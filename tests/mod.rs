@@ -20,6 +20,9 @@ mod error_tests;
 #[path = "core/options_tests.rs"]
 mod options_tests;
 
+#[path = "core/event_bus_trait_tests.rs"]
+mod event_bus_trait_tests;
+
 #[path = "local/local_event_bus_tests.rs"]
 mod local_event_bus_tests;
 

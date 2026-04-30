@@ -32,6 +32,7 @@ fn test_event_bus_error_display_covers_variants() {
         EventBusError::lock_poisoned("subscriptions"),
         EventBusError::type_mismatch("String", "u32"),
         EventBusError::ThreadJoinFailed,
+        EventBusError::unsupported_operation("flow"),
     ];
     let messages = errors.iter().map(ToString::to_string).collect::<Vec<_>>();
 
@@ -42,4 +43,5 @@ fn test_event_bus_error_display_covers_variants() {
     assert!(messages[4].contains("poisoned"));
     assert!(messages[5].contains("type mismatch"));
     assert!(messages[6].contains("panicked"));
+    assert!(messages[7].contains("unsupported"));
 }

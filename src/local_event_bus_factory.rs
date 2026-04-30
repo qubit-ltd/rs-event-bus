@@ -12,7 +12,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{LocalEventBus, SubscribeOptions};
+use crate::{EventBusFactory, LocalEventBus, SubscribeOptions, UnsupportedTransactionalEventBus};
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
 #[derive(Default)]
@@ -59,5 +59,25 @@ impl LocalEventBusFactory {
         let bus = self.create();
         bus.start();
         bus
+    }
+}
+
+impl EventBusFactory for LocalEventBusFactory {
+    type Bus = LocalEventBus;
+    type TransactionalBus = UnsupportedTransactionalEventBus;
+
+    /// Local event bus does not support transactional operations.
+    fn is_transactional_supported(&self) -> bool {
+        false
+    }
+
+    /// Creates a stopped local event bus.
+    fn create(&self) -> Self::Bus {
+        Self::create(self)
+    }
+
+    /// Creates and starts a local event bus.
+    fn create_started(&self) -> Self::Bus {
+        Self::create_started(self)
     }
 }

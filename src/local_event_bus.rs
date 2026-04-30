@@ -189,6 +189,57 @@ impl LocalEventBus {
         Ok(())
     }
 
+    /// Publishes an existing envelope on a background thread.
+    ///
+    /// # Parameters
+    /// - `envelope`: Event envelope to dispatch.
+    ///
+    /// # Returns
+    /// Join handle resolving to the publish result.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
+    /// background task is created.
+    pub fn publish_envelope_async<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.publish_envelope_with_options_async(envelope, PublishOptions::empty())
+    }
+
+    /// Publishes an existing envelope with options on a background thread.
+    ///
+    /// # Parameters
+    /// - `envelope`: Event envelope to dispatch.
+    /// - `options`: Publish options.
+    ///
+    /// # Returns
+    /// Join handle resolving to the publish result.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
+    /// background task is created.
+    pub fn publish_envelope_with_options_async<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        if let Err(error) = self.ensure_started() {
+            options.notify_publish_error(&envelope, &error);
+            return Err(error);
+        }
+        let bus = self.clone();
+        Ok(thread::spawn(move || {
+            bus.publish_envelope_with_options(envelope, options)
+        }))
+    }
+
     /// Publishes multiple envelopes.
     ///
     /// # Parameters
@@ -207,6 +258,34 @@ impl LocalEventBus {
             self.publish_envelope(envelope)?;
         }
         Ok(())
+    }
+
+    /// Publishes multiple envelopes on background threads.
+    ///
+    /// # Parameters
+    /// - `envelopes`: Envelopes to publish in order.
+    /// - `options`: Publish options cloned for each event.
+    ///
+    /// # Returns
+    /// Join handles resolving to each publish result.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before any
+    /// background task is created.
+    pub fn publish_all_async<T>(
+        &self,
+        envelopes: Vec<EventEnvelope<T>>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<Vec<JoinHandle<EventBusResult<()>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.ensure_started()?;
+        let mut handles = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            handles.push(self.publish_envelope_with_options_async(envelope, options.clone())?);
+        }
+        Ok(handles)
     }
 
     /// Publishes a payload on a background thread.
@@ -229,10 +308,7 @@ impl LocalEventBus {
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.ensure_started()?;
-        let bus = self.clone();
-        let topic = topic.clone();
-        Ok(thread::spawn(move || bus.publish(&topic, payload)))
+        self.publish_envelope_async(EventEnvelope::create(topic.clone(), payload))
     }
 
     /// Subscribes a handler using default options.
@@ -325,6 +401,71 @@ impl LocalEventBus {
         })
     }
 
+    /// Subscribes a handler on a background thread using default options.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: Subscriber identifier.
+    /// - `topic`: Topic to subscribe.
+    /// - `handler`: Handler invoked for matching events.
+    ///
+    /// # Returns
+    /// Join handle resolving to the subscription result.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
+    /// background task is created.
+    pub fn subscribe_async<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        let options = self.default_subscribe_options::<T>();
+        self.subscribe_with_options_async(subscriber_id, topic, handler, options)
+    }
+
+    /// Subscribes a handler with options on a background thread.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: Subscriber identifier.
+    /// - `topic`: Topic to subscribe.
+    /// - `handler`: Handler invoked for matching events.
+    /// - `options`: Subscription processing options.
+    ///
+    /// # Returns
+    /// Join handle resolving to the subscription result.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
+    /// background task is created.
+    pub fn subscribe_with_options_async<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+        options: SubscribeOptions<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        self.ensure_started()?;
+        let bus = self.clone();
+        let subscriber_id = subscriber_id.into();
+        let topic = topic.clone();
+        Ok(thread::spawn(move || {
+            bus.subscribe_with_options(subscriber_id, &topic, handler, options)
+        }))
+    }
+
     /// Waits until all work for a topic is idle.
     ///
     /// # Parameters
@@ -413,6 +554,175 @@ impl Default for LocalEventBus {
     /// Creates a stopped local event bus.
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::EventBus for LocalEventBus {
+    /// Starts the local event bus.
+    fn start(&self) -> bool {
+        Self::start(self)
+    }
+
+    /// Shuts down the local event bus.
+    fn shutdown(&self) -> bool {
+        Self::shutdown(self)
+    }
+
+    /// Publishes a payload using the local backend.
+    fn publish<T>(&self, topic: &Topic<T>, payload: T) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish(self, topic, payload)
+    }
+
+    /// Publishes an envelope using the local backend.
+    fn publish_envelope<T>(&self, envelope: EventEnvelope<T>) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_envelope(self, envelope)
+    }
+
+    /// Publishes an envelope with options using the local backend.
+    fn publish_envelope_with_options<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_envelope_with_options(self, envelope, options)
+    }
+
+    /// Publishes a batch using the local backend.
+    fn publish_all<T>(&self, envelopes: Vec<EventEnvelope<T>>) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_all(self, envelopes)
+    }
+
+    /// Publishes a payload on a background thread using the local backend.
+    fn publish_async<T>(
+        &self,
+        topic: &Topic<T>,
+        payload: T,
+    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_async(self, topic, payload)
+    }
+
+    /// Publishes an envelope on a background thread using the local backend.
+    fn publish_envelope_async<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_envelope_async(self, envelope)
+    }
+
+    /// Publishes an envelope with options on a background thread.
+    fn publish_envelope_with_options_async<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_envelope_with_options_async(self, envelope, options)
+    }
+
+    /// Publishes a batch asynchronously using the local backend.
+    fn publish_all_async<T>(
+        &self,
+        envelopes: Vec<EventEnvelope<T>>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<Vec<JoinHandle<EventBusResult<()>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Self::publish_all_async(self, envelopes, options)
+    }
+
+    /// Subscribes a handler using local backend defaults.
+    fn subscribe<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+    ) -> EventBusResult<Subscription<T>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        Self::subscribe(self, subscriber_id, topic, handler)
+    }
+
+    /// Subscribes a handler with options using the local backend.
+    fn subscribe_with_options<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+        options: SubscribeOptions<T>,
+    ) -> EventBusResult<Subscription<T>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        Self::subscribe_with_options(self, subscriber_id, topic, handler, options)
+    }
+
+    /// Subscribes a handler on a background thread using local defaults.
+    fn subscribe_async<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        Self::subscribe_async(self, subscriber_id, topic, handler)
+    }
+
+    /// Subscribes a handler with options on a background thread.
+    fn subscribe_with_options_async<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+        options: SubscribeOptions<T>,
+    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        Self::subscribe_with_options_async(self, subscriber_id, topic, handler, options)
+    }
+
+    /// Waits until local topic work is idle.
+    fn wait_for_idle<T>(&self, topic: &Topic<T>) -> EventBusResult<()>
+    where
+        T: 'static,
+    {
+        Self::wait_for_idle(self, topic)
     }
 }
 

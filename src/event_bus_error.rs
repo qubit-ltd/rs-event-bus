@@ -47,6 +47,11 @@ pub enum EventBusError {
     },
     /// A background thread panicked before returning a result.
     ThreadJoinFailed,
+    /// Operation is not supported by this backend.
+    UnsupportedOperation {
+        /// Operation name or feature category.
+        operation: &'static str,
+    },
 }
 
 impl EventBusError {
@@ -119,6 +124,17 @@ impl EventBusError {
     pub const fn type_mismatch(expected: &'static str, actual: &'static str) -> Self {
         Self::TypeMismatch { expected, actual }
     }
+
+    /// Creates [`EventBusError::UnsupportedOperation`].
+    ///
+    /// # Parameters
+    /// - `operation`: Operation name or feature category.
+    ///
+    /// # Returns
+    /// Error indicating that the current backend does not support the operation.
+    pub const fn unsupported_operation(operation: &'static str) -> Self {
+        Self::UnsupportedOperation { operation }
+    }
 }
 
 impl Display for EventBusError {
@@ -141,6 +157,9 @@ impl Display for EventBusError {
                 )
             }
             Self::ThreadJoinFailed => write!(formatter, "background thread panicked"),
+            Self::UnsupportedOperation { operation } => {
+                write!(formatter, "unsupported event bus operation: {operation}")
+            }
         }
     }
 }
