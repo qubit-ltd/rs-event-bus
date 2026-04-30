@@ -1,0 +1,32 @@
+[package]
+name = "qubit-event-bus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+authors = ["Haixing Hu <starfish.hu@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/qubit-ltd/rs-event-bus"
+description = "A lightweight, thread-safe in-process event bus for Rust"
+homepage = "https://github.com/qubit-ltd/rs-event-bus"
+documentation = "https://docs.rs/qubit-event-bus"
+readme = "README.md"
+keywords = ["event-bus", "pubsub", "events", "thread-safe", "qubit"]
+categories = ["concurrency", "asynchronous"]
+exclude = [
+    "coverage.sh",
+    "COVERAGE.md",
+    "COVERAGE.zh_CN.md",
+    ".circleci/*",
+    "ci-check.sh",
+    ".llvm-cov.toml",
+    ".cargo-audit.toml.example",
+]
+
+[lib]
+name = "qubit_event_bus"
+doctest = true
+
+[dependencies]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
