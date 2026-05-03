@@ -9,7 +9,10 @@
  ******************************************************************************/
 //! Type-erased publisher interceptor entry trait.
 
-use std::any::{Any, TypeId};
+use std::any::{
+    Any,
+    TypeId,
+};
 
 use crate::EventBusResult;
 

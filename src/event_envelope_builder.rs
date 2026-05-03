@@ -10,10 +10,19 @@
 //! Builder for event envelopes.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::time::{
+    Duration,
+    SystemTime,
+};
 
 use crate::event_envelope::generate_event_id;
-use crate::{Acknowledgement, EventBusError, EventBusResult, EventEnvelope, Topic};
+use crate::{
+    Acknowledgement,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    Topic,
+};
 
 /// Builder used to create [`EventEnvelope`] values with optional metadata.
 #[derive(Debug)]

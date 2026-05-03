@@ -10,7 +10,11 @@
 //! Error type returned by event bus operations.
 
 use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{
+    self,
+    Display,
+    Formatter,
+};
 
 /// Result type used by event bus operations.
 pub type EventBusResult<T> = Result<T, EventBusError>;

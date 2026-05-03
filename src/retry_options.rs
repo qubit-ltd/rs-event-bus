@@ -11,7 +11,10 @@
 
 use std::time::Duration;
 
-use crate::{EventBusError, EventBusResult};
+use crate::{
+    EventBusError,
+    EventBusResult,
+};
 
 /// Simple retry settings shared by publish and subscribe paths.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

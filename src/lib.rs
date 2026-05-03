@@ -43,7 +43,10 @@ mod unsupported_transactional_publisher;
 pub use ack_mode::AckMode;
 pub use acknowledgement::Acknowledgement;
 pub use event_bus::EventBus;
-pub use event_bus_error::{EventBusError, EventBusResult};
+pub use event_bus_error::{
+    EventBusError,
+    EventBusResult,
+};
 pub use event_bus_factory::EventBusFactory;
 pub use event_envelope::EventEnvelope;
 pub use event_envelope_builder::EventEnvelopeBuilder;

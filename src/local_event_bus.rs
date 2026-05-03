@@ -9,18 +9,36 @@
  ******************************************************************************/
 //! Thread-safe in-process event bus.
 
-use std::any::{Any, TypeId, type_name};
+use std::any::{
+    Any,
+    TypeId,
+    type_name,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{
+    AtomicBool,
+    Ordering,
+};
+use std::thread::{
+    self,
+    JoinHandle,
+};
 
 use crate::erased_subscription::ErasedSubscription;
 use crate::local_event_bus_inner::LocalEventBusInner;
 use crate::publisher_interceptor_entry::PublisherInterceptorEntry;
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventBusResult, EventEnvelope, IntoEventBusResult,
-    PublishOptions, SubscribeOptions, Subscription, Topic,
+    AckMode,
+    Acknowledgement,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
 };
 
 type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;

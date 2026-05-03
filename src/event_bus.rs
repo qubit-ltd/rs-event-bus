@@ -9,11 +9,19 @@
  ******************************************************************************/
 //! Event bus abstraction shared by concrete backends.
 
-use std::thread::{self, JoinHandle};
+use std::thread::{
+    self,
+    JoinHandle,
+};
 
 use crate::{
-    EventBusResult, EventEnvelope, IntoEventBusResult, PublishOptions, SubscribeOptions,
-    Subscription, Topic,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
 };
 
 /// Common event bus contract implemented by concrete backends.

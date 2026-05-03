@@ -11,7 +11,13 @@
 
 use std::sync::Arc;
 
-use crate::{EventBusError, EventBusResult, EventEnvelope, PublishOptionsBuilder, RetryOptions};
+use crate::{
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    PublishOptionsBuilder,
+    RetryOptions,
+};
 
 pub(crate) type PublishErrorHandlerFn<T> =
     dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()> + Send + Sync + 'static;

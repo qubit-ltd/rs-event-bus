@@ -10,13 +10,29 @@
 //! Tests for the event bus abstraction traits.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
 use qubit_event_bus::{
-    EventBus, EventBusError, EventBusFactory, EventEnvelope, LocalEventBus, LocalEventBusFactory,
-    PublishOptions, SubscribeOptions, Topic, TransactionalEventBus, TransactionalPublisher,
-    UnsupportedTransactionalEventBus, UnsupportedTransactionalPublisher,
+    EventBus,
+    EventBusError,
+    EventBusFactory,
+    EventEnvelope,
+    LocalEventBus,
+    LocalEventBusFactory,
+    PublishOptions,
+    SubscribeOptions,
+    Topic,
+    TransactionalEventBus,
+    TransactionalPublisher,
+    UnsupportedTransactionalEventBus,
+    UnsupportedTransactionalPublisher,
 };
 
 #[derive(Clone, Default)]

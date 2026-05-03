@@ -9,7 +9,12 @@
  ******************************************************************************/
 //! Factory abstraction for event bus backends.
 
-use crate::{EventBus, EventBusError, EventBusResult, TransactionalEventBus};
+use crate::{
+    EventBus,
+    EventBusError,
+    EventBusResult,
+    TransactionalEventBus,
+};
 
 /// Factory contract for creating event bus instances.
 ///

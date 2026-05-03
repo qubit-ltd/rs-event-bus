@@ -12,7 +12,12 @@
 use std::sync::Arc;
 
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventBusResult, EventEnvelope, RetryOptions,
+    AckMode,
+    Acknowledgement,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    RetryOptions,
     SubscribeOptionsBuilder,
 };
 

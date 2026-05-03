@@ -9,11 +9,19 @@
  ******************************************************************************/
 //! Factory for local event bus instances.
 
-use std::any::{Any, TypeId};
+use std::any::{
+    Any,
+    TypeId,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{EventBusFactory, LocalEventBus, SubscribeOptions, UnsupportedTransactionalEventBus};
+use crate::{
+    EventBusFactory,
+    LocalEventBus,
+    SubscribeOptions,
+    UnsupportedTransactionalEventBus,
+};
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
 #[derive(Default)]

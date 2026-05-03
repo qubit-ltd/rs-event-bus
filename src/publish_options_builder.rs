@@ -13,7 +13,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::publish_options::PublishErrorHandlerFn;
-use crate::{EventBusError, EventEnvelope, IntoEventBusResult, PublishOptions, RetryOptions};
+use crate::{
+    EventBusError,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    RetryOptions,
+};
 
 /// Builder used to create [`PublishOptions`].
 pub struct PublishOptionsBuilder<T: 'static> {

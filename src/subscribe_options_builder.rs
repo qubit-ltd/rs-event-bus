@@ -12,9 +12,18 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::subscribe_options::{DeadLetterStrategyFn, EventFilterFn, SubscribeErrorHandlerFn};
+use crate::subscribe_options::{
+    DeadLetterStrategyFn,
+    EventFilterFn,
+    SubscribeErrorHandlerFn,
+};
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventEnvelope, IntoEventBusResult, RetryOptions,
+    AckMode,
+    Acknowledgement,
+    EventBusError,
+    EventEnvelope,
+    IntoEventBusResult,
+    RetryOptions,
     SubscribeOptions,
 };
 

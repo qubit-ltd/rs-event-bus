@@ -12,11 +12,20 @@
 use std::time::Duration;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
 
 use qubit_event_bus::{
-    AckMode, EventBusError, EventEnvelope, LocalEventBus, PublishOptions, RetryOptions,
-    SubscribeOptions, Topic,
+    AckMode,
+    EventBusError,
+    EventEnvelope,
+    LocalEventBus,
+    PublishOptions,
+    RetryOptions,
+    SubscribeOptions,
+    Topic,
 };
 
 #[test]

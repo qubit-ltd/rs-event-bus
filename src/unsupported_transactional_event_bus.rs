@@ -13,8 +13,16 @@ use std::thread::JoinHandle;
 
 use crate::unsupported_transactional_publisher::UnsupportedTransactionalPublisher;
 use crate::{
-    EventBus, EventBusError, EventBusResult, EventEnvelope, IntoEventBusResult, PublishOptions,
-    SubscribeOptions, Subscription, Topic, TransactionalEventBus,
+    EventBus,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
+    TransactionalEventBus,
 };
 
 /// Placeholder transactional bus used by factories without transaction support.

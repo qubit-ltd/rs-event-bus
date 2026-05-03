@@ -9,15 +9,34 @@
  ******************************************************************************/
 //! Shared state for the local event bus.
 
-use std::any::{Any, TypeId};
+use std::any::{
+    Any,
+    TypeId,
+};
 use std::collections::HashMap;
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::panic::{
+    self,
+    AssertUnwindSafe,
+};
+use std::sync::atomic::{
+    AtomicBool,
+    AtomicUsize,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Condvar,
+    Mutex,
+};
 
 use crate::erased_subscription::ErasedSubscription;
 use crate::publisher_interceptor_entry::PublisherInterceptorEntry;
-use crate::{EventBusError, EventBusResult, SubscribeOptions, TopicKey};
+use crate::{
+    EventBusError,
+    EventBusResult,
+    SubscribeOptions,
+    TopicKey,
+};
 
 /// Shared mutable state for [`crate::LocalEventBus`].
 pub(crate) struct LocalEventBusInner {
