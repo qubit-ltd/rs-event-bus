@@ -12,6 +12,9 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+/// Result type used by event bus operations.
+pub type EventBusResult<T> = Result<T, EventBusError>;
+
 /// Error returned by event bus configuration, publishing, or subscription work.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventBusError {

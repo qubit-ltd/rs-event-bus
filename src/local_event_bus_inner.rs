@@ -11,7 +11,6 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-#[cfg(coverage)]
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -334,11 +333,10 @@ impl ProcessingTracker {
     }
 }
 
-/// Exercises lock-poisoning branches for coverage-only tests.
+/// Exercises lock-poisoning branches for coverage-oriented tests.
 ///
 /// # Returns
 /// Diagnostic strings collected from the covered error paths.
-#[cfg(coverage)]
 pub(crate) fn coverage_exercise_inner_poison_paths() -> Vec<String> {
     let mut diagnostics = Vec::new();
     let topic_key = TopicKey::new("coverage.inner".to_string(), TypeId::of::<String>());
@@ -436,7 +434,6 @@ pub(crate) fn coverage_exercise_inner_poison_paths() -> Vec<String> {
 }
 
 /// Converts an expected error result into its diagnostic message.
-#[cfg(coverage)]
 fn coverage_error_message<T>(result: EventBusResult<T>, message: &str) -> String {
     match result {
         Ok(_) => message.to_string(),
@@ -445,7 +442,6 @@ fn coverage_error_message<T>(result: EventBusResult<T>, message: &str) -> String
 }
 
 /// Poisons a mutex while suppressing the expected panic output.
-#[cfg(coverage)]
 fn coverage_poison_mutex<T>(mutex: &Mutex<T>) {
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));
@@ -457,7 +453,6 @@ fn coverage_poison_mutex<T>(mutex: &Mutex<T>) {
 }
 
 /// Exercises a poisoned lock returned from `Condvar::wait` for one topic.
-#[cfg(coverage)]
 fn coverage_wait_for_idle_poison_message() -> String {
     let tracker = Arc::new(ProcessingTracker::new());
     let topic_key = TopicKey::new("coverage.wait-for-idle".to_string(), TypeId::of::<String>());
@@ -479,7 +474,6 @@ fn coverage_wait_for_idle_poison_message() -> String {
 }
 
 /// Exercises a poisoned lock returned from `Condvar::wait` for all topics.
-#[cfg(coverage)]
 fn coverage_wait_for_all_idle_poison_message() -> String {
     let tracker = Arc::new(ProcessingTracker::new());
     let topic_key = TopicKey::new(
@@ -502,11 +496,9 @@ fn coverage_wait_for_all_idle_poison_message() -> String {
     waiter.join().expect("coverage waiter should finish")
 }
 
-/// Coverage-only publisher interceptor used for poisoned-lock paths.
-#[cfg(coverage)]
+/// Publisher interceptor used for poisoned-lock coverage paths.
 struct CoverageInnerPublisherInterceptor;
 
-#[cfg(coverage)]
 impl PublisherInterceptorEntry for CoverageInnerPublisherInterceptor {
     /// Returns a fixed coverage payload type.
     fn payload_type_id(&self) -> TypeId {
@@ -522,11 +514,9 @@ impl PublisherInterceptorEntry for CoverageInnerPublisherInterceptor {
     }
 }
 
-/// Coverage-only subscription used for poisoned-lock paths.
-#[cfg(coverage)]
+/// Subscription used for poisoned-lock coverage paths.
 struct CoverageInnerSubscription;
 
-#[cfg(coverage)]
 impl ErasedSubscription for CoverageInnerSubscription {
     /// Returns a fixed coverage subscription ID.
     fn id(&self) -> usize {

@@ -27,6 +27,5 @@ mod event_bus_trait_tests;
 #[path = "local/local_event_bus_tests.rs"]
 mod local_event_bus_tests;
 
-#[cfg(coverage)]
 #[path = "coverage_support/coverage_support_tests.rs"]
 mod coverage_support_tests;

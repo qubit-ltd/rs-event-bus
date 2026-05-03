@@ -893,11 +893,25 @@ where
     Err(last_error)
 }
 
-/// Exercises defensive local event bus branches for coverage-only tests.
+/// Helpers that exercise defensive branches for coverage-oriented tests.
+#[doc(hidden)]
+pub mod coverage_support {
+    /// Exercises defensive local event bus branches that are hard to reach
+    /// through safe public APIs.
+    ///
+    /// # Returns
+    /// Diagnostic strings collected from covered branches.
+    pub fn exercise_local_event_bus_paths() -> Vec<String> {
+        let mut diagnostics = super::coverage_exercise_local_event_bus_paths();
+        diagnostics.extend(crate::local_event_bus_inner::coverage_exercise_inner_poison_paths());
+        diagnostics
+    }
+}
+
+/// Exercises defensive local event bus branches for coverage-oriented tests.
 ///
 /// # Returns
 /// Diagnostic strings proving each branch was reached.
-#[cfg(coverage)]
 pub(crate) fn coverage_exercise_local_event_bus_paths() -> Vec<String> {
     let mut diagnostics = Vec::new();
     let topic = Topic::<String>::try_new("coverage.local").expect("coverage topic should build");
@@ -1013,11 +1027,9 @@ pub(crate) fn coverage_exercise_local_event_bus_paths() -> Vec<String> {
     diagnostics
 }
 
-/// Coverage-only subscription entry that always fails dispatch.
-#[cfg(coverage)]
+/// Subscription entry that always fails dispatch for coverage-oriented tests.
 struct CoverageFailingSubscription;
 
-#[cfg(coverage)]
 impl ErasedSubscription for CoverageFailingSubscription {
     /// Returns a fixed coverage subscription ID.
     fn id(&self) -> usize {
@@ -1042,11 +1054,9 @@ impl ErasedSubscription for CoverageFailingSubscription {
     }
 }
 
-/// Coverage-only publisher interceptor returning the wrong boxed type.
-#[cfg(coverage)]
+/// Publisher interceptor returning the wrong boxed type for coverage-oriented tests.
 struct CoverageBadPublisherInterceptor;
 
-#[cfg(coverage)]
 impl PublisherInterceptorEntry for CoverageBadPublisherInterceptor {
     /// Returns the string payload type.
     fn payload_type_id(&self) -> TypeId {
