@@ -7,8 +7,10 @@
  *    Licensed under the Apache License, Version 2.0.
  *
  ******************************************************************************/
-//! Integration tests for `qubit-event-bus`.
+//! Tests for core event bus types.
 
-mod core;
-mod coverage_support;
-mod local;
+mod error_tests;
+mod event_bus_trait_tests;
+mod event_envelope_tests;
+mod options_tests;
+mod topic_tests;
