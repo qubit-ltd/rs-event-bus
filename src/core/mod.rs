@@ -37,7 +37,7 @@ pub use into_event_bus_result::IntoEventBusResult;
 pub use publish_options::PublishOptions;
 pub use publish_options_builder::PublishOptionsBuilder;
 pub use retry_options::RetryOptions;
-pub use subscribe_options::SubscribeOptions;
+pub use subscribe_options::{DeadLetterPayload, SubscribeOptions};
 pub use subscribe_options_builder::SubscribeOptionsBuilder;
 pub use subscription::Subscription;
 pub use topic::Topic;

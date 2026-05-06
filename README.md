@@ -12,7 +12,7 @@ Documentation: [API Reference](https://docs.rs/qubit-event-bus)
 
 `qubit-event-bus` is a lightweight, thread-safe, in-process event bus for Rust applications.
 
-It provides type-safe topics, event envelopes, subscriber options, publish options, retries, acknowledgement handles, publisher interceptors, and dead-letter routing hooks.
+It provides type-safe topics, event envelopes, subscriber options, publish options, retries, acknowledgement handles, publisher and subscriber interceptors, and dead-letter routing hooks.
 
 ## Why Use It
 
@@ -23,13 +23,14 @@ Use `qubit-event-bus` when you need:
 - automatic or manual acknowledgement for subscriber handlers
 - subscriber retry and dead-letter behavior
 - publisher interceptors that can modify or drop outgoing events
+- subscriber interceptors that can wrap, observe, or short-circuit handler execution
 - deterministic test synchronization through `wait_for_idle`
 
 ## Installation
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.1.0"
+qubit-event-bus = "0.1.1"
 ```
 
 ## Quick Start
@@ -71,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
 | Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
 | Add publisher interceptors | `add_publisher_interceptor` |
+| Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptorChain` |
 | Attach publish error handling | `PublishOptions` |
 | Wait for scheduled handler work in tests | `wait_for_idle` |
 
@@ -84,14 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `EventEnvelope<T>` | Event payload plus headers, timestamp, ordering key, delay, acknowledgement, and dead-letter marker. |
 | `PublishOptions<T>` | Publish retry metadata and publish error callbacks. |
 | `SubscribeOptions<T>` | Subscriber acknowledgement mode, retry settings, filters, error callbacks, dead-letter strategy, and priority. |
+| `DeadLetterPayload` | Cloneable type-erased payload for dead-letter envelopes. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
 
 ## Project Scope
 
 - `qubit-event-bus` is an in-process event bus. It does not persist events or provide cross-process delivery.
-- Subscriber handlers run on background threads. Publishing schedules handler work and returns after dispatch.
+- Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
+- Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived payloads from multiple source event types.
 - `wait_for_idle` is intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
 ## Contributing

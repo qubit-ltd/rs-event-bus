@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use qubit_event_bus::{LocalEventBusFactory, SubscribeOptions, Topic};
+use qubit_event_bus::{EventBusError, LocalEventBusFactory, SubscribeOptions, Topic};
 
 #[test]
 fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {
@@ -38,4 +38,37 @@ fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {
             .as_slice(),
         ["accepted"]
     );
+}
+
+#[test]
+fn test_local_event_bus_factory_validates_handler_pool_options() {
+    let mut factory = LocalEventBusFactory::new();
+
+    assert_eq!(
+        factory
+            .set_subscription_handler_pool_size(0)
+            .expect_err("zero pool size should be rejected"),
+        EventBusError::invalid_argument(
+            "pool_size",
+            "subscription handler pool size must be greater than zero",
+        )
+    );
+    assert_eq!(
+        factory
+            .set_subscription_handler_queue_capacity(Some(0))
+            .expect_err("zero queue capacity should be rejected"),
+        EventBusError::invalid_argument(
+            "capacity",
+            "subscription handler queue capacity must be greater than zero",
+        )
+    );
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("positive pool size should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(1))
+        .expect("positive queue capacity should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(None)
+        .expect("unbounded queue should be accepted");
 }

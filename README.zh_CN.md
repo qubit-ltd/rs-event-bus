@@ -12,7 +12,7 @@
 
 `qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内事件总线。
 
-它提供类型安全的 Topic、事件信封、订阅配置、发布配置、重试、确认句柄、发布拦截器和死信路由钩子。
+它提供类型安全的 Topic、事件信封、订阅配置、发布配置、重试、确认句柄、发布/订阅拦截器和死信路由钩子。
 
 ## 为什么使用
 
@@ -23,13 +23,14 @@
 - 为订阅处理器使用自动或手动确认
 - 为订阅处理器配置重试和死信行为
 - 用发布拦截器修改或丢弃待发布事件
+- 用订阅拦截器包装、观测或短路处理器执行
 - 在测试中通过 `wait_for_idle` 等待处理器工作完成
 
 ## 安装
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.1.0"
+qubit-event-bus = "0.1.1"
 ```
 
 ## 快速开始
@@ -71,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription` |
 | 配置重试和确认 | `RetryOptions`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
 | 添加发布拦截器 | `add_publisher_interceptor` |
+| 添加订阅拦截器 | `add_subscriber_interceptor`、`SubscriberInterceptorChain` |
 | 添加发布错误处理 | `PublishOptions` |
 | 在测试中等待处理器工作完成 | `wait_for_idle` |
 
@@ -84,14 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `EventEnvelope<T>` | 事件 payload 以及请求头、时间戳、顺序键、延迟、确认句柄和死信标记。 |
 | `PublishOptions<T>` | 发布重试元数据和发布错误回调。 |
 | `SubscribeOptions<T>` | 订阅确认模式、重试配置、过滤器、错误回调、死信策略和优先级。 |
+| `DeadLetterPayload` | 用于死信信封的可克隆类型擦除 payload。 |
 | `Subscription<T>` | 用于查看和取消订阅的句柄。 |
 | `EventBusError` | 生命周期、校验、处理器、锁和类型擦除失败的统一错误类型。 |
 
 ## 项目范围
 
 - `qubit-event-bus` 是进程内事件总线，不负责事件持久化或跨进程投递。
-- 订阅处理器会在后台线程中执行。发布操作会在调度处理器工作后返回。
+- 订阅处理器会在可配置的 `rs-thread-pool` 固定工作线程池中执行。发布操作会在调度处理器工作后返回。
 - 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
+- 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档 payload。
 - `wait_for_idle` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
 ## 贡献

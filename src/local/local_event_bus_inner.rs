@@ -11,9 +11,10 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+
+use qubit_thread_pool::{ExecutorService, FixedThreadPool, ThreadPoolBuildError};
 
 use crate::{EventBusError, EventBusResult, SubscribeOptions, TopicKey};
 
@@ -22,12 +23,15 @@ use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 
 /// Shared mutable state for [`crate::LocalEventBus`].
 pub(crate) struct LocalEventBusInner {
-    started: AtomicBool,
+    lifecycle: Mutex<LocalEventBusLifecycle>,
     subscriptions: Mutex<HashMap<TopicKey, Vec<Arc<dyn ErasedSubscription>>>>,
     publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorEntry>>>,
+    subscriber_interceptors: Mutex<Vec<Arc<dyn Any + Send + Sync>>>,
     processing_tracker: ProcessingTracker,
     next_subscription_id: AtomicUsize,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    subscription_handler_pool_size: usize,
+    subscription_handler_queue_capacity: Option<usize>,
 }
 
 impl LocalEventBusInner {
@@ -35,19 +39,26 @@ impl LocalEventBusInner {
     ///
     /// # Parameters
     /// - `default_subscribe_options`: Typed default subscription options.
+    /// - `subscription_handler_pool_size`: Worker count for subscriber handlers.
+    /// - `subscription_handler_queue_capacity`: Optional queued handler limit.
     ///
     /// # Returns
     /// Shared state initialized in the stopped lifecycle state.
     pub(crate) fn new(
         default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+        subscription_handler_pool_size: usize,
+        subscription_handler_queue_capacity: Option<usize>,
     ) -> Self {
         Self {
-            started: AtomicBool::new(false),
+            lifecycle: Mutex::new(LocalEventBusLifecycle::stopped()),
             subscriptions: Mutex::new(HashMap::new()),
             publisher_interceptors: Mutex::new(Vec::new()),
+            subscriber_interceptors: Mutex::new(Vec::new()),
             processing_tracker: ProcessingTracker::new(),
             next_subscription_id: AtomicUsize::new(1),
             default_subscribe_options,
+            subscription_handler_pool_size,
+            subscription_handler_queue_capacity,
         }
     }
 
@@ -56,19 +67,33 @@ impl LocalEventBusInner {
     /// # Returns
     /// `true` when this call changed state from stopped to started.
     pub(crate) fn mark_started(&self) -> bool {
-        self.started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let Ok(mut lifecycle) = self.lifecycle.lock() else {
+            return false;
+        };
+        if lifecycle.started {
+            return false;
+        }
+        let Ok(executor) = self.build_subscription_handler_executor() else {
+            return false;
+        };
+        lifecycle.executor = Some(executor);
+        lifecycle.started = true;
+        true
     }
 
-    /// Marks the bus as stopped.
+    /// Marks the bus as stopped and removes its handler executor.
     ///
     /// # Returns
-    /// `true` when this call changed state from started to stopped.
-    pub(crate) fn mark_stopped(&self) -> bool {
-        self.started
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+    /// Handler executor when this call changed state from started to stopped.
+    pub(crate) fn mark_stopped(&self) -> Option<FixedThreadPool> {
+        let Ok(mut lifecycle) = self.lifecycle.lock() else {
+            return None;
+        };
+        if !lifecycle.started {
+            return None;
+        }
+        lifecycle.started = false;
+        lifecycle.executor.take()
     }
 
     /// Returns whether the bus is currently started.
@@ -76,7 +101,10 @@ impl LocalEventBusInner {
     /// # Returns
     /// `true` if publishing and subscribing are allowed.
     pub(crate) fn is_started(&self) -> bool {
-        self.started.load(Ordering::SeqCst)
+        self.lifecycle
+            .lock()
+            .map(|lifecycle| lifecycle.started)
+            .unwrap_or(false)
     }
 
     /// Allocates a new subscription ID.
@@ -130,6 +158,38 @@ impl LocalEventBusInner {
             .publisher_interceptors
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("publisher_interceptors"))?
+            .clone())
+    }
+
+    /// Adds a type-erased subscriber interceptor entry.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Shared typed interceptor adapter.
+    ///
+    /// # Returns
+    /// `Ok(())` when the entry is stored.
+    pub(crate) fn add_subscriber_interceptor(
+        &self,
+        interceptor: Arc<dyn Any + Send + Sync>,
+    ) -> EventBusResult<()> {
+        self.subscriber_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
+            .push(interceptor);
+        Ok(())
+    }
+
+    /// Returns registered subscriber interceptors.
+    ///
+    /// # Returns
+    /// Cloned interceptor entries.
+    pub(crate) fn subscriber_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn Any + Send + Sync>>> {
+        Ok(self
+            .subscriber_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
             .clone())
     }
 
@@ -242,6 +302,77 @@ impl LocalEventBusInner {
     pub(crate) fn wait_for_all_idle(&self) -> EventBusResult<()> {
         self.processing_tracker.wait_for_all_idle()
     }
+
+    /// Submits subscriber processing work to the handler pool.
+    ///
+    /// # Parameters
+    /// - `task`: One-shot task that owns one subscriber delivery.
+    ///
+    /// # Returns
+    /// `Ok(())` when the pool accepts the task.
+    ///
+    /// # Errors
+    /// Returns lock-poisoning or executor rejection errors before the task runs.
+    pub(crate) fn submit_processing_task<F>(&self, task: F) -> EventBusResult<()>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
+        let executor = lifecycle
+            .executor
+            .as_ref()
+            .ok_or_else(EventBusError::not_started)?;
+        let mut task = Some(task);
+        executor
+            .submit_callable(move || {
+                let task = task.take().ok_or_else(|| {
+                    EventBusError::handler_failed("subscription task was invoked more than once")
+                })?;
+                task();
+                Ok::<(), EventBusError>(())
+            })
+            .map(|_handle| ())
+            .map_err(|error| EventBusError::execution_rejected(error.to_string()))
+    }
+
+    /// Builds the subscription handler executor.
+    ///
+    /// # Returns
+    /// A fixed thread pool configured for subscriber processing.
+    ///
+    /// # Errors
+    /// Returns executor build errors from `rs-thread-pool`.
+    fn build_subscription_handler_executor(&self) -> Result<FixedThreadPool, ThreadPoolBuildError> {
+        let mut builder = FixedThreadPool::builder()
+            .pool_size(self.subscription_handler_pool_size)
+            .thread_name_prefix("qubit-event-bus-subscriber");
+        if let Some(capacity) = self.subscription_handler_queue_capacity {
+            builder = builder.queue_capacity(capacity);
+        }
+        builder.build()
+    }
+}
+
+/// Lifecycle state protected by the local event bus lifecycle lock.
+struct LocalEventBusLifecycle {
+    started: bool,
+    executor: Option<FixedThreadPool>,
+}
+
+impl LocalEventBusLifecycle {
+    /// Creates a stopped lifecycle without a handler executor.
+    ///
+    /// # Returns
+    /// Stopped lifecycle state.
+    fn stopped() -> Self {
+        Self {
+            started: false,
+            executor: None,
+        }
+    }
 }
 
 /// Tracks active handler work per topic.
@@ -330,211 +461,6 @@ impl ProcessingTracker {
                 .wait(counts)
                 .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
         }
-        Ok(())
-    }
-}
-
-/// Exercises lock-poisoning branches for coverage-oriented tests.
-///
-/// # Returns
-/// Diagnostic strings collected from the covered error paths.
-pub(crate) fn coverage_exercise_inner_poison_paths() -> Vec<String> {
-    let mut diagnostics = Vec::new();
-    let topic_key = TopicKey::new("coverage.inner".to_string(), TypeId::of::<String>());
-
-    let mut defaults = HashMap::new();
-    defaults.insert(
-        TypeId::of::<String>(),
-        Arc::new(SubscribeOptions::<String>::empty()) as Arc<dyn Any + Send + Sync>,
-    );
-    let defaults_inner = LocalEventBusInner::new(defaults);
-    diagnostics.push(
-        defaults_inner
-            .default_subscribe_options::<u32>()
-            .is_none()
-            .to_string(),
-    );
-    diagnostics.push(coverage_error_message(Ok(()), "coverage ok branch"));
-    diagnostics.push(
-        CoverageInnerPublisherInterceptor
-            .payload_type_id()
-            .eq(&TypeId::of::<String>())
-            .to_string(),
-    );
-    diagnostics.push(
-        CoverageInnerPublisherInterceptor
-            .intercept(Box::new("coverage".to_string()))
-            .expect("coverage interceptor should pass through")
-            .is_some()
-            .to_string(),
-    );
-    diagnostics.push(ErasedSubscription::id(&CoverageInnerSubscription).to_string());
-    diagnostics.push(ErasedSubscription::priority(&CoverageInnerSubscription).to_string());
-    diagnostics.push(
-        ErasedSubscription::dispatch(
-            &CoverageInnerSubscription,
-            Box::new("coverage".to_string()),
-            Arc::new(LocalEventBusInner::new(HashMap::new())),
-        )
-        .is_ok()
-        .to_string(),
-    );
-
-    let interceptor_inner = LocalEventBusInner::new(HashMap::new());
-    coverage_poison_mutex(&interceptor_inner.publisher_interceptors);
-    diagnostics.push(coverage_error_message(
-        interceptor_inner.add_publisher_interceptor(Arc::new(CoverageInnerPublisherInterceptor)),
-        "poisoned interceptor lock should reject writes",
-    ));
-    diagnostics.push(coverage_error_message(
-        interceptor_inner.publisher_interceptors(),
-        "poisoned interceptor lock should reject reads",
-    ));
-
-    let subscription_inner = LocalEventBusInner::new(HashMap::new());
-    coverage_poison_mutex(&subscription_inner.subscriptions);
-    diagnostics.push(coverage_error_message(
-        subscription_inner.add_subscription(topic_key.clone(), Arc::new(CoverageInnerSubscription)),
-        "poisoned subscription lock should reject writes",
-    ));
-    diagnostics.push(coverage_error_message(
-        subscription_inner.subscriptions_for(&topic_key),
-        "poisoned subscription lock should reject reads",
-    ));
-    diagnostics.push(coverage_error_message(
-        subscription_inner.unsubscribe(&topic_key, 1),
-        "poisoned subscription lock should reject removals",
-    ));
-    subscription_inner.clear_subscriptions();
-
-    let tracker_inner = LocalEventBusInner::new(HashMap::new());
-    coverage_poison_mutex(&tracker_inner.processing_tracker.counts);
-    diagnostics.push(
-        tracker_inner
-            .start_processing(&topic_key)
-            .expect_err("poisoned processing lock should reject start")
-            .to_string(),
-    );
-    tracker_inner.finish_processing(&topic_key);
-    diagnostics.push(
-        tracker_inner
-            .wait_for_idle(&topic_key)
-            .expect_err("poisoned processing lock should reject topic wait")
-            .to_string(),
-    );
-    diagnostics.push(
-        tracker_inner
-            .wait_for_all_idle()
-            .expect_err("poisoned processing lock should reject global wait")
-            .to_string(),
-    );
-    diagnostics.push(coverage_wait_for_idle_poison_message());
-    diagnostics.push(coverage_wait_for_all_idle_poison_message());
-
-    diagnostics
-}
-
-/// Converts an expected error result into its diagnostic message.
-fn coverage_error_message<T>(result: EventBusResult<T>, message: &str) -> String {
-    match result {
-        Ok(_) => message.to_string(),
-        Err(error) => error.to_string(),
-    }
-}
-
-/// Poisons a mutex while suppressing the expected panic output.
-fn coverage_poison_mutex<T>(mutex: &Mutex<T>) {
-    let previous_hook = panic::take_hook();
-    panic::set_hook(Box::new(|_| {}));
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        let _guard = mutex.lock().expect("coverage lock should be available");
-        panic!("coverage poison mutex");
-    }));
-    panic::set_hook(previous_hook);
-}
-
-/// Exercises a poisoned lock returned from `Condvar::wait` for one topic.
-fn coverage_wait_for_idle_poison_message() -> String {
-    let tracker = Arc::new(ProcessingTracker::new());
-    let topic_key = TopicKey::new("coverage.wait-for-idle".to_string(), TypeId::of::<String>());
-    tracker
-        .start(&topic_key)
-        .expect("coverage tracker should start");
-    let waiting_tracker = Arc::clone(&tracker);
-    let waiting_topic_key = topic_key.clone();
-    let waiter = std::thread::spawn(move || {
-        waiting_tracker
-            .wait_for_idle(&waiting_topic_key)
-            .expect_err("poisoned condvar wait should fail")
-            .to_string()
-    });
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    coverage_poison_mutex(&tracker.counts);
-    tracker.condvar.notify_all();
-    waiter.join().expect("coverage waiter should finish")
-}
-
-/// Exercises a poisoned lock returned from `Condvar::wait` for all topics.
-fn coverage_wait_for_all_idle_poison_message() -> String {
-    let tracker = Arc::new(ProcessingTracker::new());
-    let topic_key = TopicKey::new(
-        "coverage.wait-for-all-idle".to_string(),
-        TypeId::of::<String>(),
-    );
-    tracker
-        .start(&topic_key)
-        .expect("coverage tracker should start");
-    let waiting_tracker = Arc::clone(&tracker);
-    let waiter = std::thread::spawn(move || {
-        waiting_tracker
-            .wait_for_all_idle()
-            .expect_err("poisoned condvar wait should fail")
-            .to_string()
-    });
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    coverage_poison_mutex(&tracker.counts);
-    tracker.condvar.notify_all();
-    waiter.join().expect("coverage waiter should finish")
-}
-
-/// Publisher interceptor used for poisoned-lock coverage paths.
-struct CoverageInnerPublisherInterceptor;
-
-impl PublisherInterceptorEntry for CoverageInnerPublisherInterceptor {
-    /// Returns a fixed coverage payload type.
-    fn payload_type_id(&self) -> TypeId {
-        TypeId::of::<String>()
-    }
-
-    /// Passes the erased envelope through unchanged.
-    fn intercept(
-        &self,
-        envelope: Box<dyn Any + Send>,
-    ) -> EventBusResult<Option<Box<dyn Any + Send>>> {
-        Ok(Some(envelope))
-    }
-}
-
-/// Subscription used for poisoned-lock coverage paths.
-struct CoverageInnerSubscription;
-
-impl ErasedSubscription for CoverageInnerSubscription {
-    /// Returns a fixed coverage subscription ID.
-    fn id(&self) -> usize {
-        1
-    }
-
-    /// Returns neutral priority.
-    fn priority(&self) -> i32 {
-        0
-    }
-
-    /// Accepts the erased envelope without work.
-    fn dispatch(
-        &self,
-        _envelope: Box<dyn Any + Send>,
-        _bus: Arc<LocalEventBusInner>,
-    ) -> EventBusResult<()> {
         Ok(())
     }
 }

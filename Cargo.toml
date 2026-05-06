@@ -27,6 +27,8 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
+qubit-retry = { version = "0.10.3", path = "../rs-retry" }
+qubit-thread-pool = { version = "0.1.2", path = "../rs-thread-pool" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
