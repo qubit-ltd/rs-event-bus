@@ -24,6 +24,9 @@ pub(crate) trait ErasedSubscription: Send + Sync {
     /// Returns subscription priority.
     fn priority(&self) -> i32;
 
+    /// Marks the subscription inactive without removing it from storage.
+    fn deactivate(&self);
+
     /// Dispatches a boxed envelope to the subscription.
     fn dispatch(
         &self,

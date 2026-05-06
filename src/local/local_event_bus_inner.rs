@@ -328,6 +328,9 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?;
         if let Some(entries) = subscriptions.get_mut(topic_key) {
+            for entry in entries.iter().filter(|entry| entry.id() == id) {
+                entry.deactivate();
+            }
             entries.retain(|entry| entry.id() != id);
             if entries.is_empty() {
                 subscriptions.remove(topic_key);
@@ -339,6 +342,11 @@ impl LocalEventBusInner {
     /// Clears all subscriptions.
     pub(crate) fn clear_subscriptions(&self) {
         if let Ok(mut subscriptions) = self.subscriptions.lock() {
+            for entries in subscriptions.values() {
+                for entry in entries {
+                    entry.deactivate();
+                }
+            }
             subscriptions.clear();
         }
     }
