@@ -1005,6 +1005,11 @@ where
         self.options.priority()
     }
 
+    /// Marks this subscription inactive.
+    fn deactivate(&self) {
+        self.active.store(false, Ordering::SeqCst);
+    }
+
     /// Downcasts and schedules handler processing.
     fn dispatch(
         &self,

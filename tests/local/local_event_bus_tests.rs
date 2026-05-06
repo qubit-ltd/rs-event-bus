@@ -69,6 +69,7 @@ fn test_lifecycle_rejects_use_until_started_and_is_idempotent() {
     assert_eq!(subscription.topic(), &topic);
 
     assert!(bus.shutdown());
+    assert!(!subscription.is_active());
     assert!(!bus.shutdown());
     assert_eq!(
         bus.publish(&topic, "payload".to_string())
