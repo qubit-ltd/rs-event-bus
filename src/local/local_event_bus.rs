@@ -9,26 +9,53 @@
  ******************************************************************************/
 //! Thread-safe in-process event bus.
 
-use std::any::{Any, TypeId, type_name};
+use std::any::{
+    Any,
+    TypeId,
+    type_name,
+};
 use std::collections::HashMap;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{
+    self,
+    AssertUnwindSafe,
+};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{
+    AtomicBool,
+    Ordering,
+};
 use std::thread;
 use std::time::Duration;
 
-use qubit_thread_pool::{ExecutorService, FixedThreadPool};
+use qubit_thread_pool::{
+    ExecutorService,
+    FixedThreadPool,
+};
 
-use crate::core::subscribe_options::{DeadLetterStrategyFn, normalize_dead_letter_error};
+use crate::core::subscribe_options::{
+    DeadLetterStrategyFn,
+    normalize_dead_letter_error,
+};
 use crate::{
-    AckMode, Acknowledgement, DeadLetterPayload, EventBusError, EventBusResult, EventBusTask,
-    EventEnvelope, IntoEventBusResult, PublishOptions, SubscribeOptions, Subscription, Topic,
+    AckMode,
+    Acknowledgement,
+    DeadLetterPayload,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
     TopicKey,
 };
 
 use super::erased_subscription::ErasedSubscription;
 use super::local_event_bus_inner::LocalEventBusInner;
-use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
+use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;
 type PublisherInterceptorFn<T> =
@@ -37,45 +64,6 @@ type SubscriberInterceptorFn<T> = dyn Fn(EventEnvelope<T>, SubscriberInterceptor
     + Send
     + Sync
     + 'static;
-
-/// Chain handle passed to subscriber interceptors.
-///
-/// Calling [`proceed`](Self::proceed) invokes the next subscriber interceptor,
-/// or the original subscriber handler when the current interceptor is the last
-/// one in the chain.
-pub struct SubscriberInterceptorChain<T: Clone + Send + Sync + 'static> {
-    next: Arc<HandlerFn<T>>,
-}
-
-impl<T> SubscriberInterceptorChain<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Creates a chain handle around the next handler.
-    ///
-    /// # Parameters
-    /// - `next`: Handler or interceptor wrapper to invoke next.
-    ///
-    /// # Returns
-    /// Chain handle for one interceptor invocation.
-    fn new(next: Arc<HandlerFn<T>>) -> Self {
-        Self { next }
-    }
-
-    /// Continues subscriber processing.
-    ///
-    /// # Parameters
-    /// - `envelope`: Envelope to pass to the next chain element.
-    ///
-    /// # Returns
-    /// `Ok(())` when downstream processing succeeds.
-    ///
-    /// # Errors
-    /// Returns the downstream handler or interceptor error.
-    pub fn proceed(&self, envelope: EventEnvelope<T>) -> EventBusResult<()> {
-        (self.next)(envelope)
-    }
-}
 
 /// Thread-safe in-process event bus.
 ///
@@ -228,7 +216,8 @@ impl LocalEventBus {
     /// Registers an observer for internal background errors.
     ///
     /// # Parameters
-    /// - `observer`: Callback invoked when error handlers or dead-letter routing fail.
+    /// - `observer`: Callback invoked when interceptors, error handlers, or
+    ///   dead-letter routing fail.
     ///
     /// # Returns
     /// `Ok(())` when the observer is stored.
@@ -300,47 +289,21 @@ impl LocalEventBus {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
-        let Some(envelope) = self.apply_publisher_interceptors(envelope)? else {
-            return Ok(());
+        let original_envelope = envelope.clone();
+        let envelope = match self.apply_publisher_interceptors(envelope) {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.inner.observe_error(&error);
+                self.observe_errors(options.notify_publish_error(&original_envelope, &error));
+                return Err(error);
+            }
         };
         if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options()) {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
         Ok(())
-    }
-
-    /// Publishes an existing envelope and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `envelope`: Event envelope to dispatch.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    pub fn publish_envelope_async<T>(&self, envelope: EventEnvelope<T>) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        self.publish_envelope_with_options_async(envelope, self.default_publish_options::<T>())
-    }
-
-    /// Publishes an existing envelope with options and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `envelope`: Event envelope to dispatch.
-    /// - `options`: Publish options.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    pub fn publish_envelope_with_options_async<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-        options: PublishOptions<T>,
-    ) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        EventBusTask::completed(self.publish_envelope_with_options(envelope, options))
     }
 
     /// Publishes multiple envelopes.
@@ -361,44 +324,6 @@ impl LocalEventBus {
             self.publish_envelope(envelope)?;
         }
         Ok(())
-    }
-
-    /// Publishes multiple envelopes and returns completed tasks.
-    ///
-    /// # Parameters
-    /// - `envelopes`: Envelopes to publish in order.
-    /// - `options`: Publish options cloned for each event.
-    ///
-    /// # Returns
-    /// Completed tasks resolving to each publish result.
-    pub fn publish_all_async<T>(
-        &self,
-        envelopes: Vec<EventEnvelope<T>>,
-        options: PublishOptions<T>,
-    ) -> Vec<EventBusTask<()>>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        let mut handles = Vec::with_capacity(envelopes.len());
-        for envelope in envelopes {
-            handles.push(self.publish_envelope_with_options_async(envelope, options.clone()));
-        }
-        handles
-    }
-
-    /// Publishes a payload and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `topic`: Target topic.
-    /// - `payload`: Event payload.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    pub fn publish_async<T>(&self, topic: &Topic<T>, payload: T) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        self.publish_envelope_async(EventEnvelope::create(topic.clone(), payload))
     }
 
     /// Subscribes a handler using default options.
@@ -490,58 +415,6 @@ impl LocalEventBus {
             active,
             bus: Arc::downgrade(&self.inner),
         })
-    }
-
-    /// Subscribes a handler and returns a completed task using default options.
-    ///
-    /// # Parameters
-    /// - `subscriber_id`: Subscriber identifier.
-    /// - `topic`: Topic to subscribe.
-    /// - `handler`: Handler invoked for matching events.
-    ///
-    /// # Returns
-    /// Completed task resolving to the subscription result.
-    pub fn subscribe_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        let options = self.default_subscribe_options::<T>();
-        self.subscribe_with_options_async(subscriber_id, topic, handler, options)
-    }
-
-    /// Subscribes a handler with options and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `subscriber_id`: Subscriber identifier.
-    /// - `topic`: Topic to subscribe.
-    /// - `handler`: Handler invoked for matching events.
-    /// - `options`: Subscription processing options.
-    ///
-    /// # Returns
-    /// Completed task resolving to the subscription result.
-    pub fn subscribe_with_options_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-        options: SubscribeOptions<T>,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        let subscriber_id = subscriber_id.into();
-        EventBusTask::completed(self.subscribe_with_options(subscriber_id, topic, handler, options))
     }
 
     /// Waits until all work for a topic is idle.
@@ -767,46 +640,6 @@ impl crate::EventBus for LocalEventBus {
         Self::publish_all(self, envelopes)
     }
 
-    /// Publishes a payload and returns a completed task.
-    fn publish_async<T>(&self, topic: &Topic<T>, payload: T) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        Self::publish_async(self, topic, payload)
-    }
-
-    /// Publishes an envelope and returns a completed task.
-    fn publish_envelope_async<T>(&self, envelope: EventEnvelope<T>) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        Self::publish_envelope_async(self, envelope)
-    }
-
-    /// Publishes an envelope with options and returns a completed task.
-    fn publish_envelope_with_options_async<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-        options: PublishOptions<T>,
-    ) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        Self::publish_envelope_with_options_async(self, envelope, options)
-    }
-
-    /// Publishes a batch and returns completed tasks.
-    fn publish_all_async<T>(
-        &self,
-        envelopes: Vec<EventEnvelope<T>>,
-        options: PublishOptions<T>,
-    ) -> Vec<EventBusTask<()>>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        Self::publish_all_async(self, envelopes, options)
-    }
-
     /// Subscribes a handler using local backend defaults.
     fn subscribe<T, S, F, R>(
         &self,
@@ -838,39 +671,6 @@ impl crate::EventBus for LocalEventBus {
         R: IntoEventBusResult + 'static,
     {
         Self::subscribe_with_options(self, subscriber_id, topic, handler, options)
-    }
-
-    /// Subscribes a handler and returns a completed task using local defaults.
-    fn subscribe_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        Self::subscribe_async(self, subscriber_id, topic, handler)
-    }
-
-    /// Subscribes a handler with options and returns a completed task.
-    fn subscribe_with_options_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-        options: SubscribeOptions<T>,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        Self::subscribe_with_options_async(self, subscriber_id, topic, handler, options)
     }
 
     /// Waits until local topic work is idle.
@@ -923,7 +723,13 @@ where
         let envelope = envelope.downcast::<EventEnvelope<T>>().map_err(|_| {
             EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
         })?;
-        Ok((self.interceptor)(*envelope).map(|envelope| Box::new(envelope) as Box<dyn Any + Send>))
+        match panic::catch_unwind(AssertUnwindSafe(|| (self.interceptor)(*envelope))) {
+            Ok(envelope) => Ok(envelope.map(|envelope| Box::new(envelope) as Box<dyn Any + Send>)),
+            Err(_) => Err(EventBusError::interceptor_failed(
+                "publish",
+                "publisher interceptor panicked",
+            )),
+        }
     }
 }
 

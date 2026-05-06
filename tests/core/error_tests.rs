@@ -9,7 +9,10 @@
  ******************************************************************************/
 //! Tests for event bus errors and acknowledgement state.
 
-use qubit_event_bus::{Acknowledgement, EventBusError};
+use qubit_event_bus::{
+    Acknowledgement,
+    EventBusError,
+};
 
 #[test]
 fn test_acknowledgement_default_and_nack_state() {
@@ -31,11 +34,11 @@ fn test_event_bus_error_display_covers_variants() {
         EventBusError::invalid_argument("field", "bad value"),
         EventBusError::missing_field("topic"),
         EventBusError::handler_failed("boom"),
+        EventBusError::interceptor_failed("publish", "interceptor boom"),
         EventBusError::error_handler_failed("subscribe", "handler boom"),
         EventBusError::dead_letter_failed("publish rejected"),
         EventBusError::lock_poisoned("subscriptions"),
         EventBusError::type_mismatch("String", "u32"),
-        EventBusError::ThreadJoinFailed,
         EventBusError::unsupported_operation("flow"),
     ];
     let messages = errors.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -45,10 +48,10 @@ fn test_event_bus_error_display_covers_variants() {
     assert!(messages[2].contains("invalid argument"));
     assert!(messages[3].contains("missing required field"));
     assert!(messages[4].contains("handler failed"));
-    assert!(messages[5].contains("error handler failed"));
-    assert!(messages[6].contains("dead-letter routing failed"));
-    assert!(messages[7].contains("poisoned"));
-    assert!(messages[8].contains("type mismatch"));
-    assert!(messages[9].contains("panicked"));
+    assert!(messages[5].contains("interceptor failed"));
+    assert!(messages[6].contains("error handler failed"));
+    assert!(messages[7].contains("dead-letter routing failed"));
+    assert!(messages[8].contains("poisoned"));
+    assert!(messages[9].contains("type mismatch"));
     assert!(messages[10].contains("unsupported"));
 }

@@ -19,14 +19,38 @@ mod local;
 mod transactional;
 
 pub use core::{
-    AckMode, Acknowledgement, AttemptTimeoutOption, AttemptTimeoutPolicy, DeadLetterPayload,
-    DeadLetterRecord, EventBus, EventBusError, EventBusFactory, EventBusResult, EventBusTask,
-    EventEnvelope, EventEnvelopeBuilder, IntoEventBusResult, PublishOptions, PublishOptionsBuilder,
-    RetryDelay, RetryJitter, RetryOptions, SubscribeOptions, SubscribeOptionsBuilder, Subscription,
-    Topic, TopicKey,
+    AckMode,
+    Acknowledgement,
+    AttemptTimeoutOption,
+    AttemptTimeoutPolicy,
+    DeadLetterPayload,
+    DeadLetterRecord,
+    EventBus,
+    EventBusError,
+    EventBusFactory,
+    EventBusResult,
+    EventEnvelope,
+    EventEnvelopeBuilder,
+    IntoEventBusResult,
+    PublishOptions,
+    PublishOptionsBuilder,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+    SubscribeOptions,
+    SubscribeOptionsBuilder,
+    Subscription,
+    Topic,
+    TopicKey,
 };
-pub use local::{LocalEventBus, LocalEventBusFactory, SubscriberInterceptorChain};
+pub use local::{
+    LocalEventBus,
+    LocalEventBusFactory,
+    SubscriberInterceptorChain,
+};
 pub use transactional::{
-    TransactionalEventBus, TransactionalPublisher, UnsupportedTransactionalEventBus,
+    TransactionalEventBus,
+    TransactionalPublisher,
+    UnsupportedTransactionalEventBus,
     UnsupportedTransactionalPublisher,
 };

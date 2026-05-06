@@ -10,38 +10,14 @@
 //! Event bus abstraction shared by concrete backends.
 
 use crate::{
-    EventBusResult, EventEnvelope, IntoEventBusResult, PublishOptions, SubscribeOptions,
-    Subscription, Topic,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
 };
-
-/// Completed event-bus task returned by non-blocking convenience APIs.
-///
-/// The local backend performs publish and subscribe scheduling synchronously and
-/// returns an already-completed task instead of creating a throwaway OS thread.
-pub struct EventBusTask<T> {
-    result: EventBusResult<T>,
-}
-
-impl<T> EventBusTask<T> {
-    /// Creates a completed task.
-    ///
-    /// # Parameters
-    /// - `result`: Operation result stored in the task.
-    ///
-    /// # Returns
-    /// Task whose [`join`](Self::join) method returns `result`.
-    pub fn completed(result: EventBusResult<T>) -> Self {
-        Self { result }
-    }
-
-    /// Returns the completed task result.
-    ///
-    /// # Returns
-    /// Operation result captured when the task was created.
-    pub fn join(self) -> EventBusResult<T> {
-        self.result
-    }
-}
 
 /// Common event bus contract implemented by concrete backends.
 ///
@@ -146,89 +122,6 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         Ok(())
     }
 
-    /// Publishes a payload and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `topic`: Target topic.
-    /// - `payload`: Event payload.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns backend errors when [`EventBusTask::join`] is called.
-    fn publish_async<T>(&self, topic: &Topic<T>, payload: T) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        self.publish_envelope_async(EventEnvelope::create(topic.clone(), payload))
-    }
-
-    /// Publishes an envelope and returns a completed task with default options.
-    ///
-    /// # Parameters
-    /// - `envelope`: Event envelope to publish.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns backend errors when [`EventBusTask::join`] is called.
-    fn publish_envelope_async<T>(&self, envelope: EventEnvelope<T>) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        self.publish_envelope_with_options_async(envelope, PublishOptions::empty())
-    }
-
-    /// Publishes an envelope with options and returns a completed task.
-    ///
-    /// # Parameters
-    /// - `envelope`: Event envelope to publish.
-    /// - `options`: Publish options applied to this event.
-    ///
-    /// # Returns
-    /// Completed task resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns backend errors when [`EventBusTask::join`] is called.
-    fn publish_envelope_with_options_async<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-        options: PublishOptions<T>,
-    ) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        EventBusTask::completed(self.publish_envelope_with_options(envelope, options))
-    }
-
-    /// Publishes a batch of envelopes asynchronously.
-    ///
-    /// # Parameters
-    /// - `envelopes`: Envelopes to publish.
-    /// - `options`: Publish options cloned for each envelope.
-    ///
-    /// # Returns
-    /// Completed tasks, one per envelope.
-    ///
-    /// # Errors
-    /// Returns per-envelope backend errors when task results are joined.
-    fn publish_all_async<T>(
-        &self,
-        envelopes: Vec<EventEnvelope<T>>,
-        options: PublishOptions<T>,
-    ) -> Vec<EventBusTask<()>>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        let mut handles = Vec::with_capacity(envelopes.len());
-        for envelope in envelopes {
-            handles.push(self.publish_envelope_with_options_async(envelope, options.clone()));
-        }
-        handles
-    }
-
     /// Subscribes a handler using backend default options.
     ///
     /// # Parameters
@@ -281,63 +174,6 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         S: Into<String>,
         F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static;
-
-    /// Subscribes a handler on a background thread using backend default options.
-    ///
-    /// # Parameters
-    /// - `subscriber_id`: Subscriber identifier.
-    /// - `topic`: Topic to subscribe.
-    /// - `handler`: Handler invoked for matching events.
-    ///
-    /// # Returns
-    /// Join handle resolving to the subscription result.
-    ///
-    /// # Errors
-    /// Returns scheduling or backend precondition errors before the thread starts.
-    fn subscribe_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        self.subscribe_with_options_async(subscriber_id, topic, handler, SubscribeOptions::empty())
-    }
-
-    /// Subscribes a handler with options on a background thread.
-    ///
-    /// # Parameters
-    /// - `subscriber_id`: Subscriber identifier.
-    /// - `topic`: Topic to subscribe.
-    /// - `handler`: Handler invoked for matching events.
-    /// - `options`: Subscription options.
-    ///
-    /// # Returns
-    /// Completed task resolving to the subscription result.
-    ///
-    /// # Errors
-    /// Returns backend errors when [`EventBusTask::join`] is called.
-    fn subscribe_with_options_async<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-        options: SubscribeOptions<T>,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        let subscriber_id = subscriber_id.into();
-        EventBusTask::completed(self.subscribe_with_options(subscriber_id, topic, handler, options))
-    }
 
     /// Waits until all work for a topic is idle.
     ///

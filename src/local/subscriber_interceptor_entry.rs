@@ -7,7 +7,7 @@
  *    Licensed under the Apache License, Version 2.0.
  *
  ******************************************************************************/
-//! Type-erased publisher interceptor entry trait.
+//! Type-erased subscriber interceptor entry trait.
 
 use std::any::{
     Any,
@@ -16,14 +16,14 @@ use std::any::{
 
 use crate::EventBusResult;
 
-/// Type-erased publisher interceptor entry stored in the local event bus.
-pub(crate) trait PublisherInterceptorEntry: Send + Sync {
+/// Type-erased subscriber interceptor entry stored in the local event bus.
+pub(crate) trait SubscriberInterceptorEntry: Send + Sync {
     /// Returns the payload type handled by this interceptor.
     fn payload_type_id(&self) -> TypeId;
 
-    /// Applies the interceptor to a boxed envelope.
-    fn intercept(
+    /// Wraps a boxed subscriber handler with this interceptor.
+    fn wrap_handler(
         &self,
-        envelope: Box<dyn Any + Send>,
-    ) -> EventBusResult<Option<Box<dyn Any + Send>>>;
+        handler: Box<dyn Any + Send + Sync>,
+    ) -> EventBusResult<Box<dyn Any + Send + Sync>>;
 }

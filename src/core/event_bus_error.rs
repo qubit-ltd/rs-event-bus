@@ -10,7 +10,11 @@
 //! Error type returned by event bus operations.
 
 use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{
+    self,
+    Display,
+    Formatter,
+};
 
 /// Result type used by event bus operations.
 pub type EventBusResult<T> = Result<T, EventBusError>;
@@ -44,6 +48,13 @@ pub enum EventBusError {
     },
     /// Subscriber handler or interceptor panicked.
     HandlerPanicked,
+    /// A configured interceptor failed while processing an event.
+    InterceptorFailed {
+        /// Interceptor phase.
+        phase: &'static str,
+        /// Human-readable failure message.
+        message: String,
+    },
     /// A configured error handler failed while processing another error.
     ErrorHandlerFailed {
         /// Error handling phase.
@@ -73,8 +84,6 @@ pub enum EventBusError {
         /// Actual Rust type name.
         actual: &'static str,
     },
-    /// A background thread panicked before returning a result.
-    ThreadJoinFailed,
     /// Operation is not supported by this backend.
     UnsupportedOperation {
         /// Operation name or feature category.
@@ -149,6 +158,21 @@ impl EventBusError {
     /// Handler panic error used by subscriber failure handling.
     pub const fn handler_panicked() -> Self {
         Self::HandlerPanicked
+    }
+
+    /// Creates [`EventBusError::InterceptorFailed`].
+    ///
+    /// # Parameters
+    /// - `phase`: Interceptor phase.
+    /// - `message`: Interceptor failure details.
+    ///
+    /// # Returns
+    /// Interceptor failure with context.
+    pub fn interceptor_failed(phase: &'static str, message: impl Into<String>) -> Self {
+        Self::InterceptorFailed {
+            phase,
+            message: message.into(),
+        }
     }
 
     /// Creates [`EventBusError::ErrorHandlerFailed`].
@@ -238,12 +262,12 @@ impl EventBusError {
             Self::MissingField { .. } => "missing_field",
             Self::HandlerFailed { .. } => "handler_failed",
             Self::HandlerPanicked => "handler_panicked",
+            Self::InterceptorFailed { .. } => "interceptor_failed",
             Self::ErrorHandlerFailed { .. } => "error_handler_failed",
             Self::DeadLetterFailed { .. } => "dead_letter_failed",
             Self::ExecutionRejected { .. } => "execution_rejected",
             Self::LockPoisoned { .. } => "lock_poisoned",
             Self::TypeMismatch { .. } => "type_mismatch",
-            Self::ThreadJoinFailed => "thread_join_failed",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
         }
     }
@@ -263,6 +287,9 @@ impl Display for EventBusError {
             Self::MissingField { field } => write!(formatter, "missing required field `{field}`"),
             Self::HandlerFailed { message } => write!(formatter, "event handler failed: {message}"),
             Self::HandlerPanicked => write!(formatter, "event handler panicked"),
+            Self::InterceptorFailed { phase, message } => {
+                write!(formatter, "{phase} interceptor failed: {message}")
+            }
             Self::ErrorHandlerFailed { phase, message } => {
                 write!(formatter, "{phase} error handler failed: {message}")
             }
@@ -281,7 +308,6 @@ impl Display for EventBusError {
                     "event payload type mismatch: expected {expected}, got {actual}"
                 )
             }
-            Self::ThreadJoinFailed => write!(formatter, "background thread panicked"),
             Self::UnsupportedOperation { operation } => {
                 write!(formatter, "unsupported event bus operation: {operation}")
             }

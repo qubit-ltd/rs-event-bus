@@ -10,8 +10,16 @@
 //! Unsupported transactional backend placeholders.
 
 use crate::{
-    EventBus, EventBusError, EventBusResult, EventBusTask, EventEnvelope, IntoEventBusResult,
-    PublishOptions, SubscribeOptions, Subscription, Topic, TransactionalEventBus,
+    EventBus,
+    EventBusError,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    Subscription,
+    Topic,
+    TransactionalEventBus,
 };
 
 use super::unsupported_transactional_publisher::UnsupportedTransactionalPublisher;
@@ -53,18 +61,6 @@ impl EventBus for UnsupportedTransactionalEventBus {
         Err(EventBusError::unsupported_operation("publish"))
     }
 
-    /// Returns an unsupported-operation error before spawning any thread.
-    fn publish_envelope_with_options_async<T>(
-        &self,
-        _envelope: EventEnvelope<T>,
-        _options: PublishOptions<T>,
-    ) -> EventBusTask<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        EventBusTask::completed(Err(EventBusError::unsupported_operation("publish_async")))
-    }
-
     /// Returns an unsupported-operation error.
     fn subscribe_with_options<T, S, F, R>(
         &self,
@@ -80,23 +76,6 @@ impl EventBus for UnsupportedTransactionalEventBus {
         R: IntoEventBusResult + 'static,
     {
         Err(EventBusError::unsupported_operation("subscribe"))
-    }
-
-    /// Returns an unsupported-operation error before spawning any thread.
-    fn subscribe_with_options_async<T, S, F, R>(
-        &self,
-        _subscriber_id: S,
-        _topic: &Topic<T>,
-        _handler: F,
-        _options: SubscribeOptions<T>,
-    ) -> EventBusTask<Subscription<T>>
-    where
-        T: Clone + Send + Sync + 'static,
-        S: Into<String>,
-        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
-    {
-        EventBusTask::completed(Err(EventBusError::unsupported_operation("subscribe_async")))
     }
 
     /// Returns an unsupported-operation error.
