@@ -123,7 +123,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
                 &EventEnvelope<T>,
                 &EventBusError,
                 &SubscribeOptions<T>,
-            ) -> Option<EventEnvelope<DeadLetterPayload>>
+            ) -> crate::EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
             + Send
             + Sync
             + 'static,

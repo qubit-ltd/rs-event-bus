@@ -329,7 +329,7 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
             Ok(())
         })
         .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
-            Some(
+            Ok(Some(
                 EventEnvelope::create(
                     dead_letter_target.clone(),
                     DeadLetterRecord::from_failure(subscriber_id, failed, error),
@@ -337,7 +337,7 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
                 .with_header("subscriber-id", subscriber_id)
                 .with_header("failure", error.to_string())
                 .as_dead_letter(),
-            )
+            ))
         })
         .build();
 
@@ -452,10 +452,10 @@ fn test_manual_nack_is_treated_as_subscription_failure() {
             Ok(())
         })
         .dead_letter_strategy(move |_subscriber_id, failed, _error, _options| {
-            Some(EventEnvelope::create(
+            Ok(Some(EventEnvelope::create(
                 dead_letter_target.clone(),
                 DeadLetterRecord::from_failure(_subscriber_id, failed, _error),
-            ))
+            )))
         })
         .build();
 
@@ -517,10 +517,10 @@ fn test_subscribe_error_handler_ack_short_circuits_failure_handling() {
             Ok(())
         })
         .dead_letter_strategy(move |_subscriber_id, failed, _error, _options| {
-            Some(EventEnvelope::create(
+            Ok(Some(EventEnvelope::create(
                 dead_letter_target.clone(),
                 DeadLetterRecord::from_failure(_subscriber_id, failed, _error),
-            ))
+            )))
         })
         .build();
 
@@ -835,6 +835,52 @@ fn test_factory_applies_default_publish_options_and_interceptors() {
 }
 
 #[test]
+fn test_publish_error_handler_failure_is_observed_and_isolated() {
+    let bus = LocalEventBus::new();
+    let topic = create_topic("publish-error-observed");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let second_handlers = Arc::new(AtomicUsize::new(0));
+    let captured_second_handlers = Arc::clone(&second_handlers);
+    let options = PublishOptions::<String>::builder()
+        .error_handler(|_event, _error| {
+            Err(EventBusError::handler_failed(
+                "publish error handler failed",
+            ))
+        })
+        .error_handler(move |_event, error| {
+            assert_eq!(error, &EventBusError::not_started());
+            captured_second_handlers.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .build();
+
+    assert_eq!(
+        bus.publish_envelope_with_options(
+            EventEnvelope::create(topic, "payload".to_string()),
+            options,
+        )
+        .expect_err("stopped bus should reject publish"),
+        EventBusError::not_started()
+    );
+
+    assert_eq!(second_handlers.load(Ordering::SeqCst), 1);
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::ErrorHandlerFailed { phase, message }
+            if *phase == "publish" && message.contains("publish error handler failed")
+    )));
+}
+
+#[test]
 fn test_subscribe_error_handler_failure_is_observed() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("observed-error-handler");
@@ -869,5 +915,164 @@ fn test_subscribe_error_handler_failure_is_observed() {
         error,
         EventBusError::ErrorHandlerFailed { phase, message }
             if *phase == "subscribe" && message.contains("custom error handler failed")
+    )));
+}
+
+#[test]
+fn test_subscribe_error_handler_panic_does_not_block_later_ack() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("subscribe-error-handler-panic");
+    let dead_letter_topic = create_dead_letter_topic("dlq.subscribe-error-handler-panic");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let second_handlers = Arc::new(AtomicUsize::new(0));
+    let captured_second_handlers = Arc::clone(&second_handlers);
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let dead_letter_target = dead_letter_topic.clone();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(
+            |_subscriber_id,
+             _envelope,
+             _error,
+             _acknowledgement|
+             -> qubit_event_bus::EventBusResult<()> {
+                panic!("subscribe error handler panic");
+            },
+        )
+        .error_handler(move |_subscriber_id, _envelope, _error, acknowledgement| {
+            acknowledgement.ack();
+            captured_second_handlers.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        |_| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscribe should work");
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    assert_eq!(second_handlers.load(Ordering::SeqCst), 1);
+    assert!(
+        dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .is_empty()
+    );
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::ErrorHandlerFailed { phase, message }
+            if *phase == "subscribe" && message.contains("panicked")
+    )));
+}
+
+#[test]
+fn test_dead_letter_strategy_error_is_observed() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("dead-letter-strategy-error");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(|_subscriber_id, _failed, _error, _options| {
+            Err(EventBusError::handler_failed("dead-letter strategy failed"))
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        |_| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscribe should work");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message }
+            if message.contains("dead-letter strategy failed")
+    )));
+}
+
+#[test]
+fn test_dead_letter_strategy_panic_is_observed() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("dead-letter-strategy-panic");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(|_subscriber_id, _failed, _error, _options| {
+            panic!("dead-letter strategy panic");
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        |_| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscribe should work");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message } if message.contains("panicked")
     )));
 }
