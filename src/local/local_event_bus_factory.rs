@@ -105,7 +105,7 @@ impl LocalEventBusFactory {
                 &EventEnvelope<T>,
                 &EventBusError,
                 &SubscribeOptions<T>,
-            ) -> Option<EventEnvelope<DeadLetterPayload>>
+            ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
             + Send
             + Sync
             + 'static,

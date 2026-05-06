@@ -10,6 +10,7 @@
 //! Options controlling event subscription.
 
 use std::any::{Any, type_name};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -123,7 +124,7 @@ pub(crate) type DeadLetterStrategyFn<T> = dyn Fn(
         &EventEnvelope<T>,
         &EventBusError,
         &SubscribeOptions<T>,
-    ) -> Option<EventEnvelope<DeadLetterPayload>>
+    ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
     + Send
     + Sync
     + 'static;
@@ -212,20 +213,35 @@ impl<T: 'static> SubscribeOptions<T> {
     /// - `envelope`: Event that failed.
     /// - `error`: Final handler error.
     /// - `acknowledgement`: Acknowledgement handle for the failed event.
+    /// # Returns
+    /// Failures raised by subscribe error handlers.
     pub(crate) fn notify_subscribe_error(
         &self,
         subscriber_id: &str,
         envelope: &EventEnvelope<T>,
         error: &EventBusError,
         acknowledgement: &Acknowledgement,
-    ) -> EventBusResult<()> {
+    ) -> Vec<EventBusError> {
+        let mut failures = Vec::new();
         for handler in &self.error_handlers {
-            handler(subscriber_id, envelope, error, acknowledgement)?;
+            match panic::catch_unwind(AssertUnwindSafe(|| {
+                handler(subscriber_id, envelope, error, acknowledgement)
+            })) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed(
+                    "subscribe",
+                    error.to_string(),
+                )),
+                Err(_) => failures.push(EventBusError::error_handler_failed(
+                    "subscribe",
+                    "subscribe error handler panicked",
+                )),
+            }
             if acknowledgement.is_completed() {
                 break;
             }
         }
-        Ok(())
+        failures
     }
 
     /// Creates a dead-letter envelope through the configured strategy.
@@ -237,15 +253,42 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Optional dead-letter envelope with a type-erased payload.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::DeadLetterFailed`] when the strategy fails or panics.
     pub(crate) fn create_dead_letter(
         &self,
         subscriber_id: &str,
         envelope: &EventEnvelope<T>,
         error: &EventBusError,
-    ) -> Option<EventEnvelope<DeadLetterPayload>> {
-        self.dead_letter_strategy
-            .as_ref()
-            .and_then(|strategy| strategy(subscriber_id, envelope, error, self))
+    ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>> {
+        let Some(strategy) = &self.dead_letter_strategy else {
+            return Ok(None);
+        };
+        match panic::catch_unwind(AssertUnwindSafe(|| {
+            strategy(subscriber_id, envelope, error, self)
+        })) {
+            Ok(Ok(dead_letter)) => Ok(dead_letter),
+            Ok(Err(error)) => Err(normalize_dead_letter_error(error)),
+            Err(_) => Err(EventBusError::dead_letter_failed(
+                "dead-letter strategy panicked",
+            )),
+        }
+    }
+}
+
+/// Normalizes a strategy failure into a dead-letter failure.
+///
+/// # Parameters
+/// - `error`: Strategy error.
+///
+/// # Returns
+/// Dead-letter failure preserving existing dead-letter errors.
+pub(crate) fn normalize_dead_letter_error(error: EventBusError) -> EventBusError {
+    if matches!(error, EventBusError::DeadLetterFailed { .. }) {
+        error
+    } else {
+        EventBusError::dead_letter_failed(error.to_string())
     }
 }
 

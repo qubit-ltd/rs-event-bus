@@ -19,9 +19,11 @@ use std::time::Duration;
 
 use qubit_thread_pool::{ExecutorService, FixedThreadPool};
 
+use crate::core::subscribe_options::{DeadLetterStrategyFn, normalize_dead_letter_error};
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventBusResult, EventBusTask, EventEnvelope,
-    IntoEventBusResult, PublishOptions, SubscribeOptions, Subscription, Topic, TopicKey,
+    AckMode, Acknowledgement, DeadLetterPayload, EventBusError, EventBusResult, EventBusTask,
+    EventEnvelope, IntoEventBusResult, PublishOptions, SubscribeOptions, Subscription, Topic,
+    TopicKey,
 };
 
 use super::erased_subscription::ErasedSubscription;
@@ -295,14 +297,14 @@ impl LocalEventBus {
         T: Clone + Send + Sync + 'static,
     {
         if let Err(error) = self.ensure_started() {
-            options.notify_publish_error(&envelope, &error);
+            self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
         let Some(envelope) = self.apply_publisher_interceptors(envelope)? else {
             return Ok(());
         };
         if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options()) {
-            options.notify_publish_error(&envelope, &error);
+            self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
         Ok(())
@@ -597,6 +599,16 @@ impl LocalEventBus {
             Ok(())
         } else {
             Err(EventBusError::not_started())
+        }
+    }
+
+    /// Observes internal failures produced by user callbacks.
+    ///
+    /// # Parameters
+    /// - `errors`: Callback failures to publish to registered error observers.
+    fn observe_errors(&self, errors: Vec<EventBusError>) {
+        for error in errors {
+            self.inner.observe_error(&error);
         }
     }
 
@@ -1140,30 +1152,121 @@ fn handle_subscription_failure<T>(
 ) where
     T: Clone + Send + Sync + 'static,
 {
-    if let Err(error) =
-        options.notify_subscribe_error(subscriber_id, delivered, error, acknowledgement)
-    {
-        let observed = EventBusError::error_handler_failed("subscribe", error.to_string());
-        event_bus.inner.observe_error(&observed);
+    for error in options.notify_subscribe_error(subscriber_id, delivered, error, acknowledgement) {
+        event_bus.inner.observe_error(&error);
     }
     if !acknowledgement.is_completed() {
         acknowledgement.nack();
     }
     if acknowledgement.is_nacked() && !delivered.is_dead_letter() {
-        let dead_letter = options
-            .create_dead_letter(subscriber_id, delivered, error)
-            .or_else(|| {
-                event_bus
-                    .inner
-                    .default_dead_letter_strategy::<T>()
-                    .and_then(|strategy| strategy(subscriber_id, delivered, error, options))
-            });
+        let dead_letter =
+            create_dead_letter_for_failure(options, subscriber_id, delivered, error, event_bus);
         if let Some(dead_letter) = dead_letter
             && let Err(error) = event_bus.publish_envelope(dead_letter.as_dead_letter())
         {
             let observed = EventBusError::dead_letter_failed(error.to_string());
             event_bus.inner.observe_error(&observed);
         }
+    }
+}
+
+/// Creates a dead-letter envelope for a failed delivery.
+///
+/// # Parameters
+/// - `options`: Subscription options containing the primary DLQ policy.
+/// - `subscriber_id`: Subscriber identifier.
+/// - `delivered`: Failed delivered event.
+/// - `error`: Failure reason.
+/// - `event_bus`: Bus containing optional factory defaults and observers.
+///
+/// # Returns
+/// Dead-letter envelope when a strategy creates one.
+fn create_dead_letter_for_failure<T>(
+    options: &SubscribeOptions<T>,
+    subscriber_id: &str,
+    delivered: &EventEnvelope<T>,
+    error: &EventBusError,
+    event_bus: &LocalEventBus,
+) -> Option<EventEnvelope<DeadLetterPayload>>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    match options.create_dead_letter(subscriber_id, delivered, error) {
+        Ok(Some(dead_letter)) => Some(dead_letter),
+        Ok(None) => create_default_dead_letter_for_failure(
+            options,
+            subscriber_id,
+            delivered,
+            error,
+            event_bus,
+        ),
+        Err(error) => {
+            event_bus.inner.observe_error(&error);
+            None
+        }
+    }
+}
+
+/// Creates a dead-letter envelope with the factory default strategy.
+///
+/// # Parameters
+/// - `options`: Subscription options passed to the strategy.
+/// - `subscriber_id`: Subscriber identifier.
+/// - `delivered`: Failed delivered event.
+/// - `error`: Failure reason.
+/// - `event_bus`: Bus containing optional factory defaults and observers.
+///
+/// # Returns
+/// Dead-letter envelope when the default strategy exists and creates one.
+fn create_default_dead_letter_for_failure<T>(
+    options: &SubscribeOptions<T>,
+    subscriber_id: &str,
+    delivered: &EventEnvelope<T>,
+    error: &EventBusError,
+    event_bus: &LocalEventBus,
+) -> Option<EventEnvelope<DeadLetterPayload>>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let strategy = event_bus.inner.default_dead_letter_strategy::<T>()?;
+    match call_dead_letter_strategy(strategy, subscriber_id, delivered, error, options) {
+        Ok(dead_letter) => dead_letter,
+        Err(error) => {
+            event_bus.inner.observe_error(&error);
+            None
+        }
+    }
+}
+
+/// Calls a dead-letter strategy while converting failures into event-bus errors.
+///
+/// # Parameters
+/// - `strategy`: Strategy to invoke.
+/// - `subscriber_id`: Subscriber identifier.
+/// - `delivered`: Failed delivered event.
+/// - `error`: Failure reason.
+/// - `options`: Subscription options.
+///
+/// # Returns
+/// Dead-letter envelope produced by the strategy.
+fn call_dead_letter_strategy<T>(
+    strategy: Arc<DeadLetterStrategyFn<T>>,
+    subscriber_id: &str,
+    delivered: &EventEnvelope<T>,
+    error: &EventBusError,
+    options: &SubscribeOptions<T>,
+) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        strategy(subscriber_id, delivered, error, options)
+    })) {
+        Ok(Ok(dead_letter)) => Ok(dead_letter),
+        Ok(Err(error)) => Err(normalize_dead_letter_error(error)),
+        Err(_) => Err(EventBusError::dead_letter_failed(
+            "default dead-letter strategy panicked",
+        )),
     }
 }
 

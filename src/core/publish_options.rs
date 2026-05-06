@@ -9,6 +9,7 @@
  ******************************************************************************/
 //! Options controlling event publishing.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
 use crate::{EventBusError, EventBusResult, EventEnvelope, PublishOptionsBuilder, RetryOptions};
@@ -63,10 +64,28 @@ impl<T: 'static> PublishOptions<T> {
     /// # Parameters
     /// - `envelope`: Envelope that failed to publish.
     /// - `error`: Final publish error.
-    pub(crate) fn notify_publish_error(&self, envelope: &EventEnvelope<T>, error: &EventBusError) {
+    /// # Returns
+    /// Failures raised by publish error handlers.
+    pub(crate) fn notify_publish_error(
+        &self,
+        envelope: &EventEnvelope<T>,
+        error: &EventBusError,
+    ) -> Vec<EventBusError> {
+        let mut failures = Vec::new();
         for handler in &self.error_handlers {
-            let _ = handler(envelope, error);
+            match panic::catch_unwind(AssertUnwindSafe(|| handler(envelope, error))) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed(
+                    "publish",
+                    error.to_string(),
+                )),
+                Err(_) => failures.push(EventBusError::error_handler_failed(
+                    "publish",
+                    "publish error handler panicked",
+                )),
+            }
         }
+        failures
     }
 }
 
