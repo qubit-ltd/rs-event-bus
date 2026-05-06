@@ -68,13 +68,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Create an event bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
 | Define a type-safe topic | `Topic::<T>::try_new` |
-| Publish payloads or envelopes | `publish`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_async` |
+| Publish payloads or envelopes | `publish`, `publish_envelope`, `publish_envelope_with_options`, `publish_all` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
 | Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
 | Add publisher interceptors | `add_publisher_interceptor` |
 | Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptorChain` |
 | Attach publish error handling | `PublishOptions` |
-| Observe internal background failures | `add_error_observer` |
+| Observe internal callback failures | `add_error_observer` |
 | Wait for scheduled handler work in tests | `wait_for_idle` |
 
 ## Core API At A Glance
@@ -88,7 +88,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `PublishOptions<T>` | Publish retry metadata and publish error callbacks. |
 | `SubscribeOptions<T>` | Subscriber acknowledgement mode, retry settings, filters, error callbacks, dead-letter strategy, and priority. |
 | `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
-| `EventBusTask<T>` | Completed task returned by local async convenience methods without spawning an OS thread. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
 
@@ -96,7 +95,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - `qubit-event-bus` is an in-process event bus. It does not persist events or provide cross-process delivery.
 - Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
-- Local async convenience methods return completed `EventBusTask` values; they do not create one thread per call.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
 - `ordering_key` and `delay` are preserved as envelope metadata; the local backend does not enforce ordering lanes or delayed delivery.
