@@ -1,6 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
-use qubit_event_bus::{EventBusError, LocalEventBusFactory, SubscribeOptions, Topic};
+use qubit_event_bus::{
+    EventBusError,
+    LocalEventBusFactory,
+    SubscribeOptions,
+    Topic,
+};
 
 #[test]
 fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {

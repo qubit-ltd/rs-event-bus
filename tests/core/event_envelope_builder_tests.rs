@@ -1,6 +1,13 @@
-use std::time::{Duration, SystemTime};
+use std::time::{
+    Duration,
+    SystemTime,
+};
 
-use qubit_event_bus::{EventBusError, EventEnvelope, Topic};
+use qubit_event_bus::{
+    EventBusError,
+    EventEnvelope,
+    Topic,
+};
 
 #[test]
 fn test_event_envelope_builder_requires_topic() {

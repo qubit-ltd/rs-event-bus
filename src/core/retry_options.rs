@@ -10,5 +10,9 @@
 //! Retry option types re-exported from `qubit-retry`.
 
 pub use qubit_retry::{
-    AttemptTimeoutOption, AttemptTimeoutPolicy, RetryDelay, RetryJitter, RetryOptions,
+    AttemptTimeoutOption,
+    AttemptTimeoutPolicy,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
 };

@@ -1,4 +1,8 @@
-use qubit_event_bus::{RetryDelay, RetryJitter, RetryOptions};
+use qubit_event_bus::{
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+};
 
 #[test]
 fn test_retry_options_new_rejects_zero_attempts() {

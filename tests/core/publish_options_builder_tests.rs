@@ -1,4 +1,9 @@
-use qubit_event_bus::{PublishOptions, RetryDelay, RetryJitter, RetryOptions};
+use qubit_event_bus::{
+    PublishOptions,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+};
 
 #[test]
 fn test_publish_options_builder_sets_retry_options() {

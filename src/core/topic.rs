@@ -9,12 +9,26 @@
  ******************************************************************************/
 //! Type-safe event topics.
 
-use std::any::{TypeId, type_name};
-use std::fmt::{self, Display, Formatter};
-use std::hash::{Hash, Hasher};
+use std::any::{
+    TypeId,
+    type_name,
+};
+use std::fmt::{
+    self,
+    Display,
+    Formatter,
+};
+use std::hash::{
+    Hash,
+    Hasher,
+};
 use std::marker::PhantomData;
 
-use crate::{EventBusError, EventBusResult, TopicKey};
+use crate::{
+    EventBusError,
+    EventBusResult,
+    TopicKey,
+};
 
 /// Type-safe event topic.
 ///

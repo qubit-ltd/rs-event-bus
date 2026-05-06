@@ -9,10 +9,21 @@
  ******************************************************************************/
 //! Subscription handle.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{
+    AtomicBool,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Weak,
+};
 
-use crate::{EventBusResult, SubscribeOptions, Topic, TopicKey};
+use crate::{
+    EventBusResult,
+    SubscribeOptions,
+    Topic,
+    TopicKey,
+};
 
 use crate::local::local_event_bus_inner::LocalEventBusInner;
 

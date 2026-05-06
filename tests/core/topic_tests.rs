@@ -12,7 +12,10 @@
 use std::any::TypeId;
 use std::collections::HashSet;
 
-use qubit_event_bus::{EventBusError, Topic};
+use qubit_event_bus::{
+    EventBusError,
+    Topic,
+};
 
 #[test]
 fn test_try_new_creates_type_safe_topic() {

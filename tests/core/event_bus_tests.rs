@@ -1,6 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
-use qubit_event_bus::{EventBus, LocalEventBus, Topic};
+use qubit_event_bus::{
+    EventBus,
+    LocalEventBus,
+    Topic,
+};
 
 #[test]
 fn test_event_bus_trait_publish_delegates_to_backend() {

@@ -1,4 +1,10 @@
-use qubit_event_bus::{AckMode, RetryDelay, RetryJitter, RetryOptions, SubscribeOptions};
+use qubit_event_bus::{
+    AckMode,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+    SubscribeOptions,
+};
 
 #[test]
 fn test_subscribe_options_builder_sets_ack_retry_and_priority() {
