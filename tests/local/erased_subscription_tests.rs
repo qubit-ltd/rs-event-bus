@@ -4,7 +4,7 @@ use qubit_event_bus::{LocalEventBus, Topic};
 
 #[test]
 fn test_subscription_cancel_removes_type_erased_entry() {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started().expect("bus should start");
     let topic = Topic::<String>::try_new("erased-subscription").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);

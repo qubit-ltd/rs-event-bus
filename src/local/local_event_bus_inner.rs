@@ -16,20 +16,25 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use qubit_thread_pool::{ExecutorService, FixedThreadPool, ThreadPoolBuildError};
 
-use crate::{EventBusError, EventBusResult, SubscribeOptions, TopicKey};
+use crate::{EventBusError, EventBusResult, PublishOptions, SubscribeOptions, TopicKey};
 
 use super::erased_subscription::ErasedSubscription;
-use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
+
+pub(crate) type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 
 /// Shared mutable state for [`crate::LocalEventBus`].
 pub(crate) struct LocalEventBusInner {
     lifecycle: Mutex<LocalEventBusLifecycle>,
     subscriptions: Mutex<HashMap<TopicKey, Vec<Arc<dyn ErasedSubscription>>>>,
     publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorEntry>>>,
-    subscriber_interceptors: Mutex<Vec<Arc<dyn Any + Send + Sync>>>,
+    subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorEntry>>>,
+    error_observers: Mutex<Vec<Arc<ErrorObserverFn>>>,
     processing_tracker: ProcessingTracker,
     next_subscription_id: AtomicUsize,
+    default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     subscription_handler_pool_size: usize,
     subscription_handler_queue_capacity: Option<usize>,
 }
@@ -45,18 +50,25 @@ impl LocalEventBusInner {
     /// # Returns
     /// Shared state initialized in the stopped lifecycle state.
     pub(crate) fn new(
+        default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
         default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+        default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+        publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
+        subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
         subscription_handler_pool_size: usize,
         subscription_handler_queue_capacity: Option<usize>,
     ) -> Self {
         Self {
             lifecycle: Mutex::new(LocalEventBusLifecycle::stopped()),
             subscriptions: Mutex::new(HashMap::new()),
-            publisher_interceptors: Mutex::new(Vec::new()),
-            subscriber_interceptors: Mutex::new(Vec::new()),
+            publisher_interceptors: Mutex::new(publisher_interceptors),
+            subscriber_interceptors: Mutex::new(subscriber_interceptors),
+            error_observers: Mutex::new(Vec::new()),
             processing_tracker: ProcessingTracker::new(),
             next_subscription_id: AtomicUsize::new(1),
+            default_publish_options,
             default_subscribe_options,
+            default_dead_letter_strategies,
             subscription_handler_pool_size,
             subscription_handler_queue_capacity,
         }
@@ -66,19 +78,20 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `true` when this call changed state from stopped to started.
-    pub(crate) fn mark_started(&self) -> bool {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
+    pub(crate) fn mark_started(&self) -> EventBusResult<bool> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
         if lifecycle.started {
-            return false;
+            return Ok(false);
         }
-        let Ok(executor) = self.build_subscription_handler_executor() else {
-            return false;
-        };
+        let executor = self
+            .build_subscription_handler_executor()
+            .map_err(|error| EventBusError::start_failed(error.to_string()))?;
         lifecycle.executor = Some(executor);
         lifecycle.started = true;
-        true
+        Ok(true)
     }
 
     /// Marks the bus as stopped and removes its handler executor.
@@ -115,6 +128,20 @@ impl LocalEventBusInner {
         self.next_subscription_id.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Returns typed default publish options.
+    ///
+    /// # Returns
+    /// Type-specific default options if configured.
+    pub(crate) fn default_publish_options<T>(&self) -> Option<PublishOptions<T>>
+    where
+        T: 'static,
+    {
+        self.default_publish_options
+            .get(&TypeId::of::<T>())
+            .and_then(|options| options.downcast_ref::<PublishOptions<T>>())
+            .cloned()
+    }
+
     /// Returns typed default subscribe options.
     ///
     /// # Returns
@@ -126,6 +153,25 @@ impl LocalEventBusInner {
         self.default_subscribe_options
             .get(&TypeId::of::<T>())
             .and_then(|options| options.downcast_ref::<SubscribeOptions<T>>())
+            .cloned()
+    }
+
+    /// Returns a typed default dead-letter strategy.
+    ///
+    /// # Returns
+    /// Type-specific strategy if configured.
+    pub(crate) fn default_dead_letter_strategy<T>(
+        &self,
+    ) -> Option<Arc<crate::core::subscribe_options::DeadLetterStrategyFn<T>>>
+    where
+        T: 'static,
+    {
+        self.default_dead_letter_strategies
+            .get(&TypeId::of::<T>())
+            .and_then(|strategy| {
+                strategy
+                    .downcast_ref::<Arc<crate::core::subscribe_options::DeadLetterStrategyFn<T>>>()
+            })
             .cloned()
     }
 
@@ -170,7 +216,7 @@ impl LocalEventBusInner {
     /// `Ok(())` when the entry is stored.
     pub(crate) fn add_subscriber_interceptor(
         &self,
-        interceptor: Arc<dyn Any + Send + Sync>,
+        interceptor: Arc<dyn SubscriberInterceptorEntry>,
     ) -> EventBusResult<()> {
         self.subscriber_interceptors
             .lock()
@@ -185,12 +231,44 @@ impl LocalEventBusInner {
     /// Cloned interceptor entries.
     pub(crate) fn subscriber_interceptors(
         &self,
-    ) -> EventBusResult<Vec<Arc<dyn Any + Send + Sync>>> {
+    ) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorEntry>>> {
         Ok(self
             .subscriber_interceptors
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
             .clone())
+    }
+
+    /// Adds an error observer.
+    ///
+    /// # Parameters
+    /// - `observer`: Callback notified about internal background failures.
+    ///
+    /// # Returns
+    /// `Ok(())` when the observer is stored.
+    pub(crate) fn add_error_observer(&self, observer: Arc<ErrorObserverFn>) -> EventBusResult<()> {
+        self.error_observers
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("error_observers"))?
+            .push(observer);
+        Ok(())
+    }
+
+    /// Notifies registered error observers.
+    ///
+    /// # Parameters
+    /// - `error`: Internal failure to observe.
+    pub(crate) fn observe_error(&self, error: &EventBusError) {
+        let Ok(observers) = self
+            .error_observers
+            .lock()
+            .map(|observers| observers.clone())
+        else {
+            return;
+        };
+        for observer in observers {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(error)));
+        }
     }
 
     /// Adds a subscription entry.

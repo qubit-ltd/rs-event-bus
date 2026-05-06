@@ -14,9 +14,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    EventBusError, EventBusFactory, EventBusResult, LocalEventBus, SubscribeOptions,
-    UnsupportedTransactionalEventBus,
+    DeadLetterPayload, EventBusError, EventBusFactory, EventBusResult, EventEnvelope,
+    IntoEventBusResult, LocalEventBus, PublishOptions, SubscribeOptions,
+    SubscriberInterceptorChain, UnsupportedTransactionalEventBus,
 };
+
+use super::local_event_bus::{
+    create_publisher_interceptor_entry, create_subscriber_interceptor_entry,
+};
+use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
 
 /// Returns the default subscription handler worker count.
 ///
@@ -30,7 +36,11 @@ fn default_subscription_handler_pool_size() -> usize {
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
 pub struct LocalEventBusFactory {
+    default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
+    subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
     subscription_handler_pool_size: usize,
     subscription_handler_queue_capacity: Option<usize>,
 }
@@ -49,10 +59,26 @@ impl LocalEventBusFactory {
     /// Factory with no typed defaults.
     pub fn new() -> Self {
         Self {
+            default_publish_options: HashMap::new(),
             default_subscribe_options: HashMap::new(),
+            default_dead_letter_strategies: HashMap::new(),
+            publisher_interceptors: Vec::new(),
+            subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: default_subscription_handler_pool_size(),
             subscription_handler_queue_capacity: None,
         }
+    }
+
+    /// Sets default publish options for a payload type.
+    ///
+    /// # Parameters
+    /// - `options`: Options used by default publish methods for payload `T`.
+    pub fn set_default_publish_options<T>(&mut self, options: PublishOptions<T>)
+    where
+        T: Send + Sync + 'static,
+    {
+        self.default_publish_options
+            .insert(TypeId::of::<T>(), Arc::new(options));
     }
 
     /// Sets default subscribe options for a payload type.
@@ -65,6 +91,64 @@ impl LocalEventBusFactory {
     {
         self.default_subscribe_options
             .insert(TypeId::of::<T>(), Arc::new(options));
+    }
+
+    /// Sets the default dead-letter strategy for a payload type.
+    ///
+    /// # Parameters
+    /// - `strategy`: Strategy used when subscription options do not provide one.
+    pub fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F)
+    where
+        T: Clone + Send + Sync + 'static,
+        F: Fn(
+                &str,
+                &EventEnvelope<T>,
+                &EventBusError,
+                &SubscribeOptions<T>,
+            ) -> Option<EventEnvelope<DeadLetterPayload>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let strategy: Arc<crate::core::subscribe_options::DeadLetterStrategyFn<T>> =
+            Arc::new(strategy);
+        self.default_dead_letter_strategies
+            .insert(TypeId::of::<T>(), Arc::new(strategy));
+    }
+
+    /// Adds a publisher interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Callback that can modify or drop outgoing envelopes.
+    ///
+    /// # Returns
+    /// `Ok(())` when the interceptor is stored.
+    pub fn add_publisher_interceptor<T, F>(&mut self, interceptor: F) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: Fn(EventEnvelope<T>) -> Option<EventEnvelope<T>> + Send + Sync + 'static,
+    {
+        self.publisher_interceptors
+            .push(create_publisher_interceptor_entry::<T, F>(interceptor));
+        Ok(())
+    }
+
+    /// Adds a subscriber interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Callback wrapping subscriber handler execution.
+    ///
+    /// # Returns
+    /// `Ok(())` when the interceptor is stored.
+    pub fn add_subscriber_interceptor<T, F, R>(&mut self, interceptor: F) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        self.subscriber_interceptors
+            .push(create_subscriber_interceptor_entry::<T, F, R>(interceptor));
+        Ok(())
     }
 
     /// Sets the subscription handler worker count for created buses.
@@ -118,7 +202,11 @@ impl LocalEventBusFactory {
     /// Local event bus initialized with factory defaults.
     pub fn create(&self) -> LocalEventBus {
         LocalEventBus::with_runtime_options(
+            self.default_publish_options.clone(),
             self.default_subscribe_options.clone(),
+            self.default_dead_letter_strategies.clone(),
+            self.publisher_interceptors.clone(),
+            self.subscriber_interceptors.clone(),
             self.subscription_handler_pool_size,
             self.subscription_handler_queue_capacity,
         )
@@ -128,10 +216,13 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// Started local event bus initialized with factory defaults.
-    pub fn create_started(&self) -> LocalEventBus {
+    ///
+    /// # Errors
+    /// Returns startup errors from the handler executor.
+    pub fn create_started(&self) -> EventBusResult<LocalEventBus> {
         let bus = self.create();
-        bus.start();
-        bus
+        bus.start()?;
+        Ok(bus)
     }
 }
 
@@ -150,7 +241,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Creates and starts a local event bus.
-    fn create_started(&self) -> Self::Bus {
+    fn create_started(&self) -> EventBusResult<Self::Bus> {
         Self::create_started(self)
     }
 }

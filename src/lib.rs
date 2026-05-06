@@ -19,9 +19,10 @@ mod local;
 mod transactional;
 
 pub use core::{
-    AckMode, Acknowledgement, DeadLetterPayload, EventBus, EventBusError, EventBusFactory,
-    EventBusResult, EventEnvelope, EventEnvelopeBuilder, IntoEventBusResult, PublishOptions,
-    PublishOptionsBuilder, RetryOptions, SubscribeOptions, SubscribeOptionsBuilder, Subscription,
+    AckMode, Acknowledgement, AttemptTimeoutOption, AttemptTimeoutPolicy, DeadLetterPayload,
+    DeadLetterRecord, EventBus, EventBusError, EventBusFactory, EventBusResult, EventBusTask,
+    EventEnvelope, EventEnvelopeBuilder, IntoEventBusResult, PublishOptions, PublishOptionsBuilder,
+    RetryDelay, RetryJitter, RetryOptions, SubscribeOptions, SubscribeOptionsBuilder, Subscription,
     Topic, TopicKey,
 };
 pub use local::{LocalEventBus, LocalEventBusFactory, SubscriberInterceptorChain};

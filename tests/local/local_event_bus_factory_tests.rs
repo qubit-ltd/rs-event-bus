@@ -11,7 +11,7 @@ fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {
             .priority(9)
             .build(),
     );
-    let bus = factory.create_started();
+    let bus = factory.create_started().expect("factory should start bus");
     let topic = Topic::<String>::try_new("local-factory").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);

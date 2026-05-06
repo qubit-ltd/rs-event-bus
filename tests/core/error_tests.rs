@@ -27,9 +27,12 @@ fn test_acknowledgement_default_and_nack_state() {
 fn test_event_bus_error_display_covers_variants() {
     let errors = [
         EventBusError::not_started(),
+        EventBusError::start_failed("pool build failed"),
         EventBusError::invalid_argument("field", "bad value"),
         EventBusError::missing_field("topic"),
         EventBusError::handler_failed("boom"),
+        EventBusError::error_handler_failed("subscribe", "handler boom"),
+        EventBusError::dead_letter_failed("publish rejected"),
         EventBusError::lock_poisoned("subscriptions"),
         EventBusError::type_mismatch("String", "u32"),
         EventBusError::ThreadJoinFailed,
@@ -38,11 +41,14 @@ fn test_event_bus_error_display_covers_variants() {
     let messages = errors.iter().map(ToString::to_string).collect::<Vec<_>>();
 
     assert!(messages[0].contains("not been started"));
-    assert!(messages[1].contains("invalid argument"));
-    assert!(messages[2].contains("missing required field"));
-    assert!(messages[3].contains("handler failed"));
-    assert!(messages[4].contains("poisoned"));
-    assert!(messages[5].contains("type mismatch"));
-    assert!(messages[6].contains("panicked"));
-    assert!(messages[7].contains("unsupported"));
+    assert!(messages[1].contains("failed to start"));
+    assert!(messages[2].contains("invalid argument"));
+    assert!(messages[3].contains("missing required field"));
+    assert!(messages[4].contains("handler failed"));
+    assert!(messages[5].contains("error handler failed"));
+    assert!(messages[6].contains("dead-letter routing failed"));
+    assert!(messages[7].contains("poisoned"));
+    assert!(messages[8].contains("type mismatch"));
+    assert!(messages[9].contains("panicked"));
+    assert!(messages[10].contains("unsupported"));
 }

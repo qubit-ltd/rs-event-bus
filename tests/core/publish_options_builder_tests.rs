@@ -1,16 +1,14 @@
-use std::time::Duration;
-
-use qubit_event_bus::{PublishOptions, RetryOptions};
+use qubit_event_bus::{PublishOptions, RetryDelay, RetryJitter, RetryOptions};
 
 #[test]
 fn test_publish_options_builder_sets_retry_options() {
-    let retry_options =
-        RetryOptions::new(4, Duration::from_millis(10)).expect("retry options should build");
+    let retry_options = RetryOptions::new(4, None, None, RetryDelay::none(), RetryJitter::none())
+        .expect("retry options should build");
     let options = PublishOptions::<String>::builder()
-        .retry_options(retry_options)
+        .retry_options(retry_options.clone())
         .build();
 
-    assert_eq!(options.retry_options(), Some(retry_options));
+    assert_eq!(options.retry_options(), Some(&retry_options));
 }
 
 #[test]

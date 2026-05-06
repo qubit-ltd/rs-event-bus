@@ -52,6 +52,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -460,6 +461,7 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -621,6 +623,7 @@ checksum = "6f8f052350ff3e4adffde1814a929c8403af2307552d2b4d0253f47818d26c09"
 name = "qubit-event-bus"
 version = "0.1.1"
 dependencies = [
+ "qubit-metadata",
  "qubit-retry",
  "qubit-thread-pool",
 ]
@@ -658,6 +661,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qubit-metadata"
+version = "0.4.2"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "num-bigint",
+ "qubit-datatype",
+ "qubit-value",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "qubit-retry"
 version = "0.10.3"
 dependencies = [
@@ -690,6 +707,22 @@ dependencies = [
  "qubit-function",
  "qubit-lock",
  "thiserror",
+]
+
+[[package]]
+name = "qubit-value"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c06d0f120e351a17e04bec38fca241224ff1cf9dfb4347f0f2ee9bfce699c3f4"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "num-bigint",
+ "qubit-datatype",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
 ]
 
 [[package]]
@@ -953,6 +986,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

@@ -46,8 +46,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// `Some` when publish retry is configured.
-    pub const fn retry_options(&self) -> Option<RetryOptions> {
-        self.retry_options
+    pub fn retry_options(&self) -> Option<&RetryOptions> {
+        self.retry_options.as_ref()
     }
 
     /// Returns the number of registered publish error handlers.
@@ -74,7 +74,7 @@ impl<T: 'static> Clone for PublishOptions<T> {
     /// Clones retry settings and shared handlers.
     fn clone(&self) -> Self {
         Self {
-            retry_options: self.retry_options,
+            retry_options: self.retry_options.clone(),
             error_handlers: self.error_handlers.clone(),
         }
     }
