@@ -14,6 +14,9 @@ mod local_event_bus;
 mod local_event_bus_factory;
 pub(crate) mod local_event_bus_inner;
 pub(crate) mod publisher_interceptor_entry;
+mod subscriber_interceptor_chain;
+pub(crate) mod subscriber_interceptor_entry;
 
-pub use local_event_bus::{LocalEventBus, SubscriberInterceptorChain};
+pub use local_event_bus::LocalEventBus;
 pub use local_event_bus_factory::LocalEventBusFactory;
+pub use subscriber_interceptor_chain::SubscriberInterceptorChain;

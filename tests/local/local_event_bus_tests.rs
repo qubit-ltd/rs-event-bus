@@ -9,13 +9,31 @@
  ******************************************************************************/
 //! Tests for the in-process event bus implementation.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{
+    AtomicBool,
+    AtomicUsize,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Mutex,
+    mpsc,
+};
 use std::time::Duration;
 
 use qubit_event_bus::{
-    AckMode, DeadLetterPayload, DeadLetterRecord, EventBusError, EventEnvelope, LocalEventBus,
-    LocalEventBusFactory, PublishOptions, RetryDelay, RetryJitter, RetryOptions, SubscribeOptions,
+    AckMode,
+    DeadLetterPayload,
+    DeadLetterRecord,
+    EventBusError,
+    EventEnvelope,
+    LocalEventBus,
+    LocalEventBusFactory,
+    PublishOptions,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+    SubscribeOptions,
     Topic,
 };
 
@@ -187,19 +205,6 @@ fn test_subscribe_rejects_blank_subscriber_id() {
 }
 
 #[test]
-fn test_default_and_stopped_async_publish() {
-    let bus = LocalEventBus::default();
-    let topic = create_topic("default-bus");
-
-    let error = bus
-        .publish_async(&topic, "payload".to_string())
-        .join()
-        .expect_err("stopped bus should reject async publish");
-
-    assert_eq!(error, EventBusError::not_started());
-}
-
-#[test]
 fn test_subscribe_options_filter_events() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("filter");
@@ -271,6 +276,62 @@ fn test_publisher_interceptor_can_modify_or_drop_events() {
         events[0].headers().get("intercepted"),
         Some(&"true".to_string())
     );
+}
+
+#[test]
+fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("publisher-interceptor-panic");
+    let publish_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let observed_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_publish_errors = Arc::clone(&publish_errors);
+    let captured_observed_errors = Arc::clone(&observed_errors);
+    bus.add_publisher_interceptor::<String, _>(|_event| {
+        panic!("publisher interceptor panic");
+    })
+    .expect("interceptor should be registered");
+    bus.add_error_observer(move |error| {
+        captured_observed_errors
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("observer should register");
+    let options = PublishOptions::<String>::builder()
+        .error_handler(move |_event, error| {
+            captured_publish_errors
+                .lock()
+                .expect("publish errors should lock")
+                .push(error.clone());
+            Err(EventBusError::handler_failed(
+                "publish error handler saw interceptor panic",
+            ))
+        })
+        .build();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let error = bus
+        .publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
+        .expect_err("publisher interceptor panic should become publish error");
+    std::panic::set_hook(previous_hook);
+
+    assert_eq!(error.kind(), "interceptor_failed");
+    assert!(error.to_string().contains("publisher interceptor panicked"));
+    let publish_errors = publish_errors.lock().expect("publish errors should lock");
+    assert_eq!(publish_errors.len(), 1);
+    assert_eq!(publish_errors[0].kind(), "interceptor_failed");
+    let observed_errors = observed_errors.lock().expect("observed errors should lock");
+    assert!(
+        observed_errors
+            .iter()
+            .any(|error| error.kind() == "interceptor_failed")
+    );
+    assert!(observed_errors.iter().any(|error| matches!(
+        error,
+        EventBusError::ErrorHandlerFailed { phase, message }
+            if *phase == "publish" && message.contains("interceptor panic")
+    )));
 }
 
 #[test]
@@ -724,7 +785,7 @@ fn test_configured_handler_pool_limits_concurrent_subscriber_work() {
 }
 
 #[test]
-fn test_publish_all_and_publish_async() {
+fn test_publish_all_delivers_each_envelope() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("batch");
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -745,17 +806,11 @@ fn test_publish_all_and_publish_async() {
         .collect::<Vec<_>>();
     bus.publish_all(envelopes)
         .expect("batch publish should work");
-    let handle = bus.publish_async(&topic, "async".to_string());
-    handle.join().expect("async publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(
         received_payloads(&received),
-        vec![
-            "async".to_string(),
-            "batch-1".to_string(),
-            "batch-2".to_string()
-        ]
+        vec!["batch-1".to_string(), "batch-2".to_string()]
     );
 }
 
@@ -772,6 +827,52 @@ fn test_factory_creates_started_bus_with_default_options() {
         .expect("factory bus should accept subscriptions");
 
     assert_eq!(subscription.options().priority(), 5);
+}
+
+#[test]
+fn test_subscriber_priority_controls_delivery_order() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("pool size should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("priority-order");
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let low_sequence = Arc::clone(&sequence);
+    bus.subscribe_with_options(
+        "low",
+        &topic,
+        move |_| {
+            low_sequence
+                .lock()
+                .expect("sequence should lock")
+                .push("low".to_string());
+        },
+        SubscribeOptions::<String>::builder().priority(1).build(),
+    )
+    .expect("low priority subscriber should register");
+    let high_sequence = Arc::clone(&sequence);
+    bus.subscribe_with_options(
+        "high",
+        &topic,
+        move |_| {
+            high_sequence
+                .lock()
+                .expect("sequence should lock")
+                .push("high".to_string());
+        },
+        SubscribeOptions::<String>::builder().priority(10).build(),
+    )
+    .expect("high priority subscriber should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(
+        sequence.lock().expect("sequence should lock").as_slice(),
+        ["high", "low"]
+    );
 }
 
 #[test]

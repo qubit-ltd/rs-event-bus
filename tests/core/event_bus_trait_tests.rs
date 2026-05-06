@@ -10,13 +10,29 @@
 //! Tests for the event bus abstraction traits.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
 use qubit_event_bus::{
-    EventBus, EventBusError, EventBusFactory, EventEnvelope, LocalEventBus, LocalEventBusFactory,
-    PublishOptions, SubscribeOptions, Topic, TransactionalEventBus, TransactionalPublisher,
-    UnsupportedTransactionalEventBus, UnsupportedTransactionalPublisher,
+    EventBus,
+    EventBusError,
+    EventBusFactory,
+    EventEnvelope,
+    LocalEventBus,
+    LocalEventBusFactory,
+    PublishOptions,
+    SubscribeOptions,
+    Topic,
+    TransactionalEventBus,
+    TransactionalPublisher,
+    UnsupportedTransactionalEventBus,
+    UnsupportedTransactionalPublisher,
 };
 
 #[derive(Clone, Default)]
@@ -151,15 +167,15 @@ fn test_event_bus_trait_publish_subscribe_lifecycle() {
 }
 
 #[test]
-fn test_event_bus_trait_async_and_batch_methods() {
+fn test_event_bus_trait_batch_methods() {
     let bus = LocalEventBus::started().expect("bus should start");
-    let topic = create_topic("trait-async");
+    let topic = create_topic("trait-batch");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    let subscription_handle = EventBus::subscribe_async(
+    let subscription = EventBus::subscribe(
         &bus,
-        "async-sub",
+        "batch-sub",
         &topic,
         move |event: EventEnvelope<String>| {
             captured
@@ -167,18 +183,16 @@ fn test_event_bus_trait_async_and_batch_methods() {
                 .expect("received events should lock")
                 .push(event.payload().clone());
         },
-    );
-    let subscription = subscription_handle
-        .join()
-        .expect("async subscribe should work");
+    )
+    .expect("trait subscribe should work");
     assert!(subscription.is_active());
 
-    let async_handle = EventBus::publish_envelope_with_options_async(
+    EventBus::publish_envelope_with_options(
         &bus,
-        EventEnvelope::create(topic.clone(), "async".to_string()),
+        EventEnvelope::create(topic.clone(), "single".to_string()),
         PublishOptions::empty(),
-    );
-    async_handle.join().expect("async publish should work");
+    )
+    .expect("publish with options should work");
 
     EventBus::publish_all(
         &bus,
@@ -189,27 +203,14 @@ fn test_event_bus_trait_async_and_batch_methods() {
     )
     .expect("batch publish should work");
 
-    let handles = EventBus::publish_all_async(
-        &bus,
-        vec![EventEnvelope::create(
-            topic.clone(),
-            "batch-async".to_string(),
-        )],
-        PublishOptions::empty(),
-    );
-    for handle in handles {
-        handle.join().expect("batch async publish should work");
-    }
-
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
 
     assert_eq!(
         captured_payloads(&received),
         vec![
-            "async".to_string(),
             "batch-1".to_string(),
             "batch-2".to_string(),
-            "batch-async".to_string(),
+            "single".to_string(),
         ]
     );
 }
@@ -252,18 +253,11 @@ fn test_local_event_bus_trait_overrides_delegate_to_inherent_methods() {
         PublishOptions::empty(),
     )
     .expect("trait publish with options should work");
-    EventBus::publish_async(&bus, &topic, "async".to_string())
-        .join()
-        .expect("trait payload async publish should work");
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
 
     assert_eq!(
         captured_payloads(&received),
-        vec![
-            "async:true".to_string(),
-            "envelope:true".to_string(),
-            "options:true".to_string(),
-        ]
+        vec!["envelope:true".to_string(), "options:true".to_string(),]
     );
 }
 
@@ -289,63 +283,10 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     )
     .expect("default batch publish should work");
 
-    let payload_handle = EventBus::publish_async(&bus, &topic, "payload-async".to_string());
-    payload_handle
-        .join()
-        .expect("default async publish should work");
-    let envelope_handle = EventBus::publish_envelope_async(
-        &bus,
-        EventEnvelope::create(topic.clone(), "envelope-async".to_string()),
-    );
-    envelope_handle
-        .join()
-        .expect("default envelope async publish should work");
-    let options_handle = EventBus::publish_envelope_with_options_async(
-        &bus,
-        EventEnvelope::create(topic.clone(), "options-async".to_string()),
-        PublishOptions::empty(),
-    );
-    options_handle
-        .join()
-        .expect("default options async publish should work");
-    for handle in EventBus::publish_all_async(
-        &bus,
-        vec![EventEnvelope::create(
-            topic.clone(),
-            "batch-async-default".to_string(),
-        )],
-        PublishOptions::empty(),
-    ) {
-        handle
-            .join()
-            .expect("default batch async publish should work");
-    }
-
     assert_eq!(
         expect_subscription_error(
             EventBus::subscribe(&bus, "sub", &topic, |_| ()),
             "default subscribe should delegate",
-        ),
-        EventBusError::unsupported_operation("defaulting_subscribe")
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_async(&bus, "async-sub", &topic, |_| ()).join(),
-            "default async subscribe should delegate",
-        ),
-        EventBusError::unsupported_operation("defaulting_subscribe")
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_with_options_async(
-                &bus,
-                "options-async-sub",
-                &topic,
-                |_| (),
-                SubscribeOptions::empty(),
-            )
-            .join(),
-            "default async subscribe with options should delegate",
         ),
         EventBusError::unsupported_operation("defaulting_subscribe")
     );
@@ -354,12 +295,8 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     assert_eq!(
         bus.published_payloads(),
         vec![
-            "batch-async-default".to_string(),
             "batch-default".to_string(),
             "envelope".to_string(),
-            "envelope-async".to_string(),
-            "options-async".to_string(),
-            "payload-async".to_string(),
             "publish".to_string(),
         ]
     );
@@ -457,66 +394,6 @@ fn test_event_bus_factory_trait_default_methods() {
 }
 
 #[test]
-fn test_local_event_bus_trait_async_methods_reject_stopped_bus() {
-    let bus = LocalEventBus::new();
-    let topic = create_topic("local-stopped-async");
-
-    assert_eq!(
-        EventBus::publish_envelope_async(
-            &bus,
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-        )
-        .join()
-        .expect_err("stopped bus should reject envelope async publish"),
-        EventBusError::not_started()
-    );
-    assert_eq!(
-        EventBus::publish_envelope_with_options_async(
-            &bus,
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-            PublishOptions::empty(),
-        )
-        .join()
-        .expect_err("stopped bus should reject envelope async publish with options"),
-        EventBusError::not_started()
-    );
-    assert_eq!(
-        EventBus::publish_all_async(
-            &bus,
-            vec![EventEnvelope::create(topic.clone(), "payload".to_string())],
-            PublishOptions::empty(),
-        )
-        .into_iter()
-        .next()
-        .expect("batch task should exist")
-        .join()
-        .expect_err("stopped bus should reject batch async publish"),
-        EventBusError::not_started()
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_async(&bus, "sub", &topic, |_| ()).join(),
-            "stopped bus should reject async subscribe",
-        ),
-        EventBusError::not_started()
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_with_options_async(
-                &bus,
-                "sub",
-                &topic,
-                |_| (),
-                SubscribeOptions::empty(),
-            )
-            .join(),
-            "stopped bus should reject async subscribe with options",
-        ),
-        EventBusError::not_started()
-    );
-}
-
-#[test]
 fn test_unsupported_transactional_event_bus_rejects_all_operations() {
     let bus = UnsupportedTransactionalEventBus::new();
     let topic = create_topic("unsupported-transactional");
@@ -533,16 +410,6 @@ fn test_unsupported_transactional_event_bus_rejects_all_operations() {
         EventBusError::unsupported_operation("publish")
     );
     assert_eq!(
-        EventBus::publish_envelope_with_options_async(
-            &bus,
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-            PublishOptions::empty(),
-        )
-        .join()
-        .expect_err("placeholder bus should reject async publish"),
-        EventBusError::unsupported_operation("publish_async")
-    );
-    assert_eq!(
         expect_subscription_error(
             EventBus::subscribe_with_options(
                 &bus,
@@ -554,20 +421,6 @@ fn test_unsupported_transactional_event_bus_rejects_all_operations() {
             "placeholder bus should reject subscribe",
         ),
         EventBusError::unsupported_operation("subscribe")
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_with_options_async(
-                &bus,
-                "sub",
-                &topic,
-                |_| (),
-                SubscribeOptions::empty(),
-            )
-            .join(),
-            "placeholder bus should reject async subscribe",
-        ),
-        EventBusError::unsupported_operation("subscribe_async")
     );
     assert_eq!(
         EventBus::wait_for_idle(&bus, &topic).expect_err("placeholder bus should reject wait"),

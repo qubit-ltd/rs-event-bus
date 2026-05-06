@@ -9,17 +9,38 @@
  ******************************************************************************/
 //! Shared state for the local event bus.
 
-use std::any::{Any, TypeId};
+use std::any::{
+    Any,
+    TypeId,
+};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
+use std::sync::{
+    Arc,
+    Condvar,
+    Mutex,
+};
 
-use qubit_thread_pool::{ExecutorService, FixedThreadPool, ThreadPoolBuildError};
+use qubit_thread_pool::{
+    ExecutorService,
+    FixedThreadPool,
+    ThreadPoolBuildError,
+};
 
-use crate::{EventBusError, EventBusResult, PublishOptions, SubscribeOptions, TopicKey};
+use crate::{
+    EventBusError,
+    EventBusResult,
+    PublishOptions,
+    SubscribeOptions,
+    TopicKey,
+};
 
 use super::erased_subscription::ErasedSubscription;
-use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
+use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 pub(crate) type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 
@@ -242,7 +263,7 @@ impl LocalEventBusInner {
     /// Adds an error observer.
     ///
     /// # Parameters
-    /// - `observer`: Callback notified about internal background failures.
+    /// - `observer`: Callback notified about internal callback failures.
     ///
     /// # Returns
     /// `Ok(())` when the observer is stored.

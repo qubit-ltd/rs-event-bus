@@ -13,11 +13,21 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::{
-    AckMode, Acknowledgement, DeadLetterPayload, EventBusError, EventEnvelope, IntoEventBusResult,
-    RetryOptions, SubscribeOptions,
+    AckMode,
+    Acknowledgement,
+    DeadLetterPayload,
+    EventBusError,
+    EventEnvelope,
+    IntoEventBusResult,
+    RetryOptions,
+    SubscribeOptions,
 };
 
-use super::subscribe_options::{DeadLetterStrategyFn, EventFilterFn, SubscribeErrorHandlerFn};
+use super::subscribe_options::{
+    DeadLetterStrategyFn,
+    EventFilterFn,
+    SubscribeErrorHandlerFn,
+};
 
 /// Builder used to create [`SubscribeOptions`].
 pub struct SubscribeOptionsBuilder<T: 'static> {
@@ -135,7 +145,8 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Sets subscriber priority.
     ///
     /// # Parameters
-    /// - `priority`: Informational priority value.
+    /// - `priority`: Submission priority; higher values are submitted first
+    ///   by the local backend.
     ///
     /// # Returns
     /// Updated builder.

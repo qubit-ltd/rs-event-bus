@@ -9,20 +9,33 @@
  ******************************************************************************/
 //! Factory for local event bus instances.
 
-use std::any::{Any, TypeId};
+use std::any::{
+    Any,
+    TypeId,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    DeadLetterPayload, EventBusError, EventBusFactory, EventBusResult, EventEnvelope,
-    IntoEventBusResult, LocalEventBus, PublishOptions, SubscribeOptions,
-    SubscriberInterceptorChain, UnsupportedTransactionalEventBus,
+    DeadLetterPayload,
+    EventBusError,
+    EventBusFactory,
+    EventBusResult,
+    EventEnvelope,
+    IntoEventBusResult,
+    LocalEventBus,
+    PublishOptions,
+    SubscribeOptions,
+    SubscriberInterceptorChain,
+    UnsupportedTransactionalEventBus,
 };
 
 use super::local_event_bus::{
-    create_publisher_interceptor_entry, create_subscriber_interceptor_entry,
+    create_publisher_interceptor_entry,
+    create_subscriber_interceptor_entry,
 };
-use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
+use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 /// Returns the default subscription handler worker count.
 ///
