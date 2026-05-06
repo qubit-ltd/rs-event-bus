@@ -4,7 +4,7 @@ use qubit_event_bus::{EventBus, LocalEventBus, Topic};
 
 #[test]
 fn test_event_bus_trait_publish_delegates_to_backend() {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started().expect("bus should start");
     let topic = Topic::<String>::try_new("event-bus-trait").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);

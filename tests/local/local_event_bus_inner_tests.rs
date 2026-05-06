@@ -1,16 +1,21 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use qubit_event_bus::{EventBusError, LocalEventBus, RetryOptions, SubscribeOptions, Topic};
+use qubit_event_bus::{
+    EventBusError, LocalEventBus, RetryDelay, RetryJitter, RetryOptions, SubscribeOptions, Topic,
+};
 
 #[test]
 fn test_local_event_bus_inner_retries_handler_until_success() {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started().expect("bus should start");
     let topic = Topic::<String>::try_new("inner-retry").expect("topic should build");
     let attempts = Arc::new(AtomicUsize::new(0));
     let captured_attempts = Arc::clone(&attempts);
     let options = SubscribeOptions::builder()
-        .retry_options(RetryOptions::new(3, std::time::Duration::ZERO).expect("retry should build"))
+        .retry_options(
+            RetryOptions::new(3, None, None, RetryDelay::none(), RetryJitter::none())
+                .expect("retry should build"),
+        )
         .build();
 
     bus.subscribe_with_options(

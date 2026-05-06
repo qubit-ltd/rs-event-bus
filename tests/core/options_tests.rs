@@ -9,30 +9,38 @@
  ******************************************************************************/
 //! Tests for publish and subscribe options.
 
-use std::time::Duration;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use qubit_event_bus::{
-    AckMode, EventBusError, EventEnvelope, LocalEventBus, PublishOptions, RetryOptions,
-    SubscribeOptions, Topic,
+    AckMode, EventBusError, EventEnvelope, LocalEventBus, PublishOptions, RetryDelay, RetryJitter,
+    RetryOptions, SubscribeOptions, Topic,
 };
+
+fn retry_options(max_attempts: u32) -> RetryOptions {
+    RetryOptions::new(
+        max_attempts,
+        None,
+        None,
+        RetryDelay::none(),
+        RetryJitter::none(),
+    )
+    .expect("retry options should build")
+}
 
 #[test]
 fn test_retry_options_validate_attempts() {
-    let retry = RetryOptions::new(3, Duration::from_millis(10))
-        .expect("positive attempts should be accepted");
+    let retry = retry_options(3);
 
     assert_eq!(retry.max_attempts(), 3);
-    assert_eq!(retry.delay(), Duration::from_millis(10));
-    assert!(RetryOptions::new(0, Duration::ZERO).is_err());
+    assert_eq!(retry.delay(), &RetryDelay::none());
+    assert!(RetryOptions::new(0, None, None, RetryDelay::none(), RetryJitter::none()).is_err());
 }
 
 #[test]
 fn test_publish_options_builder_sets_retry_and_error_handler() {
     let options = PublishOptions::<String>::builder()
-        .retry_options(RetryOptions::new(2, Duration::ZERO).expect("retry should build"))
+        .retry_options(retry_options(2))
         .error_handler(|envelope, error| {
             assert_eq!(envelope.payload(), "payload");
             assert!(error.to_string().contains("publish"));
@@ -82,7 +90,7 @@ fn test_subscribe_options_defaults_and_builder() {
     let options = SubscribeOptions::<String>::builder()
         .ack_mode(AckMode::Manual)
         .priority(10)
-        .retry_options(RetryOptions::new(4, Duration::ZERO).expect("retry should build"))
+        .retry_options(retry_options(4))
         .filter(|envelope| envelope.payload() == "accepted")
         .build();
 

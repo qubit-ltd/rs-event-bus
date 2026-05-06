@@ -9,11 +9,9 @@
  ******************************************************************************/
 //! Unsupported transactional backend placeholders.
 
-use std::thread::JoinHandle;
-
 use crate::{
-    EventBus, EventBusError, EventBusResult, EventEnvelope, IntoEventBusResult, PublishOptions,
-    SubscribeOptions, Subscription, Topic, TransactionalEventBus,
+    EventBus, EventBusError, EventBusResult, EventBusTask, EventEnvelope, IntoEventBusResult,
+    PublishOptions, SubscribeOptions, Subscription, Topic, TransactionalEventBus,
 };
 
 use super::unsupported_transactional_publisher::UnsupportedTransactionalPublisher;
@@ -34,8 +32,8 @@ impl UnsupportedTransactionalEventBus {
 
 impl EventBus for UnsupportedTransactionalEventBus {
     /// Unsupported placeholders never start.
-    fn start(&self) -> bool {
-        false
+    fn start(&self) -> EventBusResult<bool> {
+        Ok(false)
     }
 
     /// Unsupported placeholders are never running.
@@ -60,11 +58,11 @@ impl EventBus for UnsupportedTransactionalEventBus {
         &self,
         _envelope: EventEnvelope<T>,
         _options: PublishOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    ) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
-        Err(EventBusError::unsupported_operation("publish_async"))
+        EventBusTask::completed(Err(EventBusError::unsupported_operation("publish_async")))
     }
 
     /// Returns an unsupported-operation error.
@@ -91,14 +89,14 @@ impl EventBus for UnsupportedTransactionalEventBus {
         _topic: &Topic<T>,
         _handler: F,
         _options: SubscribeOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    ) -> EventBusTask<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
         F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static,
     {
-        Err(EventBusError::unsupported_operation("subscribe_async"))
+        EventBusTask::completed(Err(EventBusError::unsupported_operation("subscribe_async")))
     }
 
     /// Returns an unsupported-operation error.

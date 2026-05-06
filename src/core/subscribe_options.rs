@@ -9,8 +9,11 @@
  ******************************************************************************/
 //! Options controlling event subscription.
 
-use std::any::Any;
+use std::any::{Any, type_name};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use qubit_metadata::Metadata;
 
 use crate::{
     AckMode, Acknowledgement, EventBusError, EventBusResult, EventEnvelope, RetryOptions,
@@ -22,8 +25,98 @@ pub(crate) type SubscribeErrorHandlerFn<T> = dyn Fn(&str, &EventEnvelope<T>, &Ev
     + Send
     + Sync
     + 'static;
-/// Cloneable type-erased payload used by dead-letter envelopes.
-pub type DeadLetterPayload = Arc<dyn Any + Send + Sync + 'static>;
+/// Type-erased original payload stored inside dead-letter records.
+pub type DeadLetterOriginalPayload = Arc<dyn Any + Send + Sync + 'static>;
+
+/// Standard payload used by dead-letter envelopes.
+pub type DeadLetterPayload = DeadLetterRecord;
+
+/// Standard dead-letter record with diagnostic metadata and original payload.
+#[derive(Clone)]
+pub struct DeadLetterRecord {
+    metadata: Metadata,
+    original_payload: DeadLetterOriginalPayload,
+}
+
+impl DeadLetterRecord {
+    /// Creates a dead-letter record from metadata and an original payload.
+    ///
+    /// # Parameters
+    /// - `metadata`: Diagnostic metadata for the failed delivery.
+    /// - `original_payload`: Cloneable type-erased original payload.
+    ///
+    /// # Returns
+    /// Dead-letter record ready to use as an envelope payload.
+    pub fn new(metadata: Metadata, original_payload: DeadLetterOriginalPayload) -> Self {
+        Self {
+            metadata,
+            original_payload,
+        }
+    }
+
+    /// Creates a standard dead-letter record from a failed event.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: Identifier of the failing subscriber.
+    /// - `envelope`: Failed event envelope.
+    /// - `error`: Final processing error.
+    ///
+    /// # Returns
+    /// Dead-letter record containing standard metadata and the cloned payload.
+    pub fn from_failure<T>(
+        subscriber_id: &str,
+        envelope: &EventEnvelope<T>,
+        error: &EventBusError,
+    ) -> Self
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let failed_at_unix_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or_default();
+        let mut metadata = Metadata::new()
+            .with("subscriber_id", subscriber_id.to_string())
+            .with("event_id", envelope.id().to_string())
+            .with("topic", envelope.topic().name().to_string())
+            .with("failure_reason", error.to_string())
+            .with("failure_type", error.kind().to_string())
+            .with("payload_type", type_name::<T>().to_string())
+            .with("failed_at_unix_millis", failed_at_unix_millis)
+            .with("dead_letter", true);
+        if let Some(ordering_key) = envelope.ordering_key() {
+            metadata.set("ordering_key", ordering_key.to_string());
+        }
+        Self::new(metadata, Arc::new(envelope.payload().clone()))
+    }
+
+    /// Returns diagnostic metadata for this dead-letter record.
+    ///
+    /// # Returns
+    /// Metadata with standard failure fields and any caller-provided fields.
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Returns the type-erased original payload.
+    ///
+    /// # Returns
+    /// Shared original payload as an [`Arc`].
+    pub fn original_payload(&self) -> DeadLetterOriginalPayload {
+        Arc::clone(&self.original_payload)
+    }
+
+    /// Downcasts the original payload by reference.
+    ///
+    /// # Returns
+    /// `Some(&T)` when the original payload has type `T`.
+    pub fn downcast_original_payload_ref<T>(&self) -> Option<&T>
+    where
+        T: 'static,
+    {
+        self.original_payload.as_ref().downcast_ref::<T>()
+    }
+}
 
 pub(crate) type DeadLetterStrategyFn<T> = dyn Fn(
         &str,
@@ -81,8 +174,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// `Some` when subscriber retry is configured.
-    pub const fn retry_options(&self) -> Option<RetryOptions> {
-        self.retry_options
+    pub fn retry_options(&self) -> Option<&RetryOptions> {
+        self.retry_options.as_ref()
     }
 
     /// Returns subscription priority.
@@ -161,7 +254,7 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
     fn clone(&self) -> Self {
         Self {
             ack_mode: self.ack_mode,
-            retry_options: self.retry_options,
+            retry_options: self.retry_options.clone(),
             filter: self.filter.clone(),
             error_handlers: self.error_handlers.clone(),
             dead_letter_strategy: self.dead_letter_strategy.clone(),

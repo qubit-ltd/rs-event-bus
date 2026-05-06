@@ -27,6 +27,7 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
+qubit-metadata = { version = "0.4.2", path = "../rs-metadata" }
 qubit-retry = { version = "0.10.3", path = "../rs-retry" }
 qubit-thread-pool = { version = "0.1.2", path = "../rs-thread-pool" }
 

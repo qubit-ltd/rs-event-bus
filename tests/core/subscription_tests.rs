@@ -2,7 +2,7 @@ use qubit_event_bus::{LocalEventBus, Topic};
 
 #[test]
 fn test_subscription_exposes_id_topic_options_and_active_state() {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started().expect("bus should start");
     let topic = Topic::<String>::try_new("subscription").expect("topic should build");
     let subscription = bus
         .subscribe("sub-1", &topic, |_| ())

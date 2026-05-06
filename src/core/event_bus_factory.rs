@@ -41,10 +41,13 @@ pub trait EventBusFactory {
     ///
     /// # Returns
     /// Started event bus initialized with factory defaults.
-    fn create_started(&self) -> Self::Bus {
+    ///
+    /// # Errors
+    /// Returns backend startup errors when the bus cannot be started.
+    fn create_started(&self) -> EventBusResult<Self::Bus> {
         let bus = self.create();
-        bus.start();
-        bus
+        bus.start()?;
+        Ok(bus)
     }
 
     /// Creates a transactional event bus.

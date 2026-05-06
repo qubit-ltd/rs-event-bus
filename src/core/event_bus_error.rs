@@ -20,6 +20,11 @@ pub type EventBusResult<T> = Result<T, EventBusError>;
 pub enum EventBusError {
     /// Operation requires a started event bus.
     NotStarted,
+    /// The event bus could not be started.
+    StartFailed {
+        /// Human-readable startup failure reason.
+        message: String,
+    },
     /// An argument value is invalid.
     InvalidArgument {
         /// Argument name.
@@ -39,6 +44,18 @@ pub enum EventBusError {
     },
     /// Subscriber handler or interceptor panicked.
     HandlerPanicked,
+    /// A configured error handler failed while processing another error.
+    ErrorHandlerFailed {
+        /// Error handling phase.
+        phase: &'static str,
+        /// Human-readable failure message.
+        message: String,
+    },
+    /// Dead-letter routing failed after a terminal subscriber failure.
+    DeadLetterFailed {
+        /// Human-readable routing failure message.
+        message: String,
+    },
     /// Managed executor rejected event processing work.
     ExecutionRejected {
         /// Human-readable rejection reason.
@@ -72,6 +89,19 @@ impl EventBusError {
     /// Error indicating that the bus must be started first.
     pub const fn not_started() -> Self {
         Self::NotStarted
+    }
+
+    /// Creates [`EventBusError::StartFailed`].
+    ///
+    /// # Parameters
+    /// - `message`: Startup failure details.
+    ///
+    /// # Returns
+    /// Startup error with context.
+    pub fn start_failed(message: impl Into<String>) -> Self {
+        Self::StartFailed {
+            message: message.into(),
+        }
     }
 
     /// Creates [`EventBusError::InvalidArgument`].
@@ -121,6 +151,34 @@ impl EventBusError {
         Self::HandlerPanicked
     }
 
+    /// Creates [`EventBusError::ErrorHandlerFailed`].
+    ///
+    /// # Parameters
+    /// - `phase`: Error handling phase.
+    /// - `message`: Handler failure details.
+    ///
+    /// # Returns
+    /// Error handler failure with context.
+    pub fn error_handler_failed(phase: &'static str, message: impl Into<String>) -> Self {
+        Self::ErrorHandlerFailed {
+            phase,
+            message: message.into(),
+        }
+    }
+
+    /// Creates [`EventBusError::DeadLetterFailed`].
+    ///
+    /// # Parameters
+    /// - `message`: Dead-letter routing failure details.
+    ///
+    /// # Returns
+    /// Dead-letter failure with context.
+    pub fn dead_letter_failed(message: impl Into<String>) -> Self {
+        Self::DeadLetterFailed {
+            message: message.into(),
+        }
+    }
+
     /// Creates [`EventBusError::ExecutionRejected`].
     ///
     /// # Parameters
@@ -167,6 +225,28 @@ impl EventBusError {
     pub const fn unsupported_operation(operation: &'static str) -> Self {
         Self::UnsupportedOperation { operation }
     }
+
+    /// Returns a stable symbolic error kind.
+    ///
+    /// # Returns
+    /// Static string useful for diagnostics and dead-letter metadata.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::StartFailed { .. } => "start_failed",
+            Self::InvalidArgument { .. } => "invalid_argument",
+            Self::MissingField { .. } => "missing_field",
+            Self::HandlerFailed { .. } => "handler_failed",
+            Self::HandlerPanicked => "handler_panicked",
+            Self::ErrorHandlerFailed { .. } => "error_handler_failed",
+            Self::DeadLetterFailed { .. } => "dead_letter_failed",
+            Self::ExecutionRejected { .. } => "execution_rejected",
+            Self::LockPoisoned { .. } => "lock_poisoned",
+            Self::TypeMismatch { .. } => "type_mismatch",
+            Self::ThreadJoinFailed => "thread_join_failed",
+            Self::UnsupportedOperation { .. } => "unsupported_operation",
+        }
+    }
 }
 
 impl Display for EventBusError {
@@ -174,12 +254,21 @@ impl Display for EventBusError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotStarted => write!(formatter, "the EventBus has not been started"),
+            Self::StartFailed { message } => {
+                write!(formatter, "failed to start EventBus: {message}")
+            }
             Self::InvalidArgument { field, message } => {
                 write!(formatter, "invalid argument `{field}`: {message}")
             }
             Self::MissingField { field } => write!(formatter, "missing required field `{field}`"),
             Self::HandlerFailed { message } => write!(formatter, "event handler failed: {message}"),
             Self::HandlerPanicked => write!(formatter, "event handler panicked"),
+            Self::ErrorHandlerFailed { phase, message } => {
+                write!(formatter, "{phase} error handler failed: {message}")
+            }
+            Self::DeadLetterFailed { message } => {
+                write!(formatter, "dead-letter routing failed: {message}")
+            }
             Self::ExecutionRejected { message } => {
                 write!(formatter, "event processing task was rejected: {message}")
             }

@@ -12,7 +12,7 @@
 
 `qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内事件总线。
 
-它提供类型安全的 Topic、事件信封、订阅配置、发布配置、重试、确认句柄、发布/订阅拦截器和死信路由钩子。
+它提供类型安全的 Topic、事件信封、订阅配置、发布配置、`qubit-retry` 重试策略、确认句柄、发布/订阅拦截器，以及带 `qubit-metadata` 诊断信息的死信记录。
 
 ## 为什么使用
 
@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use qubit_event_bus::{LocalEventBus, Topic};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started()?;
     let topic = Topic::<String>::try_new("orders.created")?;
     let received = Arc::new(Mutex::new(Vec::new()));
 
@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 添加发布拦截器 | `add_publisher_interceptor` |
 | 添加订阅拦截器 | `add_subscriber_interceptor`、`SubscriberInterceptorChain` |
 | 添加发布错误处理 | `PublishOptions` |
+| 观测内部后台失败 | `add_error_observer` |
 | 在测试中等待处理器工作完成 | `wait_for_idle` |
 
 ## 核心 API 概览
@@ -81,12 +82,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 类型 | 用途 |
 | --- | --- |
 | `LocalEventBus` | 线程安全的进程内事件总线实现。 |
-| `LocalEventBusFactory` | 使用类型化默认订阅配置创建已启动的事件总线。 |
+| `LocalEventBusFactory` | 使用类型化默认发布配置、订阅配置、拦截器和死信策略创建事件总线。 |
 | `Topic<T>` | 按名称和 payload 类型区分的类型安全 Topic。 |
 | `EventEnvelope<T>` | 事件 payload 以及请求头、时间戳、顺序键、延迟、确认句柄和死信标记。 |
 | `PublishOptions<T>` | 发布重试元数据和发布错误回调。 |
 | `SubscribeOptions<T>` | 订阅确认模式、重试配置、过滤器、错误回调、死信策略和优先级。 |
-| `DeadLetterPayload` | 用于死信信封的可克隆类型擦除 payload。 |
+| `DeadLetterPayload` | 标准死信记录，包含诊断元数据和类型擦除的原始 payload。 |
+| `EventBusTask<T>` | 本地 async 便捷方法返回的已完成任务，不会为每次调用创建 OS 线程。 |
 | `Subscription<T>` | 用于查看和取消订阅的句柄。 |
 | `EventBusError` | 生命周期、校验、处理器、锁和类型擦除失败的统一错误类型。 |
 
@@ -94,8 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - `qubit-event-bus` 是进程内事件总线，不负责事件持久化或跨进程投递。
 - 订阅处理器会在可配置的 `rs-thread-pool` 固定工作线程池中执行。发布操作会在调度处理器工作后返回。
+- 本地 async 便捷方法返回已完成的 `EventBusTask`，不会为每次调用创建临时线程。
 - 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
-- 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档 payload。
+- 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档记录。
+- `ordering_key` 和 `delay` 会作为信封元数据保留；本地 backend 不执行有序分发通道或延迟投递语义。
 - `wait_for_idle` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
 ## 贡献

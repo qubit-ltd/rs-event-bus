@@ -4,7 +4,7 @@ use qubit_event_bus::{LocalEventBus, Topic};
 
 #[test]
 fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started().expect("bus should start");
     let topic = Topic::<String>::try_new("publisher-interceptor").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);

@@ -12,7 +12,7 @@ Documentation: [API Reference](https://docs.rs/qubit-event-bus)
 
 `qubit-event-bus` is a lightweight, thread-safe, in-process event bus for Rust applications.
 
-It provides type-safe topics, event envelopes, subscriber options, publish options, retries, acknowledgement handles, publisher and subscriber interceptors, and dead-letter routing hooks.
+It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, publisher and subscriber interceptors, and dead-letter records with `qubit-metadata` diagnostics.
 
 ## Why Use It
 
@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use qubit_event_bus::{LocalEventBus, Topic};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bus = LocalEventBus::started();
+    let bus = LocalEventBus::started()?;
     let topic = Topic::<String>::try_new("orders.created")?;
     let received = Arc::new(Mutex::new(Vec::new()));
 
@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Add publisher interceptors | `add_publisher_interceptor` |
 | Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptorChain` |
 | Attach publish error handling | `PublishOptions` |
+| Observe internal background failures | `add_error_observer` |
 | Wait for scheduled handler work in tests | `wait_for_idle` |
 
 ## Core API At A Glance
@@ -81,12 +82,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Type | Purpose |
 | --- | --- |
 | `LocalEventBus` | Thread-safe in-process event bus implementation. |
-| `LocalEventBusFactory` | Creates started buses with typed default subscription options. |
+| `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and dead-letter strategies. |
 | `Topic<T>` | Type-safe event topic keyed by name and payload type. |
 | `EventEnvelope<T>` | Event payload plus headers, timestamp, ordering key, delay, acknowledgement, and dead-letter marker. |
 | `PublishOptions<T>` | Publish retry metadata and publish error callbacks. |
 | `SubscribeOptions<T>` | Subscriber acknowledgement mode, retry settings, filters, error callbacks, dead-letter strategy, and priority. |
-| `DeadLetterPayload` | Cloneable type-erased payload for dead-letter envelopes. |
+| `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
+| `EventBusTask<T>` | Completed task returned by local async convenience methods without spawning an OS thread. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
 
@@ -94,8 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - `qubit-event-bus` is an in-process event bus. It does not persist events or provide cross-process delivery.
 - Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
+- Local async convenience methods return completed `EventBusTask` values; they do not create one thread per call.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
-- Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived payloads from multiple source event types.
+- Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
+- `ordering_key` and `delay` are preserved as envelope metadata; the local backend does not enforce ordering lanes or delayed delivery.
 - `wait_for_idle` is intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
 ## Contributing

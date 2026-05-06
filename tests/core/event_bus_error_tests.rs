@@ -15,6 +15,10 @@ fn test_event_bus_error_constructors_preserve_context() {
         EventBusError::missing_field("payload").to_string(),
         "missing required field `payload`"
     );
+    assert_eq!(
+        EventBusError::dead_letter_failed("boom").kind(),
+        "dead_letter_failed"
+    );
 }
 
 #[test]

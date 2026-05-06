@@ -14,19 +14,19 @@ use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use qubit_thread_pool::{ExecutorService, FixedThreadPool};
 
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventBusResult, EventEnvelope, IntoEventBusResult,
-    PublishOptions, SubscribeOptions, Subscription, Topic, TopicKey,
+    AckMode, Acknowledgement, EventBusError, EventBusResult, EventBusTask, EventEnvelope,
+    IntoEventBusResult, PublishOptions, SubscribeOptions, Subscription, Topic, TopicKey,
 };
 
 use super::erased_subscription::ErasedSubscription;
 use super::local_event_bus_inner::LocalEventBusInner;
-use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::publisher_interceptor_entry::{PublisherInterceptorEntry, SubscriberInterceptorEntry};
 
 type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;
 type PublisherInterceptorFn<T> =
@@ -92,53 +92,59 @@ impl LocalEventBus {
     /// # Returns
     /// A new event bus with no subscriptions.
     pub fn new() -> Self {
-        Self::with_default_subscribe_options(HashMap::new())
+        Self::with_runtime_options(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            default_subscription_handler_pool_size(),
+            None,
+        )
     }
 
     /// Creates and starts a local event bus.
     ///
     /// # Returns
     /// A started event bus.
-    pub fn started() -> Self {
+    ///
+    /// # Errors
+    /// Returns startup errors from the handler executor.
+    pub fn started() -> EventBusResult<Self> {
         let bus = Self::new();
-        bus.start();
-        bus
-    }
-
-    /// Creates a stopped event bus with typed default subscribe options.
-    ///
-    /// # Parameters
-    /// - `default_subscribe_options`: Type-erased defaults copied from a factory.
-    ///
-    /// # Returns
-    /// A stopped event bus.
-    pub(crate) fn with_default_subscribe_options(
-        default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-    ) -> Self {
-        Self::with_runtime_options(
-            default_subscribe_options,
-            default_subscription_handler_pool_size(),
-            None,
-        )
+        bus.start()?;
+        Ok(bus)
     }
 
     /// Creates a stopped event bus with typed defaults and local runtime options.
     ///
     /// # Parameters
+    /// - `default_publish_options`: Type-erased publish defaults copied from a factory.
     /// - `default_subscribe_options`: Type-erased defaults copied from a factory.
+    /// - `default_dead_letter_strategies`: Type-erased default dead-letter strategies.
+    /// - `publisher_interceptors`: Factory-level publisher interceptors.
+    /// - `subscriber_interceptors`: Factory-level subscriber interceptors.
     /// - `subscription_handler_pool_size`: Number of subscriber handler workers.
     /// - `subscription_handler_queue_capacity`: Optional queued handler limit.
     ///
     /// # Returns
     /// A stopped event bus.
     pub(crate) fn with_runtime_options(
+        default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
         default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+        default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+        publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
+        subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
         subscription_handler_pool_size: usize,
         subscription_handler_queue_capacity: Option<usize>,
     ) -> Self {
         Self {
             inner: Arc::new(LocalEventBusInner::new(
+                default_publish_options,
                 default_subscribe_options,
+                default_dead_letter_strategies,
+                publisher_interceptors,
+                subscriber_interceptors,
                 subscription_handler_pool_size,
                 subscription_handler_queue_capacity,
             )),
@@ -148,8 +154,11 @@ impl LocalEventBus {
     /// Starts the event bus.
     ///
     /// # Returns
-    /// `true` when this call changed the bus from stopped to started.
-    pub fn start(&self) -> bool {
+    /// `Ok(true)` when this call changed the bus from stopped to started.
+    ///
+    /// # Errors
+    /// Returns startup errors from the handler executor.
+    pub fn start(&self) -> EventBusResult<bool> {
         self.inner.mark_started()
     }
 
@@ -186,10 +195,8 @@ impl LocalEventBus {
         T: Clone + Send + Sync + 'static,
         F: Fn(EventEnvelope<T>) -> Option<EventEnvelope<T>> + Send + Sync + 'static,
     {
-        let entry = TypedPublisherInterceptor::<T> {
-            interceptor: Arc::new(interceptor),
-        };
-        self.inner.add_publisher_interceptor(Arc::new(entry))
+        self.inner
+            .add_publisher_interceptor(create_publisher_interceptor_entry::<T, F>(interceptor))
     }
 
     /// Registers a typed subscriber interceptor.
@@ -212,12 +219,25 @@ impl LocalEventBus {
         F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static,
     {
-        let entry = TypedSubscriberInterceptor::<T> {
-            interceptor: Arc::new(move |event, chain| {
-                interceptor(event, chain).into_event_bus_result()
-            }),
-        };
-        self.inner.add_subscriber_interceptor(Arc::new(entry))
+        self.inner
+            .add_subscriber_interceptor(create_subscriber_interceptor_entry::<T, F, R>(interceptor))
+    }
+
+    /// Registers an observer for internal background errors.
+    ///
+    /// # Parameters
+    /// - `observer`: Callback invoked when error handlers or dead-letter routing fail.
+    ///
+    /// # Returns
+    /// `Ok(())` when the observer is stored.
+    ///
+    /// # Errors
+    /// Returns a lock-poisoning error if observer state is unavailable.
+    pub fn add_error_observer<F>(&self, observer: F) -> EventBusResult<()>
+    where
+        F: Fn(&EventBusError) + Send + Sync + 'static,
+    {
+        self.inner.add_error_observer(Arc::new(observer))
     }
 
     /// Publishes a payload to a topic.
@@ -252,7 +272,7 @@ impl LocalEventBus {
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.publish_envelope_with_options(envelope, PublishOptions::empty())
+        self.publish_envelope_with_options(envelope, self.default_publish_options::<T>())
     }
 
     /// Publishes an existing envelope with options.
@@ -281,65 +301,44 @@ impl LocalEventBus {
         let Some(envelope) = self.apply_publisher_interceptors(envelope)? else {
             return Ok(());
         };
-        if let Err(error) = self.dispatch_envelope(
-            envelope.clone(),
-            options.retry_options().unwrap_or_default(),
-        ) {
+        if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options()) {
             options.notify_publish_error(&envelope, &error);
             return Err(error);
         }
         Ok(())
     }
 
-    /// Publishes an existing envelope on a background thread.
+    /// Publishes an existing envelope and returns a completed task.
     ///
     /// # Parameters
     /// - `envelope`: Event envelope to dispatch.
     ///
     /// # Returns
-    /// Join handle resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
-    /// background task is created.
-    pub fn publish_envelope_async<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    /// Completed task resolving to the publish result.
+    pub fn publish_envelope_async<T>(&self, envelope: EventEnvelope<T>) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.publish_envelope_with_options_async(envelope, PublishOptions::empty())
+        self.publish_envelope_with_options_async(envelope, self.default_publish_options::<T>())
     }
 
-    /// Publishes an existing envelope with options on a background thread.
+    /// Publishes an existing envelope with options and returns a completed task.
     ///
     /// # Parameters
     /// - `envelope`: Event envelope to dispatch.
     /// - `options`: Publish options.
     ///
     /// # Returns
-    /// Join handle resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
-    /// background task is created.
+    /// Completed task resolving to the publish result.
     pub fn publish_envelope_with_options_async<T>(
         &self,
         envelope: EventEnvelope<T>,
         options: PublishOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    ) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
-        if let Err(error) = self.ensure_started() {
-            options.notify_publish_error(&envelope, &error);
-            return Err(error);
-        }
-        let bus = self.clone();
-        Ok(thread::spawn(move || {
-            bus.publish_envelope_with_options(envelope, options)
-        }))
+        EventBusTask::completed(self.publish_envelope_with_options(envelope, options))
     }
 
     /// Publishes multiple envelopes.
@@ -362,51 +361,38 @@ impl LocalEventBus {
         Ok(())
     }
 
-    /// Publishes multiple envelopes on background threads.
+    /// Publishes multiple envelopes and returns completed tasks.
     ///
     /// # Parameters
     /// - `envelopes`: Envelopes to publish in order.
     /// - `options`: Publish options cloned for each event.
     ///
     /// # Returns
-    /// Join handles resolving to each publish result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before any
-    /// background task is created.
+    /// Completed tasks resolving to each publish result.
     pub fn publish_all_async<T>(
         &self,
         envelopes: Vec<EventEnvelope<T>>,
         options: PublishOptions<T>,
-    ) -> EventBusResult<Vec<JoinHandle<EventBusResult<()>>>>
+    ) -> Vec<EventBusTask<()>>
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.ensure_started()?;
         let mut handles = Vec::with_capacity(envelopes.len());
         for envelope in envelopes {
-            handles.push(self.publish_envelope_with_options_async(envelope, options.clone())?);
+            handles.push(self.publish_envelope_with_options_async(envelope, options.clone()));
         }
-        Ok(handles)
+        handles
     }
 
-    /// Publishes a payload on a background thread.
+    /// Publishes a payload and returns a completed task.
     ///
     /// # Parameters
     /// - `topic`: Target topic.
     /// - `payload`: Event payload.
     ///
     /// # Returns
-    /// Join handle resolving to the publish result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
-    /// background task is created.
-    pub fn publish_async<T>(
-        &self,
-        topic: &Topic<T>,
-        payload: T,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    /// Completed task resolving to the publish result.
+    pub fn publish_async<T>(&self, topic: &Topic<T>, payload: T) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -504,7 +490,7 @@ impl LocalEventBus {
         })
     }
 
-    /// Subscribes a handler on a background thread using default options.
+    /// Subscribes a handler and returns a completed task using default options.
     ///
     /// # Parameters
     /// - `subscriber_id`: Subscriber identifier.
@@ -512,17 +498,13 @@ impl LocalEventBus {
     /// - `handler`: Handler invoked for matching events.
     ///
     /// # Returns
-    /// Join handle resolving to the subscription result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
-    /// background task is created.
+    /// Completed task resolving to the subscription result.
     pub fn subscribe_async<T, S, F, R>(
         &self,
         subscriber_id: S,
         topic: &Topic<T>,
         handler: F,
-    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    ) -> EventBusTask<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -533,7 +515,7 @@ impl LocalEventBus {
         self.subscribe_with_options_async(subscriber_id, topic, handler, options)
     }
 
-    /// Subscribes a handler with options on a background thread.
+    /// Subscribes a handler with options and returns a completed task.
     ///
     /// # Parameters
     /// - `subscriber_id`: Subscriber identifier.
@@ -542,31 +524,22 @@ impl LocalEventBus {
     /// - `options`: Subscription processing options.
     ///
     /// # Returns
-    /// Join handle resolving to the subscription result.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::NotStarted`] if the bus is stopped before the
-    /// background task is created.
+    /// Completed task resolving to the subscription result.
     pub fn subscribe_with_options_async<T, S, F, R>(
         &self,
         subscriber_id: S,
         topic: &Topic<T>,
         handler: F,
         options: SubscribeOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    ) -> EventBusTask<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
         F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static,
     {
-        self.ensure_started()?;
-        let bus = self.clone();
         let subscriber_id = subscriber_id.into();
-        let topic = topic.clone();
-        Ok(thread::spawn(move || {
-            bus.subscribe_with_options(subscriber_id, &topic, handler, options)
-        }))
+        EventBusTask::completed(self.subscribe_with_options(subscriber_id, topic, handler, options))
     }
 
     /// Waits until all work for a topic is idle.
@@ -584,6 +557,19 @@ impl LocalEventBus {
         T: 'static,
     {
         self.inner.wait_for_idle(&topic.key())
+    }
+
+    /// Returns default publish options for a payload type.
+    ///
+    /// # Returns
+    /// Type-specific default options or empty options.
+    fn default_publish_options<T>(&self) -> PublishOptions<T>
+    where
+        T: 'static,
+    {
+        self.inner
+            .default_publish_options::<T>()
+            .unwrap_or_else(PublishOptions::empty)
     }
 
     /// Returns default subscribe options for a payload type.
@@ -665,19 +651,23 @@ impl LocalEventBus {
     fn dispatch_envelope<T>(
         &self,
         envelope: EventEnvelope<T>,
-        retry_options: crate::RetryOptions,
+        retry_options: Option<&crate::RetryOptions>,
     ) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
         let subscriptions = self.inner.subscriptions_for(&envelope.topic().key())?;
+        let mut first_error = None;
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
-            run_with_retry(retry_options, || {
+            if let Err(error) = run_with_retry(retry_options, || {
                 subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner))
-            })?;
+            }) && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Applies matching subscriber interceptors to a handler.
@@ -698,22 +688,16 @@ impl LocalEventBus {
         T: Clone + Send + Sync + 'static,
     {
         let interceptors = self.inner.subscriber_interceptors()?;
-        let mut chain = handler;
+        let mut chain = Box::new(handler) as Box<dyn Any + Send + Sync>;
         for interceptor in interceptors.into_iter().rev() {
-            let Some(typed) = interceptor
-                .as_ref()
-                .downcast_ref::<TypedSubscriberInterceptor<T>>()
-            else {
-                continue;
-            };
-            let next = Arc::clone(&chain);
-            let interceptor = Arc::clone(&typed.interceptor);
-            chain = Arc::new(move |event| {
-                let next_chain = SubscriberInterceptorChain::new(Arc::clone(&next));
-                interceptor(event, next_chain)
-            });
+            if interceptor.payload_type_id() == TypeId::of::<T>() {
+                chain = interceptor.wrap_handler(chain)?;
+            }
         }
-        Ok(chain)
+        chain
+            .downcast::<Arc<HandlerFn<T>>>()
+            .map(|handler| *handler)
+            .map_err(|_| EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown"))
     }
 }
 
@@ -726,7 +710,7 @@ impl Default for LocalEventBus {
 
 impl crate::EventBus for LocalEventBus {
     /// Starts the local event bus.
-    fn start(&self) -> bool {
+    fn start(&self) -> EventBusResult<bool> {
         Self::start(self)
     }
 
@@ -771,47 +755,40 @@ impl crate::EventBus for LocalEventBus {
         Self::publish_all(self, envelopes)
     }
 
-    /// Publishes a payload on a background thread using the local backend.
-    fn publish_async<T>(
-        &self,
-        topic: &Topic<T>,
-        payload: T,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    /// Publishes a payload and returns a completed task.
+    fn publish_async<T>(&self, topic: &Topic<T>, payload: T) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
         Self::publish_async(self, topic, payload)
     }
 
-    /// Publishes an envelope on a background thread using the local backend.
-    fn publish_envelope_async<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    /// Publishes an envelope and returns a completed task.
+    fn publish_envelope_async<T>(&self, envelope: EventEnvelope<T>) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
         Self::publish_envelope_async(self, envelope)
     }
 
-    /// Publishes an envelope with options on a background thread.
+    /// Publishes an envelope with options and returns a completed task.
     fn publish_envelope_with_options_async<T>(
         &self,
         envelope: EventEnvelope<T>,
         options: PublishOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<()>>>
+    ) -> EventBusTask<()>
     where
         T: Clone + Send + Sync + 'static,
     {
         Self::publish_envelope_with_options_async(self, envelope, options)
     }
 
-    /// Publishes a batch asynchronously using the local backend.
+    /// Publishes a batch and returns completed tasks.
     fn publish_all_async<T>(
         &self,
         envelopes: Vec<EventEnvelope<T>>,
         options: PublishOptions<T>,
-    ) -> EventBusResult<Vec<JoinHandle<EventBusResult<()>>>>
+    ) -> Vec<EventBusTask<()>>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -851,13 +828,13 @@ impl crate::EventBus for LocalEventBus {
         Self::subscribe_with_options(self, subscriber_id, topic, handler, options)
     }
 
-    /// Subscribes a handler on a background thread using local defaults.
+    /// Subscribes a handler and returns a completed task using local defaults.
     fn subscribe_async<T, S, F, R>(
         &self,
         subscriber_id: S,
         topic: &Topic<T>,
         handler: F,
-    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    ) -> EventBusTask<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -867,14 +844,14 @@ impl crate::EventBus for LocalEventBus {
         Self::subscribe_async(self, subscriber_id, topic, handler)
     }
 
-    /// Subscribes a handler with options on a background thread.
+    /// Subscribes a handler with options and returns a completed task.
     fn subscribe_with_options_async<T, S, F, R>(
         &self,
         subscriber_id: S,
         topic: &Topic<T>,
         handler: F,
         options: SubscribeOptions<T>,
-    ) -> EventBusResult<JoinHandle<EventBusResult<Subscription<T>>>>
+    ) -> EventBusTask<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -896,6 +873,25 @@ impl crate::EventBus for LocalEventBus {
 /// Typed publisher interceptor adapter.
 struct TypedPublisherInterceptor<T: Clone + Send + Sync + 'static> {
     interceptor: Arc<PublisherInterceptorFn<T>>,
+}
+
+/// Creates a type-erased publisher interceptor entry.
+///
+/// # Parameters
+/// - `interceptor`: Typed publisher interceptor callback.
+///
+/// # Returns
+/// Type-erased entry suitable for local bus storage.
+pub(crate) fn create_publisher_interceptor_entry<T, F>(
+    interceptor: F,
+) -> Arc<dyn PublisherInterceptorEntry>
+where
+    T: Clone + Send + Sync + 'static,
+    F: Fn(EventEnvelope<T>) -> Option<EventEnvelope<T>> + Send + Sync + 'static,
+{
+    Arc::new(TypedPublisherInterceptor::<T> {
+        interceptor: Arc::new(interceptor),
+    })
 }
 
 impl<T> PublisherInterceptorEntry for TypedPublisherInterceptor<T>
@@ -922,6 +918,55 @@ where
 /// Typed subscriber interceptor adapter.
 struct TypedSubscriberInterceptor<T: Clone + Send + Sync + 'static> {
     interceptor: Arc<SubscriberInterceptorFn<T>>,
+}
+
+/// Creates a type-erased subscriber interceptor entry.
+///
+/// # Parameters
+/// - `interceptor`: Typed subscriber interceptor callback.
+///
+/// # Returns
+/// Type-erased entry suitable for local bus storage.
+pub(crate) fn create_subscriber_interceptor_entry<T, F, R>(
+    interceptor: F,
+) -> Arc<dyn SubscriberInterceptorEntry>
+where
+    T: Clone + Send + Sync + 'static,
+    F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
+    R: IntoEventBusResult + 'static,
+{
+    Arc::new(TypedSubscriberInterceptor::<T> {
+        interceptor: Arc::new(move |event, chain| {
+            interceptor(event, chain).into_event_bus_result()
+        }),
+    })
+}
+
+impl<T> SubscriberInterceptorEntry for TypedSubscriberInterceptor<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Returns the payload [`TypeId`] handled by this interceptor.
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    /// Downcasts and wraps the typed handler.
+    fn wrap_handler(
+        &self,
+        handler: Box<dyn Any + Send + Sync>,
+    ) -> EventBusResult<Box<dyn Any + Send + Sync>> {
+        let next = handler.downcast::<Arc<HandlerFn<T>>>().map_err(|_| {
+            EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown")
+        })?;
+        let next = *next;
+        let interceptor = Arc::clone(&self.interceptor);
+        let wrapped: Arc<HandlerFn<T>> = Arc::new(move |event| {
+            let next_chain = SubscriberInterceptorChain::new(Arc::clone(&next));
+            interceptor(event, next_chain)
+        });
+        Ok(Box::new(wrapped))
+    }
 }
 
 /// Typed subscription entry stored in the subscription map.
@@ -1095,15 +1140,30 @@ fn handle_subscription_failure<T>(
 ) where
     T: Clone + Send + Sync + 'static,
 {
-    let _ = options.notify_subscribe_error(subscriber_id, delivered, error, acknowledgement);
+    if let Err(error) =
+        options.notify_subscribe_error(subscriber_id, delivered, error, acknowledgement)
+    {
+        let observed = EventBusError::error_handler_failed("subscribe", error.to_string());
+        event_bus.inner.observe_error(&observed);
+    }
     if !acknowledgement.is_completed() {
         acknowledgement.nack();
     }
-    if acknowledgement.is_nacked()
-        && !delivered.is_dead_letter()
-        && let Some(dead_letter) = options.create_dead_letter(subscriber_id, delivered, error)
-    {
-        let _ = event_bus.publish_envelope(dead_letter.as_dead_letter());
+    if acknowledgement.is_nacked() && !delivered.is_dead_letter() {
+        let dead_letter = options
+            .create_dead_letter(subscriber_id, delivered, error)
+            .or_else(|| {
+                event_bus
+                    .inner
+                    .default_dead_letter_strategy::<T>()
+                    .and_then(|strategy| strategy(subscriber_id, delivered, error, options))
+            });
+        if let Some(dead_letter) = dead_letter
+            && let Err(error) = event_bus.publish_envelope(dead_letter.as_dead_letter())
+        {
+            let observed = EventBusError::dead_letter_failed(error.to_string());
+            event_bus.inner.observe_error(&observed);
+        }
     }
 }
 
@@ -1124,7 +1184,7 @@ fn run_handler_with_retry<T>(
 where
     T: Clone + Send + Sync + 'static,
 {
-    run_with_retry(options.retry_options().unwrap_or_default(), || {
+    run_with_retry(options.retry_options(), || {
         call_handler(handler, envelope.clone())
     })
 }
@@ -1155,21 +1215,18 @@ where
 ///
 /// # Returns
 /// Successful operation value or the final event-bus error.
-fn run_with_retry<T, F>(retry_options: crate::RetryOptions, operation: F) -> EventBusResult<T>
+fn run_with_retry<T, F>(
+    retry_options: Option<&crate::RetryOptions>,
+    operation: F,
+) -> EventBusResult<T>
 where
     F: FnMut() -> EventBusResult<T>,
 {
-    let max_attempts = u32::try_from(retry_options.max_attempts()).map_err(|_| {
-        EventBusError::invalid_argument("retry_options", "retry max_attempts exceeds u32::MAX")
-    })?;
-    let mut builder = qubit_retry::Retry::<EventBusError>::builder().max_attempts(max_attempts);
-    builder = if retry_options.delay().is_zero() {
-        builder.no_delay()
-    } else {
-        builder.fixed_delay(retry_options.delay())
+    let Some(retry_options) = retry_options else {
+        let mut operation = operation;
+        return operation();
     };
-    let retry = builder
-        .build()
+    let retry = qubit_retry::Retry::<EventBusError>::from_options(retry_options.clone())
         .map_err(|error| EventBusError::invalid_argument("retry_options", error.to_string()))?;
     retry.run(operation).map_err(|error| {
         error
