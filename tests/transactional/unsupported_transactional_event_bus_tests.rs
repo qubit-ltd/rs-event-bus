@@ -1,5 +1,10 @@
 use qubit_event_bus::{
-    EventBus, EventBusError, EventEnvelope, PublishOptions, Topic, UnsupportedTransactionalEventBus,
+    EventBus,
+    EventBusError,
+    EventEnvelope,
+    PublishOptions,
+    Topic,
+    UnsupportedTransactionalEventBus,
 };
 
 #[test]

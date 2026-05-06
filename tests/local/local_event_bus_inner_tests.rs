@@ -1,8 +1,17 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
 
 use qubit_event_bus::{
-    EventBusError, LocalEventBus, RetryDelay, RetryJitter, RetryOptions, SubscribeOptions, Topic,
+    EventBusError,
+    LocalEventBus,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+    SubscribeOptions,
+    Topic,
 };
 
 #[test]

@@ -9,7 +9,11 @@
  ******************************************************************************/
 //! Transactional publisher abstraction.
 
-use crate::{EventBusResult, EventEnvelope, Topic};
+use crate::{
+    EventBusResult,
+    EventEnvelope,
+    Topic,
+};
 
 /// Publisher that buffers events until a transaction is committed.
 ///

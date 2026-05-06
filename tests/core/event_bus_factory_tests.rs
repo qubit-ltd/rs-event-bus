@@ -1,4 +1,9 @@
-use qubit_event_bus::{EventBusError, EventBusFactory, LocalEventBusFactory, Topic};
+use qubit_event_bus::{
+    EventBusError,
+    EventBusFactory,
+    LocalEventBusFactory,
+    Topic,
+};
 
 #[test]
 fn test_event_bus_factory_create_returns_stopped_bus() {

@@ -1,5 +1,8 @@
 use qubit_event_bus::{
-    EventBusError, Topic, TransactionalPublisher, UnsupportedTransactionalPublisher,
+    EventBusError,
+    Topic,
+    TransactionalPublisher,
+    UnsupportedTransactionalPublisher,
 };
 
 #[test]

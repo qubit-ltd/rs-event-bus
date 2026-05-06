@@ -1,4 +1,8 @@
-use qubit_event_bus::{EventEnvelope, SubscribeOptions, Topic};
+use qubit_event_bus::{
+    EventEnvelope,
+    SubscribeOptions,
+    Topic,
+};
 
 #[test]
 fn test_subscribe_options_empty_handles_every_event() {

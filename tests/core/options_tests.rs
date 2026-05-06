@@ -10,11 +10,22 @@
 //! Tests for publish and subscribe options.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
 
 use qubit_event_bus::{
-    AckMode, EventBusError, EventEnvelope, LocalEventBus, PublishOptions, RetryDelay, RetryJitter,
-    RetryOptions, SubscribeOptions, Topic,
+    AckMode,
+    EventBusError,
+    EventEnvelope,
+    LocalEventBus,
+    PublishOptions,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
+    SubscribeOptions,
+    Topic,
 };
 
 fn retry_options(max_attempts: u32) -> RetryOptions {

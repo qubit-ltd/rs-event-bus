@@ -1,6 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
-use qubit_event_bus::{LocalEventBus, Topic};
+use qubit_event_bus::{
+    LocalEventBus,
+    Topic,
+};
 
 #[test]
 fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {

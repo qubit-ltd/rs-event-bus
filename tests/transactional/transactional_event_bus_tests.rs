@@ -1,4 +1,8 @@
-use qubit_event_bus::{EventBusError, TransactionalEventBus, UnsupportedTransactionalEventBus};
+use qubit_event_bus::{
+    EventBusError,
+    TransactionalEventBus,
+    UnsupportedTransactionalEventBus,
+};
 
 #[test]
 fn test_transactional_event_bus_placeholder_rejects_publisher_creation() {

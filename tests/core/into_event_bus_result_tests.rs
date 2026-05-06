@@ -1,4 +1,8 @@
-use qubit_event_bus::{EventBusError, EventBusResult, IntoEventBusResult};
+use qubit_event_bus::{
+    EventBusError,
+    EventBusResult,
+    IntoEventBusResult,
+};
 
 #[test]
 fn test_unit_converts_to_successful_event_bus_result() {
