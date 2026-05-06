@@ -9,25 +9,13 @@
  ******************************************************************************/
 //! Tests for the in-process event bus implementation.
 
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering,
-};
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use qubit_event_bus::{
-    AckMode,
-    EventBusError,
-    EventEnvelope,
-    LocalEventBus,
-    LocalEventBusFactory,
-    RetryOptions,
-    SubscribeOptions,
-    Topic,
+    AckMode, EventBusError, EventEnvelope, LocalEventBus, LocalEventBusFactory, RetryOptions,
+    SubscribeOptions, Topic,
 };
 
 fn create_topic(name: &str) -> Topic<String> {

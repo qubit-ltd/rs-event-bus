@@ -9,10 +9,7 @@
  ******************************************************************************/
 //! Tests for event bus errors and acknowledgement state.
 
-use qubit_event_bus::{
-    Acknowledgement,
-    EventBusError,
-};
+use qubit_event_bus::{Acknowledgement, EventBusError};
 
 #[test]
 fn test_acknowledgement_default_and_nack_state() {

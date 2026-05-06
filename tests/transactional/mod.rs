@@ -7,10 +7,9 @@
  *    Licensed under the Apache License, Version 2.0.
  *
  ******************************************************************************/
-//! Tests for local event bus implementations.
+//! Tests for transactional event bus contracts and fallback implementations.
 
-mod erased_subscription_tests;
-mod local_event_bus_factory_tests;
-mod local_event_bus_inner_tests;
-mod local_event_bus_tests;
-mod publisher_interceptor_entry_tests;
+mod transactional_event_bus_tests;
+mod transactional_publisher_tests;
+mod unsupported_transactional_event_bus_tests;
+mod unsupported_transactional_publisher_tests;
