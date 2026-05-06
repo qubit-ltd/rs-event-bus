@@ -13,8 +13,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::{
-    AckMode, Acknowledgement, EventBusError, EventEnvelope, IntoEventBusResult, RetryOptions,
-    SubscribeOptions,
+    AckMode, Acknowledgement, DeadLetterPayload, EventBusError, EventEnvelope, IntoEventBusResult,
+    RetryOptions, SubscribeOptions,
 };
 
 use super::subscribe_options::{DeadLetterStrategyFn, EventFilterFn, SubscribeErrorHandlerFn};
@@ -123,7 +123,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
                 &EventEnvelope<T>,
                 &EventBusError,
                 &SubscribeOptions<T>,
-            ) -> Option<EventEnvelope<T>>
+            ) -> Option<EventEnvelope<DeadLetterPayload>>
             + Send
             + Sync
             + 'static,

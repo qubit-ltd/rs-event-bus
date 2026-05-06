@@ -15,7 +15,5 @@ mod local_event_bus_factory;
 pub(crate) mod local_event_bus_inner;
 pub(crate) mod publisher_interceptor_entry;
 
-pub use local_event_bus::LocalEventBus;
-#[doc(hidden)]
-pub use local_event_bus::coverage_support;
+pub use local_event_bus::{LocalEventBus, SubscriberInterceptorChain};
 pub use local_event_bus_factory::LocalEventBusFactory;

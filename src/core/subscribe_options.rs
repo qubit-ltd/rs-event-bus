@@ -9,6 +9,7 @@
  ******************************************************************************/
 //! Options controlling event subscription.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::{
@@ -21,7 +22,15 @@ pub(crate) type SubscribeErrorHandlerFn<T> = dyn Fn(&str, &EventEnvelope<T>, &Ev
     + Send
     + Sync
     + 'static;
-pub(crate) type DeadLetterStrategyFn<T> = dyn Fn(&str, &EventEnvelope<T>, &EventBusError, &SubscribeOptions<T>) -> Option<EventEnvelope<T>>
+/// Cloneable type-erased payload used by dead-letter envelopes.
+pub type DeadLetterPayload = Arc<dyn Any + Send + Sync + 'static>;
+
+pub(crate) type DeadLetterStrategyFn<T> = dyn Fn(
+        &str,
+        &EventEnvelope<T>,
+        &EventBusError,
+        &SubscribeOptions<T>,
+    ) -> Option<EventEnvelope<DeadLetterPayload>>
     + Send
     + Sync
     + 'static;
@@ -103,7 +112,7 @@ impl<T: 'static> SubscribeOptions<T> {
         self.filter.as_ref().is_none_or(|filter| filter(envelope))
     }
 
-    /// Notifies registered subscribe error handlers.
+    /// Notifies registered subscribe error handlers until acknowledgement is handled.
     ///
     /// # Parameters
     /// - `subscriber_id`: Failing subscriber ID.
@@ -116,10 +125,14 @@ impl<T: 'static> SubscribeOptions<T> {
         envelope: &EventEnvelope<T>,
         error: &EventBusError,
         acknowledgement: &Acknowledgement,
-    ) {
+    ) -> EventBusResult<()> {
         for handler in &self.error_handlers {
-            let _ = handler(subscriber_id, envelope, error, acknowledgement);
+            handler(subscriber_id, envelope, error, acknowledgement)?;
+            if acknowledgement.is_completed() {
+                break;
+            }
         }
+        Ok(())
     }
 
     /// Creates a dead-letter envelope through the configured strategy.
@@ -130,13 +143,13 @@ impl<T: 'static> SubscribeOptions<T> {
     /// - `error`: Final processing error.
     ///
     /// # Returns
-    /// Optional dead-letter envelope.
+    /// Optional dead-letter envelope with a type-erased payload.
     pub(crate) fn create_dead_letter(
         &self,
         subscriber_id: &str,
         envelope: &EventEnvelope<T>,
         error: &EventBusError,
-    ) -> Option<EventEnvelope<T>> {
+    ) -> Option<EventEnvelope<DeadLetterPayload>> {
         self.dead_letter_strategy
             .as_ref()
             .and_then(|strategy| strategy(subscriber_id, envelope, error, self))

@@ -37,6 +37,13 @@ pub enum EventBusError {
         /// Human-readable failure message.
         message: String,
     },
+    /// Subscriber handler or interceptor panicked.
+    HandlerPanicked,
+    /// Managed executor rejected event processing work.
+    ExecutionRejected {
+        /// Human-readable rejection reason.
+        message: String,
+    },
     /// Shared state lock was poisoned.
     LockPoisoned {
         /// Shared resource name.
@@ -106,6 +113,27 @@ impl EventBusError {
         }
     }
 
+    /// Creates [`EventBusError::HandlerPanicked`].
+    ///
+    /// # Returns
+    /// Handler panic error used by subscriber failure handling.
+    pub const fn handler_panicked() -> Self {
+        Self::HandlerPanicked
+    }
+
+    /// Creates [`EventBusError::ExecutionRejected`].
+    ///
+    /// # Parameters
+    /// - `message`: Executor rejection details.
+    ///
+    /// # Returns
+    /// Rejection error with executor context.
+    pub fn execution_rejected(message: impl Into<String>) -> Self {
+        Self::ExecutionRejected {
+            message: message.into(),
+        }
+    }
+
     /// Creates [`EventBusError::LockPoisoned`].
     ///
     /// # Parameters
@@ -151,6 +179,10 @@ impl Display for EventBusError {
             }
             Self::MissingField { field } => write!(formatter, "missing required field `{field}`"),
             Self::HandlerFailed { message } => write!(formatter, "event handler failed: {message}"),
+            Self::HandlerPanicked => write!(formatter, "event handler panicked"),
+            Self::ExecutionRejected { message } => {
+                write!(formatter, "event processing task was rejected: {message}")
+            }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")
             }

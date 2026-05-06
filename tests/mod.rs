@@ -10,6 +10,5 @@
 //! Integration tests for `qubit-event-bus`.
 
 mod core;
-mod coverage_support;
 mod local;
 mod transactional;
