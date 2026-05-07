@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Attach publish error handling | `PublishOptions` |
 | Observe internal callback failures | `add_error_observer` |
 | Wait for scheduled handler work in tests | `wait_for_idle` |
+| Shut down a local bus | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout` |
 
 ## Core API At A Glance
 
@@ -97,7 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
+- A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery.
+- Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
+- Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
+- `publish_all` submits envelopes in input order, but local handler execution order depends on worker scheduling.
 - `ordering_key` and `delay` are preserved as envelope metadata; the local backend does not enforce ordering lanes or delayed delivery.
+- Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
+- Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - `wait_for_idle` is intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
 ## Contributing

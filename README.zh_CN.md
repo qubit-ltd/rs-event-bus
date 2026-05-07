@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 添加发布错误处理 | `PublishOptions` |
 | 观测内部回调失败 | `add_error_observer` |
 | 在测试中等待处理器工作完成 | `wait_for_idle` |
+| 关闭本地事件总线 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout` |
 
 ## 核心 API 概览
 
@@ -97,7 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 订阅处理器会在可配置的 `rs-thread-pool` 固定工作线程池中执行。发布操作会在调度处理器工作后返回。
 - 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
 - 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档记录。
+- 订阅级死信策略返回 `Ok(None)` 时，会禁用本次失败投递对 factory 默认死信策略的回退。
+- 手动 NACK 会被视为订阅处理失败，并先参与订阅重试；重试耗尽后才进入错误处理器和死信路由。
+- 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
+- `publish_all` 会按输入顺序提交 envelope，但本地处理器执行顺序取决于 worker 调度。
 - `ordering_key` 和 `delay` 会作为信封元数据保留；本地 backend 不执行有序分发通道或延迟投递语义。
+- `LocalEventBus` 会拒绝 retry 的 `attempt_timeout` 选项，因为本地处理器没有协作取消信号。
+- 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
 - `wait_for_idle` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
 ## 贡献
