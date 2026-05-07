@@ -16,13 +16,16 @@ use std::sync::atomic::{
 };
 use std::sync::{
     Arc,
+    Condvar,
     Mutex,
     mpsc,
 };
+use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::{
     AckMode,
+    AttemptTimeoutOption,
     DeadLetterPayload,
     DeadLetterRecord,
     EventBusError,
@@ -67,6 +70,33 @@ fn retry_options(max_attempts: u32) -> RetryOptions {
     .expect("retry options should build")
 }
 
+fn retry_options_with_attempt_timeout() -> RetryOptions {
+    RetryOptions::new_with_attempt_timeout(
+        2,
+        None,
+        None,
+        RetryDelay::none(),
+        RetryJitter::none(),
+        Some(AttemptTimeoutOption::retry(Duration::from_millis(10))),
+    )
+    .expect("retry options with attempt timeout should build")
+}
+
+fn wait_for_count(counter: &Arc<(Mutex<usize>, Condvar)>, expected: usize) {
+    let (lock, condvar) = &**counter;
+    let mut count = lock.lock().expect("counter should lock");
+    while *count < expected {
+        count = condvar.wait(count).expect("counter wait should not poison");
+    }
+}
+
+fn release_gate(gate: &Arc<(Mutex<bool>, Condvar)>) {
+    let (lock, condvar) = &**gate;
+    let mut released = lock.lock().expect("gate should lock");
+    *released = true;
+    condvar.notify_all();
+}
+
 #[test]
 fn test_lifecycle_rejects_use_until_started_and_is_idempotent() {
     let bus = LocalEventBus::new();
@@ -94,6 +124,37 @@ fn test_lifecycle_rejects_use_until_started_and_is_idempotent() {
             .expect_err("bus should reject publish"),
         EventBusError::not_started()
     );
+}
+
+#[test]
+fn test_default_bus_is_stopped_and_publish_all_propagates_first_error() {
+    let bus = LocalEventBus::default();
+    let topic = create_topic("default-bus");
+    let envelope = EventEnvelope::create(topic, "payload".to_string());
+
+    assert_eq!(
+        bus.publish_all(vec![envelope])
+            .expect_err("stopped bus should reject batch publish"),
+        EventBusError::not_started()
+    );
+}
+
+#[test]
+fn test_subscribe_with_options_rejects_stopped_bus() {
+    let bus = LocalEventBus::new();
+    let topic = create_topic("subscribe-stopped");
+
+    let error = match bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_| Ok::<(), EventBusError>(()),
+        SubscribeOptions::empty(),
+    ) {
+        Ok(_) => panic!("stopped bus should reject subscribe with options"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error, EventBusError::not_started());
 }
 
 #[test]
@@ -238,6 +299,64 @@ fn test_subscribe_options_filter_events() {
 }
 
 #[test]
+fn test_subscribe_filter_panic_becomes_publish_error() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("filter-panic");
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let captured_handler_calls = Arc::clone(&handler_calls);
+    let publish_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_publish_errors = Arc::clone(&publish_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .filter(|_event| -> bool {
+            panic!("filter panic");
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        move |_event| {
+            captured_handler_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+        options,
+    )
+    .expect("subscribe should work");
+    let publish_options = PublishOptions::<String>::builder()
+        .error_handler(move |_event, error| {
+            captured_publish_errors
+                .lock()
+                .expect("publish errors should lock")
+                .push(error.clone());
+            Ok(())
+        })
+        .build();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let publish_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bus.publish_envelope_with_options(
+            EventEnvelope::create(topic.clone(), "payload".to_string()),
+            publish_options,
+        )
+    }));
+    std::panic::set_hook(previous_hook);
+
+    let error = publish_result
+        .expect("filter panic should not unwind")
+        .expect_err("filter panic should reject publish");
+    assert_eq!(error.kind(), "handler_failed");
+    assert!(error.to_string().contains("filter panicked"));
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        publish_errors
+            .lock()
+            .expect("publish errors should lock")
+            .as_slice(),
+        &[error]
+    );
+}
+
+#[test]
 fn test_publisher_interceptor_can_modify_or_drop_events() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("intercepted");
@@ -366,6 +485,187 @@ fn test_retry_eventually_succeeds() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn test_retry_success_ignores_nack_from_failed_attempt() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("retry-manual-nack-then-success");
+    let dead_letter_topic = create_dead_letter_topic("dlq.retry-manual-nack-then-success");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(AtomicUsize::new(0));
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let captured_attempts = Arc::clone(&attempts);
+    let captured_errors = Arc::clone(&errors);
+    let dead_letter_target = dead_letter_topic.clone();
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .retry_options(retry_options(2))
+        .error_handler(move |_subscriber_id, _envelope, _error, _acknowledgement| {
+            captured_errors.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        move |event| {
+            let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 1 {
+                event
+                    .acknowledgement()
+                    .expect("acknowledgement should be injected")
+                    .nack();
+                Err(EventBusError::handler_failed("first attempt failed"))
+            } else {
+                Ok(())
+            }
+        },
+        options,
+    )
+    .expect("subscribe should work");
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(errors.load(Ordering::SeqCst), 0);
+    assert!(
+        dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_manual_nack_returning_ok_is_retried() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("manual-nack-ok-retry");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(AtomicUsize::new(0));
+    let captured_attempts = Arc::clone(&attempts);
+    let captured_errors = Arc::clone(&errors);
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .retry_options(retry_options(2))
+        .error_handler(move |_subscriber_id, _envelope, _error, _acknowledgement| {
+            captured_errors.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        move |event| {
+            let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            let acknowledgement = event
+                .acknowledgement()
+                .expect("acknowledgement should be injected");
+            if attempt == 1 {
+                acknowledgement.nack();
+            } else {
+                acknowledgement.ack();
+            }
+            Ok(())
+        },
+        options,
+    )
+    .expect("subscribe should work");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(errors.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_retry_failure_ignores_ack_from_failed_attempt() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("retry-manual-ack-then-failure");
+    let dead_letter_topic = create_dead_letter_topic("dlq.retry-manual-ack-then-failure");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(AtomicUsize::new(0));
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let captured_attempts = Arc::clone(&attempts);
+    let captured_errors = Arc::clone(&errors);
+    let dead_letter_target = dead_letter_topic.clone();
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .retry_options(retry_options(2))
+        .error_handler(move |_subscriber_id, _envelope, _error, acknowledgement| {
+            assert!(!acknowledgement.is_acked());
+            captured_errors.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        move |event| {
+            let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 1 {
+                event
+                    .acknowledgement()
+                    .expect("acknowledgement should be injected")
+                    .ack();
+            }
+            Err(EventBusError::handler_failed(format!(
+                "attempt {attempt} failed"
+            )))
+        },
+        options,
+    )
+    .expect("subscribe should work");
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(errors.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        dead_letters.lock().expect("dead letters should lock").len(),
+        1
+    );
 }
 
 #[test]
@@ -621,6 +921,50 @@ fn test_subscribe_error_handler_ack_short_circuits_failure_handling() {
 }
 
 #[test]
+fn test_manual_nack_notifies_all_error_handlers_until_acknowledged() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("manual-nack-error-handler-chain");
+    let first_errors = Arc::new(AtomicUsize::new(0));
+    let second_errors = Arc::new(AtomicUsize::new(0));
+    let captured_first = Arc::clone(&first_errors);
+    let captured_second = Arc::clone(&second_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .error_handler(move |_subscriber_id, _envelope, _error, acknowledgement| {
+            assert!(acknowledgement.is_nacked());
+            captured_first.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .error_handler(move |_subscriber_id, _envelope, _error, acknowledgement| {
+            assert!(acknowledgement.is_nacked());
+            captured_second.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        |event| {
+            event
+                .acknowledgement()
+                .expect("manual ack should be injected")
+                .nack();
+            Ok(())
+        },
+        options,
+    )
+    .expect("subscribe should work");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(first_errors.load(Ordering::SeqCst), 1);
+    assert_eq!(second_errors.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("panic-handler");
@@ -786,7 +1130,11 @@ fn test_configured_handler_pool_limits_concurrent_subscriber_work() {
 
 #[test]
 fn test_publish_all_delivers_each_envelope() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("pool size should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("batch");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
@@ -808,10 +1156,66 @@ fn test_publish_all_delivers_each_envelope() {
         .expect("batch publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
-    assert_eq!(
-        received_payloads(&received),
-        vec!["batch-1".to_string(), "batch-2".to_string()]
-    );
+    let payloads = received
+        .lock()
+        .expect("received events should lock")
+        .iter()
+        .map(|event| event.payload().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(payloads, vec!["batch-2".to_string(), "batch-1".to_string()]);
+}
+
+#[test]
+fn test_publish_rejects_attempt_timeout_retry_options() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("publish-attempt-timeout");
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let captured_handler_calls = Arc::clone(&handler_calls);
+    bus.subscribe("sub-1", &topic, move |_event| {
+        captured_handler_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .expect("subscribe should work");
+    let options = PublishOptions::<String>::builder()
+        .retry_options(retry_options_with_attempt_timeout())
+        .build();
+
+    let error = bus
+        .publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
+        .expect_err("attempt timeout retry options should be rejected");
+
+    assert!(matches!(
+        error,
+        EventBusError::InvalidArgument {
+            field: "retry_options",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("attempt_timeout"));
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_subscribe_rejects_attempt_timeout_retry_options() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("subscribe-attempt-timeout");
+    let options = SubscribeOptions::<String>::builder()
+        .retry_options(retry_options_with_attempt_timeout())
+        .build();
+
+    let error = match bus.subscribe_with_options("sub-1", &topic, |_event| Ok(()), options) {
+        Ok(_) => panic!("attempt timeout retry options should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        EventBusError::InvalidArgument {
+            field: "retry_options",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("attempt_timeout"));
 }
 
 #[test]
@@ -1140,6 +1544,46 @@ fn test_dead_letter_strategy_error_is_observed() {
 }
 
 #[test]
+fn test_dead_letter_strategy_dead_letter_error_is_preserved() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("dead-letter-strategy-preserve-error");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(|_subscriber_id, _failed, _error, _options| {
+            Err(EventBusError::dead_letter_failed(
+                "already dead-letter failed",
+            ))
+        })
+        .build();
+
+    bus.subscribe_with_options(
+        "sub-1",
+        &topic,
+        |_| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscribe should work");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message }
+            if message == "already dead-letter failed"
+    )));
+}
+
+#[test]
 fn test_dead_letter_strategy_panic_is_observed() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("dead-letter-strategy-panic");
@@ -1176,5 +1620,319 @@ fn test_dead_letter_strategy_panic_is_observed() {
     assert!(observed.iter().any(|error| matches!(
         error,
         EventBusError::DeadLetterFailed { message } if message.contains("panicked")
+    )));
+}
+
+#[test]
+fn test_bounded_handler_queue_rejects_when_saturated() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(1))
+        .expect("bounded queue should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("bounded-handler-queue");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "first".to_string())
+        .expect("first publish should occupy the worker");
+    wait_for_count(&started, 1);
+    bus.publish(&topic, "second".to_string())
+        .expect("second publish should fill the queue");
+    let error = bus
+        .publish(&topic, "third".to_string())
+        .expect_err("third publish should be rejected by the bounded queue");
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert!(matches!(error, EventBusError::ExecutionRejected { .. }));
+    assert_eq!(*started.0.lock().expect("started count should lock"), 2);
+}
+
+#[test]
+fn test_cancelled_queued_delivery_skips_handler() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(2))
+        .expect("bounded queue should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("cancelled-queued-delivery");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    let subscription = bus
+        .subscribe("sub", &topic, move |_event| {
+            let (started_lock, started_condvar) = &*captured_started;
+            let mut started_count = started_lock.lock().expect("started count should lock");
+            *started_count += 1;
+            started_condvar.notify_all();
+            drop(started_count);
+
+            let (release_lock, release_condvar) = &*captured_release;
+            let mut released = release_lock.lock().expect("release gate should lock");
+            while !*released {
+                released = release_condvar
+                    .wait(released)
+                    .expect("release gate wait should not poison");
+            }
+        })
+        .expect("subscription should register");
+
+    bus.publish(&topic, "first".to_string())
+        .expect("first publish should occupy the worker");
+    wait_for_count(&started, 1);
+    bus.publish(&topic, "second".to_string())
+        .expect("second publish should queue behind the worker");
+    subscription
+        .cancel()
+        .expect("subscription cancellation should succeed");
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(*started.0.lock().expect("started count should lock"), 1);
+}
+
+#[test]
+fn test_shutdown_waits_for_active_handler() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("shutdown-waits-active-handler");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+    let release_for_thread = Arc::clone(&release);
+    let releaser = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        release_gate(&release_for_thread);
+    });
+
+    assert!(bus.shutdown());
+    releaser.join().expect("release thread should finish");
+    assert_eq!(*started.0.lock().expect("started count should lock"), 1);
+}
+
+#[test]
+fn test_shutdown_panics_when_called_from_own_subscription_worker() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("shutdown-from-own-handler");
+    let handler_bus = bus.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+    bus.subscribe("sub", &topic, move |_event| {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler_bus.shutdown()));
+        result_tx
+            .send(result.is_err())
+            .expect("shutdown result should send");
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("handler should report shutdown panic")
+    );
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert!(bus.shutdown());
+}
+
+#[test]
+fn test_shutdown_nonblocking_returns_while_handler_is_active() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("shutdown-nonblocking-active-handler");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+
+    assert!(bus.shutdown_nonblocking());
+    assert!(!bus.shutdown_nonblocking());
+    assert_eq!(
+        bus.publish(&topic, "after-shutdown".to_string())
+            .expect_err("nonblocking shutdown should stop publishing"),
+        EventBusError::not_started()
+    );
+
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert_eq!(*started.0.lock().expect("started count should lock"), 1);
+}
+
+#[test]
+fn test_shutdown_with_timeout_reports_active_handler_timeout() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("shutdown-timeout-active-handler");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+
+    let error = bus
+        .shutdown_with_timeout(Duration::from_millis(10))
+        .expect_err("active handler should time out shutdown");
+    assert!(matches!(error, EventBusError::ShutdownTimedOut { .. }));
+    assert_eq!(error.kind(), "shutdown_timed_out");
+
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert!(!bus.shutdown());
+}
+
+#[test]
+fn test_dead_letter_publish_failure_is_observed() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("dead-letter-publish-failure");
+    let dead_letter_topic = create_dead_letter_topic("dlq.dead-letter-publish-failure");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    let dead_letter_target = dead_letter_topic.clone();
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+    let dead_letter_options = SubscribeOptions::<DeadLetterPayload>::builder()
+        .filter(|_event| -> bool {
+            panic!("dead-letter filter panic");
+        })
+        .build();
+    bus.subscribe_with_options(
+        "dlq-sub",
+        &dead_letter_topic,
+        |_event| Ok(()),
+        dead_letter_options,
+    )
+    .expect("dead letter subscriber should register");
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("failing subscriber should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should schedule failing handler");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }));
+    std::panic::set_hook(previous_hook);
+    result.expect("dead-letter filter panic should be isolated");
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message } if message.contains("filter panicked")
     )));
 }

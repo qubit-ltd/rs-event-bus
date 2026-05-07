@@ -9,6 +9,8 @@
  ******************************************************************************/
 //! Tests for local event bus implementations.
 
+#[cfg(coverage)]
+mod coverage_helpers_tests;
 mod erased_subscription_tests;
 mod local_event_bus_factory_tests;
 mod local_event_bus_inner_tests;
