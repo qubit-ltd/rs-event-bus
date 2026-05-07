@@ -8,6 +8,7 @@
  *
  ******************************************************************************/
 //! Shared state for the local event bus.
+// qubit-style: allow coverage-cfg
 
 use std::any::{
     Any,
@@ -22,6 +23,10 @@ use std::sync::{
     Arc,
     Condvar,
     Mutex,
+};
+use std::time::{
+    Duration,
+    Instant,
 };
 
 use qubit_thread_pool::{
@@ -410,6 +415,18 @@ impl LocalEventBusInner {
         self.processing_tracker.wait_for_all_idle()
     }
 
+    /// Waits until all topics have zero active work or the timeout elapses.
+    ///
+    /// # Parameters
+    /// - `timeout`: Maximum duration to wait.
+    ///
+    /// # Returns
+    /// `Ok(true)` once all tracked topics are idle, or `Ok(false)` when the
+    /// timeout elapses first.
+    pub(crate) fn wait_for_all_idle_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
+        self.processing_tracker.wait_for_all_idle_timeout(timeout)
+    }
+
     /// Submits subscriber processing work to the handler pool.
     ///
     /// # Parameters
@@ -435,9 +452,7 @@ impl LocalEventBusInner {
         let mut task = Some(task);
         executor
             .submit_callable(move || {
-                let task = task.take().ok_or_else(|| {
-                    EventBusError::handler_failed("subscription task was invoked more than once")
-                })?;
+                let task = take_subscription_task(&mut task)?;
                 task();
                 Ok::<(), EventBusError>(())
             })
@@ -460,6 +475,29 @@ impl LocalEventBusInner {
             builder = builder.queue_capacity(capacity);
         }
         builder.build()
+    }
+}
+
+/// Takes a one-shot subscription task from executor state.
+///
+/// # Parameters
+/// - `task`: Mutable one-shot task slot.
+///
+/// # Returns
+/// Task to invoke exactly once.
+///
+/// # Errors
+/// Returns [`EventBusError::HandlerFailed`] when the executor invokes the same
+/// callable more than once.
+fn take_subscription_task<F>(task: &mut Option<F>) -> EventBusResult<F>
+where
+    F: FnOnce() + Send + 'static,
+{
+    match task.take() {
+        Some(task) => Ok(task),
+        None => Err(EventBusError::handler_failed(
+            "subscription task was invoked more than once",
+        )),
     }
 }
 
@@ -545,10 +583,10 @@ impl ProcessingTracker {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
         while counts.get(topic_key).copied().unwrap_or(0) > 0 {
-            counts = self
-                .condvar
-                .wait(counts)
-                .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
+            counts = match self.condvar.wait(counts) {
+                Ok(counts) => counts,
+                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+            };
         }
         Ok(())
     }
@@ -563,11 +601,294 @@ impl ProcessingTracker {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
         while !counts.is_empty() {
-            counts = self
-                .condvar
-                .wait(counts)
-                .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
+            counts = match self.condvar.wait(counts) {
+                Ok(counts) => counts,
+                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+            };
         }
         Ok(())
     }
+
+    /// Waits until all topics have zero active work or the timeout elapses.
+    ///
+    /// # Parameters
+    /// - `timeout`: Maximum duration to wait.
+    ///
+    /// # Returns
+    /// `Ok(true)` once all tracked topics are idle, or `Ok(false)` when the
+    /// timeout elapses first.
+    fn wait_for_all_idle_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
+        let started_at = Instant::now();
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
+        while !counts.is_empty() {
+            let Some(remaining) = remaining_timeout(started_at, timeout) else {
+                return Ok(false);
+            };
+            let (next_counts, timeout_result) = match self.condvar.wait_timeout(counts, remaining) {
+                Ok(result) => result,
+                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+            };
+            counts = next_counts;
+            if timeout_result.timed_out() && !counts.is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Returns the remaining time before a timeout elapses.
+///
+/// # Parameters
+/// - `started_at`: Time when the wait began.
+/// - `timeout`: Total timeout budget.
+///
+/// # Returns
+/// Remaining duration, or `None` when the timeout has elapsed.
+fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
+    timeout.checked_sub(started_at.elapsed())
+}
+
+#[cfg(coverage)]
+struct CoveragePublisherInterceptor;
+
+#[cfg(coverage)]
+impl PublisherInterceptorEntry for CoveragePublisherInterceptor {
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<String>()
+    }
+
+    fn intercept(
+        &self,
+        envelope: Box<dyn Any + Send>,
+    ) -> EventBusResult<Option<Box<dyn Any + Send>>> {
+        Ok(Some(envelope))
+    }
+}
+
+#[cfg(coverage)]
+struct CoverageSubscriberInterceptor;
+
+#[cfg(coverage)]
+impl SubscriberInterceptorEntry for CoverageSubscriberInterceptor {
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<String>()
+    }
+
+    fn wrap_handler(
+        &self,
+        handler: Box<dyn Any + Send + Sync>,
+    ) -> EventBusResult<Box<dyn Any + Send + Sync>> {
+        Ok(handler)
+    }
+}
+
+#[cfg(coverage)]
+struct CoverageSubscription;
+
+#[cfg(coverage)]
+impl ErasedSubscription for CoverageSubscription {
+    fn id(&self) -> usize {
+        1
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+
+    fn deactivate(&self) {}
+
+    fn dispatch(
+        &self,
+        _envelope: Box<dyn Any + Send>,
+        _bus: Arc<LocalEventBusInner>,
+    ) -> EventBusResult<()> {
+        Ok(())
+    }
+}
+
+#[cfg(coverage)]
+fn coverage_noop_task() {}
+
+#[cfg(coverage)]
+fn coverage_ignore_error(_error: &EventBusError) {}
+
+/// Exercises internal defensive branches that require poisoned private locks.
+///
+/// # Returns
+/// Errors produced by intentionally poisoning internal locks and task state.
+#[cfg(coverage)]
+pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBusError> {
+    fn empty_inner() -> LocalEventBusInner {
+        LocalEventBusInner::new(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            1,
+            None,
+        )
+    }
+
+    fn poison_mutex<T>(mutex: &Mutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("coverage mutex should lock");
+            panic!("coverage poison");
+        }));
+    }
+
+    fn push_error<T>(errors: &mut Vec<EventBusError>, result: EventBusResult<T>) {
+        errors.extend(result.err());
+    }
+
+    let mut errors = Vec::new();
+    let topic_key = TopicKey::new(
+        "coverage-inner-defensive".to_string(),
+        TypeId::of::<String>(),
+    );
+
+    coverage_noop_task();
+    coverage_ignore_error(&EventBusError::handler_failed("coverage"));
+
+    let publisher_interceptor = CoveragePublisherInterceptor;
+    assert_eq!(
+        publisher_interceptor.payload_type_id(),
+        TypeId::of::<String>(),
+    );
+    let publisher_output = publisher_interceptor
+        .intercept(Box::new("payload".to_string()))
+        .expect("coverage publisher interceptor should pass payload");
+    assert!(publisher_output.is_some());
+
+    let subscriber_interceptor = CoverageSubscriberInterceptor;
+    assert_eq!(
+        subscriber_interceptor.payload_type_id(),
+        TypeId::of::<String>(),
+    );
+    let subscriber_output = subscriber_interceptor
+        .wrap_handler(Box::new("handler".to_string()))
+        .expect("coverage subscriber interceptor should pass handler");
+    assert!(subscriber_output.downcast::<String>().is_ok());
+
+    let subscription = CoverageSubscription;
+    assert_eq!(subscription.id(), 1);
+    assert_eq!(subscription.priority(), 0);
+    subscription.deactivate();
+    subscription
+        .dispatch(Box::new("payload".to_string()), Arc::new(empty_inner()))
+        .expect("coverage subscription dispatch should succeed");
+
+    let invalid_executor_inner = LocalEventBusInner::new(
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        Vec::new(),
+        Vec::new(),
+        0,
+        None,
+    );
+    errors.push(
+        invalid_executor_inner
+            .mark_started()
+            .expect_err("invalid executor should fail startup"),
+    );
+
+    let mut one_shot = Some(coverage_noop_task);
+    let task = take_subscription_task(&mut one_shot).expect("first task take should succeed");
+    task();
+    errors.extend(take_subscription_task(&mut one_shot).err());
+
+    let lifecycle_inner = empty_inner();
+    errors.push(
+        lifecycle_inner
+            .submit_processing_task(coverage_noop_task)
+            .expect_err("stopped executor should reject tasks"),
+    );
+    poison_mutex(&lifecycle_inner.lifecycle);
+    assert!(lifecycle_inner.mark_stopped().is_none());
+    assert!(!lifecycle_inner.is_started());
+    errors.push(
+        lifecycle_inner
+            .mark_started()
+            .expect_err("poisoned lifecycle should reject start"),
+    );
+    errors.push(
+        lifecycle_inner
+            .submit_processing_task(coverage_noop_task)
+            .expect_err("poisoned lifecycle should reject task submission"),
+    );
+
+    let publisher_inner = empty_inner();
+    poison_mutex(&publisher_inner.publisher_interceptors);
+    errors.push(
+        publisher_inner
+            .add_publisher_interceptor(Arc::new(CoveragePublisherInterceptor))
+            .expect_err("poisoned publisher interceptors should reject add"),
+    );
+    push_error(&mut errors, publisher_inner.publisher_interceptors());
+
+    let subscriber_inner = empty_inner();
+    poison_mutex(&subscriber_inner.subscriber_interceptors);
+    errors.push(
+        subscriber_inner
+            .add_subscriber_interceptor(Arc::new(CoverageSubscriberInterceptor))
+            .expect_err("poisoned subscriber interceptors should reject add"),
+    );
+    push_error(&mut errors, subscriber_inner.subscriber_interceptors());
+
+    let observer_inner = empty_inner();
+    poison_mutex(&observer_inner.error_observers);
+    observer_inner.observe_error(&EventBusError::handler_failed("coverage"));
+    errors.push(
+        observer_inner
+            .add_error_observer(Arc::new(coverage_ignore_error))
+            .expect_err("poisoned error observers should reject add"),
+    );
+
+    let subscriptions_inner = empty_inner();
+    subscriptions_inner
+        .unsubscribe(&topic_key, 1)
+        .expect("missing subscription should be a no-op");
+    poison_mutex(&subscriptions_inner.subscriptions);
+    errors.push(
+        subscriptions_inner
+            .add_subscription(topic_key.clone(), Arc::new(CoverageSubscription))
+            .expect_err("poisoned subscriptions should reject add"),
+    );
+    push_error(
+        &mut errors,
+        subscriptions_inner.subscriptions_for(&topic_key),
+    );
+    errors.push(
+        subscriptions_inner
+            .unsubscribe(&topic_key, 1)
+            .expect_err("poisoned subscriptions should reject unsubscribe"),
+    );
+    subscriptions_inner.clear_subscriptions();
+
+    let tracker_inner = empty_inner();
+    tracker_inner.finish_processing(&topic_key);
+    poison_mutex(&tracker_inner.processing_tracker.counts);
+    errors.push(
+        tracker_inner
+            .start_processing(&topic_key)
+            .expect_err("poisoned tracker should reject start"),
+    );
+    tracker_inner.finish_processing(&topic_key);
+    errors.push(
+        tracker_inner
+            .wait_for_idle(&topic_key)
+            .expect_err("poisoned tracker should reject topic wait"),
+    );
+    errors.push(
+        tracker_inner
+            .wait_for_all_idle()
+            .expect_err("poisoned tracker should reject global wait"),
+    );
+
+    errors
 }

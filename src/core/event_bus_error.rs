@@ -15,6 +15,7 @@ use std::fmt::{
     Display,
     Formatter,
 };
+use std::time::Duration;
 
 /// Result type used by event bus operations.
 pub type EventBusResult<T> = Result<T, EventBusError>;
@@ -71,6 +72,11 @@ pub enum EventBusError {
     ExecutionRejected {
         /// Human-readable rejection reason.
         message: String,
+    },
+    /// Graceful shutdown did not complete before the configured timeout.
+    ShutdownTimedOut {
+        /// Timeout used for the shutdown wait.
+        timeout: Duration,
     },
     /// Shared state lock was poisoned.
     LockPoisoned {
@@ -216,6 +222,17 @@ impl EventBusError {
         }
     }
 
+    /// Creates [`EventBusError::ShutdownTimedOut`].
+    ///
+    /// # Parameters
+    /// - `timeout`: Timeout that elapsed before shutdown completed.
+    ///
+    /// # Returns
+    /// Shutdown timeout error with the configured duration.
+    pub const fn shutdown_timed_out(timeout: Duration) -> Self {
+        Self::ShutdownTimedOut { timeout }
+    }
+
     /// Creates [`EventBusError::LockPoisoned`].
     ///
     /// # Parameters
@@ -266,6 +283,7 @@ impl EventBusError {
             Self::ErrorHandlerFailed { .. } => "error_handler_failed",
             Self::DeadLetterFailed { .. } => "dead_letter_failed",
             Self::ExecutionRejected { .. } => "execution_rejected",
+            Self::ShutdownTimedOut { .. } => "shutdown_timed_out",
             Self::LockPoisoned { .. } => "lock_poisoned",
             Self::TypeMismatch { .. } => "type_mismatch",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
@@ -298,6 +316,9 @@ impl Display for EventBusError {
             }
             Self::ExecutionRejected { message } => {
                 write!(formatter, "event processing task was rejected: {message}")
+            }
+            Self::ShutdownTimedOut { timeout } => {
+                write!(formatter, "event bus shutdown timed out after {timeout:?}")
             }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")

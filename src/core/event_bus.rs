@@ -104,8 +104,12 @@ pub trait EventBus: Clone + Send + Sync + 'static {
 
     /// Publishes a batch of envelopes with default publish options.
     ///
+    /// The default implementation submits envelopes in input order. Concrete
+    /// backends may still execute handlers concurrently unless they document a
+    /// stronger ordering guarantee.
+    ///
     /// # Parameters
-    /// - `envelopes`: Envelopes to publish.
+    /// - `envelopes`: Envelopes to submit in order.
     ///
     /// # Returns
     /// `Ok(())` after the backend accepts the batch.

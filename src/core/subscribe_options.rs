@@ -109,18 +109,53 @@ impl<T: 'static> SubscribeOptions<T> {
         self.error_handlers.len()
     }
 
+    /// Returns whether this option set has an explicit dead-letter strategy.
+    ///
+    /// # Returns
+    /// `true` when a subscription-level strategy was configured. A configured
+    /// strategy that returns `Ok(None)` intentionally disables fallback to any
+    /// factory default strategy.
+    pub(crate) fn has_dead_letter_strategy(&self) -> bool {
+        self.dead_letter_strategy.is_some()
+    }
+
     /// Evaluates the optional event filter.
     ///
     /// # Parameters
     /// - `envelope`: Candidate event.
     ///
     /// # Returns
-    /// `true` when the event should be handled.
+    /// `true` when the event should be handled. Returns `false` if the filter
+    /// panics, so direct callers do not receive user callback unwinds.
     pub fn should_handle(&self, envelope: &EventEnvelope<T>) -> bool {
-        self.filter.as_ref().is_none_or(|filter| filter(envelope))
+        self.try_should_handle(envelope).unwrap_or(false)
     }
 
-    /// Notifies registered subscribe error handlers until acknowledgement is handled.
+    /// Evaluates the optional event filter and preserves callback failures.
+    ///
+    /// # Parameters
+    /// - `envelope`: Candidate event.
+    ///
+    /// # Returns
+    /// `Ok(true)` when the event should be handled, `Ok(false)` when it should
+    /// be skipped.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::HandlerFailed`] when the filter panics.
+    pub(crate) fn try_should_handle(&self, envelope: &EventEnvelope<T>) -> EventBusResult<bool> {
+        let Some(filter) = &self.filter else {
+            return Ok(true);
+        };
+        panic::catch_unwind(AssertUnwindSafe(|| filter(envelope)))
+            .map_err(|_| EventBusError::handler_failed("subscriber filter panicked"))
+    }
+
+    /// Notifies registered subscribe error handlers until one handles acknowledgement.
+    ///
+    /// A NACK set by the subscriber handler before this method is called does not
+    /// by itself short-circuit the error handler chain. The chain stops only when
+    /// an error handler records a new terminal acknowledgement decision, or when
+    /// an error handler changes the decision to ACK.
     ///
     /// # Parameters
     /// - `subscriber_id`: Failing subscriber ID.
@@ -138,6 +173,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ) -> Vec<EventBusError> {
         let mut failures = Vec::new();
         for handler in &self.error_handlers {
+            let was_completed = acknowledgement.is_completed();
+            let was_acked = acknowledgement.is_acked();
             match panic::catch_unwind(AssertUnwindSafe(|| {
                 handler(subscriber_id, envelope, error, acknowledgement)
             })) {
@@ -151,7 +188,9 @@ impl<T: 'static> SubscribeOptions<T> {
                     "subscribe error handler panicked",
                 )),
             }
-            if acknowledgement.is_completed() {
+            if (!was_completed && acknowledgement.is_completed())
+                || (!was_acked && acknowledgement.is_acked())
+            {
                 break;
             }
         }

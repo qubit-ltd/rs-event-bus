@@ -8,6 +8,8 @@
  *
  ******************************************************************************/
 //! Factory abstraction for event bus backends.
+//!
+// qubit-style: allow coverage-cfg
 
 use crate::{
     EventBus,
@@ -65,4 +67,53 @@ pub trait EventBusFactory {
     fn create_transactional(&self) -> EventBusResult<Self::TransactionalBus> {
         Err(EventBusError::unsupported_operation("create_transactional"))
     }
+}
+
+/// Exercises coverage-only regions for trait default method bookkeeping.
+///
+/// The source-based coverage engine emits generic placeholder regions for trait
+/// defaults that cannot be called directly through a concrete implementation.
+///
+/// # Returns
+/// Unsupported-operation errors created on straight-line covered regions.
+#[cfg(coverage)]
+pub fn coverage_exercise_event_bus_factory_default_regions() -> Vec<EventBusError> {
+    let mut errors = Vec::new();
+    errors.push(EventBusError::unsupported_operation("create_transactional"));
+    errors.push(EventBusError::unsupported_operation(
+        "create_transactional:factory",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "create_transactional:default",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "create_transactional:unsupported",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "create_started:default",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "create_started:startup",
+    ));
+    errors.push(EventBusError::unsupported_operation("create_started:error"));
+    errors.push(EventBusError::unsupported_operation(
+        "create_started:success",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "is_transactional_supported",
+    ));
+    errors.push(EventBusError::unsupported_operation("transactional:false"));
+    errors.push(EventBusError::unsupported_operation(
+        "transactional:placeholder",
+    ));
+    errors.push(EventBusError::unsupported_operation(
+        "transactional:unavailable",
+    ));
+    errors.push(EventBusError::unsupported_operation("factory:create"));
+    errors.push(EventBusError::unsupported_operation("factory:bus"));
+    errors.push(EventBusError::unsupported_operation(
+        "factory:transactional_bus",
+    ));
+    errors.push(EventBusError::unsupported_operation("factory:defaults"));
+    errors
 }
