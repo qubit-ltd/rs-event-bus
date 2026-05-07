@@ -18,8 +18,11 @@ use std::sync::{
     Arc,
     Mutex,
 };
+use std::time::Duration;
 
 use qubit_event_bus::{
+    DeadLetterPayload,
+    DeadLetterRecord,
     EventBus,
     EventBusError,
     EventBusFactory,
@@ -28,6 +31,7 @@ use qubit_event_bus::{
     LocalEventBusFactory,
     PublishOptions,
     SubscribeOptions,
+    SubscriberInterceptorChain,
     Topic,
     TransactionalEventBus,
     TransactionalPublisher,
@@ -99,6 +103,17 @@ impl EventBus for DefaultingEventBus {
     {
         Ok(())
     }
+
+    fn wait_for_idle_timeout<T>(
+        &self,
+        _topic: &Topic<T>,
+        _timeout: Duration,
+    ) -> qubit_event_bus::EventBusResult<bool>
+    where
+        T: 'static,
+    {
+        Ok(true)
+    }
 }
 
 struct DefaultingFactory;
@@ -160,6 +175,10 @@ fn test_event_bus_trait_publish_subscribe_lifecycle() {
     .expect("trait subscribe should work");
     EventBus::publish(&bus, &topic, "payload".to_string()).expect("trait publish should work");
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
+    assert!(
+        EventBus::wait_for_idle_timeout(&bus, &topic, Duration::from_millis(1))
+            .expect("idle topic should return before timeout")
+    );
 
     assert_eq!(subscription.subscriber_id(), "trait-sub");
     assert_eq!(captured_payloads(&received), vec!["payload".to_string()]);
@@ -193,6 +212,13 @@ fn test_event_bus_trait_batch_methods() {
         PublishOptions::empty(),
     )
     .expect("publish with options should work");
+    EventBus::publish_with_options(
+        &bus,
+        &topic,
+        "with-options".to_string(),
+        PublishOptions::empty(),
+    )
+    .expect("publish payload with options should work");
 
     EventBus::publish_all(
         &bus,
@@ -202,6 +228,15 @@ fn test_event_bus_trait_batch_methods() {
         ],
     )
     .expect("batch publish should work");
+    EventBus::publish_all_with_options(
+        &bus,
+        vec![EventEnvelope::create(
+            topic.clone(),
+            "batch-with-options".to_string(),
+        )],
+        PublishOptions::empty(),
+    )
+    .expect("batch publish with options should work");
 
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
 
@@ -210,8 +245,62 @@ fn test_event_bus_trait_batch_methods() {
         vec![
             "batch-1".to_string(),
             "batch-2".to_string(),
+            "batch-with-options".to_string(),
             "single".to_string(),
+            "with-options".to_string(),
         ]
+    );
+}
+
+#[test]
+fn test_event_bus_trait_add_dead_letter_handler_delegates_to_subscription() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("trait-dead-letter-handler");
+    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("trait-dead-letter-handler-dlq")
+        .expect("dead letter topic should build");
+    let dead_letter_target = dead_letter_topic.clone();
+    let dead_letters = Arc::new(Mutex::new(Vec::new()));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    EventBus::add_dead_letter_handler(
+        &bus,
+        &dead_letter_topic,
+        move |event| {
+            captured_dead_letters
+                .lock()
+                .expect("dead letters should lock")
+                .push(event);
+        },
+        SubscribeOptions::empty(),
+    )
+    .expect("dead letter handler should subscribe");
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+    EventBus::subscribe_with_options(
+        &bus,
+        "failing-sub",
+        &topic,
+        |_event| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("failing subscription should register");
+
+    EventBus::publish(&bus, &topic, "payload".to_string()).expect("publish should work");
+    EventBus::wait_for_idle(&bus, &topic).expect("source topic should become idle");
+    EventBus::wait_for_idle(&bus, &dead_letter_topic).expect("dlq topic should become idle");
+
+    let dead_letters = dead_letters.lock().expect("dead letters should lock");
+    assert_eq!(dead_letters.len(), 1);
+    assert_eq!(
+        dead_letters[0]
+            .payload()
+            .downcast_original_payload_ref::<String>(),
+        Some(&"payload".to_string())
     );
 }
 
@@ -222,8 +311,10 @@ fn test_local_event_bus_trait_overrides_delegate_to_inherent_methods() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.add_publisher_interceptor::<String, _>(|event| Some(event.with_header("trait", "true")))
-        .expect("publisher interceptor should register");
+    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+        Some(event.with_header("trait", "true"))
+    })
+    .expect("publisher interceptor should register");
     EventBus::subscribe_with_options(
         &bus,
         "local-trait-sub",
@@ -269,6 +360,13 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     assert!(EventBus::start(&bus).expect("default start should work"));
     assert!(EventBus::close(&bus));
     EventBus::publish(&bus, &topic, "publish".to_string()).expect("default publish should work");
+    EventBus::publish_with_options(
+        &bus,
+        &topic,
+        "publish-with-options".to_string(),
+        PublishOptions::empty(),
+    )
+    .expect("default publish with options should work");
     EventBus::publish_envelope(
         &bus,
         EventEnvelope::create(topic.clone(), "envelope".to_string()),
@@ -282,6 +380,15 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
         )],
     )
     .expect("default batch publish should work");
+    EventBus::publish_all_with_options(
+        &bus,
+        vec![EventEnvelope::create(
+            topic.clone(),
+            "batch-with-options-default".to_string(),
+        )],
+        PublishOptions::empty(),
+    )
+    .expect("default batch publish with options should work");
 
     assert_eq!(
         expect_subscription_error(
@@ -296,8 +403,10 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
         bus.published_payloads(),
         vec![
             "batch-default".to_string(),
+            "batch-with-options-default".to_string(),
             "envelope".to_string(),
             "publish".to_string(),
+            "publish-with-options".to_string(),
         ]
     );
 }
@@ -381,7 +490,7 @@ fn test_event_bus_factory_trait_rejects_transactional_create_when_unsupported() 
 
 #[test]
 fn test_event_bus_factory_trait_default_methods() {
-    let factory = DefaultingFactory;
+    let mut factory = DefaultingFactory;
     let bus = EventBusFactory::create_started(&factory).expect("default factory should start bus");
 
     assert_eq!(bus.start_count.load(Ordering::SeqCst), 1);
@@ -390,6 +499,48 @@ fn test_event_bus_factory_trait_default_methods() {
         EventBusFactory::create_transactional(&factory)
             .expect_err("default factory should reject transactional creation"),
         EventBusError::unsupported_operation("create_transactional")
+    );
+    assert_eq!(
+        EventBusFactory::set_default_publish_options::<String>(
+            &mut factory,
+            PublishOptions::empty(),
+        )
+        .expect_err("default factory should reject publish defaults"),
+        EventBusError::unsupported_operation("set_default_publish_options")
+    );
+    assert_eq!(
+        EventBusFactory::set_default_subscribe_options::<String>(
+            &mut factory,
+            SubscribeOptions::empty(),
+        )
+        .expect_err("default factory should reject subscribe defaults"),
+        EventBusError::unsupported_operation("set_default_subscribe_options")
+    );
+    assert_eq!(
+        EventBusFactory::set_default_dead_letter_strategy::<String, _>(
+            &mut factory,
+            |_subscriber, _event, _error, _options| Ok(None),
+        )
+        .expect_err("default factory should reject dead-letter defaults"),
+        EventBusError::unsupported_operation("set_default_dead_letter_strategy")
+    );
+    assert_eq!(
+        EventBusFactory::add_publisher_interceptor::<String, _>(
+            &mut factory,
+            |event: EventEnvelope<String>| Some(event),
+        )
+        .expect_err("default factory should reject publisher interceptors"),
+        EventBusError::unsupported_operation("add_publisher_interceptor")
+    );
+    assert_eq!(
+        EventBusFactory::add_subscriber_interceptor::<String, _>(
+            &mut factory,
+            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                chain.proceed(event)
+            },
+        )
+        .expect_err("default factory should reject subscriber interceptors"),
+        EventBusError::unsupported_operation("add_subscriber_interceptor")
     );
 }
 
@@ -425,6 +576,11 @@ fn test_unsupported_transactional_event_bus_rejects_all_operations() {
     assert_eq!(
         EventBus::wait_for_idle(&bus, &topic).expect_err("placeholder bus should reject wait"),
         EventBusError::unsupported_operation("wait_for_idle")
+    );
+    assert_eq!(
+        EventBus::wait_for_idle_timeout(&bus, &topic, Duration::from_millis(1))
+            .expect_err("placeholder bus should reject timeout wait"),
+        EventBusError::unsupported_operation("wait_for_idle_timeout")
     );
     assert_eq!(
         TransactionalEventBus::publish_batch_atomically(

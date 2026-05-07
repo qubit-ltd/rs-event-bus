@@ -19,8 +19,6 @@ mod core;
 mod local;
 mod transactional;
 
-#[cfg(coverage)]
-pub use core::coverage_exercise_event_bus_factory_default_regions;
 pub use core::{
     AckMode,
     Acknowledgement,
@@ -46,9 +44,17 @@ pub use core::{
     Topic,
     TopicKey,
 };
+#[cfg(coverage)]
+pub use core::{
+    coverage_exercise_core_defensive_paths,
+    coverage_exercise_event_bus_factory_default_regions,
+};
 pub use local::{
+    IntoPublisherInterceptorResult,
     LocalEventBus,
     LocalEventBusFactory,
+    PublisherInterceptor,
+    SubscriberInterceptor,
     SubscriberInterceptorChain,
 };
 #[cfg(coverage)]

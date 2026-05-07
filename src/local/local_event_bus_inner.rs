@@ -10,6 +10,9 @@
 //! Shared state for the local event bus.
 // qubit-style: allow coverage-cfg
 
+#[cfg(coverage)]
+mod coverage;
+
 use std::any::{
     Any,
     TypeId,
@@ -38,6 +41,7 @@ use qubit_thread_pool::{
     ThreadPoolBuildError,
 };
 
+use crate::core::SubscriptionState;
 use crate::{
     EventBusError,
     EventBusResult,
@@ -52,12 +56,18 @@ use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
-pub(crate) type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
+#[cfg(coverage)]
+pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
+
+type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 
 /// Ordered subscriber task plus its local queue-capacity reservation.
 struct OrderedProcessingEntry {
     task: ProcessingTask,
     reserved_queue_slot: bool,
+    delay_started_at: Option<Instant>,
+    delay: Option<Duration>,
+    subscription_state: Option<Arc<SubscriptionState>>,
 }
 
 impl OrderedProcessingEntry {
@@ -66,7 +76,44 @@ impl OrderedProcessingEntry {
         Self {
             task,
             reserved_queue_slot,
+            delay_started_at: None,
+            delay: None,
+            subscription_state: None,
         }
+    }
+
+    /// Creates a delayed ordered processing entry.
+    fn delayed(
+        task: ProcessingTask,
+        reserved_queue_slot: bool,
+        delay: Duration,
+        subscription_state: Arc<SubscriptionState>,
+    ) -> Self {
+        Self {
+            task,
+            reserved_queue_slot,
+            delay_started_at: Some(Instant::now()),
+            delay: Some(delay),
+            subscription_state: Some(subscription_state),
+        }
+    }
+
+    /// Returns whether the entry belongs to a cancelled subscription.
+    fn is_inactive(&self) -> bool {
+        self.subscription_state
+            .as_ref()
+            .is_some_and(|state| !state.is_active())
+    }
+
+    /// Returns the remaining delay before this entry is ready.
+    fn remaining_delay(&self) -> Option<(Duration, Arc<SubscriptionState>)> {
+        let delay_started_at = self.delay_started_at?;
+        let delay = self.delay?;
+        let subscription_state = self.subscription_state.as_ref()?;
+        delay
+            .checked_sub(delay_started_at.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .map(|remaining| (remaining, Arc::clone(subscription_state)))
     }
 }
 
@@ -87,6 +134,22 @@ impl OrderedProcessingLane {
     fn push(&mut self, task: ProcessingTask, reserved_queue_slot: bool) {
         self.queued
             .push_back(OrderedProcessingEntry::new(task, reserved_queue_slot));
+    }
+
+    /// Queues a delayed task behind the active task.
+    fn push_delayed(
+        &mut self,
+        task: ProcessingTask,
+        reserved_queue_slot: bool,
+        delay: Duration,
+        subscription_state: Arc<SubscriptionState>,
+    ) {
+        self.queued.push_back(OrderedProcessingEntry::delayed(
+            task,
+            reserved_queue_slot,
+            delay,
+            subscription_state,
+        ));
     }
 
     /// Takes the next queued task.
@@ -123,6 +186,12 @@ impl OrderedProcessingLane {
         }
         released
     }
+}
+
+/// Work found at the front of an ordered lane.
+enum OrderedLaneTask {
+    Ready(ProcessingTask),
+    Delayed(Duration, Arc<SubscriptionState>),
 }
 
 /// Guard that cancels queued lane tasks if an ordered lane runner exits early.
@@ -230,7 +299,7 @@ impl LocalEventBusInner {
         if lifecycle.started {
             return Ok(false);
         }
-        if lifecycle.executor.is_some() {
+        if lifecycle.executor.is_some() || lifecycle.delay_executor.is_some() {
             return Err(EventBusError::start_failed(
                 "previous shutdown is still draining subscriber work",
             ));
@@ -242,8 +311,12 @@ impl LocalEventBusInner {
         }
         let executor = self
             .build_subscription_handler_executor()
-            .map_err(|error| EventBusError::start_failed(error.to_string()))?;
+            .map_err(start_failed_from_thread_pool_error)?;
+        let delay_executor = self
+            .build_delay_executor()
+            .map_err(start_failed_from_thread_pool_error)?;
         lifecycle.executor = Some(executor);
+        lifecycle.delay_executor = Some(delay_executor);
         lifecycle.started = true;
         Ok(true)
     }
@@ -287,6 +360,17 @@ impl LocalEventBusInner {
             return None;
         };
         lifecycle.executor.take()
+    }
+
+    /// Removes the delayed-delivery executor after the bus has entered stopping state.
+    ///
+    /// # Returns
+    /// Delayed-delivery executor if one is still owned by the bus.
+    pub(crate) fn take_delay_executor(&self) -> Option<FixedThreadPool> {
+        let Ok(mut lifecycle) = self.lifecycle.lock() else {
+            return None;
+        };
+        lifecycle.delay_executor.take()
     }
 
     /// Returns whether the bus is currently started.
@@ -561,6 +645,23 @@ impl LocalEventBusInner {
         self.processing_tracker.wait_for_idle(topic_key)
     }
 
+    /// Waits until a topic has zero active work or the timeout elapses.
+    ///
+    /// # Parameters
+    /// - `topic_key`: Topic key to wait for.
+    /// - `timeout`: Maximum duration to wait.
+    ///
+    /// # Returns
+    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout elapses first.
+    pub(crate) fn wait_for_idle_timeout(
+        &self,
+        topic_key: &TopicKey,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
+        self.processing_tracker
+            .wait_for_idle_timeout(topic_key, timeout)
+    }
+
     /// Waits until all topics have zero active work.
     ///
     /// # Returns
@@ -607,6 +708,63 @@ impl LocalEventBusInner {
         submit_processing_task_to_executor(executor, task)
     }
 
+    /// Schedules delayed subscriber processing without occupying a handler worker.
+    ///
+    /// # Parameters
+    /// - `task`: Subscriber processing task accepted by dispatch.
+    /// - `delay`: Delay before the task can enter the handler pool.
+    /// - `subscription_state`: State used to wake the delay when the subscription is cancelled.
+    ///
+    /// # Returns
+    /// `Ok(())` after the delay wait has been scheduled.
+    ///
+    /// # Errors
+    /// Returns executor admission errors if the bus is not accepting dispatch or
+    /// the delayed-delivery executor rejects the delay waiter.
+    pub(crate) fn submit_delayed_processing_task(
+        self: &Arc<Self>,
+        task: ProcessingTask,
+        delay: Duration,
+        subscription_state: Arc<SubscriptionState>,
+        allow_stopping: bool,
+    ) -> EventBusResult<()> {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
+        let delay_executor = delay_executor_for_dispatch(&lifecycle, allow_stopping)?;
+        let bus = Arc::clone(self);
+        submit_processing_task_to_executor(delay_executor, move || {
+            if subscription_state.wait_until_delay_elapsed_or_inactive(delay) {
+                let task_slot = Arc::new(Mutex::new(Some(task)));
+                let task_for_executor = Arc::clone(&task_slot);
+                let result = bus.submit_processing_task(
+                    move || {
+                        if let Ok(mut task) = task_for_executor.lock()
+                            && let Some(task) = task.take()
+                        {
+                            task.run();
+                        }
+                    },
+                    true,
+                );
+                match result {
+                    Ok(()) => {}
+                    Err(EventBusError::ExecutionRejected { .. }) => {
+                        let recovered_task = match task_slot.lock() {
+                            Ok(mut task) => task.take(),
+                            Err(_) => None,
+                        };
+                        if let Some(task) = recovered_task {
+                            task.run();
+                        }
+                    }
+                    Err(error) => bus.observe_error(&error),
+                }
+            }
+        })
+    }
+
     /// Reserves one local ordered-lane queue slot.
     fn reserve_ordered_queue_slot(&self, lifecycle: &LocalEventBusLifecycle) -> EventBusResult<()> {
         let Some(capacity) = self.subscription_handler_queue_capacity else {
@@ -617,23 +775,20 @@ impl LocalEventBusInner {
             .as_ref()
             .map(FixedThreadPool::queued_count)
             .unwrap_or_default();
-        let mut ordered_queued = self.ordered_queued_task_count.load(Ordering::SeqCst);
-        loop {
-            if ordered_queued.saturating_add(executor_queued) >= capacity {
-                return Err(EventBusError::execution_rejected(
+        self.ordered_queued_task_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |ordered_queued| {
+                if ordered_queued.saturating_add(executor_queued) >= capacity {
+                    None
+                } else {
+                    Some(ordered_queued + 1)
+                }
+            })
+            .map(|_| ())
+            .map_err(|_| {
+                EventBusError::execution_rejected(
                     "subscription handler queue capacity is saturated",
-                ));
-            }
-            match self.ordered_queued_task_count.compare_exchange(
-                ordered_queued,
-                ordered_queued + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(current) => ordered_queued = current,
-            }
-        }
+                )
+            })
     }
 
     /// Releases local ordered-lane queue slots.
@@ -675,13 +830,44 @@ impl LocalEventBusInner {
         )
     }
 
+    /// Resubmits an ordered lane after its front task delay elapses.
+    fn submit_ordered_lane_runner_after_delay(
+        self: &Arc<Self>,
+        lane_key: OrderingLaneKey,
+        delay: Duration,
+        subscription_state: Arc<SubscriptionState>,
+    ) -> EventBusResult<()> {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
+        let delay_executor = delay_executor_for_dispatch(&lifecycle, true)?;
+        let bus = Arc::clone(self);
+        submit_processing_task_to_executor(delay_executor, move || {
+            if subscription_state.wait_until_delay_elapsed_or_inactive(delay) {
+                match bus.submit_ordered_lane_runner(lane_key.clone(), true) {
+                    Ok(()) => {}
+                    Err(EventBusError::ExecutionRejected { .. }) => {
+                        Arc::clone(&bus).run_ordered_lane(lane_key.clone());
+                    }
+                    Err(error) => {
+                        bus.observe_error(&error);
+                        bus.cancel_ordered_lane(&lane_key);
+                    }
+                }
+            } else {
+                bus.cancel_ordered_lane(&lane_key);
+            }
+        })
+    }
+
     /// Pops the next task for an ordered lane.
     fn pop_ordered_lane_task(
         &self,
         lane_key: &OrderingLaneKey,
         guard: &mut OrderedLaneRunnerGuard,
-    ) -> Option<ProcessingTask> {
-        let next_entry = {
+    ) -> Option<OrderedLaneTask> {
+        loop {
             let Ok(mut lanes) = self.ordering_lanes.lock() else {
                 let error = EventBusError::lock_poisoned("ordering_lanes");
                 self.observe_error(&error);
@@ -691,21 +877,36 @@ impl LocalEventBusInner {
                 guard.disarm();
                 return None;
             };
-            match lane.pop() {
-                Some(entry) => Some(entry),
-                None => {
-                    lanes.remove(lane_key);
-                    guard.disarm();
-                    None
+
+            let Some(front) = lane.queued.front() else {
+                lanes.remove(lane_key);
+                guard.disarm();
+                return None;
+            };
+            if front.is_inactive() {
+                let mut inactive_entry = lane
+                    .pop()
+                    .expect("front entry should exist after inactive check");
+                if inactive_entry.reserved_queue_slot {
+                    inactive_entry.reserved_queue_slot = false;
+                    self.release_ordered_queue_slots(1);
                 }
+                drop(inactive_entry);
+                continue;
             }
-        };
-        let mut next_entry = next_entry?;
-        if next_entry.reserved_queue_slot {
-            next_entry.reserved_queue_slot = false;
-            self.release_ordered_queue_slots(1);
+            if let Some((remaining, subscription_state)) = front.remaining_delay() {
+                return Some(OrderedLaneTask::Delayed(remaining, subscription_state));
+            }
+
+            let mut next_entry = lane
+                .pop()
+                .expect("front entry should exist after readiness check");
+            if next_entry.reserved_queue_slot {
+                next_entry.reserved_queue_slot = false;
+                self.release_ordered_queue_slots(1);
+            }
+            return Some(OrderedLaneTask::Ready(next_entry.task));
         }
-        Some(next_entry.task)
     }
 
     /// Finishes one ordered lane turn and decides how the lane should continue.
@@ -796,6 +997,42 @@ impl LocalEventBusInner {
         result
     }
 
+    /// Submits delayed subscriber processing work through a per-ordering-key lane.
+    pub(crate) fn submit_delayed_ordered_processing_task(
+        self: &Arc<Self>,
+        lane_key: OrderingLaneKey,
+        task: ProcessingTask,
+        delay: Duration,
+        subscription_state: Arc<SubscriptionState>,
+        allow_stopping: bool,
+    ) -> EventBusResult<()> {
+        let result = {
+            let lifecycle = self
+                .lifecycle
+                .lock()
+                .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
+            let executor = executor_for_dispatch(&lifecycle, allow_stopping)?;
+            let mut lanes = self
+                .ordering_lanes
+                .lock()
+                .map_err(|_| EventBusError::lock_poisoned("ordering_lanes"))?;
+            if let Some(lane) = lanes.get_mut(&lane_key) {
+                self.reserve_ordered_queue_slot(&lifecycle)?;
+                lane.push_delayed(task, true, delay, subscription_state);
+                return Ok(());
+            }
+            let mut lane = OrderedProcessingLane::new();
+            lane.push_delayed(task, false, delay, subscription_state);
+            lanes.insert(lane_key.clone(), lane);
+            drop(lanes);
+            self.submit_ordered_lane_runner_to_executor(executor, lane_key.clone())
+        };
+        if result.is_err() {
+            self.cancel_ordered_lane(&lane_key);
+        }
+        result
+    }
+
     /// Drains one turn of an ordering lane on a handler-pool worker.
     fn run_ordered_lane(self: Arc<Self>, lane_key: OrderingLaneKey) {
         let mut guard = OrderedLaneRunnerGuard::new(Arc::clone(&self), lane_key.clone());
@@ -803,7 +1040,24 @@ impl LocalEventBusInner {
             let Some(task) = self.pop_ordered_lane_task(&lane_key, &mut guard) else {
                 return;
             };
-            task.run();
+            match task {
+                OrderedLaneTask::Ready(task) => task.run(),
+                OrderedLaneTask::Delayed(delay, subscription_state) => {
+                    match self.submit_ordered_lane_runner_after_delay(
+                        lane_key.clone(),
+                        delay,
+                        subscription_state,
+                    ) {
+                        Ok(()) => guard.disarm(),
+                        Err(error) => {
+                            self.observe_error(&error);
+                            self.cancel_ordered_lane(&lane_key);
+                            guard.disarm();
+                        }
+                    }
+                    return;
+                }
+            }
             match self.finish_ordered_lane_turn(&lane_key, &mut guard) {
                 OrderedLaneTurn::ContinueInline => {}
                 OrderedLaneTurn::Drained
@@ -845,6 +1099,20 @@ impl LocalEventBusInner {
         }
         builder.build()
     }
+
+    /// Builds the delayed-delivery executor.
+    ///
+    /// # Returns
+    /// A fixed thread pool used to wait for delayed deliveries.
+    ///
+    /// # Errors
+    /// Returns executor build errors from `rs-thread-pool`.
+    fn build_delay_executor(&self) -> Result<FixedThreadPool, ThreadPoolBuildError> {
+        FixedThreadPool::builder()
+            .pool_size(self.subscription_handler_pool_size)
+            .thread_name_prefix("qubit-event-bus-delay")
+            .build()
+    }
 }
 
 /// Returns the executor if the current lifecycle allows dispatch.
@@ -859,6 +1127,25 @@ fn executor_for_dispatch(
         .executor
         .as_ref()
         .ok_or_else(EventBusError::not_started)
+}
+
+/// Returns the delayed-delivery executor if the lifecycle allows dispatch.
+fn delay_executor_for_dispatch(
+    lifecycle: &LocalEventBusLifecycle,
+    allow_stopping: bool,
+) -> EventBusResult<&FixedThreadPool> {
+    if !lifecycle.started && !allow_stopping {
+        return Err(EventBusError::not_started());
+    }
+    lifecycle
+        .delay_executor
+        .as_ref()
+        .ok_or_else(EventBusError::not_started)
+}
+
+/// Converts a thread-pool build failure into a local event-bus startup failure.
+fn start_failed_from_thread_pool_error(error: ThreadPoolBuildError) -> EventBusError {
+    EventBusError::start_failed(error.to_string())
 }
 
 /// Submits subscriber processing work to the executor.
@@ -904,6 +1191,7 @@ where
 struct LocalEventBusLifecycle {
     started: bool,
     executor: Option<FixedThreadPool>,
+    delay_executor: Option<FixedThreadPool>,
 }
 
 impl LocalEventBusLifecycle {
@@ -915,6 +1203,7 @@ impl LocalEventBusLifecycle {
         Self {
             started: false,
             executor: None,
+            delay_executor: None,
         }
     }
 }
@@ -984,10 +1273,44 @@ impl ProcessingTracker {
         while counts.get(topic_key).copied().unwrap_or(0) > 0 {
             counts = match self.condvar.wait(counts) {
                 Ok(counts) => counts,
-                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+                Err(poisoned) => poisoned.into_inner(),
             };
         }
         Ok(())
+    }
+
+    /// Waits until a topic has zero active work or the timeout elapses.
+    ///
+    /// # Parameters
+    /// - `topic_key`: Topic key to wait for.
+    /// - `timeout`: Maximum duration to wait.
+    ///
+    /// # Returns
+    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout elapses first.
+    fn wait_for_idle_timeout(
+        &self,
+        topic_key: &TopicKey,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
+        let started_at = Instant::now();
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("processing_tracker"))?;
+        while counts.get(topic_key).copied().unwrap_or(0) > 0 {
+            let Some(remaining) = remaining_timeout(started_at, timeout) else {
+                return Ok(false);
+            };
+            let (next_counts, timeout_result) = match self.condvar.wait_timeout(counts, remaining) {
+                Ok(result) => result,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            counts = next_counts;
+            if timeout_result.timed_out() && counts.get(topic_key).copied().unwrap_or(0) > 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Waits until all topics have zero active work.
@@ -1002,7 +1325,7 @@ impl ProcessingTracker {
         while !counts.is_empty() {
             counts = match self.condvar.wait(counts) {
                 Ok(counts) => counts,
-                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+                Err(poisoned) => poisoned.into_inner(),
             };
         }
         Ok(())
@@ -1028,7 +1351,7 @@ impl ProcessingTracker {
             };
             let (next_counts, timeout_result) = match self.condvar.wait_timeout(counts, remaining) {
                 Ok(result) => result,
-                Err(_) => return Err(EventBusError::lock_poisoned("processing_tracker")),
+                Err(poisoned) => poisoned.into_inner(),
             };
             counts = next_counts;
             if timeout_result.timed_out() && !counts.is_empty() {
@@ -1058,488 +1381,4 @@ impl ProcessingTracker {
 /// Remaining duration, or `None` when the timeout has elapsed.
 fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
     timeout.checked_sub(started_at.elapsed())
-}
-
-#[cfg(coverage)]
-struct CoveragePublisherInterceptor;
-
-#[cfg(coverage)]
-impl PublisherInterceptorEntry for CoveragePublisherInterceptor {
-    fn payload_type_id(&self) -> TypeId {
-        TypeId::of::<String>()
-    }
-
-    fn intercept(
-        &self,
-        envelope: Box<dyn Any + Send>,
-    ) -> EventBusResult<Option<Box<dyn Any + Send>>> {
-        Ok(Some(envelope))
-    }
-}
-
-#[cfg(coverage)]
-struct CoverageSubscriberInterceptor;
-
-#[cfg(coverage)]
-impl SubscriberInterceptorEntry for CoverageSubscriberInterceptor {
-    fn payload_type_id(&self) -> TypeId {
-        TypeId::of::<String>()
-    }
-
-    fn wrap_handler(
-        &self,
-        handler: Box<dyn Any + Send + Sync>,
-    ) -> EventBusResult<Box<dyn Any + Send + Sync>> {
-        Ok(handler)
-    }
-}
-
-#[cfg(coverage)]
-struct CoverageSubscription;
-
-#[cfg(coverage)]
-impl ErasedSubscription for CoverageSubscription {
-    fn id(&self) -> usize {
-        1
-    }
-
-    fn priority(&self) -> i32 {
-        0
-    }
-
-    fn deactivate(&self) {}
-
-    fn dispatch(
-        &self,
-        _envelope: Box<dyn Any + Send>,
-        _bus: Arc<LocalEventBusInner>,
-        _allow_stopping: bool,
-    ) -> EventBusResult<()> {
-        Ok(())
-    }
-}
-
-#[cfg(coverage)]
-fn coverage_noop_task() {}
-
-#[cfg(coverage)]
-fn coverage_ignore_error(_error: &EventBusError) {}
-
-/// Exercises internal defensive branches that require poisoned private locks.
-///
-/// # Returns
-/// Errors produced by intentionally poisoning internal locks and task state.
-#[cfg(coverage)]
-pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBusError> {
-    fn empty_inner() -> LocalEventBusInner {
-        LocalEventBusInner::new(
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            Vec::new(),
-            Vec::new(),
-            1,
-            None,
-        )
-    }
-
-    fn poison_mutex<T>(mutex: &Mutex<T>) {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = mutex.lock().expect("coverage mutex should lock");
-            panic!("coverage poison");
-        }));
-    }
-
-    fn push_error<T>(errors: &mut Vec<EventBusError>, result: EventBusResult<T>) {
-        errors.extend(result.err());
-    }
-
-    let mut errors = Vec::new();
-    let topic_key = TopicKey::new(
-        "coverage-inner-defensive".to_string(),
-        TypeId::of::<String>(),
-    );
-
-    coverage_noop_task();
-    coverage_ignore_error(&EventBusError::handler_failed("coverage"));
-
-    let publisher_interceptor = CoveragePublisherInterceptor;
-    assert_eq!(
-        publisher_interceptor.payload_type_id(),
-        TypeId::of::<String>(),
-    );
-    let publisher_output = publisher_interceptor
-        .intercept(Box::new("payload".to_string()))
-        .expect("coverage publisher interceptor should pass payload");
-    assert!(publisher_output.is_some());
-
-    let subscriber_interceptor = CoverageSubscriberInterceptor;
-    assert_eq!(
-        subscriber_interceptor.payload_type_id(),
-        TypeId::of::<String>(),
-    );
-    let subscriber_output = subscriber_interceptor
-        .wrap_handler(Box::new("handler".to_string()))
-        .expect("coverage subscriber interceptor should pass handler");
-    assert!(subscriber_output.downcast::<String>().is_ok());
-
-    let subscription = CoverageSubscription;
-    assert_eq!(subscription.id(), 1);
-    assert_eq!(subscription.priority(), 0);
-    subscription.deactivate();
-    subscription
-        .dispatch(
-            Box::new("payload".to_string()),
-            Arc::new(empty_inner()),
-            false,
-        )
-        .expect("coverage subscription dispatch should succeed");
-
-    let invalid_executor_inner = LocalEventBusInner::new(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        Vec::new(),
-        Vec::new(),
-        0,
-        None,
-    );
-    errors.push(
-        invalid_executor_inner
-            .mark_started()
-            .expect_err("invalid executor should fail startup"),
-    );
-
-    let mut one_shot = Some(coverage_noop_task);
-    let task = take_subscription_task(&mut one_shot).expect("first task take should succeed");
-    task();
-    errors.extend(take_subscription_task(&mut one_shot).err());
-
-    let lane_bus = Arc::new(empty_inner());
-    let lane_key = OrderingLaneKey::new(topic_key.clone(), "coverage-order", 1);
-    let mut lane = OrderedProcessingLane::new();
-    assert_eq!(lane.release_front_queue_slot(), 0);
-    lane.push(
-        ProcessingTask::new(Arc::clone(&lane_bus), topic_key.clone(), coverage_noop_task),
-        false,
-    );
-    assert_eq!(lane.release_front_queue_slot(), 0);
-    lane.push(
-        ProcessingTask::new(Arc::clone(&lane_bus), topic_key.clone(), coverage_noop_task),
-        true,
-    );
-    assert_eq!(lane.release_all_queue_slots(), 1);
-    drop(lane);
-    lane_bus.release_ordered_queue_slots(0);
-
-    let cancel_bus = Arc::new(empty_inner());
-    let mut cancel_lane = OrderedProcessingLane::new();
-    cancel_lane.push(
-        ProcessingTask::new(
-            Arc::clone(&cancel_bus),
-            topic_key.clone(),
-            coverage_noop_task,
-        ),
-        true,
-    );
-    cancel_bus
-        .ordered_queued_task_count
-        .store(1, Ordering::SeqCst);
-    cancel_bus
-        .ordering_lanes
-        .lock()
-        .expect("coverage lanes should lock")
-        .insert(lane_key.clone(), cancel_lane);
-    {
-        let _guard = OrderedLaneRunnerGuard::new(Arc::clone(&cancel_bus), lane_key.clone());
-    }
-    assert!(
-        cancel_bus
-            .ordering_lanes
-            .lock()
-            .expect("coverage lanes should lock")
-            .get(&lane_key)
-            .is_none()
-    );
-    assert_eq!(
-        cancel_bus.ordered_queued_task_count.load(Ordering::SeqCst),
-        0,
-    );
-
-    let pop_bus = Arc::new(empty_inner());
-    let missing_lane_key = OrderingLaneKey::new(topic_key.clone(), "missing-order", 1);
-    let mut missing_guard =
-        OrderedLaneRunnerGuard::new(Arc::clone(&pop_bus), missing_lane_key.clone());
-    assert!(
-        pop_bus
-            .pop_ordered_lane_task(&missing_lane_key, &mut missing_guard)
-            .is_none()
-    );
-
-    let empty_lane_key = OrderingLaneKey::new(topic_key.clone(), "empty-order", 1);
-    pop_bus
-        .ordering_lanes
-        .lock()
-        .expect("coverage lanes should lock")
-        .insert(empty_lane_key.clone(), OrderedProcessingLane::new());
-    let mut empty_guard = OrderedLaneRunnerGuard::new(Arc::clone(&pop_bus), empty_lane_key.clone());
-    assert!(
-        pop_bus
-            .pop_ordered_lane_task(&empty_lane_key, &mut empty_guard)
-            .is_none()
-    );
-
-    let reserved_lane_key = OrderingLaneKey::new(topic_key.clone(), "reserved-order", 1);
-    let mut reserved_lane = OrderedProcessingLane::new();
-    reserved_lane.push(
-        ProcessingTask::new(Arc::clone(&pop_bus), topic_key.clone(), coverage_noop_task),
-        true,
-    );
-    pop_bus.ordered_queued_task_count.store(1, Ordering::SeqCst);
-    pop_bus
-        .ordering_lanes
-        .lock()
-        .expect("coverage lanes should lock")
-        .insert(reserved_lane_key.clone(), reserved_lane);
-    let mut reserved_guard =
-        OrderedLaneRunnerGuard::new(Arc::clone(&pop_bus), reserved_lane_key.clone());
-    pop_bus
-        .pop_ordered_lane_task(&reserved_lane_key, &mut reserved_guard)
-        .expect("reserved lane should yield a task")
-        .run();
-
-    let mut finish_guard =
-        OrderedLaneRunnerGuard::new(Arc::clone(&pop_bus), missing_lane_key.clone());
-    assert!(matches!(
-        pop_bus.finish_ordered_lane_turn(&missing_lane_key, &mut finish_guard),
-        OrderedLaneTurn::Drained
-    ));
-
-    let rejected_order_inner = Arc::new(empty_inner());
-    rejected_order_inner
-        .mark_started()
-        .expect("coverage ordered inner should start");
-    {
-        let lifecycle = rejected_order_inner
-            .lifecycle
-            .lock()
-            .expect("coverage lifecycle should lock");
-        lifecycle
-            .executor
-            .as_ref()
-            .expect("coverage executor should exist")
-            .shutdown();
-    }
-    errors.push(
-        rejected_order_inner
-            .submit_ordered_processing_task(
-                OrderingLaneKey::new(topic_key.clone(), "rejected-order", 1),
-                ProcessingTask::new(
-                    Arc::clone(&rejected_order_inner),
-                    topic_key.clone(),
-                    coverage_noop_task,
-                ),
-                false,
-            )
-            .expect_err("shutdown executor should reject ordered runner"),
-    );
-
-    let poisoned_lifecycle_order_inner = Arc::new(empty_inner());
-    poison_mutex(&poisoned_lifecycle_order_inner.lifecycle);
-    errors.push(
-        poisoned_lifecycle_order_inner
-            .submit_ordered_processing_task(
-                OrderingLaneKey::new(topic_key.clone(), "poisoned-lifecycle-order", 1),
-                ProcessingTask::new(
-                    Arc::clone(&poisoned_lifecycle_order_inner),
-                    topic_key.clone(),
-                    coverage_noop_task,
-                ),
-                false,
-            )
-            .expect_err("poisoned lifecycle should reject ordered submission"),
-    );
-
-    let poisoned_lanes_order_inner = Arc::new(empty_inner());
-    poisoned_lanes_order_inner
-        .mark_started()
-        .expect("coverage poisoned lanes inner should start");
-    poison_mutex(&poisoned_lanes_order_inner.ordering_lanes);
-    errors.push(
-        poisoned_lanes_order_inner
-            .submit_ordered_processing_task(
-                OrderingLaneKey::new(topic_key.clone(), "poisoned-lanes-order", 1),
-                ProcessingTask::new(
-                    Arc::clone(&poisoned_lanes_order_inner),
-                    topic_key.clone(),
-                    coverage_noop_task,
-                ),
-                false,
-            )
-            .expect_err("poisoned lanes should reject ordered submission"),
-    );
-    if let Some(executor) = poisoned_lanes_order_inner.take_executor() {
-        executor.shutdown();
-    }
-
-    let no_executor_order_inner = Arc::new(empty_inner());
-    let no_executor_lane_key = OrderingLaneKey::new(topic_key.clone(), "no-executor-order", 1);
-    let mut no_executor_lane = OrderedProcessingLane::new();
-    no_executor_lane.push(
-        ProcessingTask::new(
-            Arc::clone(&no_executor_order_inner),
-            topic_key.clone(),
-            coverage_noop_task,
-        ),
-        false,
-    );
-    no_executor_order_inner
-        .ordering_lanes
-        .lock()
-        .expect("coverage lanes should lock")
-        .insert(no_executor_lane_key.clone(), no_executor_lane);
-    let mut no_executor_guard = OrderedLaneRunnerGuard::new(
-        Arc::clone(&no_executor_order_inner),
-        no_executor_lane_key.clone(),
-    );
-    assert!(matches!(
-        no_executor_order_inner
-            .finish_ordered_lane_turn(&no_executor_lane_key, &mut no_executor_guard,),
-        OrderedLaneTurn::Cancelled
-    ));
-
-    let draining_inner = empty_inner();
-    assert!(draining_inner.mark_started().expect("inner should start"));
-    assert!(draining_inner.mark_stopping());
-    errors.push(
-        draining_inner
-            .mark_started()
-            .expect_err("draining executor should block restart"),
-    );
-    assert!(!draining_inner.mark_stopping());
-    if let Some(executor) = draining_inner.take_executor() {
-        executor.shutdown();
-    }
-
-    let lifecycle_inner = empty_inner();
-    errors.push(
-        lifecycle_inner
-            .submit_processing_task(coverage_noop_task, false)
-            .expect_err("stopped executor should reject tasks"),
-    );
-    poison_mutex(&lifecycle_inner.lifecycle);
-    assert!(lifecycle_inner.mark_stopped().is_none());
-    assert!(!lifecycle_inner.mark_stopping());
-    assert!(lifecycle_inner.take_executor().is_none());
-    assert!(!lifecycle_inner.is_started());
-    errors.push(
-        lifecycle_inner
-            .mark_started()
-            .expect_err("poisoned lifecycle should reject start"),
-    );
-    errors.push(
-        lifecycle_inner
-            .submit_processing_task(coverage_noop_task, false)
-            .expect_err("poisoned lifecycle should reject task submission"),
-    );
-
-    let publisher_inner = empty_inner();
-    poison_mutex(&publisher_inner.publisher_interceptors);
-    errors.push(
-        publisher_inner
-            .add_publisher_interceptor(Arc::new(CoveragePublisherInterceptor))
-            .expect_err("poisoned publisher interceptors should reject add"),
-    );
-    push_error(&mut errors, publisher_inner.publisher_interceptors());
-
-    let subscriber_inner = empty_inner();
-    poison_mutex(&subscriber_inner.subscriber_interceptors);
-    errors.push(
-        subscriber_inner
-            .add_subscriber_interceptor(Arc::new(CoverageSubscriberInterceptor))
-            .expect_err("poisoned subscriber interceptors should reject add"),
-    );
-    push_error(&mut errors, subscriber_inner.subscriber_interceptors());
-
-    let observer_inner = empty_inner();
-    poison_mutex(&observer_inner.error_observers);
-    observer_inner.observe_error(&EventBusError::handler_failed("coverage"));
-    errors.push(
-        observer_inner
-            .add_error_observer(Arc::new(coverage_ignore_error))
-            .expect_err("poisoned error observers should reject add"),
-    );
-
-    let subscriptions_inner = empty_inner();
-    subscriptions_inner
-        .unsubscribe(&topic_key, 1)
-        .expect("missing subscription should be a no-op");
-    poison_mutex(&subscriptions_inner.subscriptions);
-    errors.push(
-        subscriptions_inner
-            .add_subscription(topic_key.clone(), Arc::new(CoverageSubscription))
-            .expect_err("poisoned subscriptions should reject add"),
-    );
-    push_error(
-        &mut errors,
-        subscriptions_inner.subscriptions_for(&topic_key),
-    );
-    errors.push(
-        subscriptions_inner
-            .unsubscribe(&topic_key, 1)
-            .expect_err("poisoned subscriptions should reject unsubscribe"),
-    );
-    subscriptions_inner.clear_subscriptions();
-
-    let tracker_inner = empty_inner();
-    tracker_inner.finish_processing(&topic_key);
-    poison_mutex(&tracker_inner.processing_tracker.counts);
-    errors.push(
-        tracker_inner
-            .start_processing(&topic_key)
-            .expect_err("poisoned tracker should reject start"),
-    );
-    tracker_inner.finish_processing(&topic_key);
-    errors.push(
-        tracker_inner
-            .wait_for_idle(&topic_key)
-            .expect_err("poisoned tracker should reject topic wait"),
-    );
-    errors.push(
-        tracker_inner
-            .wait_for_all_idle()
-            .expect_err("poisoned tracker should reject global wait"),
-    );
-    errors.push(
-        tracker_inner
-            .wait_for_all_idle_timeout(Duration::from_millis(1))
-            .expect_err("poisoned tracker should reject timeout wait"),
-    );
-    push_error(&mut errors, tracker_inner.processing_tracker.has_active());
-
-    let tracker = ProcessingTracker::new();
-    tracker
-        .start(&topic_key)
-        .expect("coverage tracker should start");
-    assert!(
-        !tracker
-            .wait_for_all_idle_timeout(Duration::ZERO)
-            .expect("coverage tracker timeout should return")
-    );
-    tracker.finish(&topic_key);
-
-    let poisoned_ordering_inner = Arc::new(empty_inner());
-    let poisoned_lane_key = OrderingLaneKey::new(topic_key, "poisoned-order", 1);
-    poison_mutex(&poisoned_ordering_inner.ordering_lanes);
-    let mut poisoned_guard = OrderedLaneRunnerGuard::new(
-        Arc::clone(&poisoned_ordering_inner),
-        poisoned_lane_key.clone(),
-    );
-    assert!(matches!(
-        poisoned_ordering_inner.finish_ordered_lane_turn(&poisoned_lane_key, &mut poisoned_guard),
-        OrderedLaneTurn::Cancelled
-    ));
-    poisoned_ordering_inner.cancel_ordered_lane(&poisoned_lane_key);
-
-    errors
 }

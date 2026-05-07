@@ -40,6 +40,7 @@ use qubit_event_bus::{
     RetryJitter,
     RetryOptions,
     SubscribeOptions,
+    SubscriberInterceptorChain,
     Topic,
 };
 
@@ -224,6 +225,269 @@ fn test_publish_delay_defers_local_delivery() {
     assert!(
         received_at.duration_since(started_at) >= delay,
         "handler ran before the configured delay elapsed"
+    );
+}
+
+#[test]
+fn test_delayed_delivery_does_not_occupy_handler_worker() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("delayed-does-not-block-worker");
+    let (received_tx, received_rx) = mpsc::channel::<(String, Instant)>();
+
+    bus.subscribe("sub", &topic, move |event| {
+        received_tx
+            .send((event.payload().clone(), Instant::now()))
+            .expect("received payload should send");
+        Ok(())
+    })
+    .expect("subscribe should work");
+
+    let published_at = Instant::now();
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "delayed".to_string())
+            .with_delay(Duration::from_millis(250)),
+    )
+    .expect("delayed publish should work");
+    bus.publish(&topic, "immediate".to_string())
+        .expect("immediate publish should work");
+
+    let first = received_rx
+        .recv_timeout(Duration::from_millis(150))
+        .expect("immediate event should not wait behind delayed delivery");
+    assert_eq!(first.0, "immediate");
+    assert!(first.1.duration_since(published_at) < Duration::from_millis(150));
+
+    let second = received_rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("delayed event should eventually be delivered");
+    assert_eq!(second.0, "delayed");
+    assert!(second.1.duration_since(published_at) >= Duration::from_millis(250));
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
+fn test_ordered_delayed_delivery_does_not_occupy_handler_worker() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordered-delayed-does-not-block-worker");
+    let (received_tx, received_rx) = mpsc::channel::<(String, Instant)>();
+
+    bus.subscribe("sub", &topic, move |event| {
+        received_tx
+            .send((event.payload().clone(), Instant::now()))
+            .expect("received payload should send");
+        Ok(())
+    })
+    .expect("subscribe should work");
+
+    let published_at = Instant::now();
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "ordered-delayed".to_string())
+            .with_ordering_key("same-key")
+            .with_delay(Duration::from_millis(250)),
+    )
+    .expect("ordered delayed publish should work");
+    bus.publish(&topic, "immediate".to_string())
+        .expect("immediate publish should work");
+
+    let first = received_rx
+        .recv_timeout(Duration::from_millis(150))
+        .expect("immediate event should not wait behind ordered delayed delivery");
+    assert_eq!(first.0, "immediate");
+    assert!(first.1.duration_since(published_at) < Duration::from_millis(150));
+
+    let second = received_rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("ordered delayed event should eventually be delivered");
+    assert_eq!(second.0, "ordered-delayed");
+    assert!(second.1.duration_since(published_at) >= Duration::from_millis(250));
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
+fn test_ordered_delayed_delivery_preserves_same_key_order() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(2)
+        .expect("pool size should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordered-delayed-preserves-order");
+    let (received_tx, received_rx) = mpsc::channel::<String>();
+
+    bus.subscribe("sub", &topic, move |event| {
+        received_tx
+            .send(event.payload().clone())
+            .expect("received payload should send");
+        Ok(())
+    })
+    .expect("subscribe should work");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "first".to_string())
+            .with_ordering_key("same-key")
+            .with_delay(Duration::from_millis(120)),
+    )
+    .expect("first delayed publish should work");
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"),
+    )
+    .expect("second publish should work");
+
+    assert!(
+        received_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "same-key delivery should wait for the delayed first event"
+    );
+    assert_eq!(
+        received_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("first event should arrive"),
+        "first"
+    );
+    assert_eq!(
+        received_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("second event should arrive after first"),
+        "second"
+    );
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
+fn test_ordered_huge_delay_does_not_become_immediately_ready() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("ordered-huge-delay");
+    let (received_tx, received_rx) = mpsc::channel::<String>();
+    let subscription = bus
+        .subscribe("sub", &topic, move |event| {
+            received_tx
+                .send(event.payload().clone())
+                .expect("received payload should send");
+            Ok(())
+        })
+        .expect("subscription should register");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "delayed".to_string())
+            .with_ordering_key("same-key")
+            .with_delay(Duration::MAX),
+    )
+    .expect("huge ordered delayed publish should be accepted");
+
+    assert!(
+        received_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "huge ordered delay should not overflow into immediate delivery"
+    );
+    subscription
+        .cancel()
+        .expect("subscription cancellation should succeed");
+    assert!(
+        bus.wait_for_idle_timeout(&topic, Duration::from_millis(150))
+            .expect("cancelled huge delayed delivery should become idle")
+    );
+}
+
+#[test]
+fn test_delayed_delivery_runs_when_handler_queue_is_saturated_at_delay_expiry() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(1))
+        .expect("bounded queue should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("delayed-saturated-at-expiry");
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_release = Arc::clone(&release);
+    let (received_tx, received_rx) = mpsc::channel::<String>();
+
+    bus.subscribe("sub", &topic, move |event| {
+        let payload = event.payload().clone();
+        received_tx
+            .send(payload.clone())
+            .expect("received payload should send");
+        if payload == "first" {
+            wait_for_gate(&captured_release);
+        }
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "first".to_string())
+        .expect("first publish should occupy the worker");
+    assert_eq!(
+        received_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first event should start"),
+        "first"
+    );
+    bus.publish(&topic, "second".to_string())
+        .expect("second publish should fill the handler queue");
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "delayed".to_string())
+            .with_delay(Duration::from_millis(30)),
+    )
+    .expect("delayed publish should be accepted before expiry");
+
+    assert_eq!(
+        received_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("delayed event should still run after expiry"),
+        "delayed"
+    );
+    release_gate(&release);
+    assert_eq!(
+        received_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("queued second event should run after release"),
+        "second"
+    );
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
+fn test_wait_for_idle_timeout_reports_busy_topic() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("wait-for-idle-timeout");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+        wait_for_gate(&captured_release);
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+
+    assert!(
+        !bus.wait_for_idle_timeout(&topic, Duration::from_millis(10))
+            .expect("busy topic wait should return timeout result")
+    );
+    release_gate(&release);
+    assert!(
+        bus.wait_for_idle_timeout(&topic, Duration::from_secs(1))
+            .expect("released topic should become idle")
     );
 }
 
@@ -593,7 +857,7 @@ fn test_publisher_interceptor_can_modify_or_drop_events() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.add_publisher_interceptor::<String, _>(|event| {
+    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
         if event.topic().name() == "dropped" {
             None
         } else {
@@ -634,9 +898,11 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
     let observed_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_publish_errors = Arc::clone(&publish_errors);
     let captured_observed_errors = Arc::clone(&observed_errors);
-    bus.add_publisher_interceptor::<String, _>(|_event| {
-        panic!("publisher interceptor panic");
-    })
+    bus.add_publisher_interceptor::<String, _>(
+        |_event: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
+            panic!("publisher interceptor panic");
+        },
+    )
     .expect("interceptor should be registered");
     bus.add_error_observer(move |error| {
         captured_observed_errors
@@ -690,7 +956,7 @@ fn test_publish_retry_retries_publisher_interceptor_failures() {
     let received = Arc::new(AtomicUsize::new(0));
     let captured_attempts = Arc::clone(&attempts);
     let captured_received = Arc::clone(&received);
-    bus.add_publisher_interceptor::<String, _>(move |event| {
+    bus.add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
         let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         if attempt == 1 {
             panic!("transient publisher interceptor failure");
@@ -1276,31 +1542,35 @@ fn test_subscriber_interceptor_wraps_handler_and_can_short_circuit() {
     let dropped_topic = create_topic("subscriber-interceptor-dropped");
     let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured_before_after = Arc::clone(&sequence);
-    bus.add_subscriber_interceptor::<String, _, _>(move |event, chain| {
-        captured_before_after
-            .lock()
-            .expect("sequence should lock")
-            .push(format!("before:{}", event.payload()));
-        let result = chain.proceed(event.with_header("intercepted", "true"));
-        captured_before_after
-            .lock()
-            .expect("sequence should lock")
-            .push("after".to_string());
-        result
-    })
-    .expect("subscriber interceptor should register");
-    let captured_short_circuit = Arc::clone(&sequence);
-    bus.add_subscriber_interceptor::<String, _, _>(move |event, chain| {
-        if event.topic().name() == "subscriber-interceptor-dropped" {
-            captured_short_circuit
+    bus.add_subscriber_interceptor::<String, _>(
+        move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+            captured_before_after
                 .lock()
                 .expect("sequence should lock")
-                .push("dropped".to_string());
-            Ok(())
-        } else {
-            chain.proceed(event)
-        }
-    })
+                .push(format!("before:{}", event.payload()));
+            let result = chain.proceed(event.with_header("intercepted", "true"));
+            captured_before_after
+                .lock()
+                .expect("sequence should lock")
+                .push("after".to_string());
+            result
+        },
+    )
+    .expect("subscriber interceptor should register");
+    let captured_short_circuit = Arc::clone(&sequence);
+    bus.add_subscriber_interceptor::<String, _>(
+        move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+            if event.topic().name() == "subscriber-interceptor-dropped" {
+                captured_short_circuit
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("dropped".to_string());
+                Ok(())
+            } else {
+                chain.proceed(event)
+            }
+        },
+    )
     .expect("subscriber interceptor should register");
     let captured_handler = Arc::clone(&sequence);
 
@@ -1563,12 +1833,16 @@ fn test_factory_applies_default_publish_options_and_interceptors() {
             .build(),
     );
     factory
-        .add_publisher_interceptor::<String, _>(|event| Some(event.with_header("factory", "true")))
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            Some(event.with_header("factory", "true"))
+        })
         .expect("factory publisher interceptor should register");
     factory
-        .add_subscriber_interceptor::<String, _, _>(|event, chain| {
-            chain.proceed(event.with_header("subscriber-factory", "true"))
-        })
+        .add_subscriber_interceptor::<String, _>(
+            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                chain.proceed(event.with_header("subscriber-factory", "true"))
+            },
+        )
         .expect("factory subscriber interceptor should register");
 
     let stopped_bus = factory.create();
@@ -1607,6 +1881,82 @@ fn test_factory_applies_default_publish_options_and_interceptors() {
         events[0].headers().get("subscriber-factory"),
         Some(&"true".to_string())
     );
+}
+
+#[test]
+fn test_publish_with_options_merges_factory_default_publish_error_handlers() {
+    let mut factory = LocalEventBusFactory::new();
+    let default_errors = Arc::new(AtomicUsize::new(0));
+    let explicit_errors = Arc::new(AtomicUsize::new(0));
+    let captured_default_errors = Arc::clone(&default_errors);
+    let captured_explicit_errors = Arc::clone(&explicit_errors);
+    factory.set_default_publish_options::<String>(
+        PublishOptions::builder()
+            .error_handler(move |_event, error| {
+                assert_eq!(error, &EventBusError::not_started());
+                captured_default_errors.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .build(),
+    );
+    let bus = factory.create();
+    let topic = create_topic("factory-default-publish-merge");
+    let options = PublishOptions::<String>::builder()
+        .error_handler(move |_event, error| {
+            assert_eq!(error, &EventBusError::not_started());
+            captured_explicit_errors.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .build();
+
+    let error = bus
+        .publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
+        .expect_err("stopped publish should fail");
+
+    assert_eq!(error, EventBusError::not_started());
+    assert_eq!(default_errors.load(Ordering::SeqCst), 1);
+    assert_eq!(explicit_errors.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_subscribe_with_options_merges_factory_default_subscribe_options() {
+    let mut factory = LocalEventBusFactory::new();
+    let default_errors = Arc::new(AtomicUsize::new(0));
+    let explicit_errors = Arc::new(AtomicUsize::new(0));
+    let captured_default_errors = Arc::clone(&default_errors);
+    let captured_explicit_errors = Arc::clone(&explicit_errors);
+    factory.set_default_subscribe_options::<String>(
+        SubscribeOptions::builder()
+            .priority(7)
+            .error_handler(move |_subscriber, _event, _error, _ack| {
+                captured_default_errors.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .build(),
+    );
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("factory-default-subscribe-merge");
+    let subscription = bus
+        .subscribe_with_options(
+            "sub",
+            &topic,
+            |_event| Err(EventBusError::handler_failed("expected failure")),
+            SubscribeOptions::<String>::builder()
+                .error_handler(move |_subscriber, _event, _error, _ack| {
+                    captured_explicit_errors.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .build(),
+        )
+        .expect("subscription should merge defaults");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(subscription.options().priority(), 7);
+    assert_eq!(default_errors.load(Ordering::SeqCst), 1);
+    assert_eq!(explicit_errors.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -2043,6 +2393,51 @@ fn test_cancelled_queued_delayed_delivery_skips_delay_wait() {
 }
 
 #[test]
+fn test_cancelled_ordered_delayed_delivery_skips_delay_wait() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("cancelled-ordered-delayed-delivery");
+    let (received_tx, received_rx) = mpsc::channel::<String>();
+    let subscription = bus
+        .subscribe("sub", &topic, move |event| {
+            received_tx
+                .send(event.payload().clone())
+                .expect("received payload should send");
+            Ok(())
+        })
+        .expect("subscription should register");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "delayed".to_string())
+            .with_ordering_key("same-key")
+            .with_delay(Duration::from_millis(500)),
+    )
+    .expect("ordered delayed publish should queue");
+    thread::sleep(Duration::from_millis(30));
+    let wait_started_at = Instant::now();
+    subscription
+        .cancel()
+        .expect("subscription cancellation should succeed");
+
+    assert!(
+        bus.wait_for_idle_timeout(&topic, Duration::from_millis(150))
+            .expect("cancelled delayed ordered delivery should become idle"),
+        "cancelled ordered delayed delivery should not wait for the configured delay"
+    );
+    assert!(
+        wait_started_at.elapsed() < Duration::from_millis(150),
+        "cancelled ordered delayed delivery should wake promptly"
+    );
+    assert!(
+        received_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "cancelled ordered delayed delivery should not invoke the handler"
+    );
+}
+
+#[test]
 fn test_shutdown_waits_for_active_handler() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -2198,7 +2593,7 @@ fn test_publish_racing_shutdown_rejects_existing_ordering_lane_submission() {
 
     let captured_ready = Arc::clone(&interceptor_ready);
     let captured_release_interceptor = Arc::clone(&release_interceptor);
-    bus.add_publisher_interceptor::<String, _>(move |event| {
+    bus.add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
         if event.payload() == "after-shutdown" {
             release_gate(&captured_ready);
             let (release_lock, release_condvar) = &*captured_release_interceptor;
@@ -2445,6 +2840,97 @@ fn test_shutdown_routes_dead_letter_for_handler_failure_during_graceful_shutdown
     assert!(events[0].is_dead_letter());
     assert_eq!(
         events[0]
+            .payload()
+            .downcast_original_payload_ref::<String>()
+            .expect("dead letter payload should preserve original payload"),
+        "payload"
+    );
+}
+
+#[test]
+fn test_shutdown_routes_delayed_dead_letter_during_graceful_shutdown() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("shutdown-routes-delayed-dead-letter");
+    let probe_topic = create_topic("shutdown-routes-delayed-dead-letter-probe");
+    let dead_letter_topic = create_dead_letter_topic("dlq.shutdown-routes-delayed-dead-letter");
+    let (dead_letter_tx, dead_letter_rx) = mpsc::channel::<EventEnvelope<DeadLetterPayload>>();
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        dead_letter_tx.send(event).expect("dead letter should send");
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    let dead_letter_target = dead_letter_topic.clone();
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(
+                EventEnvelope::create(
+                    dead_letter_target.clone(),
+                    DeadLetterRecord::from_failure(subscriber_id, failed, error),
+                )
+                .with_delay(Duration::from_millis(30)),
+            ))
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |_event| {
+            let (started_lock, started_condvar) = &*captured_started;
+            let mut started_count = started_lock.lock().expect("started count should lock");
+            *started_count += 1;
+            started_condvar.notify_all();
+            drop(started_count);
+
+            wait_for_gate(&captured_release);
+            Err(EventBusError::handler_failed(
+                "handler failed during shutdown",
+            ))
+        },
+        options,
+    )
+    .expect("failing subscriber should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+
+    let shutdown_bus = bus.clone();
+    let shutdown_thread = thread::spawn(move || shutdown_bus.shutdown());
+    let stopped_before_release = (0..50).any(|_| {
+        if bus.publish(&probe_topic, "probe".to_string()).is_err() {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(5));
+            false
+        }
+    });
+    assert!(
+        stopped_before_release,
+        "shutdown should stop public publishing before the handler completes"
+    );
+
+    release_gate(&release);
+    assert!(
+        shutdown_thread
+            .join()
+            .expect("shutdown thread should finish")
+    );
+
+    let dead_letter = dead_letter_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("delayed dead letter should be delivered while shutdown drains");
+    assert!(dead_letter.is_dead_letter());
+    assert_eq!(
+        dead_letter
             .payload()
             .downcast_original_payload_ref::<String>()
             .expect("dead letter payload should preserve original payload"),

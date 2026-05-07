@@ -22,11 +22,11 @@ use crate::{
     EventBusFactory,
     EventBusResult,
     EventEnvelope,
-    IntoEventBusResult,
     LocalEventBus,
     PublishOptions,
+    PublisherInterceptor,
     SubscribeOptions,
-    SubscriberInterceptorChain,
+    SubscriberInterceptor,
     UnsupportedTransactionalEventBus,
 };
 
@@ -136,13 +136,13 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_publisher_interceptor<T, F>(&mut self, interceptor: F) -> EventBusResult<()>
+    pub fn add_publisher_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
-        F: Fn(EventEnvelope<T>) -> Option<EventEnvelope<T>> + Send + Sync + 'static,
+        I: PublisherInterceptor<T>,
     {
         self.publisher_interceptors
-            .push(create_publisher_interceptor_entry::<T, F>(interceptor));
+            .push(create_publisher_interceptor_entry::<T, I>(interceptor));
         Ok(())
     }
 
@@ -153,14 +153,13 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_subscriber_interceptor<T, F, R>(&mut self, interceptor: F) -> EventBusResult<()>
+    pub fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
-        F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
-        R: IntoEventBusResult + 'static,
+        I: SubscriberInterceptor<T>,
     {
         self.subscriber_interceptors
-            .push(create_subscriber_interceptor_entry::<T, F, R>(interceptor));
+            .push(create_subscriber_interceptor_entry::<T, I>(interceptor));
         Ok(())
     }
 
@@ -256,5 +255,62 @@ impl EventBusFactory for LocalEventBusFactory {
     /// Creates and starts a local event bus.
     fn create_started(&self) -> EventBusResult<Self::Bus> {
         Self::create_started(self)
+    }
+
+    /// Sets typed default publish options for local buses.
+    fn set_default_publish_options<T>(&mut self, options: PublishOptions<T>) -> EventBusResult<()>
+    where
+        T: Send + Sync + 'static,
+    {
+        Self::set_default_publish_options(self, options);
+        Ok(())
+    }
+
+    /// Sets typed default subscribe options for local buses.
+    fn set_default_subscribe_options<T>(
+        &mut self,
+        options: SubscribeOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Send + Sync + 'static,
+    {
+        Self::set_default_subscribe_options(self, options);
+        Ok(())
+    }
+
+    /// Sets a typed default dead-letter strategy for local buses.
+    fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: Fn(
+                &str,
+                &EventEnvelope<T>,
+                &EventBusError,
+                &SubscribeOptions<T>,
+            ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self::set_default_dead_letter_strategy::<T, F>(self, strategy);
+        Ok(())
+    }
+
+    /// Adds a typed publisher interceptor for local buses.
+    fn add_publisher_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+        I: PublisherInterceptor<T>,
+    {
+        Self::add_publisher_interceptor::<T, I>(self, interceptor)
+    }
+
+    /// Adds a typed subscriber interceptor for local buses.
+    fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+        I: SubscriberInterceptor<T>,
+    {
+        Self::add_subscriber_interceptor::<T, I>(self, interceptor)
     }
 }

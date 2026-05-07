@@ -46,11 +46,13 @@ pub(crate) type DeadLetterStrategyFn<T> = dyn Fn(
 /// Immutable options applied to subscriber processing.
 pub struct SubscribeOptions<T: 'static> {
     pub(crate) ack_mode: AckMode,
+    pub(crate) ack_mode_configured: bool,
     pub(crate) retry_options: Option<RetryOptions>,
     pub(crate) filter: Option<Arc<EventFilterFn<T>>>,
     pub(crate) error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     pub(crate) dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
     pub(crate) priority: i32,
+    pub(crate) priority_configured: bool,
 }
 
 impl<T: 'static> SubscribeOptions<T> {
@@ -69,11 +71,13 @@ impl<T: 'static> SubscribeOptions<T> {
     pub fn empty() -> Self {
         Self {
             ack_mode: AckMode::Auto,
+            ack_mode_configured: false,
             retry_options: None,
             filter: None,
             error_handlers: Vec::new(),
             dead_letter_strategy: None,
             priority: 0,
+            priority_configured: false,
         }
     }
 
@@ -107,6 +111,34 @@ impl<T: 'static> SubscribeOptions<T> {
     /// Handler count.
     pub fn error_handler_count(&self) -> usize {
         self.error_handlers.len()
+    }
+
+    /// Merges these explicit options with type-level defaults.
+    ///
+    /// Explicit scalar settings override defaults only when the builder method
+    /// was called. Optional policies prefer explicit values, and error handlers
+    /// are cumulative with default handlers running first.
+    pub(crate) fn merge_defaults(self, defaults: Self) -> Self {
+        let mut error_handlers = defaults.error_handlers;
+        error_handlers.extend(self.error_handlers);
+        Self {
+            ack_mode: if self.ack_mode_configured {
+                self.ack_mode
+            } else {
+                defaults.ack_mode
+            },
+            ack_mode_configured: self.ack_mode_configured || defaults.ack_mode_configured,
+            retry_options: self.retry_options.or(defaults.retry_options),
+            filter: self.filter.or(defaults.filter),
+            error_handlers,
+            dead_letter_strategy: self.dead_letter_strategy.or(defaults.dead_letter_strategy),
+            priority: if self.priority_configured {
+                self.priority
+            } else {
+                defaults.priority
+            },
+            priority_configured: self.priority_configured || defaults.priority_configured,
+        }
     }
 
     /// Returns whether this option set has an explicit dead-letter strategy.
@@ -250,11 +282,13 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
     fn clone(&self) -> Self {
         Self {
             ack_mode: self.ack_mode,
+            ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options.clone(),
             filter: self.filter.clone(),
             error_handlers: self.error_handlers.clone(),
             dead_letter_strategy: self.dead_letter_strategy.clone(),
             priority: self.priority,
+            priority_configured: self.priority_configured,
         }
     }
 }
