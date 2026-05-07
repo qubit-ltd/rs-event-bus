@@ -32,5 +32,6 @@ pub(crate) trait ErasedSubscription: Send + Sync {
         &self,
         envelope: Box<dyn Any + Send>,
         bus: Arc<LocalEventBusInner>,
+        allow_stopping: bool,
     ) -> EventBusResult<()>;
 }

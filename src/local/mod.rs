@@ -14,6 +14,8 @@ pub(crate) mod erased_subscription;
 mod local_event_bus;
 mod local_event_bus_factory;
 pub(crate) mod local_event_bus_inner;
+pub(crate) mod ordering_lane_key;
+pub(crate) mod processing_task;
 pub(crate) mod publisher_interceptor_entry;
 mod subscriber_interceptor_chain;
 pub(crate) mod subscriber_interceptor_entry;

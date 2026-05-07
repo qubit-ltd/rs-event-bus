@@ -30,7 +30,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.1.1"
+qubit-event-bus = "0.2.0"
 ```
 
 ## Quick Start
@@ -101,10 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery.
 - Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
-- `publish_all` submits envelopes in input order, but local handler execution order depends on worker scheduling.
-- `ordering_key` and `delay` are preserved as envelope metadata; the local backend does not enforce ordering lanes or delayed delivery.
+- `publish_all` submits envelopes in input order. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
+- `delay` defers local subscriber handling for at least the requested duration. Delayed work still occupies local handler-pool capacity while waiting.
 - Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
+- After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
 - `wait_for_idle` is intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
 ## Contributing

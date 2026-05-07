@@ -621,7 +621,7 @@ checksum = "6f8f052350ff3e4adffde1814a929c8403af2307552d2b4d0253f47818d26c09"
 
 [[package]]
 name = "qubit-event-bus"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "qubit-metadata",
  "qubit-retry",
