@@ -68,26 +68,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Create an event bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
 | Define a type-safe topic | `Topic::<T>::try_new` |
-| Publish payloads or envelopes | `publish`, `publish_envelope`, `publish_envelope_with_options`, `publish_all` |
+| Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
 | Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
-| Add publisher interceptors | `add_publisher_interceptor` |
-| Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptorChain` |
+| Add publisher interceptors | `add_publisher_interceptor`, `PublisherInterceptor` |
+| Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorChain` |
 | Attach publish error handling | `PublishOptions` |
+| Consume dead-letter events | `add_dead_letter_handler`, `DeadLetterPayload` |
 | Observe internal callback failures | `add_error_observer` |
-| Wait for scheduled handler work in tests | `wait_for_idle` |
+| Wait for scheduled handler work in tests | `wait_for_idle`, `wait_for_idle_timeout` |
 | Shut down a local bus | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout` |
 
 ## Core API At A Glance
 
 | Type | Purpose |
 | --- | --- |
+| `EventBus` | Common event bus contract for concrete backends. |
+| `EventBusFactory` | Common factory contract for backend creation and default configuration. |
 | `LocalEventBus` | Thread-safe in-process event bus implementation. |
 | `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and dead-letter strategies. |
 | `Topic<T>` | Type-safe event topic keyed by name and payload type. |
 | `EventEnvelope<T>` | Event payload plus headers, timestamp, ordering key, delay, acknowledgement, and dead-letter marker. |
 | `PublishOptions<T>` | Publish retry metadata and publish error callbacks. |
 | `SubscribeOptions<T>` | Subscriber acknowledgement mode, retry settings, filters, error callbacks, dead-letter strategy, and priority. |
+| `PublisherInterceptor<T>` | Public interceptor contract that can enrich or drop outgoing envelopes. |
+| `SubscriberInterceptor<T>` | Public around-style interceptor contract for subscriber handling. |
 | `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
@@ -99,14 +104,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
 - A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery.
+- Explicit publish and subscribe options are merged with type-level factory defaults. Scalar subscribe settings such as acknowledgement mode and priority override defaults only when explicitly set through the builder.
 - Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
 - `publish_all` submits envelopes in input order. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
-- `delay` defers local subscriber handling for at least the requested duration. Delayed work still occupies local handler-pool capacity while waiting.
+- `delay` defers local subscriber handling for at least the requested duration. Delayed work waits outside the local handler pool before handler execution is submitted.
 - Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
-- `wait_for_idle` is intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
+- `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
 ## Contributing
 

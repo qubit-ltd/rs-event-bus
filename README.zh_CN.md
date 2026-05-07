@@ -68,26 +68,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | 创建事件总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
 | 定义类型安全 Topic | `Topic::<T>::try_new` |
-| 发布 payload 或 envelope | `publish`、`publish_envelope`、`publish_envelope_with_options`、`publish_all` |
+| 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`publish_all`、`publish_all_with_options` |
 | 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription` |
 | 配置重试和确认 | `RetryOptions`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
-| 添加发布拦截器 | `add_publisher_interceptor` |
-| 添加订阅拦截器 | `add_subscriber_interceptor`、`SubscriberInterceptorChain` |
+| 添加发布拦截器 | `add_publisher_interceptor`、`PublisherInterceptor` |
+| 添加订阅拦截器 | `add_subscriber_interceptor`、`SubscriberInterceptor`、`SubscriberInterceptorChain` |
 | 添加发布错误处理 | `PublishOptions` |
+| 消费死信事件 | `add_dead_letter_handler`、`DeadLetterPayload` |
 | 观测内部回调失败 | `add_error_observer` |
-| 在测试中等待处理器工作完成 | `wait_for_idle` |
+| 在测试中等待处理器工作完成 | `wait_for_idle`、`wait_for_idle_timeout` |
 | 关闭本地事件总线 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout` |
 
 ## 核心 API 概览
 
 | 类型 | 用途 |
 | --- | --- |
+| `EventBus` | 具体后端共享的事件总线契约。 |
+| `EventBusFactory` | 后端创建和默认配置的通用工厂契约。 |
 | `LocalEventBus` | 线程安全的进程内事件总线实现。 |
 | `LocalEventBusFactory` | 使用类型化默认发布配置、订阅配置、拦截器和死信策略创建事件总线。 |
 | `Topic<T>` | 按名称和 payload 类型区分的类型安全 Topic。 |
 | `EventEnvelope<T>` | 事件 payload 以及请求头、时间戳、顺序键、延迟、确认句柄和死信标记。 |
 | `PublishOptions<T>` | 发布重试元数据和发布错误回调。 |
 | `SubscribeOptions<T>` | 订阅确认模式、重试配置、过滤器、错误回调、死信策略和优先级。 |
+| `PublisherInterceptor<T>` | 可以增强或丢弃待发布 envelope 的公开拦截器契约。 |
+| `SubscriberInterceptor<T>` | 围绕订阅处理器执行的公开 around-style 拦截器契约。 |
 | `DeadLetterPayload` | 标准死信记录，包含诊断元数据和类型擦除的原始 payload。 |
 | `Subscription<T>` | 用于查看和取消订阅的句柄。 |
 | `EventBusError` | 生命周期、校验、处理器、锁和类型擦除失败的统一错误类型。 |
@@ -99,14 +104,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
 - 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档记录。
 - 订阅级死信策略返回 `Ok(None)` 时，会禁用本次失败投递对 factory 默认死信策略的回退。
+- 显式传入的发布和订阅配置会与类型级 factory 默认配置合并。确认模式、优先级等订阅标量配置只有在 builder 中显式设置时才覆盖默认值。
 - 手动 NACK 会被视为订阅处理失败，并先参与订阅重试；重试耗尽后才进入错误处理器和死信路由。
 - 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
 - `publish_all` 会按输入顺序提交 envelope。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
-- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待期间仍会占用本地处理器线程池容量。
+- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待发生在本地处理器线程池之外，到期后才提交处理器执行。
 - `LocalEventBus` 会拒绝 retry 的 `attempt_timeout` 选项，因为本地处理器没有协作取消信号。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
 - `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
-- `wait_for_idle` 面向测试和需要等待已调度处理器完成的受控关闭流程。
+- `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
 ## 贡献
 
