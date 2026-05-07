@@ -32,11 +32,13 @@ use super::subscribe_options::{
 /// Builder used to create [`SubscribeOptions`].
 pub struct SubscribeOptionsBuilder<T: 'static> {
     ack_mode: AckMode,
+    ack_mode_configured: bool,
     retry_options: Option<RetryOptions>,
     filter: Option<Arc<EventFilterFn<T>>>,
     error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
     priority: i32,
+    priority_configured: bool,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -48,11 +50,13 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     pub(crate) fn new() -> Self {
         Self {
             ack_mode: AckMode::Auto,
+            ack_mode_configured: false,
             retry_options: None,
             filter: None,
             error_handlers: Vec::new(),
             dead_letter_strategy: None,
             priority: 0,
+            priority_configured: false,
             marker: PhantomData,
         }
     }
@@ -66,6 +70,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn ack_mode(mut self, ack_mode: AckMode) -> Self {
         self.ack_mode = ack_mode;
+        self.ack_mode_configured = true;
         self
     }
 
@@ -152,6 +157,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn priority(mut self, priority: i32) -> Self {
         self.priority = priority;
+        self.priority_configured = true;
         self
     }
 
@@ -162,11 +168,13 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     pub fn build(self) -> SubscribeOptions<T> {
         SubscribeOptions {
             ack_mode: self.ack_mode,
+            ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options,
             filter: self.filter,
             error_handlers: self.error_handlers,
             dead_letter_strategy: self.dead_letter_strategy,
             priority: self.priority,
+            priority_configured: self.priority_configured,
         }
     }
 }

@@ -10,6 +10,7 @@
 //! Event bus abstraction shared by concrete backends.
 
 use crate::{
+    DeadLetterPayload,
     EventBusResult,
     EventEnvelope,
     IntoEventBusResult,
@@ -18,6 +19,7 @@ use crate::{
     Subscription,
     Topic,
 };
+use std::time::Duration;
 
 /// Common event bus contract implemented by concrete backends.
 ///
@@ -64,6 +66,30 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         T: Clone + Send + Sync + 'static,
     {
         self.publish_envelope(EventEnvelope::create(topic.clone(), payload))
+    }
+
+    /// Publishes a payload to a topic with explicit publish options.
+    ///
+    /// # Parameters
+    /// - `topic`: Target topic.
+    /// - `payload`: Event payload.
+    /// - `options`: Publish options applied to this event.
+    ///
+    /// # Returns
+    /// `Ok(())` after the backend accepts the event.
+    ///
+    /// # Errors
+    /// Returns backend-specific publish errors.
+    fn publish_with_options<T>(
+        &self,
+        topic: &Topic<T>,
+        payload: T,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.publish_envelope_with_options(EventEnvelope::create(topic.clone(), payload), options)
     }
 
     /// Publishes an existing envelope with default publish options.
@@ -120,8 +146,34 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     where
         T: Clone + Send + Sync + 'static,
     {
+        self.publish_all_with_options(envelopes, PublishOptions::empty())
+    }
+
+    /// Publishes a batch of envelopes with explicit publish options.
+    ///
+    /// The default implementation submits envelopes in input order. Concrete
+    /// backends may still execute handlers concurrently unless they document a
+    /// stronger ordering guarantee.
+    ///
+    /// # Parameters
+    /// - `envelopes`: Envelopes to submit in order.
+    /// - `options`: Publish options cloned for each envelope.
+    ///
+    /// # Returns
+    /// `Ok(())` after the backend accepts the batch.
+    ///
+    /// # Errors
+    /// Returns the first backend publishing error.
+    fn publish_all_with_options<T>(
+        &self,
+        envelopes: Vec<EventEnvelope<T>>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
         for envelope in envelopes {
-            self.publish_envelope(envelope)?;
+            self.publish_envelope_with_options(envelope, options.clone())?;
         }
         Ok(())
     }
@@ -179,6 +231,39 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static;
 
+    /// Registers a handler for standard dead-letter payloads.
+    ///
+    /// The default implementation adapts the handler into a normal subscription
+    /// with a deterministic system subscriber ID derived from the topic name.
+    ///
+    /// # Parameters
+    /// - `dead_letter_topic`: Topic carrying [`DeadLetterPayload`] events.
+    /// - `handler`: Handler invoked for dead-letter events.
+    /// - `options`: Subscription options for dead-letter consumption.
+    ///
+    /// # Returns
+    /// Subscription handle for the dead-letter handler.
+    ///
+    /// # Errors
+    /// Returns backend-specific subscription errors.
+    fn add_dead_letter_handler<F, R>(
+        &self,
+        dead_letter_topic: &Topic<DeadLetterPayload>,
+        handler: F,
+        options: SubscribeOptions<DeadLetterPayload>,
+    ) -> EventBusResult<Subscription<DeadLetterPayload>>
+    where
+        F: Fn(EventEnvelope<DeadLetterPayload>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        self.subscribe_with_options(
+            format!("dead-letter:{}", dead_letter_topic.name()),
+            dead_letter_topic,
+            handler,
+            options,
+        )
+    }
+
     /// Waits until all work for a topic is idle.
     ///
     /// # Parameters
@@ -190,6 +275,22 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// # Errors
     /// Returns backend-specific wait errors.
     fn wait_for_idle<T>(&self, topic: &Topic<T>) -> EventBusResult<()>
+    where
+        T: 'static;
+
+    /// Waits until all work for a topic is idle or the timeout elapses.
+    ///
+    /// # Parameters
+    /// - `topic`: Topic to wait for.
+    /// - `timeout`: Maximum duration to wait.
+    ///
+    /// # Returns
+    /// `Ok(true)` once the topic has no active handler work, or `Ok(false)` when
+    /// the timeout elapses first.
+    ///
+    /// # Errors
+    /// Returns backend-specific wait errors.
+    fn wait_for_idle_timeout<T>(&self, topic: &Topic<T>, timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static;
 }

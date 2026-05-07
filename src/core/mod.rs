@@ -13,6 +13,8 @@
 
 mod ack_mode;
 mod acknowledgement;
+#[cfg(coverage)]
+mod coverage;
 mod dead_letter_record;
 mod event_bus;
 mod event_bus_error;
@@ -31,6 +33,8 @@ mod topic_key;
 
 pub use ack_mode::AckMode;
 pub use acknowledgement::Acknowledgement;
+#[cfg(coverage)]
+pub use coverage::coverage_exercise_core_defensive_paths;
 pub use dead_letter_record::{
     DeadLetterPayload,
     DeadLetterRecord,
@@ -58,5 +62,6 @@ pub use retry_options::{
 pub use subscribe_options::SubscribeOptions;
 pub use subscribe_options_builder::SubscribeOptionsBuilder;
 pub use subscription::Subscription;
+pub(crate) use subscription::SubscriptionState;
 pub use topic::Topic;
 pub use topic_key::TopicKey;

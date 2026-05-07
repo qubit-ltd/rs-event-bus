@@ -1,6 +1,9 @@
 coverage-cfg | src/lib.rs | Re-export coverage helpers only when cargo-llvm-cov builds with cfg(coverage).
 coverage-cfg | src/core/mod.rs | Re-export core coverage helpers only for coverage builds.
 coverage-cfg | src/core/event_bus_factory.rs | Compensate for source-based coverage placeholder regions on trait default methods.
+coverage-cfg | src/core/subscription.rs | Poison private delay mutex only under coverage to exercise defensive recovery paths.
 coverage-cfg | src/local/mod.rs | Re-export local coverage helpers only for coverage builds.
-coverage-cfg | src/local/local_event_bus.rs | Exercise type-erased defensive branches that cannot be triggered through the public API.
-coverage-cfg | src/local/local_event_bus_inner.rs | Exercise private poisoned-lock and one-shot task defensive branches for coverage builds.
+coverage-cfg | src/local/local_event_bus.rs | Host LocalEventBus coverage helpers as a private child module for cfg(coverage) tests.
+coverage-cfg | src/local/local_event_bus_inner.rs | Host LocalEventBusInner coverage helpers as a private child module for cfg(coverage) tests.
+multiple-public-types | src/core/subscription.rs | SubscriptionState is crate-internal shared cancellation state paired with the public Subscription handle.
+multiple-public-types | src/local/local_event_bus.rs | Interceptor contracts are intentionally documented next to the LocalEventBus runtime entry point.

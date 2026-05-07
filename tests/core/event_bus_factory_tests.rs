@@ -1,5 +1,10 @@
 #[cfg(coverage)]
-use qubit_event_bus::coverage_exercise_event_bus_factory_default_regions;
+use qubit_event_bus::{
+    coverage_exercise_core_defensive_paths,
+    coverage_exercise_event_bus_factory_default_regions,
+};
+use std::time::Duration;
+
 use qubit_event_bus::{
     EventBus,
     EventBusError,
@@ -63,6 +68,17 @@ impl EventBus for FailingStartBus {
     {
         Ok(())
     }
+
+    fn wait_for_idle_timeout<T>(
+        &self,
+        _topic: &Topic<T>,
+        _timeout: Duration,
+    ) -> EventBusResult<bool>
+    where
+        T: 'static,
+    {
+        Ok(true)
+    }
 }
 
 impl EventBus for SuccessfulStartBus {
@@ -106,6 +122,17 @@ impl EventBus for SuccessfulStartBus {
         T: 'static,
     {
         Ok(())
+    }
+
+    fn wait_for_idle_timeout<T>(
+        &self,
+        _topic: &Topic<T>,
+        _timeout: Duration,
+    ) -> EventBusResult<bool>
+    where
+        T: 'static,
+    {
+        Ok(true)
     }
 }
 
@@ -179,6 +206,7 @@ fn test_event_bus_factory_create_started_returns_started_bus() {
 #[test]
 fn test_coverage_event_bus_factory_default_regions() {
     let errors = coverage_exercise_event_bus_factory_default_regions();
+    let observations = coverage_exercise_core_defensive_paths();
 
     assert_eq!(errors.len(), 16);
     assert!(
@@ -186,4 +214,5 @@ fn test_coverage_event_bus_factory_default_regions() {
             .iter()
             .all(|error| error.kind() == "unsupported_operation")
     );
+    assert!(observations.into_iter().all(|observed| observed));
 }

@@ -68,6 +68,19 @@ impl<T: 'static> PublishOptions<T> {
         self.error_handlers.len()
     }
 
+    /// Merges these explicit options with type-level defaults.
+    ///
+    /// Explicit retry options override defaults. Error handlers are cumulative
+    /// and default handlers run before explicit handlers.
+    pub(crate) fn merge_defaults(self, defaults: Self) -> Self {
+        let mut error_handlers = defaults.error_handlers;
+        error_handlers.extend(self.error_handlers);
+        Self {
+            retry_options: self.retry_options.or(defaults.retry_options),
+            error_handlers,
+        }
+    }
+
     /// Notifies registered publish error handlers.
     ///
     /// # Parameters

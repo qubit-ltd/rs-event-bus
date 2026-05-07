@@ -21,6 +21,7 @@ use crate::{
     Topic,
     TransactionalEventBus,
 };
+use std::time::Duration;
 
 use super::unsupported_transactional_publisher::UnsupportedTransactionalPublisher;
 
@@ -84,6 +85,20 @@ impl EventBus for UnsupportedTransactionalEventBus {
         T: 'static,
     {
         Err(EventBusError::unsupported_operation("wait_for_idle"))
+    }
+
+    /// Returns an unsupported-operation error.
+    fn wait_for_idle_timeout<T>(
+        &self,
+        _topic: &Topic<T>,
+        _timeout: Duration,
+    ) -> EventBusResult<bool>
+    where
+        T: 'static,
+    {
+        Err(EventBusError::unsupported_operation(
+            "wait_for_idle_timeout",
+        ))
     }
 }
 

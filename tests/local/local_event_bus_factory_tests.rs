@@ -6,12 +6,125 @@ use std::sync::{
 use qubit_event_bus::{
     DeadLetterPayload,
     DeadLetterRecord,
+    EventBus,
     EventBusError,
+    EventBusFactory,
+    EventBusResult,
     EventEnvelope,
     LocalEventBusFactory,
+    PublishOptions,
+    PublisherInterceptor,
     SubscribeOptions,
+    SubscriberInterceptor,
+    SubscriberInterceptorChain,
     Topic,
 };
+
+struct PublicPublisherInterceptor;
+
+impl PublisherInterceptor<String> for PublicPublisherInterceptor {
+    fn on_publish(
+        &self,
+        envelope: EventEnvelope<String>,
+    ) -> EventBusResult<Option<EventEnvelope<String>>> {
+        Ok(Some(envelope.with_header("factory-publisher", "seen")))
+    }
+}
+
+struct PublicSubscriberInterceptor {
+    observed: Arc<Mutex<Vec<String>>>,
+}
+
+impl SubscriberInterceptor<String> for PublicSubscriberInterceptor {
+    fn on_consume(
+        &self,
+        envelope: EventEnvelope<String>,
+        chain: SubscriberInterceptorChain<String>,
+    ) -> EventBusResult<()> {
+        self.observed
+            .lock()
+            .expect("observed interceptors should lock")
+            .push(format!("before:{}", envelope.payload()));
+        let result = chain.proceed(envelope.with_header("factory-subscriber", "seen"));
+        self.observed
+            .lock()
+            .expect("observed interceptors should lock")
+            .push("after".to_string());
+        result
+    }
+}
+
+#[test]
+fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
+    let mut factory = LocalEventBusFactory::new();
+    let observed_interceptors = Arc::new(Mutex::new(Vec::new()));
+    EventBusFactory::set_default_publish_options::<String>(&mut factory, PublishOptions::empty())
+        .expect("factory trait should accept default publish options");
+    EventBusFactory::set_default_subscribe_options::<String>(
+        &mut factory,
+        SubscribeOptions::<String>::builder().priority(7).build(),
+    )
+    .expect("factory trait should accept default subscribe options");
+    EventBusFactory::set_default_dead_letter_strategy::<String, _>(
+        &mut factory,
+        |_subscriber, _event, _error, _options| Ok(None),
+    )
+    .expect("factory trait should accept default dead-letter strategies");
+    EventBusFactory::add_publisher_interceptor::<String, _>(
+        &mut factory,
+        PublicPublisherInterceptor,
+    )
+    .expect("factory trait should accept public publisher interceptors");
+    EventBusFactory::add_subscriber_interceptor::<String, _>(
+        &mut factory,
+        PublicSubscriberInterceptor {
+            observed: Arc::clone(&observed_interceptors),
+        },
+    )
+    .expect("factory trait should accept public subscriber interceptors");
+
+    let bus = EventBusFactory::create_started(&factory).expect("factory should start bus");
+    let topic = Topic::<String>::try_new("factory-trait-config").expect("topic should build");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&received);
+    let subscription = EventBus::subscribe(&bus, "sub", &topic, move |event| {
+        captured
+            .lock()
+            .expect("received payloads should lock")
+            .push(format!(
+                "{}:{}:{}",
+                event.payload(),
+                event
+                    .headers()
+                    .get("factory-publisher")
+                    .expect("publisher header should exist"),
+                event
+                    .headers()
+                    .get("factory-subscriber")
+                    .expect("subscriber header should exist"),
+            ));
+    })
+    .expect("subscription should use factory trait defaults");
+
+    EventBus::publish(&bus, &topic, "payload".to_string()).expect("publish should work");
+    EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
+
+    assert_eq!(subscription.options().priority(), 7);
+    assert_eq!(
+        received
+            .lock()
+            .expect("received payloads should lock")
+            .as_slice(),
+        ["payload:seen:seen"]
+    );
+    assert_eq!(
+        observed_interceptors
+            .lock()
+            .expect("observed interceptors should lock")
+            .as_slice(),
+        ["before:payload", "after"]
+    );
+}
 
 #[test]
 fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {

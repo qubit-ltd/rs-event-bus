@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use qubit_event_bus::{
+    EventEnvelope,
     LocalEventBus,
     Topic,
 };
@@ -15,8 +16,10 @@ fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.add_publisher_interceptor::<String, _>(|event| Some(event.with_header("seen", "true")))
-        .expect("interceptor should register");
+    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+        Some(event.with_header("seen", "true"))
+    })
+    .expect("interceptor should register");
     bus.subscribe("sub", &topic, move |event| {
         captured
             .lock()

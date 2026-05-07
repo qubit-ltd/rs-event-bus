@@ -4,7 +4,9 @@ use std::sync::{
 };
 
 use qubit_event_bus::{
+    EventEnvelope,
     LocalEventBus,
+    SubscriberInterceptorChain,
     Topic,
 };
 
@@ -14,9 +16,11 @@ fn test_subscriber_interceptor_entry_applies_to_matching_payload_type() {
     let topic = Topic::<String>::try_new("subscriber-entry").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
-    bus.add_subscriber_interceptor::<String, _, _>(|event, chain| {
-        chain.proceed(event.with_header("subscriber-entry", "true"))
-    })
+    bus.add_subscriber_interceptor::<String, _>(
+        |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+            chain.proceed(event.with_header("subscriber-entry", "true"))
+        },
+    )
     .expect("subscriber interceptor should register");
     bus.subscribe("sub", &topic, move |event| {
         captured
