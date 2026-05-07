@@ -8,12 +8,14 @@
  *
  ******************************************************************************/
 //! Thread-safe in-process event bus.
+// qubit-style: allow coverage-cfg
 
 use std::any::{
     Any,
     TypeId,
     type_name,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::{
     self,
@@ -25,7 +27,10 @@ use std::sync::atomic::{
     Ordering,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{
+    Duration,
+    Instant,
+};
 
 use qubit_thread_pool::{
     ExecutorService,
@@ -64,6 +69,46 @@ type SubscriberInterceptorFn<T> = dyn Fn(EventEnvelope<T>, SubscriberInterceptor
     + Send
     + Sync
     + 'static;
+
+thread_local! {
+    static SUBSCRIPTION_WORKER_BUS_IDS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Event delivery state for one handler attempt.
+#[derive(Clone)]
+struct HandlerDelivery<T: Clone + Send + Sync + 'static> {
+    delivered: EventEnvelope<T>,
+    acknowledgement: Acknowledgement,
+}
+
+impl<T> HandlerDelivery<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Creates a delivered envelope with a fresh acknowledgement.
+    ///
+    /// # Parameters
+    /// - `envelope`: Original event envelope for this attempt.
+    ///
+    /// # Returns
+    /// Delivery state for one handler attempt.
+    fn new(envelope: &EventEnvelope<T>) -> Self {
+        let acknowledgement = Acknowledgement::new();
+        let delivered = envelope
+            .clone()
+            .with_acknowledgement(acknowledgement.clone());
+        Self {
+            delivered,
+            acknowledgement,
+        }
+    }
+}
+
+/// Terminal handler failure paired with the final attempt delivery.
+struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
+    error: EventBusError,
+    delivery: HandlerDelivery<T>,
+}
 
 /// Thread-safe in-process event bus.
 ///
@@ -159,7 +204,15 @@ impl LocalEventBus {
     ///
     /// # Returns
     /// `true` when this call changed the bus from started to stopped.
+    ///
+    /// # Panics
+    /// Panics when called from one of this bus's subscriber worker threads. A
+    /// subscriber worker cannot wait for itself to finish. Use
+    /// [`shutdown_nonblocking`](Self::shutdown_nonblocking) or
+    /// [`shutdown_with_timeout`](Self::shutdown_with_timeout) from subscriber
+    /// handlers.
     pub fn shutdown(&self) -> bool {
+        self.assert_not_own_subscription_worker_for_blocking_shutdown();
         let Some(executor) = self.inner.mark_stopped() else {
             return false;
         };
@@ -168,6 +221,67 @@ impl LocalEventBus {
         wait_for_executor_termination(&executor);
         self.inner.clear_subscriptions();
         true
+    }
+
+    /// Requests shutdown without waiting for subscriber work to finish.
+    ///
+    /// The bus stops accepting publish and subscribe operations, asks the handler
+    /// executor to shut down, deactivates subscriptions, and returns immediately.
+    /// Already running handler code is not interrupted.
+    ///
+    /// # Returns
+    /// `true` when this call changed the bus from started to stopped.
+    pub fn shutdown_nonblocking(&self) -> bool {
+        let Some(executor) = self.inner.mark_stopped() else {
+            return false;
+        };
+        executor.shutdown();
+        self.inner.clear_subscriptions();
+        true
+    }
+
+    /// Shuts down the event bus with a maximum wait duration.
+    ///
+    /// The bus stops accepting new publish and subscribe operations immediately,
+    /// then waits for scheduled subscriber work and executor workers to finish.
+    /// If the timeout elapses, subscriptions are deactivated before the timeout
+    /// error is returned.
+    ///
+    /// # Parameters
+    /// - `timeout`: Maximum duration to wait for graceful shutdown.
+    ///
+    /// # Returns
+    /// `Ok(true)` when this call changed the bus from started to stopped and
+    /// shutdown completed within the timeout. `Ok(false)` means the bus was
+    /// already stopped.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::ShutdownTimedOut`] if subscriber work or executor
+    /// workers do not finish before `timeout`.
+    pub fn shutdown_with_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
+        let started_at = Instant::now();
+        let Some(executor) = self.inner.mark_stopped() else {
+            return Ok(false);
+        };
+        executor.shutdown();
+        let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
+            self.inner.clear_subscriptions();
+            return Err(EventBusError::shutdown_timed_out(timeout));
+        };
+        if !self.inner.wait_for_all_idle_timeout(remaining)? {
+            self.inner.clear_subscriptions();
+            return Err(EventBusError::shutdown_timed_out(timeout));
+        }
+        let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
+            self.inner.clear_subscriptions();
+            return Err(EventBusError::shutdown_timed_out(timeout));
+        };
+        if !wait_for_executor_termination_timeout(&executor, remaining) {
+            self.inner.clear_subscriptions();
+            return Err(EventBusError::shutdown_timed_out(timeout));
+        }
+        self.inner.clear_subscriptions();
+        Ok(true)
     }
 
     /// Registers a typed publisher interceptor.
@@ -289,6 +403,10 @@ impl LocalEventBus {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
+        if let Err(error) = validate_retry_options(options.retry_options()) {
+            self.observe_errors(options.notify_publish_error(&envelope, &error));
+            return Err(error);
+        }
         let original_envelope = envelope.clone();
         let envelope = match self.apply_publisher_interceptors(envelope) {
             Ok(Some(envelope)) => envelope,
@@ -306,10 +424,14 @@ impl LocalEventBus {
         Ok(())
     }
 
-    /// Publishes multiple envelopes.
+    /// Publishes multiple envelopes by submitting each envelope in input order.
+    ///
+    /// This method preserves submission order only. Handler execution order is
+    /// backend-specific because local handlers can run on multiple worker
+    /// threads.
     ///
     /// # Parameters
-    /// - `envelopes`: Envelopes to publish in order.
+    /// - `envelopes`: Envelopes to submit in order.
     ///
     /// # Returns
     /// `Ok(())` after all envelopes have been scheduled.
@@ -389,6 +511,7 @@ impl LocalEventBus {
                 "subscriber ID must not be blank",
             ));
         }
+        validate_retry_options(options.retry_options())?;
 
         let id = self.inner.next_subscription_id();
         let active = Arc::new(AtomicBool::new(true));
@@ -482,6 +605,16 @@ impl LocalEventBus {
     fn observe_errors(&self, errors: Vec<EventBusError>) {
         for error in errors {
             self.inner.observe_error(&error);
+        }
+    }
+
+    /// Panics if blocking shutdown is called from this bus's subscriber worker.
+    fn assert_not_own_subscription_worker_for_blocking_shutdown(&self) {
+        let bus_id = local_event_bus_id(&self.inner);
+        if is_current_subscription_worker_for_bus(bus_id) {
+            panic!(
+                "LocalEventBus::shutdown must not be called from this bus's subscriber worker; use shutdown_nonblocking or shutdown_with_timeout"
+            );
         }
     }
 
@@ -828,7 +961,7 @@ where
         let envelope = envelope.downcast::<EventEnvelope<T>>().map_err(|_| {
             EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
         })?;
-        if !self.options.should_handle(&envelope) {
+        if !self.options.try_should_handle(&envelope)? {
             return Ok(());
         }
         let topic_key = self.topic.key();
@@ -844,7 +977,9 @@ where
             inner: Arc::clone(&bus),
         };
         let bus_for_task = Arc::clone(&bus);
+        let bus_id = local_event_bus_id(&bus);
         if let Err(error) = bus.submit_processing_task(move || {
+            let _worker_context = SubscriptionWorkerContext::enter(bus_id);
             let _guard = ProcessingGuard::new(Arc::clone(&bus_for_task), guard_topic_key);
             process_subscription_event(
                 active,
@@ -859,6 +994,61 @@ where
             return Err(error);
         }
         Ok(())
+    }
+}
+
+/// Returns a stable in-process identifier for one local event bus inner value.
+///
+/// # Parameters
+/// - `inner`: Shared event bus state.
+///
+/// # Returns
+/// Pointer-sized identifier used only for thread-local worker tracking.
+fn local_event_bus_id(inner: &Arc<LocalEventBusInner>) -> usize {
+    Arc::as_ptr(inner) as usize
+}
+
+/// Returns whether the current thread is processing work for the bus.
+///
+/// # Parameters
+/// - `bus_id`: Identifier returned by [`local_event_bus_id`].
+///
+/// # Returns
+/// `true` when the current thread is inside a subscriber task for the same bus.
+fn is_current_subscription_worker_for_bus(bus_id: usize) -> bool {
+    SUBSCRIPTION_WORKER_BUS_IDS.with(|bus_ids| bus_ids.borrow().contains(&bus_id))
+}
+
+/// Thread-local marker for subscriber worker execution.
+struct SubscriptionWorkerContext {
+    bus_id: usize,
+}
+
+impl SubscriptionWorkerContext {
+    /// Marks the current thread as processing subscriber work for a bus.
+    ///
+    /// # Parameters
+    /// - `bus_id`: Identifier returned by [`local_event_bus_id`].
+    ///
+    /// # Returns
+    /// Guard that removes the marker on drop.
+    fn enter(bus_id: usize) -> Self {
+        SUBSCRIPTION_WORKER_BUS_IDS.with(|bus_ids| {
+            bus_ids.borrow_mut().push(bus_id);
+        });
+        Self { bus_id }
+    }
+}
+
+impl Drop for SubscriptionWorkerContext {
+    /// Removes this guard's bus marker from thread-local worker state.
+    fn drop(&mut self) {
+        SUBSCRIPTION_WORKER_BUS_IDS.with(|bus_ids| {
+            let mut bus_ids = bus_ids.borrow_mut();
+            if let Some(position) = bus_ids.iter().rposition(|bus_id| *bus_id == self.bus_id) {
+                bus_ids.remove(position);
+            }
+        });
     }
 }
 
@@ -911,33 +1101,31 @@ fn process_subscription_event<T>(
     if !active.load(Ordering::SeqCst) {
         return;
     }
-    let acknowledgement = Acknowledgement::new();
-    let delivered = envelope
-        .clone()
-        .with_acknowledgement(acknowledgement.clone());
-    match run_handler_with_retry(&handler, &options, delivered.clone()) {
-        Ok(()) => {
-            if acknowledgement.is_nacked() {
+    match run_handler_with_retry(&handler, &options, envelope) {
+        Ok(delivery) => {
+            if delivery.acknowledgement.is_nacked() {
                 let error = EventBusError::handler_failed("subscriber nacked the event");
                 handle_subscription_failure(
                     &options,
                     &subscriber_id,
-                    &delivered,
+                    &delivery.delivered,
                     &error,
-                    &acknowledgement,
+                    &delivery.acknowledgement,
                     &event_bus,
                 );
-            } else if options.ack_mode() == AckMode::Auto && !acknowledgement.is_completed() {
-                acknowledgement.ack();
+            } else if options.ack_mode() == AckMode::Auto
+                && !delivery.acknowledgement.is_completed()
+            {
+                delivery.acknowledgement.ack();
             }
         }
-        Err(error) => {
+        Err(failure) => {
             handle_subscription_failure(
                 &options,
                 &subscriber_id,
-                &delivered,
-                &error,
-                &acknowledgement,
+                &failure.delivery.delivered,
+                &failure.error,
+                &failure.delivery.acknowledgement,
                 &event_bus,
             );
         }
@@ -1002,19 +1190,16 @@ fn create_dead_letter_for_failure<T>(
 where
     T: Clone + Send + Sync + 'static,
 {
-    match options.create_dead_letter(subscriber_id, delivered, error) {
-        Ok(Some(dead_letter)) => Some(dead_letter),
-        Ok(None) => create_default_dead_letter_for_failure(
-            options,
-            subscriber_id,
-            delivered,
-            error,
-            event_bus,
-        ),
-        Err(error) => {
-            event_bus.inner.observe_error(&error);
-            None
+    if options.has_dead_letter_strategy() {
+        match options.create_dead_letter(subscriber_id, delivered, error) {
+            Ok(dead_letter) => dead_letter,
+            Err(error) => {
+                event_bus.inner.observe_error(&error);
+                None
+            }
         }
+    } else {
+        create_default_dead_letter_for_failure(options, subscriber_id, delivered, error, event_bus)
     }
 }
 
@@ -1086,21 +1271,38 @@ where
 /// # Parameters
 /// - `handler`: Subscriber handler.
 /// - `options`: Subscriber options.
-/// - `envelope`: Delivered envelope.
+/// - `envelope`: Original event envelope.
 ///
 /// # Returns
-/// `Ok(())` after a successful attempt, or the final handler error.
+/// Successful attempt delivery, or the final handler error with its delivery.
 fn run_handler_with_retry<T>(
     handler: &Arc<HandlerFn<T>>,
     options: &SubscribeOptions<T>,
     envelope: EventEnvelope<T>,
-) -> EventBusResult<()>
+) -> Result<HandlerDelivery<T>, Box<HandlerRunFailure<T>>>
 where
     T: Clone + Send + Sync + 'static,
 {
-    run_with_retry(options.retry_options(), || {
-        call_handler(handler, envelope.clone())
-    })
+    let mut last_delivery = None;
+    match run_with_retry(options.retry_options(), || {
+        let delivery = HandlerDelivery::new(&envelope);
+        last_delivery = Some(delivery.clone());
+        call_handler(handler, delivery.delivered.clone())?;
+        if delivery.acknowledgement.is_nacked() {
+            Err(EventBusError::handler_failed("subscriber nacked the event"))
+        } else {
+            Ok(delivery)
+        }
+    }) {
+        Ok(delivery) => Ok(delivery),
+        Err(error) => {
+            let delivery = match last_delivery {
+                Some(delivery) => delivery,
+                None => HandlerDelivery::new(&envelope),
+            };
+            Err(Box::new(HandlerRunFailure { error, delivery }))
+        }
+    }
 }
 
 /// Calls a subscriber handler while converting panics into handler errors.
@@ -1140,14 +1342,215 @@ where
         let mut operation = operation;
         return operation();
     };
-    let retry = qubit_retry::Retry::<EventBusError>::from_options(retry_options.clone())
-        .map_err(|error| EventBusError::invalid_argument("retry_options", error.to_string()))?;
-    retry.run(operation).map_err(|error| {
-        error
-            .last_error()
-            .cloned()
-            .unwrap_or_else(|| EventBusError::handler_failed(error.to_string()))
-    })
+    let retry = match qubit_retry::Retry::<EventBusError>::from_options(retry_options.clone()) {
+        Ok(retry) => retry,
+        Err(error) => {
+            return Err(EventBusError::invalid_argument(
+                "retry_options",
+                error.to_string(),
+            ));
+        }
+    };
+    match retry.run(operation) {
+        Ok(value) => Ok(value),
+        Err(error) => match error.last_error().cloned() {
+            Some(error) => Err(error),
+            None => Err(EventBusError::handler_failed(error.to_string())),
+        },
+    }
+}
+
+/// Validates retry options supported by the local backend.
+///
+/// # Parameters
+/// - `retry_options`: Optional retry options to validate.
+///
+/// # Returns
+/// `Ok(())` when the local backend can apply the options.
+///
+/// # Errors
+/// Returns [`EventBusError::InvalidArgument`] when unsupported attempt timeout
+/// options are configured.
+fn validate_retry_options(retry_options: Option<&crate::RetryOptions>) -> EventBusResult<()> {
+    if retry_options
+        .and_then(crate::RetryOptions::attempt_timeout)
+        .is_some()
+    {
+        return Err(EventBusError::invalid_argument(
+            "retry_options",
+            "attempt_timeout is not supported by LocalEventBus retry handling",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(coverage)]
+struct CoverageWrongPublisherInterceptor;
+
+#[cfg(coverage)]
+impl PublisherInterceptorEntry for CoverageWrongPublisherInterceptor {
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<String>()
+    }
+
+    fn intercept(
+        &self,
+        _envelope: Box<dyn Any + Send>,
+    ) -> EventBusResult<Option<Box<dyn Any + Send>>> {
+        let topic =
+            Topic::<u32>::try_new("coverage-wrong-publisher").expect("coverage topic should build");
+        Ok(Some(Box::new(EventEnvelope::create(topic, 1_u32))))
+    }
+}
+
+#[cfg(coverage)]
+struct CoverageWrongSubscriberInterceptor;
+
+#[cfg(coverage)]
+impl SubscriberInterceptorEntry for CoverageWrongSubscriberInterceptor {
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<String>()
+    }
+
+    fn wrap_handler(
+        &self,
+        _handler: Box<dyn Any + Send + Sync>,
+    ) -> EventBusResult<Box<dyn Any + Send + Sync>> {
+        Ok(Box::new("wrong handler".to_string()))
+    }
+}
+
+#[cfg(coverage)]
+fn coverage_string_handler(_event: EventEnvelope<String>) -> EventBusResult<()> {
+    Ok(())
+}
+
+#[cfg(coverage)]
+fn coverage_number_handler(_event: EventEnvelope<u32>) -> EventBusResult<()> {
+    Ok(())
+}
+
+#[cfg(coverage)]
+fn coverage_subscriber_passthrough(
+    event: EventEnvelope<String>,
+    chain: SubscriberInterceptorChain<String>,
+) -> EventBusResult<()> {
+    chain.proceed(event)
+}
+
+/// Exercises defensive local event-bus branches that are not public behavior.
+///
+/// # Returns
+/// Errors produced by intentionally mismatched type-erased adapters.
+#[cfg(coverage)]
+pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError> {
+    let mut errors = Vec::new();
+    let string_topic =
+        Topic::<String>::try_new("coverage-local-defensive").expect("coverage topic should build");
+    let number_topic = Topic::<u32>::try_new("coverage-local-defensive-number")
+        .expect("coverage topic should build");
+
+    let publisher = create_publisher_interceptor_entry::<String, _>(Some);
+    let publisher_error = publisher
+        .intercept(Box::new(EventEnvelope::create(number_topic.clone(), 1_u32)))
+        .expect_err("wrong publisher envelope type should fail");
+    errors.push(publisher_error);
+
+    let wrong_publisher_bus = LocalEventBus::with_runtime_options(
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![Arc::new(CoverageWrongPublisherInterceptor)],
+        Vec::new(),
+        1,
+        None,
+    );
+    wrong_publisher_bus
+        .start()
+        .expect("coverage bus should start");
+    let publisher_error = wrong_publisher_bus
+        .publish(&string_topic, "payload".to_string())
+        .expect_err("wrong publisher output type should fail");
+    errors.push(publisher_error);
+
+    let subscriber =
+        create_subscriber_interceptor_entry::<String, _, _>(coverage_subscriber_passthrough);
+    let pass_handler: Arc<HandlerFn<String>> = Arc::new(coverage_string_handler);
+    let wrapped_handler = subscriber
+        .wrap_handler(Box::new(pass_handler))
+        .expect("subscriber interceptor should wrap matching handler");
+    let wrapped_handler = *wrapped_handler
+        .downcast::<Arc<HandlerFn<String>>>()
+        .expect("subscriber interceptor should return matching handler");
+    wrapped_handler(EventEnvelope::create(
+        string_topic.clone(),
+        "payload".to_string(),
+    ))
+    .expect("wrapped handler should proceed");
+
+    let wrong_handler: Arc<HandlerFn<u32>> = Arc::new(coverage_number_handler);
+    wrong_handler(EventEnvelope::create(number_topic.clone(), 2_u32))
+        .expect("coverage number handler should succeed");
+    let subscriber_error = subscriber
+        .wrap_handler(Box::new(wrong_handler))
+        .expect_err("wrong subscriber handler type should fail");
+    errors.push(subscriber_error);
+
+    let wrong_subscriber_bus = LocalEventBus::with_runtime_options(
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        Vec::new(),
+        vec![Arc::new(CoverageWrongSubscriberInterceptor)],
+        1,
+        None,
+    );
+    wrong_subscriber_bus
+        .start()
+        .expect("coverage bus should start");
+    let subscriber_error = wrong_subscriber_bus
+        .subscribe("sub", &string_topic, coverage_string_handler)
+        .err()
+        .expect("wrong subscriber output type should fail");
+    errors.push(subscriber_error);
+
+    let handler: Arc<HandlerFn<String>> = Arc::new(coverage_string_handler);
+    let inactive_entry = TypedSubscriptionEntry {
+        id: 1,
+        subscriber_id: "inactive".to_string(),
+        topic: string_topic.clone(),
+        active: Arc::new(AtomicBool::new(false)),
+        handler: Arc::clone(&handler),
+        options: SubscribeOptions::empty(),
+    };
+    let bus = LocalEventBus::new();
+    inactive_entry
+        .dispatch(
+            Box::new(EventEnvelope::create(
+                string_topic.clone(),
+                "payload".to_string(),
+            )),
+            Arc::clone(&bus.inner),
+        )
+        .expect("inactive entry should skip dispatch");
+
+    let mismatched_entry = TypedSubscriptionEntry {
+        id: 2,
+        subscriber_id: "mismatch".to_string(),
+        topic: string_topic.clone(),
+        active: Arc::new(AtomicBool::new(true)),
+        handler,
+        options: SubscribeOptions::empty(),
+    };
+    let dispatch_error = mismatched_entry
+        .dispatch(
+            Box::new(EventEnvelope::create(number_topic, 1_u32)),
+            Arc::clone(&bus.inner),
+        )
+        .expect_err("wrong dispatch envelope type should fail");
+    errors.push(dispatch_error);
+
+    errors
 }
 
 /// Waits for a fixed handler executor to finish after shutdown.
@@ -1158,6 +1561,37 @@ fn wait_for_executor_termination(executor: &FixedThreadPool) {
     while !executor.is_terminated() {
         thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Waits for a fixed handler executor to finish until the timeout elapses.
+///
+/// # Parameters
+/// - `executor`: Executor whose graceful shutdown has already been requested.
+/// - `timeout`: Maximum duration to wait.
+///
+/// # Returns
+/// `true` when the executor terminates before the timeout.
+fn wait_for_executor_termination_timeout(executor: &FixedThreadPool, timeout: Duration) -> bool {
+    let started_at = Instant::now();
+    while !executor.is_terminated() {
+        let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
+            return false;
+        };
+        thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+    true
+}
+
+/// Returns the remaining shutdown timeout.
+///
+/// # Parameters
+/// - `started_at`: Time when the shutdown wait began.
+/// - `timeout`: Total timeout budget.
+///
+/// # Returns
+/// Remaining duration, or `None` when the timeout has elapsed.
+fn remaining_shutdown_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
+    timeout.checked_sub(started_at.elapsed())
 }
 
 /// Returns the default subscription handler worker count.

@@ -1,0 +1,6 @@
+coverage-cfg | src/lib.rs | Re-export coverage helpers only when cargo-llvm-cov builds with cfg(coverage).
+coverage-cfg | src/core/mod.rs | Re-export core coverage helpers only for coverage builds.
+coverage-cfg | src/core/event_bus_factory.rs | Compensate for source-based coverage placeholder regions on trait default methods.
+coverage-cfg | src/local/mod.rs | Re-export local coverage helpers only for coverage builds.
+coverage-cfg | src/local/local_event_bus.rs | Exercise type-erased defensive branches that cannot be triggered through the public API.
+coverage-cfg | src/local/local_event_bus_inner.rs | Exercise private poisoned-lock and one-shot task defensive branches for coverage builds.

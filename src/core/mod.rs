@@ -8,6 +8,8 @@
  *
  ******************************************************************************/
 //! Core event bus contracts, value objects, options, and errors.
+//!
+// qubit-style: allow coverage-cfg
 
 mod ack_mode;
 mod acknowledgement;
@@ -39,6 +41,8 @@ pub use event_bus_error::{
     EventBusResult,
 };
 pub use event_bus_factory::EventBusFactory;
+#[cfg(coverage)]
+pub use event_bus_factory::coverage_exercise_event_bus_factory_default_regions;
 pub use event_envelope::EventEnvelope;
 pub use event_envelope_builder::EventEnvelopeBuilder;
 pub use into_event_bus_result::IntoEventBusResult;
