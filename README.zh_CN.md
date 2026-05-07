@@ -30,7 +30,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.1.1"
+qubit-event-bus = "0.2.0"
 ```
 
 ## 快速开始
@@ -101,10 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 订阅级死信策略返回 `Ok(None)` 时，会禁用本次失败投递对 factory 默认死信策略的回退。
 - 手动 NACK 会被视为订阅处理失败，并先参与订阅重试；重试耗尽后才进入错误处理器和死信路由。
 - 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
-- `publish_all` 会按输入顺序提交 envelope，但本地处理器执行顺序取决于 worker 调度。
-- `ordering_key` 和 `delay` 会作为信封元数据保留；本地 backend 不执行有序分发通道或延迟投递语义。
+- `publish_all` 会按输入顺序提交 envelope。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
+- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待期间仍会占用本地处理器线程池容量。
 - `LocalEventBus` 会拒绝 retry 的 `attempt_timeout` 选项，因为本地处理器没有协作取消信号。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
+- `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
 - `wait_for_idle` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
 ## 贡献

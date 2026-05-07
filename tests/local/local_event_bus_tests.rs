@@ -21,7 +21,10 @@ use std::sync::{
     mpsc,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{
+    Duration,
+    Instant,
+};
 
 use qubit_event_bus::{
     AckMode,
@@ -87,6 +90,14 @@ fn wait_for_count(counter: &Arc<(Mutex<usize>, Condvar)>, expected: usize) {
     let mut count = lock.lock().expect("counter should lock");
     while *count < expected {
         count = condvar.wait(count).expect("counter wait should not poison");
+    }
+}
+
+fn wait_for_gate(gate: &Arc<(Mutex<bool>, Condvar)>) {
+    let (lock, condvar) = &**gate;
+    let mut released = lock.lock().expect("gate should lock");
+    while !*released {
+        released = condvar.wait(released).expect("gate wait should not poison");
     }
 }
 
@@ -178,6 +189,224 @@ fn test_publish_delivers_event_to_single_subscriber() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(received_payloads(&received), vec!["payload".to_string()]);
+}
+
+#[test]
+fn test_publish_delay_defers_local_delivery() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("delayed-delivery");
+    let (received_tx, received_rx) = mpsc::channel();
+    bus.subscribe("sub-1", &topic, move |event| {
+        received_tx
+            .send((Instant::now(), event.payload().clone()))
+            .expect("received timestamp should send");
+        Ok(())
+    })
+    .expect("subscribe should work");
+
+    let delay = Duration::from_millis(80);
+    let started_at = Instant::now();
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "payload".to_string()).with_delay(delay),
+    )
+    .expect("publish should accept delayed event");
+
+    assert!(
+        received_rx.recv_timeout(Duration::from_millis(25)).is_err(),
+        "handler should not run before the configured delay"
+    );
+    let (received_at, payload) = received_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("delayed handler should eventually run");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(payload, "payload");
+    assert!(
+        received_at.duration_since(started_at) >= delay,
+        "handler ran before the configured delay elapsed"
+    );
+}
+
+#[test]
+fn test_ordering_key_serializes_same_key_delivery_on_multi_worker_pool() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(2)
+        .expect("pool size should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordering-key-serializes");
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (first_started_tx, first_started_rx) = mpsc::channel();
+    let (second_started_tx, second_started_rx) = mpsc::channel();
+    let captured_release = Arc::clone(&release);
+    let captured_sequence = Arc::clone(&sequence);
+
+    bus.subscribe("sub-1", &topic, move |event| {
+        if event.payload() == "first" {
+            first_started_tx.send(()).expect("first start should send");
+            let (lock, condvar) = &*captured_release;
+            let mut released = lock.lock().expect("release gate should lock");
+            while !*released {
+                released = condvar
+                    .wait(released)
+                    .expect("release gate wait should not poison");
+            }
+        } else if event.payload() == "second" {
+            second_started_tx
+                .send(())
+                .expect("second start should send");
+        }
+        captured_sequence
+            .lock()
+            .expect("sequence should lock")
+            .push(event.payload().clone());
+        Ok(())
+    })
+    .expect("subscribe should work");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
+    )
+    .expect("first publish should work");
+    first_started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("first handler should start");
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"),
+    )
+    .expect("second publish should work");
+
+    assert!(
+        second_started_rx
+            .recv_timeout(Duration::from_millis(30))
+            .is_err(),
+        "same ordering key should wait for the previous delivery"
+    );
+    release_gate(&release);
+    second_started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second handler should start after first completes");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(
+        sequence.lock().expect("sequence should lock").as_slice(),
+        ["first", "second"]
+    );
+}
+
+#[test]
+fn test_ordering_key_delivery_respects_bounded_queue_capacity() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(1))
+        .expect("bounded queue should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordered-bounded-handler-queue");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
+    )
+    .expect("first publish should occupy the ordered lane");
+    wait_for_count(&started, 1);
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"),
+    )
+    .expect("second publish should fill the ordered lane queue");
+    let error = bus
+        .publish_envelope(
+            EventEnvelope::create(topic.clone(), "third".to_string())
+                .with_ordering_key("account-1"),
+        )
+        .expect_err("third ordered publish should be rejected by the bounded queue");
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert!(matches!(error, EventBusError::ExecutionRejected { .. }));
+    assert_eq!(*started.0.lock().expect("started count should lock"), 2);
+}
+
+#[test]
+fn test_ordering_key_yields_between_keys_on_single_worker_pool() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordered-key-fairness");
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let first_started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let captured_sequence = Arc::clone(&sequence);
+    let captured_release = Arc::clone(&release);
+    let captured_first_started = Arc::clone(&first_started);
+    bus.subscribe("sub", &topic, move |event| {
+        captured_sequence
+            .lock()
+            .expect("sequence should lock")
+            .push(event.payload().clone());
+        if event.payload() == "a1" {
+            let (started_lock, started_condvar) = &*captured_first_started;
+            let mut started_count = started_lock.lock().expect("started count should lock");
+            *started_count += 1;
+            started_condvar.notify_all();
+            drop(started_count);
+
+            let (release_lock, release_condvar) = &*captured_release;
+            let mut released = release_lock.lock().expect("release gate should lock");
+            while !*released {
+                released = release_condvar
+                    .wait(released)
+                    .expect("release gate wait should not poison");
+            }
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "a1".to_string()).with_ordering_key("account-a"),
+    )
+    .expect("first A event should publish");
+    wait_for_count(&first_started, 1);
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "a2".to_string()).with_ordering_key("account-a"),
+    )
+    .expect("second A event should queue");
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "b1".to_string()).with_ordering_key("account-b"),
+    )
+    .expect("B event should queue behind the running worker");
+
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(
+        sequence.lock().expect("sequence should lock").as_slice(),
+        ["a1", "b1", "a2"]
+    );
 }
 
 #[test]
@@ -451,6 +680,46 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
         EventBusError::ErrorHandlerFailed { phase, message }
             if *phase == "publish" && message.contains("interceptor panic")
     )));
+}
+
+#[test]
+fn test_publish_retry_retries_publisher_interceptor_failures() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("publisher-interceptor-retry");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(AtomicUsize::new(0));
+    let captured_attempts = Arc::clone(&attempts);
+    let captured_received = Arc::clone(&received);
+    bus.add_publisher_interceptor::<String, _>(move |event| {
+        let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt == 1 {
+            panic!("transient publisher interceptor failure");
+        }
+        Some(event.with_header("attempt", attempt.to_string()))
+    })
+    .expect("interceptor should be registered");
+    bus.subscribe("sub-1", &topic, move |event| {
+        assert_eq!(event.headers().get("attempt"), Some(&"2".to_string()));
+        captured_received.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .expect("subscribe should work");
+    let options = PublishOptions::<String>::builder()
+        .retry_options(retry_options(2))
+        .build();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let result = bus.publish_envelope_with_options(
+        EventEnvelope::create(topic.clone(), "payload".to_string()),
+        options,
+    );
+    std::panic::set_hook(previous_hook);
+
+    result.expect("transient interceptor failure should be retried");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(received.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -1718,6 +1987,62 @@ fn test_cancelled_queued_delivery_skips_handler() {
 }
 
 #[test]
+fn test_cancelled_queued_delayed_delivery_skips_delay_wait() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    factory
+        .set_subscription_handler_queue_capacity(Some(2))
+        .expect("bounded queue should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("cancelled-queued-delayed-delivery");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    let subscription = bus
+        .subscribe("sub", &topic, move |_event| {
+            let (started_lock, started_condvar) = &*captured_started;
+            let mut started_count = started_lock.lock().expect("started count should lock");
+            *started_count += 1;
+            started_condvar.notify_all();
+            drop(started_count);
+
+            let (release_lock, release_condvar) = &*captured_release;
+            let mut released = release_lock.lock().expect("release gate should lock");
+            while !*released {
+                released = release_condvar
+                    .wait(released)
+                    .expect("release gate wait should not poison");
+            }
+        })
+        .expect("subscription should register");
+
+    bus.publish(&topic, "first".to_string())
+        .expect("first publish should occupy the worker");
+    wait_for_count(&started, 1);
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "second".to_string())
+            .with_delay(Duration::from_millis(500)),
+    )
+    .expect("delayed publish should queue behind the worker");
+    subscription
+        .cancel()
+        .expect("subscription cancellation should succeed");
+
+    let wait_started_at = Instant::now();
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert!(
+        wait_started_at.elapsed() < Duration::from_millis(150),
+        "cancelled delayed delivery should not sleep for the configured delay"
+    );
+    assert_eq!(*started.0.lock().expect("started count should lock"), 1);
+}
+
+#[test]
 fn test_shutdown_waits_for_active_handler() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -1835,6 +2160,81 @@ fn test_shutdown_nonblocking_returns_while_handler_is_active() {
 }
 
 #[test]
+fn test_publish_racing_shutdown_rejects_existing_ordering_lane_submission() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("ordered-shutdown-race");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release_handler = Arc::new((Mutex::new(false), Condvar::new()));
+    let interceptor_ready = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_interceptor = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release_handler = Arc::clone(&release_handler);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release_handler;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
+    )
+    .expect("first publish should occupy the ordered lane");
+    wait_for_count(&started, 1);
+
+    let captured_ready = Arc::clone(&interceptor_ready);
+    let captured_release_interceptor = Arc::clone(&release_interceptor);
+    bus.add_publisher_interceptor::<String, _>(move |event| {
+        if event.payload() == "after-shutdown" {
+            release_gate(&captured_ready);
+            let (release_lock, release_condvar) = &*captured_release_interceptor;
+            let mut released = release_lock.lock().expect("interceptor gate should lock");
+            while !*released {
+                released = release_condvar
+                    .wait(released)
+                    .expect("interceptor wait should not poison");
+            }
+        }
+        Some(event)
+    })
+    .expect("interceptor should register");
+
+    let publisher_bus = bus.clone();
+    let publish_topic = topic.clone();
+    let publisher = thread::spawn(move || {
+        publisher_bus.publish_envelope(
+            EventEnvelope::create(publish_topic, "after-shutdown".to_string())
+                .with_ordering_key("account-1"),
+        )
+    });
+    wait_for_gate(&interceptor_ready);
+    assert!(bus.shutdown_nonblocking());
+    release_gate(&release_interceptor);
+    let error = publisher
+        .join()
+        .expect("publisher thread should finish")
+        .expect_err("publish should be rejected after shutdown wins admission");
+    release_gate(&release_handler);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(error, EventBusError::not_started());
+}
+
+#[test]
 fn test_shutdown_with_timeout_reports_active_handler_timeout() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -1876,6 +2276,180 @@ fn test_shutdown_with_timeout_reports_active_handler_timeout() {
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
     assert!(!bus.shutdown());
+}
+
+#[test]
+fn test_shutdown_with_timeout_completes_without_active_work() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("shutdown-timeout-completes");
+
+    assert!(
+        bus.shutdown_with_timeout(Duration::from_secs(1))
+            .expect("idle shutdown should complete")
+    );
+    assert_eq!(
+        bus.publish(&topic, "after-shutdown".to_string())
+            .expect_err("stopped bus should reject publish"),
+        EventBusError::not_started()
+    );
+}
+
+#[test]
+fn test_shutdown_with_timeout_returns_false_when_already_stopped() {
+    let bus = LocalEventBus::new();
+
+    assert!(
+        !bus.shutdown_with_timeout(Duration::from_millis(10))
+            .expect("stopped shutdown should be idempotent")
+    );
+}
+
+#[test]
+fn test_start_rejects_restart_after_shutdown_timeout_until_handlers_finish() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("restart-after-shutdown-timeout");
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("sub", &topic, move |_event| {
+        let (started_lock, started_condvar) = &*captured_started;
+        let mut started_count = started_lock.lock().expect("started count should lock");
+        *started_count += 1;
+        started_condvar.notify_all();
+        drop(started_count);
+
+        let (release_lock, release_condvar) = &*captured_release;
+        let mut released = release_lock.lock().expect("release gate should lock");
+        while !*released {
+            released = release_condvar
+                .wait(released)
+                .expect("release gate wait should not poison");
+        }
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+    let error = bus
+        .shutdown_with_timeout(Duration::from_millis(10))
+        .expect_err("active handler should time out shutdown");
+    assert!(matches!(error, EventBusError::ShutdownTimedOut { .. }));
+
+    let restart_error = bus
+        .start()
+        .expect_err("restart should wait until old handler work is finished");
+    assert!(matches!(restart_error, EventBusError::StartFailed { .. }));
+
+    release_gate(&release);
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert!(
+        bus.start()
+            .expect("restart should work after old handlers finish")
+    );
+    assert!(bus.shutdown());
+}
+
+#[test]
+fn test_shutdown_routes_dead_letter_for_handler_failure_during_graceful_shutdown() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("shutdown-routes-dead-letter");
+    let probe_topic = create_topic("shutdown-routes-dead-letter-probe");
+    let dead_letter_topic = create_dead_letter_topic("dlq.shutdown-routes-dead-letter");
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+
+    let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_started = Arc::clone(&started);
+    let captured_release = Arc::clone(&release);
+    let dead_letter_target = dead_letter_topic.clone();
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(move |subscriber_id, failed, error, _options| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )))
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |_event| {
+            let (started_lock, started_condvar) = &*captured_started;
+            let mut started_count = started_lock.lock().expect("started count should lock");
+            *started_count += 1;
+            started_condvar.notify_all();
+            drop(started_count);
+
+            let (release_lock, release_condvar) = &*captured_release;
+            let mut released = release_lock.lock().expect("release gate should lock");
+            while !*released {
+                released = release_condvar
+                    .wait(released)
+                    .expect("release gate wait should not poison");
+            }
+            Err(EventBusError::handler_failed(
+                "handler failed during shutdown",
+            ))
+        },
+        options,
+    )
+    .expect("failing subscriber should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should start handler work");
+    wait_for_count(&started, 1);
+
+    let shutdown_bus = bus.clone();
+    let shutdown_thread = thread::spawn(move || shutdown_bus.shutdown());
+    let stopped_before_release = (0..50).any(|_| {
+        if bus.publish(&probe_topic, "probe".to_string()).is_err() {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(5));
+            false
+        }
+    });
+    assert!(
+        stopped_before_release,
+        "shutdown should stop public publishing before the handler completes"
+    );
+
+    release_gate(&release);
+    assert!(
+        shutdown_thread
+            .join()
+            .expect("shutdown thread should finish")
+    );
+
+    let events = dead_letters.lock().expect("dead letters should lock");
+    assert_eq!(events.len(), 1);
+    assert!(events[0].is_dead_letter());
+    assert_eq!(
+        events[0]
+            .payload()
+            .downcast_original_payload_ref::<String>()
+            .expect("dead letter payload should preserve original payload"),
+        "payload"
+    );
 }
 
 #[test]

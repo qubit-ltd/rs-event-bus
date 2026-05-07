@@ -21,6 +21,7 @@ mod event_envelope_builder_tests;
 mod event_envelope_tests;
 mod into_event_bus_result_tests;
 mod options_tests;
+mod package_metadata_tests;
 mod publish_options_builder_tests;
 mod publish_options_tests;
 mod retry_options_tests;

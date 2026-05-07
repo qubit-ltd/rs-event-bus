@@ -53,11 +53,12 @@ use crate::{
     SubscribeOptions,
     Subscription,
     Topic,
-    TopicKey,
 };
 
 use super::erased_subscription::ErasedSubscription;
 use super::local_event_bus_inner::LocalEventBusInner;
+use super::ordering_lane_key::OrderingLaneKey;
+use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_chain::SubscriberInterceptorChain;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
@@ -213,12 +214,14 @@ impl LocalEventBus {
     /// handlers.
     pub fn shutdown(&self) -> bool {
         self.assert_not_own_subscription_worker_for_blocking_shutdown();
-        let Some(executor) = self.inner.mark_stopped() else {
+        if !self.inner.mark_stopping() {
             return false;
-        };
-        executor.shutdown();
+        }
         let _ = self.inner.wait_for_all_idle();
-        wait_for_executor_termination(&executor);
+        if let Some(executor) = self.inner.take_executor() {
+            executor.shutdown();
+            wait_for_executor_termination(&executor);
+        }
         self.inner.clear_subscriptions();
         true
     }
@@ -260,22 +263,35 @@ impl LocalEventBus {
     /// workers do not finish before `timeout`.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
         let started_at = Instant::now();
-        let Some(executor) = self.inner.mark_stopped() else {
+        if !self.inner.mark_stopping() {
             return Ok(false);
-        };
-        executor.shutdown();
+        }
         let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
             self.inner.clear_subscriptions();
+            if let Some(executor) = self.inner.take_executor() {
+                executor.shutdown();
+            }
             return Err(EventBusError::shutdown_timed_out(timeout));
         };
         if !self.inner.wait_for_all_idle_timeout(remaining)? {
             self.inner.clear_subscriptions();
+            if let Some(executor) = self.inner.take_executor() {
+                executor.shutdown();
+            }
             return Err(EventBusError::shutdown_timed_out(timeout));
         }
         let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
             self.inner.clear_subscriptions();
+            if let Some(executor) = self.inner.take_executor() {
+                executor.shutdown();
+            }
             return Err(EventBusError::shutdown_timed_out(timeout));
         };
+        let Some(executor) = self.inner.take_executor() else {
+            self.inner.clear_subscriptions();
+            return Ok(true);
+        };
+        executor.shutdown();
         if !wait_for_executor_termination_timeout(&executor, remaining) {
             self.inner.clear_subscriptions();
             return Err(EventBusError::shutdown_timed_out(timeout));
@@ -399,7 +415,23 @@ impl LocalEventBus {
     where
         T: Clone + Send + Sync + 'static,
     {
-        if let Err(error) = self.ensure_started() {
+        self.publish_envelope_with_options_internal(envelope, options, false, true)
+    }
+
+    /// Publishes an envelope through the local dispatch path.
+    fn publish_envelope_with_options_internal<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+        options: PublishOptions<T>,
+        allow_stopping: bool,
+        require_started: bool,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        if let Err(error) = self.ensure_started()
+            && require_started
+        {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
@@ -408,7 +440,9 @@ impl LocalEventBus {
             return Err(error);
         }
         let original_envelope = envelope.clone();
-        let envelope = match self.apply_publisher_interceptors(envelope) {
+        let envelope = match run_with_retry(options.retry_options(), || {
+            self.apply_publisher_interceptors(original_envelope.clone())
+        }) {
             Ok(Some(envelope)) => envelope,
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -417,11 +451,26 @@ impl LocalEventBus {
                 return Err(error);
             }
         };
-        if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options()) {
+        if let Err(error) =
+            self.dispatch_envelope(envelope.clone(), options.retry_options(), allow_stopping)
+        {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Publishes a dead-letter envelope while graceful shutdown is draining.
+    fn publish_dead_letter_envelope(
+        &self,
+        envelope: EventEnvelope<DeadLetterPayload>,
+    ) -> EventBusResult<()> {
+        self.publish_envelope_with_options_internal(
+            envelope,
+            self.default_publish_options::<DeadLetterPayload>(),
+            true,
+            false,
+        )
     }
 
     /// Publishes multiple envelopes by submitting each envelope in input order.
@@ -670,16 +719,24 @@ impl LocalEventBus {
         &self,
         envelope: EventEnvelope<T>,
         retry_options: Option<&crate::RetryOptions>,
+        allow_stopping: bool,
     ) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
+        if !allow_stopping {
+            self.ensure_started()?;
+        }
         let subscriptions = self.inner.subscriptions_for(&envelope.topic().key())?;
         let mut first_error = None;
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
             if let Err(error) = run_with_retry(retry_options, || {
-                subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner))
+                subscription.dispatch(
+                    Box::new(envelope.clone()),
+                    Arc::clone(&self.inner),
+                    allow_stopping,
+                )
             }) && first_error.is_none()
             {
                 first_error = Some(error);
@@ -954,6 +1011,7 @@ where
         &self,
         envelope: Box<dyn Any + Send>,
         bus: Arc<LocalEventBusInner>,
+        allow_stopping: bool,
     ) -> EventBusResult<()> {
         if !self.active.load(Ordering::SeqCst) {
             return Ok(());
@@ -966,8 +1024,10 @@ where
         }
         let topic_key = self.topic.key();
         bus.start_processing(&topic_key)?;
-        let guard_topic_key = topic_key.clone();
-        let rejected_topic_key = topic_key.clone();
+        let ordering_lane_key = envelope
+            .ordering_key()
+            .map(|ordering_key| OrderingLaneKey::new(topic_key.clone(), ordering_key, self.id));
+        let delay = envelope.delay();
 
         let active = Arc::clone(&self.active);
         let handler = Arc::clone(&self.handler);
@@ -976,11 +1036,17 @@ where
         let event_bus = LocalEventBus {
             inner: Arc::clone(&bus),
         };
-        let bus_for_task = Arc::clone(&bus);
         let bus_id = local_event_bus_id(&bus);
-        if let Err(error) = bus.submit_processing_task(move || {
+        let processing_task = ProcessingTask::new(Arc::clone(&bus), topic_key, move || {
             let _worker_context = SubscriptionWorkerContext::enter(bus_id);
-            let _guard = ProcessingGuard::new(Arc::clone(&bus_for_task), guard_topic_key);
+            if !active.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Some(delay) = delay
+                && !delay.is_zero()
+            {
+                thread::sleep(delay);
+            }
             process_subscription_event(
                 active,
                 handler,
@@ -989,11 +1055,12 @@ where
                 *envelope,
                 event_bus,
             );
-        }) {
-            bus.finish_processing(&rejected_topic_key);
-            return Err(error);
+        });
+        if let Some(ordering_lane_key) = ordering_lane_key {
+            bus.submit_ordered_processing_task(ordering_lane_key, processing_task, allow_stopping)
+        } else {
+            bus.submit_processing_task(move || processing_task.run(), allow_stopping)
         }
-        Ok(())
     }
 }
 
@@ -1052,33 +1119,6 @@ impl Drop for SubscriptionWorkerContext {
     }
 }
 
-/// Guard that decrements processing state when a subscriber task exits.
-struct ProcessingGuard {
-    bus: Arc<LocalEventBusInner>,
-    topic_key: TopicKey,
-}
-
-impl ProcessingGuard {
-    /// Creates a guard for one started processing task.
-    ///
-    /// # Parameters
-    /// - `bus`: Shared local bus state.
-    /// - `topic_key`: Topic key whose active count was incremented.
-    ///
-    /// # Returns
-    /// Guard that finishes processing on drop.
-    fn new(bus: Arc<LocalEventBusInner>, topic_key: TopicKey) -> Self {
-        Self { bus, topic_key }
-    }
-}
-
-impl Drop for ProcessingGuard {
-    /// Marks the tracked topic processing as finished.
-    fn drop(&mut self) {
-        self.bus.finish_processing(&self.topic_key);
-    }
-}
-
 /// Processes a subscriber event on a background thread.
 ///
 /// # Parameters
@@ -1103,19 +1143,7 @@ fn process_subscription_event<T>(
     }
     match run_handler_with_retry(&handler, &options, envelope) {
         Ok(delivery) => {
-            if delivery.acknowledgement.is_nacked() {
-                let error = EventBusError::handler_failed("subscriber nacked the event");
-                handle_subscription_failure(
-                    &options,
-                    &subscriber_id,
-                    &delivery.delivered,
-                    &error,
-                    &delivery.acknowledgement,
-                    &event_bus,
-                );
-            } else if options.ack_mode() == AckMode::Auto
-                && !delivery.acknowledgement.is_completed()
-            {
+            if options.ack_mode() == AckMode::Auto && !delivery.acknowledgement.is_completed() {
                 delivery.acknowledgement.ack();
             }
         }
@@ -1161,7 +1189,7 @@ fn handle_subscription_failure<T>(
         let dead_letter =
             create_dead_letter_for_failure(options, subscriber_id, delivered, error, event_bus);
         if let Some(dead_letter) = dead_letter
-            && let Err(error) = event_bus.publish_envelope(dead_letter.as_dead_letter())
+            && let Err(error) = event_bus.publish_dead_letter_envelope(dead_letter.as_dead_letter())
         {
             let observed = EventBusError::dead_letter_failed(error.to_string());
             event_bus.inner.observe_error(&observed);
@@ -1531,6 +1559,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
                 "payload".to_string(),
             )),
             Arc::clone(&bus.inner),
+            false,
         )
         .expect("inactive entry should skip dispatch");
 
@@ -1546,9 +1575,19 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .dispatch(
             Box::new(EventEnvelope::create(number_topic, 1_u32)),
             Arc::clone(&bus.inner),
+            false,
         )
         .expect_err("wrong dispatch envelope type should fail");
     errors.push(dispatch_error);
+
+    process_subscription_event(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(coverage_string_handler),
+        SubscribeOptions::empty(),
+        "inactive-process".to_string(),
+        EventEnvelope::create(string_topic, "payload".to_string()),
+        bus,
+    );
 
     errors
 }
