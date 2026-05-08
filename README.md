@@ -12,7 +12,7 @@ Documentation: [API Reference](https://docs.rs/qubit-event-bus)
 
 `qubit-event-bus` is a lightweight, thread-safe, in-process event bus for Rust applications.
 
-It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, publisher and subscriber interceptors, and dead-letter records with `qubit-metadata` diagnostics.
+It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, typed and global interceptors, best-effort batch results, and dead-letter records with `qubit-metadata` diagnostics.
 
 ## Why Use It
 
@@ -23,6 +23,7 @@ Use `qubit-event-bus` when you need:
 - automatic or manual acknowledgement for subscriber handlers
 - subscriber retry and dead-letter behavior
 - publisher interceptors that can modify or drop outgoing events
+- global metadata interceptors for tracing, logging, and metrics across all payload types
 - subscriber interceptors that can wrap, observe, or short-circuit handler execution
 - deterministic test synchronization through `wait_for_idle`
 
@@ -68,13 +69,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Create an event bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
 | Define a type-safe topic | `Topic::<T>::try_new` |
-| Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options` |
+| Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
 | Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
-| Add publisher interceptors | `add_publisher_interceptor`, `PublisherInterceptor` |
-| Add subscriber interceptors | `add_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorChain` |
+| Add publisher interceptors | `add_publisher_interceptor`, `add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
+| Add subscriber interceptors | `add_subscriber_interceptor`, `add_global_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorAny` |
 | Attach publish error handling | `PublishOptions` |
-| Consume dead-letter events | `add_dead_letter_handler`, `DeadLetterPayload` |
+| Consume dead-letter events | `add_dead_letter_handler`, `DeadLetterPayload`, `standard_dead_letters_to`, `discard_dead_letters` |
 | Observe internal callback failures | `add_error_observer` |
 | Wait for scheduled handler work in tests | `wait_for_idle`, `wait_for_idle_timeout` |
 | Shut down a local bus | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout` |
@@ -89,10 +90,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and dead-letter strategies. |
 | `Topic<T>` | Type-safe event topic keyed by name and payload type. |
 | `EventEnvelope<T>` | Event payload plus headers, timestamp, ordering key, delay, acknowledgement, and dead-letter marker. |
+| `EventEnvelopeMetadata` | Type-erased metadata view used by global interceptors. |
 | `PublishOptions<T>` | Publish retry metadata and publish error callbacks. |
 | `SubscribeOptions<T>` | Subscriber acknowledgement mode, retry settings, filters, error callbacks, dead-letter strategy, and priority. |
 | `PublisherInterceptor<T>` | Public interceptor contract that can enrich or drop outgoing envelopes. |
+| `PublisherInterceptorAny` | Global publisher interceptor contract for metadata-only cross-cutting behavior. |
 | `SubscriberInterceptor<T>` | Public around-style interceptor contract for subscriber handling. |
+| `SubscriberInterceptorAny` | Global subscriber interceptor contract for metadata-only wrapping. |
+| `BatchPublishResult` | Best-effort batch summary with per-envelope failures. |
 | `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
@@ -103,11 +108,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
+- `standard_dead_letters_to`, `prefixed_dead_letters`, and `discard_dead_letters` cover common dead-letter routing policies without requiring custom closures.
 - A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery.
 - Explicit publish and subscribe options are merged with type-level factory defaults. Scalar subscribe settings such as acknowledgement mode and priority override defaults only when explicitly set through the builder.
 - Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
-- `publish_all` submits envelopes in input order. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
+- `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with per-envelope failures. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
 - `delay` defers local subscriber handling for at least the requested duration. Delayed work waits outside the local handler pool before handler execution is submitted.
 - Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
