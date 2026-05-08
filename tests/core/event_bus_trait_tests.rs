@@ -366,7 +366,7 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     let topic = create_topic("trait-defaults");
 
     assert!(EventBus::start(&bus).expect("default start should work"));
-    assert!(EventBus::close(&bus));
+    assert!(EventBus::shutdown(&bus));
     EventBus::publish(&bus, &topic, "publish".to_string()).expect("default publish should work");
     EventBus::publish_with_options(
         &bus,

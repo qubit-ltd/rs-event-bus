@@ -171,14 +171,6 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// `true` when this call changed the bus from started to stopped.
     fn shutdown(&self) -> bool;
 
-    /// Closes the event bus.
-    ///
-    /// # Returns
-    /// The result returned by [`shutdown`](Self::shutdown).
-    fn close(&self) -> bool {
-        self.shutdown()
-    }
-
     /// Publishes a payload to a topic.
     ///
     /// # Parameters
