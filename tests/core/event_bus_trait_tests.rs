@@ -27,10 +27,12 @@ use qubit_event_bus::{
     EventBusError,
     EventBusFactory,
     EventEnvelope,
+    EventEnvelopeMetadata,
     LocalEventBus,
     LocalEventBusFactory,
     PublishOptions,
     SubscribeOptions,
+    SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
     Topic,
     TransactionalEventBus,
@@ -73,6 +75,9 @@ impl EventBus for DefaultingEventBus {
     {
         let payload = envelope.payload() as &dyn Any;
         if let Some(value) = payload.downcast_ref::<String>() {
+            if value == "fail" {
+                return Err(EventBusError::handler_failed("default publish failed"));
+            }
             self.published
                 .lock()
                 .expect("published events should lock")
@@ -389,6 +394,27 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
         PublishOptions::empty(),
     )
     .expect("default batch publish with options should work");
+    let failed = EventEnvelope::create(topic.clone(), "fail".to_string());
+    let failed_event_id = failed.id().to_string();
+    let batch_result = EventBus::publish_all_with_options(
+        &bus,
+        vec![
+            EventEnvelope::create(topic.clone(), "batch-before-failure".to_string()),
+            failed,
+            EventEnvelope::create(topic.clone(), "batch-after-failure".to_string()),
+        ],
+        PublishOptions::empty(),
+    )
+    .expect("default batch publish should summarize failures");
+    assert_eq!(batch_result.total_count(), 3);
+    assert_eq!(batch_result.success_count(), 2);
+    assert_eq!(batch_result.failure_count(), 1);
+    assert_eq!(batch_result.failures()[0].index(), 1);
+    assert_eq!(batch_result.failures()[0].event_id(), failed_event_id);
+    assert_eq!(
+        batch_result.failures()[0].error(),
+        &EventBusError::handler_failed("default publish failed")
+    );
 
     assert_eq!(
         expect_subscription_error(
@@ -402,6 +428,8 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     assert_eq!(
         bus.published_payloads(),
         vec![
+            "batch-after-failure".to_string(),
+            "batch-before-failure".to_string(),
             "batch-default".to_string(),
             "batch-with-options-default".to_string(),
             "envelope".to_string(),
@@ -533,6 +561,14 @@ fn test_event_bus_factory_trait_default_methods() {
         EventBusError::unsupported_operation("add_publisher_interceptor")
     );
     assert_eq!(
+        EventBusFactory::add_global_publisher_interceptor(
+            &mut factory,
+            |metadata: EventEnvelopeMetadata| metadata,
+        )
+        .expect_err("default factory should reject global publisher interceptors"),
+        EventBusError::unsupported_operation("add_global_publisher_interceptor")
+    );
+    assert_eq!(
         EventBusFactory::add_subscriber_interceptor::<String, _>(
             &mut factory,
             |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
@@ -541,6 +577,16 @@ fn test_event_bus_factory_trait_default_methods() {
         )
         .expect_err("default factory should reject subscriber interceptors"),
         EventBusError::unsupported_operation("add_subscriber_interceptor")
+    );
+    assert_eq!(
+        EventBusFactory::add_global_subscriber_interceptor(
+            &mut factory,
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+                chain.proceed()
+            },
+        )
+        .expect_err("default factory should reject global subscriber interceptors"),
+        EventBusError::unsupported_operation("add_global_subscriber_interceptor")
     );
 }
 

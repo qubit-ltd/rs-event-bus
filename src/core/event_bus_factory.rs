@@ -11,15 +11,16 @@
 // qubit-style: allow coverage-cfg
 
 use crate::{
-    DeadLetterPayload,
+    DeadLetterStrategyCallback,
     EventBus,
     EventBusError,
     EventBusResult,
-    EventEnvelope,
     PublishOptions,
     PublisherInterceptor,
+    PublisherInterceptorAny,
     SubscribeOptions,
     SubscriberInterceptor,
+    SubscriberInterceptorAny,
     TransactionalEventBus,
 };
 
@@ -132,15 +133,7 @@ pub trait EventBusFactory {
     fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
-        F: Fn(
-                &str,
-                &EventEnvelope<T>,
-                &EventBusError,
-                &SubscribeOptions<T>,
-            ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
-            + Send
-            + Sync
-            + 'static,
+        F: DeadLetterStrategyCallback<T>,
     {
         let _ = strategy;
         Err(EventBusError::unsupported_operation(
@@ -170,6 +163,27 @@ pub trait EventBusFactory {
         ))
     }
 
+    /// Adds a global publisher interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Interceptor invoked before typed publish interceptors.
+    ///
+    /// # Returns
+    /// `Ok(())` when the factory stores the interceptor.
+    ///
+    /// # Errors
+    /// Returns unsupported-operation errors for factories that do not expose
+    /// configurable interceptors.
+    fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: PublisherInterceptorAny,
+    {
+        let _ = interceptor;
+        Err(EventBusError::unsupported_operation(
+            "add_global_publisher_interceptor",
+        ))
+    }
+
     /// Adds a subscriber interceptor to buses created by this factory.
     ///
     /// # Parameters
@@ -189,6 +203,27 @@ pub trait EventBusFactory {
         let _ = interceptor;
         Err(EventBusError::unsupported_operation(
             "add_subscriber_interceptor",
+        ))
+    }
+
+    /// Adds a global subscriber interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Interceptor invoked around all subscriber payload types.
+    ///
+    /// # Returns
+    /// `Ok(())` when the factory stores the interceptor.
+    ///
+    /// # Errors
+    /// Returns unsupported-operation errors for factories that do not expose
+    /// configurable interceptors.
+    fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: SubscriberInterceptorAny,
+    {
+        let _ = interceptor;
+        Err(EventBusError::unsupported_operation(
+            "add_global_subscriber_interceptor",
         ))
     }
 }

@@ -17,16 +17,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    DeadLetterPayload,
+    DeadLetterStrategyCallback,
     EventBusError,
     EventBusFactory,
     EventBusResult,
-    EventEnvelope,
     LocalEventBus,
     PublishOptions,
     PublisherInterceptor,
+    PublisherInterceptorAny,
     SubscribeOptions,
     SubscriberInterceptor,
+    SubscriberInterceptorAny,
     UnsupportedTransactionalEventBus,
 };
 
@@ -34,8 +35,10 @@ use super::local_event_bus::{
     create_publisher_interceptor_entry,
     create_subscriber_interceptor_entry,
 };
+use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
+use crate::core::subscribe_options::wrap_dead_letter_strategy;
 
 /// Returns the default subscription handler worker count.
 ///
@@ -52,6 +55,8 @@ pub struct LocalEventBusFactory {
     default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
+    global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
     publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
     subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
     subscription_handler_pool_size: usize,
@@ -75,6 +80,8 @@ impl LocalEventBusFactory {
             default_publish_options: HashMap::new(),
             default_subscribe_options: HashMap::new(),
             default_dead_letter_strategies: HashMap::new(),
+            global_publisher_interceptors: Vec::new(),
+            global_subscriber_interceptors: Vec::new(),
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: default_subscription_handler_pool_size(),
@@ -113,18 +120,9 @@ impl LocalEventBusFactory {
     pub fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F)
     where
         T: Clone + Send + Sync + 'static,
-        F: Fn(
-                &str,
-                &EventEnvelope<T>,
-                &EventBusError,
-                &SubscribeOptions<T>,
-            ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
-            + Send
-            + Sync
-            + 'static,
+        F: DeadLetterStrategyCallback<T>,
     {
-        let strategy: Arc<crate::core::subscribe_options::DeadLetterStrategyFn<T>> =
-            Arc::new(strategy);
+        let strategy = wrap_dead_letter_strategy(strategy);
         self.default_dead_letter_strategies
             .insert(TypeId::of::<T>(), Arc::new(strategy));
     }
@@ -146,6 +144,22 @@ impl LocalEventBusFactory {
         Ok(())
     }
 
+    /// Adds a global publisher interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Callback that can mutate metadata or drop any event.
+    ///
+    /// # Returns
+    /// `Ok(())` when the interceptor is stored.
+    pub fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: PublisherInterceptorAny,
+    {
+        self.global_publisher_interceptors
+            .push(Arc::new(interceptor));
+        Ok(())
+    }
+
     /// Adds a subscriber interceptor to buses created by this factory.
     ///
     /// # Parameters
@@ -160,6 +174,22 @@ impl LocalEventBusFactory {
     {
         self.subscriber_interceptors
             .push(create_subscriber_interceptor_entry::<T, I>(interceptor));
+        Ok(())
+    }
+
+    /// Adds a global subscriber interceptor to buses created by this factory.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Callback wrapping subscriber handling for any payload type.
+    ///
+    /// # Returns
+    /// `Ok(())` when the interceptor is stored.
+    pub fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: SubscriberInterceptorAny,
+    {
+        self.global_subscriber_interceptors
+            .push(Arc::new(interceptor));
         Ok(())
     }
 
@@ -213,15 +243,17 @@ impl LocalEventBusFactory {
     /// # Returns
     /// Local event bus initialized with factory defaults.
     pub fn create(&self) -> LocalEventBus {
-        LocalEventBus::with_runtime_options(
-            self.default_publish_options.clone(),
-            self.default_subscribe_options.clone(),
-            self.default_dead_letter_strategies.clone(),
-            self.publisher_interceptors.clone(),
-            self.subscriber_interceptors.clone(),
-            self.subscription_handler_pool_size,
-            self.subscription_handler_queue_capacity,
-        )
+        LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
+            default_publish_options: self.default_publish_options.clone(),
+            default_subscribe_options: self.default_subscribe_options.clone(),
+            default_dead_letter_strategies: self.default_dead_letter_strategies.clone(),
+            global_publisher_interceptors: self.global_publisher_interceptors.clone(),
+            global_subscriber_interceptors: self.global_subscriber_interceptors.clone(),
+            publisher_interceptors: self.publisher_interceptors.clone(),
+            subscriber_interceptors: self.subscriber_interceptors.clone(),
+            subscription_handler_pool_size: self.subscription_handler_pool_size,
+            subscription_handler_queue_capacity: self.subscription_handler_queue_capacity,
+        })
     }
 
     /// Creates and starts an event bus.
@@ -282,15 +314,7 @@ impl EventBusFactory for LocalEventBusFactory {
     fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
-        F: Fn(
-                &str,
-                &EventEnvelope<T>,
-                &EventBusError,
-                &SubscribeOptions<T>,
-            ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
-            + Send
-            + Sync
-            + 'static,
+        F: DeadLetterStrategyCallback<T>,
     {
         Self::set_default_dead_letter_strategy::<T, F>(self, strategy);
         Ok(())
@@ -305,6 +329,14 @@ impl EventBusFactory for LocalEventBusFactory {
         Self::add_publisher_interceptor::<T, I>(self, interceptor)
     }
 
+    /// Adds a global publisher interceptor for local buses.
+    fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: PublisherInterceptorAny,
+    {
+        Self::add_global_publisher_interceptor(self, interceptor)
+    }
+
     /// Adds a typed subscriber interceptor for local buses.
     fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
@@ -312,5 +344,13 @@ impl EventBusFactory for LocalEventBusFactory {
         I: SubscriberInterceptor<T>,
     {
         Self::add_subscriber_interceptor::<T, I>(self, interceptor)
+    }
+
+    /// Adds a global subscriber interceptor for local buses.
+    fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
+    where
+        I: SubscriberInterceptorAny,
+    {
+        Self::add_global_subscriber_interceptor(self, interceptor)
     }
 }

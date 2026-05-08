@@ -15,7 +15,6 @@ use std::sync::Arc;
 use crate::{
     AckMode,
     Acknowledgement,
-    DeadLetterPayload,
     EventBusError,
     EventEnvelope,
     IntoEventBusResult,
@@ -24,9 +23,11 @@ use crate::{
 };
 
 use super::subscribe_options::{
+    DeadLetterStrategyCallback,
     DeadLetterStrategyFn,
     EventFilterFn,
     SubscribeErrorHandlerFn,
+    wrap_dead_letter_strategy,
 };
 
 /// Builder used to create [`SubscribeOptions`].
@@ -133,17 +134,9 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn dead_letter_strategy<F>(mut self, strategy: F) -> Self
     where
-        F: Fn(
-                &str,
-                &EventEnvelope<T>,
-                &EventBusError,
-                &SubscribeOptions<T>,
-            ) -> crate::EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
-            + Send
-            + Sync
-            + 'static,
+        F: DeadLetterStrategyCallback<T>,
     {
-        self.dead_letter_strategy = Some(Arc::new(strategy));
+        self.dead_letter_strategy = Some(wrap_dead_letter_strategy(strategy));
         self
     }
 

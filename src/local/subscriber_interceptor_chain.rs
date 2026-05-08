@@ -8,6 +8,7 @@
  *
  ******************************************************************************/
 //! Subscriber interceptor chain handle.
+// qubit-style: allow multiple-public-types
 
 use std::sync::Arc;
 
@@ -25,6 +26,38 @@ type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync
 /// one in the chain.
 pub struct SubscriberInterceptorChain<T: Clone + Send + Sync + 'static> {
     next: Arc<HandlerFn<T>>,
+}
+
+/// Chain handle passed to global subscriber interceptors.
+///
+/// Calling [`proceed`](Self::proceed) invokes the next global interceptor,
+/// typed interceptor, or original subscriber handler.
+pub struct SubscriberInterceptorAnyChain {
+    next: Arc<dyn Fn() -> EventBusResult<()> + Send + Sync + 'static>,
+}
+
+impl SubscriberInterceptorAnyChain {
+    /// Creates a chain handle around the next handler.
+    ///
+    /// # Parameters
+    /// - `next`: Handler or interceptor wrapper to invoke next.
+    ///
+    /// # Returns
+    /// Chain handle for one global interceptor invocation.
+    pub(crate) fn new(next: Arc<dyn Fn() -> EventBusResult<()> + Send + Sync + 'static>) -> Self {
+        Self { next }
+    }
+
+    /// Continues subscriber processing.
+    ///
+    /// # Returns
+    /// `Ok(())` when downstream processing succeeds.
+    ///
+    /// # Errors
+    /// Returns the downstream handler or interceptor error.
+    pub fn proceed(&self) -> EventBusResult<()> {
+        (self.next)()
+    }
 }
 
 impl<T> SubscriberInterceptorChain<T>

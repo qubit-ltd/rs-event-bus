@@ -25,20 +25,24 @@ use std::time::Duration;
 use qubit_thread_pool::ExecutorService;
 
 use crate::core::SubscriptionState;
+use crate::core::subscribe_options::wrap_dead_letter_strategy;
 use crate::{
     DeadLetterPayload,
     DeadLetterRecord,
     EventBusError,
     EventBusResult,
     EventEnvelope,
+    EventEnvelopeMetadata,
     PublishOptions,
     SubscribeOptions,
+    SubscriberInterceptorAnyChain,
     Topic,
     TopicKey,
 };
 
 use super::{
     LocalEventBusInner,
+    LocalEventBusRuntimeOptions,
     OrderedLaneRunnerGuard,
     OrderedLaneTask,
     OrderedLaneTurn,
@@ -109,6 +113,21 @@ fn coverage_noop_task() {}
 
 fn coverage_ignore_error(_error: &EventBusError) {}
 
+fn coverage_global_publisher(metadata: EventEnvelopeMetadata) -> Option<EventEnvelopeMetadata> {
+    Some(metadata)
+}
+
+fn coverage_global_subscriber(
+    _metadata: EventEnvelopeMetadata,
+    chain: SubscriberInterceptorAnyChain,
+) -> EventBusResult<()> {
+    chain.proceed()
+}
+
+fn coverage_global_subscriber_next() -> EventBusResult<()> {
+    Ok(())
+}
+
 fn coverage_dead_letter_record_strategy(
     _subscriber_id: &str,
     _event: &EventEnvelope<DeadLetterRecord>,
@@ -130,15 +149,17 @@ fn inactive_subscription_state() -> Arc<SubscriptionState> {
 /// Errors produced by intentionally poisoning internal locks and task state.
 pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBusError> {
     fn empty_inner() -> LocalEventBusInner {
-        LocalEventBusInner::new(
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            Vec::new(),
-            Vec::new(),
-            1,
-            None,
-        )
+        LocalEventBusInner::new(LocalEventBusRuntimeOptions {
+            default_publish_options: HashMap::new(),
+            default_subscribe_options: HashMap::new(),
+            default_dead_letter_strategies: HashMap::new(),
+            global_publisher_interceptors: Vec::new(),
+            global_subscriber_interceptors: Vec::new(),
+            publisher_interceptors: Vec::new(),
+            subscriber_interceptors: Vec::new(),
+            subscription_handler_pool_size: 1,
+            subscription_handler_queue_capacity: None,
+        })
     }
 
     fn poison_mutex<T>(mutex: &Mutex<T>) {
@@ -183,20 +204,22 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
     let mut default_dead_letter_strategies = HashMap::new();
     let default_dead_letter_strategy: Arc<
         crate::core::subscribe_options::DeadLetterStrategyFn<DeadLetterRecord>,
-    > = Arc::new(coverage_dead_letter_record_strategy);
+    > = wrap_dead_letter_strategy(coverage_dead_letter_record_strategy);
     default_dead_letter_strategies.insert(
         TypeId::of::<DeadLetterRecord>(),
         Arc::new(default_dead_letter_strategy) as Arc<dyn Any + Send + Sync>,
     );
-    let default_options_inner = LocalEventBusInner::new(
+    let default_options_inner = LocalEventBusInner::new(LocalEventBusRuntimeOptions {
         default_publish_options,
         default_subscribe_options,
         default_dead_letter_strategies,
-        Vec::new(),
-        Vec::new(),
-        1,
-        None,
-    );
+        global_publisher_interceptors: Vec::new(),
+        global_subscriber_interceptors: Vec::new(),
+        publisher_interceptors: Vec::new(),
+        subscriber_interceptors: Vec::new(),
+        subscription_handler_pool_size: 1,
+        subscription_handler_queue_capacity: None,
+    });
     assert!(
         default_options_inner
             .default_publish_options::<DeadLetterRecord>()
@@ -216,13 +239,14 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         qubit_metadata::Metadata::new(),
         Arc::new("payload".to_string()),
     );
-    default_dead_letter_strategy(
-        "coverage-sub",
-        &EventEnvelope::create(dead_letter_topic, dead_letter_record),
-        &EventBusError::handler_failed("coverage"),
-        &SubscribeOptions::empty(),
-    )
-    .expect("coverage dead-letter strategy should run");
+    default_dead_letter_strategy
+        .create_dead_letter(
+            "coverage-sub",
+            &EventEnvelope::create(dead_letter_topic, dead_letter_record),
+            &EventBusError::handler_failed("coverage"),
+            &SubscribeOptions::empty(),
+        )
+        .expect("coverage dead-letter strategy should run");
 
     let publisher_interceptor = CoveragePublisherInterceptor;
     assert_eq!(
@@ -233,6 +257,17 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         .intercept(Box::new("payload".to_string()))
         .expect("coverage publisher interceptor should pass payload");
     assert!(publisher_output.is_some());
+    let global_metadata = EventEnvelope::create(
+        Topic::<String>::try_new("coverage-global-interceptor").expect("topic should build"),
+        "payload".to_string(),
+    )
+    .metadata();
+    assert!(coverage_global_publisher(global_metadata.clone()).is_some());
+    coverage_global_subscriber(
+        global_metadata,
+        SubscriberInterceptorAnyChain::new(Arc::new(coverage_global_subscriber_next)),
+    )
+    .expect("coverage global subscriber should proceed");
 
     let subscriber_interceptor = CoverageSubscriberInterceptor;
     assert_eq!(
@@ -256,15 +291,17 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         )
         .expect("coverage subscription dispatch should succeed");
 
-    let invalid_executor_inner = LocalEventBusInner::new(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        Vec::new(),
-        Vec::new(),
-        0,
-        None,
-    );
+    let invalid_executor_inner = LocalEventBusInner::new(LocalEventBusRuntimeOptions {
+        default_publish_options: HashMap::new(),
+        default_subscribe_options: HashMap::new(),
+        default_dead_letter_strategies: HashMap::new(),
+        global_publisher_interceptors: Vec::new(),
+        global_subscriber_interceptors: Vec::new(),
+        publisher_interceptors: Vec::new(),
+        subscriber_interceptors: Vec::new(),
+        subscription_handler_pool_size: 0,
+        subscription_handler_queue_capacity: None,
+    });
     errors.push(
         invalid_executor_inner
             .mark_started()
@@ -965,6 +1002,18 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
     );
     push_error(&mut errors, publisher_inner.publisher_interceptors());
 
+    let global_publisher_inner = empty_inner();
+    poison_mutex(&global_publisher_inner.global_publisher_interceptors);
+    errors.push(
+        global_publisher_inner
+            .add_global_publisher_interceptor(Arc::new(coverage_global_publisher))
+            .expect_err("poisoned global publisher interceptors should reject add"),
+    );
+    push_error(
+        &mut errors,
+        global_publisher_inner.global_publisher_interceptors(),
+    );
+
     let subscriber_inner = empty_inner();
     poison_mutex(&subscriber_inner.subscriber_interceptors);
     errors.push(
@@ -973,6 +1022,18 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
             .expect_err("poisoned subscriber interceptors should reject add"),
     );
     push_error(&mut errors, subscriber_inner.subscriber_interceptors());
+
+    let global_subscriber_inner = empty_inner();
+    poison_mutex(&global_subscriber_inner.global_subscriber_interceptors);
+    errors.push(
+        global_subscriber_inner
+            .add_global_subscriber_interceptor(Arc::new(coverage_global_subscriber))
+            .expect_err("poisoned global subscriber interceptors should reject add"),
+    );
+    push_error(
+        &mut errors,
+        global_subscriber_inner.global_subscriber_interceptors(),
+    );
 
     let observer_inner = empty_inner();
     poison_mutex(&observer_inner.error_observers);
