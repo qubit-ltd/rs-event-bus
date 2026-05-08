@@ -26,9 +26,12 @@ pub use core::{
     AttemptTimeoutPolicy,
     BatchPublishFailure,
     BatchPublishResult,
+    DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,
     DeadLetterStrategy,
+    DeadLetterStrategyAny,
+    DeadLetterStrategyAnyCallback,
     DeadLetterStrategyCallback,
     EventBus,
     EventBusError,
@@ -75,6 +78,8 @@ pub use local::{
     coverage_exercise_local_event_bus_inner_defensive_paths,
 };
 pub use transactional::{
+    StagedEvent,
+    StagedEventEnvelope,
     TransactionalEventBus,
     TransactionalPublisher,
     UnsupportedTransactionalEventBus,

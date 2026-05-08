@@ -70,7 +70,8 @@ impl BatchPublishFailure {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishResult {
     total_count: usize,
-    success_count: usize,
+    accepted_count: usize,
+    dropped_count: usize,
     failures: Vec<BatchPublishFailure>,
 }
 
@@ -79,14 +80,20 @@ impl BatchPublishResult {
     pub(crate) fn new(total_count: usize) -> Self {
         Self {
             total_count,
-            success_count: 0,
+            accepted_count: 0,
+            dropped_count: 0,
             failures: Vec::new(),
         }
     }
 
-    /// Records one successful envelope submission.
-    pub(crate) fn record_success(&mut self) {
-        self.success_count += 1;
+    /// Records one accepted envelope submission.
+    pub(crate) fn record_accepted(&mut self) {
+        self.accepted_count += 1;
+    }
+
+    /// Records one envelope dropped by publisher interceptors.
+    pub(crate) fn record_dropped(&mut self) {
+        self.dropped_count += 1;
     }
 
     /// Records one failed envelope submission.
@@ -105,9 +112,17 @@ impl BatchPublishResult {
     /// Returns the number of envelopes accepted by the backend.
     ///
     /// # Returns
-    /// Successful submission count.
-    pub fn success_count(&self) -> usize {
-        self.success_count
+    /// Accepted submission count.
+    pub fn accepted_count(&self) -> usize {
+        self.accepted_count
+    }
+
+    /// Returns the number of envelopes dropped before dispatch.
+    ///
+    /// # Returns
+    /// Drop count reported by publisher interceptors.
+    pub fn dropped_count(&self) -> usize {
+        self.dropped_count
     }
 
     /// Returns the number of failed envelope submissions.
@@ -129,7 +144,7 @@ impl BatchPublishResult {
     /// Returns whether the batch completed without per-envelope failures.
     ///
     /// # Returns
-    /// `true` when every envelope was accepted.
+    /// `true` when every envelope was accepted or intentionally dropped.
     pub fn is_success(&self) -> bool {
         self.failures.is_empty()
     }
@@ -291,7 +306,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
             match self.publish_envelope_with_options(envelope, options.clone()) {
-                Ok(()) => result.record_success(),
+                Ok(()) => result.record_accepted(),
                 Err(error) => {
                     result.record_failure(BatchPublishFailure::new(index, event_id, error));
                 }

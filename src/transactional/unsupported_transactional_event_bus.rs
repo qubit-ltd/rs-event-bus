@@ -16,6 +16,7 @@ use crate::{
     EventEnvelope,
     IntoEventBusResult,
     PublishOptions,
+    StagedEvent,
     SubscribeOptions,
     Subscription,
     Topic,
@@ -113,14 +114,10 @@ impl TransactionalEventBus for UnsupportedTransactionalEventBus {
     }
 
     /// Returns an unsupported-operation error.
-    fn publish_batch_atomically<T>(
+    fn publish_batch_atomically_staged(
         &self,
-        _envelopes: Vec<EventEnvelope<T>>,
-        _options: PublishOptions<T>,
-    ) -> EventBusResult<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
+        _events: Vec<Box<dyn StagedEvent>>,
+    ) -> EventBusResult<()> {
         Err(EventBusError::unsupported_operation(
             "publish_batch_atomically",
         ))

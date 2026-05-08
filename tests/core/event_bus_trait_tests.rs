@@ -21,6 +21,7 @@ use std::sync::{
 use std::time::Duration;
 
 use qubit_event_bus::{
+    DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,
     EventBus,
@@ -311,15 +312,17 @@ fn test_event_bus_trait_add_dead_letter_handler_delegates_to_subscription() {
 
 #[test]
 fn test_local_event_bus_trait_overrides_delegate_to_inherent_methods() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            Some(event.with_header("trait", "true"))
+        })
+        .expect("publisher interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("trait-local-overrides");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-        Some(event.with_header("trait", "true"))
-    })
-    .expect("publisher interceptor should register");
     EventBus::subscribe_with_options(
         &bus,
         "local-trait-sub",
@@ -407,7 +410,8 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     )
     .expect("default batch publish should summarize failures");
     assert_eq!(batch_result.total_count(), 3);
-    assert_eq!(batch_result.success_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 2);
+    assert_eq!(batch_result.dropped_count(), 0);
     assert_eq!(batch_result.failure_count(), 1);
     assert_eq!(batch_result.failures()[0].index(), 1);
     assert_eq!(batch_result.failures()[0].event_id(), failed_event_id);
@@ -551,6 +555,17 @@ fn test_event_bus_factory_trait_default_methods() {
         )
         .expect_err("default factory should reject dead-letter defaults"),
         EventBusError::unsupported_operation("set_default_dead_letter_strategy")
+    );
+    assert_eq!(
+        EventBusFactory::set_global_default_dead_letter_strategy(
+            &mut factory,
+            |_subscriber: &str,
+             _metadata: EventEnvelopeMetadata,
+             _payload: DeadLetterOriginalPayload,
+             _error: &EventBusError| { Ok(None) },
+        )
+        .expect_err("default factory should reject global dead-letter defaults"),
+        EventBusError::unsupported_operation("set_global_default_dead_letter_strategy")
     );
     assert_eq!(
         EventBusFactory::add_publisher_interceptor::<String, _>(

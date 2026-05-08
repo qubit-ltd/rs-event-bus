@@ -11,6 +11,7 @@
 // qubit-style: allow coverage-cfg
 
 use crate::{
+    DeadLetterStrategyAnyCallback,
     DeadLetterStrategyCallback,
     EventBus,
     EventBusError,
@@ -138,6 +139,30 @@ pub trait EventBusFactory {
         let _ = strategy;
         Err(EventBusError::unsupported_operation(
             "set_default_dead_letter_strategy",
+        ))
+    }
+
+    /// Sets the global default dead-letter strategy for all payload types.
+    ///
+    /// The global strategy is used only when a subscription and the matching
+    /// payload type have no more specific dead-letter strategy configured.
+    ///
+    /// # Parameters
+    /// - `strategy`: Type-erased fallback dead-letter strategy.
+    ///
+    /// # Returns
+    /// `Ok(())` when the factory accepts the strategy.
+    ///
+    /// # Errors
+    /// Returns unsupported-operation errors for factories that do not expose
+    /// configurable defaults.
+    fn set_global_default_dead_letter_strategy<F>(&mut self, strategy: F) -> EventBusResult<()>
+    where
+        F: DeadLetterStrategyAnyCallback,
+    {
+        let _ = strategy;
+        Err(EventBusError::unsupported_operation(
+            "set_global_default_dead_letter_strategy",
         ))
     }
 

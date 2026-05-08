@@ -12,7 +12,7 @@ Documentation: [API Reference](https://docs.rs/qubit-event-bus)
 
 `qubit-event-bus` is a lightweight, thread-safe, in-process event bus for Rust applications.
 
-It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, typed and global interceptors, best-effort batch results, and dead-letter records with `qubit-metadata` diagnostics.
+It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, factory-configured typed and global interceptors, best-effort batch results, transactional staged-event contracts, and dead-letter records with `qubit-metadata` diagnostics.
 
 ## Why Use It
 
@@ -25,6 +25,8 @@ Use `qubit-event-bus` when you need:
 - publisher interceptors that can modify or drop outgoing events
 - global metadata interceptors for tracing, logging, and metrics across all payload types
 - subscriber interceptors that can wrap, observe, or short-circuit handler execution
+- typed and global default dead-letter strategies
+- heterogeneous staged-event contracts for transactional backends
 - deterministic test synchronization through `wait_for_idle`
 
 ## Installation
@@ -72,11 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
 | Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
-| Add publisher interceptors | `add_publisher_interceptor`, `add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
-| Add subscriber interceptors | `add_subscriber_interceptor`, `add_global_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorAny` |
+| Configure publisher interceptors | `LocalEventBusFactory::add_publisher_interceptor`, `LocalEventBusFactory::add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
+| Configure subscriber interceptors | `LocalEventBusFactory::add_subscriber_interceptor`, `LocalEventBusFactory::add_global_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorAny` |
 | Attach publish error handling | `PublishOptions` |
 | Consume dead-letter events | `add_dead_letter_handler`, `DeadLetterPayload`, `standard_dead_letters_to`, `discard_dead_letters` |
 | Observe internal callback failures | `add_error_observer` |
+| Model transactional batches | `TransactionalEventBus`, `TransactionalPublisher`, `StagedEvent`, `StagedEventEnvelope` |
 | Wait for scheduled handler work in tests | `wait_for_idle`, `wait_for_idle_timeout` |
 | Shut down a local bus | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout` |
 
@@ -87,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `EventBus` | Common event bus contract for concrete backends. |
 | `EventBusFactory` | Common factory contract for backend creation and default configuration. |
 | `LocalEventBus` | Thread-safe in-process event bus implementation. |
-| `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and dead-letter strategies. |
+| `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and typed or global dead-letter strategies. |
 | `Topic<T>` | Type-safe event topic keyed by name and payload type. |
 | `EventEnvelope<T>` | Event payload plus headers, timestamp, ordering key, delay, acknowledgement, and dead-letter marker. |
 | `EventEnvelopeMetadata` | Type-erased metadata view used by global interceptors. |
@@ -97,8 +100,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `PublisherInterceptorAny` | Global publisher interceptor contract for metadata-only cross-cutting behavior. |
 | `SubscriberInterceptor<T>` | Public around-style interceptor contract for subscriber handling. |
 | `SubscriberInterceptorAny` | Global subscriber interceptor contract for metadata-only wrapping. |
-| `BatchPublishResult` | Best-effort batch summary with per-envelope failures. |
+| `BatchPublishResult` | Best-effort batch summary with accepted, dropped, and failed counts. |
 | `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
+| `DeadLetterOriginalPayload` | Type-erased original payload stored in dead-letter records and global dead-letter callbacks. |
+| `StagedEvent` | Type-erased staged event used by transactional backends for heterogeneous batches. |
+| `StagedEventEnvelope<T>` | Typed staged event retaining an envelope and publish options. |
 | `Subscription<T>` | Handle used to inspect and cancel a subscription. |
 | `EventBusError` | Unified error type for lifecycle, validation, handler, lock, and type-erasure failures. |
 
@@ -109,12 +115,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
 - `standard_dead_letters_to`, `prefixed_dead_letters`, and `discard_dead_letters` cover common dead-letter routing policies without requiring custom closures.
-- A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery.
+- A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery. If no subscription or typed default strategy is configured, the local factory can use a global default dead-letter strategy.
+- Interceptors are configured on `LocalEventBusFactory` before creating a bus. Runtime interceptor mutation is intentionally not part of `LocalEventBus`; use `add_error_observer` for runtime error observation.
 - Explicit publish and subscribe options are merged with type-level factory defaults. Scalar subscribe settings such as acknowledgement mode and priority override defaults only when explicitly set through the builder.
 - Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
-- `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with per-envelope failures. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
-- `delay` defers local subscriber handling for at least the requested duration. Delayed work waits outside the local handler pool before handler execution is submitted.
+- `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
+- `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-thread-pool`'s `DelayedTaskScheduler` and does not occupy handler workers while waiting.
+- Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
 - Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
+    DeadLetterStrategyAnyCallback,
     DeadLetterStrategyCallback,
     EventBusError,
     EventBusFactory,
@@ -38,7 +39,11 @@ use super::local_event_bus::{
 use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
-use crate::core::subscribe_options::wrap_dead_letter_strategy;
+use crate::core::subscribe_options::{
+    DeadLetterStrategyAnyFn,
+    wrap_dead_letter_strategy,
+    wrap_dead_letter_strategy_any,
+};
 
 /// Returns the default subscription handler worker count.
 ///
@@ -55,6 +60,7 @@ pub struct LocalEventBusFactory {
     default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
     global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
     global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
     publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
@@ -80,6 +86,7 @@ impl LocalEventBusFactory {
             default_publish_options: HashMap::new(),
             default_subscribe_options: HashMap::new(),
             default_dead_letter_strategies: HashMap::new(),
+            global_default_dead_letter_strategy: None,
             global_publisher_interceptors: Vec::new(),
             global_subscriber_interceptors: Vec::new(),
             publisher_interceptors: Vec::new(),
@@ -125,6 +132,18 @@ impl LocalEventBusFactory {
         let strategy = wrap_dead_letter_strategy(strategy);
         self.default_dead_letter_strategies
             .insert(TypeId::of::<T>(), Arc::new(strategy));
+    }
+
+    /// Sets the global default dead-letter strategy.
+    ///
+    /// # Parameters
+    /// - `strategy`: Strategy used when no subscription or typed factory
+    ///   dead-letter strategy is configured.
+    pub fn set_global_default_dead_letter_strategy<F>(&mut self, strategy: F)
+    where
+        F: DeadLetterStrategyAnyCallback,
+    {
+        self.global_default_dead_letter_strategy = Some(wrap_dead_letter_strategy_any(strategy));
     }
 
     /// Adds a publisher interceptor to buses created by this factory.
@@ -247,6 +266,7 @@ impl LocalEventBusFactory {
             default_publish_options: self.default_publish_options.clone(),
             default_subscribe_options: self.default_subscribe_options.clone(),
             default_dead_letter_strategies: self.default_dead_letter_strategies.clone(),
+            global_default_dead_letter_strategy: self.global_default_dead_letter_strategy.clone(),
             global_publisher_interceptors: self.global_publisher_interceptors.clone(),
             global_subscriber_interceptors: self.global_subscriber_interceptors.clone(),
             publisher_interceptors: self.publisher_interceptors.clone(),
@@ -317,6 +337,15 @@ impl EventBusFactory for LocalEventBusFactory {
         F: DeadLetterStrategyCallback<T>,
     {
         Self::set_default_dead_letter_strategy::<T, F>(self, strategy);
+        Ok(())
+    }
+
+    /// Sets the global default dead-letter strategy for local buses.
+    fn set_global_default_dead_letter_strategy<F>(&mut self, strategy: F) -> EventBusResult<()>
+    where
+        F: DeadLetterStrategyAnyCallback,
+    {
+        Self::set_global_default_dead_letter_strategy(self, strategy);
         Ok(())
     }
 

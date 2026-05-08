@@ -5,32 +5,34 @@ use std::sync::{
 
 use qubit_event_bus::{
     EventEnvelope,
-    LocalEventBus,
+    LocalEventBusFactory,
     SubscriberInterceptorChain,
     Topic,
 };
 
 #[test]
 fn test_subscriber_interceptor_chain_proceeds_to_handler() {
-    let bus = LocalEventBus::started().expect("bus should start");
-    let topic = Topic::<String>::try_new("subscriber-chain").expect("topic should build");
     let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
     let interceptor_sequence = Arc::clone(&sequence);
-    bus.add_subscriber_interceptor::<String, _>(
-        move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
-            interceptor_sequence
-                .lock()
-                .expect("sequence should lock")
-                .push("before".to_string());
-            let result = chain.proceed(event.with_header("chain", "seen"));
-            interceptor_sequence
-                .lock()
-                .expect("sequence should lock")
-                .push("after".to_string());
-            result
-        },
-    )
-    .expect("subscriber interceptor should register");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                interceptor_sequence
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("before".to_string());
+                let result = chain.proceed(event.with_header("chain", "seen"));
+                interceptor_sequence
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("after".to_string());
+                result
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = Topic::<String>::try_new("subscriber-chain").expect("topic should build");
     let handler_sequence = Arc::clone(&sequence);
     bus.subscribe("sub", &topic, move |event| {
         assert_eq!(event.headers().get("chain"), Some(&"seen".to_string()));

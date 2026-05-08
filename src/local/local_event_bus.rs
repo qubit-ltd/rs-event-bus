@@ -33,12 +33,14 @@ use std::time::{
 };
 
 use qubit_thread_pool::{
+    DelayedTaskScheduler,
     ExecutorService,
     FixedThreadPool,
 };
 
 use crate::core::SubscriptionState;
 use crate::core::subscribe_options::{
+    DeadLetterStrategyAnyFn,
     DeadLetterStrategyFn,
     normalize_dead_letter_error,
 };
@@ -47,6 +49,7 @@ use crate::{
     Acknowledgement,
     BatchPublishFailure,
     BatchPublishResult,
+    DeadLetterOriginalPayload,
     DeadLetterPayload,
     EventBusError,
     EventBusResult,
@@ -118,6 +121,14 @@ where
 struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
     error: EventBusError,
     delivery: HandlerDelivery<T>,
+}
+
+/// Admission outcome for one local publish attempt.
+enum PublishOutcome {
+    /// The envelope reached subscriber dispatch.
+    Accepted,
+    /// A publisher interceptor intentionally dropped the envelope.
+    Dropped,
 }
 
 /// Converts publisher interceptor return values into the standard result form.
@@ -363,6 +374,7 @@ impl LocalEventBus {
             default_publish_options: HashMap::new(),
             default_subscribe_options: HashMap::new(),
             default_dead_letter_strategies: HashMap::new(),
+            global_default_dead_letter_strategy: None,
             global_publisher_interceptors: Vec::new(),
             global_subscriber_interceptors: Vec::new(),
             publisher_interceptors: Vec::new(),
@@ -430,9 +442,9 @@ impl LocalEventBus {
             executor.shutdown();
             wait_for_executor_termination(&executor);
         }
-        if let Some(delay_executor) = self.inner.take_delay_executor() {
-            delay_executor.shutdown();
-            wait_for_executor_termination(&delay_executor);
+        if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+            delay_scheduler.shutdown();
+            wait_for_delay_scheduler_termination(&delay_scheduler);
         }
         self.inner.clear_subscriptions();
         true
@@ -451,8 +463,8 @@ impl LocalEventBus {
             return false;
         };
         executor.shutdown();
-        if let Some(delay_executor) = self.inner.take_delay_executor() {
-            delay_executor.shutdown();
+        if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+            delay_scheduler.shutdown();
         }
         self.inner.clear_subscriptions();
         true
@@ -486,8 +498,8 @@ impl LocalEventBus {
             if let Some(executor) = self.inner.take_executor() {
                 executor.shutdown();
             }
-            if let Some(delay_executor) = self.inner.take_delay_executor() {
-                delay_executor.shutdown();
+            if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+                delay_scheduler.shutdown();
             }
             return Err(EventBusError::shutdown_timed_out(timeout));
         };
@@ -496,8 +508,8 @@ impl LocalEventBus {
             if let Some(executor) = self.inner.take_executor() {
                 executor.shutdown();
             }
-            if let Some(delay_executor) = self.inner.take_delay_executor() {
-                delay_executor.shutdown();
+            if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+                delay_scheduler.shutdown();
             }
             return Err(EventBusError::shutdown_timed_out(timeout));
         }
@@ -506,22 +518,22 @@ impl LocalEventBus {
             if let Some(executor) = self.inner.take_executor() {
                 executor.shutdown();
             }
-            if let Some(delay_executor) = self.inner.take_delay_executor() {
-                delay_executor.shutdown();
+            if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+                delay_scheduler.shutdown();
             }
             return Err(EventBusError::shutdown_timed_out(timeout));
         };
         let Some(executor) = self.inner.take_executor() else {
-            if let Some(delay_executor) = self.inner.take_delay_executor() {
-                delay_executor.shutdown();
+            if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+                delay_scheduler.shutdown();
             }
             self.inner.clear_subscriptions();
             return Ok(true);
         };
         executor.shutdown();
-        if let Some(delay_executor) = self.inner.take_delay_executor() {
-            delay_executor.shutdown();
-            if !wait_for_executor_termination_timeout(&delay_executor, remaining) {
+        if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
+            delay_scheduler.shutdown();
+            if !wait_for_delay_scheduler_termination_timeout(&delay_scheduler, remaining) {
                 self.inner.clear_subscriptions();
                 return Err(EventBusError::shutdown_timed_out(timeout));
             }
@@ -536,84 +548,6 @@ impl LocalEventBus {
         }
         self.inner.clear_subscriptions();
         Ok(true)
-    }
-
-    /// Registers a typed publisher interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Callback that can modify or drop outgoing envelopes.
-    ///
-    /// # Returns
-    /// `Ok(())` when the interceptor is stored.
-    ///
-    /// # Errors
-    /// Returns a lock-poisoning error if interceptor state is unavailable.
-    pub fn add_publisher_interceptor<T, I>(&self, interceptor: I) -> EventBusResult<()>
-    where
-        T: Clone + Send + Sync + 'static,
-        I: PublisherInterceptor<T>,
-    {
-        self.inner
-            .add_publisher_interceptor(create_publisher_interceptor_entry::<T, I>(interceptor))
-    }
-
-    /// Registers a global publisher interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Callback that can mutate metadata or drop any event.
-    ///
-    /// # Returns
-    /// `Ok(())` when the interceptor is stored.
-    ///
-    /// # Errors
-    /// Returns a lock-poisoning error if interceptor state is unavailable.
-    pub fn add_global_publisher_interceptor<I>(&self, interceptor: I) -> EventBusResult<()>
-    where
-        I: PublisherInterceptorAny,
-    {
-        self.inner
-            .add_global_publisher_interceptor(Arc::new(interceptor))
-    }
-
-    /// Registers a typed subscriber interceptor.
-    ///
-    /// Subscriber interceptors are applied in registration order and use an
-    /// around-style chain. An interceptor can skip downstream processing by not
-    /// calling [`SubscriberInterceptorChain::proceed`].
-    ///
-    /// # Parameters
-    /// - `interceptor`: Callback wrapping subscriber handler execution.
-    ///
-    /// # Returns
-    /// `Ok(())` when the interceptor is stored.
-    ///
-    /// # Errors
-    /// Returns a lock-poisoning error if interceptor state is unavailable.
-    pub fn add_subscriber_interceptor<T, I>(&self, interceptor: I) -> EventBusResult<()>
-    where
-        T: Clone + Send + Sync + 'static,
-        I: SubscriberInterceptor<T>,
-    {
-        self.inner
-            .add_subscriber_interceptor(create_subscriber_interceptor_entry::<T, I>(interceptor))
-    }
-
-    /// Registers a global subscriber interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Callback wrapping subscriber handling for any payload type.
-    ///
-    /// # Returns
-    /// `Ok(())` when the interceptor is stored.
-    ///
-    /// # Errors
-    /// Returns a lock-poisoning error if interceptor state is unavailable.
-    pub fn add_global_subscriber_interceptor<I>(&self, interceptor: I) -> EventBusResult<()>
-    where
-        I: SubscriberInterceptorAny,
-    {
-        self.inner
-            .add_global_subscriber_interceptor(Arc::new(interceptor))
     }
 
     /// Registers an observer for internal background errors.
@@ -714,6 +648,7 @@ impl LocalEventBus {
     {
         let options = options.merge_defaults(self.default_publish_options::<T>());
         self.publish_envelope_with_options_internal(envelope, options, false, true)
+            .map(|_outcome| ())
     }
 
     /// Publishes an envelope through the local dispatch path.
@@ -723,7 +658,7 @@ impl LocalEventBus {
         options: PublishOptions<T>,
         allow_stopping: bool,
         require_started: bool,
-    ) -> EventBusResult<()>
+    ) -> EventBusResult<PublishOutcome>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -742,7 +677,7 @@ impl LocalEventBus {
             self.apply_publisher_interceptors(original_envelope.clone())
         }) {
             Ok(Some(envelope)) => envelope,
-            Ok(None) => return Ok(()),
+            Ok(None) => return Ok(PublishOutcome::Dropped),
             Err(error) => {
                 self.inner.observe_error(&error);
                 self.observe_errors(options.notify_publish_error(&original_envelope, &error));
@@ -755,7 +690,7 @@ impl LocalEventBus {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
-        Ok(())
+        Ok(PublishOutcome::Accepted)
     }
 
     /// Publishes a dead-letter envelope while graceful shutdown is draining.
@@ -766,6 +701,7 @@ impl LocalEventBus {
         let options = PublishOptions::empty()
             .merge_defaults(self.default_publish_options::<DeadLetterPayload>());
         self.publish_envelope_with_options_internal(envelope, options, true, false)
+            .map(|_outcome| ())
     }
 
     /// Publishes multiple envelopes by submitting each envelope in input order.
@@ -816,8 +752,16 @@ impl LocalEventBus {
         let mut result = BatchPublishResult::new(envelopes.len());
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
-            match self.publish_envelope_with_options(envelope, options.clone()) {
-                Ok(()) => result.record_success(),
+            match self.publish_envelope_with_options_internal(
+                envelope,
+                options
+                    .clone()
+                    .merge_defaults(self.default_publish_options::<T>()),
+                false,
+                true,
+            ) {
+                Ok(PublishOutcome::Accepted) => result.record_accepted(),
+                Ok(PublishOutcome::Dropped) => result.record_dropped(),
                 Err(error) => {
                     result.record_failure(BatchPublishFailure::new(index, event_id, error));
                 }
@@ -1768,8 +1712,23 @@ fn create_default_dead_letter_for_failure<T>(
 where
     T: Clone + Send + Sync + 'static,
 {
-    let strategy = event_bus.inner.default_dead_letter_strategy::<T>()?;
-    match call_dead_letter_strategy(strategy, subscriber_id, delivered, error, options) {
+    if let Some(strategy) = event_bus.inner.default_dead_letter_strategy::<T>() {
+        return match call_dead_letter_strategy(strategy, subscriber_id, delivered, error, options) {
+            Ok(dead_letter) => dead_letter,
+            Err(error) => {
+                event_bus.inner.observe_error(&error);
+                None
+            }
+        };
+    }
+    let strategy = event_bus.inner.global_default_dead_letter_strategy()?;
+    match call_global_dead_letter_strategy(
+        strategy,
+        subscriber_id,
+        delivered.metadata(),
+        Arc::new(delivered.payload().clone()),
+        error,
+    ) {
         Ok(dead_letter) => dead_letter,
         Err(error) => {
             event_bus.inner.observe_error(&error);
@@ -1806,6 +1765,35 @@ where
         Ok(Err(error)) => Err(normalize_dead_letter_error(error)),
         Err(_) => Err(EventBusError::dead_letter_failed(
             "default dead-letter strategy panicked",
+        )),
+    }
+}
+
+/// Calls a type-erased dead-letter strategy while normalizing failures.
+///
+/// # Parameters
+/// - `strategy`: Strategy to invoke.
+/// - `subscriber_id`: Subscriber identifier.
+/// - `metadata`: Failed event metadata.
+/// - `original_payload`: Type-erased cloned original payload.
+/// - `error`: Failure reason.
+///
+/// # Returns
+/// Dead-letter envelope produced by the strategy.
+fn call_global_dead_letter_strategy(
+    strategy: Arc<DeadLetterStrategyAnyFn>,
+    subscriber_id: &str,
+    metadata: EventEnvelopeMetadata,
+    original_payload: DeadLetterOriginalPayload,
+    error: &EventBusError,
+) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>> {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        strategy.create_dead_letter(subscriber_id, metadata, original_payload, error)
+    })) {
+        Ok(Ok(dead_letter)) => Ok(dead_letter),
+        Ok(Err(error)) => Err(normalize_dead_letter_error(error)),
+        Err(_) => Err(EventBusError::dead_letter_failed(
+            "global default dead-letter strategy panicked",
         )),
     }
 }
@@ -1949,6 +1937,38 @@ fn wait_for_executor_termination(executor: &FixedThreadPool) {
 fn wait_for_executor_termination_timeout(executor: &FixedThreadPool, timeout: Duration) -> bool {
     let started_at = Instant::now();
     while !executor.is_terminated() {
+        let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
+            return false;
+        };
+        thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+    true
+}
+
+/// Waits for a delayed task scheduler to finish after shutdown.
+///
+/// # Parameters
+/// - `scheduler`: Scheduler whose graceful shutdown has already been requested.
+fn wait_for_delay_scheduler_termination(scheduler: &DelayedTaskScheduler) {
+    while !scheduler.is_terminated() {
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Waits for a delayed task scheduler to finish until the timeout elapses.
+///
+/// # Parameters
+/// - `scheduler`: Scheduler whose graceful shutdown has already been requested.
+/// - `timeout`: Maximum duration to wait.
+///
+/// # Returns
+/// `true` when the scheduler terminates before the timeout.
+fn wait_for_delay_scheduler_termination_timeout(
+    scheduler: &DelayedTaskScheduler,
+    timeout: Duration,
+) -> bool {
+    let started_at = Instant::now();
+    while !scheduler.is_terminated() {
         let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
             return false;
         };

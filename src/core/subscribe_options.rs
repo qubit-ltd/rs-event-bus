@@ -19,10 +19,12 @@ use std::sync::Arc;
 use crate::{
     AckMode,
     Acknowledgement,
+    DeadLetterOriginalPayload,
     DeadLetterRecord,
     EventBusError,
     EventBusResult,
     EventEnvelope,
+    EventEnvelopeMetadata,
     RetryOptions,
     SubscribeOptionsBuilder,
     Topic,
@@ -121,6 +123,89 @@ where
     F: DeadLetterStrategyCallback<T>,
 {
     Arc::new(ClosureDeadLetterStrategy::new(strategy))
+}
+
+/// Creates dead-letter envelopes without knowing the original payload type.
+pub trait DeadLetterStrategyAny: Send + Sync + 'static {
+    /// Creates a dead-letter envelope for one terminal delivery failure.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: Failing subscriber ID.
+    /// - `failed`: Type-erased metadata for the failed event.
+    /// - `original_payload`: Type-erased cloned original payload.
+    /// - `error`: Final processing error.
+    ///
+    /// # Returns
+    /// Dead-letter envelope, `None` to discard, or a strategy failure.
+    fn create_dead_letter(
+        &self,
+        subscriber_id: &str,
+        failed: EventEnvelopeMetadata,
+        original_payload: DeadLetterOriginalPayload,
+        error: &EventBusError,
+    ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>;
+}
+
+/// Closure contract accepted by global dead-letter strategy builders.
+pub trait DeadLetterStrategyAnyCallback:
+    Fn(
+        &str,
+        EventEnvelopeMetadata,
+        DeadLetterOriginalPayload,
+        &EventBusError,
+    ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
+    + Send
+    + Sync
+    + 'static
+{
+}
+
+impl<F> DeadLetterStrategyAnyCallback for F where
+    F: Fn(
+            &str,
+            EventEnvelopeMetadata,
+            DeadLetterOriginalPayload,
+            &EventBusError,
+        ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>>
+        + Send
+        + Sync
+        + 'static
+{
+}
+
+struct ClosureDeadLetterStrategyAny<F> {
+    callback: F,
+}
+
+impl<F> ClosureDeadLetterStrategyAny<F> {
+    fn new(callback: F) -> Self {
+        Self { callback }
+    }
+}
+
+impl<F> DeadLetterStrategyAny for ClosureDeadLetterStrategyAny<F>
+where
+    F: DeadLetterStrategyAnyCallback,
+{
+    fn create_dead_letter(
+        &self,
+        subscriber_id: &str,
+        failed: EventEnvelopeMetadata,
+        original_payload: DeadLetterOriginalPayload,
+        error: &EventBusError,
+    ) -> EventBusResult<Option<EventEnvelope<DeadLetterPayload>>> {
+        (self.callback)(subscriber_id, failed, original_payload, error)
+    }
+}
+
+pub(crate) type DeadLetterStrategyAnyFn = dyn DeadLetterStrategyAny;
+
+/// Wraps a closure as a type-erased dead-letter strategy object.
+pub(crate) fn wrap_dead_letter_strategy_any<F>(strategy: F) -> Arc<DeadLetterStrategyAnyFn>
+where
+    F: DeadLetterStrategyAnyCallback,
+{
+    Arc::new(ClosureDeadLetterStrategyAny::new(strategy))
 }
 
 /// Creates a strategy that discards failed events.

@@ -37,12 +37,14 @@ use std::time::{
 };
 
 use qubit_thread_pool::{
+    DelayedTaskScheduler,
     ExecutorService,
     FixedThreadPool,
     ThreadPoolBuildError,
 };
 
 use crate::core::SubscriptionState;
+use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
 use crate::{
     EventBusError,
     EventBusResult,
@@ -72,6 +74,7 @@ pub(crate) struct LocalEventBusRuntimeOptions {
     pub(crate) default_publish_options: TypeErasedDefaults,
     pub(crate) default_subscribe_options: TypeErasedDefaults,
     pub(crate) default_dead_letter_strategies: TypeErasedDefaults,
+    pub(crate) global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
     pub(crate) global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
     pub(crate) global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
     pub(crate) publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
@@ -267,6 +270,7 @@ pub(crate) struct LocalEventBusInner {
     default_publish_options: TypeErasedDefaults,
     default_subscribe_options: TypeErasedDefaults,
     default_dead_letter_strategies: TypeErasedDefaults,
+    global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
     subscription_handler_pool_size: usize,
     subscription_handler_queue_capacity: Option<usize>,
 }
@@ -297,6 +301,7 @@ impl LocalEventBusInner {
             default_publish_options: options.default_publish_options,
             default_subscribe_options: options.default_subscribe_options,
             default_dead_letter_strategies: options.default_dead_letter_strategies,
+            global_default_dead_letter_strategy: options.global_default_dead_letter_strategy,
             subscription_handler_pool_size: options.subscription_handler_pool_size,
             subscription_handler_queue_capacity: options.subscription_handler_queue_capacity,
         }
@@ -314,7 +319,7 @@ impl LocalEventBusInner {
         if lifecycle.started {
             return Ok(false);
         }
-        if lifecycle.executor.is_some() || lifecycle.delay_executor.is_some() {
+        if lifecycle.executor.is_some() || lifecycle.delay_scheduler.is_some() {
             return Err(EventBusError::start_failed(
                 "previous shutdown is still draining subscriber work",
             ));
@@ -327,11 +332,11 @@ impl LocalEventBusInner {
         let executor = self
             .build_subscription_handler_executor()
             .map_err(start_failed_from_thread_pool_error)?;
-        let delay_executor = self
-            .build_delay_executor()
+        let delay_scheduler = self
+            .build_delay_scheduler()
             .map_err(start_failed_from_thread_pool_error)?;
         lifecycle.executor = Some(executor);
-        lifecycle.delay_executor = Some(delay_executor);
+        lifecycle.delay_scheduler = Some(delay_scheduler);
         lifecycle.started = true;
         Ok(true)
     }
@@ -377,15 +382,15 @@ impl LocalEventBusInner {
         lifecycle.executor.take()
     }
 
-    /// Removes the delayed-delivery executor after the bus has entered stopping state.
+    /// Removes the delayed-delivery scheduler after the bus has entered stopping state.
     ///
     /// # Returns
-    /// Delayed-delivery executor if one is still owned by the bus.
-    pub(crate) fn take_delay_executor(&self) -> Option<FixedThreadPool> {
+    /// Delayed-delivery scheduler if one is still owned by the bus.
+    pub(crate) fn take_delay_scheduler(&self) -> Option<DelayedTaskScheduler> {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
-        lifecycle.delay_executor.take()
+        lifecycle.delay_scheduler.take()
     }
 
     /// Returns whether the bus is currently started.
@@ -454,6 +459,16 @@ impl LocalEventBusInner {
             .cloned()
     }
 
+    /// Returns the global default dead-letter strategy.
+    ///
+    /// # Returns
+    /// Type-erased strategy if configured.
+    pub(crate) fn global_default_dead_letter_strategy(
+        &self,
+    ) -> Option<Arc<DeadLetterStrategyAnyFn>> {
+        self.global_default_dead_letter_strategy.clone()
+    }
+
     /// Adds a global publisher interceptor.
     ///
     /// # Parameters
@@ -461,6 +476,7 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` when the entry is stored.
+    #[cfg_attr(not(coverage), allow(dead_code))]
     pub(crate) fn add_global_publisher_interceptor(
         &self,
         interceptor: Arc<dyn PublisherInterceptorAny>,
@@ -493,6 +509,7 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` when the entry is stored.
+    #[cfg_attr(not(coverage), allow(dead_code))]
     pub(crate) fn add_publisher_interceptor(
         &self,
         interceptor: Arc<dyn PublisherInterceptorEntry>,
@@ -525,6 +542,7 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` when the entry is stored.
+    #[cfg_attr(not(coverage), allow(dead_code))]
     pub(crate) fn add_subscriber_interceptor(
         &self,
         interceptor: Arc<dyn SubscriberInterceptorEntry>,
@@ -557,6 +575,7 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` when the entry is stored.
+    #[cfg_attr(not(coverage), allow(dead_code))]
     pub(crate) fn add_global_subscriber_interceptor(
         &self,
         interceptor: Arc<dyn SubscriberInterceptorAny>,
@@ -811,12 +830,26 @@ impl LocalEventBusInner {
             .lifecycle
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        let delay_executor = delay_executor_for_dispatch(&lifecycle, allow_stopping)?;
+        let delay_scheduler = delay_scheduler_for_dispatch(&lifecycle, allow_stopping)?;
         let bus = Arc::clone(self);
-        submit_processing_task_to_executor(delay_executor, move || {
-            if subscription_state.wait_until_delay_elapsed_or_inactive(delay) {
-                let task_slot = Arc::new(Mutex::new(Some(task)));
-                let task_for_executor = Arc::clone(&task_slot);
+        let task_slot = Arc::new(Mutex::new(Some(task)));
+        let registration = Arc::new(Mutex::new(None::<usize>));
+        let fired = Arc::new(Mutex::new(false));
+        let task_for_delay = Arc::clone(&task_slot);
+        let registration_for_delay = Arc::clone(&registration);
+        let fired_for_delay = Arc::clone(&fired);
+        let subscription_for_delay = Arc::clone(&subscription_state);
+        let scheduled = delay_scheduler.schedule(delay, move || {
+            if let Ok(mut fired) = fired_for_delay.lock() {
+                *fired = true;
+            }
+            if let Ok(mut registration) = registration_for_delay.lock()
+                && let Some(registration_id) = registration.take()
+            {
+                subscription_for_delay.unregister_delay_cancellation(registration_id);
+            }
+            if subscription_for_delay.is_active() {
+                let task_for_executor = Arc::clone(&task_for_delay);
                 let result = bus.submit_processing_task(
                     move || {
                         if let Ok(mut task) = task_for_executor.lock()
@@ -830,7 +863,7 @@ impl LocalEventBusInner {
                 match result {
                     Ok(()) => {}
                     Err(EventBusError::ExecutionRejected { .. }) => {
-                        let recovered_task = match task_slot.lock() {
+                        let recovered_task = match task_for_delay.lock() {
                             Ok(mut task) => task.take(),
                             Err(_) => None,
                         };
@@ -841,7 +874,32 @@ impl LocalEventBusInner {
                     Err(error) => bus.observe_error(&error),
                 }
             }
-        })
+        });
+        let handle = match scheduled {
+            Ok(handle) => handle,
+            Err(error) => return Err(EventBusError::execution_rejected(error.to_string())),
+        };
+        if fired.lock().map(|fired| *fired).unwrap_or(true) {
+            return Ok(());
+        }
+        let task_for_cancel = Arc::clone(&task_slot);
+        let registration_id = subscription_state.register_delay_cancellation(move || {
+            if handle.cancel()
+                && let Ok(mut task) = task_for_cancel.lock()
+            {
+                let _ = task.take();
+            }
+        });
+        if let Some(registration_id) = registration_id
+            && let Ok(mut registration) = registration.lock()
+        {
+            if fired.lock().map(|fired| *fired).unwrap_or(true) {
+                subscription_state.unregister_delay_cancellation(registration_id);
+            } else {
+                *registration = Some(registration_id);
+            }
+        }
+        Ok(())
     }
 
     /// Reserves one local ordered-lane queue slot.
@@ -920,24 +978,62 @@ impl LocalEventBusInner {
             .lifecycle
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        let delay_executor = delay_executor_for_dispatch(&lifecycle, true)?;
+        let delay_scheduler = delay_scheduler_for_dispatch(&lifecycle, true)?;
         let bus = Arc::clone(self);
-        submit_processing_task_to_executor(delay_executor, move || {
-            if subscription_state.wait_until_delay_elapsed_or_inactive(delay) {
-                match bus.submit_ordered_lane_runner(lane_key.clone(), true) {
+        let registration = Arc::new(Mutex::new(None::<usize>));
+        let fired = Arc::new(Mutex::new(false));
+        let registration_for_delay = Arc::clone(&registration);
+        let fired_for_delay = Arc::clone(&fired);
+        let subscription_for_delay = Arc::clone(&subscription_state);
+        let lane_key_for_delay = lane_key.clone();
+        let scheduled = delay_scheduler.schedule(delay, move || {
+            if let Ok(mut fired) = fired_for_delay.lock() {
+                *fired = true;
+            }
+            if let Ok(mut registration) = registration_for_delay.lock()
+                && let Some(registration_id) = registration.take()
+            {
+                subscription_for_delay.unregister_delay_cancellation(registration_id);
+            }
+            if subscription_for_delay.is_active() {
+                match bus.submit_ordered_lane_runner(lane_key_for_delay.clone(), true) {
                     Ok(()) => {}
                     Err(EventBusError::ExecutionRejected { .. }) => {
-                        Arc::clone(&bus).run_ordered_lane(lane_key.clone());
+                        Arc::clone(&bus).run_ordered_lane(lane_key_for_delay.clone());
                     }
                     Err(error) => {
                         bus.observe_error(&error);
-                        bus.cancel_ordered_lane(&lane_key);
+                        bus.cancel_ordered_lane(&lane_key_for_delay);
                     }
                 }
             } else {
-                bus.cancel_ordered_lane(&lane_key);
+                bus.cancel_ordered_lane(&lane_key_for_delay);
             }
-        })
+        });
+        let handle = match scheduled {
+            Ok(handle) => handle,
+            Err(error) => return Err(EventBusError::execution_rejected(error.to_string())),
+        };
+        if fired.lock().map(|fired| *fired).unwrap_or(true) {
+            return Ok(());
+        }
+        let bus_for_cancel = Arc::clone(self);
+        let lane_key_for_cancel = lane_key.clone();
+        let registration_id = subscription_state.register_delay_cancellation(move || {
+            if handle.cancel() {
+                bus_for_cancel.cancel_ordered_lane(&lane_key_for_cancel);
+            }
+        });
+        if let Some(registration_id) = registration_id
+            && let Ok(mut registration) = registration.lock()
+        {
+            if fired.lock().map(|fired| *fired).unwrap_or(true) {
+                subscription_state.unregister_delay_cancellation(registration_id);
+            } else {
+                *registration = Some(registration_id);
+            }
+        }
+        Ok(())
     }
 
     /// Pops the next task for an ordered lane.
@@ -1179,18 +1275,15 @@ impl LocalEventBusInner {
         builder.build()
     }
 
-    /// Builds the delayed-delivery executor.
+    /// Builds the delayed-delivery scheduler.
     ///
     /// # Returns
-    /// A fixed thread pool used to wait for delayed deliveries.
+    /// A scheduler used to wait for delayed deliveries.
     ///
     /// # Errors
     /// Returns executor build errors from `rs-thread-pool`.
-    fn build_delay_executor(&self) -> Result<FixedThreadPool, ThreadPoolBuildError> {
-        FixedThreadPool::builder()
-            .pool_size(self.subscription_handler_pool_size)
-            .thread_name_prefix("qubit-event-bus-delay")
-            .build()
+    fn build_delay_scheduler(&self) -> Result<DelayedTaskScheduler, ThreadPoolBuildError> {
+        DelayedTaskScheduler::new("qubit-event-bus-delay")
     }
 }
 
@@ -1208,16 +1301,16 @@ fn executor_for_dispatch(
         .ok_or_else(EventBusError::not_started)
 }
 
-/// Returns the delayed-delivery executor if the lifecycle allows dispatch.
-fn delay_executor_for_dispatch(
+/// Returns the delayed-delivery scheduler if the lifecycle allows dispatch.
+fn delay_scheduler_for_dispatch(
     lifecycle: &LocalEventBusLifecycle,
     allow_stopping: bool,
-) -> EventBusResult<&FixedThreadPool> {
+) -> EventBusResult<&DelayedTaskScheduler> {
     if !lifecycle.started && !allow_stopping {
         return Err(EventBusError::not_started());
     }
     lifecycle
-        .delay_executor
+        .delay_scheduler
         .as_ref()
         .ok_or_else(EventBusError::not_started)
 }
@@ -1270,7 +1363,7 @@ where
 struct LocalEventBusLifecycle {
     started: bool,
     executor: Option<FixedThreadPool>,
-    delay_executor: Option<FixedThreadPool>,
+    delay_scheduler: Option<DelayedTaskScheduler>,
 }
 
 impl LocalEventBusLifecycle {
@@ -1282,7 +1375,7 @@ impl LocalEventBusLifecycle {
         Self {
             started: false,
             executor: None,
-            delay_executor: None,
+            delay_scheduler: None,
         }
     }
 }

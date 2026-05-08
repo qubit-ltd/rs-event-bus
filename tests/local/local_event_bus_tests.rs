@@ -32,6 +32,7 @@ use qubit_event_bus::{
     DeadLetterPayload,
     DeadLetterRecord,
     EventBusError,
+    EventBusResult,
     EventEnvelope,
     EventEnvelopeMetadata,
     LocalEventBus,
@@ -270,6 +271,46 @@ fn test_delayed_delivery_does_not_occupy_handler_worker() {
         .expect("delayed event should eventually be delivered");
     assert_eq!(second.0, "delayed");
     assert!(second.1.duration_since(published_at) >= Duration::from_millis(250));
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
+fn test_short_delayed_delivery_does_not_wait_behind_long_delays() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("single worker should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("short-delay-before-long-delay");
+    let (received_tx, received_rx) = mpsc::channel::<(String, Instant)>();
+
+    bus.subscribe("sub", &topic, move |event| {
+        received_tx
+            .send((event.payload().clone(), Instant::now()))
+            .expect("received payload should send");
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    let published_at = Instant::now();
+    for index in 0..4 {
+        bus.publish_envelope(
+            EventEnvelope::create(topic.clone(), format!("long-{index}"))
+                .with_delay(Duration::from_millis(300)),
+        )
+        .expect("long delayed publish should work");
+    }
+    bus.publish_envelope(
+        EventEnvelope::create(topic.clone(), "short".to_string())
+            .with_delay(Duration::from_millis(30)),
+    )
+    .expect("short delayed publish should work");
+
+    let first = received_rx
+        .recv_timeout(Duration::from_millis(180))
+        .expect("short delay should not wait behind long delayed events");
+    assert_eq!(first.0, "short");
+    assert!(first.1.duration_since(published_at) < Duration::from_millis(180));
     bus.wait_for_idle(&topic).expect("topic should become idle");
 }
 
@@ -855,20 +896,21 @@ fn test_subscribe_filter_panic_becomes_publish_error() {
 
 #[test]
 fn test_publisher_interceptor_can_modify_or_drop_events() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            if event.topic().name() == "dropped" {
+                None
+            } else {
+                Some(event.with_header("intercepted", "true"))
+            }
+        })
+        .expect("interceptor should be registered");
+    let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("intercepted");
     let dropped = create_topic("dropped");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
-
-    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-        if event.topic().name() == "dropped" {
-            None
-        } else {
-            Some(event.with_header("intercepted", "true"))
-        }
-    })
-    .expect("interceptor should be registered");
     bus.subscribe("sub-1", &topic, move |event| {
         captured
             .lock()
@@ -896,7 +938,32 @@ fn test_publisher_interceptor_can_modify_or_drop_events() {
 
 #[test]
 fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+            metadata.with_header("global-bare", "seen")
+        })
+        .expect("global publisher interceptor should register");
+    factory
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+            Ok::<EventEnvelopeMetadata, EventBusError>(
+                metadata.with_header("global-result", "seen"),
+            )
+        })
+        .expect("global publisher interceptor should register");
+    factory
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+            if metadata.topic_name() == "global-publisher-dropped" {
+                Ok::<Option<EventEnvelopeMetadata>, EventBusError>(None)
+            } else {
+                let payload_type_name = metadata.payload_type_name();
+                Ok(Some(
+                    metadata.with_header("global-publisher", payload_type_name),
+                ))
+            }
+        })
+        .expect("global publisher interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
     let string_topic = create_topic("global-publisher-string");
     let number_topic =
         Topic::<i32>::try_new("global-publisher-number").expect("number topic should build");
@@ -905,26 +972,6 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
     let number_received = Arc::new(Mutex::new(Vec::new()));
     let captured_strings = Arc::clone(&string_received);
     let captured_numbers = Arc::clone(&number_received);
-
-    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-        metadata.with_header("global-bare", "seen")
-    })
-    .expect("global publisher interceptor should register");
-    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-        Ok::<EventEnvelopeMetadata, EventBusError>(metadata.with_header("global-result", "seen"))
-    })
-    .expect("global publisher interceptor should register");
-    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-        if metadata.topic_name() == "global-publisher-dropped" {
-            Ok::<Option<EventEnvelopeMetadata>, EventBusError>(None)
-        } else {
-            let payload_type_name = metadata.payload_type_name();
-            Ok(Some(
-                metadata.with_header("global-publisher", payload_type_name),
-            ))
-        }
-    })
-    .expect("global publisher interceptor should register");
     bus.subscribe("string-sub", &string_topic, move |event| {
         captured_strings
             .lock()
@@ -978,19 +1025,88 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
 }
 
 #[test]
+fn test_global_publisher_interceptor_error_is_reported_to_publish_error_handling() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_publisher_interceptor(|_metadata: EventEnvelopeMetadata| {
+            Err::<EventEnvelopeMetadata, EventBusError>(EventBusError::handler_failed(
+                "global publisher interceptor failed",
+            ))
+        })
+        .expect("global publisher interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-publisher-interceptor-error");
+    let publish_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_publish_errors = Arc::clone(&publish_errors);
+    let options = PublishOptions::<String>::builder()
+        .error_handler(move |_event, error| {
+            captured_publish_errors
+                .lock()
+                .expect("publish errors should lock")
+                .push(error.clone());
+            Ok(())
+        })
+        .build();
+
+    let error = bus
+        .publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
+        .expect_err("global publisher interceptor error should reject publish");
+
+    assert_eq!(error.kind(), "interceptor_failed");
+    assert!(
+        error
+            .to_string()
+            .contains("global publisher interceptor failed")
+    );
+    let publish_errors = publish_errors.lock().expect("publish errors should lock");
+    assert_eq!(publish_errors.len(), 1);
+    assert_eq!(publish_errors[0].kind(), "interceptor_failed");
+}
+
+#[test]
+fn test_global_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_publisher_interceptor(
+            |_metadata: EventEnvelopeMetadata| -> EventEnvelopeMetadata {
+                panic!("global publisher interceptor panic");
+            },
+        )
+        .expect("global publisher interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-publisher-interceptor-panic");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let error = bus
+        .publish(&topic, "payload".to_string())
+        .expect_err("global publisher interceptor panic should reject publish");
+    std::panic::set_hook(previous_hook);
+
+    assert_eq!(error.kind(), "interceptor_failed");
+    assert!(
+        error
+            .to_string()
+            .contains("global publisher interceptor panicked")
+    );
+}
+
+#[test]
 fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(
+            |_event: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
+                panic!("publisher interceptor panic");
+            },
+        )
+        .expect("interceptor should be registered");
+    let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("publisher-interceptor-panic");
     let publish_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let observed_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_publish_errors = Arc::clone(&publish_errors);
     let captured_observed_errors = Arc::clone(&observed_errors);
-    bus.add_publisher_interceptor::<String, _>(
-        |_event: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
-            panic!("publisher interceptor panic");
-        },
-    )
-    .expect("interceptor should be registered");
     bus.add_error_observer(move |error| {
         captured_observed_errors
             .lock()
@@ -1037,20 +1153,22 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
 
 #[test]
 fn test_publish_retry_retries_publisher_interceptor_failures() {
-    let bus = LocalEventBus::started().expect("bus should start");
-    let topic = create_topic("publisher-interceptor-retry");
     let attempts = Arc::new(AtomicUsize::new(0));
     let received = Arc::new(AtomicUsize::new(0));
     let captured_attempts = Arc::clone(&attempts);
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
+            let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 1 {
+                panic!("transient publisher interceptor failure");
+            }
+            Some(event.with_header("attempt", attempt.to_string()))
+        })
+        .expect("interceptor should be registered");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("publisher-interceptor-retry");
     let captured_received = Arc::clone(&received);
-    bus.add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
-        let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        if attempt == 1 {
-            panic!("transient publisher interceptor failure");
-        }
-        Some(event.with_header("attempt", attempt.to_string()))
-    })
-    .expect("interceptor should be registered");
     bus.subscribe("sub-1", &topic, move |event| {
         assert_eq!(event.headers().get("attempt"), Some(&"2".to_string()));
         captured_received.fetch_add(1, Ordering::SeqCst);
@@ -1714,41 +1832,44 @@ fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
 
 #[test]
 fn test_subscriber_interceptor_wraps_handler_and_can_short_circuit() {
-    let bus = LocalEventBus::started().expect("bus should start");
-    let handled_topic = create_topic("subscriber-interceptor");
-    let dropped_topic = create_topic("subscriber-interceptor-dropped");
     let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured_before_after = Arc::clone(&sequence);
-    bus.add_subscriber_interceptor::<String, _>(
-        move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
-            captured_before_after
-                .lock()
-                .expect("sequence should lock")
-                .push(format!("before:{}", event.payload()));
-            let result = chain.proceed(event.with_header("intercepted", "true"));
-            captured_before_after
-                .lock()
-                .expect("sequence should lock")
-                .push("after".to_string());
-            result
-        },
-    )
-    .expect("subscriber interceptor should register");
-    let captured_short_circuit = Arc::clone(&sequence);
-    bus.add_subscriber_interceptor::<String, _>(
-        move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
-            if event.topic().name() == "subscriber-interceptor-dropped" {
-                captured_short_circuit
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                captured_before_after
                     .lock()
                     .expect("sequence should lock")
-                    .push("dropped".to_string());
-                Ok(())
-            } else {
-                chain.proceed(event)
-            }
-        },
-    )
-    .expect("subscriber interceptor should register");
+                    .push(format!("before:{}", event.payload()));
+                let result = chain.proceed(event.with_header("intercepted", "true"));
+                captured_before_after
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("after".to_string());
+                result
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let captured_short_circuit = Arc::clone(&sequence);
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                if event.topic().name() == "subscriber-interceptor-dropped" {
+                    captured_short_circuit
+                        .lock()
+                        .expect("sequence should lock")
+                        .push("dropped".to_string());
+                    Ok(())
+                } else {
+                    chain.proceed(event)
+                }
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let handled_topic = create_topic("subscriber-interceptor");
+    let dropped_topic = create_topic("subscriber-interceptor-dropped");
     let captured_handler = Arc::clone(&sequence);
 
     bus.subscribe("sub-1", &handled_topic, move |event| {
@@ -1846,37 +1967,38 @@ fn test_configured_handler_pool_limits_concurrent_subscriber_work() {
 
 #[test]
 fn test_global_subscriber_interceptor_wraps_all_payload_types_and_can_short_circuit() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_sequence = Arc::clone(&sequence);
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_subscriber_interceptor(
+            move |metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+                captured_sequence
+                    .lock()
+                    .expect("sequence should lock")
+                    .push(format!("before:{}", metadata.topic_name()));
+                if metadata.topic_name() == "global-subscriber-dropped" {
+                    captured_sequence
+                        .lock()
+                        .expect("sequence should lock")
+                        .push("dropped".to_string());
+                    Ok(())
+                } else {
+                    let result = chain.proceed();
+                    captured_sequence
+                        .lock()
+                        .expect("sequence should lock")
+                        .push("after".to_string());
+                    result
+                }
+            },
+        )
+        .expect("global subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
     let string_topic = create_topic("global-subscriber-string");
     let number_topic =
         Topic::<i32>::try_new("global-subscriber-number").expect("number topic should build");
     let dropped_topic = create_topic("global-subscriber-dropped");
-    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
-    let captured_sequence = Arc::clone(&sequence);
-
-    bus.add_global_subscriber_interceptor(
-        move |metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
-            captured_sequence
-                .lock()
-                .expect("sequence should lock")
-                .push(format!("before:{}", metadata.topic_name()));
-            if metadata.topic_name() == "global-subscriber-dropped" {
-                captured_sequence
-                    .lock()
-                    .expect("sequence should lock")
-                    .push("dropped".to_string());
-                Ok(())
-            } else {
-                let result = chain.proceed();
-                captured_sequence
-                    .lock()
-                    .expect("sequence should lock")
-                    .push("after".to_string());
-                result
-            }
-        },
-    )
-    .expect("global subscriber interceptor should register");
     let captured_string_sequence = Arc::clone(&sequence);
     bus.subscribe("string-sub", &string_topic, move |event| {
         captured_string_sequence
@@ -1935,6 +2057,95 @@ fn test_global_subscriber_interceptor_wraps_all_payload_types_and_can_short_circ
 }
 
 #[test]
+fn test_global_subscriber_interceptor_error_is_observed() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_subscriber_interceptor(
+            |_metadata: EventEnvelopeMetadata, _chain: SubscriberInterceptorAnyChain| {
+                Err(EventBusError::handler_failed(
+                    "global subscriber interceptor failed",
+                ))
+            },
+        )
+        .expect("global subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-subscriber-interceptor-error");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options("sub", &topic, |_event| Ok(()), options)
+        .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(subscribe_errors.iter().any(|error| matches!(
+        error,
+        EventBusError::InterceptorFailed { phase, message }
+            if *phase == "subscribe" && message.contains("global subscriber interceptor failed")
+    )));
+}
+
+#[test]
+fn test_global_subscriber_interceptor_panic_is_observed() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_subscriber_interceptor(
+            |_metadata: EventEnvelopeMetadata,
+             _chain: SubscriberInterceptorAnyChain|
+             -> EventBusResult<()> {
+                panic!("global subscriber interceptor panic");
+            },
+        )
+        .expect("global subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-subscriber-interceptor-panic");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options("sub", &topic, |_event| Ok(()), options)
+        .expect("subscription should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(subscribe_errors.iter().any(|error| matches!(
+        error,
+        EventBusError::InterceptorFailed { phase, message }
+            if *phase == "subscribe" && message.contains("global subscriber interceptor panicked")
+    )));
+}
+
+#[test]
 fn test_publish_all_delivers_each_envelope() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -1962,7 +2173,8 @@ fn test_publish_all_delivers_each_envelope() {
         .publish_all(envelopes)
         .expect("batch publish should work");
     assert_eq!(batch_result.total_count(), 2);
-    assert_eq!(batch_result.success_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 2);
+    assert_eq!(batch_result.dropped_count(), 0);
     assert!(batch_result.is_success());
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
@@ -1976,22 +2188,72 @@ fn test_publish_all_delivers_each_envelope() {
 }
 
 #[test]
+fn test_publish_all_reports_dropped_envelopes_separately_from_accepted() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            if event.payload() == "drop" {
+                None
+            } else {
+                Some(event)
+            }
+        })
+        .expect("interceptor should register");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("batch-dropped");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&received);
+    bus.subscribe("sub", &topic, move |event| {
+        captured
+            .lock()
+            .expect("received events should lock")
+            .push(event.payload().clone());
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    let envelopes = ["keep", "drop"]
+        .into_iter()
+        .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
+        .collect::<Vec<_>>();
+    let batch_result = bus
+        .publish_all(envelopes)
+        .expect("batch with dropped envelope should return summary");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(batch_result.total_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 1);
+    assert_eq!(batch_result.dropped_count(), 1);
+    assert_eq!(batch_result.failure_count(), 0);
+    assert!(batch_result.is_success());
+    assert_eq!(
+        received
+            .lock()
+            .expect("received events should lock")
+            .as_slice(),
+        ["keep".to_string()]
+    );
+}
+
+#[test]
 fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            if event.payload() == "bad" {
+                Err(EventBusError::interceptor_failed(
+                    "publish",
+                    "bad payload rejected",
+                ))
+            } else {
+                Ok(Some(event))
+            }
+        })
+        .expect("interceptor should register");
+    let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("batch-best-effort");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
-    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-        if event.payload() == "bad" {
-            Err(EventBusError::interceptor_failed(
-                "publish",
-                "bad payload rejected",
-            ))
-        } else {
-            Ok(Some(event))
-        }
-    })
-    .expect("interceptor should register");
     bus.subscribe("sub", &topic, move |event| {
         captured
             .lock()
@@ -2013,7 +2275,8 @@ fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(batch_result.total_count(), 3);
-    assert_eq!(batch_result.success_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 2);
+    assert_eq!(batch_result.dropped_count(), 0);
     assert_eq!(batch_result.failure_count(), 1);
     assert!(!batch_result.is_success());
     assert_eq!(batch_result.failures()[0].index(), 1);
@@ -2107,6 +2370,17 @@ fn test_subscriber_priority_controls_delivery_order() {
         .expect("pool size should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("priority-order");
+    let blocker_topic = create_topic("priority-order-blocker");
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let (started_tx, started_rx) = mpsc::channel();
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("blocker", &blocker_topic, move |_| {
+        started_tx
+            .send(())
+            .expect("blocker start should be observed");
+        wait_for_gate(&captured_release);
+    })
+    .expect("blocker subscriber should register");
     let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
     let low_sequence = Arc::clone(&sequence);
     bus.subscribe_with_options(
@@ -2135,8 +2409,16 @@ fn test_subscriber_priority_controls_delivery_order() {
     )
     .expect("high priority subscriber should register");
 
+    bus.publish(&blocker_topic, "blocked".to_string())
+        .expect("blocker publish should work");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocker should start");
     bus.publish(&topic, "payload".to_string())
         .expect("publish should work");
+    release_gate(&release);
+    bus.wait_for_idle(&blocker_topic)
+        .expect("blocker topic should become idle");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(
@@ -2887,12 +3169,29 @@ fn test_publish_racing_shutdown_rejects_existing_ordering_lane_submission() {
     factory
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
+    let interceptor_ready = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_interceptor = Arc::new((Mutex::new(false), Condvar::new()));
+    let captured_ready = Arc::clone(&interceptor_ready);
+    let captured_release_interceptor = Arc::clone(&release_interceptor);
+    factory
+        .add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
+            if event.payload() == "after-shutdown" {
+                release_gate(&captured_ready);
+                let (release_lock, release_condvar) = &*captured_release_interceptor;
+                let mut released = release_lock.lock().expect("interceptor gate should lock");
+                while !*released {
+                    released = release_condvar
+                        .wait(released)
+                        .expect("interceptor wait should not poison");
+                }
+            }
+            Some(event)
+        })
+        .expect("interceptor should register");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("ordered-shutdown-race");
     let started = Arc::new((Mutex::new(0_usize), Condvar::new()));
     let release_handler = Arc::new((Mutex::new(false), Condvar::new()));
-    let interceptor_ready = Arc::new((Mutex::new(false), Condvar::new()));
-    let release_interceptor = Arc::new((Mutex::new(false), Condvar::new()));
     let captured_started = Arc::clone(&started);
     let captured_release_handler = Arc::clone(&release_handler);
     bus.subscribe("sub", &topic, move |_event| {
@@ -2917,23 +3216,6 @@ fn test_publish_racing_shutdown_rejects_existing_ordering_lane_submission() {
     )
     .expect("first publish should occupy the ordered lane");
     wait_for_count(&started, 1);
-
-    let captured_ready = Arc::clone(&interceptor_ready);
-    let captured_release_interceptor = Arc::clone(&release_interceptor);
-    bus.add_publisher_interceptor::<String, _>(move |event: EventEnvelope<String>| {
-        if event.payload() == "after-shutdown" {
-            release_gate(&captured_ready);
-            let (release_lock, release_condvar) = &*captured_release_interceptor;
-            let mut released = release_lock.lock().expect("interceptor gate should lock");
-            while !*released {
-                released = release_condvar
-                    .wait(released)
-                    .expect("interceptor wait should not poison");
-            }
-        }
-        Some(event)
-    })
-    .expect("interceptor should register");
 
     let publisher_bus = bus.clone();
     let publish_topic = topic.clone();

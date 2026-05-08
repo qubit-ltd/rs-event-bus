@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use qubit_event_bus::{
+    DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,
     EventBus,
@@ -72,6 +73,14 @@ fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
         |_subscriber, _event, _error, _options| Ok(None),
     )
     .expect("factory trait should accept default dead-letter strategies");
+    EventBusFactory::set_global_default_dead_letter_strategy(
+        &mut factory,
+        |_subscriber: &str,
+         _metadata: EventEnvelopeMetadata,
+         _payload: DeadLetterOriginalPayload,
+         _error: &EventBusError| { Ok(None) },
+    )
+    .expect("factory trait should accept global default dead-letter strategies");
     EventBusFactory::add_publisher_interceptor::<String, _>(
         &mut factory,
         PublicPublisherInterceptor,
@@ -262,6 +271,147 @@ fn test_local_event_bus_factory_applies_default_dead_letter_strategy() {
             .get::<String>("subscriber_id"),
         Some("sub".to_string())
     );
+}
+
+#[test]
+fn test_local_event_bus_factory_applies_global_default_dead_letter_strategy() {
+    let mut factory = LocalEventBusFactory::default();
+    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("local-factory-global-dlq")
+        .expect("dlq topic should build");
+    let dead_letter_target = dead_letter_topic.clone();
+    factory.set_global_default_dead_letter_strategy(
+        move |subscriber_id: &str,
+              failed: EventEnvelopeMetadata,
+              original_payload: DeadLetterOriginalPayload,
+              error: &EventBusError| {
+            Ok(Some(EventEnvelope::create(
+                dead_letter_target.clone(),
+                DeadLetterRecord::from_metadata_failure(
+                    subscriber_id,
+                    failed,
+                    original_payload,
+                    error,
+                ),
+            )))
+        },
+    );
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic =
+        Topic::<i64>::try_new("local-factory-global-default-dlq").expect("topic should build");
+    let dead_letters = Arc::new(Mutex::new(Vec::new()));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+    })
+    .expect("dead letter subscriber should register");
+    bus.subscribe("sub", &topic, |_event| {
+        Err(EventBusError::handler_failed("handler failed"))
+    })
+    .expect("subscription should use global default dead-letter strategy");
+
+    bus.publish(&topic, 7_i64).expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+
+    let dead_letters = dead_letters.lock().expect("dead letters should lock");
+    assert_eq!(dead_letters.len(), 1);
+    let record = dead_letters[0].payload();
+    assert_eq!(
+        record.metadata().get::<String>("subscriber_id"),
+        Some("sub".to_string())
+    );
+    assert_eq!(
+        record.metadata().get::<String>("topic"),
+        Some("local-factory-global-default-dlq".to_string())
+    );
+    assert_eq!(record.downcast_original_payload_ref::<i64>(), Some(&7_i64));
+}
+
+#[test]
+fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_error() {
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_global_default_dead_letter_strategy(
+        |_subscriber_id: &str,
+         _metadata: EventEnvelopeMetadata,
+         _payload: DeadLetterOriginalPayload,
+         _error: &EventBusError| {
+            Err(EventBusError::handler_failed(
+                "global default dead-letter strategy failed",
+            ))
+        },
+    );
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic =
+        Topic::<i64>::try_new("local-factory-global-dlq-error").expect("topic should build");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    bus.subscribe("sub", &topic, |_event| {
+        Err(EventBusError::handler_failed("handler failed"))
+    })
+    .expect("failing subscriber should register");
+
+    bus.publish(&topic, 7_i64).expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message }
+            if message.contains("global default dead-letter strategy failed")
+    )));
+}
+
+#[test]
+fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_panic() {
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_global_default_dead_letter_strategy(
+        |_subscriber_id: &str,
+         _metadata: EventEnvelopeMetadata,
+         _payload: DeadLetterOriginalPayload,
+         _error: &EventBusError| {
+            panic!("global default dead-letter strategy panic");
+        },
+    );
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic =
+        Topic::<i64>::try_new("local-factory-global-dlq-panic").expect("topic should build");
+    let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_observed = Arc::clone(&observed);
+    bus.add_error_observer(move |error| {
+        captured_observed
+            .lock()
+            .expect("observed errors should lock")
+            .push(error.clone());
+    })
+    .expect("error observer should register");
+    bus.subscribe("sub", &topic, |_event| {
+        Err(EventBusError::handler_failed("handler failed"))
+    })
+    .expect("failing subscriber should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    bus.publish(&topic, 7_i64).expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    let observed = observed.lock().expect("observed errors should lock");
+    assert!(observed.iter().any(|error| matches!(
+        error,
+        EventBusError::DeadLetterFailed { message }
+            if message.contains("global default dead-letter strategy panicked")
+    )));
 }
 
 #[test]

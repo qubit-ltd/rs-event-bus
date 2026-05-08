@@ -14,14 +14,16 @@ use crate::{
     EventBusResult,
     EventEnvelope,
     PublishOptions,
+    StagedEvent,
+    StagedEventEnvelope,
     TransactionalPublisher,
 };
 
 /// Event bus extension for transactional publishing backends.
 ///
-/// The typed batch method models the Java transactional contract for a single
-/// payload type. Backends that need heterogeneous batches can add a type-erased
-/// adapter without changing this core trait.
+/// The type-erased staged batch is the core contract. Typed convenience
+/// methods lower into staged events so backends can support heterogeneous
+/// transaction contents without duplicating generic entry points.
 pub trait TransactionalEventBus: EventBus {
     /// Transactional publisher created by this bus.
     type Publisher: TransactionalPublisher;
@@ -52,5 +54,30 @@ pub trait TransactionalEventBus: EventBus {
         options: PublishOptions<T>,
     ) -> EventBusResult<()>
     where
-        T: Clone + Send + Sync + 'static;
+        T: Clone + Send + Sync + 'static,
+    {
+        let staged = envelopes
+            .into_iter()
+            .map(|envelope| {
+                Box::new(StagedEventEnvelope::new(envelope, options.clone()))
+                    as Box<dyn StagedEvent>
+            })
+            .collect::<Vec<_>>();
+        self.publish_batch_atomically_staged(staged)
+    }
+
+    /// Publishes a heterogeneous staged batch atomically.
+    ///
+    /// # Parameters
+    /// - `events`: Type-erased staged events to publish atomically.
+    ///
+    /// # Returns
+    /// `Ok(())` only when the whole batch is published.
+    ///
+    /// # Errors
+    /// Returns backend-specific atomic publishing errors.
+    fn publish_batch_atomically_staged(
+        &self,
+        events: Vec<Box<dyn StagedEvent>>,
+    ) -> EventBusResult<()>;
 }
