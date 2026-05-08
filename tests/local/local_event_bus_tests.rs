@@ -33,6 +33,7 @@ use qubit_event_bus::{
     DeadLetterRecord,
     EventBusError,
     EventEnvelope,
+    EventEnvelopeMetadata,
     LocalEventBus,
     LocalEventBusFactory,
     PublishOptions,
@@ -40,8 +41,11 @@ use qubit_event_bus::{
     RetryJitter,
     RetryOptions,
     SubscribeOptions,
+    SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
     Topic,
+    discard_dead_letters,
+    standard_dead_letters_to,
 };
 
 fn create_topic(name: &str) -> Topic<String> {
@@ -891,6 +895,89 @@ fn test_publisher_interceptor_can_modify_or_drop_events() {
 }
 
 #[test]
+fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let string_topic = create_topic("global-publisher-string");
+    let number_topic =
+        Topic::<i32>::try_new("global-publisher-number").expect("number topic should build");
+    let dropped_topic = create_topic("global-publisher-dropped");
+    let string_received = Arc::new(Mutex::new(Vec::new()));
+    let number_received = Arc::new(Mutex::new(Vec::new()));
+    let captured_strings = Arc::clone(&string_received);
+    let captured_numbers = Arc::clone(&number_received);
+
+    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+        metadata.with_header("global-bare", "seen")
+    })
+    .expect("global publisher interceptor should register");
+    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+        Ok::<EventEnvelopeMetadata, EventBusError>(metadata.with_header("global-result", "seen"))
+    })
+    .expect("global publisher interceptor should register");
+    bus.add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+        if metadata.topic_name() == "global-publisher-dropped" {
+            Ok::<Option<EventEnvelopeMetadata>, EventBusError>(None)
+        } else {
+            let payload_type_name = metadata.payload_type_name();
+            Ok(Some(
+                metadata.with_header("global-publisher", payload_type_name),
+            ))
+        }
+    })
+    .expect("global publisher interceptor should register");
+    bus.subscribe("string-sub", &string_topic, move |event| {
+        captured_strings
+            .lock()
+            .expect("string events should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("string subscription should register");
+    bus.subscribe("number-sub", &number_topic, move |event| {
+        captured_numbers
+            .lock()
+            .expect("number events should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("number subscription should register");
+
+    bus.publish(&string_topic, "payload".to_string())
+        .expect("string publish should work");
+    bus.publish(&number_topic, 7)
+        .expect("number publish should work");
+    bus.publish(&dropped_topic, "dropped".to_string())
+        .expect("dropped publish should be accepted");
+    bus.wait_for_idle(&string_topic)
+        .expect("string topic should become idle");
+    bus.wait_for_idle(&number_topic)
+        .expect("number topic should become idle");
+    bus.wait_for_idle(&dropped_topic)
+        .expect("dropped topic should become idle");
+
+    let string_events = string_received.lock().expect("string events should lock");
+    let number_events = number_received.lock().expect("number events should lock");
+    assert_eq!(string_events.len(), 1);
+    assert_eq!(number_events.len(), 1);
+    assert_eq!(
+        string_events[0].headers().get("global-publisher"),
+        Some(&string_events[0].topic().payload_type_name().to_string())
+    );
+    assert_eq!(
+        string_events[0].headers().get("global-bare"),
+        Some(&"seen".to_string())
+    );
+    assert_eq!(
+        string_events[0].headers().get("global-result"),
+        Some(&"seen".to_string())
+    );
+    assert_eq!(
+        number_events[0].headers().get("global-publisher"),
+        Some(&number_events[0].topic().payload_type_name().to_string())
+    );
+}
+
+#[test]
 fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("publisher-interceptor-panic");
@@ -1289,6 +1376,96 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
 }
 
 #[test]
+fn test_standard_dead_letter_strategy_helper_routes_standard_payload() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("standard-dead-letter-helper");
+    let dead_letter_topic = create_dead_letter_topic("dlq.standard-dead-letter-helper");
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(standard_dead_letters_to(dead_letter_topic.clone()))
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+
+    let events = dead_letters.lock().expect("dead letters should lock");
+    assert_eq!(events.len(), 1);
+    assert!(events[0].is_dead_letter());
+    assert_eq!(
+        events[0]
+            .payload()
+            .metadata()
+            .get::<String>("subscriber_id"),
+        Some("sub".to_string())
+    );
+    assert_eq!(
+        events[0]
+            .payload()
+            .downcast_original_payload_ref::<String>(),
+        Some(&"payload".to_string())
+    );
+}
+
+#[test]
+fn test_discard_dead_letter_strategy_helper_suppresses_dead_letter_routing() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("discard-dead-letter-helper");
+    let dead_letter_topic = create_dead_letter_topic("dlq.discard-dead-letter-helper");
+    let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
+        captured_dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .push(event);
+        Ok(())
+    })
+    .expect("dead letter subscriber should register");
+    let options = SubscribeOptions::<String>::builder()
+        .dead_letter_strategy(discard_dead_letters())
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| Err(EventBusError::handler_failed("handler failed")),
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letter topic should become idle");
+
+    assert!(
+        dead_letters
+            .lock()
+            .expect("dead letters should lock")
+            .is_empty()
+    );
+}
+
+#[test]
 fn test_manual_ack_is_exposed_to_handler() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("manual-ack");
@@ -1668,6 +1845,96 @@ fn test_configured_handler_pool_limits_concurrent_subscriber_work() {
 }
 
 #[test]
+fn test_global_subscriber_interceptor_wraps_all_payload_types_and_can_short_circuit() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let string_topic = create_topic("global-subscriber-string");
+    let number_topic =
+        Topic::<i32>::try_new("global-subscriber-number").expect("number topic should build");
+    let dropped_topic = create_topic("global-subscriber-dropped");
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_sequence = Arc::clone(&sequence);
+
+    bus.add_global_subscriber_interceptor(
+        move |metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+            captured_sequence
+                .lock()
+                .expect("sequence should lock")
+                .push(format!("before:{}", metadata.topic_name()));
+            if metadata.topic_name() == "global-subscriber-dropped" {
+                captured_sequence
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("dropped".to_string());
+                Ok(())
+            } else {
+                let result = chain.proceed();
+                captured_sequence
+                    .lock()
+                    .expect("sequence should lock")
+                    .push("after".to_string());
+                result
+            }
+        },
+    )
+    .expect("global subscriber interceptor should register");
+    let captured_string_sequence = Arc::clone(&sequence);
+    bus.subscribe("string-sub", &string_topic, move |event| {
+        captured_string_sequence
+            .lock()
+            .expect("sequence should lock")
+            .push(format!("handler:{}", event.payload()));
+        Ok(())
+    })
+    .expect("string subscription should register");
+    let captured_number_sequence = Arc::clone(&sequence);
+    bus.subscribe("number-sub", &number_topic, move |event| {
+        captured_number_sequence
+            .lock()
+            .expect("sequence should lock")
+            .push(format!("handler:{}", event.payload()));
+        Ok(())
+    })
+    .expect("number subscription should register");
+    let dropped_called = Arc::new(AtomicBool::new(false));
+    let captured_dropped_called = Arc::clone(&dropped_called);
+    bus.subscribe("dropped-sub", &dropped_topic, move |_| {
+        captured_dropped_called.store(true, Ordering::SeqCst);
+        Ok(())
+    })
+    .expect("dropped subscription should register");
+
+    bus.publish(&string_topic, "payload".to_string())
+        .expect("string publish should work");
+    bus.publish(&number_topic, 9)
+        .expect("number publish should work");
+    bus.publish(&dropped_topic, "ignored".to_string())
+        .expect("dropped publish should work");
+    bus.wait_for_idle(&string_topic)
+        .expect("string topic should become idle");
+    bus.wait_for_idle(&number_topic)
+        .expect("number topic should become idle");
+    bus.wait_for_idle(&dropped_topic)
+        .expect("dropped topic should become idle");
+
+    let mut observed = sequence.lock().expect("sequence should lock").clone();
+    observed.sort();
+    assert_eq!(
+        observed,
+        vec![
+            "after".to_string(),
+            "after".to_string(),
+            "before:global-subscriber-dropped".to_string(),
+            "before:global-subscriber-number".to_string(),
+            "before:global-subscriber-string".to_string(),
+            "dropped".to_string(),
+            "handler:9".to_string(),
+            "handler:payload".to_string(),
+        ]
+    );
+    assert!(!dropped_called.load(Ordering::SeqCst));
+}
+
+#[test]
 fn test_publish_all_delivers_each_envelope() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -1691,8 +1958,12 @@ fn test_publish_all_delivers_each_envelope() {
         .into_iter()
         .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
         .collect::<Vec<_>>();
-    bus.publish_all(envelopes)
+    let batch_result = bus
+        .publish_all(envelopes)
         .expect("batch publish should work");
+    assert_eq!(batch_result.total_count(), 2);
+    assert_eq!(batch_result.success_count(), 2);
+    assert!(batch_result.is_success());
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     let payloads = received
@@ -1702,6 +1973,62 @@ fn test_publish_all_delivers_each_envelope() {
         .map(|event| event.payload().clone())
         .collect::<Vec<_>>();
     assert_eq!(payloads, vec!["batch-2".to_string(), "batch-1".to_string()]);
+}
+
+#[test]
+fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("batch-best-effort");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&received);
+    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+        if event.payload() == "bad" {
+            Err(EventBusError::interceptor_failed(
+                "publish",
+                "bad payload rejected",
+            ))
+        } else {
+            Ok(Some(event))
+        }
+    })
+    .expect("interceptor should register");
+    bus.subscribe("sub", &topic, move |event| {
+        captured
+            .lock()
+            .expect("received events should lock")
+            .push(event.payload().clone());
+        Ok(())
+    })
+    .expect("subscription should register");
+
+    let envelopes = ["ok-1", "bad", "ok-2"]
+        .into_iter()
+        .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
+        .collect::<Vec<_>>();
+    let failed_event_id = envelopes[1].id().to_string();
+
+    let batch_result = bus
+        .publish_all(envelopes)
+        .expect("best-effort batch should return a result summary");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(batch_result.total_count(), 3);
+    assert_eq!(batch_result.success_count(), 2);
+    assert_eq!(batch_result.failure_count(), 1);
+    assert!(!batch_result.is_success());
+    assert_eq!(batch_result.failures()[0].index(), 1);
+    assert_eq!(batch_result.failures()[0].event_id(), failed_event_id);
+    assert_eq!(
+        batch_result.failures()[0].error().kind(),
+        "interceptor_failed"
+    );
+    assert_eq!(
+        received
+            .lock()
+            .expect("received events should lock")
+            .as_slice(),
+        ["ok-1".to_string(), "ok-2".to_string()]
+    );
 }
 
 #[test]

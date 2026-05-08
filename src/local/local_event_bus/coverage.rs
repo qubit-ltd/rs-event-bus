@@ -43,6 +43,7 @@ use super::{
     process_subscription_event,
 };
 use crate::local::erased_subscription::ErasedSubscription;
+use crate::local::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use crate::local::processing_task::ProcessingTask;
 use crate::local::publisher_interceptor_entry::PublisherInterceptorEntry;
 use crate::local::subscriber_interceptor_chain::SubscriberInterceptorChain;
@@ -228,15 +229,17 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
     errors.push(interceptor_error);
     error_interceptor_bus.shutdown();
 
-    let wrong_publisher_bus = LocalEventBus::with_runtime_options(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![Arc::new(CoverageWrongPublisherInterceptor)],
-        Vec::new(),
-        1,
-        None,
-    );
+    let wrong_publisher_bus = LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
+        default_publish_options: HashMap::new(),
+        default_subscribe_options: HashMap::new(),
+        default_dead_letter_strategies: HashMap::new(),
+        global_publisher_interceptors: Vec::new(),
+        global_subscriber_interceptors: Vec::new(),
+        publisher_interceptors: vec![Arc::new(CoverageWrongPublisherInterceptor)],
+        subscriber_interceptors: Vec::new(),
+        subscription_handler_pool_size: 1,
+        subscription_handler_queue_capacity: None,
+    });
     wrong_publisher_bus
         .start()
         .expect("coverage bus should start");
@@ -268,17 +271,19 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .expect_err("wrong subscriber handler type should fail");
     errors.push(subscriber_error);
 
-    let direct_interceptor_bus = LocalEventBus::with_runtime_options(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![create_publisher_interceptor_entry::<String, _>(Some)],
-        vec![create_subscriber_interceptor_entry::<String, _>(
+    let direct_interceptor_bus = LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
+        default_publish_options: HashMap::new(),
+        default_subscribe_options: HashMap::new(),
+        default_dead_letter_strategies: HashMap::new(),
+        global_publisher_interceptors: Vec::new(),
+        global_subscriber_interceptors: Vec::new(),
+        publisher_interceptors: vec![create_publisher_interceptor_entry::<String, _>(Some)],
+        subscriber_interceptors: vec![create_subscriber_interceptor_entry::<String, _>(
             coverage_subscriber_passthrough,
         )],
-        1,
-        None,
-    );
+        subscription_handler_pool_size: 1,
+        subscription_handler_queue_capacity: None,
+    });
     let publisher_output = direct_interceptor_bus
         .apply_publisher_interceptors(EventEnvelope::create(
             string_topic.clone(),
@@ -297,15 +302,17 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
     ))
     .expect("wrapped handler should run");
 
-    let wrong_subscriber_bus = LocalEventBus::with_runtime_options(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        Vec::new(),
-        vec![Arc::new(CoverageWrongSubscriberInterceptor)],
-        1,
-        None,
-    );
+    let wrong_subscriber_bus = LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
+        default_publish_options: HashMap::new(),
+        default_subscribe_options: HashMap::new(),
+        default_dead_letter_strategies: HashMap::new(),
+        global_publisher_interceptors: Vec::new(),
+        global_subscriber_interceptors: Vec::new(),
+        publisher_interceptors: Vec::new(),
+        subscriber_interceptors: vec![Arc::new(CoverageWrongSubscriberInterceptor)],
+        subscription_handler_pool_size: 1,
+        subscription_handler_queue_capacity: None,
+    });
     wrong_subscriber_bus
         .start()
         .expect("coverage bus should start");

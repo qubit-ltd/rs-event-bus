@@ -99,6 +99,52 @@ fn test_builder_sets_headers_timestamp_and_acknowledgement() {
 }
 
 #[test]
+fn test_metadata_exposes_and_updates_type_erased_fields() {
+    let topic = create_topic();
+    let timestamp = SystemTime::UNIX_EPOCH + Duration::from_secs(30);
+    let envelope = EventEnvelope::builder()
+        .id("event-3")
+        .topic(topic)
+        .payload("payload".to_string())
+        .header("trace-id", "trace-4")
+        .ordering_key("order-3")
+        .timestamp(timestamp)
+        .delay(Duration::from_millis(50))
+        .dead_letter(true)
+        .build()
+        .expect("complete envelope should build");
+
+    let metadata = envelope.metadata();
+    assert_eq!(metadata.id(), "event-3");
+    assert_eq!(metadata.topic_name(), "orders.created");
+    assert_eq!(
+        metadata.payload_type_name(),
+        envelope.topic().payload_type_name()
+    );
+    assert_eq!(
+        metadata.headers().get("trace-id"),
+        Some(&"trace-4".to_string())
+    );
+    assert_eq!(metadata.ordering_key(), Some("order-3"));
+    assert_eq!(metadata.timestamp(), timestamp);
+    assert_eq!(metadata.delay(), Some(Duration::from_millis(50)));
+    assert!(metadata.is_dead_letter());
+
+    let updated = metadata
+        .with_header("extra", "true")
+        .without_header("trace-id")
+        .with_ordering_key("order-4")
+        .without_ordering_key()
+        .with_delay(Duration::from_secs(2))
+        .without_delay();
+    assert_eq!(updated.headers().get("trace-id"), None);
+    assert_eq!(updated.headers().get("extra"), Some(&"true".to_string()));
+    assert_eq!(updated.ordering_key(), None);
+    assert_eq!(updated.delay(), None);
+    assert!(updated.is_dead_letter());
+}
+
+#[test]
 fn test_builder_rejects_missing_topic() {
     let error = EventEnvelope::<String>::builder()
         .payload("payload".to_string())

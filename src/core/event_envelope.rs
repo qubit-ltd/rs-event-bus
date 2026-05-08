@@ -8,6 +8,7 @@
  *
  ******************************************************************************/
 //! Standard event envelope.
+// qubit-style: allow multiple-public-types
 
 use std::collections::HashMap;
 use std::sync::atomic::{
@@ -39,6 +40,152 @@ pub struct EventEnvelope<T: 'static> {
     delay: Option<Duration>,
     acknowledgement: Option<Acknowledgement>,
     dead_letter: bool,
+}
+
+/// Type-erased event metadata exposed to global interceptors.
+#[derive(Debug, Clone)]
+pub struct EventEnvelopeMetadata {
+    id: String,
+    topic_name: String,
+    payload_type_name: &'static str,
+    headers: HashMap<String, String>,
+    ordering_key: Option<String>,
+    timestamp: SystemTime,
+    delay: Option<Duration>,
+    dead_letter: bool,
+}
+
+impl EventEnvelopeMetadata {
+    /// Returns the event ID.
+    ///
+    /// # Returns
+    /// Stable event identifier.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the topic name.
+    ///
+    /// # Returns
+    /// Topic name without payload type information.
+    pub fn topic_name(&self) -> &str {
+        &self.topic_name
+    }
+
+    /// Returns the Rust payload type name.
+    ///
+    /// # Returns
+    /// Fully qualified payload type name.
+    pub fn payload_type_name(&self) -> &'static str {
+        self.payload_type_name
+    }
+
+    /// Returns event headers.
+    ///
+    /// # Returns
+    /// Immutable header map.
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
+    }
+
+    /// Returns the optional ordering key.
+    ///
+    /// # Returns
+    /// `Some` when an ordering key was configured.
+    pub fn ordering_key(&self) -> Option<&str> {
+        self.ordering_key.as_deref()
+    }
+
+    /// Returns event creation timestamp.
+    ///
+    /// # Returns
+    /// Timestamp assigned when the envelope was built.
+    pub fn timestamp(&self) -> SystemTime {
+        self.timestamp
+    }
+
+    /// Returns optional delivery delay.
+    ///
+    /// # Returns
+    /// `Some` when delayed delivery metadata was configured.
+    pub fn delay(&self) -> Option<Duration> {
+        self.delay
+    }
+
+    /// Returns whether this metadata represents a dead letter.
+    ///
+    /// # Returns
+    /// `true` if the source envelope is already a dead letter.
+    pub fn is_dead_letter(&self) -> bool {
+        self.dead_letter
+    }
+
+    /// Adds or replaces one header.
+    ///
+    /// # Parameters
+    /// - `key`: Header key.
+    /// - `value`: Header value converted to string.
+    ///
+    /// # Returns
+    /// Updated metadata.
+    pub fn with_header(mut self, key: &str, value: impl ToString) -> Self {
+        self.headers.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Removes one header.
+    ///
+    /// # Parameters
+    /// - `key`: Header key to remove.
+    ///
+    /// # Returns
+    /// Updated metadata.
+    pub fn without_header(mut self, key: &str) -> Self {
+        self.headers.remove(key);
+        self
+    }
+
+    /// Sets the ordering key.
+    ///
+    /// # Parameters
+    /// - `ordering_key`: Ordering key used by supporting backends.
+    ///
+    /// # Returns
+    /// Updated metadata.
+    pub fn with_ordering_key(mut self, ordering_key: &str) -> Self {
+        self.ordering_key = Some(ordering_key.to_string());
+        self
+    }
+
+    /// Clears the ordering key.
+    ///
+    /// # Returns
+    /// Updated metadata without an ordering key.
+    pub fn without_ordering_key(mut self) -> Self {
+        self.ordering_key = None;
+        self
+    }
+
+    /// Sets delayed delivery metadata.
+    ///
+    /// # Parameters
+    /// - `delay`: Requested delivery delay.
+    ///
+    /// # Returns
+    /// Updated metadata.
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Clears delayed delivery metadata.
+    ///
+    /// # Returns
+    /// Updated metadata without a delay.
+    pub fn without_delay(mut self) -> Self {
+        self.delay = None;
+        self
+    }
 }
 
 impl<T: 'static> EventEnvelope<T> {
@@ -127,6 +274,23 @@ impl<T: 'static> EventEnvelope<T> {
     /// Immutable header map.
     pub fn headers(&self) -> &HashMap<String, String> {
         &self.headers
+    }
+
+    /// Returns type-erased metadata for global interception.
+    ///
+    /// # Returns
+    /// Cloned event metadata without exposing the typed payload.
+    pub fn metadata(&self) -> EventEnvelopeMetadata {
+        EventEnvelopeMetadata {
+            id: self.id.clone(),
+            topic_name: self.topic.name().to_string(),
+            payload_type_name: self.topic.payload_type_name(),
+            headers: self.headers.clone(),
+            ordering_key: self.ordering_key.clone(),
+            timestamp: self.timestamp,
+            delay: self.delay,
+            dead_letter: self.dead_letter,
+        }
     }
 
     /// Returns the optional ordering key.
@@ -225,6 +389,13 @@ impl<T: 'static> EventEnvelope<T> {
     pub fn as_dead_letter(mut self) -> Self {
         self.dead_letter = true;
         self
+    }
+
+    /// Applies mutable metadata fields returned by a global interceptor.
+    pub(crate) fn apply_metadata(&mut self, metadata: EventEnvelopeMetadata) {
+        self.headers = metadata.headers;
+        self.ordering_key = metadata.ordering_key;
+        self.delay = metadata.delay;
     }
 }
 

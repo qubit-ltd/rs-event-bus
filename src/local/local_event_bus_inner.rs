@@ -9,6 +9,7 @@
  ******************************************************************************/
 //! Shared state for the local event bus.
 // qubit-style: allow coverage-cfg
+// qubit-style: allow multiple-public-types
 
 #[cfg(coverage)]
 mod coverage;
@@ -51,6 +52,10 @@ use crate::{
 };
 
 use super::erased_subscription::ErasedSubscription;
+use super::local_event_bus::{
+    PublisherInterceptorAny,
+    SubscriberInterceptorAny,
+};
 use super::ordering_lane_key::OrderingLaneKey;
 use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
@@ -60,6 +65,20 @@ use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
 
 type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
+type TypeErasedDefaults = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
+
+/// Runtime options used to construct a local event bus.
+pub(crate) struct LocalEventBusRuntimeOptions {
+    pub(crate) default_publish_options: TypeErasedDefaults,
+    pub(crate) default_subscribe_options: TypeErasedDefaults,
+    pub(crate) default_dead_letter_strategies: TypeErasedDefaults,
+    pub(crate) global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
+    pub(crate) global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
+    pub(crate) publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
+    pub(crate) subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
+    pub(crate) subscription_handler_pool_size: usize,
+    pub(crate) subscription_handler_queue_capacity: Option<usize>,
+}
 
 /// Ordered subscriber task plus its local queue-capacity reservation.
 struct OrderedProcessingEntry {
@@ -236,6 +255,8 @@ enum OrderedLaneTurn {
 pub(crate) struct LocalEventBusInner {
     lifecycle: Mutex<LocalEventBusLifecycle>,
     subscriptions: Mutex<HashMap<TopicKey, Vec<Arc<dyn ErasedSubscription>>>>,
+    global_publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorAny>>>,
+    global_subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorAny>>>,
     publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorEntry>>>,
     subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorEntry>>>,
     error_observers: Mutex<Vec<Arc<ErrorObserverFn>>>,
@@ -243,9 +264,9 @@ pub(crate) struct LocalEventBusInner {
     ordered_queued_task_count: AtomicUsize,
     processing_tracker: ProcessingTracker,
     next_subscription_id: AtomicUsize,
-    default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-    default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-    default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    default_publish_options: TypeErasedDefaults,
+    default_subscribe_options: TypeErasedDefaults,
+    default_dead_letter_strategies: TypeErasedDefaults,
     subscription_handler_pool_size: usize,
     subscription_handler_queue_capacity: Option<usize>,
 }
@@ -260,30 +281,24 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Shared state initialized in the stopped lifecycle state.
-    pub(crate) fn new(
-        default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-        default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-        default_dead_letter_strategies: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-        publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
-        subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
-        subscription_handler_pool_size: usize,
-        subscription_handler_queue_capacity: Option<usize>,
-    ) -> Self {
+    pub(crate) fn new(options: LocalEventBusRuntimeOptions) -> Self {
         Self {
             lifecycle: Mutex::new(LocalEventBusLifecycle::stopped()),
             subscriptions: Mutex::new(HashMap::new()),
-            publisher_interceptors: Mutex::new(publisher_interceptors),
-            subscriber_interceptors: Mutex::new(subscriber_interceptors),
+            global_publisher_interceptors: Mutex::new(options.global_publisher_interceptors),
+            global_subscriber_interceptors: Mutex::new(options.global_subscriber_interceptors),
+            publisher_interceptors: Mutex::new(options.publisher_interceptors),
+            subscriber_interceptors: Mutex::new(options.subscriber_interceptors),
             error_observers: Mutex::new(Vec::new()),
             ordering_lanes: Mutex::new(HashMap::new()),
             ordered_queued_task_count: AtomicUsize::new(0),
             processing_tracker: ProcessingTracker::new(),
             next_subscription_id: AtomicUsize::new(1),
-            default_publish_options,
-            default_subscribe_options,
-            default_dead_letter_strategies,
-            subscription_handler_pool_size,
-            subscription_handler_queue_capacity,
+            default_publish_options: options.default_publish_options,
+            default_subscribe_options: options.default_subscribe_options,
+            default_dead_letter_strategies: options.default_dead_letter_strategies,
+            subscription_handler_pool_size: options.subscription_handler_pool_size,
+            subscription_handler_queue_capacity: options.subscription_handler_queue_capacity,
         }
     }
 
@@ -439,6 +454,38 @@ impl LocalEventBusInner {
             .cloned()
     }
 
+    /// Adds a global publisher interceptor.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Interceptor applied to every published payload type.
+    ///
+    /// # Returns
+    /// `Ok(())` when the entry is stored.
+    pub(crate) fn add_global_publisher_interceptor(
+        &self,
+        interceptor: Arc<dyn PublisherInterceptorAny>,
+    ) -> EventBusResult<()> {
+        self.global_publisher_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
+            .push(interceptor);
+        Ok(())
+    }
+
+    /// Returns registered global publisher interceptors.
+    ///
+    /// # Returns
+    /// Cloned interceptor entries.
+    pub(crate) fn global_publisher_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn PublisherInterceptorAny>>> {
+        Ok(self
+            .global_publisher_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
+            .clone())
+    }
+
     /// Adds a publisher interceptor.
     ///
     /// # Parameters
@@ -500,6 +547,38 @@ impl LocalEventBusInner {
             .subscriber_interceptors
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
+            .clone())
+    }
+
+    /// Adds a global subscriber interceptor.
+    ///
+    /// # Parameters
+    /// - `interceptor`: Interceptor applied to every subscriber payload type.
+    ///
+    /// # Returns
+    /// `Ok(())` when the entry is stored.
+    pub(crate) fn add_global_subscriber_interceptor(
+        &self,
+        interceptor: Arc<dyn SubscriberInterceptorAny>,
+    ) -> EventBusResult<()> {
+        self.global_subscriber_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("global_subscriber_interceptors"))?
+            .push(interceptor);
+        Ok(())
+    }
+
+    /// Returns registered global subscriber interceptors.
+    ///
+    /// # Returns
+    /// Cloned interceptor entries.
+    pub(crate) fn global_subscriber_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorAny>>> {
+        Ok(self
+            .global_subscriber_interceptors
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("global_subscriber_interceptors"))?
             .clone())
     }
 

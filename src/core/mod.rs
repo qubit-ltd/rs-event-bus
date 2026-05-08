@@ -39,7 +39,11 @@ pub use dead_letter_record::{
     DeadLetterPayload,
     DeadLetterRecord,
 };
-pub use event_bus::EventBus;
+pub use event_bus::{
+    BatchPublishFailure,
+    BatchPublishResult,
+    EventBus,
+};
 pub use event_bus_error::{
     EventBusError,
     EventBusResult,
@@ -47,7 +51,10 @@ pub use event_bus_error::{
 pub use event_bus_factory::EventBusFactory;
 #[cfg(coverage)]
 pub use event_bus_factory::coverage_exercise_event_bus_factory_default_regions;
-pub use event_envelope::EventEnvelope;
+pub use event_envelope::{
+    EventEnvelope,
+    EventEnvelopeMetadata,
+};
 pub use event_envelope_builder::EventEnvelopeBuilder;
 pub use into_event_bus_result::IntoEventBusResult;
 pub use publish_options::PublishOptions;
@@ -59,7 +66,14 @@ pub use retry_options::{
     RetryJitter,
     RetryOptions,
 };
-pub use subscribe_options::SubscribeOptions;
+pub use subscribe_options::{
+    DeadLetterStrategy,
+    DeadLetterStrategyCallback,
+    SubscribeOptions,
+    discard_dead_letters,
+    prefixed_dead_letters,
+    standard_dead_letters_to,
+};
 pub use subscribe_options_builder::SubscribeOptionsBuilder;
 pub use subscription::Subscription;
 pub(crate) use subscription::SubscriptionState;

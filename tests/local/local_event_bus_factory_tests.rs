@@ -11,11 +11,13 @@ use qubit_event_bus::{
     EventBusFactory,
     EventBusResult,
     EventEnvelope,
+    EventEnvelopeMetadata,
     LocalEventBusFactory,
     PublishOptions,
     PublisherInterceptor,
     SubscribeOptions,
     SubscriberInterceptor,
+    SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
     Topic,
 };
@@ -123,6 +125,57 @@ fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
             .expect("observed interceptors should lock")
             .as_slice(),
         ["before:payload", "after"]
+    );
+}
+
+#[test]
+fn test_event_bus_factory_trait_configures_global_interceptors() {
+    let mut factory = LocalEventBusFactory::new();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let captured_observed = Arc::clone(&observed);
+    EventBusFactory::add_global_publisher_interceptor(
+        &mut factory,
+        |metadata: EventEnvelopeMetadata| Some(metadata.with_header("global-publisher", "seen")),
+    )
+    .expect("factory trait should accept global publisher interceptors");
+    EventBusFactory::add_global_subscriber_interceptor(
+        &mut factory,
+        move |metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+            captured_observed
+                .lock()
+                .expect("observed should lock")
+                .push(metadata.topic_name().to_string());
+            chain.proceed()
+        },
+    )
+    .expect("factory trait should accept global subscriber interceptors");
+
+    let bus = EventBusFactory::create_started(&factory).expect("factory should start bus");
+    let topic =
+        Topic::<String>::try_new("factory-global-interceptors").expect("topic should build");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&received);
+    EventBus::subscribe(&bus, "sub", &topic, move |event| {
+        captured.lock().expect("received should lock").push(
+            event
+                .headers()
+                .get("global-publisher")
+                .expect("global publisher header should exist")
+                .clone(),
+        );
+    })
+    .expect("subscription should register");
+
+    EventBus::publish(&bus, &topic, "payload".to_string()).expect("publish should work");
+    EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
+
+    assert_eq!(
+        received.lock().expect("received should lock").as_slice(),
+        ["seen"]
+    );
+    assert_eq!(
+        observed.lock().expect("observed should lock").as_slice(),
+        ["factory-global-interceptors"]
     );
 }
 

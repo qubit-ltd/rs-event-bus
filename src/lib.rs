@@ -24,14 +24,19 @@ pub use core::{
     Acknowledgement,
     AttemptTimeoutOption,
     AttemptTimeoutPolicy,
+    BatchPublishFailure,
+    BatchPublishResult,
     DeadLetterPayload,
     DeadLetterRecord,
+    DeadLetterStrategy,
+    DeadLetterStrategyCallback,
     EventBus,
     EventBusError,
     EventBusFactory,
     EventBusResult,
     EventEnvelope,
     EventEnvelopeBuilder,
+    EventEnvelopeMetadata,
     IntoEventBusResult,
     PublishOptions,
     PublishOptionsBuilder,
@@ -43,6 +48,9 @@ pub use core::{
     Subscription,
     Topic,
     TopicKey,
+    discard_dead_letters,
+    prefixed_dead_letters,
+    standard_dead_letters_to,
 };
 #[cfg(coverage)]
 pub use core::{
@@ -50,11 +58,15 @@ pub use core::{
     coverage_exercise_event_bus_factory_default_regions,
 };
 pub use local::{
+    IntoPublisherInterceptorAnyResult,
     IntoPublisherInterceptorResult,
     LocalEventBus,
     LocalEventBusFactory,
     PublisherInterceptor,
+    PublisherInterceptorAny,
     SubscriberInterceptor,
+    SubscriberInterceptorAny,
+    SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
 };
 #[cfg(coverage)]
