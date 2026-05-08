@@ -9,6 +9,8 @@
  ******************************************************************************/
 //! Tests for transactional event bus contracts and fallback implementations.
 
+mod staged_event_envelope_tests;
+mod staged_event_tests;
 mod transactional_event_bus_tests;
 mod transactional_publisher_tests;
 mod unsupported_transactional_event_bus_tests;

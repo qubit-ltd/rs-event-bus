@@ -36,6 +36,7 @@ pub use acknowledgement::Acknowledgement;
 #[cfg(coverage)]
 pub use coverage::coverage_exercise_core_defensive_paths;
 pub use dead_letter_record::{
+    DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,
 };
@@ -68,6 +69,8 @@ pub use retry_options::{
 };
 pub use subscribe_options::{
     DeadLetterStrategy,
+    DeadLetterStrategyAny,
+    DeadLetterStrategyAnyCallback,
     DeadLetterStrategyCallback,
     SubscribeOptions,
     discard_dead_letters,

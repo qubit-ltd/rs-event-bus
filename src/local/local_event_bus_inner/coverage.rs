@@ -153,6 +153,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
             default_publish_options: HashMap::new(),
             default_subscribe_options: HashMap::new(),
             default_dead_letter_strategies: HashMap::new(),
+            global_default_dead_letter_strategy: None,
             global_publisher_interceptors: Vec::new(),
             global_subscriber_interceptors: Vec::new(),
             publisher_interceptors: Vec::new(),
@@ -213,6 +214,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         default_publish_options,
         default_subscribe_options,
         default_dead_letter_strategies,
+        global_default_dead_letter_strategy: None,
         global_publisher_interceptors: Vec::new(),
         global_subscriber_interceptors: Vec::new(),
         publisher_interceptors: Vec::new(),
@@ -279,6 +281,51 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         .expect("coverage subscriber interceptor should pass handler");
     assert!(subscriber_output.downcast::<String>().is_ok());
 
+    let registration_inner = empty_inner();
+    registration_inner
+        .add_publisher_interceptor(Arc::new(CoveragePublisherInterceptor))
+        .expect("coverage publisher interceptor should register");
+    assert_eq!(
+        registration_inner
+            .publisher_interceptors()
+            .expect("coverage publisher interceptors should load")
+            .len(),
+        1,
+    );
+    registration_inner
+        .add_global_publisher_interceptor(Arc::new(coverage_global_publisher))
+        .expect("coverage global publisher interceptor should register");
+    assert_eq!(
+        registration_inner
+            .global_publisher_interceptors()
+            .expect("coverage global publisher interceptors should load")
+            .len(),
+        1,
+    );
+    registration_inner
+        .add_subscriber_interceptor(Arc::new(CoverageSubscriberInterceptor))
+        .expect("coverage subscriber interceptor should register");
+    assert_eq!(
+        registration_inner
+            .subscriber_interceptors()
+            .expect("coverage subscriber interceptors should load")
+            .len(),
+        1,
+    );
+    registration_inner
+        .add_global_subscriber_interceptor(Arc::new(coverage_global_subscriber))
+        .expect("coverage global subscriber interceptor should register");
+    assert_eq!(
+        registration_inner
+            .global_subscriber_interceptors()
+            .expect("coverage global subscriber interceptors should load")
+            .len(),
+        1,
+    );
+    registration_inner
+        .add_error_observer(Arc::new(coverage_ignore_error))
+        .expect("coverage error observer should register");
+
     let subscription = CoverageSubscription;
     assert_eq!(subscription.id(), 1);
     assert_eq!(subscription.priority(), 0);
@@ -295,6 +342,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         default_publish_options: HashMap::new(),
         default_subscribe_options: HashMap::new(),
         default_dead_letter_strategies: HashMap::new(),
+        global_default_dead_letter_strategy: None,
         global_publisher_interceptors: Vec::new(),
         global_subscriber_interceptors: Vec::new(),
         publisher_interceptors: Vec::new(),
@@ -321,8 +369,8 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
             thread::sleep(Duration::from_millis(1));
         }
     }
-    if let Some(delay_executor) = direct_task_inner.take_delay_executor() {
-        delay_executor.shutdown();
+    if let Some(delay_scheduler) = direct_task_inner.take_delay_scheduler() {
+        delay_scheduler.shutdown();
     }
 
     let mut one_shot = Some(coverage_noop_task);
@@ -874,7 +922,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
     assert!(lifecycle_inner.mark_stopped().is_none());
     assert!(!lifecycle_inner.mark_stopping());
     assert!(lifecycle_inner.take_executor().is_none());
-    assert!(lifecycle_inner.take_delay_executor().is_none());
+    assert!(lifecycle_inner.take_delay_scheduler().is_none());
     assert!(!lifecycle_inner.is_started());
     errors.push(
         lifecycle_inner

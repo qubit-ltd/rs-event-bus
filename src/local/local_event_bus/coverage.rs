@@ -42,6 +42,7 @@ use super::{
     create_subscriber_interceptor_entry,
     process_subscription_event,
 };
+use crate::LocalEventBusFactory;
 use crate::local::erased_subscription::ErasedSubscription;
 use crate::local::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use crate::local::processing_task::ProcessingTask;
@@ -154,14 +155,17 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .expect_err("wrong publisher envelope type should fail");
     errors.push(publisher_error);
 
-    let direct_api_bus = LocalEventBus::started().expect("coverage bus should start");
-    let direct_topic =
-        Topic::<String>::try_new("coverage-local-direct-api").expect("coverage topic should build");
-    direct_api_bus
+    let mut direct_api_factory = LocalEventBusFactory::new();
+    direct_api_factory
         .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
             event.with_header("coverage", "direct")
         })
         .expect("direct publisher interceptor should register");
+    let direct_api_bus = direct_api_factory
+        .create_started()
+        .expect("coverage bus should start");
+    let direct_topic =
+        Topic::<String>::try_new("coverage-local-direct-api").expect("coverage topic should build");
     direct_api_bus
         .subscribe(
             "coverage-direct-sub",
@@ -213,8 +217,8 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .expect("coverage dead-letter payload topic should become idle");
     direct_api_bus.shutdown();
 
-    let error_interceptor_bus = LocalEventBus::started().expect("coverage bus should start");
-    error_interceptor_bus
+    let mut error_interceptor_factory = LocalEventBusFactory::new();
+    error_interceptor_factory
         .add_publisher_interceptor::<String, _>(
             |_event: EventEnvelope<String>| -> EventBusResult<Option<EventEnvelope<String>>> {
                 Err(EventBusError::handler_failed(
@@ -223,6 +227,9 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
             },
         )
         .expect("coverage failing publisher interceptor should register");
+    let error_interceptor_bus = error_interceptor_factory
+        .create_started()
+        .expect("coverage bus should start");
     let interceptor_error = error_interceptor_bus
         .publish(&string_topic, "payload".to_string())
         .expect_err("coverage publisher interceptor should fail");
@@ -233,6 +240,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         default_publish_options: HashMap::new(),
         default_subscribe_options: HashMap::new(),
         default_dead_letter_strategies: HashMap::new(),
+        global_default_dead_letter_strategy: None,
         global_publisher_interceptors: Vec::new(),
         global_subscriber_interceptors: Vec::new(),
         publisher_interceptors: vec![Arc::new(CoverageWrongPublisherInterceptor)],
@@ -275,6 +283,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         default_publish_options: HashMap::new(),
         default_subscribe_options: HashMap::new(),
         default_dead_letter_strategies: HashMap::new(),
+        global_default_dead_letter_strategy: None,
         global_publisher_interceptors: Vec::new(),
         global_subscriber_interceptors: Vec::new(),
         publisher_interceptors: vec![create_publisher_interceptor_entry::<String, _>(Some)],
@@ -306,6 +315,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         default_publish_options: HashMap::new(),
         default_subscribe_options: HashMap::new(),
         default_dead_letter_strategies: HashMap::new(),
+        global_default_dead_letter_strategy: None,
         global_publisher_interceptors: Vec::new(),
         global_subscriber_interceptors: Vec::new(),
         publisher_interceptors: Vec::new(),

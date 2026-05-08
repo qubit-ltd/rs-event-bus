@@ -9,11 +9,15 @@
  ******************************************************************************/
 //! Transactional event bus contracts and unsupported fallback implementations.
 
+mod staged_event;
+mod staged_event_envelope;
 mod transactional_event_bus;
 mod transactional_publisher;
 mod unsupported_transactional_event_bus;
 mod unsupported_transactional_publisher;
 
+pub use staged_event::StagedEvent;
+pub use staged_event_envelope::StagedEventEnvelope;
 pub use transactional_event_bus::TransactionalEventBus;
 pub use transactional_publisher::TransactionalPublisher;
 pub use unsupported_transactional_event_bus::UnsupportedTransactionalEventBus;

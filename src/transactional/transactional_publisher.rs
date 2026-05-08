@@ -12,6 +12,9 @@
 use crate::{
     EventBusResult,
     EventEnvelope,
+    PublishOptions,
+    StagedEvent,
+    StagedEventEnvelope,
     Topic,
 };
 
@@ -51,7 +54,61 @@ pub trait TransactionalPublisher {
     /// Returns backend-specific staging errors.
     fn publish_envelope<T>(&mut self, envelope: EventEnvelope<T>) -> EventBusResult<()>
     where
-        T: Clone + Send + Sync + 'static;
+        T: Clone + Send + Sync + 'static,
+    {
+        self.publish_envelope_with_options(envelope, PublishOptions::empty())
+    }
+
+    /// Stages an envelope with explicit publish options.
+    ///
+    /// # Parameters
+    /// - `envelope`: Event envelope to stage.
+    /// - `options`: Publish options for this event.
+    ///
+    /// # Returns
+    /// `Ok(())` after the event is staged.
+    ///
+    /// # Errors
+    /// Returns backend-specific staging errors.
+    fn publish_envelope_with_options<T>(
+        &mut self,
+        envelope: EventEnvelope<T>,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.publish_staged(Box::new(StagedEventEnvelope::new(envelope, options)))
+    }
+
+    /// Stages a type-erased event for transactional publishing.
+    ///
+    /// # Parameters
+    /// - `event`: Type-erased staged event.
+    ///
+    /// # Returns
+    /// `Ok(())` after the event is staged.
+    ///
+    /// # Errors
+    /// Returns backend-specific staging errors.
+    fn publish_staged(&mut self, event: Box<dyn StagedEvent>) -> EventBusResult<()>;
+
+    /// Stages multiple type-erased events.
+    ///
+    /// # Parameters
+    /// - `events`: Events to stage in order.
+    ///
+    /// # Returns
+    /// `Ok(())` when all events are staged.
+    ///
+    /// # Errors
+    /// Returns the first backend-specific staging error.
+    fn publish_all_staged(&mut self, events: Vec<Box<dyn StagedEvent>>) -> EventBusResult<()> {
+        for event in events {
+            self.publish_staged(event)?;
+        }
+        Ok(())
+    }
 
     /// Commits the transaction and publishes all staged events atomically.
     ///

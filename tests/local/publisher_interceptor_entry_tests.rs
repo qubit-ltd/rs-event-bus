@@ -5,21 +5,23 @@ use std::sync::{
 
 use qubit_event_bus::{
     EventEnvelope,
-    LocalEventBus,
+    LocalEventBusFactory,
     Topic,
 };
 
 #[test]
 fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {
-    let bus = LocalEventBus::started().expect("bus should start");
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            Some(event.with_header("seen", "true"))
+        })
+        .expect("interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
     let topic = Topic::<String>::try_new("publisher-interceptor").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-        Some(event.with_header("seen", "true"))
-    })
-    .expect("interceptor should register");
     bus.subscribe("sub", &topic, move |event| {
         captured
             .lock()

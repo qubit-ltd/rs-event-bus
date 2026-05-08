@@ -12,7 +12,7 @@
 use crate::{
     EventBusError,
     EventBusResult,
-    EventEnvelope,
+    StagedEvent,
     TransactionalPublisher,
 };
 
@@ -32,10 +32,7 @@ impl UnsupportedTransactionalPublisher {
 
 impl TransactionalPublisher for UnsupportedTransactionalPublisher {
     /// Returns an unsupported-operation error.
-    fn publish_envelope<T>(&mut self, _envelope: EventEnvelope<T>) -> EventBusResult<()>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
+    fn publish_staged(&mut self, _event: Box<dyn StagedEvent>) -> EventBusResult<()> {
         Err(EventBusError::unsupported_operation(
             "transactional_publish",
         ))

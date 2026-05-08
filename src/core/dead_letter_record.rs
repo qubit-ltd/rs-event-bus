@@ -24,6 +24,7 @@ use qubit_metadata::Metadata;
 use crate::{
     EventBusError,
     EventEnvelope,
+    EventEnvelopeMetadata,
 };
 
 /// Type-erased original payload stored inside dead-letter records.
@@ -89,6 +90,41 @@ impl DeadLetterRecord {
             metadata.set("ordering_key", ordering_key.to_string());
         }
         Self::new(metadata, Arc::new(envelope.payload().clone()))
+    }
+
+    /// Creates a standard dead-letter record from type-erased failure data.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: Identifier of the failing subscriber.
+    /// - `metadata`: Metadata from the failed event envelope.
+    /// - `original_payload`: Type-erased cloned original payload.
+    /// - `error`: Final processing error.
+    ///
+    /// # Returns
+    /// Dead-letter record containing standard metadata and original payload.
+    pub fn from_metadata_failure(
+        subscriber_id: &str,
+        metadata: EventEnvelopeMetadata,
+        original_payload: DeadLetterOriginalPayload,
+        error: &EventBusError,
+    ) -> Self {
+        let failed_at_unix_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or_default();
+        let mut record_metadata = Metadata::new()
+            .with("subscriber_id", subscriber_id.to_string())
+            .with("event_id", metadata.id().to_string())
+            .with("topic", metadata.topic_name().to_string())
+            .with("failure_reason", error.to_string())
+            .with("failure_type", error.kind().to_string())
+            .with("payload_type", metadata.payload_type_name().to_string())
+            .with("failed_at_unix_millis", failed_at_unix_millis)
+            .with("dead_letter", true);
+        if let Some(ordering_key) = metadata.ordering_key() {
+            record_metadata.set("ordering_key", ordering_key.to_string());
+        }
+        Self::new(record_metadata, original_payload)
     }
 
     /// Returns diagnostic metadata for this dead-letter record.
