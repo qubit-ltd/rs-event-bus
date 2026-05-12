@@ -13,11 +13,12 @@ readme = "README.md"
 keywords = ["event-bus", "pubsub", "events", "thread-safe", "qubit"]
 categories = ["concurrency", "asynchronous"]
 exclude = [
-    "coverage.sh",
-    "COVERAGE.md",
-    "COVERAGE.zh_CN.md",
-    ".circleci/*",
+    "align-ci.sh",
     "ci-check.sh",
+    "coverage.sh",
+    "style-check.sh",
+    "update-submodule.sh",
+    ".github/*",
     ".llvm-cov.toml",
     ".cargo-audit.toml.example",
 ]
@@ -27,9 +28,9 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
-qubit-metadata = { version = "0.4", path = "../rs-metadata" }
-qubit-retry = { version = "0.12", path = "../rs-retry" }
-qubit-thread-pool = { version = "0.3", path = "../rs-thread-pool" }
+qubit-metadata = { version = "0.4" }
+qubit-retry = { version = "0.12" }
+qubit-thread-pool = { version = "0.3" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
