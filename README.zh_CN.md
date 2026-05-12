@@ -1,6 +1,6 @@
 # Qubit Event Bus（`rs-event-bus`）
 
-[![CircleCI](https://circleci.com/gh/qubit-ltd/rs-event-bus.svg?style=shield)](https://circleci.com/gh/qubit-ltd/rs-event-bus)
+[![Rust CI](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml/badge.svg)](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml)
 [![Coverage Status](https://coveralls.io/repos/github/qubit-ltd/rs-event-bus/badge.svg?branch=main)](https://coveralls.io/github/qubit-ltd/rs-event-bus?branch=main)
 [![Crates.io](https://img.shields.io/crates/v/qubit-event-bus.svg?color=blue)](https://crates.io/crates/qubit-event-bus)
 [![Docs.rs](https://docs.rs/qubit-event-bus/badge.svg)](https://docs.rs/qubit-event-bus)
