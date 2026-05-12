@@ -39,8 +39,8 @@ use std::time::{
 use qubit_thread_pool::{
     DelayedTaskScheduler,
     ExecutorService,
+    ExecutorServiceBuilderError,
     FixedThreadPool,
-    ThreadPoolBuildError,
 };
 
 use crate::core::SubscriptionState;
@@ -1265,7 +1265,9 @@ impl LocalEventBusInner {
     ///
     /// # Errors
     /// Returns executor build errors from `rs-thread-pool`.
-    fn build_subscription_handler_executor(&self) -> Result<FixedThreadPool, ThreadPoolBuildError> {
+    fn build_subscription_handler_executor(
+        &self,
+    ) -> Result<FixedThreadPool, ExecutorServiceBuilderError> {
         let mut builder = FixedThreadPool::builder()
             .pool_size(self.subscription_handler_pool_size)
             .thread_name_prefix("qubit-event-bus-subscriber");
@@ -1282,7 +1284,7 @@ impl LocalEventBusInner {
     ///
     /// # Errors
     /// Returns executor build errors from `rs-thread-pool`.
-    fn build_delay_scheduler(&self) -> Result<DelayedTaskScheduler, ThreadPoolBuildError> {
+    fn build_delay_scheduler(&self) -> Result<DelayedTaskScheduler, ExecutorServiceBuilderError> {
         DelayedTaskScheduler::new("qubit-event-bus-delay")
     }
 }
@@ -1316,7 +1318,7 @@ fn delay_scheduler_for_dispatch(
 }
 
 /// Converts a thread-pool build failure into a local event-bus startup failure.
-fn start_failed_from_thread_pool_error(error: ThreadPoolBuildError) -> EventBusError {
+fn start_failed_from_thread_pool_error(error: ExecutorServiceBuilderError) -> EventBusError {
     EventBusError::start_failed(error.to_string())
 }
 

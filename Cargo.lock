@@ -109,6 +109,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "const_panic"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e262cdaac42494e3ae34c43969f9cdeb7da178bdb4b66fa6a1ea2edb4c8ae652"
+dependencies = [
+ "typewit",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -409,6 +418,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "konst"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f660d5f887e3562f9ab6f4a14988795b694099d66b4f5dedc02d197ba9becb1d"
+dependencies = [
+ "const_panic",
+ "typewit",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -489,6 +508,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oneshot"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe21416a02c693fb9f980befcb230ecc70b0b3d1cc4abf88b9675c4c1457f0c"
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -513,9 +538,9 @@ dependencies = [
 
 [[package]]
 name = "parse-display"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "287d8d3ebdce117b8539f59411e4ed9ec226e0a4153c7f55495c6070d68e6f72"
+checksum = "e78deb158fb1d73b29efb4b7e9b9860b78059c670de06bd28df8d0b458ded0eb"
 dependencies = [
  "parse-display-derive",
  "regex",
@@ -524,9 +549,9 @@ dependencies = [
 
 [[package]]
 name = "parse-display-derive"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fc048687be30d79502dea2f623d052f3a074012c6eac41726b7ab17213616b1"
+checksum = "8e95a50d1084dab562913062c4c34bb204b68fc6ec38a1395909ff5aaaf4f10a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -590,12 +615,25 @@ dependencies = [
 
 [[package]]
 name = "qubit-atomic"
-version = "0.10.3"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd26945075d2dd1955e43a921ba6cd24d4ee4542c4b514e097b9c88e9279145"
+checksum = "33d68a50d78ab3da351a5b600dbbf7aa022068e1809d9e5e32b92fd9dc0a46a2"
 dependencies = [
  "arc-swap",
  "portable-atomic",
+]
+
+[[package]]
+name = "qubit-cas"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63aaefd29cd48c933c13191414d00c9940963b073a99d63fb3e6fee4e46796ab"
+dependencies = [
+ "konst",
+ "qubit-atomic",
+ "qubit-error",
+ "qubit-function",
+ "qubit-retry 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -624,27 +662,32 @@ name = "qubit-event-bus"
 version = "0.2.0"
 dependencies = [
  "qubit-metadata",
- "qubit-retry",
+ "qubit-retry 0.12.0",
  "qubit-thread-pool",
 ]
 
 [[package]]
 name = "qubit-executor"
-version = "0.1.5"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7acfa6cf50a8b211944d2c30944500d8c836d042ca6d83bb9de44882aa8f6b90"
+checksum = "60a29b7878bfeaad57e4b46333ec6e14f468186d268297017ef2f86721b8f469"
 dependencies = [
+ "log",
+ "oneshot",
+ "parking_lot",
  "qubit-atomic",
+ "qubit-cas",
  "qubit-function",
  "qubit-lock",
+ "qubit-state-machine",
  "thiserror",
 ]
 
 [[package]]
 name = "qubit-function"
-version = "0.12.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da19a04aa84248448c3bfd7a5791d5e62adbf0c25fa93c91b0f3b72a051e61a4"
+checksum = "8efec94edc436712d98c514ae339e246e079853d9eaacb1ac38c7dd50ff4f89a"
 dependencies = [
  "parking_lot",
  "pastey",
@@ -652,9 +695,9 @@ dependencies = [
 
 [[package]]
 name = "qubit-lock"
-version = "0.3.2"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b51e033e60614e51c6ad5ba76e58f08d0e88533a641162900bb85a091d82114"
+checksum = "15180bc5ff265078d6d384ccde799b9e73a10f152ad9f311f5e8f97d2bb4b145"
 dependencies = [
  "parking_lot",
  "tokio",
@@ -662,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-metadata"
-version = "0.4.2"
+version = "0.4.4"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -676,7 +719,22 @@ dependencies = [
 
 [[package]]
 name = "qubit-retry"
-version = "0.10.5"
+version = "0.12.0"
+dependencies = [
+ "parse-display",
+ "qubit-datatype",
+ "qubit-error",
+ "qubit-function",
+ "qubit-serde",
+ "rand",
+ "serde",
+]
+
+[[package]]
+name = "qubit-retry"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3841e4921e97333be912b9a07cbe6fcc78f720f0f8f2c85a0f1b8be4cc40328"
 dependencies = [
  "parse-display",
  "qubit-datatype",
@@ -699,8 +757,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "qubit-state-machine"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fafdbcffab2f8dcd2f8edb38d1e9e045ed007ce0ff8d1f898ae994bb6058bc4"
+dependencies = [
+ "qubit-atomic",
+ "qubit-cas",
+ "thiserror",
+]
+
+[[package]]
 name = "qubit-thread-pool"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-deque",
  "qubit-executor",
@@ -963,6 +1032,12 @@ checksum = "110a78583f19d5cdb2c5ccf321d1290344e71313c6c37d43520d386027d18386"
 dependencies = [
  "pin-project-lite",
 ]
+
+[[package]]
+name = "typewit"
+version = "1.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "214ca0b2191785cbc06209b9ca1861e048e39b5ba33574b3cedd58363d5bb5f6"
 
 [[package]]
 name = "unicode-ident"
