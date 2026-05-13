@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -30,7 +30,7 @@ doctest = true
 [dependencies]
 qubit-metadata = { version = "0.4" }
 qubit-retry = { version = "0.12" }
-qubit-thread-pool = { version = "0.3" }
+qubit-thread-pool = { version = "0.4" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
