@@ -71,8 +71,11 @@ use super::ordering_lane_key::OrderingLaneKey;
 use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_chain::{
+    DownstreamErrorSlot,
     SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
+    create_downstream_error_slot,
+    is_recorded_downstream_error,
 };
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
@@ -748,15 +751,14 @@ impl LocalEventBus {
         T: Clone + Send + Sync + 'static,
     {
         self.ensure_started()?;
+        let options = options.merge_defaults(self.default_publish_options::<T>());
         validate_retry_options(options.retry_options())?;
         let mut result = BatchPublishResult::new(envelopes.len());
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
             match self.publish_envelope_with_options_internal(
                 envelope,
-                options
-                    .clone()
-                    .merge_defaults(self.default_publish_options::<T>()),
+                options.clone(),
                 false,
                 true,
             ) {
@@ -1157,22 +1159,19 @@ impl LocalEventBus {
                 let metadata = event.metadata();
                 let next = Arc::clone(&next);
                 let event_for_next = event.clone();
-                let chain = SubscriberInterceptorAnyChain::new(Arc::new(move || {
-                    next(event_for_next.clone())
-                }));
-                match panic::catch_unwind(AssertUnwindSafe(|| {
+                let downstream_error = create_downstream_error_slot();
+                let chain = SubscriberInterceptorAnyChain::with_downstream_error(
+                    Arc::new(move || next(event_for_next.clone())),
+                    Arc::clone(&downstream_error),
+                );
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
                     interceptor.on_consume(metadata, chain)
-                })) {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(error)) => Err(EventBusError::interceptor_failed(
-                        "subscribe",
-                        error.to_string(),
-                    )),
-                    Err(_) => Err(EventBusError::interceptor_failed(
-                        "subscribe",
-                        "global subscriber interceptor panicked",
-                    )),
-                }
+                }));
+                normalize_subscriber_interceptor_result(
+                    result,
+                    &downstream_error,
+                    "global subscriber interceptor panicked",
+                )
             });
         }
         Ok(chain)
@@ -1409,8 +1408,19 @@ where
         let next = *next;
         let interceptor = Arc::clone(&self.interceptor);
         let wrapped: Arc<HandlerFn<T>> = Arc::new(move |event| {
-            let next_chain = SubscriberInterceptorChain::new(Arc::clone(&next));
-            interceptor.on_consume(event, next_chain)
+            let downstream_error = create_downstream_error_slot();
+            let next_chain = SubscriberInterceptorChain::with_downstream_error(
+                Arc::clone(&next),
+                Arc::clone(&downstream_error),
+            );
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                interceptor.on_consume(event, next_chain)
+            }));
+            normalize_subscriber_interceptor_result(
+                result,
+                &downstream_error,
+                "subscriber interceptor panicked",
+            )
         });
         Ok(Box::new(wrapped))
     }
@@ -1852,6 +1862,51 @@ where
     match panic::catch_unwind(AssertUnwindSafe(|| handler(envelope))) {
         Ok(result) => result,
         Err(_) => Err(EventBusError::handler_panicked()),
+    }
+}
+
+/// Normalizes the result returned by a subscriber interceptor.
+///
+/// # Parameters
+/// - `result`: Result of invoking the interceptor callback.
+/// - `downstream_error`: Shared slot filled when the interceptor called `proceed`.
+/// - `panic_message`: Message used when the interceptor callback itself panics.
+///
+/// # Returns
+/// Downstream failures unchanged, or interceptor failures wrapped as
+/// [`EventBusError::InterceptorFailed`].
+fn normalize_subscriber_interceptor_result(
+    result: Result<EventBusResult<()>, Box<dyn Any + Send>>,
+    downstream_error: &DownstreamErrorSlot,
+    panic_message: &'static str,
+) -> EventBusResult<()> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) if is_recorded_downstream_error(downstream_error, &error) => Err(error),
+        Ok(Err(error)) => Err(normalize_subscriber_interceptor_error(error)),
+        Err(_) => Err(EventBusError::interceptor_failed(
+            "subscribe",
+            panic_message,
+        )),
+    }
+}
+
+/// Converts an interceptor-owned error into the public interceptor failure kind.
+///
+/// # Parameters
+/// - `error`: Error returned directly by an interceptor callback.
+///
+/// # Returns
+/// Existing subscribe interceptor failures are preserved; other errors are
+/// wrapped with subscribe interceptor context.
+fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError {
+    if matches!(
+        &error,
+        EventBusError::InterceptorFailed { phase, .. } if *phase == "subscribe"
+    ) {
+        error
+    } else {
+        EventBusError::interceptor_failed("subscribe", error.to_string())
     }
 }
 
