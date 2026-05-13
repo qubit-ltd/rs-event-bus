@@ -1,7 +1,7 @@
 # Qubit Event Bus (`rs-event-bus`)
 
 [![Rust CI](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml/badge.svg)](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml)
-[![Coverage Status](https://coveralls.io/repos/github/qubit-ltd/rs-event-bus/badge.svg?branch=main)](https://coveralls.io/github/qubit-ltd/rs-event-bus?branch=main)
+[![Coverage](https://img.shields.io/endpoint?url=https://qubit-ltd.github.io/rs-event-bus/coverage-badge.json)](https://qubit-ltd.github.io/rs-event-bus/coverage/)
 [![Crates.io](https://img.shields.io/crates/v/qubit-event-bus.svg?color=blue)](https://crates.io/crates/qubit-event-bus)
 [![Docs.rs](https://docs.rs/qubit-event-bus/badge.svg)](https://docs.rs/qubit-event-bus)
 [![Rust](https://img.shields.io/badge/rust-1.94+-blue.svg?logo=rust)](https://www.rust-lang.org)
@@ -33,7 +33,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.2.0"
+qubit-event-bus = "0.3.0"
 ```
 
 ## Quick Start
