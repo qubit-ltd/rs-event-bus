@@ -2100,6 +2100,107 @@ fn test_global_subscriber_interceptor_error_is_observed() {
 }
 
 #[test]
+fn test_global_subscriber_interceptor_preserves_downstream_handler_error() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_subscriber_interceptor(
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+                chain.proceed()
+            },
+        )
+        .expect("global subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-subscriber-preserves-handler-error");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| {
+            Err(EventBusError::handler_failed(
+                "handler failed behind global interceptor",
+            ))
+        },
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert_eq!(
+        subscribe_errors.as_slice(),
+        [EventBusError::handler_failed(
+            "handler failed behind global interceptor"
+        )]
+    );
+}
+
+#[test]
+fn test_global_subscriber_interceptor_preserves_downstream_handler_panic() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_subscriber_interceptor(
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
+                chain.proceed()
+            },
+        )
+        .expect("global subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("global-subscriber-preserves-handler-panic");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| -> EventBusResult<()> {
+            panic!("handler panic behind global interceptor");
+        },
+        options,
+    )
+    .expect("subscription should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert_eq!(
+        subscribe_errors.as_slice(),
+        [EventBusError::handler_panicked()]
+    );
+}
+
+#[test]
 fn test_global_subscriber_interceptor_panic_is_observed() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -2143,6 +2244,106 @@ fn test_global_subscriber_interceptor_panic_is_observed() {
         EventBusError::InterceptorFailed { phase, message }
             if *phase == "subscribe" && message.contains("global subscriber interceptor panicked")
     )));
+}
+
+#[test]
+fn test_subscriber_interceptor_error_is_reported_as_interceptor_failure() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            |_event: EventEnvelope<String>, _chain: SubscriberInterceptorChain<String>| {
+                Err(EventBusError::handler_failed(
+                    "typed subscriber interceptor failed",
+                ))
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("subscriber-interceptor-error");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let handler_called = Arc::new(AtomicBool::new(false));
+    let captured_handler_called = Arc::clone(&handler_called);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |_event| {
+            captured_handler_called.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert!(!handler_called.load(Ordering::SeqCst));
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(matches!(
+        subscribe_errors.as_slice(),
+        [EventBusError::InterceptorFailed { phase, message }]
+            if *phase == "subscribe" && message.contains("typed subscriber interceptor failed")
+    ));
+}
+
+#[test]
+fn test_subscriber_interceptor_panic_is_reported_as_interceptor_failure() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            |_event: EventEnvelope<String>,
+             _chain: SubscriberInterceptorChain<String>|
+             -> EventBusResult<()> {
+                panic!("typed subscriber interceptor panic");
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("subscriber-interceptor-panic");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options("sub", &topic, |_event| Ok(()), options)
+        .expect("subscription should register");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    std::panic::set_hook(previous_hook);
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(matches!(
+        subscribe_errors.as_slice(),
+        [EventBusError::InterceptorFailed { phase, message }]
+            if *phase == "subscribe" && message.contains("subscriber interceptor panicked")
+    ));
 }
 
 #[test]
@@ -2285,11 +2486,13 @@ fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
         batch_result.failures()[0].error().kind(),
         "interceptor_failed"
     );
+    let mut received = received
+        .lock()
+        .expect("received events should lock")
+        .clone();
+    received.sort();
     assert_eq!(
-        received
-            .lock()
-            .expect("received events should lock")
-            .as_slice(),
+        received.as_slice(),
         ["ok-1".to_string(), "ok-2".to_string()]
     );
 }
@@ -2322,6 +2525,35 @@ fn test_publish_rejects_attempt_timeout_retry_options() {
     ));
     assert!(error.to_string().contains("attempt_timeout"));
     assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_publish_all_validates_merged_default_publish_options_before_batch_starts() {
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_default_publish_options::<String>(
+        PublishOptions::builder()
+            .retry_options(retry_options_with_attempt_timeout())
+            .build(),
+    );
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("publish-all-default-attempt-timeout");
+    let envelopes = ["first", "second"]
+        .into_iter()
+        .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
+        .collect::<Vec<_>>();
+
+    let error = bus
+        .publish_all(envelopes)
+        .expect_err("merged default attempt timeout should reject the whole batch");
+
+    assert!(matches!(
+        error,
+        EventBusError::InvalidArgument {
+            field: "retry_options",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("attempt_timeout"));
 }
 
 #[test]
