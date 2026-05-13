@@ -54,6 +54,7 @@ use crate::local::erased_subscription::ErasedSubscription;
 use crate::local::ordering_lane_key::OrderingLaneKey;
 use crate::local::processing_task::ProcessingTask;
 use crate::local::publisher_interceptor_entry::PublisherInterceptorEntry;
+use crate::local::subscriber_interceptor_chain::create_downstream_error_slot;
 use crate::local::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 struct CoveragePublisherInterceptor;
@@ -267,7 +268,10 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
     assert!(coverage_global_publisher(global_metadata.clone()).is_some());
     coverage_global_subscriber(
         global_metadata,
-        SubscriberInterceptorAnyChain::new(Arc::new(coverage_global_subscriber_next)),
+        SubscriberInterceptorAnyChain::with_downstream_error(
+            Arc::new(coverage_global_subscriber_next),
+            create_downstream_error_slot(),
+        ),
     )
     .expect("coverage global subscriber should proceed");
 
