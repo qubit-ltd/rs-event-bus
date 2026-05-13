@@ -40,6 +40,7 @@ use super::{
     TypedSubscriptionEntry,
     create_publisher_interceptor_entry,
     create_subscriber_interceptor_entry,
+    normalize_subscriber_interceptor_error,
     process_subscription_event,
 };
 use crate::LocalEventBusFactory;
@@ -47,7 +48,10 @@ use crate::local::erased_subscription::ErasedSubscription;
 use crate::local::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use crate::local::processing_task::ProcessingTask;
 use crate::local::publisher_interceptor_entry::PublisherInterceptorEntry;
-use crate::local::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use crate::local::subscriber_interceptor_chain::{
+    SubscriberInterceptorChain,
+    create_downstream_error_slot,
+};
 use crate::local::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 struct CoverageWrongPublisherInterceptor;
@@ -109,6 +113,16 @@ fn coverage_subscriber_passthrough(
     chain: SubscriberInterceptorChain<String>,
 ) -> EventBusResult<()> {
     chain.proceed(event)
+}
+
+fn coverage_failing_string_handler(_event: EventEnvelope<String>) -> EventBusResult<()> {
+    Err(EventBusError::handler_failed(
+        "coverage downstream handler failed",
+    ))
+}
+
+fn coverage_panicking_string_handler(_event: EventEnvelope<String>) -> EventBusResult<()> {
+    panic!("coverage downstream handler panic");
 }
 
 fn inactive_subscription_state() -> Arc<SubscriptionState> {
@@ -278,6 +292,34 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .wrap_handler(Box::new(wrong_handler))
         .expect_err("wrong subscriber handler type should fail");
     errors.push(subscriber_error);
+    let failing_handler: Arc<HandlerFn<String>> = Arc::new(coverage_failing_string_handler);
+    let failing_chain = SubscriberInterceptorChain::with_downstream_error(
+        failing_handler,
+        create_downstream_error_slot(),
+    );
+    let downstream_error = failing_chain
+        .proceed(EventEnvelope::create(
+            string_topic.clone(),
+            "downstream-error".to_string(),
+        ))
+        .expect_err("failing downstream handler should be preserved");
+    errors.push(downstream_error);
+    let panicking_handler: Arc<HandlerFn<String>> = Arc::new(coverage_panicking_string_handler);
+    let panicking_chain = SubscriberInterceptorChain::with_downstream_error(
+        panicking_handler,
+        create_downstream_error_slot(),
+    );
+    let downstream_panic = panicking_chain
+        .proceed(EventEnvelope::create(
+            string_topic.clone(),
+            "downstream-panic".to_string(),
+        ))
+        .expect_err("panicking downstream handler should be converted");
+    errors.push(downstream_panic);
+    let preserved_error = normalize_subscriber_interceptor_error(
+        EventBusError::interceptor_failed("subscribe", "coverage preserved"),
+    );
+    errors.push(preserved_error);
 
     let direct_interceptor_bus = LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
         default_publish_options: HashMap::new(),
