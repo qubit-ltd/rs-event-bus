@@ -4,13 +4,17 @@ use qubit_event_bus::{
     coverage_exercise_local_event_bus_inner_defensive_paths,
 };
 
+use crate::support::PanicHookGuard;
+
 #[test]
 fn test_coverage_helpers_exercise_local_defensive_paths() {
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let local_errors = coverage_exercise_local_event_bus_defensive_paths();
-    let inner_errors = coverage_exercise_local_event_bus_inner_defensive_paths();
-    std::panic::set_hook(previous_hook);
+    let (local_errors, inner_errors) = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        (
+            coverage_exercise_local_event_bus_defensive_paths(),
+            coverage_exercise_local_event_bus_inner_defensive_paths(),
+        )
+    };
 
     assert!(
         local_errors

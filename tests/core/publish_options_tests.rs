@@ -11,6 +11,8 @@ use qubit_event_bus::{
     Topic,
 };
 
+use crate::support::PanicHookGuard;
+
 #[test]
 fn test_publish_options_empty_has_no_retry_or_error_handlers() {
     let options = PublishOptions::<String>::empty();
@@ -47,18 +49,17 @@ fn test_publish_options_converts_error_handler_panic_to_failure() {
             panic!("publish handler panic");
         })
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    assert_eq!(
-        bus.publish_envelope_with_options(
-            EventEnvelope::create(topic, "payload".to_string()),
-            options,
-        )
-        .expect_err("stopped bus should reject publish"),
-        EventBusError::not_started()
-    );
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        assert_eq!(
+            bus.publish_envelope_with_options(
+                EventEnvelope::create(topic, "payload".to_string()),
+                options,
+            )
+            .expect_err("stopped bus should reject publish"),
+            EventBusError::not_started()
+        );
+    }
 
     let observed = observed.lock().expect("observed errors should lock");
     assert!(matches!(
