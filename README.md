@@ -33,7 +33,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.5.0"
+qubit-event-bus = "0.6.0"
 ```
 
 ## Quick Start
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
 - `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
-- `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-thread-pool`'s `DelayedTaskScheduler` and does not occupy handler workers while waiting.
+- `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-executor`'s `SingleThreadScheduledExecutorService` and does not occupy handler workers while waiting.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
 - Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.

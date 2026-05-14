@@ -22,7 +22,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use qubit_thread_pool::ExecutorService;
+use qubit_executor::ExecutorService;
 
 use crate::core::SubscriptionState;
 use crate::core::subscribe_options::wrap_dead_letter_strategy;

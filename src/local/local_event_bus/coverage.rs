@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use qubit_thread_pool::ExecutorService;
+use qubit_executor::ExecutorService;
 
 use crate::core::SubscriptionState;
 use crate::{

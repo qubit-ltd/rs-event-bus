@@ -32,11 +32,11 @@ use std::time::{
     Instant,
 };
 
-use qubit_thread_pool::{
-    DelayedTaskScheduler,
+use qubit_executor::{
     ExecutorService,
-    FixedThreadPool,
+    SingleThreadScheduledExecutorService,
 };
+use qubit_thread_pool::FixedThreadPool;
 
 use crate::core::SubscriptionState;
 use crate::core::subscribe_options::{
@@ -2012,7 +2012,7 @@ fn wait_for_executor_termination_timeout(executor: &FixedThreadPool, timeout: Du
 ///
 /// # Parameters
 /// - `scheduler`: Scheduler whose graceful shutdown has already been requested.
-fn wait_for_delay_scheduler_termination(scheduler: &DelayedTaskScheduler) {
+fn wait_for_delay_scheduler_termination(scheduler: &SingleThreadScheduledExecutorService) {
     while !scheduler.is_terminated() {
         thread::sleep(Duration::from_millis(1));
     }
@@ -2027,7 +2027,7 @@ fn wait_for_delay_scheduler_termination(scheduler: &DelayedTaskScheduler) {
 /// # Returns
 /// `true` when the scheduler terminates before the timeout.
 fn wait_for_delay_scheduler_termination_timeout(
-    scheduler: &DelayedTaskScheduler,
+    scheduler: &SingleThreadScheduledExecutorService,
     timeout: Duration,
 ) -> bool {
     let started_at = Instant::now();
