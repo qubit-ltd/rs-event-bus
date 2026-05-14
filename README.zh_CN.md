@@ -33,7 +33,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.5.0"
+qubit-event-bus = "0.6.0"
 ```
 
 ## 快速开始
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 手动 NACK 会被视为订阅处理失败，并先参与订阅重试；重试耗尽后才进入错误处理器和死信路由。
 - 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
 - `publish_all` 会按输入顺序提交 envelope，并返回包含 accepted、dropped 和 failed 计数的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
-- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待由 `rs-thread-pool` 的 `DelayedTaskScheduler` 调度，不占用本地处理器 worker，到期后才提交处理器执行。
+- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待由 `rs-executor` 的 `SingleThreadScheduledExecutorService` 调度，不占用本地处理器 worker，到期后才提交处理器执行。
 - 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
 - `LocalEventBus` 会拒绝 retry 的 `attempt_timeout` 选项，因为本地处理器没有协作取消信号。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。

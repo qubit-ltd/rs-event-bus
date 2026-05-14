@@ -36,12 +36,14 @@ use std::time::{
     Instant,
 };
 
-use qubit_thread_pool::{
-    DelayedTaskScheduler,
+use qubit_executor::{
+    CancelResult,
     ExecutorService,
     ExecutorServiceBuilderError,
-    FixedThreadPool,
+    ScheduledExecutorService,
+    SingleThreadScheduledExecutorService,
 };
+use qubit_thread_pool::FixedThreadPool;
 
 use crate::core::SubscriptionState;
 use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
@@ -386,7 +388,7 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Delayed-delivery scheduler if one is still owned by the bus.
-    pub(crate) fn take_delay_scheduler(&self) -> Option<DelayedTaskScheduler> {
+    pub(crate) fn take_delay_scheduler(&self) -> Option<SingleThreadScheduledExecutorService> {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
@@ -874,6 +876,7 @@ impl LocalEventBusInner {
                     Err(error) => bus.observe_error(&error),
                 }
             }
+            Ok::<(), EventBusError>(())
         });
         let handle = match scheduled {
             Ok(handle) => handle,
@@ -883,8 +886,11 @@ impl LocalEventBusInner {
             return Ok(());
         }
         let task_for_cancel = Arc::clone(&task_slot);
+        let handle_for_cancel = Arc::new(Mutex::new(Some(handle)));
         let registration_id = subscription_state.register_delay_cancellation(move || {
-            if handle.cancel()
+            if let Ok(mut handle) = handle_for_cancel.lock()
+                && let Some(handle) = handle.take()
+                && handle.cancel() == CancelResult::Cancelled
                 && let Ok(mut task) = task_for_cancel.lock()
             {
                 let _ = task.take();
@@ -1009,6 +1015,7 @@ impl LocalEventBusInner {
             } else {
                 bus.cancel_ordered_lane(&lane_key_for_delay);
             }
+            Ok::<(), EventBusError>(())
         });
         let handle = match scheduled {
             Ok(handle) => handle,
@@ -1019,8 +1026,12 @@ impl LocalEventBusInner {
         }
         let bus_for_cancel = Arc::clone(self);
         let lane_key_for_cancel = lane_key.clone();
+        let handle_for_cancel = Arc::new(Mutex::new(Some(handle)));
         let registration_id = subscription_state.register_delay_cancellation(move || {
-            if handle.cancel() {
+            if let Ok(mut handle) = handle_for_cancel.lock()
+                && let Some(handle) = handle.take()
+                && handle.cancel() == CancelResult::Cancelled
+            {
                 bus_for_cancel.cancel_ordered_lane(&lane_key_for_cancel);
             }
         });
@@ -1277,15 +1288,17 @@ impl LocalEventBusInner {
         builder.build()
     }
 
-    /// Builds the delayed-delivery scheduler.
+    /// Builds the delayed-delivery scheduled executor service.
     ///
     /// # Returns
-    /// A scheduler used to wait for delayed deliveries.
+    /// A scheduled executor service used to wait for delayed deliveries.
     ///
     /// # Errors
-    /// Returns executor build errors from `rs-thread-pool`.
-    fn build_delay_scheduler(&self) -> Result<DelayedTaskScheduler, ExecutorServiceBuilderError> {
-        DelayedTaskScheduler::new("qubit-event-bus-delay")
+    /// Returns executor build errors from `rs-executor`.
+    fn build_delay_scheduler(
+        &self,
+    ) -> Result<SingleThreadScheduledExecutorService, ExecutorServiceBuilderError> {
+        SingleThreadScheduledExecutorService::new("qubit-event-bus-delay")
     }
 }
 
@@ -1307,7 +1320,7 @@ fn executor_for_dispatch(
 fn delay_scheduler_for_dispatch(
     lifecycle: &LocalEventBusLifecycle,
     allow_stopping: bool,
-) -> EventBusResult<&DelayedTaskScheduler> {
+) -> EventBusResult<&SingleThreadScheduledExecutorService> {
     if !lifecycle.started && !allow_stopping {
         return Err(EventBusError::not_started());
     }
@@ -1317,7 +1330,7 @@ fn delay_scheduler_for_dispatch(
         .ok_or_else(EventBusError::not_started)
 }
 
-/// Converts a thread-pool build failure into a local event-bus startup failure.
+/// Converts an executor build failure into a local event-bus startup failure.
 fn start_failed_from_thread_pool_error(error: ExecutorServiceBuilderError) -> EventBusError {
     EventBusError::start_failed(error.to_string())
 }
@@ -1365,7 +1378,7 @@ where
 struct LocalEventBusLifecycle {
     started: bool,
     executor: Option<FixedThreadPool>,
-    delay_scheduler: Option<DelayedTaskScheduler>,
+    delay_scheduler: Option<SingleThreadScheduledExecutorService>,
 }
 
 impl LocalEventBusLifecycle {
