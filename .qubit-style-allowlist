@@ -5,6 +5,7 @@ coverage-cfg | src/core/subscription.rs | Poison private delay mutex only under 
 coverage-cfg | src/local/mod.rs | Re-export local coverage helpers only for coverage builds.
 coverage-cfg | src/local/local_event_bus.rs | Host LocalEventBus coverage helpers as a private child module for cfg(coverage) tests.
 coverage-cfg | src/local/local_event_bus_inner.rs | Host LocalEventBusInner coverage helpers as a private child module for cfg(coverage) tests.
+coverage-cfg | src/local/subscriber_interceptor_chain.rs | Exercise subscriber chain downstream provenance branches only for coverage builds.
 multiple-public-types | src/core/subscription.rs | SubscriptionState is crate-internal shared cancellation state paired with the public Subscription handle.
 multiple-public-types | src/core/event_bus.rs | Batch result value objects are part of the EventBus batch publishing contract.
 multiple-public-types | src/core/event_envelope.rs | Type-erased metadata is the interceptor-facing view of the public event envelope.

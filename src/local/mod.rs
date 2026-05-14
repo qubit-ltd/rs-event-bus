@@ -34,6 +34,8 @@ pub use local_event_bus::{
 pub use local_event_bus_factory::LocalEventBusFactory;
 #[cfg(coverage)]
 pub use local_event_bus_inner::coverage_exercise_local_event_bus_inner_defensive_paths;
+#[cfg(coverage)]
+pub use subscriber_interceptor_chain::coverage_exercise_subscriber_interceptor_chain_defensive_paths;
 pub use subscriber_interceptor_chain::{
     SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,

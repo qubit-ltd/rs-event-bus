@@ -33,7 +33,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.4.0"
+qubit-event-bus = "0.5.0"
 ```
 
 ## 快速开始

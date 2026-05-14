@@ -9,6 +9,7 @@
  ******************************************************************************/
 //! Subscriber interceptor chain handle.
 // qubit-style: allow multiple-public-types
+// qubit-style: allow coverage-cfg
 
 use std::panic::{
     self,
@@ -20,6 +21,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[cfg(coverage)]
+use crate::Topic;
 use crate::{
     EventBusError,
     EventBusResult,
@@ -357,4 +360,109 @@ impl OwnedStringFingerprint {
             len: message.len(),
         }
     }
+}
+
+/// Exercises coverage-only defensive branches for subscriber interceptor chains.
+///
+/// # Returns
+/// Errors observed while exercising downstream provenance recording.
+#[cfg(coverage)]
+pub fn coverage_exercise_subscriber_interceptor_chain_defensive_paths() -> Vec<EventBusError> {
+    let mut errors = Vec::new();
+    let empty_slot = create_downstream_error_slot();
+    assert!(!is_recorded_downstream_error(
+        &empty_slot,
+        &EventBusError::not_started()
+    ));
+
+    let any_ok = SubscriberInterceptorAnyChain::with_downstream_error(
+        Arc::new(|| Ok(())),
+        create_downstream_error_slot(),
+    );
+    assert!(any_ok.proceed().is_ok());
+
+    let any_error_slot = create_downstream_error_slot();
+    let any_error = SubscriberInterceptorAnyChain::with_downstream_error(
+        Arc::new(|| Err(EventBusError::start_failed("coverage any failed"))),
+        Arc::clone(&any_error_slot),
+    )
+    .proceed()
+    .expect_err("coverage any chain should fail");
+    assert!(is_recorded_downstream_error(&any_error_slot, &any_error));
+    errors.push(any_error);
+
+    let any_panic_slot = create_downstream_error_slot();
+    let any_panic = SubscriberInterceptorAnyChain::with_downstream_error(
+        Arc::new(|| panic!("coverage any panic")),
+        Arc::clone(&any_panic_slot),
+    )
+    .proceed()
+    .expect_err("coverage any chain should report panic");
+    assert!(is_recorded_downstream_error(&any_panic_slot, &any_panic));
+    errors.push(any_panic);
+
+    let topic =
+        Topic::<String>::try_new("coverage-subscriber-chain").expect("coverage topic should build");
+    let typed_ok = SubscriberInterceptorChain::with_downstream_error(
+        Arc::new(|_event: EventEnvelope<String>| Ok(())),
+        create_downstream_error_slot(),
+    );
+    assert!(
+        typed_ok
+            .proceed(EventEnvelope::create(topic.clone(), "ok".to_string()))
+            .is_ok()
+    );
+
+    let typed_error_slot = create_downstream_error_slot();
+    let typed_error = SubscriberInterceptorChain::with_downstream_error(
+        Arc::new(|_event: EventEnvelope<String>| {
+            Err(EventBusError::handler_failed("coverage typed failed"))
+        }),
+        Arc::clone(&typed_error_slot),
+    )
+    .proceed(EventEnvelope::create(
+        topic.clone(),
+        "typed-error".to_string(),
+    ))
+    .expect_err("coverage typed chain should fail");
+    assert!(is_recorded_downstream_error(
+        &typed_error_slot,
+        &typed_error
+    ));
+    errors.push(typed_error);
+
+    let typed_panic_slot = create_downstream_error_slot();
+    let typed_panic = SubscriberInterceptorChain::with_downstream_error(
+        Arc::new(|_event: EventEnvelope<String>| panic!("coverage typed panic")),
+        Arc::clone(&typed_panic_slot),
+    )
+    .proceed(EventEnvelope::create(topic, "typed-panic".to_string()))
+    .expect_err("coverage typed chain should report panic");
+    assert!(is_recorded_downstream_error(
+        &typed_panic_slot,
+        &typed_panic
+    ));
+    errors.push(typed_panic);
+
+    let direct_slot = create_downstream_error_slot();
+    let direct_errors = vec![
+        EventBusError::not_started(),
+        EventBusError::invalid_argument("field", "invalid"),
+        EventBusError::missing_field("field"),
+        EventBusError::interceptor_failed("phase", "interceptor"),
+        EventBusError::error_handler_failed("phase", "handler"),
+        EventBusError::dead_letter_failed("dead letter"),
+        EventBusError::execution_rejected("execution"),
+        EventBusError::shutdown_timed_out(Duration::from_millis(1)),
+        EventBusError::lock_poisoned("lock"),
+        EventBusError::type_mismatch("expected", "actual"),
+        EventBusError::unsupported_operation("operation"),
+    ];
+    for error in direct_errors {
+        record_downstream_error(&direct_slot, &error);
+        record_downstream_error(&direct_slot, &error);
+        assert!(is_recorded_downstream_error(&direct_slot, &error));
+        errors.push(error);
+    }
+    errors
 }
