@@ -76,6 +76,7 @@ pub use local::{
 pub use local::{
     coverage_exercise_local_event_bus_defensive_paths,
     coverage_exercise_local_event_bus_inner_defensive_paths,
+    coverage_exercise_subscriber_interceptor_chain_defensive_paths,
 };
 pub use transactional::{
     StagedEvent,
