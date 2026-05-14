@@ -580,6 +580,10 @@ impl LocalEventBus {
     /// # Returns
     /// `Ok(())` after subscriber work has been scheduled.
     ///
+    /// Local dispatch is non-transactional across matching subscribers. If
+    /// scheduling fails for a later subscriber, earlier subscriber work may
+    /// already have been accepted.
+    ///
     /// # Errors
     /// Returns [`EventBusError::NotStarted`] if the bus is stopped.
     pub fn publish<T>(&self, topic: &Topic<T>, payload: T) -> EventBusResult<()>
@@ -1067,6 +1071,10 @@ impl LocalEventBus {
     ///
     /// # Returns
     /// `Ok(())` once matching subscriber tasks have been accepted.
+    ///
+    /// This dispatch loop is best-effort across subscriptions: a later
+    /// submission error does not roll back subscriber tasks accepted earlier in
+    /// the same publish call.
     ///
     /// # Errors
     /// Returns subscription lookup, type-erasure, or executor submission errors.

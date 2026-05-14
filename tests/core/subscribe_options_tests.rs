@@ -6,6 +6,8 @@ use qubit_event_bus::{
     prefixed_dead_letters,
 };
 
+use crate::support::PanicHookGuard;
+
 #[test]
 fn test_subscribe_options_empty_handles_every_event() {
     let topic = Topic::<String>::try_new("subscribe-options").expect("topic should build");
@@ -37,13 +39,12 @@ fn test_subscribe_options_filter_panic_returns_not_handled() {
             panic!("filter panic");
         })
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        options.should_handle(&envelope)
-    }));
-    std::panic::set_hook(previous_hook);
+    let result = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            options.should_handle(&envelope)
+        }))
+    };
 
     assert!(!result.expect("filter panic should be isolated"));
 }

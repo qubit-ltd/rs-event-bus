@@ -23,6 +23,8 @@ use qubit_event_bus::{
     Topic,
 };
 
+use crate::support::PanicHookGuard;
+
 struct PublicPublisherInterceptor;
 
 impl PublisherInterceptor<String> for PublicPublisherInterceptor {
@@ -399,12 +401,11 @@ fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_pan
         Err(EventBusError::handler_failed("handler failed"))
     })
     .expect("failing subscriber should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    bus.publish(&topic, 7_i64).expect("publish should succeed");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, 7_i64).expect("publish should succeed");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let observed = observed.lock().expect("observed errors should lock");
     assert!(observed.iter().any(|error| matches!(
@@ -528,13 +529,12 @@ fn test_local_event_bus_factory_observes_default_dead_letter_strategy_panic() {
         Err(EventBusError::handler_failed("handler failed"))
     })
     .expect("failing subscriber should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should succeed");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should succeed");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let observed = observed.lock().expect("observed errors should lock");
     assert!(observed.iter().any(|error| matches!(

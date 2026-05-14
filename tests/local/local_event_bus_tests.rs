@@ -49,6 +49,8 @@ use qubit_event_bus::{
     standard_dead_letters_to,
 };
 
+use crate::support::PanicHookGuard;
+
 fn create_topic(name: &str) -> Topic<String> {
     Topic::try_new(name).expect("topic should build")
 }
@@ -91,19 +93,47 @@ fn retry_options_with_attempt_timeout() -> RetryOptions {
     .expect("retry options with attempt timeout should build")
 }
 
+const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn wait_for_count(counter: &Arc<(Mutex<usize>, Condvar)>, expected: usize) {
     let (lock, condvar) = &**counter;
     let mut count = lock.lock().expect("counter should lock");
+    let started_at = Instant::now();
     while *count < expected {
-        count = condvar.wait(count).expect("counter wait should not poison");
+        let remaining = TEST_WAIT_TIMEOUT
+            .checked_sub(started_at.elapsed())
+            .unwrap_or_else(|| {
+                panic!(
+                    "timed out waiting for counter to reach {expected}; current value is {count}"
+                )
+            });
+        let (next_count, wait_result) = condvar
+            .wait_timeout(count, remaining)
+            .expect("counter wait should not poison");
+        count = next_count;
+        assert!(
+            !wait_result.timed_out() || *count >= expected,
+            "timed out waiting for counter to reach {expected}; current value is {count}"
+        );
     }
 }
 
 fn wait_for_gate(gate: &Arc<(Mutex<bool>, Condvar)>) {
     let (lock, condvar) = &**gate;
     let mut released = lock.lock().expect("gate should lock");
+    let started_at = Instant::now();
     while !*released {
-        released = condvar.wait(released).expect("gate wait should not poison");
+        let remaining = TEST_WAIT_TIMEOUT
+            .checked_sub(started_at.elapsed())
+            .unwrap_or_else(|| panic!("timed out waiting for gate to open"));
+        let (next_released, wait_result) = condvar
+            .wait_timeout(released, remaining)
+            .expect("gate wait should not poison");
+        released = next_released;
+        assert!(
+            !wait_result.timed_out() || *released,
+            "timed out waiting for gate to open"
+        );
     }
 }
 
@@ -868,16 +898,15 @@ fn test_subscribe_filter_panic_becomes_publish_error() {
             Ok(())
         })
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    let publish_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        bus.publish_envelope_with_options(
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-            publish_options,
-        )
-    }));
-    std::panic::set_hook(previous_hook);
+    let publish_result = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bus.publish_envelope_with_options(
+                EventEnvelope::create(topic.clone(), "payload".to_string()),
+                publish_options,
+            )
+        }))
+    };
 
     let error = publish_result
         .expect("filter panic should not unwind")
@@ -1075,13 +1104,11 @@ fn test_global_publisher_interceptor_panic_is_reported_to_publish_error_handling
         .expect("global publisher interceptor should register");
     let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("global-publisher-interceptor-panic");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    let error = bus
-        .publish(&topic, "payload".to_string())
-        .expect_err("global publisher interceptor panic should reject publish");
-    std::panic::set_hook(previous_hook);
+    let error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect_err("global publisher interceptor panic should reject publish")
+    };
 
     assert_eq!(error.kind(), "interceptor_failed");
     assert!(
@@ -1125,13 +1152,14 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
             ))
         })
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    let error = bus
-        .publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
-        .expect_err("publisher interceptor panic should become publish error");
-    std::panic::set_hook(previous_hook);
+    let error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish_envelope_with_options(
+            EventEnvelope::create(topic, "payload".to_string()),
+            options,
+        )
+        .expect_err("publisher interceptor panic should become publish error")
+    };
 
     assert_eq!(error.kind(), "interceptor_failed");
     assert!(error.to_string().contains("publisher interceptor panicked"));
@@ -1178,14 +1206,13 @@ fn test_publish_retry_retries_publisher_interceptor_failures() {
     let options = PublishOptions::<String>::builder()
         .retry_options(retry_options(2))
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    let result = bus.publish_envelope_with_options(
-        EventEnvelope::create(topic.clone(), "payload".to_string()),
-        options,
-    );
-    std::panic::set_hook(previous_hook);
+    let result = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish_envelope_with_options(
+            EventEnvelope::create(topic.clone(), "payload".to_string()),
+            options,
+        )
+    };
 
     result.expect("transient interceptor failure should be retried");
     bus.wait_for_idle(&topic).expect("topic should become idle");
@@ -1808,9 +1835,6 @@ fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
             Ok(())
         })
         .build();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
     bus.subscribe_with_options(
         "sub-1",
         &topic,
@@ -1821,11 +1845,13 @@ fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
     )
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
-    bus.wait_for_idle(&topic)
-        .expect("topic should become idle after panic");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should work");
+        bus.wait_for_idle(&topic)
+            .expect("topic should become idle after panic");
+    }
 
     assert_eq!(errors.load(Ordering::SeqCst), 1);
 }
@@ -2183,13 +2209,12 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_panic() {
         options,
     )
     .expect("subscription should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should succeed");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should succeed");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let subscribe_errors = subscribe_errors
         .lock()
@@ -2198,6 +2223,60 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_panic() {
         subscribe_errors.as_slice(),
         [EventBusError::handler_panicked()]
     );
+}
+
+#[test]
+fn test_subscriber_interceptor_owned_equal_error_is_reported_as_interceptor_failure() {
+    let mut factory = LocalEventBusFactory::new();
+    let downstream_keepalive = Arc::new(Mutex::new(None::<EventBusError>));
+    let captured_downstream_keepalive = Arc::clone(&downstream_keepalive);
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+                if let Err(error) = chain.proceed(event) {
+                    captured_downstream_keepalive
+                        .lock()
+                        .expect("downstream error should lock")
+                        .replace(error);
+                }
+                Err(EventBusError::handler_failed("ambiguous subscriber error"))
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("subscriber-interceptor-equal-owned-error");
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(move |_subscriber_id, _envelope, error, acknowledgement| {
+            captured_subscribe_errors
+                .lock()
+                .expect("subscribe errors should lock")
+                .push(error.clone());
+            acknowledgement.ack();
+            Ok(())
+        })
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        |_event| Err(EventBusError::handler_failed("ambiguous subscriber error")),
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(matches!(
+        subscribe_errors.as_slice(),
+        [EventBusError::InterceptorFailed { phase, message }]
+            if *phase == "subscribe" && message.contains("ambiguous subscriber error")
+    ));
 }
 
 #[test]
@@ -2228,13 +2307,12 @@ fn test_global_subscriber_interceptor_panic_is_observed() {
         .build();
     bus.subscribe_with_options("sub", &topic, |_event| Ok(()), options)
         .expect("subscription should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should succeed");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should succeed");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let subscribe_errors = subscribe_errors
         .lock()
@@ -2328,13 +2406,12 @@ fn test_subscriber_interceptor_panic_is_reported_as_interceptor_failure() {
         .build();
     bus.subscribe_with_options("sub", &topic, |_event| Ok(()), options)
         .expect("subscription should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should succeed");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should succeed");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let subscribe_errors = subscribe_errors
         .lock()
@@ -2902,8 +2979,6 @@ fn test_subscribe_error_handler_panic_does_not_block_later_ack() {
     let captured_second_handlers = Arc::clone(&second_handlers);
     let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
     let dead_letter_target = dead_letter_topic.clone();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let options = SubscribeOptions::<String>::builder()
         .error_handler(
             |_subscriber_id,
@@ -2943,12 +3018,14 @@ fn test_subscribe_error_handler_panic_does_not_block_later_ack() {
         Ok(())
     })
     .expect("dead letter subscriber should register");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    bus.wait_for_idle(&dead_letter_topic)
-        .expect("dead letter topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should work");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+        bus.wait_for_idle(&dead_letter_topic)
+            .expect("dead letter topic should become idle");
+    }
 
     assert_eq!(second_handlers.load(Ordering::SeqCst), 1);
     assert!(
@@ -3056,8 +3133,6 @@ fn test_dead_letter_strategy_panic_is_observed() {
             .push(error.clone());
     })
     .expect("error observer should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let options = SubscribeOptions::<String>::builder()
         .dead_letter_strategy(|_subscriber_id, _failed, _error, _options| {
             panic!("dead-letter strategy panic");
@@ -3071,10 +3146,12 @@ fn test_dead_letter_strategy_panic_is_observed() {
         options,
     )
     .expect("subscribe should work");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
-    bus.wait_for_idle(&topic).expect("topic should become idle");
-    std::panic::set_hook(previous_hook);
+    {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        bus.publish(&topic, "payload".to_string())
+            .expect("publish should work");
+        bus.wait_for_idle(&topic).expect("topic should become idle");
+    }
 
     let observed = observed.lock().expect("observed errors should lock");
     assert!(observed.iter().any(|error| matches!(
@@ -3821,14 +3898,14 @@ fn test_dead_letter_publish_failure_is_observed() {
         options,
     )
     .expect("failing subscriber should register");
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        bus.publish(&topic, "payload".to_string())
-            .expect("publish should schedule failing handler");
-        bus.wait_for_idle(&topic).expect("topic should become idle");
-    }));
-    std::panic::set_hook(previous_hook);
+    let result = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bus.publish(&topic, "payload".to_string())
+                .expect("publish should schedule failing handler");
+            bus.wait_for_idle(&topic).expect("topic should become idle");
+        }))
+    };
     result.expect("dead-letter filter panic should be isolated");
 
     let observed = observed.lock().expect("observed errors should lock");

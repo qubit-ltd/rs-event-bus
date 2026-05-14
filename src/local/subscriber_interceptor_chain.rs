@@ -18,6 +18,7 @@ use std::sync::{
     Arc,
     Mutex,
 };
+use std::time::Duration;
 
 use crate::{
     EventBusError,
@@ -26,13 +27,84 @@ use crate::{
 };
 
 type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;
-pub(crate) type DownstreamErrorSlot = Arc<Mutex<Vec<EventBusError>>>;
+pub(crate) type DownstreamErrorSlot = Arc<Mutex<Vec<DownstreamErrorRecord>>>;
+
+/// Recorded downstream failure provenance for one interceptor invocation.
+pub(crate) struct DownstreamErrorRecord {
+    fingerprint: ErrorFingerprint,
+}
+
+/// Identity of a downstream error value returned from `proceed`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ErrorFingerprint {
+    NotStarted,
+    StartFailed(OwnedStringFingerprint),
+    InvalidArgument {
+        field: &'static str,
+        message: OwnedStringFingerprint,
+    },
+    MissingField {
+        field: &'static str,
+    },
+    HandlerFailed(OwnedStringFingerprint),
+    HandlerPanicked,
+    InterceptorFailed {
+        phase: &'static str,
+        message: OwnedStringFingerprint,
+    },
+    ErrorHandlerFailed {
+        phase: &'static str,
+        message: OwnedStringFingerprint,
+    },
+    DeadLetterFailed(OwnedStringFingerprint),
+    ExecutionRejected(OwnedStringFingerprint),
+    ShutdownTimedOut {
+        timeout: Duration,
+    },
+    LockPoisoned {
+        resource: &'static str,
+    },
+    TypeMismatch {
+        expected: &'static str,
+        actual: &'static str,
+    },
+    UnsupportedOperation {
+        operation: &'static str,
+    },
+}
+
+/// Allocation identity for owned string payloads inside an error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OwnedStringFingerprint {
+    ptr: usize,
+    len: usize,
+}
 
 /// Chain handle passed to subscriber interceptors.
 ///
 /// Calling [`proceed`](Self::proceed) invokes the next subscriber interceptor,
 /// or the original subscriber handler when the current interceptor is the last
 /// one in the chain.
+///
+/// The chain is a one-shot continuation. Calling `proceed` consumes the chain,
+/// so an interceptor cannot accidentally invoke downstream processing twice.
+///
+/// ```compile_fail
+/// # use qubit_event_bus::{
+/// #     EventBusResult,
+/// #     EventEnvelope,
+/// #     SubscriberInterceptorChain,
+/// # };
+/// # fn interceptor(
+/// #     event: EventEnvelope<String>,
+/// #     chain: SubscriberInterceptorChain<String>,
+/// # ) -> EventBusResult<()> {
+/// let first = chain.proceed(event.clone());
+/// let second = chain.proceed(event);
+/// # first?;
+/// # second
+/// # }
+/// ```
 pub struct SubscriberInterceptorChain<T: Clone + Send + Sync + 'static> {
     next: Arc<HandlerFn<T>>,
     downstream_error: DownstreamErrorSlot,
@@ -42,6 +114,22 @@ pub struct SubscriberInterceptorChain<T: Clone + Send + Sync + 'static> {
 ///
 /// Calling [`proceed`](Self::proceed) invokes the next global interceptor,
 /// typed interceptor, or original subscriber handler.
+///
+/// The chain is a one-shot continuation. Calling `proceed` consumes the chain,
+/// so an interceptor cannot accidentally invoke downstream processing twice.
+///
+/// ```compile_fail
+/// # use qubit_event_bus::{
+/// #     EventBusResult,
+/// #     SubscriberInterceptorAnyChain,
+/// # };
+/// # fn interceptor(chain: SubscriberInterceptorAnyChain) -> EventBusResult<()> {
+/// let first = chain.proceed();
+/// let second = chain.proceed();
+/// # first?;
+/// # second
+/// # }
+/// ```
 pub struct SubscriberInterceptorAnyChain {
     next: Arc<dyn Fn() -> EventBusResult<()> + Send + Sync + 'static>,
     downstream_error: DownstreamErrorSlot,
@@ -66,7 +154,7 @@ impl SubscriberInterceptorAnyChain {
         }
     }
 
-    /// Continues subscriber processing.
+    /// Continues subscriber processing, consuming this one-shot chain handle.
     ///
     /// # Returns
     /// `Ok(())` when downstream processing succeeds.
@@ -75,7 +163,7 @@ impl SubscriberInterceptorAnyChain {
     /// Returns the downstream handler or interceptor error. If the downstream
     /// handler panics, the panic is isolated and returned as
     /// [`EventBusError::HandlerPanicked`].
-    pub fn proceed(&self) -> EventBusResult<()> {
+    pub fn proceed(self) -> EventBusResult<()> {
         match panic::catch_unwind(AssertUnwindSafe(|| (self.next)())) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
@@ -113,7 +201,7 @@ where
         }
     }
 
-    /// Continues subscriber processing.
+    /// Continues subscriber processing, consuming this one-shot chain handle.
     ///
     /// # Parameters
     /// - `envelope`: Envelope to pass to the next chain element.
@@ -125,7 +213,7 @@ where
     /// Returns the downstream handler or interceptor error. If the downstream
     /// handler panics, the panic is isolated and returned as
     /// [`EventBusError::HandlerPanicked`].
-    pub fn proceed(&self, envelope: EventEnvelope<T>) -> EventBusResult<()> {
+    pub fn proceed(self, envelope: EventEnvelope<T>) -> EventBusResult<()> {
         match panic::catch_unwind(AssertUnwindSafe(|| (self.next)(envelope))) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
@@ -157,14 +245,19 @@ pub(crate) fn create_downstream_error_slot() -> DownstreamErrorSlot {
 /// - `error`: Error returned by an interceptor.
 ///
 /// # Returns
-/// `true` when `error` matches a recorded downstream failure.
+/// `true` when `error` has the same provenance as a recorded downstream failure.
 pub(crate) fn is_recorded_downstream_error(
     downstream_error: &DownstreamErrorSlot,
     error: &EventBusError,
 ) -> bool {
+    let fingerprint = ErrorFingerprint::from_error(error);
     downstream_error
         .lock()
-        .map(|recorded| recorded.contains(error))
+        .map(|recorded| {
+            recorded
+                .iter()
+                .any(|record| record.fingerprint == fingerprint)
+        })
         .unwrap_or(false)
 }
 
@@ -174,9 +267,94 @@ pub(crate) fn is_recorded_downstream_error(
 /// - `downstream_error`: Shared error slot.
 /// - `error`: Downstream failure to record.
 fn record_downstream_error(downstream_error: &DownstreamErrorSlot, error: &EventBusError) {
+    let record = DownstreamErrorRecord::new(error);
     if let Ok(mut recorded) = downstream_error.lock()
-        && !recorded.contains(error)
+        && !recorded
+            .iter()
+            .any(|existing| existing.fingerprint == record.fingerprint)
     {
-        recorded.push(error.clone());
+        recorded.push(record);
+    }
+}
+
+impl DownstreamErrorRecord {
+    /// Creates a downstream provenance record from an error value.
+    ///
+    /// # Parameters
+    /// - `error`: Error returned by downstream processing.
+    ///
+    /// # Returns
+    /// Record used to recognize the same downstream error if it is propagated.
+    fn new(error: &EventBusError) -> Self {
+        Self {
+            fingerprint: ErrorFingerprint::from_error(error),
+        }
+    }
+}
+
+impl ErrorFingerprint {
+    /// Captures the internal identity of an event bus error.
+    ///
+    /// # Parameters
+    /// - `error`: Error value to fingerprint.
+    ///
+    /// # Returns
+    /// Fingerprint that preserves allocation provenance for owned messages.
+    fn from_error(error: &EventBusError) -> Self {
+        match error {
+            EventBusError::NotStarted => Self::NotStarted,
+            EventBusError::StartFailed { message } => {
+                Self::StartFailed(OwnedStringFingerprint::new(message))
+            }
+            EventBusError::InvalidArgument { field, message } => Self::InvalidArgument {
+                field,
+                message: OwnedStringFingerprint::new(message),
+            },
+            EventBusError::MissingField { field } => Self::MissingField { field },
+            EventBusError::HandlerFailed { message } => {
+                Self::HandlerFailed(OwnedStringFingerprint::new(message))
+            }
+            EventBusError::HandlerPanicked => Self::HandlerPanicked,
+            EventBusError::InterceptorFailed { phase, message } => Self::InterceptorFailed {
+                phase,
+                message: OwnedStringFingerprint::new(message),
+            },
+            EventBusError::ErrorHandlerFailed { phase, message } => Self::ErrorHandlerFailed {
+                phase,
+                message: OwnedStringFingerprint::new(message),
+            },
+            EventBusError::DeadLetterFailed { message } => {
+                Self::DeadLetterFailed(OwnedStringFingerprint::new(message))
+            }
+            EventBusError::ExecutionRejected { message } => {
+                Self::ExecutionRejected(OwnedStringFingerprint::new(message))
+            }
+            EventBusError::ShutdownTimedOut { timeout } => {
+                Self::ShutdownTimedOut { timeout: *timeout }
+            }
+            EventBusError::LockPoisoned { resource } => Self::LockPoisoned { resource },
+            EventBusError::TypeMismatch { expected, actual } => {
+                Self::TypeMismatch { expected, actual }
+            }
+            EventBusError::UnsupportedOperation { operation } => {
+                Self::UnsupportedOperation { operation }
+            }
+        }
+    }
+}
+
+impl OwnedStringFingerprint {
+    /// Captures the allocation identity of a string slice.
+    ///
+    /// # Parameters
+    /// - `message`: Owned string contents stored in an error.
+    ///
+    /// # Returns
+    /// Pointer-and-length identity for the current allocation.
+    fn new(message: &str) -> Self {
+        Self {
+            ptr: message.as_ptr() as usize,
+            len: message.len(),
+        }
     }
 }

@@ -155,6 +155,11 @@ impl BatchPublishResult {
 /// The trait mirrors the Java `EventBus` interface with Rust ownership and
 /// error handling. Methods are generic over the payload type, so the trait is
 /// intended for static dispatch rather than `dyn EventBus` trait objects.
+///
+/// Unless a backend documents stronger transactional semantics, publish
+/// operations are non-transactional across matching subscribers. A dispatch
+/// error can be returned after earlier subscriber work has already been
+/// accepted.
 pub trait EventBus: Clone + Send + Sync + 'static {
     /// Starts the event bus.
     ///
