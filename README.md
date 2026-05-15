@@ -33,7 +33,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.6.1"
+qubit-event-bus = "0.6.2"
 ```
 
 ## Quick Start
