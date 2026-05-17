@@ -12,15 +12,15 @@ documentation = "https://docs.rs/qubit-event-bus"
 readme = "README.md"
 keywords = ["event-bus", "pubsub", "events", "thread-safe", "qubit"]
 categories = ["concurrency", "asynchronous"]
-exclude = [
-    "align-ci.sh",
-    "ci-check.sh",
-    "coverage.sh",
-    "style-check.sh",
-    "update-submodule.sh",
-    ".github/*",
-    ".llvm-cov.toml",
-    ".cargo-audit.toml.example",
+include = [
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/README.zh_CN.md",
+    "/doc/**/user_guide*.md",
+    "/examples/**",
+    "/src/**",
+    "/tests/**",
 ]
 
 [lib]
@@ -28,10 +28,10 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
-qubit-executor = "0.5"
-qubit-metadata = { version = "0.4" }
-qubit-retry = { version = "0.12" }
-qubit-thread-pool = "0.7"
+qubit-executor = "0.6"
+qubit-metadata = { version = "0.5" }
+qubit-retry = { version = "0.13" }
+qubit-thread-pool = "0.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
