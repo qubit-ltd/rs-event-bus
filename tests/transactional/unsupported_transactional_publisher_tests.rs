@@ -10,8 +10,7 @@ fn test_unsupported_transactional_publisher_rejects_commit_but_allows_rollback()
     let mut publisher = UnsupportedTransactionalPublisher;
 
     assert_eq!(
-        TransactionalPublisher::commit(&mut publisher)
-            .expect_err("unsupported publisher should reject commit"),
+        TransactionalPublisher::commit(&mut publisher).expect_err("unsupported publisher should reject commit"),
         EventBusError::unsupported_operation("transactional_commit")
     );
     assert!(TransactionalPublisher::rollback(&mut publisher).is_ok());

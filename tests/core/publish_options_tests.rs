@@ -23,9 +23,7 @@ fn test_publish_options_empty_has_no_retry_or_error_handlers() {
 
 #[test]
 fn test_publish_options_clone_preserves_shared_handlers() {
-    let options = PublishOptions::<String>::builder()
-        .error_handler(|_, _| ())
-        .build();
+    let options = PublishOptions::<String>::builder().error_handler(|_, _| ()).build();
     let cloned = options.clone();
 
     assert_eq!(cloned.error_handler_count(), 1);
@@ -52,11 +50,8 @@ fn test_publish_options_converts_error_handler_panic_to_failure() {
     {
         let _panic_hook_guard = PanicHookGuard::suppress();
         assert_eq!(
-            bus.publish_envelope_with_options(
-                EventEnvelope::create(topic, "payload".to_string()),
-                options,
-            )
-            .expect_err("stopped bus should reject publish"),
+            bus.publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options,)
+                .expect_err("stopped bus should reject publish"),
             EventBusError::not_started()
         );
     }

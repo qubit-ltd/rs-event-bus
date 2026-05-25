@@ -43,8 +43,7 @@ fn test_subscriber_interceptor_chain_proceeds_to_handler() {
     })
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(

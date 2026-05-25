@@ -32,15 +32,11 @@ fn test_subscriber_interceptor_entry_applies_to_matching_payload_type() {
     })
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(
-        received
-            .lock()
-            .expect("received headers should lock")
-            .as_slice(),
+        received.lock().expect("received headers should lock").as_slice(),
         [Some("true".to_string())]
     );
 }

@@ -12,8 +12,7 @@ fn test_staged_event_envelope_preserves_typed_parts() {
     let options = PublishOptions::<String>::builder()
         .error_handler(|_event, _error| Ok(()))
         .build();
-    let staged =
-        StagedEventEnvelope::new(EventEnvelope::create(topic, "payload".to_string()), options);
+    let staged = StagedEventEnvelope::new(EventEnvelope::create(topic, "payload".to_string()), options);
 
     assert_eq!(staged.envelope().payload(), "payload");
     assert_eq!(staged.options().error_handler_count(), 1);

@@ -29,10 +29,5 @@ fn test_subscription_cancel_removes_type_erased_entry() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert!(!subscription.is_active());
-    assert!(
-        received
-            .lock()
-            .expect("received payloads should lock")
-            .is_empty()
-    );
+    assert!(received.lock().expect("received payloads should lock").is_empty());
 }

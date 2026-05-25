@@ -27,10 +27,7 @@ fn test_event_bus_trait_publish_delegates_to_backend() {
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
 
     assert_eq!(
-        received
-            .lock()
-            .expect("received payloads should lock")
-            .as_slice(),
+        received.lock().expect("received payloads should lock").as_slice(),
         ["payload"]
     );
 }

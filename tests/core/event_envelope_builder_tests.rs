@@ -38,10 +38,7 @@ fn test_event_envelope_builder_sets_all_optional_metadata() {
     assert_eq!(envelope.id(), "event-1");
     assert_eq!(envelope.topic(), &topic);
     assert_eq!(envelope.payload(), "payload");
-    assert_eq!(
-        envelope.headers().get("trace-id"),
-        Some(&"trace-1".to_string())
-    );
+    assert_eq!(envelope.headers().get("trace-id"), Some(&"trace-1".to_string()));
     assert_eq!(envelope.timestamp(), timestamp);
     assert_eq!(envelope.ordering_key(), Some("order-1"));
     assert_eq!(envelope.delay(), Some(Duration::from_millis(5)));
