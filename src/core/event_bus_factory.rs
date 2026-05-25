@@ -91,9 +91,7 @@ pub trait EventBusFactory {
         T: Send + Sync + 'static,
     {
         let _ = options;
-        Err(EventBusError::unsupported_operation(
-            "set_default_publish_options",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_publish_options"))
     }
 
     /// Sets default subscribe options for a payload type.
@@ -107,17 +105,12 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable defaults.
-    fn set_default_subscribe_options<T>(
-        &mut self,
-        options: SubscribeOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_subscribe_options<T>(&mut self, options: SubscribeOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
         let _ = options;
-        Err(EventBusError::unsupported_operation(
-            "set_default_subscribe_options",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_subscribe_options"))
     }
 
     /// Sets a default dead-letter strategy for a payload type.
@@ -137,9 +130,7 @@ pub trait EventBusFactory {
         F: DeadLetterStrategyCallback<T>,
     {
         let _ = strategy;
-        Err(EventBusError::unsupported_operation(
-            "set_default_dead_letter_strategy",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_dead_letter_strategy"))
     }
 
     /// Sets the global default dead-letter strategy for all payload types.
@@ -183,9 +174,7 @@ pub trait EventBusFactory {
         I: PublisherInterceptor<T>,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_publisher_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_publisher_interceptor"))
     }
 
     /// Adds a global publisher interceptor to buses created by this factory.
@@ -204,9 +193,7 @@ pub trait EventBusFactory {
         I: PublisherInterceptorAny,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_global_publisher_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_global_publisher_interceptor"))
     }
 
     /// Adds a subscriber interceptor to buses created by this factory.
@@ -226,9 +213,7 @@ pub trait EventBusFactory {
         I: SubscriberInterceptor<T>,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_subscriber_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_subscriber_interceptor"))
     }
 
     /// Adds a global subscriber interceptor to buses created by this factory.

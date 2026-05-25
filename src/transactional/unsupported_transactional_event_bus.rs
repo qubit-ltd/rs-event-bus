@@ -89,17 +89,11 @@ impl EventBus for UnsupportedTransactionalEventBus {
     }
 
     /// Returns an unsupported-operation error.
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
-        Err(EventBusError::unsupported_operation(
-            "wait_for_idle_timeout",
-        ))
+        Err(EventBusError::unsupported_operation("wait_for_idle_timeout"))
     }
 }
 
@@ -108,18 +102,11 @@ impl TransactionalEventBus for UnsupportedTransactionalEventBus {
 
     /// Returns an unsupported-operation error.
     fn create_transactional_publisher(&self) -> EventBusResult<Self::Publisher> {
-        Err(EventBusError::unsupported_operation(
-            "create_transactional_publisher",
-        ))
+        Err(EventBusError::unsupported_operation("create_transactional_publisher"))
     }
 
     /// Returns an unsupported-operation error.
-    fn publish_batch_atomically_staged(
-        &self,
-        _events: Vec<Box<dyn StagedEvent>>,
-    ) -> EventBusResult<()> {
-        Err(EventBusError::unsupported_operation(
-            "publish_batch_atomically",
-        ))
+    fn publish_batch_atomically_staged(&self, _events: Vec<Box<dyn StagedEvent>>) -> EventBusResult<()> {
+        Err(EventBusError::unsupported_operation("publish_batch_atomically"))
     }
 }

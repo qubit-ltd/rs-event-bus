@@ -188,10 +188,7 @@ impl<T: 'static> EventEnvelopeBuilder<T> {
     /// Returns an error when ID, topic, or payload is missing or invalid.
     pub fn build(self) -> EventBusResult<EventEnvelope<T>> {
         if self.id.trim().is_empty() {
-            return Err(EventBusError::invalid_argument(
-                "id",
-                "event id must not be blank",
-            ));
+            return Err(EventBusError::invalid_argument("id", "event id must not be blank"));
         }
         if self.topic.is_none() {
             return Err(EventBusError::missing_field("topic"));

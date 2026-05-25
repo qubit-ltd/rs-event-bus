@@ -34,11 +34,7 @@ pub struct BatchPublishFailure {
 impl BatchPublishFailure {
     /// Creates a batch publish failure record.
     pub(crate) fn new(index: usize, event_id: String, error: EventBusError) -> Self {
-        Self {
-            index,
-            event_id,
-            error,
-        }
+        Self { index, event_id, error }
     }
 
     /// Returns the input index of the failed envelope.
@@ -206,12 +202,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns backend-specific publish errors.
-    fn publish_with_options<T>(
-        &self,
-        topic: &Topic<T>,
-        payload: T,
-        options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    fn publish_with_options<T>(&self, topic: &Topic<T>, payload: T, options: PublishOptions<T>) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -324,12 +315,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns backend-specific subscription errors.
-    fn subscribe<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-    ) -> EventBusResult<Subscription<T>>
+    fn subscribe<T, S, F, R>(&self, subscriber_id: S, topic: &Topic<T>, handler: F) -> EventBusResult<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,

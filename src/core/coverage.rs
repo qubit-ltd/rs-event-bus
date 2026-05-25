@@ -27,16 +27,13 @@ fn coverage_noop_cancel() {}
 pub fn coverage_exercise_core_defensive_paths() -> Vec<bool> {
     let state = SubscriptionState::active();
     let zero_delay_remained_active = state.wait_until_delay_elapsed_or_inactive(Duration::ZERO);
-    let elapsed_delay_remained_active =
-        state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
+    let elapsed_delay_remained_active = state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
     let first_deactivate_changed_state = state.deactivate();
     let second_deactivate_was_idempotent = !state.deactivate();
-    let inactive_delay_skipped =
-        !state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
+    let inactive_delay_skipped = !state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
     let poisoned_state = SubscriptionState::active();
     poisoned_state.coverage_poison_delay_mutex();
-    let poisoned_delay_remained_active =
-        poisoned_state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
+    let poisoned_delay_remained_active = poisoned_state.wait_until_delay_elapsed_or_inactive(Duration::from_millis(1));
     let poisoned_deactivate_changed_state = poisoned_state.deactivate();
 
     let cancellation_count = Arc::new(AtomicUsize::new(0));

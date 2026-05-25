@@ -110,9 +110,7 @@ where
     /// Delivery state for one handler attempt.
     fn new(envelope: &EventEnvelope<T>) -> Self {
         let acknowledgement = Acknowledgement::new();
-        let delivered = envelope
-            .clone()
-            .with_acknowledgement(acknowledgement.clone());
+        let delivered = envelope.clone().with_acknowledgement(acknowledgement.clone());
         Self {
             delivered,
             acknowledgement,
@@ -217,38 +215,29 @@ pub trait IntoPublisherInterceptorAnyResult {
     /// # Returns
     /// `Ok(Some(metadata))` to continue publishing, `Ok(None)` to drop the
     /// event, or an error when the interceptor failed.
-    fn into_publisher_interceptor_any_result(self)
-    -> EventBusResult<Option<EventEnvelopeMetadata>>;
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>>;
 }
 
 impl IntoPublisherInterceptorAnyResult for EventEnvelopeMetadata {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         Ok(Some(self))
     }
 }
 
 impl IntoPublisherInterceptorAnyResult for Option<EventEnvelopeMetadata> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         Ok(self)
     }
 }
 
 impl IntoPublisherInterceptorAnyResult for EventBusResult<EventEnvelopeMetadata> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self.map(Some)
     }
 }
 
 impl IntoPublisherInterceptorAnyResult for EventBusResult<Option<EventEnvelopeMetadata>> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self
     }
 }
@@ -266,10 +255,7 @@ pub trait PublisherInterceptorAny: Send + Sync + 'static {
     ///
     /// # Returns
     /// Updated metadata, dropped event marker, or interceptor failure.
-    fn on_publish(
-        &self,
-        metadata: EventEnvelopeMetadata,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>>;
+    fn on_publish(&self, metadata: EventEnvelopeMetadata) -> EventBusResult<Option<EventEnvelopeMetadata>>;
 }
 
 impl<F, R> PublisherInterceptorAny for F
@@ -277,10 +263,7 @@ where
     F: Fn(EventEnvelopeMetadata) -> R + Send + Sync + 'static,
     R: IntoPublisherInterceptorAnyResult + 'static,
 {
-    fn on_publish(
-        &self,
-        metadata: EventEnvelopeMetadata,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn on_publish(&self, metadata: EventEnvelopeMetadata) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self(metadata).into_publisher_interceptor_any_result()
     }
 }
@@ -299,11 +282,7 @@ pub trait SubscriberInterceptor<T: Clone + Send + Sync + 'static>: Send + Sync +
     ///
     /// # Returns
     /// `Ok(())` when interception and downstream processing succeed.
-    fn on_consume(
-        &self,
-        envelope: EventEnvelope<T>,
-        chain: SubscriberInterceptorChain<T>,
-    ) -> EventBusResult<()>;
+    fn on_consume(&self, envelope: EventEnvelope<T>, chain: SubscriberInterceptorChain<T>) -> EventBusResult<()>;
 }
 
 impl<T, F, R> SubscriberInterceptor<T> for F
@@ -312,11 +291,7 @@ where
     F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
     R: IntoEventBusResult + 'static,
 {
-    fn on_consume(
-        &self,
-        envelope: EventEnvelope<T>,
-        chain: SubscriberInterceptorChain<T>,
-    ) -> EventBusResult<()> {
+    fn on_consume(&self, envelope: EventEnvelope<T>, chain: SubscriberInterceptorChain<T>) -> EventBusResult<()> {
         self(envelope, chain).into_event_bus_result()
     }
 }
@@ -335,11 +310,7 @@ pub trait SubscriberInterceptorAny: Send + Sync + 'static {
     ///
     /// # Returns
     /// `Ok(())` when interception and downstream processing succeed.
-    fn on_consume(
-        &self,
-        metadata: EventEnvelopeMetadata,
-        chain: SubscriberInterceptorAnyChain,
-    ) -> EventBusResult<()>;
+    fn on_consume(&self, metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain) -> EventBusResult<()>;
 }
 
 impl<F, R> SubscriberInterceptorAny for F
@@ -347,11 +318,7 @@ where
     F: Fn(EventEnvelopeMetadata, SubscriberInterceptorAnyChain) -> R + Send + Sync + 'static,
     R: IntoEventBusResult + 'static,
 {
-    fn on_consume(
-        &self,
-        metadata: EventEnvelopeMetadata,
-        chain: SubscriberInterceptorAnyChain,
-    ) -> EventBusResult<()> {
+    fn on_consume(&self, metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain) -> EventBusResult<()> {
         self(metadata, chain).into_event_bus_result()
     }
 }
@@ -691,9 +658,7 @@ impl LocalEventBus {
                 return Err(error);
             }
         };
-        if let Err(error) =
-            self.dispatch_envelope(envelope.clone(), options.retry_options(), allow_stopping)
-        {
+        if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options(), allow_stopping) {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
@@ -701,12 +666,8 @@ impl LocalEventBus {
     }
 
     /// Publishes a dead-letter envelope while graceful shutdown is draining.
-    fn publish_dead_letter_envelope(
-        &self,
-        envelope: EventEnvelope<DeadLetterPayload>,
-    ) -> EventBusResult<()> {
-        let options = PublishOptions::empty()
-            .merge_defaults(self.default_publish_options::<DeadLetterPayload>());
+    fn publish_dead_letter_envelope(&self, envelope: EventEnvelope<DeadLetterPayload>) -> EventBusResult<()> {
+        let options = PublishOptions::empty().merge_defaults(self.default_publish_options::<DeadLetterPayload>());
         self.publish_envelope_with_options_internal(envelope, options, true, false)
             .map(|_outcome| ())
     }
@@ -725,10 +686,7 @@ impl LocalEventBus {
     ///
     /// # Errors
     /// Returns lifecycle or option validation errors before the batch starts.
-    pub fn publish_all<T>(
-        &self,
-        envelopes: Vec<EventEnvelope<T>>,
-    ) -> EventBusResult<BatchPublishResult>
+    pub fn publish_all<T>(&self, envelopes: Vec<EventEnvelope<T>>) -> EventBusResult<BatchPublishResult>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -760,12 +718,7 @@ impl LocalEventBus {
         let mut result = BatchPublishResult::new(envelopes.len());
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
-            match self.publish_envelope_with_options_internal(
-                envelope,
-                options.clone(),
-                false,
-                true,
-            ) {
+            match self.publish_envelope_with_options_internal(envelope, options.clone(), false, true) {
                 Ok(PublishOutcome::Accepted) => result.record_accepted(),
                 Ok(PublishOutcome::Dropped) => result.record_dropped(),
                 Err(error) => {
@@ -854,8 +807,7 @@ impl LocalEventBus {
             handler,
             options: options.clone(),
         };
-        self.inner
-            .add_subscription(topic_key.clone(), Arc::new(entry))?;
+        self.inner.add_subscription(topic_key.clone(), Arc::new(entry))?;
 
         Ok(Subscription {
             id,
@@ -932,11 +884,7 @@ impl LocalEventBus {
     ///
     /// # Errors
     /// Returns a lock-poisoning error if tracker state is unavailable.
-    pub fn wait_for_idle_timeout<T>(
-        &self,
-        topic: &Topic<T>,
-        timeout: Duration,
-    ) -> EventBusResult<bool>
+    pub fn wait_for_idle_timeout<T>(&self, topic: &Topic<T>, timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -1014,33 +962,26 @@ impl LocalEventBus {
     ///
     /// # Errors
     /// Returns lock or type-erasure errors.
-    fn apply_publisher_interceptors<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-    ) -> EventBusResult<Option<EventEnvelope<T>>>
+    fn apply_publisher_interceptors<T>(&self, envelope: EventEnvelope<T>) -> EventBusResult<Option<EventEnvelope<T>>>
     where
         T: Clone + Send + Sync + 'static,
     {
         let mut envelope = envelope;
         for interceptor in self.inner.global_publisher_interceptors()? {
             let metadata = envelope.metadata();
-            let metadata =
-                match panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_publish(metadata))) {
-                    Ok(Ok(Some(metadata))) => metadata,
-                    Ok(Ok(None)) => return Ok(None),
-                    Ok(Err(error)) => {
-                        return Err(EventBusError::interceptor_failed(
-                            "publish",
-                            error.to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(EventBusError::interceptor_failed(
-                            "publish",
-                            "global publisher interceptor panicked",
-                        ));
-                    }
-                };
+            let metadata = match panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_publish(metadata))) {
+                Ok(Ok(Some(metadata))) => metadata,
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(error)) => {
+                    return Err(EventBusError::interceptor_failed("publish", error.to_string()));
+                }
+                Err(_) => {
+                    return Err(EventBusError::interceptor_failed(
+                        "publish",
+                        "global publisher interceptor panicked",
+                    ));
+                }
+            };
             envelope.apply_metadata(metadata);
         }
         let interceptors = self.inner.publisher_interceptors()?;
@@ -1057,9 +998,7 @@ impl LocalEventBus {
                 boxed
                     .downcast::<EventEnvelope<T>>()
                     .map(|envelope| *envelope)
-                    .map_err(|_| {
-                        EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
-                    })
+                    .map_err(|_| EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown"))
             })
             .transpose()
     }
@@ -1095,11 +1034,7 @@ impl LocalEventBus {
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
             if let Err(error) = run_with_retry(retry_options, || {
-                subscription.dispatch(
-                    Box::new(envelope.clone()),
-                    Arc::clone(&self.inner),
-                    allow_stopping,
-                )
+                subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner), allow_stopping)
             }) && first_error.is_none()
             {
                 first_error = Some(error);
@@ -1118,10 +1053,7 @@ impl LocalEventBus {
     ///
     /// # Errors
     /// Returns lock or type-erasure errors.
-    fn apply_subscriber_interceptors<T>(
-        &self,
-        handler: Arc<HandlerFn<T>>,
-    ) -> EventBusResult<Arc<HandlerFn<T>>>
+    fn apply_subscriber_interceptors<T>(&self, handler: Arc<HandlerFn<T>>) -> EventBusResult<Arc<HandlerFn<T>>>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -1135,9 +1067,7 @@ impl LocalEventBus {
         let handler = chain
             .downcast::<Arc<HandlerFn<T>>>()
             .map(|handler| *handler)
-            .map_err(|_| {
-                EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown")
-            })?;
+            .map_err(|_| EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown"))?;
         self.apply_global_subscriber_interceptors(handler)
     }
 
@@ -1148,20 +1078,12 @@ impl LocalEventBus {
     ///
     /// # Returns
     /// Handler wrapped by global subscriber interceptors.
-    fn apply_global_subscriber_interceptors<T>(
-        &self,
-        handler: Arc<HandlerFn<T>>,
-    ) -> EventBusResult<Arc<HandlerFn<T>>>
+    fn apply_global_subscriber_interceptors<T>(&self, handler: Arc<HandlerFn<T>>) -> EventBusResult<Arc<HandlerFn<T>>>
     where
         T: Clone + Send + Sync + 'static,
     {
         let mut chain = handler;
-        for interceptor in self
-            .inner
-            .global_subscriber_interceptors()?
-            .into_iter()
-            .rev()
-        {
+        for interceptor in self.inner.global_subscriber_interceptors()?.into_iter().rev() {
             let next = Arc::clone(&chain);
             chain = Arc::new(move |event: EventEnvelope<T>| {
                 let metadata = event.metadata();
@@ -1172,9 +1094,7 @@ impl LocalEventBus {
                     Arc::new(move || next(event_for_next.clone())),
                     Arc::clone(&downstream_error),
                 );
-                let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    interceptor.on_consume(metadata, chain)
-                }));
+                let result = panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_consume(metadata, chain)));
                 normalize_subscriber_interceptor_result(
                     result,
                     &downstream_error,
@@ -1213,12 +1133,7 @@ impl crate::EventBus for LocalEventBus {
     }
 
     /// Publishes a payload with options using the local backend.
-    fn publish_with_options<T>(
-        &self,
-        topic: &Topic<T>,
-        payload: T,
-        options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    fn publish_with_options<T>(&self, topic: &Topic<T>, payload: T, options: PublishOptions<T>) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -1266,12 +1181,7 @@ impl crate::EventBus for LocalEventBus {
     }
 
     /// Subscribes a handler using local backend defaults.
-    fn subscribe<T, S, F, R>(
-        &self,
-        subscriber_id: S,
-        topic: &Topic<T>,
-        handler: F,
-    ) -> EventBusResult<Subscription<T>>
+    fn subscribe<T, S, F, R>(&self, subscriber_id: S, topic: &Topic<T>, handler: F) -> EventBusResult<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -1327,9 +1237,7 @@ struct TypedPublisherInterceptor<T: Clone + Send + Sync + 'static> {
 ///
 /// # Returns
 /// Type-erased entry suitable for local bus storage.
-pub(super) fn create_publisher_interceptor_entry<T, I>(
-    interceptor: I,
-) -> Arc<dyn PublisherInterceptorEntry>
+pub(super) fn create_publisher_interceptor_entry<T, I>(interceptor: I) -> Arc<dyn PublisherInterceptorEntry>
 where
     T: Clone + Send + Sync + 'static,
     I: PublisherInterceptor<T>,
@@ -1349,21 +1257,13 @@ where
     }
 
     /// Downcasts and applies the typed interceptor.
-    fn intercept(
-        &self,
-        envelope: Box<dyn Any + Send>,
-    ) -> EventBusResult<Option<Box<dyn Any + Send>>> {
-        let envelope = envelope.downcast::<EventEnvelope<T>>().map_err(|_| {
-            EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
-        })?;
+    fn intercept(&self, envelope: Box<dyn Any + Send>) -> EventBusResult<Option<Box<dyn Any + Send>>> {
+        let envelope = envelope
+            .downcast::<EventEnvelope<T>>()
+            .map_err(|_| EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown"))?;
         match panic::catch_unwind(AssertUnwindSafe(|| self.interceptor.on_publish(*envelope))) {
-            Ok(Ok(envelope)) => {
-                Ok(envelope.map(|envelope| Box::new(envelope) as Box<dyn Any + Send>))
-            }
-            Ok(Err(error)) => Err(EventBusError::interceptor_failed(
-                "publish",
-                error.to_string(),
-            )),
+            Ok(Ok(envelope)) => Ok(envelope.map(|envelope| Box::new(envelope) as Box<dyn Any + Send>)),
+            Ok(Err(error)) => Err(EventBusError::interceptor_failed("publish", error.to_string())),
             Err(_) => Err(EventBusError::interceptor_failed(
                 "publish",
                 "publisher interceptor panicked",
@@ -1384,9 +1284,7 @@ struct TypedSubscriberInterceptor<T: Clone + Send + Sync + 'static> {
 ///
 /// # Returns
 /// Type-erased entry suitable for local bus storage.
-pub(super) fn create_subscriber_interceptor_entry<T, I>(
-    interceptor: I,
-) -> Arc<dyn SubscriberInterceptorEntry>
+pub(super) fn create_subscriber_interceptor_entry<T, I>(interceptor: I) -> Arc<dyn SubscriberInterceptorEntry>
 where
     T: Clone + Send + Sync + 'static,
     I: SubscriberInterceptor<T>,
@@ -1406,29 +1304,18 @@ where
     }
 
     /// Downcasts and wraps the typed handler.
-    fn wrap_handler(
-        &self,
-        handler: Box<dyn Any + Send + Sync>,
-    ) -> EventBusResult<Box<dyn Any + Send + Sync>> {
-        let next = handler.downcast::<Arc<HandlerFn<T>>>().map_err(|_| {
-            EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown")
-        })?;
+    fn wrap_handler(&self, handler: Box<dyn Any + Send + Sync>) -> EventBusResult<Box<dyn Any + Send + Sync>> {
+        let next = handler
+            .downcast::<Arc<HandlerFn<T>>>()
+            .map_err(|_| EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown"))?;
         let next = *next;
         let interceptor = Arc::clone(&self.interceptor);
         let wrapped: Arc<HandlerFn<T>> = Arc::new(move |event| {
             let downstream_error = create_downstream_error_slot();
-            let next_chain = SubscriberInterceptorChain::with_downstream_error(
-                Arc::clone(&next),
-                Arc::clone(&downstream_error),
-            );
-            let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                interceptor.on_consume(event, next_chain)
-            }));
-            normalize_subscriber_interceptor_result(
-                result,
-                &downstream_error,
-                "subscriber interceptor panicked",
-            )
+            let next_chain =
+                SubscriberInterceptorChain::with_downstream_error(Arc::clone(&next), Arc::clone(&downstream_error));
+            let result = panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_consume(event, next_chain)));
+            normalize_subscriber_interceptor_result(result, &downstream_error, "subscriber interceptor panicked")
         });
         Ok(Box::new(wrapped))
     }
@@ -1473,9 +1360,9 @@ where
         if !self.active.is_active() {
             return Ok(());
         }
-        let envelope = envelope.downcast::<EventEnvelope<T>>().map_err(|_| {
-            EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
-        })?;
+        let envelope = envelope
+            .downcast::<EventEnvelope<T>>()
+            .map_err(|_| EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown"))?;
         if !self.options.try_should_handle(&envelope)? {
             return Ok(());
         }
@@ -1500,14 +1387,7 @@ where
             if !active.is_active() {
                 return;
             }
-            process_subscription_event(
-                active,
-                handler,
-                options,
-                subscriber_id,
-                *envelope,
-                event_bus,
-            );
+            process_subscription_event(active, handler, options, subscriber_id, *envelope, event_bus);
         });
         if let Some(ordering_lane_key) = ordering_lane_key {
             if let Some(delay) = delay
@@ -1521,21 +1401,12 @@ where
                     allow_stopping,
                 )
             } else {
-                bus.submit_ordered_processing_task(
-                    ordering_lane_key,
-                    processing_task,
-                    allow_stopping,
-                )
+                bus.submit_ordered_processing_task(ordering_lane_key, processing_task, allow_stopping)
             }
         } else if let Some(delay) = delay
             && !delay.is_zero()
         {
-            bus.submit_delayed_processing_task(
-                processing_task,
-                delay,
-                delayed_active,
-                allow_stopping,
-            )
+            bus.submit_delayed_processing_task(processing_task, delay, delayed_active, allow_stopping)
         } else {
             bus.submit_processing_task(move || processing_task.run(), allow_stopping)
         }
@@ -1664,8 +1535,7 @@ fn handle_subscription_failure<T>(
         acknowledgement.nack();
     }
     if acknowledgement.is_nacked() && !delivered.is_dead_letter() {
-        let dead_letter =
-            create_dead_letter_for_failure(options, subscriber_id, delivered, error, event_bus);
+        let dead_letter = create_dead_letter_for_failure(options, subscriber_id, delivered, error, event_bus);
         if let Some(dead_letter) = dead_letter
             && let Err(error) = event_bus.publish_dead_letter_envelope(dead_letter.as_dead_letter())
         {
@@ -1892,10 +1762,7 @@ fn normalize_subscriber_interceptor_result(
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) if is_recorded_downstream_error(downstream_error, &error) => Err(error),
         Ok(Err(error)) => Err(normalize_subscriber_interceptor_error(error)),
-        Err(_) => Err(EventBusError::interceptor_failed(
-            "subscribe",
-            panic_message,
-        )),
+        Err(_) => Err(EventBusError::interceptor_failed("subscribe", panic_message)),
     }
 }
 
@@ -1926,10 +1793,7 @@ fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError
 ///
 /// # Returns
 /// Successful operation value or the final event-bus error.
-fn run_with_retry<T, F>(
-    retry_options: Option<&crate::RetryOptions>,
-    operation: F,
-) -> EventBusResult<T>
+fn run_with_retry<T, F>(retry_options: Option<&crate::RetryOptions>, operation: F) -> EventBusResult<T>
 where
     F: FnMut() -> EventBusResult<T>,
 {
@@ -1940,10 +1804,7 @@ where
     let retry = match qubit_retry::Retry::<EventBusError>::from_options(retry_options.clone()) {
         Ok(retry) => retry,
         Err(error) => {
-            return Err(EventBusError::invalid_argument(
-                "retry_options",
-                error.to_string(),
-            ));
+            return Err(EventBusError::invalid_argument("retry_options", error.to_string()));
         }
     };
     match retry.run(operation) {
@@ -1967,10 +1828,7 @@ where
 /// Returns [`EventBusError::InvalidArgument`] when unsupported attempt timeout
 /// options are configured.
 fn validate_retry_options(retry_options: Option<&crate::RetryOptions>) -> EventBusResult<()> {
-    if retry_options
-        .and_then(crate::RetryOptions::attempt_timeout)
-        .is_some()
-    {
+    if retry_options.and_then(crate::RetryOptions::attempt_timeout).is_some() {
         return Err(EventBusError::invalid_argument(
             "retry_options",
             "attempt_timeout is not supported by LocalEventBus retry handling",
@@ -2057,7 +1915,5 @@ fn remaining_shutdown_timeout(started_at: Instant, timeout: Duration) -> Option<
 /// # Returns
 /// Available CPU parallelism, or `1` if it cannot be detected.
 fn default_subscription_handler_pool_size() -> usize {
-    thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
+    thread::available_parallelism().map(usize::from).unwrap_or(1)
 }

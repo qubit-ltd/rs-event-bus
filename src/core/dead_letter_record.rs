@@ -65,11 +65,7 @@ impl DeadLetterRecord {
     ///
     /// # Returns
     /// Dead-letter record containing standard metadata and the cloned payload.
-    pub fn from_failure<T>(
-        subscriber_id: &str,
-        envelope: &EventEnvelope<T>,
-        error: &EventBusError,
-    ) -> Self
+    pub fn from_failure<T>(subscriber_id: &str, envelope: &EventEnvelope<T>, error: &EventBusError) -> Self
     where
         T: Clone + Send + Sync + 'static,
     {

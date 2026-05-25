@@ -111,17 +111,13 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn error_handler<F, R>(mut self, handler: F) -> Self
     where
-        F: Fn(&str, &EventEnvelope<T>, &EventBusError, &Acknowledgement) -> R
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&str, &EventEnvelope<T>, &EventBusError, &Acknowledgement) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static,
     {
-        self.error_handlers.push(Arc::new(
-            move |subscriber_id, envelope, error, acknowledgement| {
+        self.error_handlers
+            .push(Arc::new(move |subscriber_id, envelope, error, acknowledgement| {
                 handler(subscriber_id, envelope, error, acknowledgement).into_event_bus_result()
-            },
-        ));
+            }));
         self
     }
 

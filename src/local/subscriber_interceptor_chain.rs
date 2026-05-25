@@ -151,10 +151,7 @@ impl SubscriberInterceptorAnyChain {
         next: Arc<dyn Fn() -> EventBusResult<()> + Send + Sync + 'static>,
         downstream_error: DownstreamErrorSlot,
     ) -> Self {
-        Self {
-            next,
-            downstream_error,
-        }
+        Self { next, downstream_error }
     }
 
     /// Continues subscriber processing, consuming this one-shot chain handle.
@@ -198,10 +195,7 @@ where
         next: Arc<dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static>,
         downstream_error: DownstreamErrorSlot,
     ) -> Self {
-        Self {
-            next,
-            downstream_error,
-        }
+        Self { next, downstream_error }
     }
 
     /// Continues subscriber processing, consuming this one-shot chain handle.
@@ -249,18 +243,11 @@ pub(crate) fn create_downstream_error_slot() -> DownstreamErrorSlot {
 ///
 /// # Returns
 /// `true` when `error` has the same provenance as a recorded downstream failure.
-pub(crate) fn is_recorded_downstream_error(
-    downstream_error: &DownstreamErrorSlot,
-    error: &EventBusError,
-) -> bool {
+pub(crate) fn is_recorded_downstream_error(downstream_error: &DownstreamErrorSlot, error: &EventBusError) -> bool {
     let fingerprint = ErrorFingerprint::from_error(error);
     downstream_error
         .lock()
-        .map(|recorded| {
-            recorded
-                .iter()
-                .any(|record| record.fingerprint == fingerprint)
-        })
+        .map(|recorded| recorded.iter().any(|record| record.fingerprint == fingerprint))
         .unwrap_or(false)
 }
 
@@ -306,17 +293,13 @@ impl ErrorFingerprint {
     fn from_error(error: &EventBusError) -> Self {
         match error {
             EventBusError::NotStarted => Self::NotStarted,
-            EventBusError::StartFailed { message } => {
-                Self::StartFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::StartFailed { message } => Self::StartFailed(OwnedStringFingerprint::new(message)),
             EventBusError::InvalidArgument { field, message } => Self::InvalidArgument {
                 field,
                 message: OwnedStringFingerprint::new(message),
             },
             EventBusError::MissingField { field } => Self::MissingField { field },
-            EventBusError::HandlerFailed { message } => {
-                Self::HandlerFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::HandlerFailed { message } => Self::HandlerFailed(OwnedStringFingerprint::new(message)),
             EventBusError::HandlerPanicked => Self::HandlerPanicked,
             EventBusError::InterceptorFailed { phase, message } => Self::InterceptorFailed {
                 phase,
@@ -326,22 +309,14 @@ impl ErrorFingerprint {
                 phase,
                 message: OwnedStringFingerprint::new(message),
             },
-            EventBusError::DeadLetterFailed { message } => {
-                Self::DeadLetterFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::DeadLetterFailed { message } => Self::DeadLetterFailed(OwnedStringFingerprint::new(message)),
             EventBusError::ExecutionRejected { message } => {
                 Self::ExecutionRejected(OwnedStringFingerprint::new(message))
             }
-            EventBusError::ShutdownTimedOut { timeout } => {
-                Self::ShutdownTimedOut { timeout: *timeout }
-            }
+            EventBusError::ShutdownTimedOut { timeout } => Self::ShutdownTimedOut { timeout: *timeout },
             EventBusError::LockPoisoned { resource } => Self::LockPoisoned { resource },
-            EventBusError::TypeMismatch { expected, actual } => {
-                Self::TypeMismatch { expected, actual }
-            }
-            EventBusError::UnsupportedOperation { operation } => {
-                Self::UnsupportedOperation { operation }
-            }
+            EventBusError::TypeMismatch { expected, actual } => Self::TypeMismatch { expected, actual },
+            EventBusError::UnsupportedOperation { operation } => Self::UnsupportedOperation { operation },
         }
     }
 }
@@ -375,10 +350,8 @@ pub fn coverage_exercise_subscriber_interceptor_chain_defensive_paths() -> Vec<E
         &EventBusError::not_started()
     ));
 
-    let any_ok = SubscriberInterceptorAnyChain::with_downstream_error(
-        Arc::new(|| Ok(())),
-        create_downstream_error_slot(),
-    );
+    let any_ok =
+        SubscriberInterceptorAnyChain::with_downstream_error(Arc::new(|| Ok(())), create_downstream_error_slot());
     assert!(any_ok.proceed().is_ok());
 
     let any_error_slot = create_downstream_error_slot();
@@ -401,8 +374,7 @@ pub fn coverage_exercise_subscriber_interceptor_chain_defensive_paths() -> Vec<E
     assert!(is_recorded_downstream_error(&any_panic_slot, &any_panic));
     errors.push(any_panic);
 
-    let topic =
-        Topic::<String>::try_new("coverage-subscriber-chain").expect("coverage topic should build");
+    let topic = Topic::<String>::try_new("coverage-subscriber-chain").expect("coverage topic should build");
     let typed_ok = SubscriberInterceptorChain::with_downstream_error(
         Arc::new(|_event: EventEnvelope<String>| Ok(())),
         create_downstream_error_slot(),
@@ -415,20 +387,12 @@ pub fn coverage_exercise_subscriber_interceptor_chain_defensive_paths() -> Vec<E
 
     let typed_error_slot = create_downstream_error_slot();
     let typed_error = SubscriberInterceptorChain::with_downstream_error(
-        Arc::new(|_event: EventEnvelope<String>| {
-            Err(EventBusError::handler_failed("coverage typed failed"))
-        }),
+        Arc::new(|_event: EventEnvelope<String>| Err(EventBusError::handler_failed("coverage typed failed"))),
         Arc::clone(&typed_error_slot),
     )
-    .proceed(EventEnvelope::create(
-        topic.clone(),
-        "typed-error".to_string(),
-    ))
+    .proceed(EventEnvelope::create(topic.clone(), "typed-error".to_string()))
     .expect_err("coverage typed chain should fail");
-    assert!(is_recorded_downstream_error(
-        &typed_error_slot,
-        &typed_error
-    ));
+    assert!(is_recorded_downstream_error(&typed_error_slot, &typed_error));
     errors.push(typed_error);
 
     let typed_panic_slot = create_downstream_error_slot();
@@ -438,10 +402,7 @@ pub fn coverage_exercise_subscriber_interceptor_chain_defensive_paths() -> Vec<E
     )
     .proceed(EventEnvelope::create(topic, "typed-panic".to_string()))
     .expect_err("coverage typed chain should report panic");
-    assert!(is_recorded_downstream_error(
-        &typed_panic_slot,
-        &typed_panic
-    ));
+    assert!(is_recorded_downstream_error(&typed_panic_slot, &typed_panic));
     errors.push(typed_panic);
 
     let direct_slot = create_downstream_error_slot();
