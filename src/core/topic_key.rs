@@ -28,9 +28,6 @@ impl TopicKey {
     /// # Returns
     /// A new key suitable for hash maps.
     pub(crate) fn new(name: String, payload_type_id: TypeId) -> Self {
-        Self {
-            name,
-            payload_type_id,
-        }
+        Self { name, payload_type_id }
     }
 }

@@ -22,8 +22,5 @@ pub(crate) trait PublisherInterceptorEntry: Send + Sync {
     fn payload_type_id(&self) -> TypeId;
 
     /// Applies the interceptor to a boxed envelope.
-    fn intercept(
-        &self,
-        envelope: Box<dyn Any + Send>,
-    ) -> EventBusResult<Option<Box<dyn Any + Send>>>;
+    fn intercept(&self, envelope: Box<dyn Any + Send>) -> EventBusResult<Option<Box<dyn Any + Send>>>;
 }

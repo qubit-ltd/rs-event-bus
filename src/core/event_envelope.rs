@@ -229,12 +229,8 @@ impl<T: 'static> EventEnvelope<T> {
     pub(crate) fn from_builder(builder: EventEnvelopeBuilder<T>) -> Self {
         Self {
             id: builder.id,
-            topic: builder
-                .topic
-                .expect("validated builder should contain a topic"),
-            payload: builder
-                .payload
-                .expect("validated builder should contain a payload"),
+            topic: builder.topic.expect("validated builder should contain a topic"),
+            payload: builder.payload.expect("validated builder should contain a payload"),
             headers: builder.headers,
             ordering_key: builder.ordering_key,
             timestamp: builder.timestamp,

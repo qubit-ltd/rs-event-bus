@@ -33,9 +33,7 @@ impl UnsupportedTransactionalPublisher {
 impl TransactionalPublisher for UnsupportedTransactionalPublisher {
     /// Returns an unsupported-operation error.
     fn publish_staged(&mut self, _event: Box<dyn StagedEvent>) -> EventBusResult<()> {
-        Err(EventBusError::unsupported_operation(
-            "transactional_publish",
-        ))
+        Err(EventBusError::unsupported_operation("transactional_publish"))
     }
 
     /// Returns an unsupported-operation error.

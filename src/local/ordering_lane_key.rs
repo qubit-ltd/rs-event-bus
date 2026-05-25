@@ -29,11 +29,7 @@ impl OrderingLaneKey {
     ///
     /// # Returns
     /// Lane key that serializes work for this subscriber.
-    pub(crate) fn new(
-        topic_key: TopicKey,
-        ordering_key: impl Into<String>,
-        subscription_id: usize,
-    ) -> Self {
+    pub(crate) fn new(topic_key: TopicKey, ordering_key: impl Into<String>, subscription_id: usize) -> Self {
         Self {
             topic_key,
             ordering_key: ordering_key.into(),

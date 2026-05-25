@@ -97,10 +97,7 @@ impl<T: 'static> PublishOptions<T> {
         for handler in &self.error_handlers {
             match panic::catch_unwind(AssertUnwindSafe(|| handler(envelope, error))) {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed(
-                    "publish",
-                    error.to_string(),
-                )),
+                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed("publish", error.to_string())),
                 Err(_) => failures.push(EventBusError::error_handler_failed(
                     "publish",
                     "publish error handler panicked",

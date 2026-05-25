@@ -50,9 +50,7 @@ use crate::core::subscribe_options::{
 /// # Returns
 /// Available CPU parallelism, or `1` if it cannot be detected.
 fn default_subscription_handler_pool_size() -> usize {
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(usize::from).unwrap_or(1)
 }
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
@@ -174,8 +172,7 @@ impl LocalEventBusFactory {
     where
         I: PublisherInterceptorAny,
     {
-        self.global_publisher_interceptors
-            .push(Arc::new(interceptor));
+        self.global_publisher_interceptors.push(Arc::new(interceptor));
         Ok(())
     }
 
@@ -207,8 +204,7 @@ impl LocalEventBusFactory {
     where
         I: SubscriberInterceptorAny,
     {
-        self.global_subscriber_interceptors
-            .push(Arc::new(interceptor));
+        self.global_subscriber_interceptors.push(Arc::new(interceptor));
         Ok(())
     }
 
@@ -243,10 +239,7 @@ impl LocalEventBusFactory {
     ///
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when a configured capacity is zero.
-    pub fn set_subscription_handler_queue_capacity(
-        &mut self,
-        capacity: Option<usize>,
-    ) -> EventBusResult<()> {
+    pub fn set_subscription_handler_queue_capacity(&mut self, capacity: Option<usize>) -> EventBusResult<()> {
         if capacity == Some(0) {
             return Err(EventBusError::invalid_argument(
                 "capacity",
@@ -319,10 +312,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Sets typed default subscribe options for local buses.
-    fn set_default_subscribe_options<T>(
-        &mut self,
-        options: SubscribeOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_subscribe_options<T>(&mut self, options: SubscribeOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
