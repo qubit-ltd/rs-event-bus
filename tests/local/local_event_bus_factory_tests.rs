@@ -28,10 +28,7 @@ use crate::support::PanicHookGuard;
 struct PublicPublisherInterceptor;
 
 impl PublisherInterceptor<String> for PublicPublisherInterceptor {
-    fn on_publish(
-        &self,
-        envelope: EventEnvelope<String>,
-    ) -> EventBusResult<Option<EventEnvelope<String>>> {
+    fn on_publish(&self, envelope: EventEnvelope<String>) -> EventBusResult<Option<EventEnvelope<String>>> {
         Ok(Some(envelope.with_header("factory-publisher", "seen")))
     }
 }
@@ -83,11 +80,8 @@ fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
          _error: &EventBusError| { Ok(None) },
     )
     .expect("factory trait should accept global default dead-letter strategies");
-    EventBusFactory::add_publisher_interceptor::<String, _>(
-        &mut factory,
-        PublicPublisherInterceptor,
-    )
-    .expect("factory trait should accept public publisher interceptors");
+    EventBusFactory::add_publisher_interceptor::<String, _>(&mut factory, PublicPublisherInterceptor)
+        .expect("factory trait should accept public publisher interceptors");
     EventBusFactory::add_subscriber_interceptor::<String, _>(
         &mut factory,
         PublicSubscriberInterceptor {
@@ -101,21 +95,18 @@ fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
     let subscription = EventBus::subscribe(&bus, "sub", &topic, move |event| {
-        captured
-            .lock()
-            .expect("received payloads should lock")
-            .push(format!(
-                "{}:{}:{}",
-                event.payload(),
-                event
-                    .headers()
-                    .get("factory-publisher")
-                    .expect("publisher header should exist"),
-                event
-                    .headers()
-                    .get("factory-subscriber")
-                    .expect("subscriber header should exist"),
-            ));
+        captured.lock().expect("received payloads should lock").push(format!(
+            "{}:{}:{}",
+            event.payload(),
+            event
+                .headers()
+                .get("factory-publisher")
+                .expect("publisher header should exist"),
+            event
+                .headers()
+                .get("factory-subscriber")
+                .expect("subscriber header should exist"),
+        ));
     })
     .expect("subscription should use factory trait defaults");
 
@@ -124,10 +115,7 @@ fn test_event_bus_factory_trait_configures_defaults_and_public_interceptors() {
 
     assert_eq!(subscription.options().priority(), 7);
     assert_eq!(
-        received
-            .lock()
-            .expect("received payloads should lock")
-            .as_slice(),
+        received.lock().expect("received payloads should lock").as_slice(),
         ["payload:seen:seen"]
     );
     assert_eq!(
@@ -144,10 +132,9 @@ fn test_event_bus_factory_trait_configures_global_interceptors() {
     let mut factory = LocalEventBusFactory::new();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let captured_observed = Arc::clone(&observed);
-    EventBusFactory::add_global_publisher_interceptor(
-        &mut factory,
-        |metadata: EventEnvelopeMetadata| Some(metadata.with_header("global-publisher", "seen")),
-    )
+    EventBusFactory::add_global_publisher_interceptor(&mut factory, |metadata: EventEnvelopeMetadata| {
+        Some(metadata.with_header("global-publisher", "seen"))
+    })
     .expect("factory trait should accept global publisher interceptors");
     EventBusFactory::add_global_subscriber_interceptor(
         &mut factory,
@@ -162,8 +149,7 @@ fn test_event_bus_factory_trait_configures_global_interceptors() {
     .expect("factory trait should accept global subscriber interceptors");
 
     let bus = EventBusFactory::create_started(&factory).expect("factory should start bus");
-    let topic =
-        Topic::<String>::try_new("factory-global-interceptors").expect("topic should build");
+    let topic = Topic::<String>::try_new("factory-global-interceptors").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
     EventBus::subscribe(&bus, "sub", &topic, move |event| {
@@ -180,10 +166,7 @@ fn test_event_bus_factory_trait_configures_global_interceptors() {
     EventBus::publish(&bus, &topic, "payload".to_string()).expect("publish should work");
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
 
-    assert_eq!(
-        received.lock().expect("received should lock").as_slice(),
-        ["seen"]
-    );
+    assert_eq!(received.lock().expect("received should lock").as_slice(), ["seen"]);
     assert_eq!(
         observed.lock().expect("observed should lock").as_slice(),
         ["factory-global-interceptors"]
@@ -220,10 +203,7 @@ fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {
 
     assert_eq!(subscription.options().priority(), 9);
     assert_eq!(
-        received
-            .lock()
-            .expect("received payloads should lock")
-            .as_slice(),
+        received.lock().expect("received payloads should lock").as_slice(),
         ["accepted"]
     );
 }
@@ -231,17 +211,14 @@ fn test_local_event_bus_factory_applies_typed_default_subscribe_options() {
 #[test]
 fn test_local_event_bus_factory_applies_default_dead_letter_strategy() {
     let mut factory = LocalEventBusFactory::default();
-    let dead_letter_topic =
-        Topic::<DeadLetterPayload>::try_new("local-factory-dlq").expect("dlq topic should build");
+    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("local-factory-dlq").expect("dlq topic should build");
     let dead_letter_target = dead_letter_topic.clone();
-    factory.set_default_dead_letter_strategy::<String, _>(
-        move |subscriber_id, failed, error, _options| {
-            Ok(Some(EventEnvelope::create(
-                dead_letter_target.clone(),
-                DeadLetterRecord::from_failure(subscriber_id, failed, error),
-            )))
-        },
-    );
+    factory.set_default_dead_letter_strategy::<String, _>(move |subscriber_id, failed, error, _options| {
+        Ok(Some(EventEnvelope::create(
+            dead_letter_target.clone(),
+            DeadLetterRecord::from_failure(subscriber_id, failed, error),
+        )))
+    });
     let bus = factory.create_started().expect("factory should start bus");
     let topic = Topic::<String>::try_new("local-factory-default-dlq").expect("topic should build");
     let dead_letters = Arc::new(Mutex::new(Vec::new()));
@@ -267,10 +244,7 @@ fn test_local_event_bus_factory_applies_default_dead_letter_strategy() {
     let dead_letters = dead_letters.lock().expect("dead letters should lock");
     assert_eq!(dead_letters.len(), 1);
     assert_eq!(
-        dead_letters[0]
-            .payload()
-            .metadata()
-            .get::<String>("subscriber_id"),
+        dead_letters[0].payload().metadata().get::<String>("subscriber_id"),
         Some("sub".to_string())
     );
 }
@@ -278,8 +252,8 @@ fn test_local_event_bus_factory_applies_default_dead_letter_strategy() {
 #[test]
 fn test_local_event_bus_factory_applies_global_default_dead_letter_strategy() {
     let mut factory = LocalEventBusFactory::default();
-    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("local-factory-global-dlq")
-        .expect("dlq topic should build");
+    let dead_letter_topic =
+        Topic::<DeadLetterPayload>::try_new("local-factory-global-dlq").expect("dlq topic should build");
     let dead_letter_target = dead_letter_topic.clone();
     factory.set_global_default_dead_letter_strategy(
         move |subscriber_id: &str,
@@ -288,18 +262,12 @@ fn test_local_event_bus_factory_applies_global_default_dead_letter_strategy() {
               error: &EventBusError| {
             Ok(Some(EventEnvelope::create(
                 dead_letter_target.clone(),
-                DeadLetterRecord::from_metadata_failure(
-                    subscriber_id,
-                    failed,
-                    original_payload,
-                    error,
-                ),
+                DeadLetterRecord::from_metadata_failure(subscriber_id, failed, original_payload, error),
             )))
         },
     );
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<i64>::try_new("local-factory-global-default-dlq").expect("topic should build");
+    let topic = Topic::<i64>::try_new("local-factory-global-default-dlq").expect("topic should build");
     let dead_letters = Arc::new(Mutex::new(Vec::new()));
     let captured_dead_letters = Arc::clone(&dead_letters);
     bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
@@ -347,8 +315,7 @@ fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_err
         },
     );
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<i64>::try_new("local-factory-global-dlq-error").expect("topic should build");
+    let topic = Topic::<i64>::try_new("local-factory-global-dlq-error").expect("topic should build");
     let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_observed = Arc::clone(&observed);
     bus.add_error_observer(move |error| {
@@ -386,8 +353,7 @@ fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_pan
         },
     );
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<i64>::try_new("local-factory-global-dlq-panic").expect("topic should build");
+    let topic = Topic::<i64>::try_new("local-factory-global-dlq-panic").expect("topic should build");
     let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_observed = Arc::clone(&observed);
     bus.add_error_observer(move |error| {
@@ -418,20 +384,17 @@ fn test_local_event_bus_factory_observes_global_default_dead_letter_strategy_pan
 #[test]
 fn test_subscription_dead_letter_none_disables_factory_default_strategy() {
     let mut factory = LocalEventBusFactory::default();
-    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("local-factory-dlq-disabled")
-        .expect("dlq topic should build");
+    let dead_letter_topic =
+        Topic::<DeadLetterPayload>::try_new("local-factory-dlq-disabled").expect("dlq topic should build");
     let dead_letter_target = dead_letter_topic.clone();
-    factory.set_default_dead_letter_strategy::<String, _>(
-        move |subscriber_id, failed, error, _options| {
-            Ok(Some(EventEnvelope::create(
-                dead_letter_target.clone(),
-                DeadLetterRecord::from_failure(subscriber_id, failed, error),
-            )))
-        },
-    );
+    factory.set_default_dead_letter_strategy::<String, _>(move |subscriber_id, failed, error, _options| {
+        Ok(Some(EventEnvelope::create(
+            dead_letter_target.clone(),
+            DeadLetterRecord::from_failure(subscriber_id, failed, error),
+        )))
+    });
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<String>::try_new("local-factory-default-dlq-disabled").expect("topic should build");
+    let topic = Topic::<String>::try_new("local-factory-default-dlq-disabled").expect("topic should build");
     let dead_letters = Arc::new(Mutex::new(Vec::<EventEnvelope<DeadLetterPayload>>::new()));
     let captured_dead_letters = Arc::clone(&dead_letters);
     bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
@@ -458,27 +421,17 @@ fn test_subscription_dead_letter_none_disables_factory_default_strategy() {
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
 
-    assert!(
-        dead_letters
-            .lock()
-            .expect("dead letters should lock")
-            .is_empty()
-    );
+    assert!(dead_letters.lock().expect("dead letters should lock").is_empty());
 }
 
 #[test]
 fn test_local_event_bus_factory_observes_default_dead_letter_strategy_error() {
     let mut factory = LocalEventBusFactory::new();
-    factory.set_default_dead_letter_strategy::<String, _>(
-        |_subscriber_id, _failed, _error, _options| {
-            Err(EventBusError::handler_failed(
-                "default dead-letter strategy failed",
-            ))
-        },
-    );
+    factory.set_default_dead_letter_strategy::<String, _>(|_subscriber_id, _failed, _error, _options| {
+        Err(EventBusError::handler_failed("default dead-letter strategy failed"))
+    });
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<String>::try_new("local-factory-default-dlq-error").expect("topic should build");
+    let topic = Topic::<String>::try_new("local-factory-default-dlq-error").expect("topic should build");
     let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_observed = Arc::clone(&observed);
     bus.add_error_observer(move |error| {
@@ -508,14 +461,11 @@ fn test_local_event_bus_factory_observes_default_dead_letter_strategy_error() {
 #[test]
 fn test_local_event_bus_factory_observes_default_dead_letter_strategy_panic() {
     let mut factory = LocalEventBusFactory::new();
-    factory.set_default_dead_letter_strategy::<String, _>(
-        |_subscriber_id, _failed, _error, _options| {
-            panic!("default dead-letter strategy panic");
-        },
-    );
+    factory.set_default_dead_letter_strategy::<String, _>(|_subscriber_id, _failed, _error, _options| {
+        panic!("default dead-letter strategy panic");
+    });
     let bus = factory.create_started().expect("factory should start bus");
-    let topic =
-        Topic::<String>::try_new("local-factory-default-dlq-panic").expect("topic should build");
+    let topic = Topic::<String>::try_new("local-factory-default-dlq-panic").expect("topic should build");
     let observed = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
     let captured_observed = Arc::clone(&observed);
     bus.add_error_observer(move |error| {
@@ -552,10 +502,7 @@ fn test_local_event_bus_factory_validates_handler_pool_options() {
         factory
             .set_subscription_handler_pool_size(0)
             .expect_err("zero pool size should be rejected"),
-        EventBusError::invalid_argument(
-            "pool_size",
-            "subscription handler pool size must be greater than zero",
-        )
+        EventBusError::invalid_argument("pool_size", "subscription handler pool size must be greater than zero",)
     );
     assert_eq!(
         factory

@@ -110,11 +110,7 @@ impl EventBus for DefaultingEventBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> qubit_event_bus::EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> qubit_event_bus::EventBusResult<bool>
     where
         T: 'static,
     {
@@ -161,23 +157,17 @@ fn test_event_bus_trait_publish_subscribe_lifecycle() {
     let captured = Arc::clone(&received);
 
     assert_eq!(
-        EventBus::publish(&bus, &topic, "before-start".to_string())
-            .expect_err("stopped bus should reject publish"),
+        EventBus::publish(&bus, &topic, "before-start".to_string()).expect_err("stopped bus should reject publish"),
         EventBusError::not_started()
     );
 
     assert!(EventBus::start(&bus).expect("trait start should work"));
-    let subscription = EventBus::subscribe(
-        &bus,
-        "trait-sub",
-        &topic,
-        move |event: EventEnvelope<String>| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event.payload().clone());
-        },
-    )
+    let subscription = EventBus::subscribe(&bus, "trait-sub", &topic, move |event: EventEnvelope<String>| {
+        captured
+            .lock()
+            .expect("received events should lock")
+            .push(event.payload().clone());
+    })
     .expect("trait subscribe should work");
     EventBus::publish(&bus, &topic, "payload".to_string()).expect("trait publish should work");
     EventBus::wait_for_idle(&bus, &topic).expect("topic should become idle");
@@ -198,17 +188,12 @@ fn test_event_bus_trait_batch_methods() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    let subscription = EventBus::subscribe(
-        &bus,
-        "batch-sub",
-        &topic,
-        move |event: EventEnvelope<String>| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event.payload().clone());
-        },
-    )
+    let subscription = EventBus::subscribe(&bus, "batch-sub", &topic, move |event: EventEnvelope<String>| {
+        captured
+            .lock()
+            .expect("received events should lock")
+            .push(event.payload().clone());
+    })
     .expect("trait subscribe should work");
     assert!(subscription.is_active());
 
@@ -218,13 +203,8 @@ fn test_event_bus_trait_batch_methods() {
         PublishOptions::empty(),
     )
     .expect("publish with options should work");
-    EventBus::publish_with_options(
-        &bus,
-        &topic,
-        "with-options".to_string(),
-        PublishOptions::empty(),
-    )
-    .expect("publish payload with options should work");
+    EventBus::publish_with_options(&bus, &topic, "with-options".to_string(), PublishOptions::empty())
+        .expect("publish payload with options should work");
 
     EventBus::publish_all(
         &bus,
@@ -236,10 +216,7 @@ fn test_event_bus_trait_batch_methods() {
     .expect("batch publish should work");
     EventBus::publish_all_with_options(
         &bus,
-        vec![EventEnvelope::create(
-            topic.clone(),
-            "batch-with-options".to_string(),
-        )],
+        vec![EventEnvelope::create(topic.clone(), "batch-with-options".to_string())],
         PublishOptions::empty(),
     )
     .expect("batch publish with options should work");
@@ -262,8 +239,8 @@ fn test_event_bus_trait_batch_methods() {
 fn test_event_bus_trait_add_dead_letter_handler_delegates_to_subscription() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("trait-dead-letter-handler");
-    let dead_letter_topic = Topic::<DeadLetterPayload>::try_new("trait-dead-letter-handler-dlq")
-        .expect("dead letter topic should build");
+    let dead_letter_topic =
+        Topic::<DeadLetterPayload>::try_new("trait-dead-letter-handler-dlq").expect("dead letter topic should build");
     let dead_letter_target = dead_letter_topic.clone();
     let dead_letters = Arc::new(Mutex::new(Vec::new()));
     let captured_dead_letters = Arc::clone(&dead_letters);
@@ -303,9 +280,7 @@ fn test_event_bus_trait_add_dead_letter_handler_delegates_to_subscription() {
     let dead_letters = dead_letters.lock().expect("dead letters should lock");
     assert_eq!(dead_letters.len(), 1);
     assert_eq!(
-        dead_letters[0]
-            .payload()
-            .downcast_original_payload_ref::<String>(),
+        dead_letters[0].payload().downcast_original_payload_ref::<String>(),
         Some(&"payload".to_string())
     );
 }
@@ -314,9 +289,7 @@ fn test_event_bus_trait_add_dead_letter_handler_delegates_to_subscription() {
 fn test_local_event_bus_trait_overrides_delegate_to_inherent_methods() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-            Some(event.with_header("trait", "true"))
-        })
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| Some(event.with_header("trait", "true")))
         .expect("publisher interceptor should register");
     let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("trait-local-overrides");
@@ -328,24 +301,18 @@ fn test_local_event_bus_trait_overrides_delegate_to_inherent_methods() {
         "local-trait-sub",
         &topic,
         move |event: EventEnvelope<String>| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(format!(
-                    "{}:{}",
-                    event.payload(),
-                    event.headers().get("trait").expect("header should exist")
-                ));
+            captured.lock().expect("received events should lock").push(format!(
+                "{}:{}",
+                event.payload(),
+                event.headers().get("trait").expect("header should exist")
+            ));
         },
         SubscribeOptions::empty(),
     )
     .expect("trait subscribe with options should work");
 
-    EventBus::publish_envelope(
-        &bus,
-        EventEnvelope::create(topic.clone(), "envelope".to_string()),
-    )
-    .expect("trait envelope publish should work");
+    EventBus::publish_envelope(&bus, EventEnvelope::create(topic.clone(), "envelope".to_string()))
+        .expect("trait envelope publish should work");
     EventBus::publish_envelope_with_options(
         &bus,
         EventEnvelope::create(topic.clone(), "options".to_string()),
@@ -375,17 +342,11 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
         PublishOptions::empty(),
     )
     .expect("default publish with options should work");
-    EventBus::publish_envelope(
-        &bus,
-        EventEnvelope::create(topic.clone(), "envelope".to_string()),
-    )
-    .expect("default envelope publish should work");
+    EventBus::publish_envelope(&bus, EventEnvelope::create(topic.clone(), "envelope".to_string()))
+        .expect("default envelope publish should work");
     EventBus::publish_all(
         &bus,
-        vec![EventEnvelope::create(
-            topic.clone(),
-            "batch-default".to_string(),
-        )],
+        vec![EventEnvelope::create(topic.clone(), "batch-default".to_string())],
     )
     .expect("default batch publish should work");
     EventBus::publish_all_with_options(
@@ -458,23 +419,17 @@ fn test_event_bus_factory_trait_creates_local_event_buses() {
 
     assert!(!EventBusFactory::is_transactional_supported(&factory));
     assert_eq!(
-        EventBus::publish(&bus, &topic, "accepted".to_string())
-            .expect_err("factory-created bus should start stopped"),
+        EventBus::publish(&bus, &topic, "accepted".to_string()).expect_err("factory-created bus should start stopped"),
         EventBusError::not_started()
     );
 
     EventBus::start(&bus).expect("factory-created bus should start");
-    EventBus::subscribe(
-        &bus,
-        "factory-sub",
-        &topic,
-        move |event: EventEnvelope<String>| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event.payload().clone());
-        },
-    )
+    EventBus::subscribe(&bus, "factory-sub", &topic, move |event: EventEnvelope<String>| {
+        captured
+            .lock()
+            .expect("received events should lock")
+            .push(event.payload().clone());
+    })
     .expect("factory-created bus should subscribe with defaults");
     EventBus::publish(&bus, &topic, "rejected".to_string()).expect("publish should work");
     EventBus::publish(&bus, &topic, "accepted".to_string()).expect("publish should work");
@@ -482,8 +437,7 @@ fn test_event_bus_factory_trait_creates_local_event_buses() {
 
     assert_eq!(captured_payloads(&received), vec!["accepted".to_string()]);
 
-    let started_bus =
-        EventBusFactory::create_started(&factory).expect("factory should create started bus");
+    let started_bus = EventBusFactory::create_started(&factory).expect("factory should create started bus");
     EventBus::publish(&started_bus, &topic, "no-subscribers".to_string())
         .expect("created started bus should accept publish");
 }
@@ -513,8 +467,7 @@ fn test_event_bus_factory_trait_rejects_transactional_create_when_unsupported() 
         EventBusError::unsupported_operation("transactional_publish")
     );
     assert_eq!(
-        TransactionalPublisher::commit(&mut publisher)
-            .expect_err("placeholder publisher should reject commit"),
+        TransactionalPublisher::commit(&mut publisher).expect_err("placeholder publisher should reject commit"),
         EventBusError::unsupported_operation("transactional_commit")
     );
     assert!(TransactionalPublisher::rollback(&mut publisher).is_ok());
@@ -533,19 +486,13 @@ fn test_event_bus_factory_trait_default_methods() {
         EventBusError::unsupported_operation("create_transactional")
     );
     assert_eq!(
-        EventBusFactory::set_default_publish_options::<String>(
-            &mut factory,
-            PublishOptions::empty(),
-        )
-        .expect_err("default factory should reject publish defaults"),
+        EventBusFactory::set_default_publish_options::<String>(&mut factory, PublishOptions::empty(),)
+            .expect_err("default factory should reject publish defaults"),
         EventBusError::unsupported_operation("set_default_publish_options")
     );
     assert_eq!(
-        EventBusFactory::set_default_subscribe_options::<String>(
-            &mut factory,
-            SubscribeOptions::empty(),
-        )
-        .expect_err("default factory should reject subscribe defaults"),
+        EventBusFactory::set_default_subscribe_options::<String>(&mut factory, SubscribeOptions::empty(),)
+            .expect_err("default factory should reject subscribe defaults"),
         EventBusError::unsupported_operation("set_default_subscribe_options")
     );
     assert_eq!(
@@ -568,27 +515,21 @@ fn test_event_bus_factory_trait_default_methods() {
         EventBusError::unsupported_operation("set_global_default_dead_letter_strategy")
     );
     assert_eq!(
-        EventBusFactory::add_publisher_interceptor::<String, _>(
-            &mut factory,
-            |event: EventEnvelope<String>| Some(event),
-        )
+        EventBusFactory::add_publisher_interceptor::<String, _>(&mut factory, |event: EventEnvelope<String>| Some(
+            event
+        ),)
         .expect_err("default factory should reject publisher interceptors"),
         EventBusError::unsupported_operation("add_publisher_interceptor")
     );
     assert_eq!(
-        EventBusFactory::add_global_publisher_interceptor(
-            &mut factory,
-            |metadata: EventEnvelopeMetadata| metadata,
-        )
-        .expect_err("default factory should reject global publisher interceptors"),
+        EventBusFactory::add_global_publisher_interceptor(&mut factory, |metadata: EventEnvelopeMetadata| metadata,)
+            .expect_err("default factory should reject global publisher interceptors"),
         EventBusError::unsupported_operation("add_global_publisher_interceptor")
     );
     assert_eq!(
         EventBusFactory::add_subscriber_interceptor::<String, _>(
             &mut factory,
-            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
-                chain.proceed(event)
-            },
+            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| { chain.proceed(event) },
         )
         .expect_err("default factory should reject subscriber interceptors"),
         EventBusError::unsupported_operation("add_subscriber_interceptor")
@@ -596,9 +537,7 @@ fn test_event_bus_factory_trait_default_methods() {
     assert_eq!(
         EventBusFactory::add_global_subscriber_interceptor(
             &mut factory,
-            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
-                chain.proceed()
-            },
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| { chain.proceed() },
         )
         .expect_err("default factory should reject global subscriber interceptors"),
         EventBusError::unsupported_operation("add_global_subscriber_interceptor")
@@ -623,13 +562,7 @@ fn test_unsupported_transactional_event_bus_rejects_all_operations() {
     );
     assert_eq!(
         expect_subscription_error(
-            EventBus::subscribe_with_options(
-                &bus,
-                "sub",
-                &topic,
-                |_| (),
-                SubscribeOptions::empty()
-            ),
+            EventBus::subscribe_with_options(&bus, "sub", &topic, |_| (), SubscribeOptions::empty()),
             "placeholder bus should reject subscribe",
         ),
         EventBusError::unsupported_operation("subscribe")

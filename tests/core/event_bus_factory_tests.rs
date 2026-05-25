@@ -69,11 +69,7 @@ impl EventBus for FailingStartBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -124,11 +120,7 @@ impl EventBus for SuccessfulStartBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -177,8 +169,7 @@ fn test_event_bus_factory_reports_transactions_unsupported() {
 
     assert!(!EventBusFactory::is_transactional_supported(&factory));
     assert_eq!(
-        EventBusFactory::create_transactional(&factory)
-            .expect_err("local factory should not create transactional bus"),
+        EventBusFactory::create_transactional(&factory).expect_err("local factory should not create transactional bus"),
         EventBusError::unsupported_operation("create_transactional")
     );
 }
@@ -209,10 +200,6 @@ fn test_coverage_event_bus_factory_default_regions() {
     let observations = coverage_exercise_core_defensive_paths();
 
     assert_eq!(errors.len(), 16);
-    assert!(
-        errors
-            .iter()
-            .all(|error| error.kind() == "unsupported_operation")
-    );
+    assert!(errors.iter().all(|error| error.kind() == "unsupported_operation"));
     assert!(observations.into_iter().all(|observed| observed));
 }

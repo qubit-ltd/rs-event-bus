@@ -17,9 +17,6 @@ fn test_staged_event_exposes_metadata_and_payload_type() {
     );
 
     assert_eq!(staged.metadata().topic_name(), "staged-event");
-    assert_eq!(
-        staged.metadata().payload_type_name(),
-        topic.payload_type_name()
-    );
+    assert_eq!(staged.metadata().payload_type_name(), topic.payload_type_name());
     assert_eq!(staged.payload_type_id(), TypeId::of::<String>());
 }

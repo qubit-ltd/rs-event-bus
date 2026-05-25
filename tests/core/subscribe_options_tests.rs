@@ -23,10 +23,7 @@ fn test_subscribe_options_filter_controls_handling() {
         .filter(|event| event.payload() == "accepted")
         .build();
 
-    assert!(options.should_handle(&EventEnvelope::create(
-        topic.clone(),
-        "accepted".to_string()
-    )));
+    assert!(options.should_handle(&EventEnvelope::create(topic.clone(), "accepted".to_string())));
     assert!(!options.should_handle(&EventEnvelope::create(topic, "rejected".to_string())));
 }
 
@@ -41,9 +38,7 @@ fn test_subscribe_options_filter_panic_returns_not_handled() {
         .build();
     let result = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            options.should_handle(&envelope)
-        }))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| options.should_handle(&envelope)))
     };
 
     assert!(!result.expect("filter panic should be isolated"));
@@ -67,10 +62,7 @@ fn test_prefixed_dead_letter_strategy_builds_dead_letter_topic() {
     assert_eq!(dead_letter.topic().name(), "dead.source-topic");
     assert!(dead_letter.is_dead_letter());
     assert_eq!(
-        dead_letter
-            .payload()
-            .metadata()
-            .get::<String>("subscriber_id"),
+        dead_letter.payload().metadata().get::<String>("subscriber_id"),
         Some("subscriber".to_string())
     );
 }

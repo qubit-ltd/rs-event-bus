@@ -22,8 +22,7 @@ fn test_local_event_bus_inner_retries_handler_until_success() {
     let captured_attempts = Arc::clone(&attempts);
     let options = SubscribeOptions::builder()
         .retry_options(
-            RetryOptions::new(3, None, None, RetryDelay::none(), RetryJitter::none())
-                .expect("retry should build"),
+            RetryOptions::new(3, None, None, RetryDelay::none(), RetryJitter::none()).expect("retry should build"),
         )
         .build();
 
