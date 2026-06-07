@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Ordering lane key for local subscriber delivery.
 
 use crate::TopicKey;
@@ -29,7 +27,11 @@ impl OrderingLaneKey {
     ///
     /// # Returns
     /// Lane key that serializes work for this subscriber.
-    pub(crate) fn new(topic_key: TopicKey, ordering_key: impl Into<String>, subscription_id: usize) -> Self {
+    pub(crate) fn new(
+        topic_key: TopicKey,
+        ordering_key: impl Into<String>,
+        subscription_id: usize,
+    ) -> Self {
         Self {
             topic_key,
             ordering_key: ordering_key.into(),

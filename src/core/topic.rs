@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Type-safe event topics.
 
 use std::any::{
@@ -56,7 +54,10 @@ impl<T: 'static> Topic<T> {
     pub fn try_new(name: impl Into<String>) -> EventBusResult<Self> {
         let name = name.into();
         if name.trim().is_empty() {
-            return Err(EventBusError::invalid_argument("name", "topic name must not be blank"));
+            return Err(EventBusError::invalid_argument(
+                "name",
+                "topic name must not be blank",
+            ));
         }
         Ok(Self {
             name,

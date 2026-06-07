@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Error type returned by event bus operations.
 
 use std::error::Error;
@@ -127,7 +125,10 @@ impl EventBusError {
     ///
     /// # Returns
     /// Validation error with field context.
-    pub fn invalid_argument(field: &'static str, message: impl Into<String>) -> Self {
+    pub fn invalid_argument(
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self::InvalidArgument {
             field,
             message: message.into(),
@@ -174,7 +175,10 @@ impl EventBusError {
     ///
     /// # Returns
     /// Interceptor failure with context.
-    pub fn interceptor_failed(phase: &'static str, message: impl Into<String>) -> Self {
+    pub fn interceptor_failed(
+        phase: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self::InterceptorFailed {
             phase,
             message: message.into(),
@@ -189,7 +193,10 @@ impl EventBusError {
     ///
     /// # Returns
     /// Error handler failure with context.
-    pub fn error_handler_failed(phase: &'static str, message: impl Into<String>) -> Self {
+    pub fn error_handler_failed(
+        phase: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self::ErrorHandlerFailed {
             phase,
             message: message.into(),
@@ -252,7 +259,10 @@ impl EventBusError {
     ///
     /// # Returns
     /// Type-erasure mismatch error.
-    pub const fn type_mismatch(expected: &'static str, actual: &'static str) -> Self {
+    pub const fn type_mismatch(
+        expected: &'static str,
+        actual: &'static str,
+    ) -> Self {
         Self::TypeMismatch { expected, actual }
     }
 
@@ -262,7 +272,8 @@ impl EventBusError {
     /// - `operation`: Operation name or feature category.
     ///
     /// # Returns
-    /// Error indicating that the current backend does not support the operation.
+    /// Error indicating that the current backend does not support the
+    /// operation.
     pub const fn unsupported_operation(operation: &'static str) -> Self {
         Self::UnsupportedOperation { operation }
     }
@@ -295,16 +306,24 @@ impl Display for EventBusError {
     /// Formats the error for logs and assertions.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotStarted => write!(formatter, "the EventBus has not been started"),
+            Self::NotStarted => {
+                write!(formatter, "the EventBus has not been started")
+            }
             Self::StartFailed { message } => {
                 write!(formatter, "failed to start EventBus: {message}")
             }
             Self::InvalidArgument { field, message } => {
                 write!(formatter, "invalid argument `{field}`: {message}")
             }
-            Self::MissingField { field } => write!(formatter, "missing required field `{field}`"),
-            Self::HandlerFailed { message } => write!(formatter, "event handler failed: {message}"),
-            Self::HandlerPanicked => write!(formatter, "event handler panicked"),
+            Self::MissingField { field } => {
+                write!(formatter, "missing required field `{field}`")
+            }
+            Self::HandlerFailed { message } => {
+                write!(formatter, "event handler failed: {message}")
+            }
+            Self::HandlerPanicked => {
+                write!(formatter, "event handler panicked")
+            }
             Self::InterceptorFailed { phase, message } => {
                 write!(formatter, "{phase} interceptor failed: {message}")
             }
@@ -315,10 +334,16 @@ impl Display for EventBusError {
                 write!(formatter, "dead-letter routing failed: {message}")
             }
             Self::ExecutionRejected { message } => {
-                write!(formatter, "event processing task was rejected: {message}")
+                write!(
+                    formatter,
+                    "event processing task was rejected: {message}"
+                )
             }
             Self::ShutdownTimedOut { timeout } => {
-                write!(formatter, "event bus shutdown timed out after {timeout:?}")
+                write!(
+                    formatter,
+                    "event bus shutdown timed out after {timeout:?}"
+                )
             }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")
@@ -330,7 +355,10 @@ impl Display for EventBusError {
                 )
             }
             Self::UnsupportedOperation { operation } => {
-                write!(formatter, "unsupported event bus operation: {operation}")
+                write!(
+                    formatter,
+                    "unsupported event bus operation: {operation}"
+                )
             }
         }
     }

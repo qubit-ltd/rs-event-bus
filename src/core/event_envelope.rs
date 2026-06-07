@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Standard event envelope.
 // qubit-style: allow multiple-public-types
 
@@ -229,8 +227,12 @@ impl<T: 'static> EventEnvelope<T> {
     pub(crate) fn from_builder(builder: EventEnvelopeBuilder<T>) -> Self {
         Self {
             id: builder.id,
-            topic: builder.topic.expect("validated builder should contain a topic"),
-            payload: builder.payload.expect("validated builder should contain a payload"),
+            topic: builder
+                .topic
+                .expect("validated builder should contain a topic"),
+            payload: builder
+                .payload
+                .expect("validated builder should contain a payload"),
             headers: builder.headers,
             ordering_key: builder.ordering_key,
             timestamp: builder.timestamp,
@@ -337,7 +339,11 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
-    pub fn with_header(mut self, key: impl Into<String>, value: impl ToString) -> Self {
+    pub fn with_header(
+        mut self,
+        key: impl Into<String>,
+        value: impl ToString,
+    ) -> Self {
         self.headers.insert(key.into(), value.to_string());
         self
     }
@@ -349,7 +355,10 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
-    pub fn with_ordering_key(mut self, ordering_key: impl Into<String>) -> Self {
+    pub fn with_ordering_key(
+        mut self,
+        ordering_key: impl Into<String>,
+    ) -> Self {
         self.ordering_key = Some(ordering_key.into());
         self
     }
@@ -373,7 +382,10 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
-    pub fn with_acknowledgement(mut self, acknowledgement: Acknowledgement) -> Self {
+    pub fn with_acknowledgement(
+        mut self,
+        acknowledgement: Acknowledgement,
+    ) -> Self {
         self.acknowledgement = Some(acknowledgement);
         self
     }

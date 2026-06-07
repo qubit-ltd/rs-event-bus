@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Unsupported transactional publisher placeholder.
 
 use crate::{
@@ -32,8 +30,13 @@ impl UnsupportedTransactionalPublisher {
 
 impl TransactionalPublisher for UnsupportedTransactionalPublisher {
     /// Returns an unsupported-operation error.
-    fn publish_staged(&mut self, _event: Box<dyn StagedEvent>) -> EventBusResult<()> {
-        Err(EventBusError::unsupported_operation("transactional_publish"))
+    fn publish_staged(
+        &mut self,
+        _event: Box<dyn StagedEvent>,
+    ) -> EventBusResult<()> {
+        Err(EventBusError::unsupported_operation(
+            "transactional_publish",
+        ))
     }
 
     /// Returns an unsupported-operation error.

@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Options controlling event publishing.
 
 use std::panic::{
@@ -23,8 +21,10 @@ use crate::{
     RetryOptions,
 };
 
-pub(crate) type PublishErrorHandlerFn<T> =
-    dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()> + Send + Sync + 'static;
+pub(crate) type PublishErrorHandlerFn<T> = dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()>
+    + Send
+    + Sync
+    + 'static;
 
 /// Immutable options applied when publishing events.
 pub struct PublishOptions<T: 'static> {
@@ -95,9 +95,16 @@ impl<T: 'static> PublishOptions<T> {
     ) -> Vec<EventBusError> {
         let mut failures = Vec::new();
         for handler in &self.error_handlers {
-            match panic::catch_unwind(AssertUnwindSafe(|| handler(envelope, error))) {
+            match panic::catch_unwind(AssertUnwindSafe(|| {
+                handler(envelope, error)
+            })) {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed("publish", error.to_string())),
+                Ok(Err(error)) => {
+                    failures.push(EventBusError::error_handler_failed(
+                        "publish",
+                        error.to_string(),
+                    ))
+                }
                 Err(_) => failures.push(EventBusError::error_handler_failed(
                     "publish",
                     "publish error handler panicked",

@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Cancellation-aware local subscriber processing task.
 
 use std::sync::Arc;
@@ -33,7 +31,11 @@ impl ProcessingTask {
     ///
     /// # Returns
     /// Processing task that finishes accounting on run or drop.
-    pub(crate) fn new<F>(bus: Arc<LocalEventBusInner>, topic_key: TopicKey, task: F) -> Self
+    pub(crate) fn new<F>(
+        bus: Arc<LocalEventBusInner>,
+        topic_key: TopicKey,
+        task: F,
+    ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {

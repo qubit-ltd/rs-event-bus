@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Builder for subscribe options.
 
 use std::marker::PhantomData;
@@ -111,13 +109,18 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn error_handler<F, R>(mut self, handler: F) -> Self
     where
-        F: Fn(&str, &EventEnvelope<T>, &EventBusError, &Acknowledgement) -> R + Send + Sync + 'static,
+        F: Fn(&str, &EventEnvelope<T>, &EventBusError, &Acknowledgement) -> R
+            + Send
+            + Sync
+            + 'static,
         R: IntoEventBusResult + 'static,
     {
-        self.error_handlers
-            .push(Arc::new(move |subscriber_id, envelope, error, acknowledgement| {
-                handler(subscriber_id, envelope, error, acknowledgement).into_event_bus_result()
-            }));
+        self.error_handlers.push(Arc::new(
+            move |subscriber_id, envelope, error, acknowledgement| {
+                handler(subscriber_id, envelope, error, acknowledgement)
+                    .into_event_bus_result()
+            },
+        ));
         self
     }
 
@@ -139,8 +142,8 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Sets subscriber priority.
     ///
     /// # Parameters
-    /// - `priority`: Submission priority; higher values are submitted first
-    ///   by the local backend.
+    /// - `priority`: Submission priority; higher values are submitted first by
+    ///   the local backend.
     ///
     /// # Returns
     /// Updated builder.

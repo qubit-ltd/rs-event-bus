@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Type-erased topic key.
 
 use std::any::TypeId;
@@ -28,6 +26,9 @@ impl TopicKey {
     /// # Returns
     /// A new key suitable for hash maps.
     pub(crate) fn new(name: String, payload_type_id: TypeId) -> Self {
-        Self { name, payload_type_id }
+        Self {
+            name,
+            payload_type_id,
+        }
     }
 }
