@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Panic-hook helpers for integration tests.
 
 use std::panic::{
@@ -22,7 +20,8 @@ pub(crate) struct PanicHookGuard {
 }
 
 impl PanicHookGuard {
-    /// Installs a no-op panic hook for code paths that intentionally catch panics.
+    /// Installs a no-op panic hook for code paths that intentionally catch
+    /// panics.
     ///
     /// # Returns
     /// Guard restoring the previous hook when it leaves scope.

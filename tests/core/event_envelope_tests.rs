@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Tests for event envelopes.
 
 use std::collections::HashMap;
@@ -58,7 +56,10 @@ fn test_builder_sets_optional_metadata() {
 
     assert_eq!(envelope.id(), "event-1");
     assert_eq!(envelope.topic(), &topic);
-    assert_eq!(envelope.headers().get("trace-id"), Some(&"trace-1".to_string()));
+    assert_eq!(
+        envelope.headers().get("trace-id"),
+        Some(&"trace-1".to_string())
+    );
     assert_eq!(envelope.ordering_key(), Some("order-1"));
     assert_eq!(envelope.delay(), Some(Duration::from_millis(25)));
     assert!(envelope.is_dead_letter());
@@ -83,7 +84,10 @@ fn test_builder_sets_headers_timestamp_and_acknowledgement() {
         .expect("complete envelope should build");
 
     assert_eq!(envelope.timestamp(), timestamp);
-    assert_eq!(envelope.headers().get("trace-id"), Some(&"trace-3".to_string()));
+    assert_eq!(
+        envelope.headers().get("trace-id"),
+        Some(&"trace-3".to_string())
+    );
     assert!(
         !envelope
             .acknowledgement()
@@ -111,8 +115,14 @@ fn test_metadata_exposes_and_updates_type_erased_fields() {
     let metadata = envelope.metadata();
     assert_eq!(metadata.id(), "event-3");
     assert_eq!(metadata.topic_name(), "orders.created");
-    assert_eq!(metadata.payload_type_name(), envelope.topic().payload_type_name());
-    assert_eq!(metadata.headers().get("trace-id"), Some(&"trace-4".to_string()));
+    assert_eq!(
+        metadata.payload_type_name(),
+        envelope.topic().payload_type_name()
+    );
+    assert_eq!(
+        metadata.headers().get("trace-id"),
+        Some(&"trace-4".to_string())
+    );
     assert_eq!(metadata.ordering_key(), Some("order-3"));
     assert_eq!(metadata.timestamp(), timestamp);
     assert_eq!(metadata.delay(), Some(Duration::from_millis(50)));
@@ -173,7 +183,10 @@ fn test_with_methods_return_modified_envelope() {
         .with_delay(Duration::from_secs(1))
         .as_dead_letter();
 
-    assert_eq!(envelope.headers().get("trace-id"), Some(&"trace-2".to_string()));
+    assert_eq!(
+        envelope.headers().get("trace-id"),
+        Some(&"trace-2".to_string())
+    );
     assert_eq!(envelope.ordering_key(), Some("order-2"));
     assert_eq!(envelope.delay(), Some(Duration::from_secs(1)));
     assert!(envelope.is_dead_letter());

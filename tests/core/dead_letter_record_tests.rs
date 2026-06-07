@@ -7,11 +7,14 @@ use qubit_event_bus::{
 
 #[test]
 fn test_dead_letter_record_from_failure_preserves_metadata_and_payload() {
-    let topic = Topic::<String>::try_new("dead-letter-record").expect("topic should build");
-    let envelope = EventEnvelope::create(topic, "payload".to_string()).with_ordering_key("order-1");
+    let topic = Topic::<String>::try_new("dead-letter-record")
+        .expect("topic should build");
+    let envelope = EventEnvelope::create(topic, "payload".to_string())
+        .with_ordering_key("order-1");
     let error = EventBusError::handler_failed("handler failed");
 
-    let record = DeadLetterRecord::from_failure("subscriber", &envelope, &error);
+    let record =
+        DeadLetterRecord::from_failure("subscriber", &envelope, &error);
 
     assert_eq!(
         record.metadata().get::<String>("subscriber_id"),

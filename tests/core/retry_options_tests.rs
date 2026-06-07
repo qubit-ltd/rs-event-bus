@@ -6,8 +6,14 @@ use qubit_event_bus::{
 
 #[test]
 fn test_retry_options_new_rejects_zero_attempts() {
-    let error = RetryOptions::new(0, None, None, RetryDelay::none(), RetryJitter::none())
-        .expect_err("zero max_attempts should be rejected");
+    let error = RetryOptions::new(
+        0,
+        None,
+        None,
+        RetryDelay::none(),
+        RetryJitter::none(),
+    )
+    .expect_err("zero max_attempts should be rejected");
 
     assert_eq!(error.path(), qubit_retry::constants::KEY_MAX_ATTEMPTS);
 }
