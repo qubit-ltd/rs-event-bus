@@ -17,12 +17,20 @@ use qubit_event_bus::{
 #[test]
 fn test_local_event_bus_inner_retries_handler_until_success() {
     let bus = LocalEventBus::started().expect("bus should start");
-    let topic = Topic::<String>::try_new("inner-retry").expect("topic should build");
+    let topic =
+        Topic::<String>::try_new("inner-retry").expect("topic should build");
     let attempts = Arc::new(AtomicUsize::new(0));
     let captured_attempts = Arc::clone(&attempts);
     let options = SubscribeOptions::builder()
         .retry_options(
-            RetryOptions::new(3, None, None, RetryDelay::none(), RetryJitter::none()).expect("retry should build"),
+            RetryOptions::new(
+                3,
+                None,
+                None,
+                RetryDelay::none(),
+                RetryJitter::none(),
+            )
+            .expect("retry should build"),
         )
         .build();
 

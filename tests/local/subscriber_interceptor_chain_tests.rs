@@ -17,7 +17,8 @@ fn test_subscriber_interceptor_chain_proceeds_to_handler() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_subscriber_interceptor::<String, _>(
-            move |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
+            move |event: EventEnvelope<String>,
+                  chain: SubscriberInterceptorChain<String>| {
                 interceptor_sequence
                     .lock()
                     .expect("sequence should lock")
@@ -32,7 +33,8 @@ fn test_subscriber_interceptor_chain_proceeds_to_handler() {
         )
         .expect("subscriber interceptor should register");
     let bus = factory.create_started().expect("bus should start");
-    let topic = Topic::<String>::try_new("subscriber-chain").expect("topic should build");
+    let topic = Topic::<String>::try_new("subscriber-chain")
+        .expect("topic should build");
     let handler_sequence = Arc::clone(&sequence);
     bus.subscribe("sub", &topic, move |event| {
         assert_eq!(event.headers().get("chain"), Some(&"seen".to_string()));
@@ -43,7 +45,8 @@ fn test_subscriber_interceptor_chain_proceeds_to_handler() {
     })
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_string()).expect("publish should work");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(

@@ -12,9 +12,13 @@ use qubit_event_bus::{
 #[test]
 fn test_unsupported_transactional_event_bus_rejects_event_bus_operations() {
     let bus = UnsupportedTransactionalEventBus::new();
-    let topic = Topic::<String>::try_new("unsupported-bus").expect("topic should build");
+    let topic = Topic::<String>::try_new("unsupported-bus")
+        .expect("topic should build");
 
-    assert!(!EventBus::start(&bus).expect("unsupported bus start should be idempotent"));
+    assert!(
+        !EventBus::start(&bus)
+            .expect("unsupported bus start should be idempotent")
+    );
     assert!(!EventBus::shutdown(&bus));
     assert_eq!(
         EventBus::publish_envelope_with_options(

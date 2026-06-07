@@ -16,7 +16,10 @@ struct RecordingTransactionalPublisher {
 }
 
 impl TransactionalPublisher for RecordingTransactionalPublisher {
-    fn publish_staged(&mut self, event: Box<dyn StagedEvent>) -> EventBusResult<()> {
+    fn publish_staged(
+        &mut self,
+        event: Box<dyn StagedEvent>,
+    ) -> EventBusResult<()> {
         self.staged.push(event);
         Ok(())
     }
@@ -32,19 +35,29 @@ impl TransactionalPublisher for RecordingTransactionalPublisher {
 }
 
 #[test]
-fn test_transactional_publisher_default_publish_builds_envelope_and_delegates() {
-    let topic = Topic::<String>::try_new("transactional-publisher").expect("topic should build");
+fn test_transactional_publisher_default_publish_builds_envelope_and_delegates()
+{
+    let topic = Topic::<String>::try_new("transactional-publisher")
+        .expect("topic should build");
     let mut publisher = UnsupportedTransactionalPublisher::new();
 
-    let error = TransactionalPublisher::publish(&mut publisher, &topic, "payload".to_string())
-        .expect_err("unsupported publisher should reject publish");
+    let error = TransactionalPublisher::publish(
+        &mut publisher,
+        &topic,
+        "payload".to_string(),
+    )
+    .expect_err("unsupported publisher should reject publish");
 
-    assert_eq!(error, EventBusError::unsupported_operation("transactional_publish"));
+    assert_eq!(
+        error,
+        EventBusError::unsupported_operation("transactional_publish")
+    );
 }
 
 #[test]
 fn test_transactional_publisher_default_publish_stages_type_erased_event() {
-    let topic = Topic::<String>::try_new("transactional-staged-publisher").expect("topic should build");
+    let topic = Topic::<String>::try_new("transactional-staged-publisher")
+        .expect("topic should build");
     let mut publisher = RecordingTransactionalPublisher::default();
     let options = PublishOptions::<String>::builder()
         .error_handler(|_event, _error| Ok(()))
@@ -59,8 +72,14 @@ fn test_transactional_publisher_default_publish_stages_type_erased_event() {
 
     assert_eq!(publisher.staged.len(), 1);
     let staged = publisher.staged.pop().expect("staged event should exist");
-    assert_eq!(staged.metadata().topic_name(), "transactional-staged-publisher");
-    assert_eq!(staged.metadata().payload_type_name(), topic.payload_type_name());
+    assert_eq!(
+        staged.metadata().topic_name(),
+        "transactional-staged-publisher"
+    );
+    assert_eq!(
+        staged.metadata().payload_type_name(),
+        topic.payload_type_name()
+    );
     let typed = staged
         .as_any()
         .downcast_ref::<StagedEventEnvelope<String>>()
@@ -70,8 +89,10 @@ fn test_transactional_publisher_default_publish_stages_type_erased_event() {
 }
 
 #[test]
-fn test_transactional_publisher_default_publish_all_staged_delegates_each_event() {
-    let topic = Topic::<String>::try_new("transactional-staged-batch").expect("topic should build");
+fn test_transactional_publisher_default_publish_all_staged_delegates_each_event()
+ {
+    let topic = Topic::<String>::try_new("transactional-staged-batch")
+        .expect("topic should build");
     let mut publisher = RecordingTransactionalPublisher::default();
     let events: Vec<Box<dyn StagedEvent>> = vec![
         Box::new(StagedEventEnvelope::new(
