@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Transactional publisher abstraction.
 
 use crate::{
@@ -52,7 +50,10 @@ pub trait TransactionalPublisher {
     ///
     /// # Errors
     /// Returns backend-specific staging errors.
-    fn publish_envelope<T>(&mut self, envelope: EventEnvelope<T>) -> EventBusResult<()>
+    fn publish_envelope<T>(
+        &mut self,
+        envelope: EventEnvelope<T>,
+    ) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -78,7 +79,9 @@ pub trait TransactionalPublisher {
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.publish_staged(Box::new(StagedEventEnvelope::new(envelope, options)))
+        self.publish_staged(Box::new(StagedEventEnvelope::new(
+            envelope, options,
+        )))
     }
 
     /// Stages a type-erased event for transactional publishing.
@@ -91,7 +94,10 @@ pub trait TransactionalPublisher {
     ///
     /// # Errors
     /// Returns backend-specific staging errors.
-    fn publish_staged(&mut self, event: Box<dyn StagedEvent>) -> EventBusResult<()>;
+    fn publish_staged(
+        &mut self,
+        event: Box<dyn StagedEvent>,
+    ) -> EventBusResult<()>;
 
     /// Stages multiple type-erased events.
     ///
@@ -103,7 +109,10 @@ pub trait TransactionalPublisher {
     ///
     /// # Errors
     /// Returns the first backend-specific staging error.
-    fn publish_all_staged(&mut self, events: Vec<Box<dyn StagedEvent>>) -> EventBusResult<()> {
+    fn publish_all_staged(
+        &mut self,
+        events: Vec<Box<dyn StagedEvent>>,
+    ) -> EventBusResult<()> {
         for event in events {
             self.publish_staged(event)?;
         }

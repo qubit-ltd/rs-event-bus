@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Type-erased publisher interceptor entry trait.
 
 use std::any::{
@@ -22,5 +20,8 @@ pub(crate) trait PublisherInterceptorEntry: Send + Sync {
     fn payload_type_id(&self) -> TypeId;
 
     /// Applies the interceptor to a boxed envelope.
-    fn intercept(&self, envelope: Box<dyn Any + Send>) -> EventBusResult<Option<Box<dyn Any + Send>>>;
+    fn intercept(
+        &self,
+        envelope: Box<dyn Any + Send>,
+    ) -> EventBusResult<Option<Box<dyn Any + Send>>>;
 }

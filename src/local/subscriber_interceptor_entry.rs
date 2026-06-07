@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Type-erased subscriber interceptor entry trait.
 
 use std::any::{
@@ -22,5 +20,8 @@ pub(crate) trait SubscriberInterceptorEntry: Send + Sync {
     fn payload_type_id(&self) -> TypeId;
 
     /// Wraps a boxed subscriber handler with this interceptor.
-    fn wrap_handler(&self, handler: Box<dyn Any + Send + Sync>) -> EventBusResult<Box<dyn Any + Send + Sync>>;
+    fn wrap_handler(
+        &self,
+        handler: Box<dyn Any + Send + Sync>,
+    ) -> EventBusResult<Box<dyn Any + Send + Sync>>;
 }

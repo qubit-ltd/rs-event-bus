@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Standard dead-letter payload.
 
 use std::any::{
@@ -49,7 +47,10 @@ impl DeadLetterRecord {
     ///
     /// # Returns
     /// Dead-letter record ready to use as an envelope payload.
-    pub fn new(metadata: Metadata, original_payload: DeadLetterOriginalPayload) -> Self {
+    pub fn new(
+        metadata: Metadata,
+        original_payload: DeadLetterOriginalPayload,
+    ) -> Self {
         Self {
             metadata,
             original_payload,
@@ -65,7 +66,11 @@ impl DeadLetterRecord {
     ///
     /// # Returns
     /// Dead-letter record containing standard metadata and the cloned payload.
-    pub fn from_failure<T>(subscriber_id: &str, envelope: &EventEnvelope<T>, error: &EventBusError) -> Self
+    pub fn from_failure<T>(
+        subscriber_id: &str,
+        envelope: &EventEnvelope<T>,
+        error: &EventBusError,
+    ) -> Self
     where
         T: Clone + Send + Sync + 'static,
     {

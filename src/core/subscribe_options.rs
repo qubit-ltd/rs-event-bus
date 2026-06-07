@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Options controlling event subscription.
 // qubit-style: allow multiple-public-types
 
@@ -32,9 +30,17 @@ use crate::{
 
 use super::dead_letter_record::DeadLetterPayload;
 
-pub(crate) type EventFilterFn<T> = dyn Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'static;
-pub(crate) type SubscribeErrorHandlerFn<T> =
-    dyn Fn(&str, &EventEnvelope<T>, &EventBusError, &Acknowledgement) -> EventBusResult<()> + Send + Sync + 'static;
+pub(crate) type EventFilterFn<T> =
+    dyn Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'static;
+pub(crate) type SubscribeErrorHandlerFn<T> = dyn Fn(
+        &str,
+        &EventEnvelope<T>,
+        &EventBusError,
+        &Acknowledgement,
+    ) -> EventBusResult<()>
+    + Send
+    + Sync
+    + 'static;
 
 /// Creates dead-letter envelopes for failed subscriber deliveries.
 pub trait DeadLetterStrategy<T: 'static>: Send + Sync + 'static {
@@ -115,7 +121,9 @@ where
 pub(crate) type DeadLetterStrategyFn<T> = dyn DeadLetterStrategy<T>;
 
 /// Wraps a closure as a dead-letter strategy object.
-pub(crate) fn wrap_dead_letter_strategy<T, F>(strategy: F) -> Arc<DeadLetterStrategyFn<T>>
+pub(crate) fn wrap_dead_letter_strategy<T, F>(
+    strategy: F,
+) -> Arc<DeadLetterStrategyFn<T>>
 where
     T: 'static,
     F: DeadLetterStrategyCallback<T>,
@@ -199,7 +207,9 @@ where
 pub(crate) type DeadLetterStrategyAnyFn = dyn DeadLetterStrategyAny;
 
 /// Wraps a closure as a type-erased dead-letter strategy object.
-pub(crate) fn wrap_dead_letter_strategy_any<F>(strategy: F) -> Arc<DeadLetterStrategyAnyFn>
+pub(crate) fn wrap_dead_letter_strategy_any<F>(
+    strategy: F,
+) -> Arc<DeadLetterStrategyAnyFn>
 where
     F: DeadLetterStrategyAnyCallback,
 {
@@ -214,7 +224,10 @@ pub fn discard_dead_letters<T>() -> impl DeadLetterStrategyCallback<T>
 where
     T: 'static,
 {
-    |_subscriber_id: &str, _failed: &EventEnvelope<T>, _error: &EventBusError, _options: &SubscribeOptions<T>| Ok(None)
+    |_subscriber_id: &str,
+     _failed: &EventEnvelope<T>,
+     _error: &EventBusError,
+     _options: &SubscribeOptions<T>| Ok(None)
 }
 
 /// Creates a strategy that routes standard dead-letter payloads to a topic.
@@ -224,11 +237,16 @@ where
 ///
 /// # Returns
 /// Strategy that stores a [`DeadLetterRecord`] with diagnostic metadata.
-pub fn standard_dead_letters_to<T>(dead_letter_topic: Topic<DeadLetterPayload>) -> impl DeadLetterStrategyCallback<T>
+pub fn standard_dead_letters_to<T>(
+    dead_letter_topic: Topic<DeadLetterPayload>,
+) -> impl DeadLetterStrategyCallback<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    move |subscriber_id: &str, failed: &EventEnvelope<T>, error: &EventBusError, _options: &SubscribeOptions<T>| {
+    move |subscriber_id: &str,
+          failed: &EventEnvelope<T>,
+          error: &EventBusError,
+          _options: &SubscribeOptions<T>| {
         Ok(Some(
             EventEnvelope::create(
                 dead_letter_topic.clone(),
@@ -246,15 +264,28 @@ where
 ///
 /// # Returns
 /// Strategy that creates a dead-letter topic from the original topic name.
-pub fn prefixed_dead_letters<T>(prefix: &str) -> impl DeadLetterStrategyCallback<T>
+pub fn prefixed_dead_letters<T>(
+    prefix: &str,
+) -> impl DeadLetterStrategyCallback<T>
 where
     T: Clone + Send + Sync + 'static,
 {
     let prefix = prefix.to_string();
-    move |subscriber_id: &str, failed: &EventEnvelope<T>, error: &EventBusError, _options: &SubscribeOptions<T>| {
-        let topic = Topic::<DeadLetterPayload>::try_new(format!("{}{}", prefix, failed.topic().name()))?;
+    move |subscriber_id: &str,
+          failed: &EventEnvelope<T>,
+          error: &EventBusError,
+          _options: &SubscribeOptions<T>| {
+        let topic = Topic::<DeadLetterPayload>::try_new(format!(
+            "{}{}",
+            prefix,
+            failed.topic().name()
+        ))?;
         Ok(Some(
-            EventEnvelope::create(topic, DeadLetterRecord::from_failure(subscriber_id, failed, error)).as_dead_letter(),
+            EventEnvelope::create(
+                topic,
+                DeadLetterRecord::from_failure(subscriber_id, failed, error),
+            )
+            .as_dead_letter(),
         ))
     }
 }
@@ -343,17 +374,21 @@ impl<T: 'static> SubscribeOptions<T> {
             } else {
                 defaults.ack_mode
             },
-            ack_mode_configured: self.ack_mode_configured || defaults.ack_mode_configured,
+            ack_mode_configured: self.ack_mode_configured
+                || defaults.ack_mode_configured,
             retry_options: self.retry_options.or(defaults.retry_options),
             filter: self.filter.or(defaults.filter),
             error_handlers,
-            dead_letter_strategy: self.dead_letter_strategy.or(defaults.dead_letter_strategy),
+            dead_letter_strategy: self
+                .dead_letter_strategy
+                .or(defaults.dead_letter_strategy),
             priority: if self.priority_configured {
                 self.priority
             } else {
                 defaults.priority
             },
-            priority_configured: self.priority_configured || defaults.priority_configured,
+            priority_configured: self.priority_configured
+                || defaults.priority_configured,
         }
     }
 
@@ -390,20 +425,25 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Errors
     /// Returns [`EventBusError::HandlerFailed`] when the filter panics.
-    pub(crate) fn try_should_handle(&self, envelope: &EventEnvelope<T>) -> EventBusResult<bool> {
+    pub(crate) fn try_should_handle(
+        &self,
+        envelope: &EventEnvelope<T>,
+    ) -> EventBusResult<bool> {
         let Some(filter) = &self.filter else {
             return Ok(true);
         };
-        panic::catch_unwind(AssertUnwindSafe(|| filter(envelope)))
-            .map_err(|_| EventBusError::handler_failed("subscriber filter panicked"))
+        panic::catch_unwind(AssertUnwindSafe(|| filter(envelope))).map_err(
+            |_| EventBusError::handler_failed("subscriber filter panicked"),
+        )
     }
 
-    /// Notifies registered subscribe error handlers until one handles acknowledgement.
+    /// Notifies registered subscribe error handlers until one handles
+    /// acknowledgement.
     ///
-    /// A NACK set by the subscriber handler before this method is called does not
-    /// by itself short-circuit the error handler chain. The chain stops only when
-    /// an error handler records a new terminal acknowledgement decision, or when
-    /// an error handler changes the decision to ACK.
+    /// A NACK set by the subscriber handler before this method is called does
+    /// not by itself short-circuit the error handler chain. The chain stops
+    /// only when an error handler records a new terminal acknowledgement
+    /// decision, or when an error handler changes the decision to ACK.
     ///
     /// # Parameters
     /// - `subscriber_id`: Failing subscriber ID.
@@ -427,13 +467,20 @@ impl<T: 'static> SubscribeOptions<T> {
                 handler(subscriber_id, envelope, error, acknowledgement)
             })) {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => failures.push(EventBusError::error_handler_failed("subscribe", error.to_string())),
+                Ok(Err(error)) => {
+                    failures.push(EventBusError::error_handler_failed(
+                        "subscribe",
+                        error.to_string(),
+                    ))
+                }
                 Err(_) => failures.push(EventBusError::error_handler_failed(
                     "subscribe",
                     "subscribe error handler panicked",
                 )),
             }
-            if (!was_completed && acknowledgement.is_completed()) || (!was_acked && acknowledgement.is_acked()) {
+            if (!was_completed && acknowledgement.is_completed())
+                || (!was_acked && acknowledgement.is_acked())
+            {
                 break;
             }
         }
@@ -451,7 +498,8 @@ impl<T: 'static> SubscribeOptions<T> {
     /// Optional dead-letter envelope with a type-erased payload.
     ///
     /// # Errors
-    /// Returns [`EventBusError::DeadLetterFailed`] when the strategy fails or panics.
+    /// Returns [`EventBusError::DeadLetterFailed`] when the strategy fails or
+    /// panics.
     pub(crate) fn create_dead_letter(
         &self,
         subscriber_id: &str,
@@ -466,7 +514,9 @@ impl<T: 'static> SubscribeOptions<T> {
         })) {
             Ok(Ok(dead_letter)) => Ok(dead_letter),
             Ok(Err(error)) => Err(normalize_dead_letter_error(error)),
-            Err(_) => Err(EventBusError::dead_letter_failed("dead-letter strategy panicked")),
+            Err(_) => Err(EventBusError::dead_letter_failed(
+                "dead-letter strategy panicked",
+            )),
         }
     }
 }
@@ -478,7 +528,9 @@ impl<T: 'static> SubscribeOptions<T> {
 ///
 /// # Returns
 /// Dead-letter failure preserving existing dead-letter errors.
-pub(crate) fn normalize_dead_letter_error(error: EventBusError) -> EventBusError {
+pub(crate) fn normalize_dead_letter_error(
+    error: EventBusError,
+) -> EventBusError {
     if matches!(error, EventBusError::DeadLetterFailed { .. }) {
         error
     } else {

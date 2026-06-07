@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Subscription handle.
 // qubit-style: allow coverage-cfg
 // qubit-style: allow multiple-public-types
@@ -106,7 +104,8 @@ impl<T: 'static> Subscription<T> {
 pub(crate) struct SubscriptionState {
     active: AtomicBool,
     next_delay_cancellation_id: AtomicUsize,
-    delay_cancellations: Mutex<HashMap<usize, Box<dyn Fn() + Send + Sync + 'static>>>,
+    delay_cancellations:
+        Mutex<HashMap<usize, Box<dyn Fn() + Send + Sync + 'static>>>,
     delay_mutex: Mutex<()>,
     delay_condvar: Condvar,
 }
@@ -142,7 +141,10 @@ impl SubscriptionState {
         let mut cancellations = self.delay_cancellations_guard();
         let guard = self.delay_mutex_guard();
         let was_active = self.active.swap(false, Ordering::SeqCst);
-        let cancellation_callbacks = cancellations.drain().map(|(_id, cancel)| cancel).collect::<Vec<_>>();
+        let cancellation_callbacks = cancellations
+            .drain()
+            .map(|(_id, cancel)| cancel)
+            .collect::<Vec<_>>();
         drop(cancellations);
         drop(guard);
         if was_active {
@@ -163,7 +165,10 @@ impl SubscriptionState {
     /// # Returns
     /// Cancellation registration ID, or `None` if the subscription is already
     /// inactive.
-    pub(crate) fn register_delay_cancellation<F>(&self, cancel: F) -> Option<usize>
+    pub(crate) fn register_delay_cancellation<F>(
+        &self,
+        cancel: F,
+    ) -> Option<usize>
     where
         F: Fn() + Send + Sync + 'static,
     {
@@ -173,7 +178,9 @@ impl SubscriptionState {
             cancel();
             return None;
         }
-        let id = self.next_delay_cancellation_id.fetch_add(1, Ordering::SeqCst);
+        let id = self
+            .next_delay_cancellation_id
+            .fetch_add(1, Ordering::SeqCst);
         cancellations.insert(id, Box::new(cancel));
         Some(id)
     }
@@ -196,21 +203,26 @@ impl SubscriptionState {
     /// # Returns
     /// `true` if the delay elapsed while the subscription stayed active.
     #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn wait_until_delay_elapsed_or_inactive(&self, delay: Duration) -> bool {
+    pub(crate) fn wait_until_delay_elapsed_or_inactive(
+        &self,
+        delay: Duration,
+    ) -> bool {
         if delay.is_zero() {
             return self.is_active();
         }
         let started_at = Instant::now();
         let mut guard = self.delay_mutex_guard();
         while self.is_active() {
-            let Some(remaining) = delay.checked_sub(started_at.elapsed()) else {
+            let Some(remaining) = delay.checked_sub(started_at.elapsed())
+            else {
                 return self.is_active();
             };
             let wait_duration = remaining.min(MAX_DELAY_WAIT_SLICE);
-            let (next_guard, timeout_result) = match self.delay_condvar.wait_timeout(guard, wait_duration) {
-                Ok(result) => result,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let (next_guard, timeout_result) =
+                match self.delay_condvar.wait_timeout(guard, wait_duration) {
+                    Ok(result) => result,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
             guard = next_guard;
             if timeout_result.timed_out() && remaining <= wait_duration {
                 return self.is_active();
@@ -226,7 +238,10 @@ impl SubscriptionState {
         }
     }
 
-    fn delay_cancellations_guard(&self) -> MutexGuard<'_, HashMap<usize, Box<dyn Fn() + Send + Sync + 'static>>> {
+    fn delay_cancellations_guard(
+        &self,
+    ) -> MutexGuard<'_, HashMap<usize, Box<dyn Fn() + Send + Sync + 'static>>>
+    {
         match self.delay_cancellations.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -236,7 +251,8 @@ impl SubscriptionState {
     #[cfg(coverage)]
     pub(crate) fn coverage_poison_delay_mutex(&self) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = self.delay_mutex.lock().expect("delay mutex should lock");
+            let _guard =
+                self.delay_mutex.lock().expect("delay mutex should lock");
             panic!("coverage poison");
         }));
     }

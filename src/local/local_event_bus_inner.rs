@@ -1,12 +1,10 @@
-/*******************************************************************************
- *
- *    Copyright (c) 2026 Haixing Hu.
- *
- *    SPDX-License-Identifier: Apache-2.0
- *
- *    Licensed under the Apache License, Version 2.0.
- *
- ******************************************************************************/
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Shared state for the local event bus.
 // qubit-style: allow coverage-cfg
 // qubit-style: allow multiple-public-types
@@ -76,11 +74,15 @@ pub(crate) struct LocalEventBusRuntimeOptions {
     pub(crate) default_publish_options: TypeErasedDefaults,
     pub(crate) default_subscribe_options: TypeErasedDefaults,
     pub(crate) default_dead_letter_strategies: TypeErasedDefaults,
-    pub(crate) global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
-    pub(crate) global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
-    pub(crate) global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
+    pub(crate) global_default_dead_letter_strategy:
+        Option<Arc<DeadLetterStrategyAnyFn>>,
+    pub(crate) global_publisher_interceptors:
+        Vec<Arc<dyn PublisherInterceptorAny>>,
+    pub(crate) global_subscriber_interceptors:
+        Vec<Arc<dyn SubscriberInterceptorAny>>,
     pub(crate) publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
-    pub(crate) subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
+    pub(crate) subscriber_interceptors:
+        Vec<Arc<dyn SubscriberInterceptorEntry>>,
     pub(crate) subscription_handler_pool_size: usize,
     pub(crate) subscription_handler_queue_capacity: Option<usize>,
 }
@@ -124,7 +126,9 @@ impl OrderedProcessingEntry {
 
     /// Returns whether the entry belongs to a cancelled subscription.
     fn is_inactive(&self) -> bool {
-        self.subscription_state.as_ref().is_some_and(|state| !state.is_active())
+        self.subscription_state
+            .as_ref()
+            .is_some_and(|state| !state.is_active())
     }
 
     /// Returns the remaining delay before this entry is ready.
@@ -259,7 +263,8 @@ pub(crate) struct LocalEventBusInner {
     lifecycle: Mutex<LocalEventBusLifecycle>,
     subscriptions: Mutex<HashMap<TopicKey, Vec<Arc<dyn ErasedSubscription>>>>,
     global_publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorAny>>>,
-    global_subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorAny>>>,
+    global_subscriber_interceptors:
+        Mutex<Vec<Arc<dyn SubscriberInterceptorAny>>>,
     publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorEntry>>>,
     subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorEntry>>>,
     error_observers: Mutex<Vec<Arc<ErrorObserverFn>>>,
@@ -280,7 +285,8 @@ impl LocalEventBusInner {
     ///
     /// # Parameters
     /// - `default_subscribe_options`: Typed default subscription options.
-    /// - `subscription_handler_pool_size`: Worker count for subscriber handlers.
+    /// - `subscription_handler_pool_size`: Worker count for subscriber
+    ///   handlers.
     /// - `subscription_handler_queue_capacity`: Optional queued handler limit.
     ///
     /// # Returns
@@ -289,10 +295,16 @@ impl LocalEventBusInner {
         Self {
             lifecycle: Mutex::new(LocalEventBusLifecycle::stopped()),
             subscriptions: Mutex::new(HashMap::new()),
-            global_publisher_interceptors: Mutex::new(options.global_publisher_interceptors),
-            global_subscriber_interceptors: Mutex::new(options.global_subscriber_interceptors),
+            global_publisher_interceptors: Mutex::new(
+                options.global_publisher_interceptors,
+            ),
+            global_subscriber_interceptors: Mutex::new(
+                options.global_subscriber_interceptors,
+            ),
             publisher_interceptors: Mutex::new(options.publisher_interceptors),
-            subscriber_interceptors: Mutex::new(options.subscriber_interceptors),
+            subscriber_interceptors: Mutex::new(
+                options.subscriber_interceptors,
+            ),
             error_observers: Mutex::new(Vec::new()),
             ordering_lanes: Mutex::new(HashMap::new()),
             ordered_queued_task_count: AtomicUsize::new(0),
@@ -300,10 +312,14 @@ impl LocalEventBusInner {
             next_subscription_id: AtomicUsize::new(1),
             default_publish_options: options.default_publish_options,
             default_subscribe_options: options.default_subscribe_options,
-            default_dead_letter_strategies: options.default_dead_letter_strategies,
-            global_default_dead_letter_strategy: options.global_default_dead_letter_strategy,
-            subscription_handler_pool_size: options.subscription_handler_pool_size,
-            subscription_handler_queue_capacity: options.subscription_handler_queue_capacity,
+            default_dead_letter_strategies: options
+                .default_dead_letter_strategies,
+            global_default_dead_letter_strategy: options
+                .global_default_dead_letter_strategy,
+            subscription_handler_pool_size: options
+                .subscription_handler_pool_size,
+            subscription_handler_queue_capacity: options
+                .subscription_handler_queue_capacity,
         }
     }
 
@@ -382,11 +398,14 @@ impl LocalEventBusInner {
         lifecycle.executor.take()
     }
 
-    /// Removes the delayed-delivery scheduler after the bus has entered stopping state.
+    /// Removes the delayed-delivery scheduler after the bus has entered
+    /// stopping state.
     ///
     /// # Returns
     /// Delayed-delivery scheduler if one is still owned by the bus.
-    pub(crate) fn take_delay_scheduler(&self) -> Option<SingleThreadScheduledExecutorService> {
+    pub(crate) fn take_delay_scheduler(
+        &self,
+    ) -> Option<SingleThreadScheduledExecutorService> {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
@@ -430,7 +449,9 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Type-specific default options if configured.
-    pub(crate) fn default_subscribe_options<T>(&self) -> Option<SubscribeOptions<T>>
+    pub(crate) fn default_subscribe_options<T>(
+        &self,
+    ) -> Option<SubscribeOptions<T>>
     where
         T: 'static,
     {
@@ -462,7 +483,9 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Type-erased strategy if configured.
-    pub(crate) fn global_default_dead_letter_strategy(&self) -> Option<Arc<DeadLetterStrategyAnyFn>> {
+    pub(crate) fn global_default_dead_letter_strategy(
+        &self,
+    ) -> Option<Arc<DeadLetterStrategyAnyFn>> {
         self.global_default_dead_letter_strategy.clone()
     }
 
@@ -480,7 +503,9 @@ impl LocalEventBusInner {
     ) -> EventBusResult<()> {
         self.global_publisher_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("global_publisher_interceptors")
+            })?
             .push(interceptor);
         Ok(())
     }
@@ -489,11 +514,15 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Cloned interceptor entries.
-    pub(crate) fn global_publisher_interceptors(&self) -> EventBusResult<Vec<Arc<dyn PublisherInterceptorAny>>> {
+    pub(crate) fn global_publisher_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn PublisherInterceptorAny>>> {
         Ok(self
             .global_publisher_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("global_publisher_interceptors")
+            })?
             .clone())
     }
 
@@ -511,7 +540,9 @@ impl LocalEventBusInner {
     ) -> EventBusResult<()> {
         self.publisher_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("publisher_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("publisher_interceptors")
+            })?
             .push(interceptor);
         Ok(())
     }
@@ -520,11 +551,15 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Cloned interceptor entries.
-    pub(crate) fn publisher_interceptors(&self) -> EventBusResult<Vec<Arc<dyn PublisherInterceptorEntry>>> {
+    pub(crate) fn publisher_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn PublisherInterceptorEntry>>> {
         Ok(self
             .publisher_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("publisher_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("publisher_interceptors")
+            })?
             .clone())
     }
 
@@ -542,7 +577,9 @@ impl LocalEventBusInner {
     ) -> EventBusResult<()> {
         self.subscriber_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("subscriber_interceptors")
+            })?
             .push(interceptor);
         Ok(())
     }
@@ -551,11 +588,15 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Cloned interceptor entries.
-    pub(crate) fn subscriber_interceptors(&self) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorEntry>>> {
+    pub(crate) fn subscriber_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorEntry>>> {
         Ok(self
             .subscriber_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("subscriber_interceptors")
+            })?
             .clone())
     }
 
@@ -573,7 +614,9 @@ impl LocalEventBusInner {
     ) -> EventBusResult<()> {
         self.global_subscriber_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_subscriber_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("global_subscriber_interceptors")
+            })?
             .push(interceptor);
         Ok(())
     }
@@ -582,11 +625,15 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// Cloned interceptor entries.
-    pub(crate) fn global_subscriber_interceptors(&self) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorAny>>> {
+    pub(crate) fn global_subscriber_interceptors(
+        &self,
+    ) -> EventBusResult<Vec<Arc<dyn SubscriberInterceptorAny>>> {
         Ok(self
             .global_subscriber_interceptors
             .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_subscriber_interceptors"))?
+            .map_err(|_| {
+                EventBusError::lock_poisoned("global_subscriber_interceptors")
+            })?
             .clone())
     }
 
@@ -597,7 +644,10 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` when the observer is stored.
-    pub(crate) fn add_error_observer(&self, observer: Arc<ErrorObserverFn>) -> EventBusResult<()> {
+    pub(crate) fn add_error_observer(
+        &self,
+        observer: Arc<ErrorObserverFn>,
+    ) -> EventBusResult<()> {
         self.error_observers
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("error_observers"))?
@@ -610,11 +660,18 @@ impl LocalEventBusInner {
     /// # Parameters
     /// - `error`: Internal failure to observe.
     pub(crate) fn observe_error(&self, error: &EventBusError) {
-        let Ok(observers) = self.error_observers.lock().map(|observers| observers.clone()) else {
+        let Ok(observers) = self
+            .error_observers
+            .lock()
+            .map(|observers| observers.clone())
+        else {
             return;
         };
         for observer in observers {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(error)));
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    observer(error)
+                }));
         }
     }
 
@@ -648,7 +705,10 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// A cloned list of subscription entries.
-    pub(crate) fn subscriptions_for(&self, topic_key: &TopicKey) -> EventBusResult<Vec<Arc<dyn ErasedSubscription>>> {
+    pub(crate) fn subscriptions_for(
+        &self,
+        topic_key: &TopicKey,
+    ) -> EventBusResult<Vec<Arc<dyn ErasedSubscription>>> {
         Ok(self
             .subscriptions
             .lock()
@@ -666,7 +726,11 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` after removal.
-    pub(crate) fn unsubscribe(&self, topic_key: &TopicKey, id: usize) -> EventBusResult<()> {
+    pub(crate) fn unsubscribe(
+        &self,
+        topic_key: &TopicKey,
+        id: usize,
+    ) -> EventBusResult<()> {
         let mut subscriptions = self
             .subscriptions
             .lock()
@@ -702,7 +766,10 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` after incrementing the count.
-    pub(crate) fn start_processing(&self, topic_key: &TopicKey) -> EventBusResult<()> {
+    pub(crate) fn start_processing(
+        &self,
+        topic_key: &TopicKey,
+    ) -> EventBusResult<()> {
         self.processing_tracker.start(topic_key)
     }
 
@@ -721,7 +788,10 @@ impl LocalEventBusInner {
     ///
     /// # Returns
     /// `Ok(())` once the topic is idle.
-    pub(crate) fn wait_for_idle(&self, topic_key: &TopicKey) -> EventBusResult<()> {
+    pub(crate) fn wait_for_idle(
+        &self,
+        topic_key: &TopicKey,
+    ) -> EventBusResult<()> {
         self.processing_tracker.wait_for_idle(topic_key)
     }
 
@@ -732,9 +802,15 @@ impl LocalEventBusInner {
     /// - `timeout`: Maximum duration to wait.
     ///
     /// # Returns
-    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout elapses first.
-    pub(crate) fn wait_for_idle_timeout(&self, topic_key: &TopicKey, timeout: Duration) -> EventBusResult<bool> {
-        self.processing_tracker.wait_for_idle_timeout(topic_key, timeout)
+    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout
+    /// elapses first.
+    pub(crate) fn wait_for_idle_timeout(
+        &self,
+        topic_key: &TopicKey,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
+        self.processing_tracker
+            .wait_for_idle_timeout(topic_key, timeout)
     }
 
     /// Waits until all topics have zero active work.
@@ -753,7 +829,10 @@ impl LocalEventBusInner {
     /// # Returns
     /// `Ok(true)` once all tracked topics are idle, or `Ok(false)` when the
     /// timeout elapses first.
-    pub(crate) fn wait_for_all_idle_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
+    pub(crate) fn wait_for_all_idle_timeout(
+        &self,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
         self.processing_tracker.wait_for_all_idle_timeout(timeout)
     }
 
@@ -766,8 +845,13 @@ impl LocalEventBusInner {
     /// `Ok(())` when the pool accepts the task.
     ///
     /// # Errors
-    /// Returns lock-poisoning or executor rejection errors before the task runs.
-    pub(crate) fn submit_processing_task<F>(&self, task: F, allow_stopping: bool) -> EventBusResult<()>
+    /// Returns lock-poisoning or executor rejection errors before the task
+    /// runs.
+    pub(crate) fn submit_processing_task<F>(
+        &self,
+        task: F,
+        allow_stopping: bool,
+    ) -> EventBusResult<()>
     where
         F: FnOnce() + Send + 'static,
     {
@@ -779,19 +863,21 @@ impl LocalEventBusInner {
         submit_processing_task_to_executor(executor, task)
     }
 
-    /// Schedules delayed subscriber processing without occupying a handler worker.
+    /// Schedules delayed subscriber processing without occupying a handler
+    /// worker.
     ///
     /// # Parameters
     /// - `task`: Subscriber processing task accepted by dispatch.
     /// - `delay`: Delay before the task can enter the handler pool.
-    /// - `subscription_state`: State used to wake the delay when the subscription is cancelled.
+    /// - `subscription_state`: State used to wake the delay when the
+    ///   subscription is cancelled.
     ///
     /// # Returns
     /// `Ok(())` after the delay wait has been scheduled.
     ///
     /// # Errors
-    /// Returns executor admission errors if the bus is not accepting dispatch or
-    /// the delayed-delivery executor rejects the delay waiter.
+    /// Returns executor admission errors if the bus is not accepting dispatch
+    /// or the delayed-delivery executor rejects the delay waiter.
     pub(crate) fn submit_delayed_processing_task(
         self: &Arc<Self>,
         task: ProcessingTask,
@@ -803,7 +889,8 @@ impl LocalEventBusInner {
             .lifecycle
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        let delay_scheduler = delay_scheduler_for_dispatch(&lifecycle, allow_stopping)?;
+        let delay_scheduler =
+            delay_scheduler_for_dispatch(&lifecycle, allow_stopping)?;
         let bus = Arc::clone(self);
         let task_slot = Arc::new(Mutex::new(Some(task)));
         let registration = Arc::new(Mutex::new(None::<usize>));
@@ -819,7 +906,8 @@ impl LocalEventBusInner {
             if let Ok(mut registration) = registration_for_delay.lock()
                 && let Some(registration_id) = registration.take()
             {
-                subscription_for_delay.unregister_delay_cancellation(registration_id);
+                subscription_for_delay
+                    .unregister_delay_cancellation(registration_id);
             }
             if subscription_for_delay.is_active() {
                 let task_for_executor = Arc::clone(&task_for_delay);
@@ -851,27 +939,33 @@ impl LocalEventBusInner {
         });
         let handle = match scheduled {
             Ok(handle) => handle,
-            Err(error) => return Err(EventBusError::execution_rejected(error.to_string())),
+            Err(error) => {
+                return Err(EventBusError::execution_rejected(
+                    error.to_string(),
+                ));
+            }
         };
         if fired.lock().map(|fired| *fired).unwrap_or(true) {
             return Ok(());
         }
         let task_for_cancel = Arc::clone(&task_slot);
         let handle_for_cancel = Arc::new(Mutex::new(Some(handle)));
-        let registration_id = subscription_state.register_delay_cancellation(move || {
-            if let Ok(mut handle) = handle_for_cancel.lock()
-                && let Some(handle) = handle.take()
-                && handle.cancel() == CancelResult::Cancelled
-                && let Ok(mut task) = task_for_cancel.lock()
-            {
-                let _ = task.take();
-            }
-        });
+        let registration_id =
+            subscription_state.register_delay_cancellation(move || {
+                if let Ok(mut handle) = handle_for_cancel.lock()
+                    && let Some(handle) = handle.take()
+                    && handle.cancel() == CancelResult::Cancelled
+                    && let Ok(mut task) = task_for_cancel.lock()
+                {
+                    let _ = task.take();
+                }
+            });
         if let Some(registration_id) = registration_id
             && let Ok(mut registration) = registration.lock()
         {
             if fired.lock().map(|fired| *fired).unwrap_or(true) {
-                subscription_state.unregister_delay_cancellation(registration_id);
+                subscription_state
+                    .unregister_delay_cancellation(registration_id);
             } else {
                 *registration = Some(registration_id);
             }
@@ -880,7 +974,10 @@ impl LocalEventBusInner {
     }
 
     /// Reserves one local ordered-lane queue slot.
-    fn reserve_ordered_queue_slot(&self, lifecycle: &LocalEventBusLifecycle) -> EventBusResult<()> {
+    fn reserve_ordered_queue_slot(
+        &self,
+        lifecycle: &LocalEventBusLifecycle,
+    ) -> EventBusResult<()> {
         let Some(capacity) = self.subscription_handler_queue_capacity else {
             return Ok(());
         };
@@ -890,15 +987,25 @@ impl LocalEventBusInner {
             .map(FixedThreadPool::queued_count)
             .unwrap_or_default();
         self.ordered_queued_task_count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |ordered_queued| {
-                if ordered_queued.saturating_add(executor_queued) >= capacity {
-                    None
-                } else {
-                    Some(ordered_queued + 1)
-                }
-            })
+            .fetch_update(
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+                |ordered_queued| {
+                    if ordered_queued.saturating_add(executor_queued)
+                        >= capacity
+                    {
+                        None
+                    } else {
+                        Some(ordered_queued + 1)
+                    }
+                },
+            )
             .map(|_| ())
-            .map_err(|_| EventBusError::execution_rejected("subscription handler queue capacity is saturated"))
+            .map_err(|_| {
+                EventBusError::execution_rejected(
+                    "subscription handler queue capacity is saturated",
+                )
+            })
     }
 
     /// Releases local ordered-lane queue slots.
@@ -906,11 +1013,11 @@ impl LocalEventBusInner {
         if slots == 0 {
             return;
         }
-        let _ = self
-            .ordered_queued_task_count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                Some(current.saturating_sub(slots))
-            });
+        let _ = self.ordered_queued_task_count.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| Some(current.saturating_sub(slots)),
+        );
     }
 
     /// Submits a lane runner to a known-live handler executor.
@@ -966,13 +1073,18 @@ impl LocalEventBusInner {
             if let Ok(mut registration) = registration_for_delay.lock()
                 && let Some(registration_id) = registration.take()
             {
-                subscription_for_delay.unregister_delay_cancellation(registration_id);
+                subscription_for_delay
+                    .unregister_delay_cancellation(registration_id);
             }
             if subscription_for_delay.is_active() {
-                match bus.submit_ordered_lane_runner(lane_key_for_delay.clone(), true) {
+                match bus.submit_ordered_lane_runner(
+                    lane_key_for_delay.clone(),
+                    true,
+                ) {
                     Ok(()) => {}
                     Err(EventBusError::ExecutionRejected { .. }) => {
-                        Arc::clone(&bus).run_ordered_lane(lane_key_for_delay.clone());
+                        Arc::clone(&bus)
+                            .run_ordered_lane(lane_key_for_delay.clone());
                     }
                     Err(error) => {
                         bus.observe_error(&error);
@@ -986,7 +1098,11 @@ impl LocalEventBusInner {
         });
         let handle = match scheduled {
             Ok(handle) => handle,
-            Err(error) => return Err(EventBusError::execution_rejected(error.to_string())),
+            Err(error) => {
+                return Err(EventBusError::execution_rejected(
+                    error.to_string(),
+                ));
+            }
         };
         if fired.lock().map(|fired| *fired).unwrap_or(true) {
             return Ok(());
@@ -994,19 +1110,21 @@ impl LocalEventBusInner {
         let bus_for_cancel = Arc::clone(self);
         let lane_key_for_cancel = lane_key.clone();
         let handle_for_cancel = Arc::new(Mutex::new(Some(handle)));
-        let registration_id = subscription_state.register_delay_cancellation(move || {
-            if let Ok(mut handle) = handle_for_cancel.lock()
-                && let Some(handle) = handle.take()
-                && handle.cancel() == CancelResult::Cancelled
-            {
-                bus_for_cancel.cancel_ordered_lane(&lane_key_for_cancel);
-            }
-        });
+        let registration_id =
+            subscription_state.register_delay_cancellation(move || {
+                if let Ok(mut handle) = handle_for_cancel.lock()
+                    && let Some(handle) = handle.take()
+                    && handle.cancel() == CancelResult::Cancelled
+                {
+                    bus_for_cancel.cancel_ordered_lane(&lane_key_for_cancel);
+                }
+            });
         if let Some(registration_id) = registration_id
             && let Ok(mut registration) = registration.lock()
         {
             if fired.lock().map(|fired| *fired).unwrap_or(true) {
-                subscription_state.unregister_delay_cancellation(registration_id);
+                subscription_state
+                    .unregister_delay_cancellation(registration_id);
             } else {
                 *registration = Some(registration_id);
             }
@@ -1037,7 +1155,9 @@ impl LocalEventBusInner {
                 return None;
             };
             if front.is_inactive() {
-                let mut inactive_entry = lane.pop().expect("front entry should exist after inactive check");
+                let mut inactive_entry = lane
+                    .pop()
+                    .expect("front entry should exist after inactive check");
                 if inactive_entry.reserved_queue_slot {
                     inactive_entry.reserved_queue_slot = false;
                     self.release_ordered_queue_slots(1);
@@ -1045,11 +1165,18 @@ impl LocalEventBusInner {
                 drop(inactive_entry);
                 continue;
             }
-            if let Some((remaining, subscription_state)) = front.remaining_delay() {
-                return Some(OrderedLaneTask::Delayed(remaining, subscription_state));
+            if let Some((remaining, subscription_state)) =
+                front.remaining_delay()
+            {
+                return Some(OrderedLaneTask::Delayed(
+                    remaining,
+                    subscription_state,
+                ));
             }
 
-            let mut next_entry = lane.pop().expect("front entry should exist after readiness check");
+            let mut next_entry = lane
+                .pop()
+                .expect("front entry should exist after readiness check");
             if next_entry.reserved_queue_slot {
                 next_entry.reserved_queue_slot = false;
                 self.release_ordered_queue_slots(1);
@@ -1087,7 +1214,9 @@ impl LocalEventBusInner {
                 guard.disarm();
                 OrderedLaneTurn::Rescheduled
             }
-            Err(EventBusError::ExecutionRejected { .. }) => OrderedLaneTurn::ContinueInline,
+            Err(EventBusError::ExecutionRejected { .. }) => {
+                OrderedLaneTurn::ContinueInline
+            }
             Err(error) => {
                 self.observe_error(&error);
                 self.cancel_ordered_lane(lane_key);
@@ -1100,7 +1229,8 @@ impl LocalEventBusInner {
     /// Submits subscriber processing work through a per-ordering-key lane.
     ///
     /// Tasks in the same lane are submitted to the handler executor one at a
-    /// time, preserving publish order for a topic, subscriber, and ordering key.
+    /// time, preserving publish order for a topic, subscriber, and ordering
+    /// key.
     ///
     /// # Parameters
     /// - `lane_key`: Topic, subscriber, and ordering key identifying the lane.
@@ -1138,7 +1268,10 @@ impl LocalEventBusInner {
             lane.push(task, false);
             lanes.insert(lane_key.clone(), lane);
             drop(lanes);
-            self.submit_ordered_lane_runner_to_executor(executor, lane_key.clone())
+            self.submit_ordered_lane_runner_to_executor(
+                executor,
+                lane_key.clone(),
+            )
         };
         if result.is_err() {
             self.cancel_ordered_lane(&lane_key);
@@ -1146,7 +1279,8 @@ impl LocalEventBusInner {
         result
     }
 
-    /// Submits delayed subscriber processing work through a per-ordering-key lane.
+    /// Submits delayed subscriber processing work through a per-ordering-key
+    /// lane.
     pub(crate) fn submit_delayed_ordered_processing_task(
         self: &Arc<Self>,
         lane_key: OrderingLaneKey,
@@ -1174,7 +1308,10 @@ impl LocalEventBusInner {
             lane.push_delayed(task, false, delay, subscription_state);
             lanes.insert(lane_key.clone(), lane);
             drop(lanes);
-            self.submit_ordered_lane_runner_to_executor(executor, lane_key.clone())
+            self.submit_ordered_lane_runner_to_executor(
+                executor,
+                lane_key.clone(),
+            )
         };
         if result.is_err() {
             self.cancel_ordered_lane(&lane_key);
@@ -1184,15 +1321,21 @@ impl LocalEventBusInner {
 
     /// Drains one turn of an ordering lane on a handler-pool worker.
     fn run_ordered_lane(self: Arc<Self>, lane_key: OrderingLaneKey) {
-        let mut guard = OrderedLaneRunnerGuard::new(Arc::clone(&self), lane_key.clone());
+        let mut guard =
+            OrderedLaneRunnerGuard::new(Arc::clone(&self), lane_key.clone());
         loop {
-            let Some(task) = self.pop_ordered_lane_task(&lane_key, &mut guard) else {
+            let Some(task) = self.pop_ordered_lane_task(&lane_key, &mut guard)
+            else {
                 return;
             };
             match task {
                 OrderedLaneTask::Ready(task) => task.run(),
                 OrderedLaneTask::Delayed(delay, subscription_state) => {
-                    match self.submit_ordered_lane_runner_after_delay(lane_key.clone(), delay, subscription_state) {
+                    match self.submit_ordered_lane_runner_after_delay(
+                        lane_key.clone(),
+                        delay,
+                        subscription_state,
+                    ) {
                         Ok(()) => guard.disarm(),
                         Err(error) => {
                             self.observe_error(&error);
@@ -1205,7 +1348,9 @@ impl LocalEventBusInner {
             }
             match self.finish_ordered_lane_turn(&lane_key, &mut guard) {
                 OrderedLaneTurn::ContinueInline => {}
-                OrderedLaneTurn::Drained | OrderedLaneTurn::Rescheduled | OrderedLaneTurn::Cancelled => return,
+                OrderedLaneTurn::Drained
+                | OrderedLaneTurn::Rescheduled
+                | OrderedLaneTurn::Cancelled => return,
             }
         }
     }
@@ -1233,7 +1378,9 @@ impl LocalEventBusInner {
     ///
     /// # Errors
     /// Returns executor build errors from `rs-thread-pool`.
-    fn build_subscription_handler_executor(&self) -> Result<FixedThreadPool, ExecutorServiceBuilderError> {
+    fn build_subscription_handler_executor(
+        &self,
+    ) -> Result<FixedThreadPool, ExecutorServiceBuilderError> {
         let mut builder = FixedThreadPool::builder()
             .pool_size(self.subscription_handler_pool_size)
             .thread_name_prefix("qubit-event-bus-subscriber");
@@ -1250,17 +1397,26 @@ impl LocalEventBusInner {
     ///
     /// # Errors
     /// Returns executor build errors from `rs-executor`.
-    fn build_delay_scheduler(&self) -> Result<SingleThreadScheduledExecutorService, ExecutorServiceBuilderError> {
+    fn build_delay_scheduler(
+        &self,
+    ) -> Result<SingleThreadScheduledExecutorService, ExecutorServiceBuilderError>
+    {
         SingleThreadScheduledExecutorService::new("qubit-event-bus-delay")
     }
 }
 
 /// Returns the executor if the current lifecycle allows dispatch.
-fn executor_for_dispatch(lifecycle: &LocalEventBusLifecycle, allow_stopping: bool) -> EventBusResult<&FixedThreadPool> {
+fn executor_for_dispatch(
+    lifecycle: &LocalEventBusLifecycle,
+    allow_stopping: bool,
+) -> EventBusResult<&FixedThreadPool> {
     if !lifecycle.started && !allow_stopping {
         return Err(EventBusError::not_started());
     }
-    lifecycle.executor.as_ref().ok_or_else(EventBusError::not_started)
+    lifecycle
+        .executor
+        .as_ref()
+        .ok_or_else(EventBusError::not_started)
 }
 
 /// Returns the delayed-delivery scheduler if the lifecycle allows dispatch.
@@ -1278,12 +1434,17 @@ fn delay_scheduler_for_dispatch(
 }
 
 /// Converts an executor build failure into a local event-bus startup failure.
-fn start_failed_from_thread_pool_error(error: ExecutorServiceBuilderError) -> EventBusError {
+fn start_failed_from_thread_pool_error(
+    error: ExecutorServiceBuilderError,
+) -> EventBusError {
     EventBusError::start_failed(error.to_string())
 }
 
 /// Submits subscriber processing work to the executor.
-fn submit_processing_task_to_executor<F>(executor: &FixedThreadPool, task: F) -> EventBusResult<()>
+fn submit_processing_task_to_executor<F>(
+    executor: &FixedThreadPool,
+    task: F,
+) -> EventBusResult<()>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -1420,8 +1581,13 @@ impl ProcessingTracker {
     /// - `timeout`: Maximum duration to wait.
     ///
     /// # Returns
-    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout elapses first.
-    fn wait_for_idle_timeout(&self, topic_key: &TopicKey, timeout: Duration) -> EventBusResult<bool> {
+    /// `Ok(true)` once the topic is idle, or `Ok(false)` when the timeout
+    /// elapses first.
+    fn wait_for_idle_timeout(
+        &self,
+        topic_key: &TopicKey,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
         let started_at = Instant::now();
         let mut counts = self
             .counts
@@ -1431,12 +1597,15 @@ impl ProcessingTracker {
             let Some(remaining) = remaining_timeout(started_at, timeout) else {
                 return Ok(false);
             };
-            let (next_counts, timeout_result) = match self.condvar.wait_timeout(counts, remaining) {
-                Ok(result) => result,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let (next_counts, timeout_result) =
+                match self.condvar.wait_timeout(counts, remaining) {
+                    Ok(result) => result,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
             counts = next_counts;
-            if timeout_result.timed_out() && counts.get(topic_key).copied().unwrap_or(0) > 0 {
+            if timeout_result.timed_out()
+                && counts.get(topic_key).copied().unwrap_or(0) > 0
+            {
                 return Ok(false);
             }
         }
@@ -1469,7 +1638,10 @@ impl ProcessingTracker {
     /// # Returns
     /// `Ok(true)` once all tracked topics are idle, or `Ok(false)` when the
     /// timeout elapses first.
-    fn wait_for_all_idle_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
+    fn wait_for_all_idle_timeout(
+        &self,
+        timeout: Duration,
+    ) -> EventBusResult<bool> {
         let started_at = Instant::now();
         let mut counts = self
             .counts
@@ -1479,10 +1651,11 @@ impl ProcessingTracker {
             let Some(remaining) = remaining_timeout(started_at, timeout) else {
                 return Ok(false);
             };
-            let (next_counts, timeout_result) = match self.condvar.wait_timeout(counts, remaining) {
-                Ok(result) => result,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let (next_counts, timeout_result) =
+                match self.condvar.wait_timeout(counts, remaining) {
+                    Ok(result) => result,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
             counts = next_counts;
             if timeout_result.timed_out() && !counts.is_empty() {
                 return Ok(false);
@@ -1509,6 +1682,9 @@ impl ProcessingTracker {
 ///
 /// # Returns
 /// Remaining duration, or `None` when the timeout has elapsed.
-fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
+fn remaining_timeout(
+    started_at: Instant,
+    timeout: Duration,
+) -> Option<Duration> {
     timeout.checked_sub(started_at.elapsed())
 }
