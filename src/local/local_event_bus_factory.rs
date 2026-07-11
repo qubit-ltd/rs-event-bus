@@ -14,6 +14,11 @@ use std::any::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use qubit_argument::{
+    NumericArgument,
+    OptionArgument,
+};
+
 use crate::{
     DeadLetterStrategyAnyCallback,
     DeadLetterStrategyCallback,
@@ -243,12 +248,13 @@ impl LocalEventBusFactory {
         &mut self,
         pool_size: usize,
     ) -> EventBusResult<()> {
-        if pool_size == 0 {
-            return Err(EventBusError::invalid_argument(
-                "pool_size",
-                "subscription handler pool size must be greater than zero",
-            ));
-        }
+        let pool_size =
+            pool_size.require_positive("pool_size").map_err(|_| {
+                EventBusError::invalid_argument(
+                    "pool_size",
+                    "subscription handler pool size must be greater than zero",
+                )
+            })?;
         self.subscription_handler_pool_size = pool_size;
         Ok(())
     }
@@ -268,12 +274,17 @@ impl LocalEventBusFactory {
         &mut self,
         capacity: Option<usize>,
     ) -> EventBusResult<()> {
-        if capacity == Some(0) {
-            return Err(EventBusError::invalid_argument(
-                "capacity",
-                "subscription handler queue capacity must be greater than zero",
-            ));
-        }
+        capacity
+            .validate_if_some(|capacity| {
+                (*capacity).require_positive("capacity")?;
+                Ok(())
+            })
+            .map_err(|_| {
+                EventBusError::invalid_argument(
+                    "capacity",
+                    "subscription handler queue capacity must be greater than zero",
+                )
+            })?;
         self.subscription_handler_queue_capacity = capacity;
         Ok(())
     }

@@ -31,6 +31,7 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
+qubit-argument = "0.4"
 qubit-executor = "0.7"
 qubit-metadata = { version = "0.5" }
 qubit-retry = { version = "0.15" }

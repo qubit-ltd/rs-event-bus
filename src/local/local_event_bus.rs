@@ -30,6 +30,7 @@ use std::time::{
     Instant,
 };
 
+use qubit_argument::StringArgument;
 use qubit_executor::{
     ExecutorService,
     SingleThreadScheduledExecutorService,
@@ -907,13 +908,15 @@ impl LocalEventBus {
         self.ensure_started()?;
         let options =
             options.merge_defaults(self.default_subscribe_options::<T>());
-        let subscriber_id = subscriber_id.into();
-        if subscriber_id.trim().is_empty() {
-            return Err(EventBusError::invalid_argument(
-                "subscriber_id",
-                "subscriber ID must not be blank",
-            ));
-        }
+        let subscriber_id = subscriber_id
+            .into()
+            .require_non_blank("subscriber_id")
+            .map_err(|_| {
+                EventBusError::invalid_argument(
+                    "subscriber_id",
+                    "subscriber ID must not be blank",
+                )
+            })?;
         validate_retry_options(options.retry_options())?;
 
         let id = self.inner.next_subscription_id();
