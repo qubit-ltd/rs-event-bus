@@ -595,6 +595,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qubit-argument"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd7c4c6323e838dc61e9c37e24691a185a40e50aeb172a56ab1772dc7de31c5a"
+
+[[package]]
 name = "qubit-atomic"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -641,6 +647,7 @@ checksum = "da626589381bfcb778362b1a33268b471a40812c7d796f036a8864c1d43a4de2"
 name = "qubit-event-bus"
 version = "0.7.0"
 dependencies = [
+ "qubit-argument",
  "qubit-executor",
  "qubit-metadata",
  "qubit-retry",
