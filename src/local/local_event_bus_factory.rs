@@ -274,11 +274,8 @@ impl LocalEventBusFactory {
         &mut self,
         capacity: Option<usize>,
     ) -> EventBusResult<()> {
-        capacity
-            .validate_if_some(|capacity| {
-                (*capacity).require_positive("capacity")?;
-                Ok(())
-            })
+        let capacity = capacity
+            .validate_some(|capacity| capacity.require_positive("capacity"))
             .map_err(|_| {
                 EventBusError::invalid_argument(
                     "capacity",
