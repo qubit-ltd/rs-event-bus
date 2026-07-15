@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -32,9 +32,9 @@ doctest = true
 
 [dependencies]
 qubit-argument = "0.4"
-qubit-executor = "0.7"
-qubit-metadata = { version = "0.5" }
-qubit-retry = { version = "0.15" }
+qubit-executor = "0.7.1"
+qubit-metadata = { version = "0.6" }
+qubit-retry = { version = "0.16" }
 qubit-thread-pool = "0.9"
 
 [lints.rust]
