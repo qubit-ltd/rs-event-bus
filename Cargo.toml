@@ -33,7 +33,7 @@ doctest = true
 [dependencies]
 qubit-argument = { path = "../rs-argument", version = "0.4" }
 qubit-executor = { path = "../rs-executor", version = "0.7.1" }
-qubit-metadata = { path = "../rs-metadata", version = "0.7", default-features = false }
+qubit-metadata = { path = "../rs-metadata", version = "0.8", default-features = false }
 qubit-retry = { path = "../rs-retry", version = "0.16" }
 qubit-thread-pool = { path = "../rs-thread-pool", version = "0.9" }
 
