@@ -31,11 +31,15 @@ name = "qubit_event_bus"
 doctest = true
 
 [dependencies]
-qubit-argument = "0.4"
-qubit-executor = "0.7.1"
-qubit-metadata = { version = "0.6" }
-qubit-retry = { version = "0.16" }
-qubit-thread-pool = "0.9"
+qubit-argument = { path = "../rs-argument", version = "0.4" }
+qubit-executor = { path = "../rs-executor", version = "0.7.1" }
+qubit-metadata = { path = "../rs-metadata", version = "0.6", default-features = false }
+qubit-retry = { path = "../rs-retry", version = "0.16" }
+qubit-thread-pool = { path = "../rs-thread-pool", version = "0.9" }
+
+[patch.crates-io]
+qubit-cas = { path = "../rs-cas" }
+qubit-state-machine = { path = "../rs-state-machine" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
