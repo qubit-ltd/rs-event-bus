@@ -35,6 +35,10 @@ use qubit_executor::{
     ExecutorService,
     SingleThreadScheduledExecutorService,
 };
+use qubit_retry::{
+    Retry,
+    RetryOptions,
+};
 use qubit_thread_pool::FixedThreadPool;
 
 use crate::core::SubscriptionState;
@@ -1165,7 +1169,7 @@ impl LocalEventBus {
     fn dispatch_envelope<T>(
         &self,
         envelope: EventEnvelope<T>,
-        retry_options: Option<&crate::RetryOptions>,
+        retry_options: Option<&RetryOptions>,
         allow_stopping: bool,
     ) -> EventBusResult<()>
     where
@@ -2094,7 +2098,7 @@ fn normalize_subscriber_interceptor_error(
 /// # Returns
 /// Successful operation value or the final event-bus error.
 fn run_with_retry<T, F>(
-    retry_options: Option<&crate::RetryOptions>,
+    retry_options: Option<&RetryOptions>,
     operation: F,
 ) -> EventBusResult<T>
 where
@@ -2104,17 +2108,16 @@ where
         let mut operation = operation;
         return operation();
     };
-    let retry = match qubit_retry::Retry::<EventBusError>::from_options(
-        retry_options.clone(),
-    ) {
-        Ok(retry) => retry,
-        Err(error) => {
-            return Err(EventBusError::invalid_argument(
-                "retry_options",
-                error.to_string(),
-            ));
-        }
-    };
+    let retry =
+        match Retry::<EventBusError>::from_options(retry_options.clone()) {
+            Ok(retry) => retry,
+            Err(error) => {
+                return Err(EventBusError::invalid_argument(
+                    "retry_options",
+                    error.to_string(),
+                ));
+            }
+        };
     match retry.run(operation) {
         Ok(value) => Ok(value),
         Err(error) => match error.last_error().cloned() {
@@ -2136,10 +2139,10 @@ where
 /// Returns [`EventBusError::InvalidArgument`] when unsupported attempt timeout
 /// options are configured.
 fn validate_retry_options(
-    retry_options: Option<&crate::RetryOptions>,
+    retry_options: Option<&RetryOptions>,
 ) -> EventBusResult<()> {
     if retry_options
-        .and_then(crate::RetryOptions::attempt_timeout)
+        .and_then(RetryOptions::attempt_timeout)
         .is_some()
     {
         return Err(EventBusError::invalid_argument(

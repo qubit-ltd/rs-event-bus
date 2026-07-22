@@ -22,7 +22,6 @@ mod options_tests;
 mod package_metadata_tests;
 mod publish_options_builder_tests;
 mod publish_options_tests;
-mod retry_options_tests;
 mod subscribe_options_builder_tests;
 mod subscribe_options_tests;
 mod subscription_tests;

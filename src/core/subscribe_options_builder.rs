@@ -10,13 +10,14 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use qubit_retry::RetryOptions;
+
 use crate::{
     AckMode,
     Acknowledgement,
     EventBusError,
     EventEnvelope,
     IntoEventBusResult,
-    RetryOptions,
     SubscribeOptions,
 };
 

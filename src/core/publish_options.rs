@@ -13,12 +13,13 @@ use std::panic::{
 };
 use std::sync::Arc;
 
+use qubit_retry::RetryOptions;
+
 use crate::{
     EventBusError,
     EventBusResult,
     EventEnvelope,
     PublishOptionsBuilder,
-    RetryOptions,
 };
 
 pub(crate) type PublishErrorHandlerFn<T> = dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()>

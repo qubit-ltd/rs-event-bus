@@ -19,11 +19,13 @@ use qubit_event_bus::{
     EventEnvelope,
     LocalEventBus,
     PublishOptions,
+    SubscribeOptions,
+    Topic,
+};
+use qubit_retry::{
     RetryDelay,
     RetryJitter,
     RetryOptions,
-    SubscribeOptions,
-    Topic,
 };
 
 fn retry_options(max_attempts: u32) -> RetryOptions {

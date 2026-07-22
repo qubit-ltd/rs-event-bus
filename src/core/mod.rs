@@ -21,7 +21,6 @@ mod event_envelope_builder;
 mod into_event_bus_result;
 pub(crate) mod publish_options;
 mod publish_options_builder;
-mod retry_options;
 pub(crate) mod subscribe_options;
 mod subscribe_options_builder;
 mod subscription;
@@ -57,13 +56,6 @@ pub use event_envelope_builder::EventEnvelopeBuilder;
 pub use into_event_bus_result::IntoEventBusResult;
 pub use publish_options::PublishOptions;
 pub use publish_options_builder::PublishOptionsBuilder;
-pub use retry_options::{
-    AttemptTimeoutOption,
-    AttemptTimeoutPolicy,
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
-};
 pub use subscribe_options::{
     DeadLetterStrategy,
     DeadLetterStrategyAny,

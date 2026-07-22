@@ -7,11 +7,13 @@ use std::sync::atomic::{
 use qubit_event_bus::{
     EventBusError,
     LocalEventBus,
+    SubscribeOptions,
+    Topic,
+};
+use qubit_retry::{
     RetryDelay,
     RetryJitter,
     RetryOptions,
-    SubscribeOptions,
-    Topic,
 };
 
 #[test]
