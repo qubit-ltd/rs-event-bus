@@ -27,12 +27,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "autocfg"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -194,34 +188,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "num-bigint"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "num-traits"
-version = "0.2.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
 name = "oneshot"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -308,7 +274,7 @@ checksum = "52917ecf4305b3a354fca78aa569dfbfb2e12fe651a539760f3d66bc6034c96e"
 
 [[package]]
 name = "qubit-argument"
-version = "0.4.3"
+version = "0.4.4"
 
 [[package]]
 name = "qubit-atomic"
@@ -333,17 +299,17 @@ dependencies = [
 
 [[package]]
 name = "qubit-clock"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "qubit-datatype"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
- "num-bigint",
  "serde",
+ "strum",
  "thiserror",
 ]
 
@@ -357,7 +323,7 @@ checksum = "da626589381bfcb778362b1a33268b471a40812c7d796f036a8864c1d43a4de2"
 name = "qubit-event-bus"
 version = "0.8.0"
 dependencies = [
- "qubit-argument 0.4.3",
+ "qubit-argument 0.4.4",
  "qubit-executor",
  "qubit-metadata",
  "qubit-retry",
@@ -386,10 +352,12 @@ version = "0.1.0"
 [[package]]
 name = "qubit-function"
 version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59f10e916324739b811520fbfb24746f4822ad9ea1adb53c79fc04b7c090e5ed"
 
 [[package]]
 name = "qubit-lock"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "parking_lot",
  "qubit-clock",
@@ -420,12 +388,10 @@ dependencies = [
 
 [[package]]
 name = "qubit-serde"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96f0064338790690222e4a91641bf259a1438b5602be7c94b473678fba431bf8"
+version = "0.4.0"
 dependencies = [
+ "qubit-datatype",
  "serde",
- "thiserror",
 ]
 
 [[package]]
@@ -613,6 +579,27 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "152a0b65a590ff6c3da95cabe2353ee04e6167c896b28e3b14478c2636c922fc"
 dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
+dependencies = [
+ "heck",
  "proc-macro2",
  "quote",
  "syn",
