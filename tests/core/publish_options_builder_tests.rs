@@ -1,5 +1,5 @@
-use qubit_event_bus::{
-    PublishOptions,
+use qubit_event_bus::PublishOptions;
+use qubit_retry::{
     RetryDelay,
     RetryJitter,
     RetryOptions,

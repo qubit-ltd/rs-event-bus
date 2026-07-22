@@ -19,8 +19,6 @@ mod transactional;
 pub use core::{
     AckMode,
     Acknowledgement,
-    AttemptTimeoutOption,
-    AttemptTimeoutPolicy,
     BatchPublishFailure,
     BatchPublishResult,
     DeadLetterOriginalPayload,
@@ -40,9 +38,6 @@ pub use core::{
     IntoEventBusResult,
     PublishOptions,
     PublishOptionsBuilder,
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
     SubscribeOptions,
     SubscribeOptionsBuilder,
     Subscription,

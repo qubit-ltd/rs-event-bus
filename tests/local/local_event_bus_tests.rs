@@ -26,7 +26,6 @@ use std::time::{
 
 use qubit_event_bus::{
     AckMode,
-    AttemptTimeoutOption,
     DeadLetterPayload,
     DeadLetterRecord,
     EventBusError,
@@ -36,15 +35,18 @@ use qubit_event_bus::{
     LocalEventBus,
     LocalEventBusFactory,
     PublishOptions,
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
     SubscribeOptions,
     SubscriberInterceptorAnyChain,
     SubscriberInterceptorChain,
     Topic,
     discard_dead_letters,
     standard_dead_letters_to,
+};
+use qubit_retry::{
+    AttemptTimeoutOption,
+    RetryDelay,
+    RetryJitter,
+    RetryOptions,
 };
 
 use crate::support::PanicHookGuard;

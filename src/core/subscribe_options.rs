@@ -14,6 +14,8 @@ use std::panic::{
 };
 use std::sync::Arc;
 
+use qubit_retry::RetryOptions;
+
 use crate::{
     AckMode,
     Acknowledgement,
@@ -23,7 +25,6 @@ use crate::{
     EventBusResult,
     EventEnvelope,
     EventEnvelopeMetadata,
-    RetryOptions,
     SubscribeOptionsBuilder,
     Topic,
 };
