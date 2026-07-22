@@ -365,12 +365,17 @@ dependencies = [
 
 [[package]]
 name = "qubit-metadata"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "qubit-datatype",
+ "qubit-redact",
  "qubit-value",
  "serde",
 ]
+
+[[package]]
+name = "qubit-redact"
+version = "0.3.0"
 
 [[package]]
 name = "qubit-retry"
