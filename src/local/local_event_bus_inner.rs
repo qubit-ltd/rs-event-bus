@@ -16,6 +16,7 @@ use std::any::{
     Any,
     TypeId,
 };
+use std::cmp::Reverse;
 use std::collections::{
     HashMap,
     VecDeque,
@@ -34,6 +35,7 @@ use std::time::{
     Instant,
 };
 
+use qubit_collections::OrderedIndexMap;
 use qubit_executor::{
     CancelResult,
     ExecutorService,
@@ -68,6 +70,11 @@ pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
 
 type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 type TypeErasedDefaults = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
+type TopicSubscriptions = OrderedIndexMap<
+    usize,
+    Reverse<i32>,
+    Arc<dyn ErasedSubscription>,
+>;
 
 /// Runtime options used to construct a local event bus.
 pub(crate) struct LocalEventBusRuntimeOptions {
@@ -261,7 +268,7 @@ enum OrderedLaneTurn {
 /// Shared mutable state for [`crate::LocalEventBus`].
 pub(crate) struct LocalEventBusInner {
     lifecycle: Mutex<LocalEventBusLifecycle>,
-    subscriptions: Mutex<HashMap<TopicKey, Vec<Arc<dyn ErasedSubscription>>>>,
+    subscriptions: Mutex<HashMap<TopicKey, TopicSubscriptions>>,
     global_publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorAny>>>,
     global_subscriber_interceptors:
         Mutex<Vec<Arc<dyn SubscriberInterceptorAny>>>,
@@ -692,9 +699,13 @@ impl LocalEventBusInner {
             .subscriptions
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?;
-        let entries = subscriptions.entry(topic_key).or_default();
-        entries.push(subscription);
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.priority()));
+        let id = subscription.id();
+        let previous = subscriptions.entry(topic_key).or_default().insert(
+            id,
+            Reverse(subscription.priority()),
+            subscription,
+        );
+        assert!(previous.is_none(), "subscription ID must be unique");
         Ok(())
     }
 
@@ -714,7 +725,12 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?
             .get(topic_key)
-            .cloned()
+            .map(|entries| {
+                entries
+                    .iter_ordered()
+                    .map(|(_id, _priority, entry)| Arc::clone(entry))
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
@@ -735,14 +751,17 @@ impl LocalEventBusInner {
             .subscriptions
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?;
-        if let Some(entries) = subscriptions.get_mut(topic_key) {
-            for entry in entries.iter().filter(|entry| entry.id() == id) {
-                entry.deactivate();
-            }
-            entries.retain(|entry| entry.id() != id);
+        let removed = if let Some(entries) = subscriptions.get_mut(topic_key) {
+            let removed = entries.remove(&id);
             if entries.is_empty() {
                 subscriptions.remove(topic_key);
             }
+            removed
+        } else {
+            None
+        };
+        if let Some((_priority, entry)) = removed {
+            entry.deactivate();
         }
         Ok(())
     }
@@ -751,7 +770,7 @@ impl LocalEventBusInner {
     pub(crate) fn clear_subscriptions(&self) {
         if let Ok(mut subscriptions) = self.subscriptions.lock() {
             for entries in subscriptions.values() {
-                for entry in entries {
+                for (_id, _priority, entry) in entries.iter_ordered() {
                     entry.deactivate();
                 }
             }

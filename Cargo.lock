@@ -300,12 +300,17 @@ dependencies = [
 name = "qubit-clock"
 version = "0.10.0"
 dependencies = [
+ "qubit-collections",
  "thiserror",
 ]
 
 [[package]]
+name = "qubit-collections"
+version = "0.1.0"
+
+[[package]]
 name = "qubit-datatype"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "strum",
@@ -323,6 +328,7 @@ name = "qubit-event-bus"
 version = "0.8.0"
 dependencies = [
  "qubit-argument 0.4.4",
+ "qubit-collections",
  "qubit-executor",
  "qubit-metadata",
  "qubit-retry",
@@ -346,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-fast-cas"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "qubit-function"
@@ -383,18 +389,10 @@ dependencies = [
  "parse-display",
  "qubit-argument 0.4.1",
  "qubit-clock",
+ "qubit-datatype",
  "qubit-error",
  "qubit-function",
- "qubit-serde",
  "rand",
- "serde",
-]
-
-[[package]]
-name = "qubit-serde"
-version = "0.4.0"
-dependencies = [
- "qubit-datatype",
  "serde",
 ]
 
@@ -425,6 +423,7 @@ name = "qubit-value"
 version = "0.10.0"
 dependencies = [
  "qubit-datatype",
+ "qubit-redact",
  "serde",
  "thiserror",
 ]

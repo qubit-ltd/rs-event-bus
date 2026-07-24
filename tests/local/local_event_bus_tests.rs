@@ -2872,6 +2872,71 @@ fn test_subscriber_priority_controls_delivery_order() {
 }
 
 #[test]
+fn test_subscriber_equal_priority_preserves_registration_order() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("pool size should be accepted");
+    let bus = factory.create_started().expect("factory should start bus");
+    let topic = create_topic("equal-priority-order");
+    let blocker_topic = create_topic("equal-priority-order-blocker");
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let (started_tx, started_rx) = mpsc::channel();
+    let captured_release = Arc::clone(&release);
+    bus.subscribe("blocker", &blocker_topic, move |_| {
+        started_tx
+            .send(())
+            .expect("blocker start should be observed");
+        wait_for_gate(&captured_release);
+    })
+    .expect("blocker subscriber should register");
+    let sequence = Arc::new(Mutex::new(Vec::<String>::new()));
+    let first_sequence = Arc::clone(&sequence);
+    bus.subscribe_with_options(
+        "first",
+        &topic,
+        move |_| {
+            first_sequence
+                .lock()
+                .expect("sequence should lock")
+                .push("first".to_string());
+        },
+        SubscribeOptions::<String>::builder().priority(5).build(),
+    )
+    .expect("first subscriber should register");
+    let second_sequence = Arc::clone(&sequence);
+    bus.subscribe_with_options(
+        "second",
+        &topic,
+        move |_| {
+            second_sequence
+                .lock()
+                .expect("sequence should lock")
+                .push("second".to_string());
+        },
+        SubscribeOptions::<String>::builder().priority(5).build(),
+    )
+    .expect("second subscriber should register");
+
+    bus.publish(&blocker_topic, "blocked".to_string())
+        .expect("blocker publish should work");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocker should start");
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should work");
+    release_gate(&release);
+    bus.wait_for_idle(&blocker_topic)
+        .expect("blocker topic should become idle");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert_eq!(
+        sequence.lock().expect("sequence should lock").as_slice(),
+        ["first", "second"]
+    );
+}
+
+#[test]
 fn test_factory_applies_default_publish_options_and_interceptors() {
     let mut factory = LocalEventBusFactory::new();
     let publish_errors = Arc::new(AtomicUsize::new(0));
