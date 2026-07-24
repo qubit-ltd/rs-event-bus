@@ -70,11 +70,8 @@ pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
 
 type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 type TypeErasedDefaults = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
-type TopicSubscriptions = OrderedIndexMap<
-    usize,
-    Reverse<i32>,
-    Arc<dyn ErasedSubscription>,
->;
+type TopicSubscriptions =
+    OrderedIndexMap<usize, Reverse<i32>, Arc<dyn ErasedSubscription>>;
 
 /// Runtime options used to construct a local event bus.
 pub(crate) struct LocalEventBusRuntimeOptions {
@@ -725,12 +722,7 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?
             .get(topic_key)
-            .map(|entries| {
-                entries
-                    .iter_ordered()
-                    .map(|(_id, _priority, entry)| Arc::clone(entry))
-                    .collect()
-            })
+            .map(|entries| entries.values_ordered().map(Arc::clone).collect())
             .unwrap_or_default())
     }
 
@@ -760,8 +752,8 @@ impl LocalEventBusInner {
         } else {
             None
         };
-        if let Some((_priority, entry)) = removed {
-            entry.deactivate();
+        if let Some(entry) = removed {
+            entry.into_value().deactivate();
         }
         Ok(())
     }
@@ -770,7 +762,7 @@ impl LocalEventBusInner {
     pub(crate) fn clear_subscriptions(&self) {
         if let Ok(mut subscriptions) = self.subscriptions.lock() {
             for entries in subscriptions.values() {
-                for (_id, _priority, entry) in entries.iter_ordered() {
+                for entry in entries.values_ordered() {
                     entry.deactivate();
                 }
             }
