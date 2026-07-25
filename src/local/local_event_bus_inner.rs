@@ -697,12 +697,12 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriptions"))?;
         let id = subscription.id();
-        let previous = subscriptions.entry(topic_key).or_default().insert(
+        let inserted = subscriptions.entry(topic_key).or_default().try_insert(
             id,
             Reverse(subscription.priority()),
             subscription,
         );
-        assert!(previous.is_none(), "subscription ID must be unique");
+        assert!(inserted.is_ok(), "subscription ID must be unique");
         Ok(())
     }
 
