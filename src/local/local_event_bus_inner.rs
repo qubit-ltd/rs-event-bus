@@ -35,7 +35,7 @@ use std::time::{
     Instant,
 };
 
-use qubit_collections::OrderedIndexMap;
+use qubit_collections::map::OrderedIndexMap;
 use qubit_executor::{
     CancelResult,
     ExecutorService,
