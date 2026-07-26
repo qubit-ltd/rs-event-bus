@@ -368,6 +368,7 @@ version = "0.11.0"
 dependencies = [
  "parking_lot",
  "qubit-clock",
+ "qubit-collections",
 ]
 
 [[package]]
