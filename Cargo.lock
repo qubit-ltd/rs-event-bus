@@ -274,7 +274,7 @@ checksum = "52917ecf4305b3a354fca78aa569dfbfb2e12fe651a539760f3d66bc6034c96e"
 
 [[package]]
 name = "qubit-argument"
-version = "0.4.4"
+version = "0.4.5"
 
 [[package]]
 name = "qubit-atomic"
@@ -298,15 +298,28 @@ dependencies = [
 
 [[package]]
 name = "qubit-clock"
-version = "0.10.0"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38fc24f18d694b74188032e77ac925a87efb0fe365fea68d85eb7d54c18774d8"
 dependencies = [
- "qubit-collections",
+ "qubit-collections 0.2.0",
  "thiserror",
 ]
 
 [[package]]
 name = "qubit-collections"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e52fb7b0bbadb0b5ab1227d527c8ab46922338fbc9cdd71480dbdb83cfd472af"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "qubit-collections"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcb596d37e055a48800f0381926881152612b9171cad3be8e91dee97daee6f5b"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -314,6 +327,8 @@ dependencies = [
 [[package]]
 name = "qubit-datatype"
 version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9dd16b80a75460ac639b745af90ef486a7544574c63d0949994678afe05dd83"
 dependencies = [
  "serde",
  "thiserror",
@@ -329,8 +344,8 @@ checksum = "da626589381bfcb778362b1a33268b471a40812c7d796f036a8864c1d43a4de2"
 name = "qubit-event-bus"
 version = "0.8.0"
 dependencies = [
- "qubit-argument 0.4.4",
- "qubit-collections",
+ "qubit-argument 0.4.5",
+ "qubit-collections 0.1.0",
  "qubit-executor",
  "qubit-metadata",
  "qubit-retry",
@@ -354,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-fast-cas"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "qubit-function"
@@ -368,7 +383,7 @@ version = "0.11.0"
 dependencies = [
  "parking_lot",
  "qubit-clock",
- "qubit-collections",
+ "qubit-collections 0.1.0",
 ]
 
 [[package]]
@@ -387,7 +402,7 @@ version = "0.3.0"
 
 [[package]]
 name = "qubit-retry"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "parse-display",
  "qubit-argument 0.4.1",
