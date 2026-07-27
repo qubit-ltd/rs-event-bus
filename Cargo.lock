@@ -287,16 +287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qubit-cas"
-version = "0.9.0"
-dependencies = [
- "qubit-atomic",
- "qubit-error",
- "qubit-function",
- "qubit-retry",
-]
-
-[[package]]
 name = "qubit-clock"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -383,7 +373,6 @@ version = "0.11.0"
 dependencies = [
  "parking_lot",
  "qubit-clock",
- "qubit-collections 0.1.0",
 ]
 
 [[package]]
@@ -418,8 +407,6 @@ dependencies = [
 name = "qubit-state-machine"
 version = "0.6.0"
 dependencies = [
- "qubit-atomic",
- "qubit-cas",
  "qubit-fast-cas",
  "thiserror",
 ]

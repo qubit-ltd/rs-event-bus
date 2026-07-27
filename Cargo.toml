@@ -39,7 +39,6 @@ qubit-retry = { path = "../rs-retry", version = "0.17" }
 qubit-thread-pool = { path = "../rs-thread-pool", version = "0.9" }
 
 [patch.crates-io]
-qubit-cas = { path = "../rs-cas" }
 qubit-state-machine = { path = "../rs-state-machine" }
 
 [lints.rust]
