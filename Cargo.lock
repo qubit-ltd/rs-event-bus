@@ -292,7 +292,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38fc24f18d694b74188032e77ac925a87efb0fe365fea68d85eb7d54c18774d8"
 dependencies = [
- "qubit-collections 0.2.0",
+ "qubit-collections 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -301,6 +301,13 @@ name = "qubit-collections"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e52fb7b0bbadb0b5ab1227d527c8ab46922338fbc9cdd71480dbdb83cfd472af"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "qubit-collections"
+version = "0.2.0"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -350,6 +357,7 @@ dependencies = [
  "oneshot",
  "parking_lot",
  "qubit-atomic",
+ "qubit-collections 0.2.0",
  "qubit-fast-cas",
  "qubit-function",
  "qubit-lock",
