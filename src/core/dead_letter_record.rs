@@ -32,6 +32,11 @@ pub type DeadLetterOriginalPayload = Arc<dyn Any + Send + Sync + 'static>;
 pub type DeadLetterPayload = DeadLetterRecord;
 
 /// Standard dead-letter record with diagnostic metadata and original payload.
+///
+/// The standard `failure_reason` field contains caller-visible error text and
+/// must be treated as untrusted diagnostic content. Consumers should apply an
+/// explicit redaction policy before rendering this metadata to logs or other
+/// externally visible sinks.
 #[derive(Clone)]
 pub struct DeadLetterRecord {
     metadata: Metadata,
@@ -132,6 +137,10 @@ impl DeadLetterRecord {
     ///
     /// # Returns
     /// Metadata with standard failure fields and any caller-provided fields.
+    ///
+    /// In particular, `failure_reason` is not guaranteed to be secret-free;
+    /// render the returned metadata through an explicit redaction policy when
+    /// crossing a logging or external-output boundary.
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
