@@ -25,6 +25,34 @@ use crate::{
     EventEnvelopeMetadata,
 };
 
+/// Metadata key containing the subscriber that produced a dead letter.
+pub const DEAD_LETTER_SUBSCRIBER_ID: &str = "subscriber_id";
+
+/// Metadata key containing the failed event identifier.
+pub const DEAD_LETTER_EVENT_ID: &str = "event_id";
+
+/// Metadata key containing the failed event topic.
+pub const DEAD_LETTER_TOPIC: &str = "topic";
+
+/// Metadata key containing the failure diagnostic text.
+pub const DEAD_LETTER_FAILURE_REASON: &str = "failure_reason";
+
+/// Metadata key containing the stable failure category.
+pub const DEAD_LETTER_FAILURE_TYPE: &str = "failure_type";
+
+/// Metadata key containing the original payload type name.
+pub const DEAD_LETTER_PAYLOAD_TYPE: &str = "payload_type";
+
+/// Metadata key containing the Unix-millisecond failure timestamp.
+pub const DEAD_LETTER_FAILED_AT_UNIX_MILLIS: &str =
+    "failed_at_unix_millis";
+
+/// Metadata key marking a record as a dead letter.
+pub const DEAD_LETTER_MARKER: &str = "dead_letter";
+
+/// Metadata key containing an optional ordering key.
+pub const DEAD_LETTER_ORDERING_KEY: &str = "ordering_key";
+
 /// Type-erased original payload stored inside dead-letter records.
 pub type DeadLetterOriginalPayload = Arc<dyn Any + Send + Sync + 'static>;
 
@@ -84,16 +112,16 @@ impl DeadLetterRecord {
             .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or_default();
         let mut metadata = Metadata::new()
-            .with("subscriber_id", subscriber_id)
-            .with("event_id", envelope.id())
-            .with("topic", envelope.topic().name())
-            .with("failure_reason", error.to_string())
-            .with("failure_type", error.kind().to_string())
-            .with("payload_type", type_name::<T>())
-            .with("failed_at_unix_millis", failed_at_unix_millis)
-            .with("dead_letter", true);
+            .with(DEAD_LETTER_SUBSCRIBER_ID, subscriber_id)
+            .with(DEAD_LETTER_EVENT_ID, envelope.id())
+            .with(DEAD_LETTER_TOPIC, envelope.topic().name())
+            .with(DEAD_LETTER_FAILURE_REASON, error.to_string())
+            .with(DEAD_LETTER_FAILURE_TYPE, error.kind().to_string())
+            .with(DEAD_LETTER_PAYLOAD_TYPE, type_name::<T>())
+            .with(DEAD_LETTER_FAILED_AT_UNIX_MILLIS, failed_at_unix_millis)
+            .with(DEAD_LETTER_MARKER, true);
         if let Some(ordering_key) = envelope.ordering_key() {
-            metadata.set("ordering_key", ordering_key);
+            metadata.set(DEAD_LETTER_ORDERING_KEY, ordering_key);
         }
         Self::new(metadata, Arc::new(envelope.payload().clone()))
     }
@@ -119,16 +147,16 @@ impl DeadLetterRecord {
             .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or_default();
         let mut record_metadata = Metadata::new()
-            .with("subscriber_id", subscriber_id)
-            .with("event_id", metadata.id())
-            .with("topic", metadata.topic_name())
-            .with("failure_reason", error.to_string())
-            .with("failure_type", error.kind().to_string())
-            .with("payload_type", metadata.payload_type_name())
-            .with("failed_at_unix_millis", failed_at_unix_millis)
-            .with("dead_letter", true);
+            .with(DEAD_LETTER_SUBSCRIBER_ID, subscriber_id)
+            .with(DEAD_LETTER_EVENT_ID, metadata.id())
+            .with(DEAD_LETTER_TOPIC, metadata.topic_name())
+            .with(DEAD_LETTER_FAILURE_REASON, error.to_string())
+            .with(DEAD_LETTER_FAILURE_TYPE, error.kind().to_string())
+            .with(DEAD_LETTER_PAYLOAD_TYPE, metadata.payload_type_name())
+            .with(DEAD_LETTER_FAILED_AT_UNIX_MILLIS, failed_at_unix_millis)
+            .with(DEAD_LETTER_MARKER, true);
         if let Some(ordering_key) = metadata.ordering_key() {
-            record_metadata.set("ordering_key", ordering_key);
+            record_metadata.set(DEAD_LETTER_ORDERING_KEY, ordering_key);
         }
         Self::new(record_metadata, original_payload)
     }
