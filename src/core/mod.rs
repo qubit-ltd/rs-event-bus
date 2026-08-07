@@ -32,6 +32,15 @@ pub use acknowledgement::Acknowledgement;
 #[cfg(coverage)]
 pub use coverage::coverage_exercise_core_defensive_paths;
 pub use dead_letter_record::{
+    DEAD_LETTER_EVENT_ID,
+    DEAD_LETTER_FAILED_AT_UNIX_MILLIS,
+    DEAD_LETTER_FAILURE_REASON,
+    DEAD_LETTER_FAILURE_TYPE,
+    DEAD_LETTER_MARKER,
+    DEAD_LETTER_ORDERING_KEY,
+    DEAD_LETTER_PAYLOAD_TYPE,
+    DEAD_LETTER_SUBSCRIBER_ID,
+    DEAD_LETTER_TOPIC,
     DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,

@@ -26,6 +26,7 @@ use std::time::{
 
 use qubit_event_bus::{
     AckMode,
+    DEAD_LETTER_SUBSCRIBER_ID,
     DeadLetterPayload,
     DeadLetterRecord,
     EventBusError,
@@ -1573,7 +1574,7 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
         events[0]
             .payload()
             .metadata()
-            .get::<String>("subscriber_id"),
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
         Some("sub-1".to_string())
     );
 }
@@ -1621,7 +1622,7 @@ fn test_standard_dead_letter_strategy_helper_routes_standard_payload() {
         events[0]
             .payload()
             .metadata()
-            .get::<String>("subscriber_id"),
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
         Some("sub".to_string())
     );
     assert_eq!(

@@ -1,4 +1,5 @@
 use qubit_event_bus::{
+    DEAD_LETTER_SUBSCRIBER_ID,
     EventBusError,
     EventEnvelope,
     SubscribeOptions,
@@ -79,7 +80,7 @@ fn test_prefixed_dead_letter_strategy_builds_dead_letter_topic() {
         dead_letter
             .payload()
             .metadata()
-            .get::<String>("subscriber_id"),
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
         Some("subscriber".to_string())
     );
 }

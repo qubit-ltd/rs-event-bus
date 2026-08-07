@@ -4,6 +4,8 @@ use std::sync::{
 };
 
 use qubit_event_bus::{
+    DEAD_LETTER_SUBSCRIBER_ID,
+    DEAD_LETTER_TOPIC,
     DeadLetterOriginalPayload,
     DeadLetterPayload,
     DeadLetterRecord,
@@ -287,7 +289,7 @@ fn test_local_event_bus_factory_applies_default_dead_letter_strategy() {
         dead_letters[0]
             .payload()
             .metadata()
-            .get::<String>("subscriber_id"),
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
         Some("sub".to_string())
     );
 }
@@ -341,11 +343,11 @@ fn test_local_event_bus_factory_applies_global_default_dead_letter_strategy() {
     assert_eq!(dead_letters.len(), 1);
     let record = dead_letters[0].payload();
     assert_eq!(
-        record.metadata().get_str("subscriber_id"),
+        record.metadata().get_str(DEAD_LETTER_SUBSCRIBER_ID),
         Some("sub")
     );
     assert_eq!(
-        record.metadata().get_str("topic"),
+        record.metadata().get_str(DEAD_LETTER_TOPIC),
         Some("local-factory-global-default-dlq")
     );
     assert_eq!(record.downcast_original_payload_ref::<i64>(), Some(&7_i64));
