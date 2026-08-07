@@ -84,16 +84,16 @@ impl DeadLetterRecord {
             .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or_default();
         let mut metadata = Metadata::new()
-            .with("subscriber_id", subscriber_id.to_string())
-            .with("event_id", envelope.id().to_string())
-            .with("topic", envelope.topic().name().to_string())
+            .with("subscriber_id", subscriber_id)
+            .with("event_id", envelope.id())
+            .with("topic", envelope.topic().name())
             .with("failure_reason", error.to_string())
             .with("failure_type", error.kind().to_string())
-            .with("payload_type", type_name::<T>().to_string())
+            .with("payload_type", type_name::<T>())
             .with("failed_at_unix_millis", failed_at_unix_millis)
             .with("dead_letter", true);
         if let Some(ordering_key) = envelope.ordering_key() {
-            metadata.set("ordering_key", ordering_key.to_string());
+            metadata.set("ordering_key", ordering_key);
         }
         Self::new(metadata, Arc::new(envelope.payload().clone()))
     }
@@ -119,16 +119,16 @@ impl DeadLetterRecord {
             .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or_default();
         let mut record_metadata = Metadata::new()
-            .with("subscriber_id", subscriber_id.to_string())
-            .with("event_id", metadata.id().to_string())
-            .with("topic", metadata.topic_name().to_string())
+            .with("subscriber_id", subscriber_id)
+            .with("event_id", metadata.id())
+            .with("topic", metadata.topic_name())
             .with("failure_reason", error.to_string())
             .with("failure_type", error.kind().to_string())
-            .with("payload_type", metadata.payload_type_name().to_string())
+            .with("payload_type", metadata.payload_type_name())
             .with("failed_at_unix_millis", failed_at_unix_millis)
             .with("dead_letter", true);
         if let Some(ordering_key) = metadata.ordering_key() {
-            record_metadata.set("ordering_key", ordering_key.to_string());
+            record_metadata.set("ordering_key", ordering_key);
         }
         Self::new(record_metadata, original_payload)
     }

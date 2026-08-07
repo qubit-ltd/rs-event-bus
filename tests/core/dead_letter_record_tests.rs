@@ -17,20 +17,20 @@ fn test_dead_letter_record_from_failure_preserves_metadata_and_payload() {
         DeadLetterRecord::from_failure("subscriber", &envelope, &error);
 
     assert_eq!(
-        record.metadata().get::<String>("subscriber_id"),
-        Some("subscriber".to_string())
+        record.metadata().get_str("subscriber_id"),
+        Some("subscriber")
     );
     assert_eq!(
-        record.metadata().get::<String>("event_id"),
-        Some(envelope.id().to_string())
+        record.metadata().get_str("event_id"),
+        Some(envelope.id())
     );
     assert_eq!(
-        record.metadata().get::<String>("failure_type"),
-        Some("handler_failed".to_string())
+        record.metadata().get_str("failure_type"),
+        Some("handler_failed")
     );
     assert_eq!(
-        record.metadata().get::<String>("ordering_key"),
-        Some("order-1".to_string())
+        record.metadata().get_str("ordering_key"),
+        Some("order-1")
     );
     assert_eq!(
         record.downcast_original_payload_ref::<String>(),

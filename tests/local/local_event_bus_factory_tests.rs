@@ -341,12 +341,12 @@ fn test_local_event_bus_factory_applies_global_default_dead_letter_strategy() {
     assert_eq!(dead_letters.len(), 1);
     let record = dead_letters[0].payload();
     assert_eq!(
-        record.metadata().get::<String>("subscriber_id"),
-        Some("sub".to_string())
+        record.metadata().get_str("subscriber_id"),
+        Some("sub")
     );
     assert_eq!(
-        record.metadata().get::<String>("topic"),
-        Some("local-factory-global-default-dlq".to_string())
+        record.metadata().get_str("topic"),
+        Some("local-factory-global-default-dlq")
     );
     assert_eq!(record.downcast_original_payload_ref::<i64>(), Some(&7_i64));
 }
