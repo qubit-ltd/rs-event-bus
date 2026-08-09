@@ -22,39 +22,21 @@ use qubit_event_bus::{
     SubscribeOptions,
     Topic,
 };
-use qubit_retry::{
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
-};
+use qubit_retry::RetryPolicy;
 
-fn retry_options(max_attempts: u32) -> RetryOptions {
-    RetryOptions::new(
-        max_attempts,
-        None,
-        None,
-        RetryDelay::none(),
-        RetryJitter::none(),
-    )
-    .expect("retry options should build")
+fn retry_options(max_attempts: u32) -> RetryPolicy {
+    RetryPolicy::builder()
+        .max_attempts(max_attempts)
+        .build()
+        .expect("retry policy should build")
 }
 
 #[test]
 fn test_retry_options_validate_attempts() {
     let retry = retry_options(3);
 
-    assert_eq!(retry.max_attempts(), 3);
-    assert_eq!(retry.delay(), &RetryDelay::none());
-    assert!(
-        RetryOptions::new(
-            0,
-            None,
-            None,
-            RetryDelay::none(),
-            RetryJitter::none()
-        )
-        .is_err()
-    );
+    assert_eq!(retry.limits().max_attempts().get(), 3);
+    assert!(RetryPolicy::builder().max_attempts(0).build().is_err());
 }
 
 #[test]
@@ -71,7 +53,9 @@ fn test_publish_options_builder_sets_retry_and_error_handler() {
         options
             .retry_options()
             .expect("retry should exist")
-            .max_attempts(),
+            .limits()
+            .max_attempts()
+            .get(),
         2
     );
     assert_eq!(options.error_handler_count(), 1);
@@ -129,7 +113,9 @@ fn test_subscribe_options_defaults_and_builder() {
         options
             .retry_options()
             .expect("retry should exist")
-            .max_attempts(),
+            .limits()
+            .max_attempts()
+            .get(),
         4
     );
     assert!(options.should_handle(&accepted));

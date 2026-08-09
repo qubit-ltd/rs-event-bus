@@ -14,7 +14,7 @@ use std::panic::{
 };
 use std::sync::Arc;
 
-use qubit_retry::RetryOptions;
+use qubit_retry::RetryPolicy;
 
 use crate::{
     AckMode,
@@ -295,7 +295,7 @@ where
 pub struct SubscribeOptions<T: 'static> {
     pub(crate) ack_mode: AckMode,
     pub(crate) ack_mode_configured: bool,
-    pub(crate) retry_options: Option<RetryOptions>,
+    pub(crate) retry_options: Option<RetryPolicy>,
     pub(crate) filter: Option<Arc<EventFilterFn<T>>>,
     pub(crate) error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     pub(crate) dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
@@ -341,7 +341,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// `Some` when subscriber retry is configured.
-    pub fn retry_options(&self) -> Option<&RetryOptions> {
+    pub fn retry_options(&self) -> Option<&RetryPolicy> {
         self.retry_options.as_ref()
     }
 

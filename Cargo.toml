@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -33,10 +33,10 @@ doctest = true
 [dependencies]
 qubit-argument = { path = "../rs-argument", version = "0.4" }
 qubit-collections = { version = "0.1" }
-qubit-executor = { path = "../rs-executor", version = "0.7.1" }
+qubit-executor = { path = "../rs-executor", version = "0.8" }
 qubit-metadata = { path = "../rs-metadata", version = "0.10", default-features = false, features = [] }
-qubit-retry = { path = "../rs-retry", version = "0.17" }
-qubit-thread-pool = { path = "../rs-thread-pool", version = "0.9" }
+qubit-retry = { path = "../rs-retry", version = "0.18" }
+qubit-thread-pool = { path = "../rs-thread-pool", version = "0.10" }
 
 [patch.crates-io]
 qubit-state-machine = { path = "../rs-state-machine" }

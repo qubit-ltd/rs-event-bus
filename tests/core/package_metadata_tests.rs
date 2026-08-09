@@ -9,5 +9,5 @@
 
 #[test]
 fn test_package_version_marks_breaking_api_release() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "0.8.0");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "0.9.0");
 }

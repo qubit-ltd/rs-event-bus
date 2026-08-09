@@ -43,12 +43,7 @@ use qubit_event_bus::{
     discard_dead_letters,
     standard_dead_letters_to,
 };
-use qubit_retry::{
-    AttemptTimeoutOption,
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
-};
+use qubit_retry::RetryPolicy;
 
 use crate::support::PanicHookGuard;
 
@@ -73,27 +68,18 @@ fn create_dead_letter_topic(name: &str) -> Topic<DeadLetterPayload> {
     Topic::try_new(name).expect("dead letter topic should build")
 }
 
-fn retry_options(max_attempts: u32) -> RetryOptions {
-    RetryOptions::new(
-        max_attempts,
-        None,
-        None,
-        RetryDelay::none(),
-        RetryJitter::none(),
-    )
-    .expect("retry options should build")
+fn retry_options(max_attempts: u32) -> RetryPolicy {
+    RetryPolicy::builder()
+        .max_attempts(max_attempts)
+        .build()
+        .expect("retry policy should build")
 }
 
-fn retry_options_with_attempt_timeout() -> RetryOptions {
-    RetryOptions::new_with_attempt_timeout(
-        2,
-        None,
-        None,
-        RetryDelay::none(),
-        RetryJitter::none(),
-        Some(AttemptTimeoutOption::retry(Duration::from_millis(10))),
-    )
-    .expect("retry options with attempt timeout should build")
+fn retry_options_with_attempt_timeout() -> RetryPolicy {
+    RetryPolicy::builder()
+        .max_attempts(2)
+        .build()
+        .expect("retry policy should build")
 }
 
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2699,7 +2685,7 @@ fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
 }
 
 #[test]
-fn test_publish_rejects_attempt_timeout_retry_options() {
+fn test_publish_accepts_policy_without_execution_timeout() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("publish-attempt-timeout");
     let handler_calls = Arc::new(AtomicUsize::new(0));
@@ -2713,27 +2699,16 @@ fn test_publish_rejects_attempt_timeout_retry_options() {
         .retry_options(retry_options_with_attempt_timeout())
         .build();
 
-    let error = bus
-        .publish_envelope_with_options(
-            EventEnvelope::create(topic, "payload".to_string()),
-            options,
-        )
-        .expect_err("attempt timeout retry options should be rejected");
-
-    assert!(matches!(
-        error,
-        EventBusError::InvalidArgument {
-            field: "retry_options",
-            ..
-        }
-    ));
-    assert!(error.to_string().contains("attempt_timeout"));
-    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    bus.publish_envelope_with_options(
+        EventEnvelope::create(topic, "payload".to_string()),
+        options,
+    )
+    .expect("policy should be accepted");
+    let _ = handler_calls;
 }
 
 #[test]
-fn test_publish_all_validates_merged_default_publish_options_before_batch_starts()
- {
+fn test_publish_all_accepts_merged_default_publish_policy() {
     let mut factory = LocalEventBusFactory::new();
     factory.set_default_publish_options::<String>(
         PublishOptions::builder()
@@ -2749,46 +2724,24 @@ fn test_publish_all_validates_merged_default_publish_options_before_batch_starts
         })
         .collect::<Vec<_>>();
 
-    let error = bus.publish_all(envelopes).expect_err(
-        "merged default attempt timeout should reject the whole batch",
-    );
-
-    assert!(matches!(
-        error,
-        EventBusError::InvalidArgument {
-            field: "retry_options",
-            ..
-        }
-    ));
-    assert!(error.to_string().contains("attempt_timeout"));
+    let result = bus
+        .publish_all(envelopes)
+        .expect("policy should be accepted");
+    assert_eq!(result.accepted_count(), 2);
 }
 
 #[test]
-fn test_subscribe_rejects_attempt_timeout_retry_options() {
+fn test_subscribe_accepts_policy_without_execution_timeout() {
     let bus = LocalEventBus::started().expect("bus should start");
     let topic = create_topic("subscribe-attempt-timeout");
     let options = SubscribeOptions::<String>::builder()
         .retry_options(retry_options_with_attempt_timeout())
         .build();
 
-    let error = match bus.subscribe_with_options(
-        "sub-1",
-        &topic,
-        |_event| Ok(()),
-        options,
-    ) {
-        Ok(_) => panic!("attempt timeout retry options should be rejected"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        EventBusError::InvalidArgument {
-            field: "retry_options",
-            ..
-        }
-    ));
-    assert!(error.to_string().contains("attempt_timeout"));
+    let subscription = bus
+        .subscribe_with_options("sub-1", &topic, |_event| Ok(()), options)
+        .expect("policy should be accepted");
+    drop(subscription);
 }
 
 #[test]
