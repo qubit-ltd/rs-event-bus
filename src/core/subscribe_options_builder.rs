@@ -10,7 +10,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use qubit_retry::RetryOptions;
+use qubit_retry::RetryPolicy;
 
 use crate::{
     AckMode,
@@ -33,7 +33,7 @@ use super::subscribe_options::{
 pub struct SubscribeOptionsBuilder<T: 'static> {
     ack_mode: AckMode,
     ack_mode_configured: bool,
-    retry_options: Option<RetryOptions>,
+    retry_options: Option<RetryPolicy>,
     filter: Option<Arc<EventFilterFn<T>>>,
     error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
@@ -81,7 +81,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// Updated builder.
-    pub fn retry_options(mut self, retry_options: RetryOptions) -> Self {
+    pub fn retry_options(mut self, retry_options: RetryPolicy) -> Self {
         self.retry_options = Some(retry_options);
         self
     }

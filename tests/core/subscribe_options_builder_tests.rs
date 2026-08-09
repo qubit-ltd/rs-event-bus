@@ -2,22 +2,11 @@ use qubit_event_bus::{
     AckMode,
     SubscribeOptions,
 };
-use qubit_retry::{
-    RetryDelay,
-    RetryJitter,
-    RetryOptions,
-};
+use qubit_retry::RetryPolicy;
 
 #[test]
 fn test_subscribe_options_builder_sets_ack_retry_and_priority() {
-    let retry_options = RetryOptions::new(
-        2,
-        None,
-        None,
-        RetryDelay::none(),
-        RetryJitter::none(),
-    )
-    .expect("retry options should build");
+    let retry_options = RetryPolicy::builder().max_attempts(2).build().unwrap();
     let options = SubscribeOptions::<String>::builder()
         .ack_mode(AckMode::Manual)
         .retry_options(retry_options.clone())

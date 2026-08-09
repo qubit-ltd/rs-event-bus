@@ -10,7 +10,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use qubit_retry::RetryOptions;
+use qubit_retry::RetryPolicy;
 
 use crate::{
     EventBusError,
@@ -23,7 +23,7 @@ use super::publish_options::PublishErrorHandlerFn;
 
 /// Builder used to create [`PublishOptions`].
 pub struct PublishOptionsBuilder<T: 'static> {
-    retry_options: Option<RetryOptions>,
+    retry_options: Option<RetryPolicy>,
     error_handlers: Vec<Arc<PublishErrorHandlerFn<T>>>,
     marker: PhantomData<fn() -> T>,
 }
@@ -48,7 +48,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// Updated builder.
-    pub fn retry_options(mut self, retry_options: RetryOptions) -> Self {
+    pub fn retry_options(mut self, retry_options: RetryPolicy) -> Self {
         self.retry_options = Some(retry_options);
         self
     }

@@ -13,7 +13,7 @@ use std::panic::{
 };
 use std::sync::Arc;
 
-use qubit_retry::RetryOptions;
+use qubit_retry::RetryPolicy;
 
 use crate::{
     EventBusError,
@@ -29,7 +29,7 @@ pub(crate) type PublishErrorHandlerFn<T> = dyn Fn(&EventEnvelope<T>, &EventBusEr
 
 /// Immutable options applied when publishing events.
 pub struct PublishOptions<T: 'static> {
-    pub(crate) retry_options: Option<RetryOptions>,
+    pub(crate) retry_options: Option<RetryPolicy>,
     pub(crate) error_handlers: Vec<Arc<PublishErrorHandlerFn<T>>>,
 }
 
@@ -57,7 +57,7 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// `Some` when publish retry is configured.
-    pub fn retry_options(&self) -> Option<&RetryOptions> {
+    pub fn retry_options(&self) -> Option<&RetryPolicy> {
         self.retry_options.as_ref()
     }
 

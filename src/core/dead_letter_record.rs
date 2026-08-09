@@ -44,8 +44,7 @@ pub const DEAD_LETTER_FAILURE_TYPE: &str = "failure_type";
 pub const DEAD_LETTER_PAYLOAD_TYPE: &str = "payload_type";
 
 /// Metadata key containing the Unix-millisecond failure timestamp.
-pub const DEAD_LETTER_FAILED_AT_UNIX_MILLIS: &str =
-    "failed_at_unix_millis";
+pub const DEAD_LETTER_FAILED_AT_UNIX_MILLIS: &str = "failed_at_unix_millis";
 
 /// Metadata key marking a record as a dead letter.
 pub const DEAD_LETTER_MARKER: &str = "dead_letter";

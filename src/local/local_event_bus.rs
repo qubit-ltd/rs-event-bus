@@ -37,7 +37,7 @@ use qubit_executor::{
 };
 use qubit_retry::{
     Retry,
-    RetryOptions,
+    RetryPolicy,
 };
 use qubit_thread_pool::FixedThreadPool;
 
@@ -735,12 +735,6 @@ impl LocalEventBus {
             );
             return Err(error);
         }
-        if let Err(error) = validate_retry_options(options.retry_options()) {
-            self.observe_errors(
-                options.notify_publish_error(&envelope, &error),
-            );
-            return Err(error);
-        }
         let original_envelope = envelope.clone();
         let envelope = match run_with_retry(options.retry_options(), || {
             self.apply_publisher_interceptors(original_envelope.clone())
@@ -828,7 +822,6 @@ impl LocalEventBus {
         self.ensure_started()?;
         let options =
             options.merge_defaults(self.default_publish_options::<T>());
-        validate_retry_options(options.retry_options())?;
         let mut result = BatchPublishResult::new(envelopes.len());
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
@@ -921,7 +914,6 @@ impl LocalEventBus {
                     "subscriber ID must not be blank",
                 )
             })?;
-        validate_retry_options(options.retry_options())?;
 
         let id = self.inner.next_subscription_id();
         let active = Arc::new(SubscriptionState::active());
@@ -1169,7 +1161,7 @@ impl LocalEventBus {
     fn dispatch_envelope<T>(
         &self,
         envelope: EventEnvelope<T>,
-        retry_options: Option<&RetryOptions>,
+        retry_options: Option<&RetryPolicy>,
         allow_stopping: bool,
     ) -> EventBusResult<()>
     where
@@ -2098,7 +2090,7 @@ fn normalize_subscriber_interceptor_error(
 /// # Returns
 /// Successful operation value or the final event-bus error.
 fn run_with_retry<T, F>(
-    retry_options: Option<&RetryOptions>,
+    retry_options: Option<&RetryPolicy>,
     operation: F,
 ) -> EventBusResult<T>
 where
@@ -2109,48 +2101,14 @@ where
         return operation();
     };
     let retry =
-        match Retry::<EventBusError>::from_options(retry_options.clone()) {
-            Ok(retry) => retry,
-            Err(error) => {
-                return Err(EventBusError::invalid_argument(
-                    "retry_options",
-                    error.to_string(),
-                ));
-            }
-        };
-    match retry.run(operation) {
+        Retry::<EventBusError>::builder((*retry_options).clone()).build();
+    match retry.sync().run(operation) {
         Ok(value) => Ok(value.into_value()),
         Err(error) => match error.last_error().cloned() {
             Some(error) => Err(error),
             None => Err(EventBusError::handler_failed(error.to_string())),
         },
     }
-}
-
-/// Validates retry options supported by the local backend.
-///
-/// # Parameters
-/// - `retry_options`: Optional retry options to validate.
-///
-/// # Returns
-/// `Ok(())` when the local backend can apply the options.
-///
-/// # Errors
-/// Returns [`EventBusError::InvalidArgument`] when unsupported attempt timeout
-/// options are configured.
-fn validate_retry_options(
-    retry_options: Option<&RetryOptions>,
-) -> EventBusResult<()> {
-    if retry_options
-        .and_then(RetryOptions::attempt_timeout)
-        .is_some()
-    {
-        return Err(EventBusError::invalid_argument(
-            "retry_options",
-            "attempt_timeout is not supported by LocalEventBus retry handling",
-        ));
-    }
-    Ok(())
 }
 
 /// Waits for a fixed handler executor to finish after shutdown.
