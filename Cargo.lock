@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -217,31 +208,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parse-display"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e78deb158fb1d73b29efb4b7e9b9860b78059c670de06bd28df8d0b458ded0eb"
-dependencies = [
- "parse-display-derive",
- "regex",
- "regex-syntax",
-]
-
-[[package]]
-name = "parse-display-derive"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e95a50d1084dab562913062c4c34bb204b68fc6ec38a1395909ff5aaaf4f10a"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "regex-syntax",
- "structmeta",
- "syn",
-]
-
-[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -288,9 +254,19 @@ dependencies = [
 
 [[package]]
 name = "qubit-budget"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "838905f7003616e6576c78506a3c4702153c5b3cd316a6d0b170b290e6079437"
+version = "0.4.0"
+dependencies = [
+ "qubit-clock 0.12.1",
+ "thiserror",
+]
+
+[[package]]
+name = "qubit-clock"
+version = "0.12.1"
+dependencies = [
+ "qubit-collections 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror",
+]
 
 [[package]]
 name = "qubit-clock"
@@ -330,9 +306,8 @@ dependencies = [
 [[package]]
 name = "qubit-datatype"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91da5d9714623ff8d561d2230a81dc5c6e38b55aa4f2488c3a0ff0c21e3ff693"
 dependencies = [
+ "qubit-budget",
  "serde",
  "thiserror",
 ]
@@ -388,7 +363,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5f8269c5d3724894dd39b34daf14a14ee6eeb693f9e6a803aea0aacaae56c1"
 dependencies = [
  "parking_lot",
- "qubit-clock",
+ "qubit-clock 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -413,14 +388,14 @@ checksum = "a80d4179cd319d8a85e6d6271efdbb596c59bfe6862d9adfc5373e28cac93e61"
 name = "qubit-retry"
 version = "0.18.0"
 dependencies = [
- "parse-display",
- "qubit-argument 0.4.1",
- "qubit-clock",
+ "qubit-budget",
+ "qubit-clock 0.12.1",
  "qubit-datatype",
  "qubit-error",
  "qubit-function",
  "rand",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -452,8 +427,6 @@ checksum = "8a4e2a99ede9d46a1cccb7631957f553c1f91e6dfde5a0d628058b92d6566b55"
 [[package]]
 name = "qubit-value"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dc86a41cacde7871d4ce22fd1c7eec20c86100baa997febbd46e5fbad05709f"
 dependencies = [
  "qubit-datatype",
  "qubit-redact",
@@ -501,35 +474,6 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
 ]
-
-[[package]]
-name = "regex"
-version = "1.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.4.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rustversion"
@@ -597,29 +541,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "structmeta"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e1575d8d40908d70f6fd05537266b90ae71b15dbbe7a8b7dffa2b759306d329"
-dependencies = [
- "proc-macro2",
- "quote",
- "structmeta-derive",
- "syn",
-]
-
-[[package]]
-name = "structmeta-derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "152a0b65a590ff6c3da95cabe2353ee04e6167c896b28e3b14478c2636c922fc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "syn"
