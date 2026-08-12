@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Define a type-safe topic | `Topic::<T>::try_new` |
 | Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
-| Configure retries and acknowledgements | `RetryOptions`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
+| Configure retries and acknowledgements | `RetryPolicy`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
 | Configure publisher interceptors | `LocalEventBusFactory::add_publisher_interceptor`, `LocalEventBusFactory::add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
 | Configure subscriber interceptors | `LocalEventBusFactory::add_subscriber_interceptor`, `LocalEventBusFactory::add_global_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorAny` |
 | Attach publish error handling | `PublishOptions` |

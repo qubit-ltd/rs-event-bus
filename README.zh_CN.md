@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 定义类型安全 Topic | `Topic::<T>::try_new` |
 | 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`publish_all`、`publish_all_with_options`、`BatchPublishResult` |
 | 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription` |
-| 配置重试和确认 | `RetryOptions`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
+| 配置重试和确认 | `RetryPolicy`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
 | 配置发布拦截器 | `LocalEventBusFactory::add_publisher_interceptor`、`LocalEventBusFactory::add_global_publisher_interceptor`、`PublisherInterceptor`、`PublisherInterceptorAny` |
 | 配置订阅拦截器 | `LocalEventBusFactory::add_subscriber_interceptor`、`LocalEventBusFactory::add_global_subscriber_interceptor`、`SubscriberInterceptor`、`SubscriberInterceptorAny` |
 | 添加发布错误处理 | `PublishOptions` |
