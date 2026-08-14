@@ -10,30 +10,21 @@
 // qubit-style: allow multiple-public-types
 
 use std::collections::HashMap;
-use std::sync::atomic::{
-    AtomicBool,
-    AtomicUsize,
-    Ordering,
-};
-use std::sync::{
-    Arc,
-    Condvar,
-    Mutex,
-    MutexGuard,
-    Weak,
-};
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
-use crate::{
-    EventBusResult,
-    SubscribeOptions,
-    Topic,
-    TopicKey,
-};
-
+use crate::EventBusResult;
+use crate::SubscribeOptions;
+use crate::Topic;
+use crate::TopicKey;
 use crate::local::local_event_bus_inner::LocalEventBusInner;
 
 #[cfg_attr(not(coverage), allow(dead_code))]

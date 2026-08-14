@@ -7,17 +7,13 @@
 // =============================================================================
 //! Typed staged event envelope.
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 
-use crate::{
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    PublishOptions,
-    StagedEvent,
-};
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
+use crate::PublishOptions;
+use crate::StagedEvent;
 
 /// Typed event and publish options staged inside a transaction.
 #[derive(Clone)]

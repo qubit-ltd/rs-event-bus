@@ -1,11 +1,9 @@
-use qubit_event_bus::{
-    DEAD_LETTER_SUBSCRIBER_ID,
-    EventBusError,
-    EventEnvelope,
-    SubscribeOptions,
-    Topic,
-    prefixed_dead_letters,
-};
+use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::Topic;
+use qubit_event_bus::prefixed_dead_letters;
 
 use crate::support::PanicHookGuard;
 

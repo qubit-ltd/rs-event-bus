@@ -1,13 +1,9 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use qubit_event_bus::{
-    EventEnvelope,
-    LocalEventBusFactory,
-    Topic,
-};
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::LocalEventBusFactory;
+use qubit_event_bus::Topic;
 
 #[test]
 fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {

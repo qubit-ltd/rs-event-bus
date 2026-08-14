@@ -7,47 +7,38 @@
 // =============================================================================
 //! Coverage-only helpers for [`super::LocalEventBusInner`] internals.
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
-use std::sync::{
-    Arc,
-    Mutex,
-};
 use std::thread;
 use std::time::Duration;
 
 use qubit_executor::ExecutorService;
 
+use super::LocalEventBusInner;
+use super::LocalEventBusRuntimeOptions;
+use super::OrderedLaneRunnerGuard;
+use super::OrderedLaneTask;
+use super::OrderedLaneTurn;
+use super::OrderedProcessingLane;
+use super::ProcessingTracker;
+use super::take_subscription_task;
+use crate::DeadLetterPayload;
+use crate::DeadLetterRecord;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
+use crate::PublishOptions;
+use crate::SubscribeOptions;
+use crate::SubscriberInterceptorAnyChain;
+use crate::Topic;
+use crate::TopicKey;
 use crate::core::SubscriptionState;
 use crate::core::subscribe_options::wrap_dead_letter_strategy;
-use crate::{
-    DeadLetterPayload,
-    DeadLetterRecord,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    PublishOptions,
-    SubscribeOptions,
-    SubscriberInterceptorAnyChain,
-    Topic,
-    TopicKey,
-};
-
-use super::{
-    LocalEventBusInner,
-    LocalEventBusRuntimeOptions,
-    OrderedLaneRunnerGuard,
-    OrderedLaneTask,
-    OrderedLaneTurn,
-    OrderedProcessingLane,
-    ProcessingTracker,
-    take_subscription_task,
-};
 use crate::local::erased_subscription::ErasedSubscription;
 use crate::local::ordering_lane_key::OrderingLaneKey;
 use crate::local::processing_task::ProcessingTask;

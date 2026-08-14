@@ -1,15 +1,11 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use qubit_event_bus::{
-    EventBusError,
-    EventEnvelope,
-    LocalEventBus,
-    PublishOptions,
-    Topic,
-};
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::Topic;
 
 use crate::support::PanicHookGuard;
 

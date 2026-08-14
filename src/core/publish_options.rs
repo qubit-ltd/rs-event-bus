@@ -7,20 +7,16 @@
 // =============================================================================
 //! Options controlling event publishing.
 
-use std::panic::{
-    self,
-    AssertUnwindSafe,
-};
+use std::panic::AssertUnwindSafe;
+use std::panic::{self};
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
 
-use crate::{
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    PublishOptionsBuilder,
-};
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::PublishOptionsBuilder;
 
 pub(crate) type PublishErrorHandlerFn<T> = dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()>
     + Send

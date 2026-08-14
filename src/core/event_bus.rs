@@ -8,18 +8,17 @@
 //! Event bus abstraction shared by concrete backends.
 // qubit-style: allow multiple-public-types
 
-use crate::{
-    DeadLetterPayload,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    IntoEventBusResult,
-    PublishOptions,
-    SubscribeOptions,
-    Subscription,
-    Topic,
-};
 use std::time::Duration;
+
+use crate::DeadLetterPayload;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::IntoEventBusResult;
+use crate::PublishOptions;
+use crate::SubscribeOptions;
+use crate::Subscription;
+use crate::Topic;
 
 /// Failure captured while best-effort batch publishing continues.
 #[derive(Debug, Clone, Eq, PartialEq)]

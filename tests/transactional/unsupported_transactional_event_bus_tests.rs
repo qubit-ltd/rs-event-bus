@@ -1,13 +1,11 @@
 use std::time::Duration;
 
-use qubit_event_bus::{
-    EventBus,
-    EventBusError,
-    EventEnvelope,
-    PublishOptions,
-    Topic,
-    UnsupportedTransactionalEventBus,
-};
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::Topic;
+use qubit_event_bus::UnsupportedTransactionalEventBus;
 
 #[test]
 fn test_unsupported_transactional_event_bus_rejects_event_bus_operations() {

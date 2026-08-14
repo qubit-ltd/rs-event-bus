@@ -8,20 +8,18 @@
 //! Factory abstraction for event bus backends.
 // qubit-style: allow coverage-cfg
 
-use crate::{
-    DeadLetterStrategyAnyCallback,
-    DeadLetterStrategyCallback,
-    EventBus,
-    EventBusError,
-    EventBusResult,
-    PublishOptions,
-    PublisherInterceptor,
-    PublisherInterceptorAny,
-    SubscribeOptions,
-    SubscriberInterceptor,
-    SubscriberInterceptorAny,
-    TransactionalEventBus,
-};
+use crate::DeadLetterStrategyAnyCallback;
+use crate::DeadLetterStrategyCallback;
+use crate::EventBus;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::PublishOptions;
+use crate::PublisherInterceptor;
+use crate::PublisherInterceptorAny;
+use crate::SubscribeOptions;
+use crate::SubscriberInterceptor;
+use crate::SubscriberInterceptorAny;
+use crate::TransactionalEventBus;
 
 /// Factory contract for creating event bus instances.
 ///

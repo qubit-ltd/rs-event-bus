@@ -1,24 +1,21 @@
-use qubit_event_bus::{
-    EventBus,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    IntoEventBusResult,
-    PublishOptions,
-    StagedEvent,
-    StagedEventEnvelope,
-    SubscribeOptions,
-    Subscription,
-    Topic,
-    TransactionalEventBus,
-    TransactionalPublisher,
-    UnsupportedTransactionalEventBus,
-};
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusResult;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::IntoEventBusResult;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::StagedEvent;
+use qubit_event_bus::StagedEventEnvelope;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::Subscription;
+use qubit_event_bus::Topic;
+use qubit_event_bus::TransactionalEventBus;
+use qubit_event_bus::TransactionalPublisher;
+use qubit_event_bus::UnsupportedTransactionalEventBus;
 
 #[derive(Clone, Default)]
 struct RecordingTransactionalBus {

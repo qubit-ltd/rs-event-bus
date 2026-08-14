@@ -12,14 +12,11 @@ use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
 
-use crate::{
-    EventBusError,
-    EventEnvelope,
-    IntoEventBusResult,
-    PublishOptions,
-};
-
 use super::publish_options::PublishErrorHandlerFn;
+use crate::EventBusError;
+use crate::EventEnvelope;
+use crate::IntoEventBusResult;
+use crate::PublishOptions;
 
 /// Builder used to create [`PublishOptions`].
 pub struct PublishOptionsBuilder<T: 'static> {

@@ -10,9 +10,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use crate::EventBusResult;
-
 use super::local_event_bus_inner::LocalEventBusInner;
+use crate::EventBusResult;
 
 /// Type-erased subscription entry stored in the local event bus.
 pub(crate) trait ErasedSubscription: Send + Sync {

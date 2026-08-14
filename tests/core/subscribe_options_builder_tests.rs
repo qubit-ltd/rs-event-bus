@@ -1,7 +1,5 @@
-use qubit_event_bus::{
-    AckMode,
-    SubscribeOptions,
-};
+use qubit_event_bus::AckMode;
+use qubit_event_bus::SubscribeOptions;
 use qubit_retry::RetryPolicy;
 
 #[test]

@@ -12,61 +12,43 @@
 #[cfg(coverage)]
 mod coverage;
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 use std::cmp::Reverse;
-use std::collections::{
-    HashMap,
-    VecDeque,
-};
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering,
-};
-use std::sync::{
-    Arc,
-    Condvar,
-    Mutex,
-};
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
+#[cfg(coverage)]
+pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
 use qubit_collections::map::OrderedIndexMap;
-use qubit_executor::{
-    CancelResult,
-    ExecutorService,
-    ExecutorServiceBuilderError,
-    ScheduledExecutorService,
-    SingleThreadScheduledExecutorService,
-};
+use qubit_executor::CancelResult;
+use qubit_executor::ExecutorService;
+use qubit_executor::ExecutorServiceBuilderError;
+use qubit_executor::ScheduledExecutorService;
+use qubit_executor::SingleThreadScheduledExecutorService;
 use qubit_thread_pool::FixedThreadPool;
 
-use crate::core::SubscriptionState;
-use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
-use crate::{
-    EventBusError,
-    EventBusResult,
-    PublishOptions,
-    SubscribeOptions,
-    TopicKey,
-};
-
 use super::erased_subscription::ErasedSubscription;
-use super::local_event_bus::{
-    PublisherInterceptorAny,
-    SubscriberInterceptorAny,
-};
+use super::local_event_bus::PublisherInterceptorAny;
+use super::local_event_bus::SubscriberInterceptorAny;
 use super::ordering_lane_key::OrderingLaneKey;
 use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
-
-#[cfg(coverage)]
-pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::PublishOptions;
+use crate::SubscribeOptions;
+use crate::TopicKey;
+use crate::core::SubscriptionState;
+use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
 
 type ErrorObserverFn = dyn Fn(&EventBusError) + Send + Sync + 'static;
 type TypeErasedDefaults = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;

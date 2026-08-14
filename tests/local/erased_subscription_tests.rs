@@ -1,12 +1,8 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use qubit_event_bus::{
-    LocalEventBus,
-    Topic,
-};
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::Topic;
 
 #[test]
 fn test_subscription_cancel_removes_type_erased_entry() {

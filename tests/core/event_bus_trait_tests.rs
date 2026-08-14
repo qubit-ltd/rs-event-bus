@@ -8,37 +8,31 @@
 //! Tests for the event bus abstraction traits.
 
 use std::any::Any;
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering,
-};
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use qubit_event_bus::{
-    DeadLetterOriginalPayload,
-    DeadLetterPayload,
-    DeadLetterRecord,
-    EventBus,
-    EventBusError,
-    EventBusFactory,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    LocalEventBus,
-    LocalEventBusFactory,
-    PublishOptions,
-    SubscribeOptions,
-    SubscriberInterceptorAnyChain,
-    SubscriberInterceptorChain,
-    Topic,
-    TransactionalEventBus,
-    TransactionalPublisher,
-    UnsupportedTransactionalEventBus,
-    UnsupportedTransactionalPublisher,
-};
+use qubit_event_bus::DeadLetterOriginalPayload;
+use qubit_event_bus::DeadLetterPayload;
+use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusFactory;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::EventEnvelopeMetadata;
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::LocalEventBusFactory;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::SubscriberInterceptorAnyChain;
+use qubit_event_bus::SubscriberInterceptorChain;
+use qubit_event_bus::Topic;
+use qubit_event_bus::TransactionalEventBus;
+use qubit_event_bus::TransactionalPublisher;
+use qubit_event_bus::UnsupportedTransactionalEventBus;
+use qubit_event_bus::UnsupportedTransactionalPublisher;
 
 #[derive(Clone, Default)]
 struct DefaultingEventBus {

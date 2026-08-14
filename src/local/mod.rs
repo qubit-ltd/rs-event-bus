@@ -18,23 +18,19 @@ pub(crate) mod publisher_interceptor_entry;
 mod subscriber_interceptor_chain;
 pub(crate) mod subscriber_interceptor_entry;
 
+pub use local_event_bus::IntoPublisherInterceptorAnyResult;
+pub use local_event_bus::IntoPublisherInterceptorResult;
+pub use local_event_bus::LocalEventBus;
+pub use local_event_bus::PublisherInterceptor;
+pub use local_event_bus::PublisherInterceptorAny;
+pub use local_event_bus::SubscriberInterceptor;
+pub use local_event_bus::SubscriberInterceptorAny;
 #[cfg(coverage)]
 pub use local_event_bus::coverage_exercise_local_event_bus_defensive_paths;
-pub use local_event_bus::{
-    IntoPublisherInterceptorAnyResult,
-    IntoPublisherInterceptorResult,
-    LocalEventBus,
-    PublisherInterceptor,
-    PublisherInterceptorAny,
-    SubscriberInterceptor,
-    SubscriberInterceptorAny,
-};
 pub use local_event_bus_factory::LocalEventBusFactory;
 #[cfg(coverage)]
 pub use local_event_bus_inner::coverage_exercise_local_event_bus_inner_defensive_paths;
+pub use subscriber_interceptor_chain::SubscriberInterceptorAnyChain;
+pub use subscriber_interceptor_chain::SubscriberInterceptorChain;
 #[cfg(coverage)]
 pub use subscriber_interceptor_chain::coverage_exercise_subscriber_interceptor_chain_defensive_paths;
-pub use subscriber_interceptor_chain::{
-    SubscriberInterceptorAnyChain,
-    SubscriberInterceptorChain,
-};

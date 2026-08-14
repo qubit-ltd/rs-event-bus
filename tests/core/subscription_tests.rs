@@ -1,7 +1,5 @@
-use qubit_event_bus::{
-    LocalEventBus,
-    Topic,
-};
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::Topic;
 
 #[test]
 fn test_subscription_exposes_id_topic_options_and_active_state() {

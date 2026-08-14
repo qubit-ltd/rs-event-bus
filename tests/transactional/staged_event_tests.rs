@@ -1,12 +1,10 @@
 use std::any::TypeId;
 
-use qubit_event_bus::{
-    EventEnvelope,
-    PublishOptions,
-    StagedEvent,
-    StagedEventEnvelope,
-    Topic,
-};
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::StagedEvent;
+use qubit_event_bus::StagedEventEnvelope;
+use qubit_event_bus::Topic;
 
 #[test]
 fn test_staged_event_exposes_metadata_and_payload_type() {

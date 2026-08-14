@@ -12,22 +12,17 @@ use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
 
-use crate::{
-    AckMode,
-    Acknowledgement,
-    EventBusError,
-    EventEnvelope,
-    IntoEventBusResult,
-    SubscribeOptions,
-};
-
-use super::subscribe_options::{
-    DeadLetterStrategyCallback,
-    DeadLetterStrategyFn,
-    EventFilterFn,
-    SubscribeErrorHandlerFn,
-    wrap_dead_letter_strategy,
-};
+use super::subscribe_options::DeadLetterStrategyCallback;
+use super::subscribe_options::DeadLetterStrategyFn;
+use super::subscribe_options::EventFilterFn;
+use super::subscribe_options::SubscribeErrorHandlerFn;
+use super::subscribe_options::wrap_dead_letter_strategy;
+use crate::AckMode;
+use crate::Acknowledgement;
+use crate::EventBusError;
+use crate::EventEnvelope;
+use crate::IntoEventBusResult;
+use crate::SubscribeOptions;
 
 /// Builder used to create [`SubscribeOptions`].
 pub struct SubscribeOptionsBuilder<T: 'static> {

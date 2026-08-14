@@ -8,10 +8,8 @@
 //! Shared acknowledgement handle.
 
 use std::sync::Arc;
-use std::sync::atomic::{
-    AtomicU8,
-    Ordering,
-};
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 
 const PENDING: u8 = 0;
 const ACKED: u8 = 1;

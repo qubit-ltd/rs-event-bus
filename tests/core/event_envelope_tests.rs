@@ -8,17 +8,13 @@
 //! Tests for event envelopes.
 
 use std::collections::HashMap;
-use std::time::{
-    Duration,
-    SystemTime,
-};
+use std::time::Duration;
+use std::time::SystemTime;
 
-use qubit_event_bus::{
-    Acknowledgement,
-    EventBusError,
-    EventEnvelope,
-    Topic,
-};
+use qubit_event_bus::Acknowledgement;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::Topic;
 
 fn create_topic() -> Topic<String> {
     Topic::try_new("orders.created").expect("topic should build")

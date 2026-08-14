@@ -9,23 +9,17 @@
 // qubit-style: allow multiple-public-types
 // qubit-style: allow coverage-cfg
 
-use std::panic::{
-    self,
-    AssertUnwindSafe,
-};
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::panic::AssertUnwindSafe;
+use std::panic::{self};
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
 #[cfg(coverage)]
 use crate::Topic;
-use crate::{
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-};
 
 type HandlerFn<T> =
     dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;

@@ -9,20 +9,14 @@
 // qubit-style: allow multiple-public-types
 
 use std::collections::HashMap;
-use std::sync::atomic::{
-    AtomicU64,
-    Ordering,
-};
-use std::time::{
-    Duration,
-    SystemTime,
-};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::SystemTime;
 
-use crate::{
-    Acknowledgement,
-    EventEnvelopeBuilder,
-    Topic,
-};
+use crate::Acknowledgement;
+use crate::EventEnvelopeBuilder;
+use crate::Topic;
 
 static NEXT_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 

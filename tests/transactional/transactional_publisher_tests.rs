@@ -1,14 +1,12 @@
-use qubit_event_bus::{
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    PublishOptions,
-    StagedEvent,
-    StagedEventEnvelope,
-    Topic,
-    TransactionalPublisher,
-    UnsupportedTransactionalPublisher,
-};
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusResult;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::StagedEvent;
+use qubit_event_bus::StagedEventEnvelope;
+use qubit_event_bus::Topic;
+use qubit_event_bus::TransactionalPublisher;
+use qubit_event_bus::UnsupportedTransactionalPublisher;
 
 #[derive(Default)]
 struct RecordingTransactionalPublisher {

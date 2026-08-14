@@ -9,9 +9,8 @@
 
 use std::sync::Arc;
 
-use crate::TopicKey;
-
 use super::local_event_bus_inner::LocalEventBusInner;
+use crate::TopicKey;
 
 /// Subscriber processing task with cancellation-aware idle accounting.
 pub(crate) struct ProcessingTask {
