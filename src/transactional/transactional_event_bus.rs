@@ -7,15 +7,13 @@
 // =============================================================================
 //! Transactional event bus abstraction.
 
-use crate::{
-    EventBus,
-    EventBusResult,
-    EventEnvelope,
-    PublishOptions,
-    StagedEvent,
-    StagedEventEnvelope,
-    TransactionalPublisher,
-};
+use crate::EventBus;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::PublishOptions;
+use crate::StagedEvent;
+use crate::StagedEventEnvelope;
+use crate::TransactionalPublisher;
 
 /// Event bus extension for transactional publishing backends.
 ///

@@ -7,10 +7,8 @@
 // =============================================================================
 //! Coverage-only helpers for [`super::LocalEventBus`] internals.
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
@@ -18,38 +16,31 @@ use std::time::Duration;
 
 use qubit_executor::ExecutorService;
 
-use crate::core::SubscriptionState;
-use crate::{
-    DeadLetterPayload,
-    DeadLetterRecord,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    PublishOptions,
-    SubscribeOptions,
-    Topic,
-    TopicKey,
-};
-
-use super::{
-    HandlerFn,
-    IntoPublisherInterceptorResult,
-    LocalEventBus,
-    TypedSubscriptionEntry,
-    create_publisher_interceptor_entry,
-    create_subscriber_interceptor_entry,
-    normalize_subscriber_interceptor_error,
-    process_subscription_event,
-};
+use super::HandlerFn;
+use super::IntoPublisherInterceptorResult;
+use super::LocalEventBus;
+use super::TypedSubscriptionEntry;
+use super::create_publisher_interceptor_entry;
+use super::create_subscriber_interceptor_entry;
+use super::normalize_subscriber_interceptor_error;
+use super::process_subscription_event;
+use crate::DeadLetterPayload;
+use crate::DeadLetterRecord;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
 use crate::LocalEventBusFactory;
+use crate::PublishOptions;
+use crate::SubscribeOptions;
+use crate::Topic;
+use crate::TopicKey;
+use crate::core::SubscriptionState;
 use crate::local::erased_subscription::ErasedSubscription;
 use crate::local::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use crate::local::processing_task::ProcessingTask;
 use crate::local::publisher_interceptor_entry::PublisherInterceptorEntry;
-use crate::local::subscriber_interceptor_chain::{
-    SubscriberInterceptorChain,
-    create_downstream_error_slot,
-};
+use crate::local::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use crate::local::subscriber_interceptor_chain::create_downstream_error_slot;
 use crate::local::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 
 struct CoverageWrongPublisherInterceptor;

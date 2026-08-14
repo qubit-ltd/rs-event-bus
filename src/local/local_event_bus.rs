@@ -12,78 +12,58 @@
 #[cfg(coverage)]
 mod coverage;
 
-use std::any::{
-    Any,
-    TypeId,
-    type_name,
-};
+use std::any::Any;
+use std::any::TypeId;
+use std::any::type_name;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::panic::{
-    self,
-    AssertUnwindSafe,
-};
+use std::panic::AssertUnwindSafe;
+use std::panic::{self};
 use std::sync::Arc;
 use std::thread;
-use std::time::{
-    Duration,
-    Instant,
-};
-
-use qubit_argument::StringArgument;
-use qubit_executor::{
-    ExecutorService,
-    SingleThreadScheduledExecutorService,
-};
-use qubit_retry::{
-    Retry,
-    RetryPolicy,
-};
-use qubit_thread_pool::FixedThreadPool;
-
-use crate::core::SubscriptionState;
-use crate::core::subscribe_options::{
-    DeadLetterStrategyAnyFn,
-    DeadLetterStrategyFn,
-    normalize_dead_letter_error,
-};
-use crate::{
-    AckMode,
-    Acknowledgement,
-    BatchPublishFailure,
-    BatchPublishResult,
-    DeadLetterOriginalPayload,
-    DeadLetterPayload,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    IntoEventBusResult,
-    PublishOptions,
-    SubscribeOptions,
-    Subscription,
-    Topic,
-};
-
-use super::erased_subscription::ErasedSubscription;
-use super::local_event_bus_inner::{
-    LocalEventBusInner,
-    LocalEventBusRuntimeOptions,
-};
-use super::ordering_lane_key::OrderingLaneKey;
-use super::processing_task::ProcessingTask;
-use super::publisher_interceptor_entry::PublisherInterceptorEntry;
-use super::subscriber_interceptor_chain::{
-    DownstreamErrorSlot,
-    SubscriberInterceptorAnyChain,
-    SubscriberInterceptorChain,
-    create_downstream_error_slot,
-    is_recorded_downstream_error,
-};
-use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
+use std::time::Duration;
+use std::time::Instant;
 
 #[cfg(coverage)]
 pub use coverage::coverage_exercise_local_event_bus_defensive_paths;
+use qubit_argument::StringArgument;
+use qubit_executor::ExecutorService;
+use qubit_executor::SingleThreadScheduledExecutorService;
+use qubit_retry::Retry;
+use qubit_retry::RetryPolicy;
+use qubit_thread_pool::FixedThreadPool;
+
+use super::erased_subscription::ErasedSubscription;
+use super::local_event_bus_inner::LocalEventBusInner;
+use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
+use super::ordering_lane_key::OrderingLaneKey;
+use super::processing_task::ProcessingTask;
+use super::publisher_interceptor_entry::PublisherInterceptorEntry;
+use super::subscriber_interceptor_chain::DownstreamErrorSlot;
+use super::subscriber_interceptor_chain::SubscriberInterceptorAnyChain;
+use super::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use super::subscriber_interceptor_chain::create_downstream_error_slot;
+use super::subscriber_interceptor_chain::is_recorded_downstream_error;
+use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
+use crate::AckMode;
+use crate::Acknowledgement;
+use crate::BatchPublishFailure;
+use crate::BatchPublishResult;
+use crate::DeadLetterOriginalPayload;
+use crate::DeadLetterPayload;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
+use crate::IntoEventBusResult;
+use crate::PublishOptions;
+use crate::SubscribeOptions;
+use crate::Subscription;
+use crate::Topic;
+use crate::core::SubscriptionState;
+use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
+use crate::core::subscribe_options::DeadLetterStrategyFn;
+use crate::core::subscribe_options::normalize_dead_letter_error;
 
 type HandlerFn<T> =
     dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;

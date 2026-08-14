@@ -7,42 +7,34 @@
 // =============================================================================
 //! Tests for the in-process event bus implementation.
 
-use std::sync::atomic::{
-    AtomicBool,
-    AtomicUsize,
-    Ordering,
-};
-use std::sync::{
-    Arc,
-    Condvar,
-    Mutex,
-    mpsc,
-};
+use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::thread;
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::time::Duration;
+use std::time::Instant;
 
-use qubit_event_bus::{
-    AckMode,
-    DEAD_LETTER_SUBSCRIBER_ID,
-    DeadLetterPayload,
-    DeadLetterRecord,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    LocalEventBus,
-    LocalEventBusFactory,
-    PublishOptions,
-    SubscribeOptions,
-    SubscriberInterceptorAnyChain,
-    SubscriberInterceptorChain,
-    Topic,
-    discard_dead_letters,
-    standard_dead_letters_to,
-};
+use qubit_event_bus::AckMode;
+use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
+use qubit_event_bus::DeadLetterPayload;
+use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusResult;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::EventEnvelopeMetadata;
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::LocalEventBusFactory;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::SubscriberInterceptorAnyChain;
+use qubit_event_bus::SubscriberInterceptorChain;
+use qubit_event_bus::Topic;
+use qubit_event_bus::discard_dead_letters;
+use qubit_event_bus::standard_dead_letters_to;
 use qubit_retry::RetryPolicy;
 
 use crate::support::PanicHookGuard;

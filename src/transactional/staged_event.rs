@@ -7,10 +7,8 @@
 // =============================================================================
 //! Type-erased events staged for transactional publishing.
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 
 use crate::EventEnvelopeMetadata;
 

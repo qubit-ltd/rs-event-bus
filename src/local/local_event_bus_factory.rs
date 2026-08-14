@@ -7,46 +7,35 @@
 // =============================================================================
 //! Factory for local event bus instances.
 
-use std::any::{
-    Any,
-    TypeId,
-};
+use std::any::Any;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use qubit_argument::{
-    NumericArgument,
-    OptionArgument,
-};
+use qubit_argument::NumericArgument;
+use qubit_argument::OptionArgument;
 
-use crate::{
-    DeadLetterStrategyAnyCallback,
-    DeadLetterStrategyCallback,
-    EventBusError,
-    EventBusFactory,
-    EventBusResult,
-    LocalEventBus,
-    PublishOptions,
-    PublisherInterceptor,
-    PublisherInterceptorAny,
-    SubscribeOptions,
-    SubscriberInterceptor,
-    SubscriberInterceptorAny,
-    UnsupportedTransactionalEventBus,
-};
-
-use super::local_event_bus::{
-    create_publisher_interceptor_entry,
-    create_subscriber_interceptor_entry,
-};
+use super::local_event_bus::create_publisher_interceptor_entry;
+use super::local_event_bus::create_subscriber_interceptor_entry;
 use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
-use crate::core::subscribe_options::{
-    DeadLetterStrategyAnyFn,
-    wrap_dead_letter_strategy,
-    wrap_dead_letter_strategy_any,
-};
+use crate::DeadLetterStrategyAnyCallback;
+use crate::DeadLetterStrategyCallback;
+use crate::EventBusError;
+use crate::EventBusFactory;
+use crate::EventBusResult;
+use crate::LocalEventBus;
+use crate::PublishOptions;
+use crate::PublisherInterceptor;
+use crate::PublisherInterceptorAny;
+use crate::SubscribeOptions;
+use crate::SubscriberInterceptor;
+use crate::SubscriberInterceptorAny;
+use crate::UnsupportedTransactionalEventBus;
+use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
+use crate::core::subscribe_options::wrap_dead_letter_strategy;
+use crate::core::subscribe_options::wrap_dead_letter_strategy_any;
 
 /// Returns the default subscription handler worker count.
 ///

@@ -1,9 +1,7 @@
-use qubit_event_bus::{
-    EventBusError,
-    Topic,
-    TransactionalPublisher,
-    UnsupportedTransactionalPublisher,
-};
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::Topic;
+use qubit_event_bus::TransactionalPublisher;
+use qubit_event_bus::UnsupportedTransactionalPublisher;
 
 #[test]
 fn test_unsupported_transactional_publisher_rejects_commit_but_allows_rollback()

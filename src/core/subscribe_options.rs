@@ -8,28 +8,23 @@
 //! Options controlling event subscription.
 // qubit-style: allow multiple-public-types
 
-use std::panic::{
-    self,
-    AssertUnwindSafe,
-};
+use std::panic::AssertUnwindSafe;
+use std::panic::{self};
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
 
-use crate::{
-    AckMode,
-    Acknowledgement,
-    DeadLetterOriginalPayload,
-    DeadLetterRecord,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    SubscribeOptionsBuilder,
-    Topic,
-};
-
 use super::dead_letter_record::DeadLetterPayload;
+use crate::AckMode;
+use crate::Acknowledgement;
+use crate::DeadLetterOriginalPayload;
+use crate::DeadLetterRecord;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
+use crate::SubscribeOptionsBuilder;
+use crate::Topic;
 
 pub(crate) type EventFilterFn<T> =
     dyn Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'static;

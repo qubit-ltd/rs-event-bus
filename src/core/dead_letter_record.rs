@@ -7,23 +7,17 @@
 // =============================================================================
 //! Standard dead-letter payload.
 
-use std::any::{
-    Any,
-    type_name,
-};
+use std::any::Any;
+use std::any::type_name;
 use std::sync::Arc;
-use std::time::{
-    SystemTime,
-    UNIX_EPOCH,
-};
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use qubit_metadata::Metadata;
 
-use crate::{
-    EventBusError,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-};
+use crate::EventBusError;
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
 
 /// Metadata key containing the subscriber that produced a dead letter.
 pub const DEAD_LETTER_SUBSCRIBER_ID: &str = "subscriber_id";

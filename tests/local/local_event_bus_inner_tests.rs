@@ -1,15 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering,
-};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
-use qubit_event_bus::{
-    EventBusError,
-    LocalEventBus,
-    SubscribeOptions,
-    Topic,
-};
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::Topic;
 use qubit_retry::RetryPolicy;
 
 #[test]

@@ -8,11 +8,9 @@
 //! Error type returned by event bus operations.
 
 use std::error::Error;
-use std::fmt::{
-    self,
-    Display,
-    Formatter,
-};
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::{self};
 use std::time::Duration;
 
 /// Result type used by event bus operations.

@@ -7,22 +7,20 @@
 // =============================================================================
 //! Unsupported transactional backend placeholders.
 
-use crate::{
-    EventBus,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    IntoEventBusResult,
-    PublishOptions,
-    StagedEvent,
-    SubscribeOptions,
-    Subscription,
-    Topic,
-    TransactionalEventBus,
-};
 use std::time::Duration;
 
 use super::unsupported_transactional_publisher::UnsupportedTransactionalPublisher;
+use crate::EventBus;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::IntoEventBusResult;
+use crate::PublishOptions;
+use crate::StagedEvent;
+use crate::SubscribeOptions;
+use crate::Subscription;
+use crate::Topic;
+use crate::TransactionalEventBus;
 
 /// Placeholder transactional bus used by factories without transaction support.
 #[derive(Clone, Copy, Debug, Default)]

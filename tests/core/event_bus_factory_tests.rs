@@ -1,24 +1,21 @@
-#[cfg(coverage)]
-use qubit_event_bus::{
-    coverage_exercise_core_defensive_paths,
-    coverage_exercise_event_bus_factory_default_regions,
-};
 use std::time::Duration;
 
-use qubit_event_bus::{
-    EventBus,
-    EventBusError,
-    EventBusFactory,
-    EventBusResult,
-    EventEnvelope,
-    IntoEventBusResult,
-    LocalEventBusFactory,
-    PublishOptions,
-    SubscribeOptions,
-    Subscription,
-    Topic,
-    UnsupportedTransactionalEventBus,
-};
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusFactory;
+use qubit_event_bus::EventBusResult;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::IntoEventBusResult;
+use qubit_event_bus::LocalEventBusFactory;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::Subscription;
+use qubit_event_bus::Topic;
+use qubit_event_bus::UnsupportedTransactionalEventBus;
+#[cfg(coverage)]
+use qubit_event_bus::coverage_exercise_core_defensive_paths;
+#[cfg(coverage)]
+use qubit_event_bus::coverage_exercise_event_bus_factory_default_regions;
 
 #[derive(Clone, Debug)]
 struct FailingStartBus;

@@ -1,9 +1,7 @@
-use qubit_event_bus::{
-    EventBusError,
-    coverage_exercise_local_event_bus_defensive_paths,
-    coverage_exercise_local_event_bus_inner_defensive_paths,
-    coverage_exercise_subscriber_interceptor_chain_defensive_paths,
-};
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::coverage_exercise_local_event_bus_defensive_paths;
+use qubit_event_bus::coverage_exercise_local_event_bus_inner_defensive_paths;
+use qubit_event_bus::coverage_exercise_subscriber_interceptor_chain_defensive_paths;
 
 use crate::support::PanicHookGuard;
 

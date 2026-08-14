@@ -8,22 +8,17 @@
 //! Builder for event envelopes.
 
 use std::collections::HashMap;
-use std::time::{
-    Duration,
-    SystemTime,
-};
+use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_argument::StringArgument;
 
-use crate::{
-    Acknowledgement,
-    EventBusError,
-    EventBusResult,
-    EventEnvelope,
-    Topic,
-};
-
 use super::event_envelope::generate_event_id;
+use crate::Acknowledgement;
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::Topic;
 
 /// Builder used to create [`EventEnvelope`] values with optional metadata.
 #[derive(Debug)]

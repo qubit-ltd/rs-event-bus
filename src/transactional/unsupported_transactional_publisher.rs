@@ -7,12 +7,10 @@
 // =============================================================================
 //! Unsupported transactional publisher placeholder.
 
-use crate::{
-    EventBusError,
-    EventBusResult,
-    StagedEvent,
-    TransactionalPublisher,
-};
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::StagedEvent;
+use crate::TransactionalPublisher;
 
 /// Placeholder transactional publisher used by unsupported transactional buses.
 #[derive(Debug, Default)]

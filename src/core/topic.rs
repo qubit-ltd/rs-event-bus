@@ -7,28 +7,20 @@
 // =============================================================================
 //! Type-safe event topics.
 
-use std::any::{
-    TypeId,
-    type_name,
-};
-use std::fmt::{
-    self,
-    Display,
-    Formatter,
-};
-use std::hash::{
-    Hash,
-    Hasher,
-};
+use std::any::TypeId;
+use std::any::type_name;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::{self};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::marker::PhantomData;
 
 use qubit_argument::StringArgument;
 
-use crate::{
-    EventBusError,
-    EventBusResult,
-    TopicKey,
-};
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::TopicKey;
 
 /// Type-safe event topic.
 ///

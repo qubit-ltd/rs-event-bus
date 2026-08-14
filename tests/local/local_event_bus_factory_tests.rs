@@ -1,29 +1,25 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use qubit_event_bus::{
-    DEAD_LETTER_SUBSCRIBER_ID,
-    DEAD_LETTER_TOPIC,
-    DeadLetterOriginalPayload,
-    DeadLetterPayload,
-    DeadLetterRecord,
-    EventBus,
-    EventBusError,
-    EventBusFactory,
-    EventBusResult,
-    EventEnvelope,
-    EventEnvelopeMetadata,
-    LocalEventBusFactory,
-    PublishOptions,
-    PublisherInterceptor,
-    SubscribeOptions,
-    SubscriberInterceptor,
-    SubscriberInterceptorAnyChain,
-    SubscriberInterceptorChain,
-    Topic,
-};
+use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
+use qubit_event_bus::DEAD_LETTER_TOPIC;
+use qubit_event_bus::DeadLetterOriginalPayload;
+use qubit_event_bus::DeadLetterPayload;
+use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusFactory;
+use qubit_event_bus::EventBusResult;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::EventEnvelopeMetadata;
+use qubit_event_bus::LocalEventBusFactory;
+use qubit_event_bus::PublishOptions;
+use qubit_event_bus::PublisherInterceptor;
+use qubit_event_bus::SubscribeOptions;
+use qubit_event_bus::SubscriberInterceptor;
+use qubit_event_bus::SubscriberInterceptorAnyChain;
+use qubit_event_bus::SubscriberInterceptorChain;
+use qubit_event_bus::Topic;
 
 use crate::support::PanicHookGuard;
 

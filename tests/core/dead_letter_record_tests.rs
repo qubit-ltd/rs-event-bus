@@ -1,13 +1,11 @@
-use qubit_event_bus::{
-    DEAD_LETTER_EVENT_ID,
-    DEAD_LETTER_FAILURE_TYPE,
-    DEAD_LETTER_ORDERING_KEY,
-    DEAD_LETTER_SUBSCRIBER_ID,
-    DeadLetterRecord,
-    EventBusError,
-    EventEnvelope,
-    Topic,
-};
+use qubit_event_bus::DEAD_LETTER_EVENT_ID;
+use qubit_event_bus::DEAD_LETTER_FAILURE_TYPE;
+use qubit_event_bus::DEAD_LETTER_ORDERING_KEY;
+use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
+use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::Topic;
 
 #[test]
 fn test_dead_letter_record_from_failure_preserves_metadata_and_payload() {
