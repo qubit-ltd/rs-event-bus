@@ -17,6 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use qubit_executor::ExecutorService;
+use qubit_metadata::Metadata;
 
 use super::LocalEventBusInner;
 use super::LocalEventBusRuntimeOptions;
@@ -238,10 +239,8 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths()
     let dead_letter_topic =
         Topic::<DeadLetterRecord>::try_new("coverage-dead-letter-record")
             .expect("topic should build");
-    let dead_letter_record = DeadLetterRecord::new(
-        qubit_metadata::Metadata::new(),
-        Arc::new("payload".to_string()),
-    );
+    let dead_letter_record =
+        DeadLetterRecord::new(Metadata::new(), Arc::new("payload".to_string()));
     default_dead_letter_strategy
         .create_dead_letter(
             "coverage-sub",

@@ -20,14 +20,17 @@ use qubit_event_bus::DeadLetterRecord;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusError;
 use qubit_event_bus::EventBusFactory;
+use qubit_event_bus::EventBusResult;
 use qubit_event_bus::EventEnvelope;
 use qubit_event_bus::EventEnvelopeMetadata;
+use qubit_event_bus::IntoEventBusResult;
 use qubit_event_bus::LocalEventBus;
 use qubit_event_bus::LocalEventBusFactory;
 use qubit_event_bus::PublishOptions;
 use qubit_event_bus::SubscribeOptions;
 use qubit_event_bus::SubscriberInterceptorAnyChain;
 use qubit_event_bus::SubscriberInterceptorChain;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::Topic;
 use qubit_event_bus::TransactionalEventBus;
 use qubit_event_bus::TransactionalPublisher;
@@ -48,7 +51,7 @@ impl DefaultingEventBus {
 }
 
 impl EventBus for DefaultingEventBus {
-    fn start(&self) -> qubit_event_bus::EventBusResult<bool> {
+    fn start(&self) -> EventBusResult<bool> {
         self.start_count.fetch_add(1, Ordering::SeqCst);
         Ok(true)
     }
@@ -62,7 +65,7 @@ impl EventBus for DefaultingEventBus {
         &self,
         envelope: EventEnvelope<T>,
         _options: PublishOptions<T>,
-    ) -> qubit_event_bus::EventBusResult<()>
+    ) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -87,20 +90,17 @@ impl EventBus for DefaultingEventBus {
         _topic: &Topic<T>,
         _handler: F,
         _options: SubscribeOptions<T>,
-    ) -> qubit_event_bus::EventBusResult<qubit_event_bus::Subscription<T>>
+    ) -> EventBusResult<Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
         F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
-        R: qubit_event_bus::IntoEventBusResult + 'static,
+        R: IntoEventBusResult + 'static,
     {
         Err(EventBusError::unsupported_operation("defaulting_subscribe"))
     }
 
-    fn wait_for_idle<T>(
-        &self,
-        _topic: &Topic<T>,
-    ) -> qubit_event_bus::EventBusResult<()>
+    fn wait_for_idle<T>(&self, _topic: &Topic<T>) -> EventBusResult<()>
     where
         T: 'static,
     {
@@ -111,7 +111,7 @@ impl EventBus for DefaultingEventBus {
         &self,
         _topic: &Topic<T>,
         _timeout: Duration,
-    ) -> qubit_event_bus::EventBusResult<bool>
+    ) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -141,7 +141,7 @@ fn captured_payloads(events: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 }
 
 fn expect_subscription_error<T>(
-    result: qubit_event_bus::EventBusResult<qubit_event_bus::Subscription<T>>,
+    result: EventBusResult<Subscription<T>>,
     message: &str,
 ) -> EventBusError {
     match result {

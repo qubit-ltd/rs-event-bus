@@ -7,8 +7,8 @@
 // =============================================================================
 //! Panic-hook helpers for integration tests.
 
+use std::panic;
 use std::panic::PanicHookInfo;
-use std::panic::{self};
 
 type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
