@@ -7,8 +7,8 @@
 // =============================================================================
 //! Options controlling event publishing.
 
+use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::panic::{self};
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;

@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use qubit_executor::ExecutorService;
+use qubit_metadata::Metadata;
 
 use super::HandlerFn;
 use super::IntoPublisherInterceptorResult;
@@ -223,7 +224,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .publish(
             &dead_letter_payload_topic,
             DeadLetterRecord::new(
-                qubit_metadata::Metadata::new(),
+                Metadata::new(),
                 Arc::new("payload".to_string()),
             ),
         )
@@ -507,7 +508,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         .publish(
             &dead_letter_topic,
             DeadLetterRecord::new(
-                qubit_metadata::Metadata::new(),
+                Metadata::new(),
                 Arc::new("payload".to_string()),
             ),
         )

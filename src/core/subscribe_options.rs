@@ -8,8 +8,8 @@
 //! Options controlling event subscription.
 // qubit-style: allow multiple-public-types
 
+use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::panic::{self};
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;

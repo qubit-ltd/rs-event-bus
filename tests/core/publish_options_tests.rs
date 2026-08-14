@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use qubit_event_bus::EventBusError;
+use qubit_event_bus::EventBusResult;
 use qubit_event_bus::EventEnvelope;
 use qubit_event_bus::LocalEventBus;
 use qubit_event_bus::PublishOptions;
@@ -42,7 +43,7 @@ fn test_publish_options_converts_error_handler_panic_to_failure() {
     })
     .expect("observer should register");
     let options = PublishOptions::<String>::builder()
-        .error_handler(|_, _| -> qubit_event_bus::EventBusResult<()> {
+        .error_handler(|_, _| -> EventBusResult<()> {
             panic!("publish handler panic");
         })
         .build();

@@ -1907,7 +1907,7 @@ fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
     bus.subscribe_with_options(
         "sub-1",
         &topic,
-        |_| -> qubit_event_bus::EventBusResult<()> {
+        |_| -> EventBusResult<()> {
             panic!("handler panic");
         },
         options,
@@ -3139,7 +3139,7 @@ fn test_subscribe_error_handler_panic_does_not_block_later_ack() {
              _envelope,
              _error,
              _acknowledgement|
-             -> qubit_event_bus::EventBusResult<()> {
+             -> EventBusResult<()> {
                 panic!("subscribe error handler panic");
             },
         )

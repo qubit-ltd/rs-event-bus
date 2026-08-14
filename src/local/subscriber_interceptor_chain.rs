@@ -9,8 +9,8 @@
 // qubit-style: allow multiple-public-types
 // qubit-style: allow coverage-cfg
 
+use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::panic::{self};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
