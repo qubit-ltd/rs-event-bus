@@ -224,12 +224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qubit-error"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed10a05a65f3e81328fab4e6841e99ca2a3d36bb329f4b5b1f00202474533aae"
-
-[[package]]
 name = "qubit-event-bus"
 version = "0.9.0"
 dependencies = [
@@ -298,15 +292,11 @@ dependencies = [
 
 [[package]]
 name = "qubit-retry"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "qubit-budget",
  "qubit-clock",
- "qubit-datatype",
- "qubit-error",
- "qubit-function",
  "rand",
- "serde",
  "thiserror",
 ]
 

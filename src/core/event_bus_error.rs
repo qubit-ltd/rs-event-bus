@@ -11,7 +11,17 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::sync::Arc;
 use std::time::Duration;
+
+use qubit_retry::AttemptFailure;
+use qubit_retry::RetryCallbackFailure;
+use qubit_retry::RetryCancellationPhase;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryError;
+use qubit_retry::RetryFailure;
+use qubit_retry::RetryInfrastructureFailure;
+use qubit_retry::RetryTimeoutScope;
 
 /// Result type used by event bus operations.
 pub type EventBusResult<T> = Result<T, EventBusError>;
@@ -90,6 +100,51 @@ pub enum EventBusError {
     UnsupportedOperation {
         /// Operation name or feature category.
         operation: &'static str,
+    },
+    /// Retry execution reached a hard timeout without retaining an event-bus
+    /// business error.
+    RetryTimedOut {
+        /// Scope whose timeout expired.
+        scope: RetryTimeoutScope,
+        /// Last non-business attempt failure, when one preceded the timeout.
+        last_failure: Option<Box<AttemptFailure<EventBusError>>>,
+        /// Shared retry context captured at the terminal decision. Clones keep
+        /// the same provenance identity.
+        context: Arc<RetryContext>,
+    },
+    /// Retry execution was cancelled without retaining an event-bus business
+    /// error.
+    RetryCancelled {
+        /// Retry phase in which cancellation was observed.
+        phase: RetryCancellationPhase,
+        /// Last non-business attempt failure, when one preceded cancellation.
+        last_failure: Option<Box<AttemptFailure<EventBusError>>>,
+        /// Shared retry context captured at the terminal decision. Clones keep
+        /// the same provenance identity.
+        context: Arc<RetryContext>,
+    },
+    /// A retry callback panicked without retaining an event-bus business error.
+    RetryCallbackFailed {
+        /// Callback failure attribution from the retry executor.
+        callback: RetryCallbackFailure,
+        /// Last non-business attempt failure retained before the callback
+        /// failed.
+        last_failure: Option<Box<AttemptFailure<EventBusError>>>,
+        /// Shared retry context captured at the terminal decision. Clones keep
+        /// the same provenance identity.
+        context: Arc<RetryContext>,
+    },
+    /// Retry infrastructure failed without retaining an event-bus business
+    /// error.
+    RetryInfrastructureFailed {
+        /// Structured infrastructure failure from the retry executor.
+        failure: RetryInfrastructureFailure,
+        /// Last non-business attempt failure retained before infrastructure
+        /// failed.
+        last_failure: Option<Box<AttemptFailure<EventBusError>>>,
+        /// Shared retry context captured at the terminal decision. Clones keep
+        /// the same provenance identity.
+        context: Arc<RetryContext>,
     },
 }
 
@@ -296,6 +351,12 @@ impl EventBusError {
             Self::LockPoisoned { .. } => "lock_poisoned",
             Self::TypeMismatch { .. } => "type_mismatch",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
+            Self::RetryTimedOut { .. } => "retry_timed_out",
+            Self::RetryCancelled { .. } => "retry_cancelled",
+            Self::RetryCallbackFailed { .. } => "retry_callback_failed",
+            Self::RetryInfrastructureFailed { .. } => {
+                "retry_infrastructure_failed"
+            }
         }
     }
 }
@@ -358,8 +419,161 @@ impl Display for EventBusError {
                     "unsupported event bus operation: {operation}"
                 )
             }
+            Self::RetryTimedOut {
+                scope,
+                last_failure,
+                context,
+            } => {
+                write!(
+                    formatter,
+                    "event-bus retry timed out at {scope} scope after {} attempt(s)",
+                    context.attempts()
+                )?;
+                write_last_attempt_failure(formatter, last_failure.as_deref())
+            }
+            Self::RetryCancelled {
+                phase,
+                last_failure,
+                context,
+            } => {
+                write!(
+                    formatter,
+                    "event-bus retry was cancelled during {phase} after {} attempt(s)",
+                    context.attempts()
+                )?;
+                write_last_attempt_failure(formatter, last_failure.as_deref())
+            }
+            Self::RetryCallbackFailed {
+                callback,
+                last_failure,
+                context,
+            } => {
+                write!(
+                    formatter,
+                    "event-bus retry callback failed ({callback}) after {} attempt(s)",
+                    context.attempts()
+                )?;
+                write_last_attempt_failure(formatter, last_failure.as_deref())
+            }
+            Self::RetryInfrastructureFailed {
+                failure,
+                last_failure,
+                context,
+            } => {
+                write!(
+                    formatter,
+                    "event-bus retry infrastructure failed ({failure}) after {} attempt(s)",
+                    context.attempts()
+                )?;
+                write_last_attempt_failure(formatter, last_failure.as_deref())
+            }
         }
     }
 }
 
+/// Appends a retained non-business attempt failure to a retry error message.
+fn write_last_attempt_failure(
+    formatter: &mut Formatter<'_>,
+    last_failure: Option<&AttemptFailure<EventBusError>>,
+) -> fmt::Result {
+    if let Some(last_failure) = last_failure {
+        write!(formatter, "; last attempt failed: {last_failure}")?;
+    }
+    Ok(())
+}
+
 impl Error for EventBusError {}
+
+impl From<RetryError<EventBusError>> for EventBusError {
+    /// Restores a retained business error or preserves the structured retry
+    /// terminal classification and context.
+    fn from(error: RetryError<EventBusError>) -> Self {
+        let (failure, context) = error.into_parts();
+        match failure {
+            RetryFailure::Aborted {
+                last_failure: AttemptFailure::Error(error),
+                ..
+            }
+            | RetryFailure::Exhausted {
+                last_failure: Some(AttemptFailure::Error(error)),
+                ..
+            }
+            | RetryFailure::TimedOut {
+                last_failure: Some(AttemptFailure::Error(error)),
+                ..
+            }
+            | RetryFailure::Cancelled {
+                last_failure: Some(AttemptFailure::Error(error)),
+                ..
+            }
+            | RetryFailure::CallbackFailed {
+                last_failure: Some(AttemptFailure::Error(error)),
+                ..
+            }
+            | RetryFailure::Infrastructure {
+                last_failure: Some(AttemptFailure::Error(error)),
+                ..
+            } => error,
+            RetryFailure::Aborted { last_failure, .. } => {
+                Self::handler_failed(format!(
+                    "retry aborted: {last_failure} after {} attempt(s)",
+                    context.attempts()
+                ))
+            }
+            RetryFailure::Exhausted {
+                limit,
+                last_failure,
+                ..
+            } => match last_failure {
+                Some(last_failure) => Self::handler_failed(format!(
+                    "retry limit exhausted: {limit}; last attempt failed: {last_failure} after {} attempt(s)",
+                    context.attempts()
+                )),
+                None => Self::handler_failed(format!(
+                    "retry limit exhausted: {limit} after {} attempt(s)",
+                    context.attempts()
+                )),
+            },
+            RetryFailure::TimedOut {
+                scope,
+                last_failure,
+                ..
+            } => Self::RetryTimedOut {
+                scope,
+                last_failure: last_failure.map(Box::new),
+                context: Arc::new(context),
+            },
+            RetryFailure::Cancelled {
+                phase,
+                last_failure,
+                ..
+            } => Self::RetryCancelled {
+                phase,
+                last_failure: last_failure.map(Box::new),
+                context: Arc::new(context),
+            },
+            RetryFailure::CallbackFailed {
+                callback,
+                last_failure,
+                ..
+            } => Self::RetryCallbackFailed {
+                callback,
+                last_failure: last_failure.map(Box::new),
+                context: Arc::new(context),
+            },
+            RetryFailure::Infrastructure {
+                failure,
+                last_failure,
+                ..
+            } => Self::RetryInfrastructureFailed {
+                failure,
+                last_failure: last_failure.map(Box::new),
+                context: Arc::new(context),
+            },
+            unclassified => Self::handler_failed(format!(
+                "{unclassified} after {} attempt(s)",
+                context.attempts()
+            )),
+        }
+    }
+}
