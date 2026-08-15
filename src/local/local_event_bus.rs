@@ -2084,10 +2084,7 @@ where
         Retry::<EventBusError>::builder((*retry_options).clone()).build();
     match retry.sync().run(operation) {
         Ok(value) => Ok(value.into_value()),
-        Err(error) => match error.last_error().cloned() {
-            Some(error) => Err(error),
-            None => Err(EventBusError::handler_failed(error.to_string())),
-        },
+        Err(error) => Err(EventBusError::from(error)),
     }
 }
 

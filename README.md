@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
 - `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-executor`'s `SingleThreadScheduledExecutorService` and does not occupy handler workers while waiting.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
-- Retry `attempt_timeout` options are rejected by `LocalEventBus` because local handlers do not receive a cooperative cancellation signal.
+- `LocalEventBus` accepts retry policy limits and backoff settings, but does not expose hard attempt or flow timeouts because local handlers do not receive a cooperative cancellation signal.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
 - `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
