@@ -35,7 +35,59 @@ use qubit_event_bus::SubscriberInterceptorChain;
 use qubit_event_bus::Topic;
 use qubit_event_bus::discard_dead_letters;
 use qubit_event_bus::standard_dead_letters_to;
+use qubit_retry::AttemptFailure;
+use qubit_retry::Retry;
+use qubit_retry::RetryCallbackFailure;
+use qubit_retry::RetryCallbackKind;
+use qubit_retry::RetryCallbackPhase;
+use qubit_retry::RetryCancellationPhase;
+use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
+use qubit_retry::RetryFailure;
+use qubit_retry::RetryInfrastructureFailure;
+use qubit_retry::RetryObserver;
+use qubit_retry::RetryPanic;
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryTimeoutScope;
+
+/// Observer used to force a retry callback terminal failure before an attempt.
+struct PanickingStartedObserver;
+
+impl RetryObserver<EventBusError> for PanickingStartedObserver {
+    /// Panics before the operation is admitted.
+    fn on_attempt_started(&self, _context: &RetryContext) {
+        panic!("event-bus retry observer failed");
+    }
+}
+
+/// Observer used to force a callback terminal after an attempt failure.
+struct PanickingFailedObserver;
+
+impl RetryObserver<EventBusError> for PanickingFailedObserver {
+    /// Panics after the operation failure has been recorded.
+    fn on_attempt_failed(
+        &self,
+        _failure: &AttemptFailure<EventBusError>,
+        _context: &RetryContext,
+    ) {
+        panic!("event-bus retry failure observer failed");
+    }
+}
+
+/// Observer used to cancel a retry after an attempt failure is recorded.
+struct CancellingFailedObserver(RetryCancellationToken);
+
+impl RetryObserver<EventBusError> for CancellingFailedObserver {
+    /// Cancels the retry after retaining the failed attempt.
+    fn on_attempt_failed(
+        &self,
+        _failure: &AttemptFailure<EventBusError>,
+        _context: &RetryContext,
+    ) {
+        self.0.cancel();
+    }
+}
 
 use crate::support::PanicHookGuard;
 
@@ -72,6 +124,390 @@ fn retry_options_with_attempt_timeout() -> RetryPolicy {
         .max_attempts(2)
         .build()
         .expect("retry policy should build")
+}
+
+/// Verifies retry conversion returns the exact retained event-bus error.
+#[test]
+fn test_retry_conversion_preserves_last_business_error() {
+    let message = "allocation sentinel".to_string();
+    let expected_allocation = message.as_ptr();
+    let mut expected = Some(EventBusError::HandlerFailed { message });
+    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry_error = retry
+        .sync()
+        .run(|| {
+            Err::<(), _>(
+                expected
+                    .take()
+                    .expect("the single attempt should own the sentinel error"),
+            )
+        })
+        .expect_err("the only attempt should fail");
+
+    assert!(matches!(
+        retry_error.last_failure(),
+        Some(AttemptFailure::Error(EventBusError::HandlerFailed { message }))
+            if message == "allocation sentinel"
+    ));
+    let EventBusError::HandlerFailed { message } =
+        EventBusError::from(retry_error)
+    else {
+        panic!("the retained business error should be returned directly");
+    };
+    assert_eq!(message, "allocation sentinel");
+    assert_eq!(message.as_ptr(), expected_allocation);
+}
+
+/// Verifies a callback terminal still yields its retained business error.
+#[test]
+fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
+    let message = "callback business sentinel".to_string();
+    let expected_allocation = message.as_ptr();
+    let mut expected = Some(EventBusError::HandlerFailed { message });
+    let retry = Retry::<EventBusError>::builder(retry_options(2))
+        .observer(PanickingFailedObserver)
+        .build();
+    let retry_error =
+        {
+            let _panic_hook_guard = PanicHookGuard::suppress();
+            retry
+                .sync()
+                .run(|| {
+                    Err::<(), _>(expected.take().expect(
+                        "the first attempt should own the sentinel error",
+                    ))
+                })
+                .expect_err("the failure observer should terminate the retry")
+        };
+
+    assert!(matches!(
+        retry_error.failure(),
+        RetryFailure::CallbackFailed {
+            last_failure: Some(AttemptFailure::Error(
+                EventBusError::HandlerFailed { message }
+            )),
+            ..
+        } if message == "callback business sentinel"
+    ));
+    let EventBusError::HandlerFailed { message } =
+        EventBusError::from(retry_error)
+    else {
+        panic!("the callback terminal should yield its business error");
+    };
+    assert_eq!(message, "callback business sentinel");
+    assert_eq!(message.as_ptr(), expected_allocation);
+}
+
+/// Verifies a cancellation terminal still yields its retained business error.
+#[test]
+fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
+    let message = "cancelled business sentinel".to_string();
+    let expected_allocation = message.as_ptr();
+    let expected =
+        Arc::new(Mutex::new(Some(EventBusError::HandlerFailed { message })));
+    let captured_expected = Arc::clone(&expected);
+    let cancellation = RetryCancellationToken::new();
+    let retry = Retry::<EventBusError>::builder(retry_options(2))
+        .observer(CancellingFailedObserver(cancellation.clone()))
+        .build();
+    let retry_error = retry
+        .worker()
+        .cancellation_token(cancellation)
+        .run(move |_| {
+            Err::<(), _>(
+                captured_expected
+                    .lock()
+                    .expect("sentinel error should lock")
+                    .take()
+                    .expect("the first attempt should own the sentinel error"),
+            )
+        })
+        .expect_err("observer cancellation should terminate the retry");
+
+    assert!(matches!(
+        retry_error.failure(),
+        RetryFailure::Cancelled {
+            last_failure: Some(AttemptFailure::Error(
+                EventBusError::HandlerFailed { message }
+            )),
+            ..
+        } if message == "cancelled business sentinel"
+    ));
+    let EventBusError::HandlerFailed { message } =
+        EventBusError::from(retry_error)
+    else {
+        panic!("the cancellation terminal should yield its business error");
+    };
+    assert_eq!(message, "cancelled business sentinel");
+    assert_eq!(message.as_ptr(), expected_allocation);
+}
+
+/// Verifies cancellation remains structured when no business error exists.
+#[test]
+fn test_retry_conversion_preserves_cancelled_terminal() {
+    let cancellation = RetryCancellationToken::new();
+    cancellation.cancel();
+    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry_error = retry
+        .worker()
+        .cancellation_token(cancellation)
+        .run(|_| Ok::<(), EventBusError>(()))
+        .expect_err("pre-cancelled worker retry should stop");
+
+    assert!(retry_error.last_error().is_none());
+    let EventBusError::RetryCancelled {
+        phase,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("cancellation should use the structured retry wrapper");
+    };
+    assert_eq!(phase, RetryCancellationPhase::BeforeAttempt);
+    assert!(last_failure.is_none());
+    assert_eq!(context.attempts(), 0);
+}
+
+/// Verifies a flow timeout remains structured when no operation has run.
+#[test]
+fn test_retry_conversion_preserves_timed_out_terminal() {
+    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry_error = retry
+        .worker()
+        .flow_timeout(Duration::ZERO)
+        .run(|_| Ok::<(), EventBusError>(()))
+        .expect_err("zero flow timeout should stop before the operation");
+
+    assert!(retry_error.last_error().is_none());
+    let EventBusError::RetryTimedOut {
+        scope,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("timeout should use the structured retry wrapper");
+    };
+    assert_eq!(scope, RetryTimeoutScope::Flow);
+    assert!(last_failure.is_none());
+    assert_eq!(context.attempts(), 0);
+}
+
+/// Verifies callback attribution remains structured after conversion.
+#[test]
+fn test_retry_conversion_preserves_callback_failed_terminal() {
+    let retry = Retry::<EventBusError>::builder(retry_options(1))
+        .observer(PanickingStartedObserver)
+        .build();
+    let retry_error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        retry
+            .sync()
+            .run(|| Ok::<(), EventBusError>(()))
+            .expect_err("the started observer should terminate the retry")
+    };
+
+    assert!(retry_error.last_error().is_none());
+    let EventBusError::RetryCallbackFailed {
+        callback,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("callback failure should use the structured retry wrapper");
+    };
+    assert_eq!(callback.callback(), RetryCallbackKind::Observer);
+    assert_eq!(callback.index(), 0);
+    assert_eq!(callback.phase(), RetryCallbackPhase::AttemptStarted);
+    assert!(last_failure.is_none());
+    assert_eq!(context.attempts(), 0);
+}
+
+/// Verifies worker startup failure remains structured after conversion.
+#[test]
+fn test_retry_conversion_preserves_infrastructure_terminal() {
+    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry_error = retry
+        .worker()
+        .worker_stack_size(usize::MAX)
+        .run(|_| Ok::<(), EventBusError>(()))
+        .expect_err("an impossible stack size should prevent worker startup");
+
+    assert!(retry_error.last_error().is_none());
+    let EventBusError::RetryInfrastructureFailed {
+        failure,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!(
+            "infrastructure failure should use the structured retry wrapper"
+        );
+    };
+    assert!(matches!(
+        failure,
+        RetryInfrastructureFailure::WorkerSpawn { .. }
+    ));
+    assert!(last_failure.is_none());
+    assert_eq!(context.attempts(), 0);
+}
+
+/// Verifies an attempt timeout remains available in the retry wrapper.
+#[test]
+fn test_retry_conversion_preserves_timed_out_last_failure() {
+    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry_error = retry
+        .worker()
+        .attempt_timeout(Duration::from_millis(1))
+        .cancellation_grace(Duration::from_secs(1))
+        .run(|cancellation| {
+            while !cancellation.is_cancelled() {
+                thread::yield_now();
+            }
+            Ok::<(), EventBusError>(())
+        })
+        .expect_err("the cooperative attempt should report its timeout");
+
+    let EventBusError::RetryTimedOut {
+        scope,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("attempt timeout should use the structured retry wrapper");
+    };
+    assert_eq!(scope, RetryTimeoutScope::Attempt);
+    assert!(matches!(
+        last_failure.as_deref(),
+        Some(AttemptFailure::TimedOut {
+            scope: RetryTimeoutScope::Attempt
+        })
+    ));
+    assert_eq!(context.attempts(), 1);
+}
+
+/// Verifies cancellation retains a preceding non-business panic failure.
+#[test]
+fn test_retry_conversion_preserves_cancelled_panicked_last_failure() {
+    let cancellation = RetryCancellationToken::new();
+    let retry = Retry::<EventBusError>::builder(retry_options(2))
+        .observer(CancellingFailedObserver(cancellation.clone()))
+        .build();
+    let retry_error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        retry
+            .worker()
+            .cancellation_token(cancellation)
+            .run(|_| -> EventBusResult<()> {
+                panic!("cancelled prior panic");
+            })
+            .expect_err("observer cancellation should retain the panic")
+    };
+
+    let EventBusError::RetryCancelled {
+        phase,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("cancellation should use the structured retry wrapper");
+    };
+    assert_eq!(phase, RetryCancellationPhase::Backoff);
+    let Some(AttemptFailure::Panicked { panic }) = last_failure.as_deref()
+    else {
+        panic!("cancellation should retain the preceding attempt panic");
+    };
+    assert_eq!(panic.message(), Some("cancelled prior panic"));
+    assert_eq!(context.attempts(), 1);
+}
+
+/// Verifies callback failure retains a preceding non-business panic failure.
+#[test]
+fn test_retry_conversion_preserves_callback_panicked_last_failure() {
+    let retry = Retry::<EventBusError>::builder(retry_options(2))
+        .observer(PanickingFailedObserver)
+        .build();
+    let retry_error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        retry
+            .worker()
+            .run(|_| -> EventBusResult<()> {
+                panic!("callback prior panic");
+            })
+            .expect_err("the failed observer should retain the attempt panic")
+    };
+
+    let EventBusError::RetryCallbackFailed {
+        callback,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("callback failure should use the structured retry wrapper");
+    };
+    assert_eq!(callback.phase(), RetryCallbackPhase::AttemptFailed);
+    let Some(AttemptFailure::Panicked { panic }) = last_failure.as_deref()
+    else {
+        panic!("callback failure should retain the preceding attempt panic");
+    };
+    assert_eq!(panic.message(), Some("callback prior panic"));
+    assert_eq!(context.attempts(), 1);
+}
+
+/// Verifies infrastructure failure retains an earlier non-business panic.
+#[test]
+fn test_retry_conversion_preserves_infrastructure_panicked_last_failure() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured_calls = Arc::clone(&calls);
+    let (release_sender, release_receiver) = mpsc::channel();
+    let release_receiver = Arc::new(Mutex::new(release_receiver));
+    let captured_release_receiver = Arc::clone(&release_receiver);
+    let retry = Retry::<EventBusError>::builder(retry_options(2))
+        .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| {
+            RetryDecision::Retry
+        })
+        .build();
+    let retry_error = {
+        let _panic_hook_guard = PanicHookGuard::suppress();
+        retry
+            .worker()
+            .attempt_timeout(Duration::from_millis(1))
+            .cancellation_grace(Duration::from_millis(1))
+            .run(move |_| {
+                if captured_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("infrastructure prior panic");
+                }
+                captured_release_receiver
+                    .lock()
+                    .expect("release receiver should lock")
+                    .recv()
+                    .expect("blocked worker should be released");
+                Ok::<(), EventBusError>(())
+            })
+            .expect_err("the blocked second attempt should outlive its grace")
+    };
+    release_sender
+        .send(())
+        .expect("the detached worker should receive its release");
+
+    let EventBusError::RetryInfrastructureFailed {
+        failure,
+        last_failure,
+        context,
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("infrastructure failure should use the retry wrapper");
+    };
+    assert!(matches!(
+        failure,
+        RetryInfrastructureFailure::WorkerStillRunning { .. }
+    ));
+    let Some(AttemptFailure::Panicked { panic }) = last_failure.as_deref()
+    else {
+        panic!("infrastructure failure should retain the earlier panic");
+    };
+    assert_eq!(panic.message(), Some("infrastructure prior panic"));
+    assert_eq!(context.attempts(), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2362,6 +2798,164 @@ fn test_subscriber_interceptor_owned_equal_error_is_reported_as_interceptor_fail
         [EventBusError::InterceptorFailed { phase, message }]
             if *phase == "subscribe" && message.contains("ambiguous subscriber error")
     ));
+}
+
+fn retry_timed_out_for_interceptor_test() -> EventBusError {
+    EventBusError::RetryTimedOut {
+        scope: RetryTimeoutScope::Flow,
+        last_failure: None,
+        context: Arc::new(RetryContext::new(0, 1)),
+    }
+}
+
+fn retry_cancelled_for_interceptor_test() -> EventBusError {
+    EventBusError::RetryCancelled {
+        phase: RetryCancellationPhase::BeforeAttempt,
+        last_failure: None,
+        context: Arc::new(RetryContext::new(0, 1)),
+    }
+}
+
+fn retry_callback_failed_for_interceptor_test() -> EventBusError {
+    EventBusError::RetryCallbackFailed {
+        callback: RetryCallbackFailure::new(
+            RetryCallbackKind::Observer,
+            0,
+            RetryCallbackPhase::AttemptStarted,
+            RetryPanic::StaticStr("interceptor fingerprint callback"),
+        ),
+        last_failure: None,
+        context: Arc::new(RetryContext::new(0, 1)),
+    }
+}
+
+fn retry_infrastructure_failed_for_interceptor_test() -> EventBusError {
+    EventBusError::RetryInfrastructureFailed {
+        failure: RetryInfrastructureFailure::WorkerSpawn {
+            message: "interceptor fingerprint worker".into(),
+        },
+        last_failure: None,
+        context: Arc::new(RetryContext::new(0, 1)),
+    }
+}
+
+fn retry_context_for_interceptor_test(
+    error: &EventBusError,
+) -> &Arc<RetryContext> {
+    match error {
+        EventBusError::RetryTimedOut { context, .. }
+        | EventBusError::RetryCancelled { context, .. }
+        | EventBusError::RetryCallbackFailed { context, .. }
+        | EventBusError::RetryInfrastructureFailed { context, .. } => context,
+        _ => panic!("interceptor test requires a retry error"),
+    }
+}
+
+fn assert_retry_interceptor_replacement_is_owned(
+    case: &str,
+    retry_error: fn() -> EventBusError,
+) {
+    let mut factory = LocalEventBusFactory::new();
+    let fingerprint_retained_context = Arc::new(AtomicBool::new(false));
+    let captured_fingerprint_retained_context =
+        Arc::clone(&fingerprint_retained_context);
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            move |event: EventEnvelope<String>,
+                  chain: SubscriberInterceptorChain<String>| {
+                if let Err(error) = chain.proceed(event) {
+                    let weak_context = Arc::downgrade(
+                        retry_context_for_interceptor_test(&error),
+                    );
+                    drop(error);
+                    captured_fingerprint_retained_context.store(
+                        weak_context.upgrade().is_some(),
+                        Ordering::SeqCst,
+                    );
+                }
+                Err(retry_error())
+            },
+        )
+        .expect("subscriber interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic(&format!("subscriber-interceptor-retry-{case}"));
+    let subscribe_errors = Arc::new(Mutex::new(Vec::<EventBusError>::new()));
+    let captured_subscribe_errors = Arc::clone(&subscribe_errors);
+    let options = SubscribeOptions::<String>::builder()
+        .error_handler(
+            move |_subscriber_id, _envelope, error, acknowledgement| {
+                captured_subscribe_errors
+                    .lock()
+                    .expect("subscribe errors should lock")
+                    .push(error.clone());
+                acknowledgement.ack();
+                Ok(())
+            },
+        )
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |_event| Err(retry_error()),
+        options,
+    )
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_string())
+        .expect("publish should succeed");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+
+    assert!(
+        fingerprint_retained_context.load(Ordering::SeqCst),
+        "{case}: the provenance record should retain the context allocation"
+    );
+    let subscribe_errors = subscribe_errors
+        .lock()
+        .expect("subscribe errors should lock");
+    assert!(
+        matches!(
+            subscribe_errors.as_slice(),
+            [EventBusError::InterceptorFailed { phase, .. }]
+                if *phase == "subscribe"
+        ),
+        "{case}: independently allocated retry error should belong to the interceptor; got {subscribe_errors:?}"
+    );
+}
+
+#[test]
+fn test_subscriber_interceptor_replaced_retry_timed_out_is_interceptor_failure()
+{
+    assert_retry_interceptor_replacement_is_owned(
+        "timed-out",
+        retry_timed_out_for_interceptor_test,
+    );
+}
+
+#[test]
+fn test_subscriber_interceptor_replaced_retry_cancelled_is_interceptor_failure()
+{
+    assert_retry_interceptor_replacement_is_owned(
+        "cancelled",
+        retry_cancelled_for_interceptor_test,
+    );
+}
+
+#[test]
+fn test_subscriber_interceptor_replaced_retry_callback_is_interceptor_failure()
+{
+    assert_retry_interceptor_replacement_is_owned(
+        "callback",
+        retry_callback_failed_for_interceptor_test,
+    );
+}
+
+#[test]
+fn test_subscriber_interceptor_replaced_retry_infrastructure_is_interceptor_failure()
+ {
+    assert_retry_interceptor_replacement_is_owned(
+        "infrastructure",
+        retry_infrastructure_failed_for_interceptor_test,
+    );
 }
 
 #[test]
