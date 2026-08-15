@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use qubit_retry::RetryContext;
+
 use crate::EventBusError;
 use crate::EventBusResult;
 use crate::EventEnvelope;
@@ -31,7 +33,7 @@ pub(crate) struct DownstreamErrorRecord {
 }
 
 /// Identity of a downstream error value returned from `proceed`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ErrorFingerprint {
     NotStarted,
     StartFailed(OwnedStringFingerprint),
@@ -67,6 +69,10 @@ enum ErrorFingerprint {
     UnsupportedOperation {
         operation: &'static str,
     },
+    RetryTimedOut(RetryContextFingerprint),
+    RetryCancelled(RetryContextFingerprint),
+    RetryCallbackFailed(RetryContextFingerprint),
+    RetryInfrastructureFailed(RetryContextFingerprint),
 }
 
 /// Allocation identity for owned string payloads inside an error.
@@ -74,6 +80,12 @@ enum ErrorFingerprint {
 struct OwnedStringFingerprint {
     ptr: usize,
     len: usize,
+}
+
+/// Shared retry-context identity retained for provenance comparison.
+#[derive(Clone, Debug)]
+struct RetryContextFingerprint {
+    context: Arc<RetryContext>,
 }
 
 /// Chain handle passed to subscriber interceptors.
@@ -304,7 +316,7 @@ impl ErrorFingerprint {
     /// - `error`: Error value to fingerprint.
     ///
     /// # Returns
-    /// Fingerprint that preserves allocation provenance for owned messages.
+    /// Fingerprint that preserves allocation provenance for owned payloads.
     fn from_error(error: &EventBusError) -> Self {
         match error {
             EventBusError::NotStarted => Self::NotStarted,
@@ -354,6 +366,20 @@ impl ErrorFingerprint {
             EventBusError::UnsupportedOperation { operation } => {
                 Self::UnsupportedOperation { operation }
             }
+            EventBusError::RetryTimedOut { context, .. } => {
+                Self::RetryTimedOut(RetryContextFingerprint::new(context))
+            }
+            EventBusError::RetryCancelled { context, .. } => {
+                Self::RetryCancelled(RetryContextFingerprint::new(context))
+            }
+            EventBusError::RetryCallbackFailed { context, .. } => {
+                Self::RetryCallbackFailed(RetryContextFingerprint::new(context))
+            }
+            EventBusError::RetryInfrastructureFailed { context, .. } => {
+                Self::RetryInfrastructureFailed(RetryContextFingerprint::new(
+                    context,
+                ))
+            }
         }
     }
 }
@@ -373,6 +399,30 @@ impl OwnedStringFingerprint {
         }
     }
 }
+
+impl RetryContextFingerprint {
+    /// Retains the shared allocation identity of a retry context.
+    ///
+    /// # Parameters
+    /// - `context`: Retry context stored in an event bus error.
+    ///
+    /// # Returns
+    /// Shared identity that keeps the context allocation alive.
+    fn new(context: &Arc<RetryContext>) -> Self {
+        Self {
+            context: Arc::clone(context),
+        }
+    }
+}
+
+impl PartialEq for RetryContextFingerprint {
+    /// Compares retry provenance by shared allocation identity.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.context, &other.context)
+    }
+}
+
+impl Eq for RetryContextFingerprint {}
 
 /// Exercises coverage-only defensive branches for subscriber interceptor
 /// chains.
