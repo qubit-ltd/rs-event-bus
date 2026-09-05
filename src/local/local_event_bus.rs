@@ -29,8 +29,11 @@ pub use coverage::coverage_exercise_local_event_bus_defensive_paths;
 use qubit_argument::StringArgument;
 use qubit_executor::ExecutorService;
 use qubit_executor::SingleThreadScheduledExecutorService;
+use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
+use qubit_retry::RetryContext;
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 use qubit_thread_pool::FixedThreadPool;
 
 use super::erased_subscription::ErasedSubscription;
@@ -53,6 +56,7 @@ use crate::DeadLetterOriginalPayload;
 use crate::DeadLetterPayload;
 use crate::EventBusError;
 use crate::EventBusResult;
+use crate::EventBusRetryRule;
 use crate::EventEnvelope;
 use crate::EventEnvelopeMetadata;
 use crate::IntoEventBusResult;
@@ -627,7 +631,7 @@ impl LocalEventBus {
             return Err(error);
         }
         let original_envelope = envelope.clone();
-        let envelope = match run_with_retry(options.retry_options(), || {
+        let envelope = match run_with_retry(options.retry_options(), options.retry_rule(), || {
             self.apply_publisher_interceptors(original_envelope.clone())
         }) {
             Ok(Some(envelope)) => envelope,
@@ -638,7 +642,12 @@ impl LocalEventBus {
                 return Err(error);
             }
         };
-        if let Err(error) = self.dispatch_envelope(envelope.clone(), options.retry_options(), allow_stopping) {
+        if let Err(error) = self.dispatch_envelope(
+            envelope.clone(),
+            options.retry_options(),
+            options.retry_rule(),
+            allow_stopping,
+        ) {
             self.observe_errors(options.notify_publish_error(&envelope, &error));
             return Err(error);
         }
@@ -997,6 +1006,7 @@ impl LocalEventBus {
         &self,
         envelope: EventEnvelope<T>,
         retry_options: Option<&RetryPolicy>,
+        retry_rule: Option<&Arc<dyn RetryRule<EventBusError>>>,
         allow_stopping: bool,
     ) -> EventBusResult<()>
     where
@@ -1009,7 +1019,7 @@ impl LocalEventBus {
         let mut first_error = None;
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
-            if let Err(error) = run_with_retry(retry_options, || {
+            if let Err(error) = run_with_retry(retry_options, retry_rule, || {
                 subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner), allow_stopping)
             }) && first_error.is_none()
             {
@@ -1681,7 +1691,7 @@ where
     T: Clone + Send + Sync + 'static,
 {
     let mut last_delivery = None;
-    match run_with_retry(options.retry_options(), || {
+    match run_with_retry(options.retry_options(), options.retry_rule(), || {
         let delivery = HandlerDelivery::new(&envelope);
         last_delivery = Some(delivery.clone());
         call_handler(handler, delivery.delivered.clone())?;
@@ -1767,12 +1777,19 @@ fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError
 /// Runs a fallible operation with the event-bus retry options.
 ///
 /// # Parameters
-/// - `retry_options`: Simple event-bus retry options.
+/// - `retry_options`: Admission and backoff policy; absent means one direct
+///   call.
+/// - `retry_rule`: Optional application classification before the default rule.
 /// - `operation`: Operation to call for each attempt.
 ///
 /// # Returns
-/// Successful operation value or the final event-bus error.
-fn run_with_retry<T, F>(retry_options: Option<&RetryPolicy>, operation: F) -> EventBusResult<T>
+/// Successful operation value or the final event-bus error. Backoff blocks this
+/// thread and preserves the existing delivery/ACK/ordering lifecycle.
+fn run_with_retry<T, F>(
+    retry_options: Option<&RetryPolicy>,
+    retry_rule: Option<&Arc<dyn RetryRule<EventBusError>>>,
+    operation: F,
+) -> EventBusResult<T>
 where
     F: FnMut() -> EventBusResult<T>,
 {
@@ -1780,7 +1797,13 @@ where
         let mut operation = operation;
         return operation();
     };
-    let retry = Retry::<EventBusError>::builder((*retry_options).clone()).build();
+    let mut builder = Retry::<EventBusError>::builder((*retry_options).clone());
+    if let Some(rule) = retry_rule {
+        let rule = Arc::clone(rule);
+        builder = builder
+            .rule(move |failure: &AttemptFailure<EventBusError>, context: &RetryContext| rule.decide(failure, context));
+    }
+    let retry = builder.rule(EventBusRetryRule).build();
     match retry.sync().run(operation) {
         Ok(value) => Ok(value.into_value()),
         Err(error) => Err(EventBusError::from(error)),

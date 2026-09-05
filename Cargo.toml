@@ -35,7 +35,7 @@ qubit-argument = { path = "../rs-argument", version = "0.4" }
 qubit-collections = { version = "0.1" }
 qubit-executor = { path = "../rs-executor", version = "0.8" }
 qubit-metadata = { path = "../rs-metadata", version = "0.10", default-features = false, features = [] }
-qubit-retry = { path = "../rs-retry", version = "0.19" }
+qubit-retry = { path = "../rs-retry", version = "0.20" }
 qubit-thread-pool = { path = "../rs-thread-pool", version = "0.10" }
 
 [patch.crates-io]
@@ -43,3 +43,6 @@ qubit-state-machine = { path = "../rs-state-machine" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
+[dev-dependencies]
+qubit-clock = "0.13"

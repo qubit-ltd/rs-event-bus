@@ -40,6 +40,7 @@ pub use core::EventBus;
 pub use core::EventBusError;
 pub use core::EventBusFactory;
 pub use core::EventBusResult;
+pub use core::EventBusRetryRule;
 pub use core::EventEnvelope;
 pub use core::EventEnvelopeBuilder;
 pub use core::EventEnvelopeMetadata;
