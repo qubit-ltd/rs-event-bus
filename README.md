@@ -128,6 +128,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
 - `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
 
+## Retry classification and blocking
+
+With a retry policy configured, `EventBusRetryRule` retries `HandlerFailed`,
+`InterceptorFailed`, and `ExecutionRejected`. Configuration, type, lifecycle,
+handler panic and retry-infrastructure errors terminate immediately. Publish and
+subscribe option builders accept `.retry_rule(rule)` before this default;
+`RetryDecision::UseDefault` delegates to the default classification. A rule alone
+does not enable retries. Explicit rules override type defaults and cloned options
+share their rule instance.
+
+Local publishing and handler retries are synchronous. Backoff holds the calling
+thread or handler worker and its delivery ordering slot. ACK, dead-letter handling
+and shutdown draining finish through the same delivery flow. Size the worker pool
+and retry budgets for this occupancy; a retry policy does not schedule a detached
+redelivery or release a worker during sleep. Retried handlers and interceptors
+must tolerate repeated execution.
+
 ## Contributing
 
 Issues and pull requests are welcome.

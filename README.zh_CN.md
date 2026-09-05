@@ -128,6 +128,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
 - `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。
 
+## 重试分类与线程占用
+
+配置重试策略后，默认的 `EventBusRetryRule` 只重试 `HandlerFailed`、
+`InterceptorFailed` 和 `ExecutionRejected`。配置、类型、生命周期、handler panic
+及重试基础设施错误会立即终止。发布和订阅选项构造器可通过 `.retry_rule(rule)`
+注册先于默认分类执行的规则；返回 `RetryDecision::UseDefault` 可交回默认规则。
+仅设置规则不会启用重试。显式规则覆盖类型默认值，克隆的选项共享规则实例。
+
+本地发布与 handler 重试都是同步流程。退避等待会占用调用线程或 handler 工作线程，
+并保留当前投递的顺序位置；ACK、死信处理和停机排空仍沿同一投递流程完成。
+设置线程池和重试预算时需要考虑这段占用时间。重试策略不会自动安排独立重投递，
+也不会在等待时释放工作线程。允许重试的 handler 和拦截器必须能够接受重复执行。
+
 ## 贡献
 
 欢迎提交 issue 和 pull request。
