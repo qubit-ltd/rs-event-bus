@@ -13,6 +13,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 
 use super::dead_letter_record::DeadLetterPayload;
 use crate::AckMode;
@@ -258,6 +259,7 @@ pub struct SubscribeOptions<T: 'static> {
     pub(crate) ack_mode: AckMode,
     pub(crate) ack_mode_configured: bool,
     pub(crate) retry_options: Option<RetryPolicy>,
+    pub(crate) retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     pub(crate) filter: Option<Arc<EventFilterFn<T>>>,
     pub(crate) error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     pub(crate) dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
@@ -283,6 +285,7 @@ impl<T: 'static> SubscribeOptions<T> {
             ack_mode: AckMode::Auto,
             ack_mode_configured: false,
             retry_options: None,
+            retry_rule: None,
             filter: None,
             error_handlers: Vec::new(),
             dead_letter_strategy: None,
@@ -297,6 +300,12 @@ impl<T: 'static> SubscribeOptions<T> {
     /// Configured acknowledgement mode.
     pub const fn ack_mode(&self) -> AckMode {
         self.ack_mode
+    }
+
+    /// Returns the shared application rule, or `None` for default
+    /// classification.
+    pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<EventBusError>>> {
+        self.retry_rule.as_ref()
     }
 
     /// Returns configured retry options.
@@ -339,6 +348,7 @@ impl<T: 'static> SubscribeOptions<T> {
             },
             ack_mode_configured: self.ack_mode_configured || defaults.ack_mode_configured,
             retry_options: self.retry_options.or(defaults.retry_options),
+            retry_rule: self.retry_rule.or(defaults.retry_rule),
             filter: self.filter.or(defaults.filter),
             error_handlers,
             dead_letter_strategy: self.dead_letter_strategy.or(defaults.dead_letter_strategy),
@@ -489,6 +499,7 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
             ack_mode: self.ack_mode,
             ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options.clone(),
+            retry_rule: self.retry_rule.clone(),
             filter: self.filter.clone(),
             error_handlers: self.error_handlers.clone(),
             dead_letter_strategy: self.dead_letter_strategy.clone(),

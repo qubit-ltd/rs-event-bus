@@ -18,6 +18,8 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use qubit_clock::ManualMonotonicClock;
+use qubit_clock::MonotonicClock;
 use qubit_event_bus::AckMode;
 use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
 use qubit_event_bus::DeadLetterPayload;
@@ -36,6 +38,7 @@ use qubit_event_bus::Topic;
 use qubit_event_bus::discard_dead_letters;
 use qubit_event_bus::standard_dead_letters_to;
 use qubit_retry::AttemptFailure;
+use qubit_retry::BackoffPolicy;
 use qubit_retry::Retry;
 use qubit_retry::RetryCallbackFailure;
 use qubit_retry::RetryCallbackKind;
@@ -334,11 +337,17 @@ fn test_retry_conversion_preserves_infrastructure_terminal() {
 #[test]
 fn test_retry_conversion_preserves_timed_out_last_failure() {
     let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let clock = ManualMonotonicClock::new_shared();
+    let operation_clock = Arc::clone(&clock);
     let retry_error = retry
         .worker()
-        .attempt_timeout(Duration::from_millis(1))
+        .timer(clock.new_timer())
+        .attempt_timeout(Duration::from_secs(1))
         .cancellation_grace(Duration::from_secs(1))
-        .run(|cancellation| {
+        .run(move |cancellation| {
+            operation_clock
+                .advance(Duration::from_secs(1))
+                .expect("expire active worker");
             while !cancellation.is_cancelled() {
                 thread::yield_now();
             }
@@ -441,16 +450,22 @@ fn test_retry_conversion_preserves_infrastructure_panicked_last_failure() {
     let retry = Retry::<EventBusError>::builder(retry_options(2))
         .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
         .build();
+    let clock = ManualMonotonicClock::new_shared();
+    let operation_clock = Arc::clone(&clock);
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
         retry
             .worker()
-            .attempt_timeout(Duration::from_millis(1))
+            .timer(clock.new_timer())
+            .attempt_timeout(Duration::from_secs(1))
             .cancellation_grace(Duration::from_millis(1))
             .run(move |_| {
                 if captured_calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     panic!("infrastructure prior panic");
                 }
+                operation_clock
+                    .advance(Duration::from_secs(1))
+                    .expect("expire second worker deadline");
                 captured_release_receiver
                     .lock()
                     .expect("release receiver should lock")
@@ -4149,4 +4164,169 @@ fn test_dead_letter_publish_failure_is_observed() {
         error,
         EventBusError::DeadLetterFailed { message } if message.contains("filter panicked")
     )));
+}
+
+/// Permanent handler errors must not consume the full retry allowance.
+#[test]
+fn test_retry_aborts_permanent_handler_error() {
+    let bus = LocalEventBus::started().expect("bus starts");
+    let topic = create_topic("permanent-retry-error");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::clone(&attempts);
+    bus.subscribe_with_options(
+        "permanent",
+        &topic,
+        move |_| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::invalid_argument("payload", "invalid"))
+        },
+        SubscribeOptions::builder().retry_options(retry_options(3)).build(),
+    )
+    .expect("subscribe");
+    bus.publish(&topic, "bad payload".to_string()).expect("enqueue");
+    bus.wait_for_idle(&topic).expect("drained");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+/// A configured rule may abort a transient error without changing its identity.
+#[test]
+fn test_retry_custom_subscriber_rule_aborts_transient_failure() {
+    let bus = LocalEventBus::started().expect("bus starts");
+    let topic = create_topic("custom-retry-abort");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::clone(&attempts);
+    let options = SubscribeOptions::builder()
+        .retry_options(retry_options(3))
+        .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Abort)
+        .build();
+    assert!(options.clone().retry_rule().is_some());
+    bus.subscribe_with_options(
+        "custom",
+        &topic,
+        move |_| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::handler_failed("application declines retry"))
+        },
+        options,
+    )
+    .expect("subscribe");
+    bus.publish(&topic, "payload".to_string()).expect("enqueue");
+    bus.wait_for_idle(&topic).expect("drained");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+/// Type defaults retain shared rules, and an explicit rule can delegate to
+/// classification.
+#[test]
+fn test_retry_rule_defaults_and_explicit_override_are_applied() {
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_default_subscribe_options::<String>(
+        SubscribeOptions::builder()
+            .retry_options(retry_options(3))
+            .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Abort)
+            .build(),
+    );
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("retry-default-override");
+    let default_attempts = Arc::new(AtomicUsize::new(0));
+    let explicit_attempts = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::clone(&default_attempts);
+    bus.subscribe("default", &topic, move |_| {
+        captured.fetch_add(1, Ordering::SeqCst);
+        Err(EventBusError::handler_failed("default abort"))
+    })
+    .expect("default subscriber");
+    let captured = Arc::clone(&explicit_attempts);
+    bus.subscribe_with_options(
+        "explicit",
+        &topic,
+        move |_| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::handler_failed("explicit retry"))
+        },
+        SubscribeOptions::builder()
+            .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::UseDefault)
+            .build(),
+    )
+    .expect("explicit subscriber");
+    bus.publish(&topic, "payload".to_string()).expect("enqueue");
+    bus.wait_for_idle(&topic).expect("drained");
+    assert_eq!(default_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(explicit_attempts.load(Ordering::SeqCst), 3);
+}
+
+/// Local synchronous retry retains the single worker and delivery ordering
+/// slot.
+#[test]
+fn test_retry_backoff_retains_single_handler_worker() {
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_subscription_handler_pool_size(1).expect("one worker");
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("retry-single-worker");
+    let (started_sender, started_receiver) = mpsc::channel();
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let operation_gate = Arc::clone(&gate);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&calls);
+    let first_attempts = AtomicUsize::new(0);
+    let policy = RetryPolicy::builder()
+        .max_attempts(2)
+        .backoff(BackoffPolicy::fixed(Duration::from_millis(1)))
+        .build()
+        .expect("valid policy");
+    bus.subscribe_with_options(
+        "ordered",
+        &topic,
+        move |event| {
+            recorded.lock().expect("records").push(event.payload().clone());
+            if event.payload() == "first" && first_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                started_sender.send(()).expect("controller alive");
+                operation_gate.wait();
+                return Err(EventBusError::handler_failed("retry first delivery"));
+            }
+            Ok(())
+        },
+        SubscribeOptions::builder().retry_options(policy).build(),
+    )
+    .expect("subscribe");
+    bus.publish(&topic, "first".to_string()).expect("first enqueue");
+    started_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first started");
+    bus.publish(&topic, "second".to_string()).expect("second enqueue");
+    gate.wait();
+    bus.wait_for_idle(&topic).expect("drained");
+    assert_eq!(*calls.lock().expect("records"), ["first", "first", "second"]);
+}
+
+/// A publisher rule inherited from type defaults may suppress interceptor
+/// retries.
+#[test]
+fn test_retry_custom_publisher_rule_survives_defaults_and_clone() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::clone(&attempts);
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_publisher_interceptor::<String, _>(move |_: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
+            captured.fetch_add(1, Ordering::SeqCst);
+            panic!("publisher fails");
+        })
+        .expect("register interceptor");
+    let defaults = PublishOptions::<String>::builder()
+        .retry_options(retry_options(3))
+        .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Abort)
+        .build();
+    assert!(defaults.clone().retry_rule().is_some());
+    factory.set_default_publish_options(defaults);
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("publisher-custom-rule");
+    let result = {
+        let _guard = PanicHookGuard::suppress();
+        bus.publish_envelope_with_options(
+            EventEnvelope::create(topic, "payload".to_string()),
+            PublishOptions::empty(),
+        )
+    };
+    assert!(matches!(result, Err(EventBusError::InterceptorFailed { .. })));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

@@ -12,6 +12,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 
 use crate::EventBusError;
 use crate::EventBusResult;
@@ -24,6 +25,7 @@ pub(crate) type PublishErrorHandlerFn<T> =
 /// Immutable options applied when publishing events.
 pub struct PublishOptions<T: 'static> {
     pub(crate) retry_options: Option<RetryPolicy>,
+    pub(crate) retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     pub(crate) error_handlers: Vec<Arc<PublishErrorHandlerFn<T>>>,
 }
 
@@ -43,8 +45,15 @@ impl<T: 'static> PublishOptions<T> {
     pub fn empty() -> Self {
         Self {
             retry_options: None,
+            retry_rule: None,
             error_handlers: Vec::new(),
         }
+    }
+
+    /// Returns the shared application rule, or `None` for default
+    /// classification.
+    pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<EventBusError>>> {
+        self.retry_rule.as_ref()
     }
 
     /// Returns configured retry options.
@@ -72,6 +81,7 @@ impl<T: 'static> PublishOptions<T> {
         error_handlers.extend(self.error_handlers);
         Self {
             retry_options: self.retry_options.or(defaults.retry_options),
+            retry_rule: self.retry_rule.or(defaults.retry_rule),
             error_handlers,
         }
     }
@@ -108,6 +118,7 @@ impl<T: 'static> Clone for PublishOptions<T> {
     fn clone(&self) -> Self {
         Self {
             retry_options: self.retry_options.clone(),
+            retry_rule: self.retry_rule.clone(),
             error_handlers: self.error_handlers.clone(),
         }
     }

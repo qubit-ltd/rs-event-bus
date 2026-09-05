@@ -16,6 +16,7 @@ mod dead_letter_record;
 mod event_bus;
 mod event_bus_error;
 mod event_bus_factory;
+mod event_bus_retry_rule;
 pub(crate) mod event_envelope;
 mod event_envelope_builder;
 mod into_event_bus_result;
@@ -51,6 +52,7 @@ pub use event_bus_error::EventBusResult;
 pub use event_bus_factory::EventBusFactory;
 #[cfg(coverage)]
 pub use event_bus_factory::coverage_exercise_event_bus_factory_default_regions;
+pub use event_bus_retry_rule::EventBusRetryRule;
 pub use event_envelope::EventEnvelope;
 pub use event_envelope::EventEnvelopeMetadata;
 pub use event_envelope_builder::EventEnvelopeBuilder;

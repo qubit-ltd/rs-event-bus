@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 
 use super::publish_options::PublishErrorHandlerFn;
 use crate::EventBusError;
@@ -21,6 +22,7 @@ use crate::PublishOptions;
 /// Builder used to create [`PublishOptions`].
 pub struct PublishOptionsBuilder<T: 'static> {
     retry_options: Option<RetryPolicy>,
+    retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     error_handlers: Vec<Arc<PublishErrorHandlerFn<T>>>,
     marker: PhantomData<fn() -> T>,
 }
@@ -33,12 +35,25 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     pub(crate) fn new() -> Self {
         Self {
             retry_options: None,
+            retry_rule: None,
             error_handlers: Vec::new(),
             marker: PhantomData,
         }
     }
 
-    /// Sets publish retry options.
+    /// Sets an application retry rule evaluated before
+    /// [`crate::EventBusRetryRule`]. `UseDefault` delegates to the default
+    /// classification. A retry policy must also be configured; rules do not
+    /// enable retries by themselves.
+    pub fn retry_rule<R>(mut self, rule: R) -> Self
+    where
+        R: RetryRule<EventBusError>,
+    {
+        self.retry_rule = Some(Arc::new(rule));
+        self
+    }
+
+    /// Sets publish retry options. Backoff blocks the publishing thread.
     ///
     /// # Parameters
     /// - `retry_options`: Retry settings to use while publishing.
@@ -75,6 +90,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     pub fn build(self) -> PublishOptions<T> {
         PublishOptions {
             retry_options: self.retry_options,
+            retry_rule: self.retry_rule,
             error_handlers: self.error_handlers,
         }
     }

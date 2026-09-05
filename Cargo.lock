@@ -230,6 +230,7 @@ name = "qubit-event-bus"
 version = "0.9.0"
 dependencies = [
  "qubit-argument 0.4.5",
+ "qubit-clock",
  "qubit-collections 0.1.0",
  "qubit-executor",
  "qubit-metadata",
@@ -287,14 +288,14 @@ dependencies = [
 
 [[package]]
 name = "qubit-redact"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "qubit-budget",
 ]
 
 [[package]]
 name = "qubit-retry"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "qubit-budget",
  "qubit-clock",

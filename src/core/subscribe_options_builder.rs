@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 
 use super::subscribe_options::DeadLetterStrategyCallback;
 use super::subscribe_options::DeadLetterStrategyFn;
@@ -29,6 +30,7 @@ pub struct SubscribeOptionsBuilder<T: 'static> {
     ack_mode: AckMode,
     ack_mode_configured: bool,
     retry_options: Option<RetryPolicy>,
+    retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     filter: Option<Arc<EventFilterFn<T>>>,
     error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
     dead_letter_strategy: Option<Arc<DeadLetterStrategyFn<T>>>,
@@ -47,6 +49,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
             ack_mode: AckMode::Auto,
             ack_mode_configured: false,
             retry_options: None,
+            retry_rule: None,
             filter: None,
             error_handlers: Vec::new(),
             dead_letter_strategy: None,
@@ -69,7 +72,20 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
         self
     }
 
-    /// Sets subscriber retry options.
+    /// Sets an application retry rule evaluated before
+    /// [`crate::EventBusRetryRule`]. `UseDefault` delegates to the default
+    /// classification. A retry policy must also be configured; rules do not
+    /// enable retries by themselves.
+    pub fn retry_rule<R>(mut self, rule: R) -> Self
+    where
+        R: RetryRule<EventBusError>,
+    {
+        self.retry_rule = Some(Arc::new(rule));
+        self
+    }
+
+    /// Sets subscriber retry options. Backoff occupies the handler worker
+    /// and retains its delivery ordering slot until the flow completes.
     ///
     /// # Parameters
     /// - `retry_options`: Retry settings for handler failures.
@@ -153,6 +169,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
             ack_mode: self.ack_mode,
             ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options,
+            retry_rule: self.retry_rule,
             filter: self.filter,
             error_handlers: self.error_handlers,
             dead_letter_strategy: self.dead_letter_strategy,
