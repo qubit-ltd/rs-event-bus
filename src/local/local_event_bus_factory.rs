@@ -42,9 +42,7 @@ use crate::core::subscribe_options::wrap_dead_letter_strategy_any;
 /// # Returns
 /// Available CPU parallelism, or `1` if it cannot be detected.
 fn default_subscription_handler_pool_size() -> usize {
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(usize::from).unwrap_or(1)
 }
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
@@ -83,8 +81,7 @@ impl LocalEventBusFactory {
             global_subscriber_interceptors: Vec::new(),
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
-            subscription_handler_pool_size:
-                default_subscription_handler_pool_size(),
+            subscription_handler_pool_size: default_subscription_handler_pool_size(),
             subscription_handler_queue_capacity: None,
         }
     }
@@ -106,10 +103,8 @@ impl LocalEventBusFactory {
     /// # Parameters
     /// - `options`: Options used by [`LocalEventBus::subscribe`] for payload
     ///   `T`.
-    pub fn set_default_subscribe_options<T>(
-        &mut self,
-        options: SubscribeOptions<T>,
-    ) where
+    pub fn set_default_subscribe_options<T>(&mut self, options: SubscribeOptions<T>)
+    where
         T: Send + Sync + 'static,
     {
         self.default_subscribe_options
@@ -140,8 +135,7 @@ impl LocalEventBusFactory {
     where
         F: DeadLetterStrategyAnyCallback,
     {
-        self.global_default_dead_letter_strategy =
-            Some(wrap_dead_letter_strategy_any(strategy));
+        self.global_default_dead_letter_strategy = Some(wrap_dead_letter_strategy_any(strategy));
     }
 
     /// Adds a publisher interceptor to buses created by this factory.
@@ -151,10 +145,7 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_publisher_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    pub fn add_publisher_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: PublisherInterceptor<T>,
@@ -171,15 +162,11 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_global_publisher_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    pub fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: PublisherInterceptorAny,
     {
-        self.global_publisher_interceptors
-            .push(Arc::new(interceptor));
+        self.global_publisher_interceptors.push(Arc::new(interceptor));
         Ok(())
     }
 
@@ -190,10 +177,7 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_subscriber_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    pub fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: SubscriberInterceptor<T>,
@@ -211,15 +195,11 @@ impl LocalEventBusFactory {
     ///
     /// # Returns
     /// `Ok(())` when the interceptor is stored.
-    pub fn add_global_subscriber_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    pub fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: SubscriberInterceptorAny,
     {
-        self.global_subscriber_interceptors
-            .push(Arc::new(interceptor));
+        self.global_subscriber_interceptors.push(Arc::new(interceptor));
         Ok(())
     }
 
@@ -233,17 +213,10 @@ impl LocalEventBusFactory {
     ///
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when `pool_size` is zero.
-    pub fn set_subscription_handler_pool_size(
-        &mut self,
-        pool_size: usize,
-    ) -> EventBusResult<()> {
-        let pool_size =
-            pool_size.require_positive("pool_size").map_err(|_| {
-                EventBusError::invalid_argument(
-                    "pool_size",
-                    "subscription handler pool size must be greater than zero",
-                )
-            })?;
+    pub fn set_subscription_handler_pool_size(&mut self, pool_size: usize) -> EventBusResult<()> {
+        let pool_size = pool_size.require_positive("pool_size").map_err(|_| {
+            EventBusError::invalid_argument("pool_size", "subscription handler pool size must be greater than zero")
+        })?;
         self.subscription_handler_pool_size = pool_size;
         Ok(())
     }
@@ -259,10 +232,7 @@ impl LocalEventBusFactory {
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when a configured capacity is
     /// zero.
-    pub fn set_subscription_handler_queue_capacity(
-        &mut self,
-        capacity: Option<usize>,
-    ) -> EventBusResult<()> {
+    pub fn set_subscription_handler_queue_capacity(&mut self, capacity: Option<usize>) -> EventBusResult<()> {
         let capacity = capacity
             .validate_some(|capacity| capacity.require_positive("capacity"))
             .map_err(|_| {
@@ -283,23 +253,14 @@ impl LocalEventBusFactory {
         LocalEventBus::with_runtime_options(LocalEventBusRuntimeOptions {
             default_publish_options: self.default_publish_options.clone(),
             default_subscribe_options: self.default_subscribe_options.clone(),
-            default_dead_letter_strategies: self
-                .default_dead_letter_strategies
-                .clone(),
-            global_default_dead_letter_strategy: self
-                .global_default_dead_letter_strategy
-                .clone(),
-            global_publisher_interceptors: self
-                .global_publisher_interceptors
-                .clone(),
-            global_subscriber_interceptors: self
-                .global_subscriber_interceptors
-                .clone(),
+            default_dead_letter_strategies: self.default_dead_letter_strategies.clone(),
+            global_default_dead_letter_strategy: self.global_default_dead_letter_strategy.clone(),
+            global_publisher_interceptors: self.global_publisher_interceptors.clone(),
+            global_subscriber_interceptors: self.global_subscriber_interceptors.clone(),
             publisher_interceptors: self.publisher_interceptors.clone(),
             subscriber_interceptors: self.subscriber_interceptors.clone(),
             subscription_handler_pool_size: self.subscription_handler_pool_size,
-            subscription_handler_queue_capacity: self
-                .subscription_handler_queue_capacity,
+            subscription_handler_queue_capacity: self.subscription_handler_queue_capacity,
         })
     }
 
@@ -337,10 +298,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Sets typed default publish options for local buses.
-    fn set_default_publish_options<T>(
-        &mut self,
-        options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_publish_options<T>(&mut self, options: PublishOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
@@ -349,10 +307,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Sets typed default subscribe options for local buses.
-    fn set_default_subscribe_options<T>(
-        &mut self,
-        options: SubscribeOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_subscribe_options<T>(&mut self, options: SubscribeOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
@@ -361,10 +316,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Sets a typed default dead-letter strategy for local buses.
-    fn set_default_dead_letter_strategy<T, F>(
-        &mut self,
-        strategy: F,
-    ) -> EventBusResult<()>
+    fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         F: DeadLetterStrategyCallback<T>,
@@ -374,10 +326,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Sets the global default dead-letter strategy for local buses.
-    fn set_global_default_dead_letter_strategy<F>(
-        &mut self,
-        strategy: F,
-    ) -> EventBusResult<()>
+    fn set_global_default_dead_letter_strategy<F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         F: DeadLetterStrategyAnyCallback,
     {
@@ -386,10 +335,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Adds a typed publisher interceptor for local buses.
-    fn add_publisher_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_publisher_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: PublisherInterceptor<T>,
@@ -398,10 +344,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Adds a global publisher interceptor for local buses.
-    fn add_global_publisher_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: PublisherInterceptorAny,
     {
@@ -409,10 +352,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Adds a typed subscriber interceptor for local buses.
-    fn add_subscriber_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: SubscriberInterceptor<T>,
@@ -421,10 +361,7 @@ impl EventBusFactory for LocalEventBusFactory {
     }
 
     /// Adds a global subscriber interceptor for local buses.
-    fn add_global_subscriber_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: SubscriberInterceptorAny,
     {

@@ -30,11 +30,7 @@ impl ProcessingTask {
     ///
     /// # Returns
     /// Processing task that finishes accounting on run or drop.
-    pub(crate) fn new<F>(
-        bus: Arc<LocalEventBusInner>,
-        topic_key: TopicKey,
-        task: F,
-    ) -> Self
+    pub(crate) fn new<F>(bus: Arc<LocalEventBusInner>, topic_key: TopicKey, task: F) -> Self
     where
         F: FnOnce() + Send + 'static,
     {

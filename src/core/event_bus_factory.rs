@@ -82,17 +82,12 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable defaults.
-    fn set_default_publish_options<T>(
-        &mut self,
-        options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_publish_options<T>(&mut self, options: PublishOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
         let _ = options;
-        Err(EventBusError::unsupported_operation(
-            "set_default_publish_options",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_publish_options"))
     }
 
     /// Sets default subscribe options for a payload type.
@@ -106,17 +101,12 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable defaults.
-    fn set_default_subscribe_options<T>(
-        &mut self,
-        options: SubscribeOptions<T>,
-    ) -> EventBusResult<()>
+    fn set_default_subscribe_options<T>(&mut self, options: SubscribeOptions<T>) -> EventBusResult<()>
     where
         T: Send + Sync + 'static,
     {
         let _ = options;
-        Err(EventBusError::unsupported_operation(
-            "set_default_subscribe_options",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_subscribe_options"))
     }
 
     /// Sets a default dead-letter strategy for a payload type.
@@ -131,18 +121,13 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable defaults.
-    fn set_default_dead_letter_strategy<T, F>(
-        &mut self,
-        strategy: F,
-    ) -> EventBusResult<()>
+    fn set_default_dead_letter_strategy<T, F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         F: DeadLetterStrategyCallback<T>,
     {
         let _ = strategy;
-        Err(EventBusError::unsupported_operation(
-            "set_default_dead_letter_strategy",
-        ))
+        Err(EventBusError::unsupported_operation("set_default_dead_letter_strategy"))
     }
 
     /// Sets the global default dead-letter strategy for all payload types.
@@ -159,10 +144,7 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable defaults.
-    fn set_global_default_dead_letter_strategy<F>(
-        &mut self,
-        strategy: F,
-    ) -> EventBusResult<()>
+    fn set_global_default_dead_letter_strategy<F>(&mut self, strategy: F) -> EventBusResult<()>
     where
         F: DeadLetterStrategyAnyCallback,
     {
@@ -183,18 +165,13 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable interceptors.
-    fn add_publisher_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_publisher_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: PublisherInterceptor<T>,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_publisher_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_publisher_interceptor"))
     }
 
     /// Adds a global publisher interceptor to buses created by this factory.
@@ -208,17 +185,12 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable interceptors.
-    fn add_global_publisher_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_global_publisher_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: PublisherInterceptorAny,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_global_publisher_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_global_publisher_interceptor"))
     }
 
     /// Adds a subscriber interceptor to buses created by this factory.
@@ -232,18 +204,13 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable interceptors.
-    fn add_subscriber_interceptor<T, I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_subscriber_interceptor<T, I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         T: Clone + Send + Sync + 'static,
         I: SubscriberInterceptor<T>,
     {
         let _ = interceptor;
-        Err(EventBusError::unsupported_operation(
-            "add_subscriber_interceptor",
-        ))
+        Err(EventBusError::unsupported_operation("add_subscriber_interceptor"))
     }
 
     /// Adds a global subscriber interceptor to buses created by this factory.
@@ -258,10 +225,7 @@ pub trait EventBusFactory {
     /// # Errors
     /// Returns unsupported-operation errors for factories that do not expose
     /// configurable interceptors.
-    fn add_global_subscriber_interceptor<I>(
-        &mut self,
-        interceptor: I,
-    ) -> EventBusResult<()>
+    fn add_global_subscriber_interceptor<I>(&mut self, interceptor: I) -> EventBusResult<()>
     where
         I: SubscriberInterceptorAny,
     {
@@ -280,15 +244,12 @@ pub trait EventBusFactory {
 /// # Returns
 /// Unsupported-operation errors created on straight-line covered regions.
 #[cfg(coverage)]
-pub fn coverage_exercise_event_bus_factory_default_regions()
--> Vec<EventBusError> {
+pub fn coverage_exercise_event_bus_factory_default_regions() -> Vec<EventBusError> {
     vec![
         EventBusError::unsupported_operation("create_transactional"),
         EventBusError::unsupported_operation("create_transactional:factory"),
         EventBusError::unsupported_operation("create_transactional:default"),
-        EventBusError::unsupported_operation(
-            "create_transactional:unsupported",
-        ),
+        EventBusError::unsupported_operation("create_transactional:unsupported"),
         EventBusError::unsupported_operation("create_started:default"),
         EventBusError::unsupported_operation("create_started:startup"),
         EventBusError::unsupported_operation("create_started:error"),

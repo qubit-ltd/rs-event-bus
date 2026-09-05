@@ -46,12 +46,10 @@ impl<T: 'static> Topic<T> {
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when `name` is blank.
     pub fn try_new(name: impl Into<String>) -> EventBusResult<Self> {
-        let name = name.into().require_non_blank("name").map_err(|_| {
-            EventBusError::invalid_argument(
-                "name",
-                "topic name must not be blank",
-            )
-        })?;
+        let name = name
+            .into()
+            .require_non_blank("name")
+            .map_err(|_| EventBusError::invalid_argument("name", "topic name must not be blank"))?;
         Ok(Self {
             name,
             payload_type_id: TypeId::of::<T>(),
