@@ -59,19 +59,16 @@ fn test_publish_options_builder_sets_retry_and_error_handler() {
 
 #[test]
 fn test_publish_options_default_clone_and_error_handler_invocation() {
-    let topic = Topic::<String>::try_new("publish-options")
-        .expect("topic should build");
+    let topic = Topic::<String>::try_new("publish-options").expect("topic should build");
     let envelope = EventEnvelope::create(topic, "payload".to_string());
     let errors = Arc::new(AtomicUsize::new(0));
     let captured = Arc::clone(&errors);
     let options = PublishOptions::builder()
-        .error_handler(
-            move |event: &EventEnvelope<String>, error: &EventBusError| {
-                assert_eq!(event.payload(), "payload");
-                assert_eq!(error, &EventBusError::not_started());
-                captured.fetch_add(1, Ordering::SeqCst);
-            },
-        )
+        .error_handler(move |event: &EventEnvelope<String>, error: &EventBusError| {
+            assert_eq!(event.payload(), "payload");
+            assert_eq!(error, &EventBusError::not_started());
+            captured.fetch_add(1, Ordering::SeqCst);
+        })
         .build();
     let cloned = options.clone();
 
@@ -87,8 +84,7 @@ fn test_publish_options_default_clone_and_error_handler_invocation() {
 
 #[test]
 fn test_subscribe_options_defaults_and_builder() {
-    let topic =
-        Topic::<String>::try_new("orders.created").expect("topic should build");
+    let topic = Topic::<String>::try_new("orders.created").expect("topic should build");
     let options = SubscribeOptions::<String>::builder()
         .ack_mode(AckMode::Manual)
         .priority(10)
@@ -99,10 +95,7 @@ fn test_subscribe_options_defaults_and_builder() {
     let accepted = EventEnvelope::create(topic.clone(), "accepted".to_string());
     let rejected = EventEnvelope::create(topic, "rejected".to_string());
 
-    assert_eq!(
-        SubscribeOptions::<String>::empty().ack_mode(),
-        AckMode::Auto
-    );
+    assert_eq!(SubscribeOptions::<String>::empty().ack_mode(), AckMode::Auto);
     assert_eq!(options.ack_mode(), AckMode::Manual);
     assert_eq!(options.priority(), 10);
     assert_eq!(

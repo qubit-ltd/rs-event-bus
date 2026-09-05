@@ -7,8 +7,7 @@ use qubit_event_bus::Topic;
 #[test]
 fn test_subscription_cancel_removes_type_erased_entry() {
     let bus = LocalEventBus::started().expect("bus should start");
-    let topic = Topic::<String>::try_new("erased-subscription")
-        .expect("topic should build");
+    let topic = Topic::<String>::try_new("erased-subscription").expect("topic should build");
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
     let subscription = bus
@@ -26,10 +25,5 @@ fn test_subscription_cancel_removes_type_erased_entry() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert!(!subscription.is_active());
-    assert!(
-        received
-            .lock()
-            .expect("received payloads should lock")
-            .is_empty()
-    );
+    assert!(received.lock().expect("received payloads should lock").is_empty());
 }

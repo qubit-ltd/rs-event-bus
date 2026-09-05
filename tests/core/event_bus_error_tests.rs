@@ -13,11 +13,7 @@ use qubit_retry::RetryInfrastructureFailure;
 use qubit_retry::RetryPanic;
 use qubit_retry::RetryTimeoutScope;
 
-fn assert_retry_error_contract(
-    error: EventBusError,
-    expected_kind: &str,
-    expected_display: &str,
-) {
+fn assert_retry_error_contract(error: EventBusError, expected_kind: &str, expected_display: &str) {
     assert_eq!(error.kind(), expected_kind);
     assert_eq!(error.to_string(), expected_display);
     assert!(error.source().is_none());
@@ -36,10 +32,7 @@ fn test_event_bus_error_constructors_preserve_context() {
         EventBusError::missing_field("payload").to_string(),
         "missing required field `payload`"
     );
-    assert_eq!(
-        EventBusError::dead_letter_failed("boom").kind(),
-        "dead_letter_failed"
-    );
+    assert_eq!(EventBusError::dead_letter_failed("boom").kind(), "dead_letter_failed");
 }
 
 #[test]
@@ -47,10 +40,7 @@ fn test_event_bus_error_kind_covers_all_variants() {
     let cases = [
         (EventBusError::not_started(), "not_started"),
         (EventBusError::start_failed("boom"), "start_failed"),
-        (
-            EventBusError::invalid_argument("field", "bad"),
-            "invalid_argument",
-        ),
+        (EventBusError::invalid_argument("field", "bad"), "invalid_argument"),
         (EventBusError::missing_field("payload"), "missing_field"),
         (EventBusError::handler_failed("boom"), "handler_failed"),
         (EventBusError::handler_panicked(), "handler_panicked"),
@@ -62,26 +52,14 @@ fn test_event_bus_error_kind_covers_all_variants() {
             EventBusError::error_handler_failed("publish", "boom"),
             "error_handler_failed",
         ),
-        (
-            EventBusError::dead_letter_failed("boom"),
-            "dead_letter_failed",
-        ),
-        (
-            EventBusError::execution_rejected("queue full"),
-            "execution_rejected",
-        ),
+        (EventBusError::dead_letter_failed("boom"), "dead_letter_failed"),
+        (EventBusError::execution_rejected("queue full"), "execution_rejected"),
         (
             EventBusError::shutdown_timed_out(Duration::from_millis(10)),
             "shutdown_timed_out",
         ),
-        (
-            EventBusError::lock_poisoned("subscriptions"),
-            "lock_poisoned",
-        ),
-        (
-            EventBusError::type_mismatch("String", "i32"),
-            "type_mismatch",
-        ),
+        (EventBusError::lock_poisoned("subscriptions"), "lock_poisoned"),
+        (EventBusError::type_mismatch("String", "i32"), "type_mismatch"),
         (
             EventBusError::unsupported_operation("transaction"),
             "unsupported_operation",
@@ -96,8 +74,7 @@ fn test_event_bus_error_kind_covers_all_variants() {
 #[test]
 fn test_event_bus_error_display_covers_shutdown_timed_out() {
     assert_eq!(
-        EventBusError::shutdown_timed_out(Duration::from_millis(10))
-            .to_string(),
+        EventBusError::shutdown_timed_out(Duration::from_millis(10)).to_string(),
         "event bus shutdown timed out after 10ms"
     );
 }

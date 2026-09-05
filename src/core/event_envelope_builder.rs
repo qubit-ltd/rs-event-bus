@@ -97,11 +97,7 @@ impl<T: 'static> EventEnvelopeBuilder<T> {
     ///
     /// # Returns
     /// Updated builder.
-    pub fn header(
-        mut self,
-        key: impl Into<String>,
-        value: impl ToString,
-    ) -> Self {
+    pub fn header(mut self, key: impl Into<String>, value: impl ToString) -> Self {
         self.headers.insert(key.into(), value.to_string());
         self
     }
@@ -186,9 +182,10 @@ impl<T: 'static> EventEnvelopeBuilder<T> {
     /// # Errors
     /// Returns an error when ID, topic, or payload is missing or invalid.
     pub fn build(self) -> EventBusResult<EventEnvelope<T>> {
-        self.id.as_str().require_non_blank("id").map_err(|_| {
-            EventBusError::invalid_argument("id", "event id must not be blank")
-        })?;
+        self.id
+            .as_str()
+            .require_non_blank("id")
+            .map_err(|_| EventBusError::invalid_argument("id", "event id must not be blank"))?;
         if self.topic.is_none() {
             return Err(EventBusError::missing_field("topic"));
         }

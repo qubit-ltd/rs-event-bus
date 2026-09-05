@@ -31,8 +31,7 @@ pub trait TransactionalEventBus: EventBus {
     ///
     /// # Errors
     /// Returns backend-specific errors or unsupported-operation errors.
-    fn create_transactional_publisher(&self)
-    -> EventBusResult<Self::Publisher>;
+    fn create_transactional_publisher(&self) -> EventBusResult<Self::Publisher>;
 
     /// Publishes a typed batch atomically.
     ///
@@ -55,10 +54,7 @@ pub trait TransactionalEventBus: EventBus {
     {
         let staged = envelopes
             .into_iter()
-            .map(|envelope| {
-                Box::new(StagedEventEnvelope::new(envelope, options.clone()))
-                    as Box<dyn StagedEvent>
-            })
+            .map(|envelope| Box::new(StagedEventEnvelope::new(envelope, options.clone())) as Box<dyn StagedEvent>)
             .collect::<Vec<_>>();
         self.publish_batch_atomically_staged(staged)
     }
@@ -73,8 +69,5 @@ pub trait TransactionalEventBus: EventBus {
     ///
     /// # Errors
     /// Returns backend-specific atomic publishing errors.
-    fn publish_batch_atomically_staged(
-        &self,
-        events: Vec<Box<dyn StagedEvent>>,
-    ) -> EventBusResult<()>;
+    fn publish_batch_atomically_staged(&self, events: Vec<Box<dyn StagedEvent>>) -> EventBusResult<()>;
 }

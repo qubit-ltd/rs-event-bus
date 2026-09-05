@@ -18,8 +18,5 @@ pub(crate) trait SubscriberInterceptorEntry: Send + Sync {
     fn payload_type_id(&self) -> TypeId;
 
     /// Wraps a boxed subscriber handler with this interceptor.
-    fn wrap_handler(
-        &self,
-        handler: Box<dyn Any + Send + Sync>,
-    ) -> EventBusResult<Box<dyn Any + Send + Sync>>;
+    fn wrap_handler(&self, handler: Box<dyn Any + Send + Sync>) -> EventBusResult<Box<dyn Any + Send + Sync>>;
 }

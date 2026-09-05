@@ -36,8 +36,9 @@ fn test_coverage_helpers_exercise_local_defensive_paths() {
             .iter()
             .any(|error| matches!(error, EventBusError::StartFailed { .. }))
     );
-    assert!(chain_errors.iter().any(|error| matches!(
-        error,
-        EventBusError::UnsupportedOperation { .. }
-    )));
+    assert!(
+        chain_errors
+            .iter()
+            .any(|error| matches!(error, EventBusError::UnsupportedOperation { .. }))
+    );
 }

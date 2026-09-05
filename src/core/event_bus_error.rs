@@ -178,10 +178,7 @@ impl EventBusError {
     ///
     /// # Returns
     /// Validation error with field context.
-    pub fn invalid_argument(
-        field: &'static str,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn invalid_argument(field: &'static str, message: impl Into<String>) -> Self {
         Self::InvalidArgument {
             field,
             message: message.into(),
@@ -228,10 +225,7 @@ impl EventBusError {
     ///
     /// # Returns
     /// Interceptor failure with context.
-    pub fn interceptor_failed(
-        phase: &'static str,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn interceptor_failed(phase: &'static str, message: impl Into<String>) -> Self {
         Self::InterceptorFailed {
             phase,
             message: message.into(),
@@ -246,10 +240,7 @@ impl EventBusError {
     ///
     /// # Returns
     /// Error handler failure with context.
-    pub fn error_handler_failed(
-        phase: &'static str,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn error_handler_failed(phase: &'static str, message: impl Into<String>) -> Self {
         Self::ErrorHandlerFailed {
             phase,
             message: message.into(),
@@ -312,10 +303,7 @@ impl EventBusError {
     ///
     /// # Returns
     /// Type-erasure mismatch error.
-    pub const fn type_mismatch(
-        expected: &'static str,
-        actual: &'static str,
-    ) -> Self {
+    pub const fn type_mismatch(expected: &'static str, actual: &'static str) -> Self {
         Self::TypeMismatch { expected, actual }
     }
 
@@ -354,9 +342,7 @@ impl EventBusError {
             Self::RetryTimedOut { .. } => "retry_timed_out",
             Self::RetryCancelled { .. } => "retry_cancelled",
             Self::RetryCallbackFailed { .. } => "retry_callback_failed",
-            Self::RetryInfrastructureFailed { .. } => {
-                "retry_infrastructure_failed"
-            }
+            Self::RetryInfrastructureFailed { .. } => "retry_infrastructure_failed",
         }
     }
 }
@@ -393,16 +379,10 @@ impl Display for EventBusError {
                 write!(formatter, "dead-letter routing failed: {message}")
             }
             Self::ExecutionRejected { message } => {
-                write!(
-                    formatter,
-                    "event processing task was rejected: {message}"
-                )
+                write!(formatter, "event processing task was rejected: {message}")
             }
             Self::ShutdownTimedOut { timeout } => {
-                write!(
-                    formatter,
-                    "event bus shutdown timed out after {timeout:?}"
-                )
+                write!(formatter, "event bus shutdown timed out after {timeout:?}")
             }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")
@@ -414,10 +394,7 @@ impl Display for EventBusError {
                 )
             }
             Self::UnsupportedOperation { operation } => {
-                write!(
-                    formatter,
-                    "unsupported event bus operation: {operation}"
-                )
+                write!(formatter, "unsupported event bus operation: {operation}")
             }
             Self::RetryTimedOut {
                 scope,
@@ -514,16 +491,12 @@ impl From<RetryError<EventBusError>> for EventBusError {
                 last_failure: Some(AttemptFailure::Error(error)),
                 ..
             } => error,
-            RetryFailure::Aborted { last_failure, .. } => {
-                Self::handler_failed(format!(
-                    "retry aborted: {last_failure} after {} attempt(s)",
-                    context.attempts()
-                ))
-            }
+            RetryFailure::Aborted { last_failure, .. } => Self::handler_failed(format!(
+                "retry aborted: {last_failure} after {} attempt(s)",
+                context.attempts()
+            )),
             RetryFailure::Exhausted {
-                limit,
-                last_failure,
-                ..
+                limit, last_failure, ..
             } => match last_failure {
                 Some(last_failure) => Self::handler_failed(format!(
                     "retry limit exhausted: {limit}; last attempt failed: {last_failure} after {} attempt(s)",
@@ -535,45 +508,34 @@ impl From<RetryError<EventBusError>> for EventBusError {
                 )),
             },
             RetryFailure::TimedOut {
-                scope,
-                last_failure,
-                ..
+                scope, last_failure, ..
             } => Self::RetryTimedOut {
                 scope,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::new(context),
             },
             RetryFailure::Cancelled {
-                phase,
-                last_failure,
-                ..
+                phase, last_failure, ..
             } => Self::RetryCancelled {
                 phase,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::new(context),
             },
             RetryFailure::CallbackFailed {
-                callback,
-                last_failure,
-                ..
+                callback, last_failure, ..
             } => Self::RetryCallbackFailed {
                 callback,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::new(context),
             },
             RetryFailure::Infrastructure {
-                failure,
-                last_failure,
-                ..
+                failure, last_failure, ..
             } => Self::RetryInfrastructureFailed {
                 failure,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::new(context),
             },
-            unclassified => Self::handler_failed(format!(
-                "{unclassified} after {} attempt(s)",
-                context.attempts()
-            )),
+            unclassified => Self::handler_failed(format!("{unclassified} after {} attempt(s)", context.attempts())),
         }
     }
 }
