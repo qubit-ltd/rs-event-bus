@@ -156,8 +156,10 @@ and an omitted token inherits the type default. A token alone does not enable
 retry and does not affect a handler when no retry policy is configured.
 
 Calling `cancel()` prevents the next attempt and wakes retry backoff. It cannot
-interrupt an already-running handler; a handler returning `Ok` still follows the
-normal success/ACK path. After a failed handler, cancellation follows the existing
+interrupt an already-running handler; a successful attempt still follows the
+normal success/ACK path. Returning `Ok` while explicitly calling NACK does not
+make the attempt successful: `run_handler_with_retry` treats that acknowledgement
+decision as an attempt failure. After a failed handler, cancellation follows the existing
 terminal error notification, acknowledgement/NACK, and dead-letter path once for
 that delivery. An error handler may still ACK and suppress dead-letter routing.
 The ordering slot is released when terminal handling finishes.
