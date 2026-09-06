@@ -101,46 +101,45 @@ pub enum EventBusError {
         /// Operation name or feature category.
         operation: &'static str,
     },
-    /// Retry execution reached a hard timeout without retaining an event-bus
-    /// business error.
+    /// Retry execution reached a hard timeout, retaining the last attempt
+    /// failure when one exists.
     RetryTimedOut {
         /// Scope whose timeout expired.
         scope: RetryTimeoutScope,
-        /// Last non-business attempt failure, when one preceded the timeout.
+        /// Last attempt failure, when one preceded the timeout.
         last_failure: Option<Box<AttemptFailure<EventBusError>>>,
         /// Shared retry context captured at the terminal decision. Clones keep
         /// the same provenance identity.
         context: Arc<RetryContext>,
     },
-    /// Retry execution was cancelled without retaining an event-bus business
-    /// error.
+    /// Retry execution was cancelled, retaining the last attempt failure when
+    /// one exists.
     RetryCancelled {
         /// Retry phase in which cancellation was observed.
         phase: RetryCancellationPhase,
-        /// Last non-business attempt failure, when one preceded cancellation.
+        /// Last attempt failure, when one preceded cancellation.
         last_failure: Option<Box<AttemptFailure<EventBusError>>>,
         /// Shared retry context captured at the terminal decision. Clones keep
         /// the same provenance identity.
         context: Arc<RetryContext>,
     },
-    /// A retry callback panicked without retaining an event-bus business error.
+    /// A retry callback panicked, retaining the last attempt failure when one
+    /// exists.
     RetryCallbackFailed {
         /// Callback failure attribution from the retry executor.
         callback: RetryCallbackFailure,
-        /// Last non-business attempt failure retained before the callback
-        /// failed.
+        /// Last attempt failure retained before the callback failed.
         last_failure: Option<Box<AttemptFailure<EventBusError>>>,
         /// Shared retry context captured at the terminal decision. Clones keep
         /// the same provenance identity.
         context: Arc<RetryContext>,
     },
-    /// Retry infrastructure failed without retaining an event-bus business
-    /// error.
+    /// Retry infrastructure failed, retaining the last attempt failure when
+    /// one exists.
     RetryInfrastructureFailed {
         /// Structured infrastructure failure from the retry executor.
         failure: RetryInfrastructureFailure,
-        /// Last non-business attempt failure retained before infrastructure
-        /// failed.
+        /// Last attempt failure retained before infrastructure failed.
         last_failure: Option<Box<AttemptFailure<EventBusError>>>,
         /// Shared retry context captured at the terminal decision. Clones keep
         /// the same provenance identity.
@@ -472,22 +471,6 @@ impl From<RetryError<EventBusError>> for EventBusError {
                 ..
             }
             | RetryFailure::Exhausted {
-                last_failure: Some(AttemptFailure::Error(error)),
-                ..
-            }
-            | RetryFailure::TimedOut {
-                last_failure: Some(AttemptFailure::Error(error)),
-                ..
-            }
-            | RetryFailure::Cancelled {
-                last_failure: Some(AttemptFailure::Error(error)),
-                ..
-            }
-            | RetryFailure::CallbackFailed {
-                last_failure: Some(AttemptFailure::Error(error)),
-                ..
-            }
-            | RetryFailure::Infrastructure {
                 last_failure: Some(AttemptFailure::Error(error)),
                 ..
             } => error,
