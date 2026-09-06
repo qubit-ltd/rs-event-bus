@@ -150,7 +150,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 只有令牌不会启用重试；未配置重试策略时，它不改变直接调用 handler 的行为。
 
 调用 `cancel()` 会阻止下一次尝试并唤醒退避等待，但不能打断已运行的 handler。
-handler 返回 `Ok` 时，仍走原有成功和 ACK 流程。handler 失败后观察到取消，当前投递会沿既有
+尝试成功时，仍走原有成功和 ACK 流程。如果 handler 返回 `Ok` 却显式调用了 NACK，
+`run_handler_with_retry` 仍会根据这个确认决定将本次尝试判为失败。handler 失败后观察到取消，当前投递会沿既有
 终态错误通知、确认/NACK 和死信路径处理一次；错误处理器仍可通过 ACK 阻止死信路由。
 终态处理结束后释放当前顺序位置。
 
