@@ -124,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-executor`'s `SingleThreadScheduledExecutorService` and does not occupy handler workers while waiting.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
 - `LocalEventBus` accepts retry policy limits, backoff settings, and an explicit subscriber retry cancellation token. It does not expose hard attempt or flow timeouts or interrupt a running synchronous handler.
+- Retry conversion preserves structured timeout, cancellation, callback, and infrastructure terminals together with the last attempt failure, including a retained business error. Inspect the structured `EventBusError` variant and its `last_failure` field instead of assuming every business error is returned directly.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
 - `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
@@ -170,6 +171,25 @@ setting applies only to subscriber retry flows; publish retry is unchanged.
 `shutdown` and unsubscribe do not cancel tokens automatically, and graceful
 shutdown still drains scheduled work. The application must explicitly cancel
 its token if that is the intended shutdown policy.
+
+## Migration notes for the next release
+
+The four control terminals (`RetryTimedOut`, `RetryCancelled`,
+`RetryCallbackFailed`, and `RetryInfrastructureFailed`) retain their
+`last_failure`, including a business error. Ordinary `Aborted` and `Exhausted`
+business failures still return the business error directly. Cancellation after
+a handler failure is classified as `retry_cancelled` in standard dead-letter
+metadata; ACK/NACK behavior and delivery ordering are unchanged.
+
+```rust
+if let qubit_event_bus::EventBusError::RetryCancelled {
+    phase, last_failure, context,
+} = &error {
+    if let Some(qubit_retry::AttemptFailure::Error(business)) = last_failure.as_deref() {
+        let _ = (business, phase, context);
+    }
+}
+```
 
 ## Contributing
 
