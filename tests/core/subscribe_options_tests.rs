@@ -13,6 +13,12 @@ fn test_subscribe_options_empty_handles_every_event() {
     let envelope = EventEnvelope::create(topic, "payload".to_string());
 
     assert!(SubscribeOptions::<String>::empty().should_handle(&envelope));
+    assert!(SubscribeOptions::<String>::empty().retry_cancellation_token().is_none());
+    assert!(
+        SubscribeOptions::<String>::default()
+            .retry_cancellation_token()
+            .is_none()
+    );
 }
 
 #[test]

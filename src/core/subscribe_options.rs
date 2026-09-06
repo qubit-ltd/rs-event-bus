@@ -12,6 +12,7 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
@@ -259,6 +260,7 @@ pub struct SubscribeOptions<T: 'static> {
     pub(crate) ack_mode: AckMode,
     pub(crate) ack_mode_configured: bool,
     pub(crate) retry_options: Option<RetryPolicy>,
+    pub(crate) retry_cancellation_token: Option<RetryCancellationToken>,
     pub(crate) retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     pub(crate) filter: Option<Arc<EventFilterFn<T>>>,
     pub(crate) error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
@@ -285,6 +287,7 @@ impl<T: 'static> SubscribeOptions<T> {
             ack_mode: AckMode::Auto,
             ack_mode_configured: false,
             retry_options: None,
+            retry_cancellation_token: None,
             retry_rule: None,
             filter: None,
             error_handlers: Vec::new(),
@@ -314,6 +317,12 @@ impl<T: 'static> SubscribeOptions<T> {
     /// `Some` when subscriber retry is configured.
     pub fn retry_options(&self) -> Option<&RetryPolicy> {
         self.retry_options.as_ref()
+    }
+
+    /// Returns the shared explicit cancellation token, or `None` when absent.
+    /// The token only applies when a retry policy is configured.
+    pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
+        self.retry_cancellation_token.as_ref()
     }
 
     /// Returns subscription priority.
@@ -348,6 +357,7 @@ impl<T: 'static> SubscribeOptions<T> {
             },
             ack_mode_configured: self.ack_mode_configured || defaults.ack_mode_configured,
             retry_options: self.retry_options.or(defaults.retry_options),
+            retry_cancellation_token: self.retry_cancellation_token.or(defaults.retry_cancellation_token),
             retry_rule: self.retry_rule.or(defaults.retry_rule),
             filter: self.filter.or(defaults.filter),
             error_handlers,
@@ -499,6 +509,7 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
             ack_mode: self.ack_mode,
             ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options.clone(),
+            retry_cancellation_token: self.retry_cancellation_token.clone(),
             retry_rule: self.retry_rule.clone(),
             filter: self.filter.clone(),
             error_handlers: self.error_handlers.clone(),

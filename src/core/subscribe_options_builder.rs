@@ -10,6 +10,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
@@ -30,6 +31,7 @@ pub struct SubscribeOptionsBuilder<T: 'static> {
     ack_mode: AckMode,
     ack_mode_configured: bool,
     retry_options: Option<RetryPolicy>,
+    retry_cancellation_token: Option<RetryCancellationToken>,
     retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,
     filter: Option<Arc<EventFilterFn<T>>>,
     error_handlers: Vec<Arc<SubscribeErrorHandlerFn<T>>>,
@@ -49,6 +51,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
             ack_mode: AckMode::Auto,
             ack_mode_configured: false,
             retry_options: None,
+            retry_cancellation_token: None,
             retry_rule: None,
             filter: None,
             error_handlers: Vec::new(),
@@ -94,6 +97,27 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Updated builder.
     pub fn retry_options(mut self, retry_options: RetryPolicy) -> Self {
         self.retry_options = Some(retry_options);
+        self
+    }
+
+    /// Sets an explicit shared token for cancelling subscriber retry flows.
+    ///
+    /// Cancellation wakes backoff waits and prevents later attempts, but does
+    /// not interrupt a running synchronous handler. A successful handler
+    /// result wins over cancellation. The token is permanently cancelled:
+    /// later events using it stop before their first attempt. Cancellation
+    /// follows the usual terminal error, acknowledgement and dead-letter path.
+    /// Without a retry policy, the token does not affect direct handler calls.
+    /// Shutdown and unsubscribe do not cancel this token automatically.
+    ///
+    /// # Parameters
+    /// - `token`: Cancellation source shared by this subscription and its
+    ///   clones.
+    ///
+    /// # Returns
+    /// Updated builder.
+    pub fn retry_cancellation_token(mut self, token: RetryCancellationToken) -> Self {
+        self.retry_cancellation_token = Some(token);
         self
     }
 
@@ -169,6 +193,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
             ack_mode: self.ack_mode,
             ack_mode_configured: self.ack_mode_configured,
             retry_options: self.retry_options,
+            retry_cancellation_token: self.retry_cancellation_token,
             retry_rule: self.retry_rule,
             filter: self.filter,
             error_handlers: self.error_handlers,

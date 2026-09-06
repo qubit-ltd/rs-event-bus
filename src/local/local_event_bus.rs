@@ -31,6 +31,7 @@ use qubit_executor::ExecutorService;
 use qubit_executor::SingleThreadScheduledExecutorService;
 use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
@@ -631,7 +632,7 @@ impl LocalEventBus {
             return Err(error);
         }
         let original_envelope = envelope.clone();
-        let envelope = match run_with_retry(options.retry_options(), options.retry_rule(), || {
+        let envelope = match run_with_retry(options.retry_options(), options.retry_rule(), None, || {
             self.apply_publisher_interceptors(original_envelope.clone())
         }) {
             Ok(Some(envelope)) => envelope,
@@ -1019,7 +1020,7 @@ impl LocalEventBus {
         let mut first_error = None;
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
-            if let Err(error) = run_with_retry(retry_options, retry_rule, || {
+            if let Err(error) = run_with_retry(retry_options, retry_rule, None, || {
                 subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner), allow_stopping)
             }) && first_error.is_none()
             {
@@ -1691,16 +1692,21 @@ where
     T: Clone + Send + Sync + 'static,
 {
     let mut last_delivery = None;
-    match run_with_retry(options.retry_options(), options.retry_rule(), || {
-        let delivery = HandlerDelivery::new(&envelope);
-        last_delivery = Some(delivery.clone());
-        call_handler(handler, delivery.delivered.clone())?;
-        if delivery.acknowledgement.is_nacked() {
-            Err(EventBusError::handler_failed("subscriber nacked the event"))
-        } else {
-            Ok(delivery)
-        }
-    }) {
+    match run_with_retry(
+        options.retry_options(),
+        options.retry_rule(),
+        options.retry_cancellation_token(),
+        || {
+            let delivery = HandlerDelivery::new(&envelope);
+            last_delivery = Some(delivery.clone());
+            call_handler(handler, delivery.delivered.clone())?;
+            if delivery.acknowledgement.is_nacked() {
+                Err(EventBusError::handler_failed("subscriber nacked the event"))
+            } else {
+                Ok(delivery)
+            }
+        },
+    ) {
         Ok(delivery) => Ok(delivery),
         Err(error) => {
             let delivery = match last_delivery {
@@ -1780,6 +1786,7 @@ fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError
 /// - `retry_options`: Admission and backoff policy; absent means one direct
 ///   call.
 /// - `retry_rule`: Optional application classification before the default rule.
+/// - `cancellation`: Explicit subscriber token; ignored without a retry policy.
 /// - `operation`: Operation to call for each attempt.
 ///
 /// # Returns
@@ -1788,6 +1795,7 @@ fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError
 fn run_with_retry<T, F>(
     retry_options: Option<&RetryPolicy>,
     retry_rule: Option<&Arc<dyn RetryRule<EventBusError>>>,
+    cancellation: Option<&RetryCancellationToken>,
     operation: F,
 ) -> EventBusResult<T>
 where
@@ -1804,7 +1812,11 @@ where
             .rule(move |failure: &AttemptFailure<EventBusError>, context: &RetryContext| rule.decide(failure, context));
     }
     let retry = builder.rule(EventBusRetryRule).build();
-    match retry.sync().run(operation) {
+    let mut execution = retry.sync();
+    if let Some(token) = cancellation {
+        execution = execution.cancellation_token(token.clone());
+    }
+    match execution.run(operation) {
         Ok(value) => Ok(value.into_value()),
         Err(error) => Err(EventBusError::from(error)),
     }
