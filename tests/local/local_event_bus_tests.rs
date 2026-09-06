@@ -21,6 +21,8 @@ use std::time::Instant;
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::AckMode;
+use qubit_event_bus::DEAD_LETTER_FAILURE_REASON;
+use qubit_event_bus::DEAD_LETTER_FAILURE_TYPE;
 use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
 use qubit_event_bus::DeadLetterPayload;
 use qubit_event_bus::DeadLetterRecord;
@@ -59,7 +61,7 @@ struct PanickingStartedObserver;
 
 impl RetryObserver<EventBusError> for PanickingStartedObserver {
     /// Panics before the operation is admitted.
-    fn on_attempt_started(&self, _context: &RetryContext) {
+    fn on_before_attempt(&self, _context: &RetryContext) {
         panic!("event-bus retry observer failed");
     }
 }
@@ -185,10 +187,28 @@ fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
         .recv_timeout(Duration::from_secs(2))
         .expect("cancellation must not wait through the 60-second backoff");
     assert_eq!(payload, "first");
-    assert!(matches!(error, EventBusError::HandlerFailed { .. }));
-    dead_letter_receiver
+    assert!(matches!(
+        error,
+        EventBusError::RetryCancelled {
+            phase: RetryCancellationPhase::Backoff,
+            last_failure: Some(_),
+            ..
+        }
+    ));
+    let first_dead_letter = dead_letter_receiver
         .recv_timeout(Duration::from_secs(2))
         .expect("first dead letter");
+    assert_eq!(
+        first_dead_letter.payload().metadata().get_str(DEAD_LETTER_FAILURE_TYPE),
+        Some("retry_cancelled")
+    );
+    assert!(
+        first_dead_letter
+            .payload()
+            .metadata()
+            .get_str(DEAD_LETTER_FAILURE_REASON)
+            .is_some_and(|reason| reason.contains("first delivery failed"))
+    );
     assert!(acknowledgement.is_nacked());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -445,8 +465,15 @@ fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
             ..
         } if message == "callback business sentinel"
     ));
-    let EventBusError::HandlerFailed { message } = EventBusError::from(retry_error) else {
-        panic!("the callback terminal should yield its business error");
+    let EventBusError::RetryCallbackFailed {
+        last_failure: Some(last_failure),
+        ..
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("the callback terminal should retain its business error");
+    };
+    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref() else {
+        panic!("the callback terminal should retain a business attempt failure");
     };
     assert_eq!(message, "callback business sentinel");
     assert_eq!(message.as_ptr(), expected_allocation);
@@ -486,8 +513,15 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
             ..
         } if message == "cancelled business sentinel"
     ));
-    let EventBusError::HandlerFailed { message } = EventBusError::from(retry_error) else {
-        panic!("the cancellation terminal should yield its business error");
+    let EventBusError::RetryCancelled {
+        last_failure: Some(last_failure),
+        ..
+    } = EventBusError::from(retry_error)
+    else {
+        panic!("the cancellation terminal should retain its business error");
+    };
+    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref() else {
+        panic!("the cancellation terminal should retain a business attempt failure");
     };
     assert_eq!(message, "cancelled business sentinel");
     assert_eq!(message.as_ptr(), expected_allocation);
@@ -568,7 +602,7 @@ fn test_retry_conversion_preserves_callback_failed_terminal() {
     };
     assert_eq!(callback.callback(), RetryCallbackKind::Observer);
     assert_eq!(callback.index(), 0);
-    assert_eq!(callback.phase(), RetryCallbackPhase::AttemptStarted);
+    assert_eq!(callback.phase(), RetryCallbackPhase::BeforeAttempt);
     assert!(last_failure.is_none());
     assert_eq!(context.attempts(), 0);
 }
@@ -2766,7 +2800,7 @@ fn retry_callback_failed_for_interceptor_test() -> EventBusError {
         callback: RetryCallbackFailure::new(
             RetryCallbackKind::Observer,
             0,
-            RetryCallbackPhase::AttemptStarted,
+            RetryCallbackPhase::BeforeAttempt,
             RetryPanic::StaticStr("interceptor fingerprint callback"),
         ),
         last_failure: None,
