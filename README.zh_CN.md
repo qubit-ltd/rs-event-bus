@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `publish_all` 会按输入顺序提交 envelope，并返回包含 accepted、dropped 和 failed 计数的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
 - `delay` 会让本地订阅处理至少推迟指定时长。延迟等待由 `rs-executor` 的 `SingleThreadScheduledExecutorService` 调度，不占用本地处理器 worker，到期后才提交处理器执行。
 - 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
-- `LocalEventBus` 接受 retry policy 的限额和退避设置，但不暴露 attempt/flow 硬超时，因为本地处理器没有协作取消信号。
+- `LocalEventBus` 接受 retry policy 的限额、退避和显式订阅重试取消令牌，但不提供 attempt/flow 硬超时，也不会打断正在运行的同步 handler。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
 - `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
 - `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。
@@ -140,6 +140,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 并保留当前投递的顺序位置；ACK、死信处理和停机排空仍沿同一投递流程完成。
 设置线程池和重试预算时需要考虑这段占用时间。重试策略不会自动安排独立重投递，
 也不会在等待时释放工作线程。允许重试的 handler 和拦截器必须能够接受重复执行。
+
+### 显式取消订阅重试
+
+当前版本使用 `qubit-retry` 0.21。应用如果自行构造共享的 `RetryPolicy` 或
+`RetryCancellationToken`，直接依赖应使用兼容版本。通过
+`SubscribeOptionsBuilder::retry_cancellation_token` 设置令牌，并把克隆交给应用的停止流程。
+该选项默认是 `None`；克隆共享取消状态，显式令牌覆盖类型默认值，未设置时继承类型默认令牌。
+只有令牌不会启用重试；未配置重试策略时，它不改变直接调用 handler 的行为。
+
+调用 `cancel()` 会阻止下一次尝试并唤醒退避等待，但不能打断已运行的 handler。
+handler 返回 `Ok` 时，仍走原有成功和 ACK 流程。handler 失败后观察到取消，当前投递会沿既有
+终态错误通知、确认/NACK 和死信路径处理一次；错误处理器仍可通过 ACK 阻止死信路由。
+终态处理结束后释放当前顺序位置。
+
+令牌不能重置。后续事件若使用同一已取消令牌，会在重试流程首次准入前终止，因此新的生命周期
+需要新令牌。该配置只作用于订阅重试，不改变发布重试。`shutdown` 和取消订阅不会自动取消令牌，
+graceful shutdown 仍会排空已调度工作；如果应用希望停机时终止重试，必须显式取消其令牌。
 
 ## 贡献
 

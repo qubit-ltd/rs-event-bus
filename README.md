@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
 - `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-executor`'s `SingleThreadScheduledExecutorService` and does not occupy handler workers while waiting.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
-- `LocalEventBus` accepts retry policy limits and backoff settings, but does not expose hard attempt or flow timeouts because local handlers do not receive a cooperative cancellation signal.
+- `LocalEventBus` accepts retry policy limits, backoff settings, and an explicit subscriber retry cancellation token. It does not expose hard attempt or flow timeouts or interrupt a running synchronous handler.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
 - `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
@@ -144,6 +144,30 @@ and shutdown draining finish through the same delivery flow. Size the worker poo
 and retry budgets for this occupancy; a retry policy does not schedule a detached
 redelivery or release a worker during sleep. Retried handlers and interceptors
 must tolerate repeated execution.
+
+### Explicit subscriber retry cancellation
+
+This release uses `qubit-retry` 0.21. Applications that construct shared
+`RetryPolicy` or `RetryCancellationToken` values must use a compatible direct
+dependency. Pass a token to `SubscribeOptionsBuilder::retry_cancellation_token`
+and retain a clone for the application's stop path. The option defaults to
+`None`; clones share cancellation state, explicit tokens override type defaults,
+and an omitted token inherits the type default. A token alone does not enable
+retry and does not affect a handler when no retry policy is configured.
+
+Calling `cancel()` prevents the next attempt and wakes retry backoff. It cannot
+interrupt an already-running handler; a handler returning `Ok` still follows the
+normal success/ACK path. After a failed handler, cancellation follows the existing
+terminal error notification, acknowledgement/NACK, and dead-letter path once for
+that delivery. An error handler may still ACK and suppress dead-letter routing.
+The ordering slot is released when terminal handling finishes.
+
+Tokens cannot be reset. Later events using the same cancelled token stop before
+their first retry-flow admission, so use a new token for a new lifetime. This
+setting applies only to subscriber retry flows; publish retry is unchanged.
+`shutdown` and unsubscribe do not cancel tokens automatically, and graceful
+shutdown still drains scheduled work. The application must explicitly cancel
+its token if that is the intended shutdown policy.
 
 ## Contributing
 
