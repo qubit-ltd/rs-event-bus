@@ -119,6 +119,270 @@ fn retry_options_with_attempt_timeout() -> RetryPolicy {
         .expect("retry policy should build")
 }
 
+/// Explicit cancellation releases a long backoff and its ordering lane, with
+/// exactly one terminal notification and dead letter for each queued event.
+#[test]
+fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .set_subscription_handler_pool_size(1)
+        .expect("one handler worker");
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("retry-cancellation");
+    let dead_letter_topic = create_dead_letter_topic("dlq.retry-cancellation");
+    let token = RetryCancellationToken::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured_calls = Arc::clone(&calls);
+    let (retry_sender, retry_receiver) = mpsc::channel();
+    let (failure_sender, failure_receiver) = mpsc::channel();
+    let (dead_letter_sender, dead_letter_receiver) = mpsc::channel();
+    let options = SubscribeOptions::<String>::builder()
+        .retry_options(
+            RetryPolicy::builder()
+                .max_attempts(3)
+                .backoff(BackoffPolicy::fixed(Duration::from_secs(60)))
+                .build()
+                .expect("valid long backoff"),
+        )
+        .retry_cancellation_token(token.clone())
+        .retry_rule(move |_: &AttemptFailure<EventBusError>, _: &RetryContext| {
+            retry_sender.send(()).expect("controller waits for retry");
+            RetryDecision::Retry
+        })
+        .error_handler(move |_, event, error, acknowledgement| {
+            failure_sender
+                .send((event.payload().clone(), error.clone(), acknowledgement.clone()))
+                .expect("controller waits for failure");
+        })
+        .dead_letter_strategy(standard_dead_letters_to(dead_letter_topic.clone()))
+        .build();
+    bus.subscribe_with_options(
+        "cancelled",
+        &topic,
+        move |_| {
+            captured_calls.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::handler_failed("first delivery failed"))
+        },
+        options,
+    )
+    .expect("subscriber registers");
+    bus.subscribe("dead-letter", &dead_letter_topic, move |event| {
+        dead_letter_sender
+            .send(event)
+            .expect("controller waits for dead letter");
+    })
+    .expect("dead letter subscriber registers");
+
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("same-key"))
+        .expect("first publish");
+    retry_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("retry selected");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"))
+        .expect("queue second delivery on the same ordering lane");
+    token.cancel();
+    let (payload, error, acknowledgement) = failure_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancellation must not wait through the 60-second backoff");
+    assert_eq!(payload, "first");
+    assert!(matches!(error, EventBusError::HandlerFailed { .. }));
+    dead_letter_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first dead letter");
+    assert!(acknowledgement.is_nacked());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let (payload, error, acknowledgement) = failure_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("released ordering lane admits the permanently cancelled flow");
+    assert_eq!(payload, "second");
+    assert!(matches!(
+        error,
+        EventBusError::RetryCancelled {
+            phase: RetryCancellationPhase::BeforeAttempt,
+            ..
+        }
+    ));
+    dead_letter_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second dead letter");
+    assert!(acknowledgement.is_nacked());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    bus.wait_for_idle(&topic).expect("source drained");
+    bus.wait_for_idle(&dead_letter_topic).expect("dead letters drained");
+    assert!(failure_receiver.try_recv().is_err());
+    assert!(dead_letter_receiver.try_recv().is_err());
+}
+
+/// Type defaults share their cancellation source, while explicit tokens
+/// override it without losing the inherited retry policy.
+#[test]
+fn test_retry_cancellation_defaults_and_explicit_override_share_sources() {
+    let default_token = RetryCancellationToken::new();
+    let explicit_token = RetryCancellationToken::new();
+    let mut factory = LocalEventBusFactory::new();
+    factory.set_default_subscribe_options::<String>(
+        SubscribeOptions::builder()
+            .retry_options(retry_options(2))
+            .retry_cancellation_token(default_token.clone())
+            .build(),
+    );
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("retry-cancellation-defaults");
+    let defaults_calls = Arc::new(AtomicUsize::new(0));
+    let captured_defaults = Arc::clone(&defaults_calls);
+    bus.subscribe("default", &topic, move |_| {
+        captured_defaults.fetch_add(1, Ordering::SeqCst);
+    })
+    .expect("default subscriber");
+    let explicit_calls = Arc::new(AtomicUsize::new(0));
+    let captured_explicit = Arc::clone(&explicit_calls);
+    bus.subscribe_with_options(
+        "explicit",
+        &topic,
+        move |_| {
+            captured_explicit.fetch_add(1, Ordering::SeqCst);
+        },
+        SubscribeOptions::builder()
+            .retry_cancellation_token(explicit_token.clone())
+            .build(),
+    )
+    .expect("explicit subscriber");
+    default_token.cancel();
+    bus.publish(&topic, "first".to_string()).expect("first publish");
+    bus.wait_for_idle(&topic).expect("first drained");
+    assert_eq!(defaults_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(explicit_calls.load(Ordering::SeqCst), 1);
+    explicit_token.cancel();
+    bus.publish(&topic, "second".to_string()).expect("second publish");
+    bus.wait_for_idle(&topic).expect("second drained");
+    assert_eq!(defaults_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(explicit_calls.load(Ordering::SeqCst), 1);
+}
+
+/// A handler that succeeds while cancelling its token still receives normal
+/// automatic acknowledgement without terminal error or dead-letter callbacks.
+#[test]
+fn test_retry_cancellation_during_success_preserves_auto_acknowledgement() {
+    let bus = LocalEventBus::started().expect("bus starts");
+    let topic = create_topic("retry-cancellation-success");
+    let token = RetryCancellationToken::new();
+    let handler_token = token.clone();
+    let errors = Arc::new(AtomicUsize::new(0));
+    let captured_errors = Arc::clone(&errors);
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    let (sender, receiver) = mpsc::channel();
+    bus.subscribe_with_options(
+        "success",
+        &topic,
+        move |event| {
+            handler_token.cancel();
+            sender
+                .send(event.acknowledgement().expect("delivery acknowledgement").clone())
+                .expect("controller waits for successful delivery");
+            Ok(())
+        },
+        SubscribeOptions::builder()
+            .retry_options(retry_options(2))
+            .retry_cancellation_token(token)
+            .error_handler(move |_, _, _, _| {
+                captured_errors.fetch_add(1, Ordering::SeqCst);
+            })
+            .dead_letter_strategy(move |_, _, _, _| {
+                captured_dead_letters.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            })
+            .build(),
+    )
+    .expect("subscriber registers");
+    bus.publish(&topic, "payload".to_string()).expect("publish");
+    let acknowledgement = receiver.recv_timeout(Duration::from_secs(2)).expect("handler succeeds");
+    bus.wait_for_idle(&topic).expect("delivery drained");
+    assert!(acknowledgement.is_acked());
+    assert_eq!(errors.load(Ordering::SeqCst), 0);
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 0);
+}
+
+/// A token alone does not enable retry or suppress direct handler execution.
+#[test]
+fn test_retry_cancellation_without_policy_keeps_direct_handler_behavior() {
+    let bus = LocalEventBus::started().expect("bus starts");
+    let topic = create_topic("retry-cancellation-no-policy");
+    let token = RetryCancellationToken::new();
+    token.cancel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured_calls = Arc::clone(&calls);
+    let failures = Arc::new(AtomicUsize::new(0));
+    let captured_failures = Arc::clone(&failures);
+    bus.subscribe_with_options(
+        "direct",
+        &topic,
+        move |_| {
+            captured_calls.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::handler_failed("direct failure"))
+        },
+        SubscribeOptions::builder()
+            .retry_cancellation_token(token)
+            .error_handler(move |_, _, error, _| {
+                assert!(matches!(error, EventBusError::HandlerFailed { .. }));
+                captured_failures.fetch_add(1, Ordering::SeqCst);
+            })
+            .build(),
+    )
+    .expect("direct subscriber");
+    bus.publish(&topic, "payload".to_string()).expect("publish");
+    bus.wait_for_idle(&topic).expect("drained");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(failures.load(Ordering::SeqCst), 1);
+}
+
+/// Graceful shutdown continues the admitted retry flow without cancelling
+/// an explicitly supplied token.
+#[test]
+fn test_retry_cancellation_token_is_not_cancelled_by_shutdown() {
+    let bus = LocalEventBus::started().expect("bus starts");
+    let topic = create_topic("retry-cancellation-shutdown");
+    let token = RetryCancellationToken::new();
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let handler_gate = Arc::clone(&gate);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured_calls = Arc::clone(&calls);
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (finished_sender, finished_receiver) = mpsc::channel();
+    bus.subscribe_with_options(
+        "drain",
+        &topic,
+        move |_| {
+            if captured_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                started_sender.send(()).expect("controller waits for first attempt");
+                handler_gate.wait();
+                Err(EventBusError::handler_failed("retry while draining"))
+            } else {
+                finished_sender.send(()).expect("controller waits for retry");
+                Ok(())
+            }
+        },
+        SubscribeOptions::builder()
+            .retry_options(retry_options(2))
+            .retry_cancellation_token(token.clone())
+            .build(),
+    )
+    .expect("subscriber registers");
+    bus.publish(&topic, "payload".to_string()).expect("publish");
+    started_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first attempt starts");
+    assert!(bus.shutdown_nonblocking());
+    gate.wait();
+    finished_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("retry completes during drain");
+    bus.wait_for_idle(&topic).expect("delivery drained");
+    assert!(!token.is_cancelled());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
 /// Verifies retry conversion returns the exact retained event-bus error.
 #[test]
 fn test_retry_conversion_preserves_last_business_error() {

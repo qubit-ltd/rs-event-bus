@@ -1,6 +1,37 @@
 use qubit_event_bus::AckMode;
 use qubit_event_bus::SubscribeOptions;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
+
+#[test]
+fn test_retry_cancellation_token_build_and_clone_share_source() {
+    let token = RetryCancellationToken::new();
+    let options = SubscribeOptions::<String>::builder()
+        .retry_cancellation_token(token.clone())
+        .build();
+    let cloned = options.clone();
+    assert!(
+        !options
+            .retry_cancellation_token()
+            .expect("configured token")
+            .is_cancelled()
+    );
+    assert!(options.retry_options().is_none());
+    token.cancel();
+    assert!(
+        options
+            .retry_cancellation_token()
+            .expect("configured token")
+            .is_cancelled()
+    );
+    assert!(cloned.retry_cancellation_token().expect("cloned token").is_cancelled());
+    assert!(
+        SubscribeOptions::<String>::builder()
+            .build()
+            .retry_cancellation_token()
+            .is_none()
+    );
+}
 
 #[test]
 fn test_subscribe_options_builder_sets_ack_retry_and_priority() {
