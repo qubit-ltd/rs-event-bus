@@ -124,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `delay` 会让本地订阅处理至少推迟指定时长。延迟等待由 `rs-executor` 的 `SingleThreadScheduledExecutorService` 调度，不占用本地处理器 worker，到期后才提交处理器执行。
 - 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
 - `LocalEventBus` 接受 retry policy 的限额、退避和显式订阅重试取消令牌，但不提供 attempt/flow 硬超时，也不会打断正在运行的同步 handler。
+- 重试转换会保留结构化的超时、取消、回调失败和基础设施终态，以及最后一次尝试失败（包括业务错误）。读取对应的 `EventBusError` 结构体及其 `last_failure`，不要假设业务错误总会被直接返回。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
 - `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
 - `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。
@@ -158,6 +159,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 令牌不能重置。后续事件若使用同一已取消令牌，会在重试流程首次准入前终止，因此新的生命周期
 需要新令牌。该配置只作用于订阅重试，不改变发布重试。`shutdown` 和取消订阅不会自动取消令牌，
 graceful shutdown 仍会排空已调度工作；如果应用希望停机时终止重试，必须显式取消其令牌。
+
+## 下一版本迁移说明
+
+四类控制终态（`RetryTimedOut`、`RetryCancelled`、`RetryCallbackFailed` 和
+`RetryInfrastructureFailed`）会保留 `last_failure`，其中也可能是业务错误。
+普通 `Aborted` 和 `Exhausted` 的业务失败仍会直接返回业务错误。handler 失败后发生取消时，
+标准死信元数据会分类为 `retry_cancelled`；ACK/NACK 行为和投递顺序保持不变。
+
+```rust
+if let qubit_event_bus::EventBusError::RetryCancelled {
+    phase, last_failure, context,
+} = &error {
+    if let Some(qubit_retry::AttemptFailure::Error(business)) = last_failure.as_deref() {
+        let _ = (business, phase, context);
+    }
+}
+```
 
 ## 贡献
 
