@@ -33,7 +33,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.9"
+qubit-event-bus = "0.10"
 ```
 
 ## 快速开始
@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 显式取消订阅重试
 
-当前版本使用 `qubit-retry` 0.21。应用如果自行构造共享的 `RetryPolicy` 或
+当前版本使用 `qubit-retry` 0.22。应用如果自行构造共享的 `RetryPolicy` 或
 `RetryCancellationToken`，直接依赖应使用兼容版本。通过
 `SubscribeOptionsBuilder::retry_cancellation_token` 设置令牌，并把克隆交给应用的停止流程。
 该选项默认是 `None`；克隆共享取消状态，显式令牌覆盖类型默认值，未设置时继承类型默认令牌。
@@ -176,6 +176,15 @@ if let qubit_event_bus::EventBusError::RetryCancelled {
     }
 }
 ```
+
+## 0.10 的完成诊断
+
+转换 `RetryError<EventBusError>` 时，完成诊断为空就保持原有领域错误；非空时以
+`RetryCompletionDiagnostics` 包装领域错误、`Arc<RetryContext>` 和有序诊断 Vec。
+使用 `retry_completion_source()`、`completion_callback_failures()` 或标准 `Error::source()` 读取。
+克隆保留上下文身份和相等性。默认重试规则将该包装视为终止错误；错误处理器和死信保留
+`retry_completion_diagnostics` 分类及原始领域消息。穷举匹配需要处理新增变体。
+内置成功重试流程不注册完成观察者，因此显式丢弃空诊断。
 
 ## 贡献
 
