@@ -101,6 +101,18 @@ pub enum EventBusError {
         /// Operation name or feature category.
         operation: &'static str,
     },
+    /// A frozen domain failure accompanied by completion observer diagnostics.
+    ///
+    /// Conversion from a retry error creates this wrapper only for nonempty
+    /// diagnostics. The default retry rule treats it as terminal.
+    RetryCompletionDiagnostics {
+        /// Domain error selected before completion observers ran.
+        source: Box<EventBusError>,
+        /// Frozen retry context; clones preserve provenance identity.
+        context: Arc<RetryContext>,
+        /// Completion callback failures in observer registration order.
+        diagnostics: Vec<RetryCallbackFailure>,
+    },
     /// Retry execution reached a hard timeout, retaining the last attempt
     /// failure when one exists.
     RetryTimedOut {
@@ -318,6 +330,33 @@ impl EventBusError {
         Self::UnsupportedOperation { operation }
     }
 
+    /// Returns the domain error wrapped with completion diagnostics.
+    ///
+    /// # Returns
+    /// The immediate wrapped error, or `None` for an unwrapped domain error.
+    #[must_use]
+    #[inline]
+    pub fn retry_completion_source(&self) -> Option<&Self> {
+        match self {
+            Self::RetryCompletionDiagnostics { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Returns completion diagnostics attached to this error.
+    ///
+    /// # Returns
+    /// Failures from the outer retry completion, or an empty slice when this
+    /// error has no completion wrapper. Nested wrappers retain their own data.
+    #[must_use = "inspect retained retry completion diagnostics"]
+    #[inline]
+    pub fn completion_callback_failures(&self) -> &[RetryCallbackFailure] {
+        match self {
+            Self::RetryCompletionDiagnostics { diagnostics, .. } => diagnostics,
+            _ => &[],
+        }
+    }
+
     /// Returns a stable symbolic error kind.
     ///
     /// # Returns
@@ -338,6 +377,7 @@ impl EventBusError {
             Self::LockPoisoned { .. } => "lock_poisoned",
             Self::TypeMismatch { .. } => "type_mismatch",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
+            Self::RetryCompletionDiagnostics { .. } => "retry_completion_diagnostics",
             Self::RetryTimedOut { .. } => "retry_timed_out",
             Self::RetryCancelled { .. } => "retry_cancelled",
             Self::RetryCallbackFailed { .. } => "retry_callback_failed",
@@ -394,6 +434,15 @@ impl Display for EventBusError {
             }
             Self::UnsupportedOperation { operation } => {
                 write!(formatter, "unsupported event bus operation: {operation}")
+            }
+            Self::RetryCompletionDiagnostics {
+                source, diagnostics, ..
+            } => {
+                write!(
+                    formatter,
+                    "{source}; {} retry completion callback failure(s)",
+                    diagnostics.len()
+                )
             }
             Self::RetryTimedOut {
                 scope,
@@ -458,14 +507,21 @@ fn write_last_attempt_failure(
     Ok(())
 }
 
-impl Error for EventBusError {}
+impl Error for EventBusError {
+    /// Returns the domain error retained by a completion diagnostic wrapper.
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.retry_completion_source()
+            .map(|source| source as &(dyn Error + 'static))
+    }
+}
 
 impl From<RetryError<EventBusError>> for EventBusError {
     /// Restores a retained business error or preserves the structured retry
     /// terminal classification and context.
     fn from(error: RetryError<EventBusError>) -> Self {
-        let (failure, context) = error.into_parts();
-        match failure {
+        let (failure, context, diagnostics) = error.into_parts();
+        let context = Arc::new(context);
+        let mapped = match failure {
             RetryFailure::Aborted {
                 last_failure: AttemptFailure::Error(error),
                 ..
@@ -495,30 +551,39 @@ impl From<RetryError<EventBusError>> for EventBusError {
             } => Self::RetryTimedOut {
                 scope,
                 last_failure: last_failure.map(Box::new),
-                context: Arc::new(context),
+                context: Arc::clone(&context),
             },
             RetryFailure::Cancelled {
                 phase, last_failure, ..
             } => Self::RetryCancelled {
                 phase,
                 last_failure: last_failure.map(Box::new),
-                context: Arc::new(context),
+                context: Arc::clone(&context),
             },
             RetryFailure::CallbackFailed {
                 callback, last_failure, ..
             } => Self::RetryCallbackFailed {
                 callback,
                 last_failure: last_failure.map(Box::new),
-                context: Arc::new(context),
+                context: Arc::clone(&context),
             },
             RetryFailure::Infrastructure {
                 failure, last_failure, ..
             } => Self::RetryInfrastructureFailed {
                 failure,
                 last_failure: last_failure.map(Box::new),
-                context: Arc::new(context),
+                context: Arc::clone(&context),
             },
             unclassified => Self::handler_failed(format!("{unclassified} after {} attempt(s)", context.attempts())),
+        };
+        if diagnostics.is_empty() {
+            mapped
+        } else {
+            Self::RetryCompletionDiagnostics {
+                source: Box::new(mapped),
+                context,
+                diagnostics,
+            }
         }
     }
 }

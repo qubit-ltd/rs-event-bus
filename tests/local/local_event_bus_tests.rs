@@ -2823,7 +2823,8 @@ fn retry_context_for_interceptor_test(error: &EventBusError) -> &Arc<RetryContex
         EventBusError::RetryTimedOut { context, .. }
         | EventBusError::RetryCancelled { context, .. }
         | EventBusError::RetryCallbackFailed { context, .. }
-        | EventBusError::RetryInfrastructureFailed { context, .. } => context,
+        | EventBusError::RetryInfrastructureFailed { context, .. }
+        | EventBusError::RetryCompletionDiagnostics { context, .. } => context,
         _ => panic!("interceptor test requires a retry error"),
     }
 }
@@ -4627,4 +4628,79 @@ fn test_retry_custom_publisher_rule_survives_defaults_and_clone() {
     };
     assert!(matches!(result, Err(EventBusError::InterceptorFailed { .. })));
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+fn retry_completion_for_interceptor_test() -> EventBusError {
+    EventBusError::RetryCompletionDiagnostics {
+        source: Box::new(EventBusError::handler_failed("business")),
+        context: Arc::new(RetryContext::new(1, 1)),
+        diagnostics: vec![RetryCallbackFailure::new(
+            RetryCallbackKind::Observer,
+            0,
+            RetryCallbackPhase::TerminalFailure,
+            RetryPanic::StaticStr("completion sink"),
+        )],
+    }
+}
+
+#[test]
+fn test_subscriber_interceptor_replaced_completion_wrapper_is_interceptor_failure() {
+    assert_retry_interceptor_replacement_is_owned("completion", retry_completion_for_interceptor_test);
+}
+
+#[test]
+fn test_completion_wrapper_reaches_error_handler_and_dead_letter_without_retry() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_subscriber_interceptor::<String, _>(
+            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| chain.proceed(event),
+        )
+        .expect("passthrough interceptor");
+    let bus = factory.create_started().expect("bus starts");
+    let topic = create_topic("completion-diagnostic-delivery");
+    let dead_letter_topic = create_dead_letter_topic("dlq.completion-diagnostic-delivery");
+    let (failure_sender, failure_receiver) = mpsc::channel();
+    let (dead_letter_sender, dead_letter_receiver) = mpsc::channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = Arc::clone(&calls);
+    let options = SubscribeOptions::<String>::builder()
+        .retry_options(RetryPolicy::builder().max_attempts(3).build().unwrap())
+        .error_handler(move |_, _, error, _| {
+            failure_sender.send(error.clone()).unwrap();
+        })
+        .dead_letter_strategy(standard_dead_letters_to(dead_letter_topic.clone()))
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |_| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            Err(retry_completion_for_interceptor_test())
+        },
+        options,
+    )
+    .unwrap();
+    bus.subscribe("dlq", &dead_letter_topic, move |event| {
+        dead_letter_sender.send(event).unwrap();
+    })
+    .unwrap();
+    bus.publish(&topic, "payload".to_owned()).unwrap();
+    let error = failure_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(error, retry_completion_for_interceptor_test());
+    assert_eq!(error.completion_callback_failures().len(), 1);
+    let event = dead_letter_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        event.payload().metadata().get_str(DEAD_LETTER_FAILURE_TYPE),
+        Some("retry_completion_diagnostics")
+    );
+    assert!(
+        event
+            .payload()
+            .metadata()
+            .get_str(DEAD_LETTER_FAILURE_REASON)
+            .unwrap()
+            .contains("business")
+    );
+    bus.wait_for_idle(&topic).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

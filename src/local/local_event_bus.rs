@@ -1817,7 +1817,8 @@ where
         execution = execution.cancellation_token(token.clone());
     }
     match execution.run(operation) {
-        Ok(value) => Ok(value.into_value()),
+        // This adapter registers no completion observers.
+        Ok(value) => Ok(value.into_value_discarding_diagnostics()),
         Err(error) => Err(EventBusError::from(error)),
     }
 }
