@@ -31,7 +31,7 @@ fn retry_options(max_attempts: u32) -> RetryPolicy {
 fn test_retry_options_validate_attempts() {
     let retry = retry_options(3);
 
-    assert_eq!(retry.limits().max_attempts().get(), 3);
+    assert_eq!(retry.admission_limits().max_attempts().get(), 3);
     assert!(RetryPolicy::builder().max_attempts(0).build().is_err());
 }
 
@@ -49,7 +49,7 @@ fn test_publish_options_builder_sets_retry_and_error_handler() {
         options
             .retry_options()
             .expect("retry should exist")
-            .limits()
+            .admission_limits()
             .max_attempts()
             .get(),
         2
@@ -102,7 +102,7 @@ fn test_subscribe_options_defaults_and_builder() {
         options
             .retry_options()
             .expect("retry should exist")
-            .limits()
+            .admission_limits()
             .max_attempts()
             .get(),
         4

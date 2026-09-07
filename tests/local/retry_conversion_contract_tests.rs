@@ -15,7 +15,7 @@ use qubit_retry::BackoffPolicy;
 use qubit_retry::Retry;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
-use qubit_retry::RetryFailure;
+use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryInfrastructureFailure;
 use qubit_retry::RetryObserver;
 use qubit_retry::RetryPolicy;
@@ -90,13 +90,13 @@ fn retry_conversion_timer_failure_keeps_structured_terminal() {
         }))
         .run(|| Err::<(), _>(EventBusError::handler_failed("business")))
         .expect_err("backoff timer registration fails");
-    assert!(matches!(error.failure(), RetryFailure::Infrastructure { .. }));
+    assert!(matches!(error.reason(), RetryErrorReason::Infrastructure { .. }));
 }
 
 struct CompletionPanic;
 
 impl RetryObserver<EventBusError> for CompletionPanic {
-    fn on_terminal_failure(&self, _: &RetryFailure<EventBusError>, _: &RetryContext) {
+    fn on_terminal_failure(&self, _: &RetryErrorReason, _: &RetryContext) {
         panic!("completion diagnostic");
     }
 }

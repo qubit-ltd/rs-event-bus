@@ -280,24 +280,22 @@ dependencies = [
 name = "qubit-metadata"
 version = "0.10.0"
 dependencies = [
- "qubit-budget",
  "qubit-datatype",
  "qubit-redact",
- "qubit-utils",
  "qubit-value",
  "serde",
 ]
 
 [[package]]
 name = "qubit-redact"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "qubit-budget",
 ]
 
 [[package]]
 name = "qubit-retry"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "qubit-budget",
  "qubit-clock",
@@ -324,12 +322,6 @@ dependencies = [
  "qubit-lock",
  "thiserror",
 ]
-
-[[package]]
-name = "qubit-utils"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f9bf5cd2e783a8a6edd6536826084ef0a82d1924b14f82e79fe0088b7b33748"
 
 [[package]]
 name = "qubit-value"
