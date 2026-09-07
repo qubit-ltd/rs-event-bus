@@ -29,10 +29,8 @@ pub use coverage::coverage_exercise_local_event_bus_defensive_paths;
 use qubit_argument::StringArgument;
 use qubit_executor::ExecutorService;
 use qubit_executor::SingleThreadScheduledExecutorService;
-use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
 use qubit_retry::RetryCancellationToken;
-use qubit_retry::RetryContext;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 use qubit_thread_pool::FixedThreadPool;
@@ -1807,9 +1805,7 @@ where
     };
     let mut builder = Retry::<EventBusError>::builder((*retry_options).clone());
     if let Some(rule) = retry_rule {
-        let rule = Arc::clone(rule);
-        builder = builder
-            .rule(move |failure: &AttemptFailure<EventBusError>, context: &RetryContext| rule.decide(failure, context));
+        builder = builder.shared_rule(Arc::clone(rule));
     }
     let retry = builder.rule(EventBusRetryRule).build();
     let mut execution = retry.sync();

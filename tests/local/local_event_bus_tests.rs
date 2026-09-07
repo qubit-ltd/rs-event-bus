@@ -49,7 +49,7 @@ use qubit_retry::RetryCancellationPhase;
 use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
-use qubit_retry::RetryFailure;
+use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryInfrastructureFailure;
 use qubit_retry::RetryObserver;
 use qubit_retry::RetryPanic;
@@ -456,15 +456,7 @@ fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
             .expect_err("the failure observer should terminate the retry")
     };
 
-    assert!(matches!(
-        retry_error.failure(),
-        RetryFailure::CallbackFailed {
-            last_failure: Some(AttemptFailure::Error(
-                EventBusError::HandlerFailed { message }
-            )),
-            ..
-        } if message == "callback business sentinel"
-    ));
+    assert!(matches!(retry_error.reason(), RetryErrorReason::CallbackFailed { .. }));
     let EventBusError::RetryCallbackFailed {
         last_failure: Some(last_failure),
         ..
@@ -504,15 +496,7 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
         })
         .expect_err("observer cancellation should terminate the retry");
 
-    assert!(matches!(
-        retry_error.failure(),
-        RetryFailure::Cancelled {
-            last_failure: Some(AttemptFailure::Error(
-                EventBusError::HandlerFailed { message }
-            )),
-            ..
-        } if message == "cancelled business sentinel"
-    ));
+    assert!(matches!(retry_error.reason(), RetryErrorReason::Cancelled { .. }));
     let EventBusError::RetryCancelled {
         last_failure: Some(last_failure),
         ..
@@ -559,7 +543,7 @@ fn test_retry_conversion_preserves_timed_out_terminal() {
     let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
     let retry_error = retry
         .worker()
-        .flow_timeout(Duration::ZERO)
+        .hard_flow_timeout(Duration::ZERO)
         .run(|_| Ok::<(), EventBusError>(()))
         .expect_err("zero flow timeout should stop before the operation");
 
@@ -640,7 +624,7 @@ fn test_retry_conversion_preserves_timed_out_last_failure() {
     let retry_error = retry
         .worker()
         .timer(clock.new_timer())
-        .attempt_timeout(Duration::from_secs(1))
+        .hard_attempt_timeout(Duration::from_secs(1))
         .cancellation_grace(Duration::from_secs(1))
         .run(move |cancellation| {
             operation_clock
@@ -755,7 +739,7 @@ fn test_retry_conversion_preserves_infrastructure_panicked_last_failure() {
         retry
             .worker()
             .timer(clock.new_timer())
-            .attempt_timeout(Duration::from_secs(1))
+            .hard_attempt_timeout(Duration::from_secs(1))
             .cancellation_grace(Duration::from_millis(1))
             .run(move |_| {
                 if captured_calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -4639,7 +4623,8 @@ fn retry_completion_for_interceptor_test() -> EventBusError {
             0,
             RetryCallbackPhase::TerminalFailure,
             RetryPanic::StaticStr("completion sink"),
-        )],
+        )]
+        .into(),
     }
 }
 

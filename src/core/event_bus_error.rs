@@ -19,7 +19,7 @@ use qubit_retry::RetryCallbackFailure;
 use qubit_retry::RetryCancellationPhase;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryError;
-use qubit_retry::RetryFailure;
+use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryInfrastructureFailure;
 use qubit_retry::RetryTimeoutScope;
 
@@ -111,7 +111,7 @@ pub enum EventBusError {
         /// Frozen retry context; clones preserve provenance identity.
         context: Arc<RetryContext>,
         /// Completion callback failures in observer registration order.
-        diagnostics: Vec<RetryCallbackFailure>,
+        diagnostics: Box<[RetryCallbackFailure]>,
     },
     /// Retry execution reached a hard timeout, retaining the last attempt
     /// failure when one exists.
@@ -519,24 +519,19 @@ impl From<RetryError<EventBusError>> for EventBusError {
     /// Restores a retained business error or preserves the structured retry
     /// terminal classification and context.
     fn from(error: RetryError<EventBusError>) -> Self {
-        let (failure, context, diagnostics) = error.into_parts();
+        let (reason, last_failure, context, diagnostics) = error.into_parts();
         let context = Arc::new(context);
-        let mapped = match failure {
-            RetryFailure::Aborted {
-                last_failure: AttemptFailure::Error(error),
-                ..
-            }
-            | RetryFailure::Exhausted {
-                last_failure: Some(AttemptFailure::Error(error)),
-                ..
-            } => error,
-            RetryFailure::Aborted { last_failure, .. } => Self::handler_failed(format!(
-                "retry aborted: {last_failure} after {} attempt(s)",
-                context.attempts()
-            )),
-            RetryFailure::Exhausted {
-                limit, last_failure, ..
-            } => match last_failure {
+        let mapped = match reason {
+            RetryErrorReason::Aborted => match last_failure {
+                Some(AttemptFailure::Error(error)) => error,
+                Some(last_failure) => Self::handler_failed(format!(
+                    "retry aborted: {last_failure} after {} attempt(s)",
+                    context.attempts()
+                )),
+                None => Self::handler_failed(format!("retry aborted after {} attempt(s)", context.attempts())),
+            },
+            RetryErrorReason::Exhausted { limit } => match last_failure {
+                Some(AttemptFailure::Error(error)) => error,
                 Some(last_failure) => Self::handler_failed(format!(
                     "retry limit exhausted: {limit}; last attempt failed: {last_failure} after {} attempt(s)",
                     context.attempts()
@@ -546,35 +541,27 @@ impl From<RetryError<EventBusError>> for EventBusError {
                     context.attempts()
                 )),
             },
-            RetryFailure::TimedOut {
-                scope, last_failure, ..
-            } => Self::RetryTimedOut {
+            RetryErrorReason::TimedOut { scope } => Self::RetryTimedOut {
                 scope,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            RetryFailure::Cancelled {
-                phase, last_failure, ..
-            } => Self::RetryCancelled {
+            RetryErrorReason::Cancelled { phase } => Self::RetryCancelled {
                 phase,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            RetryFailure::CallbackFailed {
-                callback, last_failure, ..
-            } => Self::RetryCallbackFailed {
+            RetryErrorReason::CallbackFailed { callback } => Self::RetryCallbackFailed {
                 callback,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            RetryFailure::Infrastructure {
-                failure, last_failure, ..
-            } => Self::RetryInfrastructureFailed {
+            RetryErrorReason::Infrastructure { failure } => Self::RetryInfrastructureFailed {
                 failure,
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            unclassified => Self::handler_failed(format!("{unclassified} after {} attempt(s)", context.attempts())),
+            _ => Self::handler_failed(format!("retry stopped after {} attempt(s)", context.attempts())),
         };
         if diagnostics.is_empty() {
             mapped
