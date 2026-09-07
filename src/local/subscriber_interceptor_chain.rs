@@ -68,6 +68,7 @@ enum ErrorFingerprint {
     UnsupportedOperation {
         operation: &'static str,
     },
+    RetryCompletionDiagnostics(RetryContextFingerprint),
     RetryTimedOut(RetryContextFingerprint),
     RetryCancelled(RetryContextFingerprint),
     RetryCallbackFailed(RetryContextFingerprint),
@@ -322,6 +323,9 @@ impl ErrorFingerprint {
             EventBusError::LockPoisoned { resource } => Self::LockPoisoned { resource },
             EventBusError::TypeMismatch { expected, actual } => Self::TypeMismatch { expected, actual },
             EventBusError::UnsupportedOperation { operation } => Self::UnsupportedOperation { operation },
+            EventBusError::RetryCompletionDiagnostics { context, .. } => {
+                Self::RetryCompletionDiagnostics(RetryContextFingerprint::new(context))
+            }
             EventBusError::RetryTimedOut { context, .. } => Self::RetryTimedOut(RetryContextFingerprint::new(context)),
             EventBusError::RetryCancelled { context, .. } => {
                 Self::RetryCancelled(RetryContextFingerprint::new(context))
