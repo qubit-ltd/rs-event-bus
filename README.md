@@ -33,7 +33,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.9"
+qubit-event-bus = "0.10"
 ```
 
 ## Quick Start
@@ -148,7 +148,7 @@ must tolerate repeated execution.
 
 ### Explicit subscriber retry cancellation
 
-This release uses `qubit-retry` 0.21. Applications that construct shared
+This release uses `qubit-retry` 0.22. Applications that construct shared
 `RetryPolicy` or `RetryCancellationToken` values must use a compatible direct
 dependency. Pass a token to `SubscribeOptionsBuilder::retry_cancellation_token`
 and retain a clone for the application's stop path. The option defaults to
@@ -190,6 +190,18 @@ if let qubit_event_bus::EventBusError::RetryCancelled {
     }
 }
 ```
+
+## Completion diagnostics in 0.10
+
+Converting `RetryError<EventBusError>` preserves the existing domain error when
+completion diagnostics are empty. Otherwise `RetryCompletionDiagnostics` wraps
+that error, an `Arc<RetryContext>`, and the ordered diagnostic vector. Inspect
+`retry_completion_source()` / `completion_callback_failures()` or standard
+`Error::source()`. Clone preserves context identity and equality. The default
+retry rule treats this wrapper as terminal; error handlers and dead letters retain
+its `retry_completion_diagnostics` kind and original domain message. Exhaustive
+matches must handle the new variant. Internal successful retry flows register no
+completion observers and explicitly discard empty diagnostics.
 
 ## Contributing
 
