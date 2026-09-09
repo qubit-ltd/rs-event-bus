@@ -70,7 +70,8 @@ fn test_prefixed_dead_letter_strategy_builds_dead_letter_topic() {
         dead_letter
             .payload()
             .metadata()
-            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
-        Some("subscriber".to_string())
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID)
+            .unwrap(),
+        "subscriber"
     );
 }

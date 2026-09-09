@@ -34,7 +34,7 @@ doctest = true
 qubit-argument = { path = "../rs-argument", version = "0.4" }
 qubit-collections = { version = "0.1" }
 qubit-executor = { path = "../rs-executor", version = "0.8" }
-qubit-metadata = { path = "../rs-metadata", version = "0.10", default-features = false, features = [] }
+qubit-metadata = { path = "../rs-metadata", version = "0.11", default-features = false, features = [] }
 qubit-retry = { version = "0.23", features = ["worker"] }
 qubit-thread-pool = { path = "../rs-thread-pool", version = "0.10" }
 
