@@ -47,6 +47,7 @@ use qubit_retry::RetryCallbackKind;
 use qubit_retry::RetryCallbackPhase;
 use qubit_retry::RetryCancellationPhase;
 use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
@@ -55,6 +56,7 @@ use qubit_retry::RetryObserver;
 use qubit_retry::RetryPanic;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryTimeoutScope;
+use qubit_retry::WorkerRetry;
 
 /// Observer used to force a retry callback terminal failure before an attempt.
 struct PanickingStartedObserver;
@@ -409,9 +411,11 @@ fn test_retry_conversion_preserves_last_business_error() {
     let message = "allocation sentinel".to_string();
     let expected_allocation = message.as_ptr();
     let mut expected = Some(EventBusError::HandlerFailed { message });
-    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
-    let retry_error = retry
-        .sync()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
+        .build()
+        .expect("valid config");
+    let retry_error = Retry::new(&retry)
         .run(|| {
             Err::<(), _>(
                 expected
@@ -439,13 +443,14 @@ fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
     let message = "callback business sentinel".to_string();
     let expected_allocation = message.as_ptr();
     let mut expected = Some(EventBusError::HandlerFailed { message });
-    let retry = Retry::<EventBusError>::builder(retry_options(2))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(2))
         .observer(PanickingFailedObserver)
-        .build();
+        .build()
+        .expect("valid config");
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        retry
-            .sync()
+        Retry::new(&retry)
             .run(|| {
                 Err::<(), _>(
                     expected
@@ -479,11 +484,12 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
     let expected = Arc::new(Mutex::new(Some(EventBusError::HandlerFailed { message })));
     let captured_expected = Arc::clone(&expected);
     let cancellation = RetryCancellationToken::new();
-    let retry = Retry::<EventBusError>::builder(retry_options(2))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(2))
         .observer(CancellingFailedObserver(cancellation.clone()))
-        .build();
-    let retry_error = retry
-        .worker()
+        .build()
+        .expect("valid config");
+    let retry_error = WorkerRetry::new(&retry)
         .cancellation_token(cancellation)
         .run(move |_| {
             Err::<(), _>(
@@ -516,9 +522,11 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
 fn test_retry_conversion_preserves_cancelled_terminal() {
     let cancellation = RetryCancellationToken::new();
     cancellation.cancel();
-    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
-    let retry_error = retry
-        .worker()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
+        .build()
+        .expect("valid config");
+    let retry_error = WorkerRetry::new(&retry)
         .cancellation_token(cancellation)
         .run(|_| Ok::<(), EventBusError>(()))
         .expect_err("pre-cancelled worker retry should stop");
@@ -540,9 +548,11 @@ fn test_retry_conversion_preserves_cancelled_terminal() {
 /// Verifies a flow timeout remains structured when no operation has run.
 #[test]
 fn test_retry_conversion_preserves_timed_out_terminal() {
-    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
-    let retry_error = retry
-        .worker()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
+        .build()
+        .expect("valid config");
+    let retry_error = WorkerRetry::new(&retry)
         .hard_flow_timeout(Duration::ZERO)
         .run(|_| Ok::<(), EventBusError>(()))
         .expect_err("zero flow timeout should stop before the operation");
@@ -564,13 +574,14 @@ fn test_retry_conversion_preserves_timed_out_terminal() {
 /// Verifies callback attribution remains structured after conversion.
 #[test]
 fn test_retry_conversion_preserves_callback_failed_terminal() {
-    let retry = Retry::<EventBusError>::builder(retry_options(1))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
         .observer(PanickingStartedObserver)
-        .build();
+        .build()
+        .expect("valid config");
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        retry
-            .sync()
+        Retry::new(&retry)
             .run(|| Ok::<(), EventBusError>(()))
             .expect_err("the started observer should terminate the retry")
     };
@@ -594,9 +605,11 @@ fn test_retry_conversion_preserves_callback_failed_terminal() {
 /// Verifies worker startup failure remains structured after conversion.
 #[test]
 fn test_retry_conversion_preserves_infrastructure_terminal() {
-    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
-    let retry_error = retry
-        .worker()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
+        .build()
+        .expect("valid config");
+    let retry_error = WorkerRetry::new(&retry)
         .worker_stack_size(usize::MAX)
         .run(|_| Ok::<(), EventBusError>(()))
         .expect_err("an impossible stack size should prevent worker startup");
@@ -618,11 +631,13 @@ fn test_retry_conversion_preserves_infrastructure_terminal() {
 /// Verifies an attempt timeout remains available in the retry wrapper.
 #[test]
 fn test_retry_conversion_preserves_timed_out_last_failure() {
-    let retry = Retry::<EventBusError>::builder(retry_options(1)).build();
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(1))
+        .build()
+        .expect("valid config");
     let clock = ManualMonotonicClock::new_shared();
     let operation_clock = Arc::clone(&clock);
-    let retry_error = retry
-        .worker()
+    let retry_error = WorkerRetry::new(&retry)
         .timer(clock.new_timer())
         .hard_attempt_timeout(Duration::from_secs(1))
         .cancellation_grace(Duration::from_secs(1))
@@ -659,13 +674,14 @@ fn test_retry_conversion_preserves_timed_out_last_failure() {
 #[test]
 fn test_retry_conversion_preserves_cancelled_panicked_last_failure() {
     let cancellation = RetryCancellationToken::new();
-    let retry = Retry::<EventBusError>::builder(retry_options(2))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(2))
         .observer(CancellingFailedObserver(cancellation.clone()))
-        .build();
+        .build()
+        .expect("valid config");
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        retry
-            .worker()
+        WorkerRetry::new(&retry)
             .cancellation_token(cancellation)
             .run(|_| -> EventBusResult<()> {
                 panic!("cancelled prior panic");
@@ -692,13 +708,14 @@ fn test_retry_conversion_preserves_cancelled_panicked_last_failure() {
 /// Verifies callback failure retains a preceding non-business panic failure.
 #[test]
 fn test_retry_conversion_preserves_callback_panicked_last_failure() {
-    let retry = Retry::<EventBusError>::builder(retry_options(2))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(2))
         .observer(PanickingFailedObserver)
-        .build();
+        .build()
+        .expect("valid config");
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        retry
-            .worker()
+        WorkerRetry::new(&retry)
             .run(|_| -> EventBusResult<()> {
                 panic!("callback prior panic");
             })
@@ -729,15 +746,16 @@ fn test_retry_conversion_preserves_infrastructure_panicked_last_failure() {
     let (release_sender, release_receiver) = mpsc::channel();
     let release_receiver = Arc::new(Mutex::new(release_receiver));
     let captured_release_receiver = Arc::clone(&release_receiver);
-    let retry = Retry::<EventBusError>::builder(retry_options(2))
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(retry_options(2))
         .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
-        .build();
+        .build()
+        .expect("valid config");
     let clock = ManualMonotonicClock::new_shared();
     let operation_clock = Arc::clone(&clock);
     let retry_error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        retry
-            .worker()
+        WorkerRetry::new(&retry)
             .timer(clock.new_timer())
             .hard_attempt_timeout(Duration::from_secs(1))
             .cancellation_grace(Duration::from_millis(1))
