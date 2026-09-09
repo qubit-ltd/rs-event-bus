@@ -31,6 +31,7 @@ use qubit_executor::ExecutorService;
 use qubit_executor::SingleThreadScheduledExecutorService;
 use qubit_retry::Retry;
 use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryConfig;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 use qubit_thread_pool::FixedThreadPool;
@@ -1803,12 +1804,15 @@ where
         let mut operation = operation;
         return operation();
     };
-    let mut builder = Retry::<EventBusError>::builder((*retry_options).clone());
+    let mut builder = RetryConfig::<EventBusError>::builder().policy((*retry_options).clone());
     if let Some(rule) = retry_rule {
         builder = builder.shared_rule(Arc::clone(rule));
     }
-    let retry = builder.rule(EventBusRetryRule).build();
-    let mut execution = retry.sync();
+    let retry = builder
+        .rule(EventBusRetryRule)
+        .build()
+        .expect("validated event-bus retry options should build");
+    let mut execution = Retry::new(&retry);
     if let Some(token) = cancellation {
         execution = execution.cancellation_token(token.clone());
     }

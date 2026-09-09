@@ -13,6 +13,7 @@ use qubit_event_bus::EventBusRetryRule;
 use qubit_retry::AttemptFailure;
 use qubit_retry::BackoffPolicy;
 use qubit_retry::Retry;
+use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
@@ -38,17 +39,18 @@ impl Timer for RegistrationFailureTimer {
 
 #[test]
 fn retry_conversion_timer_failure_keeps_business_error() {
-    let retry = Retry::<EventBusError>::builder(
-        RetryPolicy::builder()
-            .max_attempts(2)
-            .backoff(BackoffPolicy::fixed(Duration::from_millis(1)))
-            .build()
-            .expect("retry policy should build"),
-    )
-    .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
-    .build();
-    let error = retry
-        .sync()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .backoff(BackoffPolicy::fixed(Duration::from_millis(1)))
+                .build()
+                .expect("retry policy should build"),
+        )
+        .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
+        .build()
+        .expect("valid retry config");
+    let error = Retry::new(&retry)
         .timer(Arc::new(RegistrationFailureTimer {
             clock: StdMonotonicClock::new(),
         }))
@@ -74,17 +76,18 @@ fn retry_conversion_timer_failure_keeps_business_error() {
 
 #[test]
 fn retry_conversion_timer_failure_keeps_structured_terminal() {
-    let retry = Retry::<EventBusError>::builder(
-        RetryPolicy::builder()
-            .max_attempts(2)
-            .backoff(BackoffPolicy::fixed(Duration::from_millis(1)))
-            .build()
-            .expect("retry policy should build"),
-    )
-    .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
-    .build();
-    let error = retry
-        .sync()
+    let retry = RetryConfig::<EventBusError>::builder()
+        .policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .backoff(BackoffPolicy::fixed(Duration::from_millis(1)))
+                .build()
+                .expect("retry policy should build"),
+        )
+        .rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::Retry)
+        .build()
+        .expect("valid retry config");
+    let error = Retry::new(&retry)
         .timer(Arc::new(RegistrationFailureTimer {
             clock: StdMonotonicClock::new(),
         }))
@@ -104,7 +107,8 @@ impl RetryObserver<EventBusError> for CompletionPanic {
 #[test]
 fn test_retry_conversion_preserves_completion_diagnostics_and_terminal_rule() {
     for abort in [false, true] {
-        let error = Retry::builder(RetryPolicy::builder().max_attempts(1).build().unwrap())
+        let retry = RetryConfig::builder()
+            .policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
             .observer(CompletionPanic)
             .rule(move |_: &AttemptFailure<EventBusError>, _: &RetryContext| {
                 if abort {
@@ -114,7 +118,8 @@ fn test_retry_conversion_preserves_completion_diagnostics_and_terminal_rule() {
                 }
             })
             .build()
-            .sync()
+            .expect("valid config");
+        let error = Retry::new(&retry)
             .run(|| Err::<(), _>(EventBusError::handler_failed("business")))
             .unwrap_err();
         let expected = error.completion_callback_failures().to_vec();
