@@ -15,13 +15,22 @@ fn test_dead_letter_record_from_failure_preserves_metadata_and_payload() {
 
     let record = DeadLetterRecord::from_failure("subscriber", &envelope, &error);
 
-    assert_eq!(record.metadata().get_str(DEAD_LETTER_SUBSCRIBER_ID), Some("subscriber"));
-    assert_eq!(record.metadata().get_str(DEAD_LETTER_EVENT_ID), Some(envelope.id()));
     assert_eq!(
-        record.metadata().get_str(DEAD_LETTER_FAILURE_TYPE),
-        Some("handler_failed")
+        record.metadata().get_ref::<str>(DEAD_LETTER_SUBSCRIBER_ID).unwrap(),
+        "subscriber"
     );
-    assert_eq!(record.metadata().get_str(DEAD_LETTER_ORDERING_KEY), Some("order-1"));
+    assert_eq!(
+        record.metadata().get_ref::<str>(DEAD_LETTER_EVENT_ID).unwrap(),
+        envelope.id()
+    );
+    assert_eq!(
+        record.metadata().get_ref::<str>(DEAD_LETTER_FAILURE_TYPE).unwrap(),
+        "handler_failed"
+    );
+    assert_eq!(
+        record.metadata().get_ref::<str>(DEAD_LETTER_ORDERING_KEY).unwrap(),
+        "order-1"
+    );
     assert_eq!(
         record.downcast_original_payload_ref::<String>(),
         Some(&"payload".to_string())

@@ -201,15 +201,20 @@ fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
         .recv_timeout(Duration::from_secs(2))
         .expect("first dead letter");
     assert_eq!(
-        first_dead_letter.payload().metadata().get_str(DEAD_LETTER_FAILURE_TYPE),
-        Some("retry_cancelled")
+        first_dead_letter
+            .payload()
+            .metadata()
+            .get_ref::<str>(DEAD_LETTER_FAILURE_TYPE)
+            .unwrap(),
+        "retry_cancelled"
     );
     assert!(
         first_dead_letter
             .payload()
             .metadata()
-            .get_str(DEAD_LETTER_FAILURE_REASON)
-            .is_some_and(|reason| reason.contains("first delivery failed"))
+            .get_ref::<str>(DEAD_LETTER_FAILURE_REASON)
+            .unwrap()
+            .contains("first delivery failed")
     );
     assert!(acknowledgement.is_nacked());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2082,8 +2087,12 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
         .expect("dead letter payload should preserve original payload");
     assert_eq!(payload, "payload");
     assert_eq!(
-        events[0].payload().metadata().get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
-        Some("sub-1".to_string())
+        events[0]
+            .payload()
+            .metadata()
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID)
+            .unwrap(),
+        "sub-1"
     );
 }
 
@@ -2122,8 +2131,12 @@ fn test_standard_dead_letter_strategy_helper_routes_standard_payload() {
     assert_eq!(events.len(), 1);
     assert!(events[0].is_dead_letter());
     assert_eq!(
-        events[0].payload().metadata().get::<String>(DEAD_LETTER_SUBSCRIBER_ID),
-        Some("sub".to_string())
+        events[0]
+            .payload()
+            .metadata()
+            .get::<String>(DEAD_LETTER_SUBSCRIBER_ID)
+            .unwrap(),
+        "sub"
     );
     assert_eq!(
         events[0].payload().downcast_original_payload_ref::<String>(),
@@ -4693,14 +4706,18 @@ fn test_completion_wrapper_reaches_error_handler_and_dead_letter_without_retry()
     assert_eq!(error.completion_callback_failures().len(), 1);
     let event = dead_letter_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(
-        event.payload().metadata().get_str(DEAD_LETTER_FAILURE_TYPE),
-        Some("retry_completion_diagnostics")
+        event
+            .payload()
+            .metadata()
+            .get_ref::<str>(DEAD_LETTER_FAILURE_TYPE)
+            .unwrap(),
+        "retry_completion_diagnostics"
     );
     assert!(
         event
             .payload()
             .metadata()
-            .get_str(DEAD_LETTER_FAILURE_REASON)
+            .get_ref::<str>(DEAD_LETTER_FAILURE_REASON)
             .unwrap()
             .contains("business")
     );
