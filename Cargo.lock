@@ -192,9 +192,9 @@ dependencies = [
 
 [[package]]
 name = "qubit-datatype"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34053b226e9502874d804c156a54b0e44977aa3fdc4e79c71646b3ae221b72e3"
+checksum = "ee2959d5aa33b376bdd5d9c3c4d80246dbe9cdc3de020b4443caff2de9b51cdc"
 dependencies = [
  "qubit-budget",
  "serde",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-metadata"
-version = "0.11.0"
+version = "0.6.0"
 dependencies = [
  "qubit-datatype",
  "qubit-redact",
@@ -303,7 +303,9 @@ dependencies = [
 
 [[package]]
 name = "qubit-value"
-version = "0.12.0"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "678fc53931036e5c82c90d4d372428e9e45bc482998ad2d690c895bcdd0a135e"
 dependencies = [
  "qubit-datatype",
  "qubit-redact",
