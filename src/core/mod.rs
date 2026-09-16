@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Core event bus contracts, value objects, options, and errors.
-// qubit-style: allow coverage-cfg
 
 mod ack_mode;
 mod acknowledgement;

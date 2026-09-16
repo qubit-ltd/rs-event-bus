@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! In-process event bus implementation and local runtime internals.
-// qubit-style: allow coverage-cfg
 
 pub(crate) mod erased_subscription;
 mod local_event_bus;

@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Standard event envelope.
-// qubit-style: allow multiple-public-types
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;

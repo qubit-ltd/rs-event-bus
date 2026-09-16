@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Options controlling event subscription.
-// qubit-style: allow multiple-public-types
 
 use std::panic;
 use std::panic::AssertUnwindSafe;
