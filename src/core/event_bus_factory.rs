@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Factory abstraction for event bus backends.
-// qubit-style: allow coverage-cfg
 
 use crate::DeadLetterStrategyAnyCallback;
 use crate::DeadLetterStrategyCallback;

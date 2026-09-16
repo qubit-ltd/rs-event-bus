@@ -6,8 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Subscriber interceptor chain handle.
-// qubit-style: allow multiple-public-types
-// qubit-style: allow coverage-cfg
 
 use std::panic;
 use std::panic::AssertUnwindSafe;

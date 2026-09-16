@@ -8,7 +8,6 @@
 //! # Qubit Event Bus
 //!
 //! A lightweight, thread-safe in-process event bus for Rust.
-// qubit-style: allow coverage-cfg
 
 #![deny(missing_docs)]
 

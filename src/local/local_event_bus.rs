@@ -6,8 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Thread-safe in-process event bus.
-// qubit-style: allow coverage-cfg
-// qubit-style: allow multiple-public-types
 
 #[cfg(coverage)]
 mod coverage;

@@ -6,7 +6,6 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Event bus abstraction shared by concrete backends.
-// qubit-style: allow multiple-public-types
 
 use std::time::Duration;
 

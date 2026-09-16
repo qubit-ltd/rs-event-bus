@@ -1,0 +1,76 @@
+format = 1
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/core/event_bus_factory.rs"
+reason = "Compensate for source-based coverage placeholder regions on trait default methods."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/core/mod.rs"
+reason = "Re-export core coverage helpers only for coverage builds."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/core/subscription.rs"
+reason = "Poison private delay mutex only under coverage to exercise defensive recovery paths."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/lib.rs"
+reason = "Re-export coverage helpers only when cargo-llvm-cov builds with cfg(coverage)."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/local/local_event_bus.rs"
+reason = "Host LocalEventBus coverage helpers as a private child module for cfg(coverage) tests."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/local/local_event_bus_inner.rs"
+reason = "Host LocalEventBusInner coverage helpers as a private child module for cfg(coverage) tests."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/local/mod.rs"
+reason = "Re-export local coverage helpers only for coverage builds."
+
+[[exceptions]]
+rule = "coverage-cfg"
+path = "src/local/subscriber_interceptor_chain.rs"
+reason = "Exercise subscriber chain downstream provenance branches only for coverage builds."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/core/event_bus.rs"
+reason = "Batch result value objects are part of the EventBus batch publishing contract."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/core/event_envelope.rs"
+reason = "Type-erased metadata is the interceptor-facing view of the public event envelope."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/core/subscribe_options.rs"
+reason = "Dead-letter strategy contracts are documented next to SubscribeOptions."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/core/subscription.rs"
+reason = "SubscriptionState is crate-internal shared cancellation state paired with the public Subscription handle."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/local/local_event_bus.rs"
+reason = "Interceptor contracts are intentionally documented next to the LocalEventBus runtime entry point."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/local/local_event_bus_inner.rs"
+reason = "Runtime options are crate-internal constructor state paired with LocalEventBusInner."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/local/subscriber_interceptor_chain.rs"
+reason = "Typed and global subscriber chain handles share the same invocation model."
