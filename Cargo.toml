@@ -38,9 +38,6 @@ qubit-metadata = { version = "0.6", default-features = false }
 qubit-retry = { version = "0.25", features = ["worker"] }
 qubit-thread-pool = { path = "../rs-thread-pool" }
 
-[patch.crates-io]
-qubit-state-machine = { path = "../rs-state-machine" }
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
 
