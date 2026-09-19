@@ -38,6 +38,7 @@ use super::erased_subscription::ErasedSubscription;
 use super::local_event_bus_inner::LocalEventBusInner;
 use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use super::ordering_lane_key::OrderingLaneKey;
+use super::processing_task::DeliveryContext;
 use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_chain::DownstreamErrorSlot;
@@ -319,6 +320,24 @@ pub struct LocalEventBus {
     pub(crate) inner: Arc<LocalEventBusInner>,
 }
 
+/// Keeps the bus in the stopping state until shutdown cleanup has finished.
+struct ShutdownCompletionGuard<'a> {
+    bus: &'a LocalEventBus,
+}
+
+impl Drop for ShutdownCompletionGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(executor) = self.bus.inner.take_executor() {
+            executor.shutdown();
+        }
+        if let Some(delay_scheduler) = self.bus.inner.take_delay_scheduler() {
+            delay_scheduler.shutdown();
+        }
+        self.bus.inner.clear_subscriptions();
+        self.bus.inner.complete_shutdown();
+    }
+}
+
 impl LocalEventBus {
     /// Creates a stopped local event bus.
     ///
@@ -392,6 +411,7 @@ impl LocalEventBus {
         if !self.inner.mark_stopping() {
             return false;
         }
+        let _completion = ShutdownCompletionGuard { bus: self };
         let _ = self.inner.wait_for_all_idle();
         if let Some(executor) = self.inner.take_executor() {
             executor.shutdown();
@@ -418,6 +438,7 @@ impl LocalEventBus {
         let Some(executor) = self.inner.mark_stopped() else {
             return false;
         };
+        let _completion = ShutdownCompletionGuard { bus: self };
         executor.shutdown();
         if let Some(delay_scheduler) = self.inner.take_delay_scheduler() {
             delay_scheduler.shutdown();
@@ -449,6 +470,7 @@ impl LocalEventBus {
         if !self.inner.mark_stopping() {
             return Ok(false);
         }
+        let _completion = ShutdownCompletionGuard { bus: self };
         let Some(remaining) = remaining_shutdown_timeout(started_at, timeout) else {
             self.inner.clear_subscriptions();
             if let Some(executor) = self.inner.take_executor() {
@@ -789,7 +811,8 @@ impl LocalEventBus {
             handler,
             options: options.clone(),
         };
-        self.inner.add_subscription(topic_key.clone(), Arc::new(entry))?;
+        self.inner
+            .register_subscription_if_started(topic_key.clone(), Arc::new(entry))?;
 
         Ok(Subscription {
             id,
@@ -1098,6 +1121,11 @@ impl Default for LocalEventBus {
 }
 
 impl crate::EventBus for LocalEventBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     /// Starts the local event bus.
     fn start(&self) -> EventBusResult<bool> {
         Self::start(self)
@@ -1366,13 +1394,19 @@ where
             inner: Arc::clone(&bus),
         };
         let bus_id = local_event_bus_id(&bus);
-        let processing_task = ProcessingTask::new(Arc::clone(&bus), topic_key, move || {
-            let _worker_context = SubscriptionWorkerContext::enter(bus_id);
-            if !active.is_active() {
-                return;
-            }
-            process_subscription_event(active, handler, options, subscriber_id, *envelope, event_bus);
-        });
+        let delivery_context = DeliveryContext {
+            event_id: envelope.id().to_string(),
+            topic_name: self.topic.name().to_string(),
+            subscriber_id: self.subscriber_id.clone(),
+        };
+        let processing_task =
+            ProcessingTask::with_delivery_context(Arc::clone(&bus), topic_key, delivery_context, move || {
+                let _worker_context = SubscriptionWorkerContext::enter(bus_id);
+                if !active.is_active() {
+                    return;
+                }
+                process_subscription_event(active, handler, options, subscriber_id, *envelope, event_bus);
+            });
         if let Some(ordering_lane_key) = ordering_lane_key {
             if let Some(delay) = delay
                 && !delay.is_zero()
@@ -1699,6 +1733,8 @@ where
             call_handler(handler, delivery.delivered.clone())?;
             if delivery.acknowledgement.is_nacked() {
                 Err(EventBusError::handler_failed("subscriber nacked the event"))
+            } else if options.ack_mode() == AckMode::Manual && !delivery.acknowledgement.is_acked() {
+                Err(EventBusError::handler_failed("manual acknowledgement missing"))
             } else {
                 Ok(delivery)
             }

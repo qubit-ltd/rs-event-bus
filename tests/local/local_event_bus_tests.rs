@@ -1160,7 +1160,7 @@ fn test_ordered_huge_delay_does_not_become_immediately_ready() {
 }
 
 #[test]
-fn test_delayed_delivery_runs_when_handler_queue_is_saturated_at_delay_expiry() {
+fn test_delayed_delivery_rejection_does_not_block_scheduler() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .set_subscription_handler_pool_size(1)
@@ -1173,6 +1173,13 @@ fn test_delayed_delivery_runs_when_handler_queue_is_saturated_at_delay_expiry() 
     let release = Arc::new((Mutex::new(false), Condvar::new()));
     let captured_release = Arc::clone(&release);
     let (received_tx, received_rx) = mpsc::channel::<String>();
+    let (error_tx, error_rx) = mpsc::channel::<EventBusError>();
+    bus.add_error_observer(move |error| {
+        if matches!(error, EventBusError::ExecutionRejected { .. }) {
+            error_tx.send(error.clone()).expect("rejection should send");
+        }
+    })
+    .expect("observer should register");
 
     bus.subscribe("sub", &topic, move |event| {
         let payload = event.payload().clone();
@@ -1194,17 +1201,27 @@ fn test_delayed_delivery_runs_when_handler_queue_is_saturated_at_delay_expiry() 
     );
     bus.publish(&topic, "second".to_string())
         .expect("second publish should fill the handler queue");
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "delayed".to_string()).with_delay(Duration::from_millis(30)),
-    )
-    .expect("delayed publish should be accepted before expiry");
+    let first_delay =
+        EventEnvelope::create(topic.clone(), "delayed-1".to_string()).with_delay(Duration::from_millis(30));
+    let first_id = first_delay.id().to_string();
+    let second_delay =
+        EventEnvelope::create(topic.clone(), "delayed-2".to_string()).with_delay(Duration::from_millis(40));
+    let second_id = second_delay.id().to_string();
+    bus.publish_envelope(first_delay)
+        .expect("first delay should be accepted");
+    bus.publish_envelope(second_delay)
+        .expect("second delay should be accepted");
 
-    assert_eq!(
-        received_rx
-            .recv_timeout(Duration::from_millis(250))
-            .expect("delayed event should still run after expiry"),
-        "delayed"
-    );
+    let first_error = error_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("first rejection should be observed");
+    let second_error = error_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second rejection should be observed");
+    let descriptions = [first_error.to_string(), second_error.to_string()];
+    assert!(descriptions.iter().any(|description| description.contains(&first_id)));
+    assert!(descriptions.iter().any(|description| description.contains(&second_id)));
+    assert!(received_rx.try_recv().is_err(), "rejected handlers must not run");
     release_gate(&release);
     assert_eq!(
         received_rx
@@ -1213,6 +1230,34 @@ fn test_delayed_delivery_runs_when_handler_queue_is_saturated_at_delay_expiry() 
         "second"
     );
     bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert!(error_rx.try_recv().is_err(), "each rejected delivery is observed once");
+}
+
+#[test]
+fn test_concurrent_subscribe_and_shutdown_never_retains_old_subscriptions() {
+    for iteration in 0..20 {
+        let bus = LocalEventBus::started().expect("bus should start");
+        let topic = create_topic(&format!("shutdown-subscribe-{iteration}"));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_bus = bus.clone();
+        let worker_topic = topic.clone();
+        let worker_barrier = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            worker_barrier.wait();
+            (0..20)
+                .filter_map(|index| worker_bus.subscribe(format!("sub-{index}"), &worker_topic, |_| ()).ok())
+                .collect::<Vec<_>>()
+        });
+        barrier.wait();
+        assert!(bus.shutdown());
+        let subscriptions = worker.join().expect("subscription worker should finish");
+        assert!(subscriptions.iter().all(|subscription| !subscription.is_active()));
+        assert!(bus.start().expect("restart should work after cleanup"));
+        bus.publish(&topic, "after-restart".to_string())
+            .expect("publish should work");
+        bus.wait_for_idle(&topic).expect("restarted topic should become idle");
+        assert!(bus.shutdown());
+    }
 }
 
 #[test]
@@ -1885,6 +1930,10 @@ fn test_retry_success_ignores_nack_from_failed_attempt() {
                     .nack();
                 Err(EventBusError::handler_failed("first attempt failed"))
             } else {
+                event
+                    .acknowledgement()
+                    .expect("second attempt should acknowledge")
+                    .ack();
                 Ok(())
             }
         },
@@ -2209,6 +2258,80 @@ fn test_manual_ack_is_exposed_to_handler() {
     assert_eq!(acknowledgements.len(), 1);
     assert!(acknowledgements[0].is_acked());
     assert!(!acknowledgements[0].is_nacked());
+}
+
+#[test]
+fn test_manual_pending_ack_retries_then_routes_dead_letter() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("manual-pending-retry");
+    let dead_letter_topic = create_dead_letter_topic("dlq.manual-pending-retry");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(AtomicUsize::new(0));
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+    let captured_attempts = Arc::clone(&attempts);
+    let captured_errors = Arc::clone(&errors);
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .retry_options(retry_options(2))
+        .error_handler(move |_, _, error, _| {
+            assert!(
+                matches!(error, EventBusError::HandlerFailed { message } if message == "manual acknowledgement missing")
+            );
+            captured_errors.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .dead_letter_strategy(standard_dead_letters_to(dead_letter_topic.clone()))
+        .build();
+    bus.subscribe_with_options(
+        "sub",
+        &topic,
+        move |event| {
+            assert!(!event.acknowledgement().expect("ack should exist").is_completed());
+            captured_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+        options,
+    )
+    .expect("subscription should register");
+    bus.subscribe("dlq", &dead_letter_topic, move |_| {
+        captured_dead_letters.fetch_add(1, Ordering::SeqCst);
+    })
+    .expect("dead-letter subscription should register");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    bus.wait_for_idle(&dead_letter_topic)
+        .expect("dead letters should become idle");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(errors.load(Ordering::SeqCst), 1);
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_manual_pending_ack_error_handler_can_suppress_dead_letter() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("manual-pending-handled");
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+    let captured_dead_letters = Arc::clone(&dead_letters);
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .error_handler(|_, _, error, acknowledgement| {
+            assert!(
+                matches!(error, EventBusError::HandlerFailed { message } if message == "manual acknowledgement missing")
+            );
+            acknowledgement.ack();
+            Ok(())
+        })
+        .dead_letter_strategy(move |_, _, _, _| {
+            captured_dead_letters.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
+        .build();
+    bus.subscribe_with_options("sub", &topic, |_| (), options)
+        .expect("subscription should register");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 0);
 }
 
 #[test]

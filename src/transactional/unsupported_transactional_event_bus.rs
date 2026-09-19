@@ -37,6 +37,11 @@ impl UnsupportedTransactionalEventBus {
 }
 
 impl EventBus for UnsupportedTransactionalEventBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     /// Unsupported placeholders never start.
     fn start(&self) -> EventBusResult<bool> {
         Ok(false)

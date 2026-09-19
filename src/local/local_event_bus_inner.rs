@@ -298,8 +298,12 @@ impl LocalEventBusInner {
             .lifecycle
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        if lifecycle.started {
-            return Ok(false);
+        match lifecycle.state {
+            LifecycleState::Started => return Ok(false),
+            LifecycleState::Stopping => {
+                return Err(EventBusError::start_failed("previous shutdown is still in progress"));
+            }
+            LifecycleState::Stopped => {}
         }
         if lifecycle.executor.is_some() || lifecycle.delay_scheduler.is_some() {
             return Err(EventBusError::start_failed(
@@ -319,7 +323,7 @@ impl LocalEventBusInner {
             .map_err(start_failed_from_thread_pool_error)?;
         lifecycle.executor = Some(executor);
         lifecycle.delay_scheduler = Some(delay_scheduler);
-        lifecycle.started = true;
+        lifecycle.state = LifecycleState::Started;
         Ok(true)
     }
 
@@ -331,10 +335,10 @@ impl LocalEventBusInner {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return false;
         };
-        if !lifecycle.started {
+        if lifecycle.state != LifecycleState::Started {
             return false;
         }
-        lifecycle.started = false;
+        lifecycle.state = LifecycleState::Stopping;
         true
     }
 
@@ -346,10 +350,10 @@ impl LocalEventBusInner {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
-        if !lifecycle.started {
+        if lifecycle.state != LifecycleState::Started {
             return None;
         }
-        lifecycle.started = false;
+        lifecycle.state = LifecycleState::Stopping;
         lifecycle.executor.take()
     }
 
@@ -376,6 +380,14 @@ impl LocalEventBusInner {
         lifecycle.delay_scheduler.take()
     }
 
+    /// Completes a shutdown after subscriptions and runtime resources are
+    /// cleared.
+    pub(crate) fn complete_shutdown(&self) {
+        if let Ok(mut lifecycle) = self.lifecycle.lock() {
+            lifecycle.state = LifecycleState::Stopped;
+        }
+    }
+
     /// Returns whether the bus is currently started.
     ///
     /// # Returns
@@ -383,7 +395,7 @@ impl LocalEventBusInner {
     pub(crate) fn is_started(&self) -> bool {
         self.lifecycle
             .lock()
-            .map(|lifecycle| lifecycle.started)
+            .map(|lifecycle| lifecycle.state == LifecycleState::Started)
             .unwrap_or(false)
     }
 
@@ -628,6 +640,26 @@ impl LocalEventBusInner {
         Ok(())
     }
 
+    /// Registers a subscription atomically with the lifecycle start check.
+    ///
+    /// # Errors
+    /// Returns `NotStarted` after shutdown begins or a lock error when state is
+    /// unavailable.
+    pub(crate) fn register_subscription_if_started(
+        &self,
+        topic_key: TopicKey,
+        subscription: Arc<dyn ErasedSubscription>,
+    ) -> EventBusResult<()> {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
+        if lifecycle.state != LifecycleState::Started {
+            return Err(EventBusError::not_started());
+        }
+        self.add_subscription(topic_key, subscription)
+    }
+
     /// Returns subscriptions for a topic key.
     ///
     /// # Parameters
@@ -829,16 +861,15 @@ impl LocalEventBusInner {
                 );
                 match result {
                     Ok(()) => {}
-                    Err(EventBusError::ExecutionRejected { .. }) => {
+                    Err(error) => {
                         let recovered_task = match task_for_delay.lock() {
                             Ok(mut task) => task.take(),
                             Err(_) => None,
                         };
                         if let Some(task) = recovered_task {
-                            task.run();
+                            task.reject(&error);
                         }
                     }
-                    Err(error) => bus.observe_error(&error),
                 }
             }
             Ok::<(), EventBusError>(())
@@ -967,12 +998,8 @@ impl LocalEventBusInner {
             if subscription_for_delay.is_active() {
                 match bus.submit_ordered_lane_runner(lane_key_for_delay.clone(), true) {
                     Ok(()) => {}
-                    Err(EventBusError::ExecutionRejected { .. }) => {
-                        Arc::clone(&bus).run_ordered_lane(lane_key_for_delay.clone());
-                    }
                     Err(error) => {
-                        bus.observe_error(&error);
-                        bus.cancel_ordered_lane(&lane_key_for_delay);
+                        bus.reject_ordered_lane(&lane_key_for_delay, &error);
                     }
                 }
             } else {
@@ -1195,8 +1222,7 @@ impl LocalEventBusInner {
                     match self.submit_ordered_lane_runner_after_delay(lane_key.clone(), delay, subscription_state) {
                         Ok(()) => guard.disarm(),
                         Err(error) => {
-                            self.observe_error(&error);
-                            self.cancel_ordered_lane(&lane_key);
+                            self.reject_ordered_lane(&lane_key, &error);
                             guard.disarm();
                         }
                     }
@@ -1223,6 +1249,25 @@ impl LocalEventBusInner {
         if let Some(mut lane) = removed_lane {
             let released = lane.release_all_queue_slots();
             self.release_ordered_queue_slots(released);
+        }
+    }
+
+    /// Rejects every accepted task in a lane after delayed executor admission
+    /// fails.
+    fn reject_ordered_lane(&self, lane_key: &OrderingLaneKey, cause: &EventBusError) {
+        let removed_lane = match self.ordering_lanes.lock() {
+            Ok(mut lanes) => lanes.remove(lane_key),
+            Err(_) => {
+                self.observe_error(&EventBusError::lock_poisoned("ordering_lanes"));
+                return;
+            }
+        };
+        if let Some(mut lane) = removed_lane {
+            let released = lane.release_all_queue_slots();
+            self.release_ordered_queue_slots(released);
+            for entry in lane.queued {
+                entry.task.reject(cause);
+            }
         }
     }
 
@@ -1257,7 +1302,7 @@ impl LocalEventBusInner {
 
 /// Returns the executor if the current lifecycle allows dispatch.
 fn executor_for_dispatch(lifecycle: &LocalEventBusLifecycle, allow_stopping: bool) -> EventBusResult<&FixedThreadPool> {
-    if !lifecycle.started && !allow_stopping {
+    if lifecycle.state != LifecycleState::Started && !(allow_stopping && lifecycle.state == LifecycleState::Stopping) {
         return Err(EventBusError::not_started());
     }
     lifecycle.executor.as_ref().ok_or_else(EventBusError::not_started)
@@ -1268,7 +1313,7 @@ fn delay_scheduler_for_dispatch(
     lifecycle: &LocalEventBusLifecycle,
     allow_stopping: bool,
 ) -> EventBusResult<&SingleThreadScheduledExecutorService> {
-    if !lifecycle.started && !allow_stopping {
+    if lifecycle.state != LifecycleState::Started && !(allow_stopping && lifecycle.state == LifecycleState::Stopping) {
         return Err(EventBusError::not_started());
     }
     lifecycle
@@ -1322,8 +1367,15 @@ where
 }
 
 /// Lifecycle state protected by the local event bus lifecycle lock.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LifecycleState {
+    Stopped,
+    Started,
+    Stopping,
+}
+
 struct LocalEventBusLifecycle {
-    started: bool,
+    state: LifecycleState,
     executor: Option<FixedThreadPool>,
     delay_scheduler: Option<SingleThreadScheduledExecutorService>,
 }
@@ -1335,7 +1387,7 @@ impl LocalEventBusLifecycle {
     /// Stopped lifecycle state.
     fn stopped() -> Self {
         Self {
-            started: false,
+            state: LifecycleState::Stopped,
             executor: None,
             delay_scheduler: None,
         }
@@ -1512,4 +1564,141 @@ impl ProcessingTracker {
 /// Remaining duration, or `None` when the timeout has elapsed.
 fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
     timeout.checked_sub(started_at.elapsed())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
+    use std::thread;
+
+    use super::LocalEventBusInner;
+    use super::OrderedProcessingLane;
+    use crate::EventBusError;
+    use crate::EventBusResult;
+    use crate::LocalEventBus;
+    use crate::Topic;
+    use crate::local::erased_subscription::ErasedSubscription;
+    use crate::local::ordering_lane_key::OrderingLaneKey;
+    use crate::local::processing_task::DeliveryContext;
+    use crate::local::processing_task::ProcessingTask;
+
+    struct TestSubscription;
+
+    impl ErasedSubscription for TestSubscription {
+        fn id(&self) -> usize {
+            1
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+        fn deactivate(&self) {}
+        fn dispatch(
+            &self,
+            _envelope: Box<dyn Any + Send>,
+            _bus: Arc<LocalEventBusInner>,
+            _allow_stopping: bool,
+        ) -> EventBusResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Registration after the shutdown transition must not revive a cleared
+    /// subscription.
+    #[test]
+    fn test_registration_rejects_after_shutdown_clears_subscriptions() {
+        let bus = LocalEventBus::started().expect("bus should start");
+        let topic = Topic::<String>::try_new("shutdown-registration").expect("topic should build");
+        assert!(bus.inner.is_started());
+        assert!(bus.inner.mark_stopping());
+        bus.inner.clear_subscriptions();
+        let result = bus
+            .inner
+            .register_subscription_if_started(topic.key(), Arc::new(TestSubscription));
+        assert!(matches!(result, Err(EventBusError::NotStarted)));
+        assert!(
+            bus.inner
+                .subscriptions_for(&topic.key())
+                .expect("lookup should work")
+                .is_empty()
+        );
+    }
+
+    /// A cancellation that fails to remove storage must remain retryable.
+    #[test]
+    fn test_failed_unsubscribe_keeps_handle_active() {
+        let bus = LocalEventBus::started().expect("bus should start");
+        let topic = Topic::<String>::try_new("poisoned-unsubscribe").expect("topic should build");
+        let handle = bus
+            .subscribe("sub", &topic, |_| ())
+            .expect("subscription should register");
+        let inner = Arc::clone(&bus.inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = inner
+                    .subscriptions
+                    .lock()
+                    .expect("subscriptions lock should be available");
+                panic!("poison subscriptions lock for cancellation test");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(handle.cancel().is_err());
+        assert!(handle.is_active(), "failed cancellation must remain retryable");
+    }
+
+    /// Restart is forbidden until shutdown finalization clears the state.
+    #[test]
+    fn test_start_rejects_stopping_state() {
+        let bus = LocalEventBus::started().expect("bus should start");
+        assert!(bus.inner.mark_stopping());
+        assert!(matches!(bus.start(), Err(EventBusError::StartFailed { .. })));
+    }
+
+    /// A rejected ordered lane reports each accepted delivery and releases
+    /// every slot.
+    #[test]
+    fn test_rejected_ordered_lane_reports_every_delivery() {
+        let bus = LocalEventBus::started().expect("bus should start");
+        let topic = Topic::<String>::try_new("ordered-rejection").expect("topic should build");
+        let topic_key = topic.key();
+        let lane_key = OrderingLaneKey::new(topic_key.clone(), "same-key", 1);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&errors);
+        bus.add_error_observer(move |error| {
+            captured.lock().expect("errors should lock").push(error.to_string());
+        })
+        .expect("observer should register");
+        let mut lane = OrderedProcessingLane::new();
+        for (event_id, reserved) in [("event-1", false), ("event-2", true)] {
+            bus.inner.start_processing(&topic_key).expect("tracking should start");
+            let context = DeliveryContext {
+                event_id: event_id.to_string(),
+                topic_name: topic.name().to_string(),
+                subscriber_id: "sub".to_string(),
+            };
+            lane.push(
+                ProcessingTask::with_delivery_context(Arc::clone(&bus.inner), topic_key.clone(), context, || {}),
+                reserved,
+            );
+        }
+        bus.inner.ordered_queued_task_count.store(1, Ordering::SeqCst);
+        bus.inner
+            .ordering_lanes
+            .lock()
+            .expect("lanes should lock")
+            .insert(lane_key.clone(), lane);
+        bus.inner
+            .reject_ordered_lane(&lane_key, &EventBusError::execution_rejected("queue full"));
+        let errors = errors.lock().expect("errors should lock");
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|error| error.contains("event-1")));
+        assert!(errors.iter().any(|error| error.contains("event-2")));
+        assert_eq!(bus.inner.ordered_queued_task_count.load(Ordering::SeqCst), 0);
+        bus.wait_for_idle(&topic)
+            .expect("rejected tasks should release idle accounting");
+    }
 }

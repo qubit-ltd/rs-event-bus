@@ -68,6 +68,7 @@ pub use subscribe_options::prefixed_dead_letters;
 pub use subscribe_options::standard_dead_letters_to;
 pub use subscribe_options_builder::SubscribeOptionsBuilder;
 pub use subscription::Subscription;
+pub use subscription::SubscriptionHandle;
 pub(crate) use subscription::SubscriptionState;
 pub use topic::Topic;
 pub use topic_key::TopicKey;
