@@ -33,7 +33,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.10"
+qubit-event-bus = "0.11"
 ```
 
 ## 快速开始
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 创建事件总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
 | 定义类型安全 Topic | `Topic::<T>::try_new` |
 | 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`publish_all`、`publish_all_with_options`、`BatchPublishResult` |
-| 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription` |
+| 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription`、`SubscriptionHandle` |
 | 配置重试和确认 | `RetryPolicy`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
 | 配置发布拦截器 | `LocalEventBusFactory::add_publisher_interceptor`、`LocalEventBusFactory::add_global_publisher_interceptor`、`PublisherInterceptor`、`PublisherInterceptorAny` |
 | 配置订阅拦截器 | `LocalEventBusFactory::add_subscriber_interceptor`、`LocalEventBusFactory::add_global_subscriber_interceptor`、`SubscriberInterceptor`、`SubscriberInterceptorAny` |
@@ -87,7 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | 类型 | 用途 |
 | --- | --- |
-| `EventBus` | 具体后端共享的事件总线契约。 |
+| `EventBus` | 通过关联类型 `Subscription<T>` 返回后端自有句柄的通用契约。 |
+| `SubscriptionHandle<T>` | 后端自有句柄的通用查看与取消契约。 |
 | `EventBusFactory` | 后端创建和默认配置的通用工厂契约。 |
 | `LocalEventBus` | 线程安全的进程内事件总线实现。 |
 | `LocalEventBusFactory` | 使用类型化默认发布配置、订阅配置、拦截器，以及类型级或全局死信策略创建事件总线。 |
@@ -111,6 +112,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 项目范围
 
 - `qubit-event-bus` 是进程内事件总线，不负责事件持久化或跨进程投递。
+- 外部 `EventBus` 实现可声明自己的 `Subscription<T>: SubscriptionHandle<T>`；`LocalEventBus` 的固有方法仍返回本地 `Subscription<T>`。丢弃句柄不会自动取消订阅。
+- 订阅注册与关闭共用生命周期边界：关闭开始后拒绝新订阅，清理结束前拒绝重新启动。
 - 订阅处理器会在可配置的 `rs-thread-pool` 固定工作线程池中执行。发布操作会在调度处理器工作后返回。
 - 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
 - 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档记录。
@@ -118,10 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 订阅级死信策略返回 `Ok(None)` 时，会禁用本次失败投递对 factory 默认死信策略的回退。若订阅级和类型级默认策略都不存在，本地 factory 可以使用全局默认死信策略。
 - 拦截器在 `LocalEventBusFactory` 上配置，并在创建 bus 前固定下来。`LocalEventBus` 不再提供运行时 interceptor 变更入口；运行时错误观测使用 `add_error_observer`。
 - 显式传入的发布和订阅配置会与类型级 factory 默认配置合并。确认模式、优先级等订阅标量配置只有在 builder 中显式设置时才覆盖默认值。
-- 手动 NACK 会被视为订阅处理失败，并先参与订阅重试；重试耗尽后才进入错误处理器和死信路由。
+- 使用 `AckMode::Manual` 时，handler 必须在返回前 ACK 或 NACK。NACK、以及返回 `Ok` 但未作确认决策，都会作为处理失败先参与重试，终态再进入错误处理器和死信路由。handler 返回后才 ACK 无法改变已完成投递的结果。
 - 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
 - `publish_all` 会按输入顺序提交 envelope，并返回包含 accepted、dropped 和 failed 计数的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
-- `delay` 会让本地订阅处理至少推迟指定时长。延迟等待由 `rs-executor` 的 `SingleThreadScheduledExecutorService` 调度，不占用本地处理器 worker，到期后才提交处理器执行。
+- `delay` 会让本地订阅处理至少推迟指定时长，等待期间不占用处理器 worker。若到期时工作队列拒绝移交，handler 不会运行；每条受影响投递通过 `add_error_observer` 发出带事件 ID、主题名和订阅者 ID 的 `ExecutionRejected`，随后计入 idle。有序 lane 被拒绝时会逐条报告已接纳投递。发布成功不保证最终送达。
 - 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
 - `LocalEventBus` 接受 retry policy 的限额、退避和显式订阅重试取消令牌，但不提供 attempt/flow 硬超时，也不会打断正在运行的同步 handler。
 - 重试转换会保留结构化的超时、取消、回调失败和基础设施终态，以及最后一次尝试失败（包括业务错误）。读取对应的 `EventBusError` 结构体及其 `last_failure`，不要假设业务错误总会被直接返回。
@@ -160,7 +163,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 需要新令牌。该配置只作用于订阅重试，不改变发布重试。`shutdown` 和取消订阅不会自动取消令牌，
 graceful shutdown 仍会排空已调度工作；如果应用希望停机时终止重试，必须显式取消其令牌。
 
-## 下一版本迁移说明
+## 从 0.10 迁移到 0.11
+
+泛型 `EventBus` 实现现在必须声明 `type Subscription<T>`，其返回类型需实现
+`SubscriptionHandle<T>`。原先在泛型 `EventBus` 代码中写死本地
+`Subscription<T>` 返回类型的地方，应改为 `B::Subscription<T>`。
+`LocalEventBus` 的固有方法仍返回原来的具体句柄。
+
+使用 `AckMode::Manual` 时，返回 `Ok` 却没有 ACK/NACK 现在会作为 handler
+失败参与重试与死信路由。需要成功投递时应在返回前 ACK。延迟投递到期时若工作队列
+拒绝移交，现在会向错误观察器报告并丢弃；调度线程不会代替 worker 执行 handler。
+如果应用需要监测此类丢失，应注册错误观察器。
+
+## 0.10 的历史迁移说明
 
 四类控制终态（`RetryTimedOut`、`RetryCancelled`、`RetryCallbackFailed` 和
 `RetryInfrastructureFailed`）会保留 `last_failure`，其中也可能是业务错误。

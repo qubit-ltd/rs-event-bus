@@ -33,7 +33,7 @@ Use `qubit-event-bus` when you need:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.10"
+qubit-event-bus = "0.11"
 ```
 
 ## Quick Start
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Create an event bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
 | Define a type-safe topic | `Topic::<T>::try_new` |
 | Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
-| Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
+| Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription`, `SubscriptionHandle` |
 | Configure retries and acknowledgements | `RetryPolicy`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
 | Configure publisher interceptors | `LocalEventBusFactory::add_publisher_interceptor`, `LocalEventBusFactory::add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
 | Configure subscriber interceptors | `LocalEventBusFactory::add_subscriber_interceptor`, `LocalEventBusFactory::add_global_subscriber_interceptor`, `SubscriberInterceptor`, `SubscriberInterceptorAny` |
@@ -87,7 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Type | Purpose |
 | --- | --- |
-| `EventBus` | Common event bus contract for concrete backends. |
+| `EventBus` | Common event bus contract with a backend-owned `Subscription<T>` associated type. |
+| `SubscriptionHandle<T>` | Common inspection and cancellation contract for backend-owned handles. |
 | `EventBusFactory` | Common factory contract for backend creation and default configuration. |
 | `LocalEventBus` | Thread-safe in-process event bus implementation. |
 | `LocalEventBusFactory` | Creates buses with typed default publish options, subscribe options, interceptors, and typed or global dead-letter strategies. |
@@ -111,6 +112,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Project Scope
 
 - `qubit-event-bus` is an in-process event bus. It does not persist events or provide cross-process delivery.
+- External `EventBus` implementations declare their own `Subscription<T>: SubscriptionHandle<T>`; `LocalEventBus` methods return the local `Subscription<T>`. Dropping a handle does not unsubscribe it.
+- Subscription registration and shutdown are ordered by one lifecycle boundary: once shutdown begins, new registration and restart are rejected until cleanup completes.
 - Subscriber handlers run on a configurable `rs-thread-pool` fixed worker pool. Publishing schedules handler work and returns after dispatch.
 - Payloads must be `Clone + Send + Sync + 'static` when published through `LocalEventBus`.
 - Dead-letter strategies return `EventEnvelope<DeadLetterPayload>` so one dead-letter topic can receive archived records from multiple source event types.
@@ -118,10 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - A subscription-level dead-letter strategy that returns `Ok(None)` disables fallback to a factory default strategy for that failed delivery. If no subscription or typed default strategy is configured, the local factory can use a global default dead-letter strategy.
 - Interceptors are configured on `LocalEventBusFactory` before creating a bus. Runtime interceptor mutation is intentionally not part of `LocalEventBus`; use `add_error_observer` for runtime error observation.
 - Explicit publish and subscribe options are merged with type-level factory defaults. Scalar subscribe settings such as acknowledgement mode and priority override defaults only when explicitly set through the builder.
-- Manual NACK is treated as subscriber failure and participates in subscriber retry before error handlers or dead-letter routing run.
+- With `AckMode::Manual`, handlers must ACK or NACK before returning. NACK or a successful return with no decision is a handler failure and participates in retry before error handlers or dead-letter routing run. An ACK after the handler returns cannot change the completed delivery.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
 - `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
-- `delay` defers local subscriber handling for at least the requested duration. Delayed work is scheduled by `rs-executor`'s `SingleThreadScheduledExecutorService` and does not occupy handler workers while waiting.
+- `delay` defers local subscriber handling for at least the requested duration. Delayed work does not occupy handler workers while waiting. If the worker queue rejects it at expiry, the handler does not run; each affected delivery emits an `ExecutionRejected` error with its event ID, topic, and subscriber ID through `add_error_observer`, then becomes idle. A rejected ordered lane reports every accepted delivery in that lane. Publishing successfully does not guarantee eventual delivery.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
 - `LocalEventBus` accepts retry policy limits, backoff settings, and an explicit subscriber retry cancellation token. It does not expose hard attempt or flow timeouts or interrupt a running synchronous handler.
 - Retry conversion preserves structured timeout, cancellation, callback, and infrastructure terminals together with the last attempt failure, including a retained business error. Inspect the structured `EventBusError` variant and its `last_failure` field instead of assuming every business error is returned directly.
@@ -172,7 +175,21 @@ setting applies only to subscriber retry flows; publish retry is unchanged.
 shutdown still drains scheduled work. The application must explicitly cancel
 its token if that is the intended shutdown policy.
 
-## Migration notes for the next release
+## Migrating from 0.10 to 0.11
+
+Generic `EventBus` implementations now declare `type Subscription<T>` with a
+`SubscriptionHandle<T>` implementation. Code that used the concrete
+`Subscription<T>` as a generic `EventBus` return type must use
+`B::Subscription<T>` instead. `LocalEventBus` continues to return the concrete
+handle from its inherent methods.
+
+With `AckMode::Manual`, returning `Ok` without ACK/NACK is now a handler failure
+that can be retried and routed to a dead-letter topic. ACK before returning to
+mark success. A delayed delivery rejected by the worker queue at expiry is now
+reported to error observers and discarded; the scheduler does not run its
+handler. Register an error observer if these losses must be monitored.
+
+## Historical migration notes for 0.10
 
 The four control terminals (`RetryTimedOut`, `RetryCancelled`,
 `RetryCallbackFailed`, and `RetryInfrastructureFailed`) retain their
