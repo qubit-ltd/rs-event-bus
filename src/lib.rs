@@ -49,6 +49,7 @@ pub use core::PublishOptionsBuilder;
 pub use core::SubscribeOptions;
 pub use core::SubscribeOptionsBuilder;
 pub use core::Subscription;
+pub use core::SubscriptionHandle;
 pub use core::Topic;
 pub use core::TopicKey;
 #[cfg(coverage)]

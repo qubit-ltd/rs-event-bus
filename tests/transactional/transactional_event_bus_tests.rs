@@ -40,6 +40,11 @@ impl TransactionalPublisher for RecordingPublisher {
 }
 
 impl EventBus for RecordingTransactionalBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     fn start(&self) -> EventBusResult<bool> {
         Ok(true)
     }

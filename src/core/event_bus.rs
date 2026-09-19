@@ -16,7 +16,6 @@ use crate::EventEnvelope;
 use crate::IntoEventBusResult;
 use crate::PublishOptions;
 use crate::SubscribeOptions;
-use crate::Subscription;
 use crate::Topic;
 
 /// Failure captured while best-effort batch publishing continues.
@@ -153,6 +152,11 @@ impl BatchPublishResult {
 /// error can be returned after earlier subscriber work has already been
 /// accepted.
 pub trait EventBus: Clone + Send + Sync + 'static {
+    /// Handle returned by this backend for subscriptions of payload `T`.
+    type Subscription<T>: crate::SubscriptionHandle<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     /// Starts the event bus.
     ///
     /// # Returns
@@ -313,7 +317,12 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns backend-specific subscription errors.
-    fn subscribe<T, S, F, R>(&self, subscriber_id: S, topic: &Topic<T>, handler: F) -> EventBusResult<Subscription<T>>
+    fn subscribe<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        handler: F,
+    ) -> EventBusResult<Self::Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -342,7 +351,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         topic: &Topic<T>,
         handler: F,
         options: SubscribeOptions<T>,
-    ) -> EventBusResult<Subscription<T>>
+    ) -> EventBusResult<Self::Subscription<T>>
     where
         T: Clone + Send + Sync + 'static,
         S: Into<String>,
@@ -369,7 +378,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         dead_letter_topic: &Topic<DeadLetterPayload>,
         handler: F,
         options: SubscribeOptions<DeadLetterPayload>,
-    ) -> EventBusResult<Subscription<DeadLetterPayload>>
+    ) -> EventBusResult<Self::Subscription<DeadLetterPayload>>
     where
         F: Fn(EventEnvelope<DeadLetterPayload>) -> R + Send + Sync + 'static,
         R: IntoEventBusResult + 'static,

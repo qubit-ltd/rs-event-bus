@@ -42,6 +42,48 @@ pub struct Subscription<T: 'static> {
     pub(crate) bus: Weak<LocalEventBusInner>,
 }
 
+/// Backend-independent operations available on a subscription handle.
+///
+/// Backends implementing [`crate::EventBus`] may return their own handle type.
+/// Dropping a handle does not cancel a subscription; call [`Self::cancel`].
+pub trait SubscriptionHandle<T: Clone + Send + Sync + 'static>: Send + Sync {
+    /// Returns the subscriber identifier supplied at registration.
+    fn subscriber_id(&self) -> &str;
+
+    /// Returns the subscribed topic.
+    fn topic(&self) -> &Topic<T>;
+
+    /// Returns the effective subscription options.
+    fn options(&self) -> &SubscribeOptions<T>;
+
+    /// Returns whether the subscription remains active.
+    fn is_active(&self) -> bool;
+
+    /// Cancels this subscription; repeated successful calls are harmless.
+    ///
+    /// # Errors
+    /// Returns a backend-specific error when cancellation cannot complete.
+    fn cancel(&self) -> EventBusResult<()>;
+}
+
+impl<T: Clone + Send + Sync + 'static> SubscriptionHandle<T> for Subscription<T> {
+    fn subscriber_id(&self) -> &str {
+        Self::subscriber_id(self)
+    }
+    fn topic(&self) -> &Topic<T> {
+        Self::topic(self)
+    }
+    fn options(&self) -> &SubscribeOptions<T> {
+        Self::options(self)
+    }
+    fn is_active(&self) -> bool {
+        Self::is_active(self)
+    }
+    fn cancel(&self) -> EventBusResult<()> {
+        Self::cancel(self)
+    }
+}
+
 impl<T: 'static> Subscription<T> {
     /// Returns subscriber ID.
     ///
@@ -80,11 +122,13 @@ impl<T: 'static> Subscription<T> {
     /// # Returns
     /// `Ok(())` when the subscription is cancelled or was already inactive.
     pub fn cancel(&self) -> EventBusResult<()> {
-        if self.active.deactivate()
-            && let Some(bus) = self.bus.upgrade()
-        {
+        if !self.active.is_active() {
+            return Ok(());
+        }
+        if let Some(bus) = self.bus.upgrade() {
             bus.unsubscribe(&self.topic_key, self.id)?;
         }
+        self.active.deactivate();
         Ok(())
     }
 }

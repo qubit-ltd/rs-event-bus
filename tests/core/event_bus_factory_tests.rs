@@ -24,6 +24,11 @@ struct FailingStartBus;
 struct SuccessfulStartBus;
 
 impl EventBus for FailingStartBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     fn start(&self) -> EventBusResult<bool> {
         Err(EventBusError::start_failed("start failed"))
     }
@@ -75,6 +80,11 @@ impl EventBus for FailingStartBus {
 }
 
 impl EventBus for SuccessfulStartBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     fn start(&self) -> EventBusResult<bool> {
         Ok(true)
     }

@@ -10,6 +10,7 @@
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -31,11 +32,116 @@ use qubit_event_bus::SubscribeOptions;
 use qubit_event_bus::SubscriberInterceptorAnyChain;
 use qubit_event_bus::SubscriberInterceptorChain;
 use qubit_event_bus::Subscription;
+use qubit_event_bus::SubscriptionHandle;
 use qubit_event_bus::Topic;
 use qubit_event_bus::TransactionalEventBus;
 use qubit_event_bus::TransactionalPublisher;
 use qubit_event_bus::UnsupportedTransactionalEventBus;
 use qubit_event_bus::UnsupportedTransactionalPublisher;
+
+struct ForeignSubscription<T: Clone + Send + Sync + 'static> {
+    subscriber_id: String,
+    topic: Topic<T>,
+    options: SubscribeOptions<T>,
+    active: AtomicBool,
+}
+
+impl<T: Clone + Send + Sync + 'static> SubscriptionHandle<T> for ForeignSubscription<T> {
+    fn subscriber_id(&self) -> &str {
+        &self.subscriber_id
+    }
+    fn topic(&self) -> &Topic<T> {
+        &self.topic
+    }
+    fn options(&self) -> &SubscribeOptions<T> {
+        &self.options
+    }
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+    fn cancel(&self) -> EventBusResult<()> {
+        self.active.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ForeignBus;
+
+impl EventBus for ForeignBus {
+    type Subscription<T>
+        = ForeignSubscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
+    fn start(&self) -> EventBusResult<bool> {
+        Ok(true)
+    }
+    fn shutdown(&self) -> bool {
+        true
+    }
+
+    fn publish_envelope_with_options<T>(
+        &self,
+        _envelope: EventEnvelope<T>,
+        _options: PublishOptions<T>,
+    ) -> EventBusResult<()>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Ok(())
+    }
+
+    fn subscribe_with_options<T, S, F, R>(
+        &self,
+        subscriber_id: S,
+        topic: &Topic<T>,
+        _handler: F,
+        options: SubscribeOptions<T>,
+    ) -> EventBusResult<Self::Subscription<T>>
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(EventEnvelope<T>) -> R + Send + Sync + 'static,
+        R: IntoEventBusResult + 'static,
+    {
+        Ok(ForeignSubscription {
+            subscriber_id: subscriber_id.into(),
+            topic: topic.clone(),
+            options,
+            active: AtomicBool::new(true),
+        })
+    }
+
+    fn wait_for_idle<T>(&self, _topic: &Topic<T>) -> EventBusResult<()>
+    where
+        T: 'static,
+    {
+        Ok(())
+    }
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
+    where
+        T: 'static,
+    {
+        Ok(true)
+    }
+}
+
+/// An external backend can own and cancel its own subscription handle.
+#[test]
+fn test_foreign_backend_owns_subscription_handle() {
+    let topic = Topic::<String>::try_new("foreign").expect("topic should build");
+    let bus = ForeignBus;
+    let subscription =
+        EventBus::subscribe(&bus, "foreign-sub", &topic, |_| ()).expect("foreign subscription should register");
+    assert_eq!(subscription.subscriber_id(), "foreign-sub");
+    assert_eq!(subscription.topic(), &topic);
+    assert_eq!(subscription.options().priority(), 0);
+    assert!(subscription.is_active());
+    subscription.cancel().expect("first cancellation should succeed");
+    subscription.cancel().expect("second cancellation should succeed");
+    assert!(!subscription.is_active());
+}
 
 #[derive(Clone, Default)]
 struct DefaultingEventBus {
@@ -51,6 +157,11 @@ impl DefaultingEventBus {
 }
 
 impl EventBus for DefaultingEventBus {
+    type Subscription<T>
+        = Subscription<T>
+    where
+        T: Clone + Send + Sync + 'static;
+
     fn start(&self) -> EventBusResult<bool> {
         self.start_count.fetch_add(1, Ordering::SeqCst);
         Ok(true)
