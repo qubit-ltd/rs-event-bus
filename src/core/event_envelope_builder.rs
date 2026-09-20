@@ -21,6 +21,20 @@ use crate::EventEnvelope;
 use crate::Topic;
 
 /// Builder used to create [`EventEnvelope`] values with optional metadata.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{EventEnvelope, Topic};
+///
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// let envelope = EventEnvelope::builder()
+///     .topic(topic)
+///     .payload("order-1001".to_string())
+///     .build()
+///     .unwrap();
+/// assert_eq!(envelope.payload(), "order-1001");
+/// ```
 #[derive(Debug)]
 pub struct EventEnvelopeBuilder<T: 'static> {
     pub(crate) id: String,

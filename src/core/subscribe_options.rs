@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
 //! Options controlling event subscription.
 
 use std::panic;
@@ -255,6 +256,17 @@ where
 }
 
 /// Immutable options applied to subscriber processing.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{AckMode, SubscribeOptions};
+///
+/// let options = SubscribeOptions::<String>::builder()
+///     .ack_mode(AckMode::Manual)
+///     .build();
+/// assert_eq!(options.ack_mode(), AckMode::Manual);
+/// ```
 pub struct SubscribeOptions<T: 'static> {
     pub(crate) ack_mode: AckMode,
     pub(crate) ack_mode_configured: bool,

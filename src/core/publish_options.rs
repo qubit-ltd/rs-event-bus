@@ -23,6 +23,15 @@ pub(crate) type PublishErrorHandlerFn<T> =
     dyn Fn(&EventEnvelope<T>, &EventBusError) -> EventBusResult<()> + Send + Sync + 'static;
 
 /// Immutable options applied when publishing events.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::PublishOptions;
+///
+/// let options = PublishOptions::<String>::builder().build();
+/// assert_eq!(options.error_handler_count(), 0);
+/// ```
 pub struct PublishOptions<T: 'static> {
     pub(crate) retry_options: Option<RetryPolicy>,
     pub(crate) retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,

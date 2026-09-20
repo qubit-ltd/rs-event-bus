@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
 //! Standard event envelope.
 
 use std::collections::HashMap;
@@ -20,6 +21,16 @@ use crate::Topic;
 static NEXT_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Standard message structure flowing through the event bus.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{EventEnvelope, Topic};
+///
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// let envelope = EventEnvelope::create(topic, "order-1001".to_string());
+/// assert_eq!(envelope.payload(), "order-1001");
+/// ```
 #[derive(Debug, Clone)]
 pub struct EventEnvelope<T: 'static> {
     id: String,
@@ -34,6 +45,8 @@ pub struct EventEnvelope<T: 'static> {
 }
 
 /// Type-erased event metadata exposed to global interceptors.
+///
+/// Metadata is normally obtained from [`EventEnvelope::metadata`].
 #[derive(Debug, Clone)]
 pub struct EventEnvelopeMetadata {
     id: String,

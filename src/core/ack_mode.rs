@@ -8,6 +8,15 @@
 //! Message acknowledgement modes.
 
 /// Controls how subscriber handlers acknowledge event processing.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::AckMode;
+///
+/// assert_eq!(AckMode::default(), AckMode::Auto);
+/// assert_eq!(AckMode::Manual, AckMode::Manual);
+/// ```
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash)]
 pub enum AckMode {
     /// A handler success automatically acknowledges the event.

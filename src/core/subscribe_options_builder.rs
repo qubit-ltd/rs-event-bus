@@ -27,6 +27,17 @@ use crate::IntoEventBusResult;
 use crate::SubscribeOptions;
 
 /// Builder used to create [`SubscribeOptions`].
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{AckMode, SubscribeOptions};
+///
+/// let options = SubscribeOptions::<String>::builder()
+///     .ack_mode(AckMode::Manual)
+///     .build();
+/// assert_eq!(options.ack_mode(), AckMode::Manual);
+/// ```
 pub struct SubscribeOptionsBuilder<T: 'static> {
     ack_mode: AckMode,
     ack_mode_configured: bool,

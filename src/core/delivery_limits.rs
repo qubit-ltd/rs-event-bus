@@ -2,6 +2,8 @@
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Limits controlling local subscriber delivery admission and execution queues.
 
@@ -12,6 +14,15 @@ use crate::EventBusResult;
 pub const DEFAULT_MAX_IN_FLIGHT_DELIVERIES: usize = 4096;
 
 /// Independent limits for subscriber delivery admission and handler execution.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::DeliveryLimits;
+///
+/// let limits = DeliveryLimits::bounded(128, Some(32));
+/// assert_eq!(limits.max_in_flight(), 128);
+/// ```
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DeliveryLimits {
     max_in_flight: usize,
