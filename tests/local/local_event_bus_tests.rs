@@ -1784,6 +1784,41 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
 }
 
 #[test]
+fn test_global_publisher_interceptors_run_before_typed_interceptors() {
+    let mut factory = LocalEventBusFactory::new();
+    factory
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
+            metadata.with_header("order", "global")
+        })
+        .expect("global publisher interceptor should register");
+    factory
+        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
+            let previous = event.headers().get("order").cloned().unwrap_or_default();
+            Some(event.with_header("order", format!("{previous}->typed")))
+        })
+        .expect("typed publisher interceptor should register");
+    let bus = factory.create_started().expect("bus should start");
+    let topic = create_topic("publisher-interceptor-order");
+    let (event_sender, event_receiver) = mpsc::channel();
+    bus.subscribe("sub", &topic, move |event| {
+        event_sender.send(event).expect("event should send");
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_owned())
+        .expect("publish should work");
+
+    let event = event_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("subscriber should receive event");
+    assert_eq!(
+        event.headers().get("order").map(String::as_str),
+        Some("global->typed")
+    );
+    bus.wait_for_idle(&topic).expect("topic should become idle");
+}
+
+#[test]
 fn test_global_publisher_interceptor_error_is_reported_to_publish_error_handling() {
     let mut factory = LocalEventBusFactory::new();
     factory
@@ -4365,6 +4400,32 @@ fn test_shutdown_with_timeout_reports_active_handler_timeout() {
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
     assert!(!bus.shutdown());
+}
+
+#[test]
+fn test_shutdown_with_timeout_from_own_worker_returns_timeout() {
+    let bus = LocalEventBus::started().expect("bus should start");
+    let topic = create_topic("shutdown-timeout-own-worker");
+    let handler_bus = bus.clone();
+    let (result_sender, result_receiver) = mpsc::channel();
+    bus.subscribe("sub", &topic, move |_event| {
+        result_sender
+            .send(handler_bus.shutdown_with_timeout(Duration::from_millis(10)))
+            .expect("shutdown result should send");
+    })
+    .expect("subscription should register");
+
+    bus.publish(&topic, "payload".to_owned())
+        .expect("publish should start handler work");
+
+    let result = result_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("handler should report timed shutdown result");
+    assert!(matches!(
+        result,
+        Err(EventBusError::ShutdownTimedOut { .. })
+    ));
+    bus.wait_for_idle(&topic).expect("topic should become idle");
 }
 
 #[test]
