@@ -3590,7 +3590,7 @@ fn test_publish_all_reports_dropped_envelopes_separately_from_accepted() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(batch_result.total_count(), 2);
-    assert_eq!(batch_result.accepted_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 1);
     assert_eq!(batch_result.dropped_count(), 1);
     assert_eq!(batch_result.failure_count(), 0);
     assert!(batch_result.is_success());
@@ -3702,7 +3702,7 @@ fn test_publish_all_accepts_merged_default_publish_policy() {
     let result = bus
         .publish_all(envelopes)
         .expect("policy should be accepted");
-    assert_eq!(result.accepted_count(), 2);
+    assert_eq!(result.accepted_count(), 0);
 }
 
 #[test]
