@@ -17,6 +17,13 @@ pub enum DeadLetterOutcome {
     DroppedByStrategy,
     /// A dead-letter publish returned its admission receipt.
     Publication(PublishReceipt),
+    /// A dead-letter publish returned a receipt with one or more rejected
+    /// subscriber deliveries.
+    ///
+    /// The receipt is retained so observers can inspect the per-subscriber
+    /// rejection causes without conflating admission failure with successful
+    /// dead-letter publication.
+    Rejected(PublishReceipt),
     /// Dead-letter creation or publication failed before a receipt existed.
     Failed(EventBusError),
 }
