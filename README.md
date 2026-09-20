@@ -12,7 +12,7 @@ Documentation: [API Reference](https://docs.rs/qubit-event-bus)
 
 `qubit-event-bus` is a lightweight, thread-safe, in-process event bus for Rust applications.
 
-It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, factory-configured typed and global interceptors, best-effort batch results, transactional staged-event contracts, and dead-letter records with `qubit-metadata` diagnostics.
+It provides type-safe topics, event envelopes, subscriber options, publish options, `qubit-retry` retry policies, acknowledgement handles, publish receipts, delivery-failure observers, factory-configured typed and global interceptors, best-effort batch results, transactional staged-event contracts, and dead-letter records with `qubit-metadata` diagnostics.
 
 ## Why Use It
 
@@ -28,6 +28,8 @@ Use `qubit-event-bus` when you need:
 - typed and global default dead-letter strategies
 - heterogeneous staged-event contracts for transactional backends
 - deterministic test synchronization through `wait_for_idle`
+- per-subscriber admission receipts from every publish call
+- terminal delivery failure reports after retry, error handling, and dead-letter routing
 
 ## Installation
 
@@ -71,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | Create an event bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
 | Define a type-safe topic | `Topic::<T>::try_new` |
-| Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
+| Publish payloads or envelopes | `publish`, `publish_with_options`, `publish_envelope`, `publish_envelope_with_options`, `PublishReceipt`, `publish_all`, `publish_all_with_options`, `BatchPublishResult` |
 | Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription`, `SubscriptionHandle` |
 | Configure retries and acknowledgements | `RetryPolicy`, `SubscribeOptions`, `AckMode`, `Acknowledgement` |
 | Configure publisher interceptors | `LocalEventBusFactory::add_publisher_interceptor`, `LocalEventBusFactory::add_global_publisher_interceptor`, `PublisherInterceptor`, `PublisherInterceptorAny` |
@@ -79,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Attach publish error handling | `PublishOptions` |
 | Consume dead-letter events | `add_dead_letter_handler`, `DeadLetterPayload`, `standard_dead_letters_to`, `discard_dead_letters` |
 | Observe internal callback failures | `add_error_observer` |
+| Observe terminal delivery failures | `add_delivery_failure_observer`, `DeliveryFailure`, `DeadLetterOutcome` |
 | Model transactional batches | `TransactionalEventBus`, `TransactionalPublisher`, `StagedEvent`, `StagedEventEnvelope` |
 | Wait for scheduled handler work in tests | `wait_for_idle`, `wait_for_idle_timeout` |
 | Shut down a local bus | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout` |
@@ -102,6 +105,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `SubscriberInterceptor<T>` | Public around-style interceptor contract for subscriber handling. |
 | `SubscriberInterceptorAny` | Global subscriber interceptor contract for metadata-only wrapping. |
 | `BatchPublishResult` | Best-effort batch summary with accepted, dropped, and failed counts. |
+| `PublishReceipt` | Per-event result with the dispatched ID and one admission status for each subscriber. |
+| `DeliveryFailure` | One terminal failure report emitted after subscriber recovery and dead-letter handling finish. |
 | `DeadLetterPayload` | Standard dead-letter record containing metadata and the original type-erased payload. |
 | `DeadLetterOriginalPayload` | Type-erased original payload stored in dead-letter records and global dead-letter callbacks. |
 | `StagedEvent` | Type-erased staged event used by transactional backends for heterogeneous batches. |
@@ -123,14 +128,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Explicit publish and subscribe options are merged with type-level factory defaults. Scalar subscribe settings such as acknowledgement mode and priority override defaults only when explicitly set through the builder.
 - With `AckMode::Manual`, handlers must ACK or NACK before returning. NACK or a successful return with no decision is a handler failure and participates in retry before error handlers or dead-letter routing run. An ACK after the handler returns cannot change the completed delivery.
 - Subscribe error handlers run in registration order until one records a new acknowledgement decision, or changes the decision to ACK.
-- `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with accepted, dropped, and failed counts. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
+- `publish` and envelope variants return `PublishReceipt`. A receipt distinguishes publisher drops, filtered subscribers, accepted queue submissions, and rejected submissions. A successful publish call therefore means the dispatch decision completed; it does not promise handler completion.
+- `publish_all` is best-effort after lifecycle and option validation. It submits every envelope in input order and returns `BatchPublishResult` with per-event receipts plus global failures. Envelopes with the same `ordering_key` are delivered serially per topic and subscriber; envelopes without an ordering key may run concurrently.
 - `delay` defers local subscriber handling for at least the requested duration. Delayed work does not occupy handler workers while waiting. If the worker queue rejects it at expiry, the handler does not run; each affected delivery emits an `ExecutionRejected` error with its event ID, topic, and subscriber ID through `add_error_observer`, then becomes idle. A rejected ordered lane reports every accepted delivery in that lane. Publishing successfully does not guarantee eventual delivery.
 - Transactional traits use `StagedEvent` as the core batch abstraction. Typed convenience methods lower into staged events so backends can commit heterogeneous event batches atomically.
 - `LocalEventBus` accepts retry policy limits, backoff settings, and an explicit subscriber retry cancellation token. It does not expose hard attempt or flow timeouts or interrupt a running synchronous handler.
 - Retry conversion preserves structured timeout, cancellation, callback, and infrastructure terminals together with the last attempt failure, including a retained business error. Inspect the structured `EventBusError` variant and its `last_failure` field instead of assuming every business error is returned directly.
 - Blocking `shutdown` must not be called from one of the same bus's subscriber worker threads. Use `shutdown_nonblocking` or `shutdown_with_timeout` from subscriber code.
 - After `shutdown_with_timeout` reports a timeout, `start` is rejected until the old subscriber work has become idle.
-- `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work.
+- `wait_for_idle` and `wait_for_idle_timeout` are intended for tests and controlled shutdown flows that need to wait for scheduled handler work. Calling either method from its own subscriber worker returns `EventBusError::WouldDeadlock`.
+- `LocalEventBusFactory` limits queued subscriber deliveries to `DEFAULT_MAX_IN_FLIGHT_DELIVERIES` (4096) by default. Use `set_max_in_flight_deliveries` to choose a different positive limit.
 
 ## Retry classification and blocking
 
@@ -151,7 +158,7 @@ must tolerate repeated execution.
 
 ### Explicit subscriber retry cancellation
 
-This release uses `qubit-retry` 0.22. Applications that construct shared
+This release uses `qubit-retry` 0.25. Applications that construct shared
 `RetryPolicy` or `RetryCancellationToken` values must use a compatible direct
 dependency. Pass a token to `SubscribeOptionsBuilder::retry_cancellation_token`
 and retain a clone for the application's stop path. The option defaults to

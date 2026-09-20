@@ -12,7 +12,7 @@
 
 `qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内事件总线。
 
-它提供类型安全的 Topic、事件信封、订阅配置、发布配置、`qubit-retry` 重试策略、确认句柄、通过 factory 配置的发布/订阅拦截器、批量发布结果、事务 staged event 契约，以及带 `qubit-metadata` 诊断信息的死信记录。
+它提供类型安全的 Topic、事件信封、订阅配置、发布配置、`qubit-retry` 重试策略、确认句柄、发布回执、终态投递失败观察器、通过 factory 配置的发布/订阅拦截器、批量发布结果、事务 staged event 契约，以及带 `qubit-metadata` 诊断信息的死信记录。
 
 ## 为什么使用
 
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | --- | --- |
 | 创建事件总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
 | 定义类型安全 Topic | `Topic::<T>::try_new` |
-| 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`publish_all`、`publish_all_with_options`、`BatchPublishResult` |
+| 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`PublishReceipt`、`publish_all`、`publish_all_with_options`、`BatchPublishResult` |
 | 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription`、`SubscriptionHandle` |
 | 配置重试和确认 | `RetryPolicy`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
 | 配置发布拦截器 | `LocalEventBusFactory::add_publisher_interceptor`、`LocalEventBusFactory::add_global_publisher_interceptor`、`PublisherInterceptor`、`PublisherInterceptorAny` |
@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 添加发布错误处理 | `PublishOptions` |
 | 消费死信事件 | `add_dead_letter_handler`、`DeadLetterPayload`、`standard_dead_letters_to`、`discard_dead_letters` |
 | 观测内部回调失败 | `add_error_observer` |
+| 观测终态投递失败 | `add_delivery_failure_observer`、`DeliveryFailure`、`DeadLetterOutcome` |
 | 建模事务批次 | `TransactionalEventBus`、`TransactionalPublisher`、`StagedEvent`、`StagedEventEnvelope` |
 | 在测试中等待处理器工作完成 | `wait_for_idle`、`wait_for_idle_timeout` |
 | 关闭本地事件总线 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout` |
@@ -102,6 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `SubscriberInterceptor<T>` | 围绕订阅处理器执行的公开 around-style 拦截器契约。 |
 | `SubscriberInterceptorAny` | 只处理元数据的全局订阅拦截器契约。 |
 | `BatchPublishResult` | 包含 accepted、dropped 和 failed 计数的 best-effort 批量发布摘要。 |
+| `PublishReceipt` | 包含分发事件 ID 以及每个订阅者接纳状态的单事件回执。 |
+| `DeliveryFailure` | 在重试、错误处理和死信路由结束后发出一次的终态失败报告。 |
 | `DeadLetterPayload` | 标准死信记录，包含诊断元数据和类型擦除的原始 payload。 |
 | `DeadLetterOriginalPayload` | 死信记录和全局死信回调使用的类型擦除原始 payload。 |
 | `StagedEvent` | 事务后端用于异构批次的类型擦除 staged event。 |
@@ -123,14 +126,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 显式传入的发布和订阅配置会与类型级 factory 默认配置合并。确认模式、优先级等订阅标量配置只有在 builder 中显式设置时才覆盖默认值。
 - 使用 `AckMode::Manual` 时，handler 必须在返回前 ACK 或 NACK。NACK、以及返回 `Ok` 但未作确认决策，都会作为处理失败先参与重试，终态再进入错误处理器和死信路由。handler 返回后才 ACK 无法改变已完成投递的结果。
 - 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
-- `publish_all` 会按输入顺序提交 envelope，并返回包含 accepted、dropped 和 failed 计数的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
+- `publish` 及 envelope 版本返回 `PublishReceipt`，逐个报告订阅者是已接受、被过滤还是被拒绝。发布调用成功只表示完成了投递决策，不表示处理器已经执行完成。
+- `publish_all` 会按输入顺序提交 envelope，并返回包含逐事件回执和全局失败的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
 - `delay` 会让本地订阅处理至少推迟指定时长，等待期间不占用处理器 worker。若到期时工作队列拒绝移交，handler 不会运行；每条受影响投递通过 `add_error_observer` 发出带事件 ID、主题名和订阅者 ID 的 `ExecutionRejected`，随后计入 idle。有序 lane 被拒绝时会逐条报告已接纳投递。发布成功不保证最终送达。
 - 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
 - `LocalEventBus` 接受 retry policy 的限额、退避和显式订阅重试取消令牌，但不提供 attempt/flow 硬超时，也不会打断正在运行的同步 handler。
 - 重试转换会保留结构化的超时、取消、回调失败和基础设施终态，以及最后一次尝试失败（包括业务错误）。读取对应的 `EventBusError` 结构体及其 `last_failure`，不要假设业务错误总会被直接返回。
 - 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
 - `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
-- `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。
+- `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。从订阅者自身 worker 调用时会返回 `EventBusError::WouldDeadlock`。
+- `LocalEventBusFactory` 默认将排队中的订阅投递限制为 `DEFAULT_MAX_IN_FLIGHT_DELIVERIES`（4096），可通过 `set_max_in_flight_deliveries` 设置其他正数限制。
 
 ## 重试分类与线程占用
 
@@ -147,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 显式取消订阅重试
 
-当前版本使用 `qubit-retry` 0.22。应用如果自行构造共享的 `RetryPolicy` 或
+当前版本使用 `qubit-retry` 0.25。应用如果自行构造共享的 `RetryPolicy` 或
 `RetryCancellationToken`，直接依赖应使用兼容版本。通过
 `SubscribeOptionsBuilder::retry_cancellation_token` 设置令牌，并把克隆交给应用的停止流程。
 该选项默认是 `None`；克隆共享取消状态，显式令牌覆盖类型默认值，未设置时继承类型默认令牌。
