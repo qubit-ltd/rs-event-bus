@@ -270,7 +270,6 @@ impl BatchPublishItem {
     /// # Returns
     /// `Ok` with a receipt when publishing reached admission, or `Err` with
     /// the global publication error.
-    #[must_use]
     #[inline]
     pub fn result(&self) -> &Result<PublishReceipt, EventBusError> {
         &self.result
