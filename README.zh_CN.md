@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/qubit-event-bus.svg?color=blue)](https://crates.io/crates/qubit-event-bus)
 [![Rust](https://img.shields.io/badge/rust-1.94+-blue.svg?logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![English document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
+[![English Document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
 
 `qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内发布/订阅事件总线，提供类型化 Topic 和 envelope、可配置的确认与重试、拦截器、死信路由、投递失败观测以及 best-effort 批量发布能力。
 
@@ -68,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 发布 payload 必须满足 `Clone + Send + Sync + 'static`。匹配的订阅会被提交到本地 worker 池，发布不会等待 handler 完成。
 - `AckMode::Manual` handler 必须在返回前 ACK 或 NACK。缺少确认决策会被视为失败，可能重试或进入死信处理。
 - 具有相同 `ordering_key` 的事件会在每个 Topic 和订阅者内串行执行；没有顺序键的事件可以并发执行。
+- handler 内需要请求停机时应调用 `shutdown_nonblocking()`。当前 handler 仍在运行时，`shutdown_with_timeout()` 无法完成并会报告超时；它只适用于必须有界等待的调用方。
 - 丢弃 `Subscription` 句柄不会取消订阅；请调用句柄的取消 API。生命周期、重试、延迟和停机细节见用户指南。
 
 ## 延伸阅读
@@ -77,6 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [中文用户指南](doc/user_guide.zh_CN.md)
 - [Design guide](doc/design.md)
 - [设计说明](doc/design.zh_CN.md)
+- [中文更新日志](CHANGELOG.zh_CN.md)
+- [Changelog](CHANGELOG.md)
 - [English README](README.md)
 
 ## 测试
@@ -105,7 +108,7 @@ Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
 ## 贡献
 
 欢迎贡献。请遵循 Rust API 指南，及时更新公共 API 文档与测试，并在提交
-Pull Request 前运行 `./align-ci.sh` 格式化代码，运行 `./ci-check.sh` 满足 CI 要求。
+Pull Request 前运行 `./align-ci.sh`格式化代码，运行`./ci-check.sh`对齐CI要求。
 
 ## 作者
 

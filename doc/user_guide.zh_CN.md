@@ -110,13 +110,15 @@ let bus = factory.create_started()?;
 
 在 `LocalEventBusFactory` 上配置类型化或全局发布/订阅拦截器，再调用 `create()` 或 `create_started()`。`LocalEventBus` 不提供运行时修改拦截器的入口。
 
+发布分发先执行全局拦截器，再执行类型化拦截器；每个阶段都会接收上一阶段产出的 envelope。
+
 `RetryPolicy` 控制尝试次数和退避；重试规则负责分类失败，仅设置规则不会启用重试。订阅重试可通过 `SubscribeOptionsBuilder::retry_cancellation_token` 使用取消令牌；取消会唤醒退避并阻止下一次尝试，但不能打断已经运行的 handler。
 
 死信策略可以设置在订阅选项或 factory 默认值中。`standard_dead_letters_to`、`prefixed_dead_letters` 和 `discard_dead_letters` 覆盖常见路由需求。`DeliveryFailure` 观察器会在重试、错误处理和死信路由结束后收到终态失败。
 
 ## 错误与诊断
 
-- 对停止状态的 bus 发布或订阅会返回生命周期错误。`shutdown()` 会阻塞；在订阅 worker 中应使用 `shutdown_nonblocking()` 或 `shutdown_with_timeout()`。
+- 对停止状态的 bus 发布或订阅会返回生命周期错误。`shutdown()` 会阻塞。在订阅 handler 中应使用 `shutdown_nonblocking()` 请求停机；当前 handler 仍活跃时，`shutdown_with_timeout()` 无法完成并会返回 `ShutdownTimedOut`，因此它只适用于必须有界等待的调用方。
 - `wait_for_idle` 和 `wait_for_idle_timeout` 用于测试及受控排空。从 bus 自己的订阅 worker 调用会返回 `EventBusError::WouldDeadlock`。
 - `shutdown_with_timeout` 报告超时后，旧订阅工作进入 idle 前，`start()` 仍会被拒绝。
 - 发布成功表示完成了投递准入，不表示 handler 最终送达。需要关注丢失时，请检查回执状态并注册错误/投递失败观察器。
@@ -129,8 +131,9 @@ let bus = factory.create_started()?;
 - 如果投递被拒绝，请检查回执中的 `DispatchStatus` 并注册
   `add_error_observer`；需要观察终态失败时，再注册
   `add_delivery_failure_observer`。
-- 如果停机或排空返回 `WouldDeadlock`，请把调用移出订阅 worker，或使用
-  `shutdown_nonblocking` / `shutdown_with_timeout`。
+- 如果停机或排空返回 `WouldDeadlock`，请把调用移出订阅 worker，或在其中使用
+  `shutdown_nonblocking` 请求停机。需要有界等待时，应在活跃 handler 之外调用
+  `shutdown_with_timeout`。
 - 如果没有发生重试，请确认同时配置了重试规则和重试选项；只有规则不会自动
   启用重试。
 
@@ -157,3 +160,4 @@ let bus = factory.create_started()?;
 - [English user guide](user_guide.md)
 - [设计说明](design.zh_CN.md)
 - [Design guide](design.md)
+- [中文更新日志](../CHANGELOG.zh_CN.md)

@@ -9,7 +9,7 @@
 ```text
 publisher
   -> EventEnvelope<T>
-  -> 发布拦截器（typed，再 global）
+  -> 发布拦截器（global，再 typed）
   -> 订阅快照
   -> 过滤与投递准入
   -> PublishReceipt / BatchPublishResult
@@ -53,7 +53,7 @@ publisher
 
 ## 生命周期不变量
 
-运行时有 stopped、starting、started 和 stopping 边界。关闭开始后拒绝新注册，旧工作排空前拒绝重新启动。从同一个 bus 的订阅 worker 调用阻塞式 shutdown 会造成死锁，因此 `wait_for_idle` 会检测该情况；handler 中应使用非阻塞或带超时的关闭方法。
+运行时有 stopped、starting、started 和 stopping 边界。关闭开始后拒绝新注册，旧工作排空前拒绝重新启动。从同一个 bus 的订阅 worker 调用阻塞式 shutdown 会造成死锁，因此 `wait_for_idle` 会检测该情况。handler 中应使用 `shutdown_nonblocking()` 请求停机；由于当前 handler 仍处于活跃状态，`shutdown_with_timeout()` 会报告超时，只适用于必须有界等待的调用方。
 
 ## 配置归属
 

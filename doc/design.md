@@ -9,7 +9,7 @@
 ```text
 publisher
   -> EventEnvelope<T>
-  -> publisher interceptors (typed, then global)
+  -> publisher interceptors (global, then typed)
   -> subscriber snapshot
   -> filter and delivery admission
   -> PublishReceipt / BatchPublishResult
@@ -53,7 +53,7 @@ Automatic acknowledgement follows a successful handler result. In manual mode, t
 
 ## Lifecycle invariants
 
-The runtime has stopped, starting, started, and stopping boundaries. Registration is rejected once shutdown starts, and restart is rejected until old work has drained. Blocking shutdown from the same bus's subscriber worker would deadlock, so the runtime detects this for `wait_for_idle`; callers should use nonblocking or timed shutdown from handlers.
+The runtime has stopped, starting, started, and stopping boundaries. Registration is rejected once shutdown starts, and restart is rejected until old work has drained. Blocking shutdown from the same bus's subscriber worker would deadlock, so the runtime detects this for `wait_for_idle`. A handler should request shutdown with `shutdown_nonblocking()`. Because the current handler remains active, `shutdown_with_timeout()` reports a timeout there and is reserved for callers that require bounded waiting.
 
 ## Configuration ownership
 
