@@ -66,7 +66,6 @@ impl DeliveryLimits {
     }
 
     /// Validates configured limits.
-    #[must_use]
     pub fn validate(self) -> EventBusResult<Self> {
         if self.max_in_flight == 0 {
             return Err(EventBusError::invalid_argument(

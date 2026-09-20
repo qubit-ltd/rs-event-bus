@@ -54,7 +54,6 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when `name` is blank.
-    #[must_use]
     pub fn try_new(name: impl Into<String>) -> EventBusResult<Self> {
         let name = name
             .into()
