@@ -22,6 +22,8 @@ use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 use crate::DeadLetterStrategyAnyCallback;
 use crate::DeadLetterStrategyCallback;
+use crate::core::delivery_limits::DeliveryLimits;
+use crate::core::delivery_limits::DEFAULT_MAX_IN_FLIGHT_DELIVERIES;
 use crate::EventBusError;
 use crate::EventBusFactory;
 use crate::EventBusResult;
@@ -32,10 +34,9 @@ use crate::PublisherInterceptorAny;
 use crate::SubscribeOptions;
 use crate::SubscriberInterceptor;
 use crate::SubscriberInterceptorAny;
-use crate::UnsupportedTransactionalEventBus;
 
 /// Default maximum number of queued subscriber deliveries.
-pub const DEFAULT_MAX_IN_FLIGHT_DELIVERIES: usize = 4096;
+pub use crate::core::delivery_limits::DEFAULT_MAX_IN_FLIGHT_DELIVERIES;
 use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
 use crate::core::subscribe_options::wrap_dead_letter_strategy;
 use crate::core::subscribe_options::wrap_dead_letter_strategy_any;
@@ -61,7 +62,7 @@ pub struct LocalEventBusFactory {
     publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
     subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
     subscription_handler_pool_size: usize,
-    subscription_handler_queue_capacity: Option<usize>,
+    delivery_limits: DeliveryLimits,
 }
 
 impl Default for LocalEventBusFactory {
@@ -87,7 +88,7 @@ impl LocalEventBusFactory {
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: default_subscription_handler_pool_size(),
-            subscription_handler_queue_capacity: Some(DEFAULT_MAX_IN_FLIGHT_DELIVERIES),
+            delivery_limits: DeliveryLimits::default(),
         }
     }
 
@@ -231,42 +232,9 @@ impl LocalEventBusFactory {
         Ok(())
     }
 
-    /// Sets the optional subscription handler queue capacity.
-    ///
-    /// # Parameters
-    /// - `capacity`: Maximum queued subscriber tasks, or `None` for unbounded.
-    ///
-    /// # Returns
-    /// `Ok(())` when the value is stored.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::InvalidArgument`] when a configured capacity is
-    /// zero.
-    pub fn set_subscription_handler_queue_capacity(
-        &mut self,
-        capacity: Option<usize>,
-    ) -> EventBusResult<()> {
-        let capacity = capacity
-            .validate_some(|capacity| capacity.require_positive("capacity"))
-            .map_err(|_| {
-                EventBusError::invalid_argument(
-                    "capacity",
-                    "subscription handler queue capacity must be greater than zero",
-                )
-            })?;
-        self.subscription_handler_queue_capacity = capacity;
-        Ok(())
-    }
-
-    /// Sets the maximum number of in-flight subscriber deliveries.
-    pub fn set_max_in_flight_deliveries(&mut self, limit: usize) -> EventBusResult<()> {
-        if limit == 0 {
-            return Err(EventBusError::invalid_argument(
-                "limit",
-                "in-flight delivery limit must be greater than zero",
-            ));
-        }
-        self.subscription_handler_queue_capacity = Some(limit);
+    /// Sets independent subscriber delivery limits.
+    pub fn set_delivery_limits(&mut self, limits: DeliveryLimits) -> EventBusResult<()> {
+        self.delivery_limits = limits.validate()?;
         Ok(())
     }
 
@@ -285,7 +253,7 @@ impl LocalEventBusFactory {
             publisher_interceptors: self.publisher_interceptors.clone(),
             subscriber_interceptors: self.subscriber_interceptors.clone(),
             subscription_handler_pool_size: self.subscription_handler_pool_size,
-            subscription_handler_queue_capacity: self.subscription_handler_queue_capacity,
+            delivery_limits: self.delivery_limits,
         })
     }
 
@@ -305,12 +273,6 @@ impl LocalEventBusFactory {
 
 impl EventBusFactory for LocalEventBusFactory {
     type Bus = LocalEventBus;
-    type TransactionalBus = UnsupportedTransactionalEventBus;
-
-    /// Local event bus does not support transactional operations.
-    fn is_transactional_supported(&self) -> bool {
-        false
-    }
 
     /// Creates a stopped local event bus.
     fn create(&self) -> Self::Bus {

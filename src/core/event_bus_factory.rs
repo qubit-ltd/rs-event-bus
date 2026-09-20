@@ -18,7 +18,6 @@ use crate::PublisherInterceptorAny;
 use crate::SubscribeOptions;
 use crate::SubscriberInterceptor;
 use crate::SubscriberInterceptorAny;
-use crate::TransactionalEventBus;
 
 /// Factory contract for creating event bus instances.
 ///
@@ -27,18 +26,6 @@ use crate::TransactionalEventBus;
 pub trait EventBusFactory {
     /// Concrete event bus created by this factory.
     type Bus: EventBus;
-
-    /// Transactional event bus type returned when the backend supports it.
-    type TransactionalBus: TransactionalEventBus;
-
-    /// Returns whether this factory can create transactional event buses.
-    ///
-    /// # Returns
-    /// `true` when [`create_transactional`](Self::create_transactional) can
-    /// return a supported transactional backend.
-    fn is_transactional_supported(&self) -> bool {
-        false
-    }
 
     /// Creates a stopped event bus.
     ///
@@ -57,17 +44,6 @@ pub trait EventBusFactory {
         let bus = self.create();
         bus.start()?;
         Ok(bus)
-    }
-
-    /// Creates a transactional event bus.
-    ///
-    /// # Returns
-    /// Transactional event bus when supported by the backend.
-    ///
-    /// # Errors
-    /// Returns [`EventBusError::UnsupportedOperation`] by default.
-    fn create_transactional(&self) -> EventBusResult<Self::TransactionalBus> {
-        Err(EventBusError::unsupported_operation("create_transactional"))
     }
 
     /// Sets default publish options for a payload type.
@@ -245,21 +221,12 @@ pub trait EventBusFactory {
 #[cfg(coverage)]
 pub fn coverage_exercise_event_bus_factory_default_regions() -> Vec<EventBusError> {
     vec![
-        EventBusError::unsupported_operation("create_transactional"),
-        EventBusError::unsupported_operation("create_transactional:factory"),
-        EventBusError::unsupported_operation("create_transactional:default"),
-        EventBusError::unsupported_operation("create_transactional:unsupported"),
         EventBusError::unsupported_operation("create_started:default"),
         EventBusError::unsupported_operation("create_started:startup"),
         EventBusError::unsupported_operation("create_started:error"),
         EventBusError::unsupported_operation("create_started:success"),
-        EventBusError::unsupported_operation("is_transactional_supported"),
-        EventBusError::unsupported_operation("transactional:false"),
-        EventBusError::unsupported_operation("transactional:placeholder"),
-        EventBusError::unsupported_operation("transactional:unavailable"),
         EventBusError::unsupported_operation("factory:create"),
         EventBusError::unsupported_operation("factory:bus"),
-        EventBusError::unsupported_operation("factory:transactional_bus"),
         EventBusError::unsupported_operation("factory:defaults"),
     ]
 }
