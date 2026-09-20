@@ -6,28 +6,11 @@
 [![Docs.rs](https://docs.rs/qubit-event-bus/badge.svg)](https://docs.rs/qubit-event-bus)
 [![Rust](https://img.shields.io/badge/rust-1.94+-blue.svg?logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![English Document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
+[![English document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
 
-文档：[API 文档](https://docs.rs/qubit-event-bus)
+`qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内发布/订阅事件总线，提供类型化 Topic 和 envelope、可配置的确认与重试、拦截器、死信路由、投递失败观测以及 best-effort 批量发布能力。
 
-`qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内事件总线。
-
-它提供类型安全的 Topic、事件信封、订阅配置、发布配置、`qubit-retry` 重试策略、确认句柄、发布回执、终态投递失败观察器、通过 factory 配置的发布/订阅拦截器、批量发布结果、事务 staged event 契约，以及带 `qubit-metadata` 诊断信息的死信记录。
-
-## 为什么使用
-
-当你需要以下能力时，可以使用 `qubit-event-bus`：
-
-- 在单进程内做类型安全的发布订阅路由
-- 通过 `EventEnvelope` 统一事件元数据
-- 为订阅处理器使用自动或手动确认
-- 为订阅处理器配置重试和死信行为
-- 用发布拦截器修改或丢弃待发布事件
-- 用全局元数据拦截器为所有 payload 类型统一接入 tracing、日志或指标
-- 用订阅拦截器包装、观测或短路处理器执行
-- 配置类型级或全局默认死信策略
-- 为事务后端建模异构 staged event 批次
-- 在测试中通过 `wait_for_idle` 等待处理器工作完成
+它是进程内组件，不负责事件持久化，也不负责跨进程投递。完整的场景教程、API 细节、迁移说明和运行限制请阅读[中文用户指南](doc/user_guide.zh_CN.md)或 [English user guide](doc/user_guide.md)；运行时模型见[设计说明](doc/design.zh_CN.md)和 [design guide](doc/design.md)。
 
 ## 安装
 
@@ -47,179 +30,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = LocalEventBus::started()?;
     let topic = Topic::<String>::try_new("orders.created")?;
     let received = Arc::new(Mutex::new(Vec::new()));
-
     let captured = Arc::clone(&received);
+
     bus.subscribe("audit-log", &topic, move |event| {
         captured.lock().expect("received events should lock").push(event.payload().clone());
         Ok(())
     })?;
-
     bus.publish(&topic, "order-1001".to_string())?;
     bus.wait_for_idle(&topic)?;
 
-    assert_eq!(
-        received.lock().expect("received events should lock").as_slice(),
-        &["order-1001".to_string()],
-    );
+    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001".to_string()]);
     Ok(())
 }
 ```
 
-## 后续阅读
+`publish` 返回描述准入结果的 `PublishReceipt`，不代表 handler 已完成。测试或受控停机流程需要观察 handler 效果时，应调用 `wait_for_idle`。
 
-| 任务 | API |
+## API 速览
+
+| 需求 | API |
 | --- | --- |
-| 创建事件总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
+| 创建总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
 | 定义类型安全 Topic | `Topic::<T>::try_new` |
-| 发布 payload 或 envelope | `publish`、`publish_with_options`、`publish_envelope`、`publish_envelope_with_options`、`PublishReceipt`、`publish_all`、`publish_all_with_options`、`BatchPublishResult` |
-| 注册订阅处理器 | `subscribe`、`subscribe_with_options`、`Subscription`、`SubscriptionHandle` |
-| 配置重试和确认 | `RetryPolicy`、`SubscribeOptions`、`AckMode`、`Acknowledgement` |
-| 配置发布拦截器 | `LocalEventBusFactory::add_publisher_interceptor`、`LocalEventBusFactory::add_global_publisher_interceptor`、`PublisherInterceptor`、`PublisherInterceptorAny` |
-| 配置订阅拦截器 | `LocalEventBusFactory::add_subscriber_interceptor`、`LocalEventBusFactory::add_global_subscriber_interceptor`、`SubscriberInterceptor`、`SubscriberInterceptorAny` |
-| 添加发布错误处理 | `PublishOptions` |
-| 消费死信事件 | `add_dead_letter_handler`、`DeadLetterPayload`、`standard_dead_letters_to`、`discard_dead_letters` |
-| 观测内部回调失败 | `add_error_observer` |
-| 观测终态投递失败 | `add_delivery_failure_observer`、`DeliveryFailure`、`DeadLetterOutcome` |
-| 建模事务批次 | `TransactionalEventBus`、`TransactionalPublisher`、`StagedEvent`、`StagedEventEnvelope` |
-| 在测试中等待处理器工作完成 | `wait_for_idle`、`wait_for_idle_timeout` |
-| 关闭本地事件总线 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout` |
+| 发布一个或多个事件 | `publish`、`publish_envelope`、`publish_all`、`BatchPublishResult` |
+| 订阅 handler | `subscribe`、`subscribe_with_options`、`Subscription` |
+| 配置投递容量 | `DeliveryLimits::bounded`、`DeliveryLimits::unbounded`、`LocalEventBusFactory::set_delivery_limits` |
+| 配置重试和 ACK/NACK | `SubscribeOptions`、`RetryPolicy`、`AckMode`、`Acknowledgement` |
+| 配置拦截器 | `PublisherInterceptor`、`SubscriberInterceptor` 及其 global 版本 |
+| 路由死信 | `standard_dead_letters_to`、`prefixed_dead_letters`、`discard_dead_letters` |
+| 观测终态失败 | `add_delivery_failure_observer`、`DeliveryFailure` |
+| 停止和测试 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout`、`wait_for_idle` |
 
-## 核心 API 概览
+## 重要语义
 
-| 类型 | 用途 |
-| --- | --- |
-| `EventBus` | 通过关联类型 `Subscription<T>` 返回后端自有句柄的通用契约。 |
-| `SubscriptionHandle<T>` | 后端自有句柄的通用查看与取消契约。 |
-| `EventBusFactory` | 后端创建和默认配置的通用工厂契约。 |
-| `LocalEventBus` | 线程安全的进程内事件总线实现。 |
-| `LocalEventBusFactory` | 使用类型化默认发布配置、订阅配置、拦截器，以及类型级或全局死信策略创建事件总线。 |
-| `Topic<T>` | 按名称和 payload 类型区分的类型安全 Topic。 |
-| `EventEnvelope<T>` | 事件 payload 以及请求头、时间戳、顺序键、延迟、确认句柄和死信标记。 |
-| `EventEnvelopeMetadata` | 面向全局拦截器和全局死信策略的类型擦除元数据视图。 |
-| `PublishOptions<T>` | 发布重试元数据和发布错误回调。 |
-| `SubscribeOptions<T>` | 订阅确认模式、重试配置、过滤器、错误回调、死信策略和优先级。 |
-| `PublisherInterceptor<T>` | 可以增强或丢弃待发布 envelope 的公开拦截器契约。 |
-| `PublisherInterceptorAny` | 只处理元数据的全局发布拦截器契约。 |
-| `SubscriberInterceptor<T>` | 围绕订阅处理器执行的公开 around-style 拦截器契约。 |
-| `SubscriberInterceptorAny` | 只处理元数据的全局订阅拦截器契约。 |
-| `BatchPublishResult` | 包含 accepted、dropped 和 failed 计数的 best-effort 批量发布摘要。 |
-| `PublishReceipt` | 包含分发事件 ID 以及每个订阅者接纳状态的单事件回执。 |
-| `DeliveryFailure` | 在重试、错误处理和死信路由结束后发出一次的终态失败报告。 |
-| `DeadLetterPayload` | 标准死信记录，包含诊断元数据和类型擦除的原始 payload。 |
-| `DeadLetterOriginalPayload` | 死信记录和全局死信回调使用的类型擦除原始 payload。 |
-| `StagedEvent` | 事务后端用于异构批次的类型擦除 staged event。 |
-| `StagedEventEnvelope<T>` | 保留 envelope 与发布配置的类型化 staged event。 |
-| `Subscription<T>` | 用于查看和取消订阅的句柄。 |
-| `EventBusError` | 生命周期、校验、处理器、锁和类型擦除失败的统一错误类型。 |
+- `LocalEventBus` 不提供事务语义。`publish_all` 是 best effort：按输入顺序提交每个 envelope，并记录每个事件的结果，不保证全有或全无。
+- `BatchPublishResult::accepted_count()` 统计其回执中至少有一个订阅投递为 `DispatchStatus::Accepted` 的输入项。它不是已完成 handler 的数量；同一个项还可能因另一个订阅者拒绝而计入 `failure_count()`。
+- `DeliveryLimits` 分别控制已接纳的 in-flight 投递上限和可选的 handler 执行队列容量。两个值（若提供）都必须大于零；按需使用 `DeliveryLimits::bounded` 或 `DeliveryLimits::unbounded`。默认是 `DeliveryLimits::default()`（`4096`，不显式限制队列容量）。
+- 发布 payload 必须满足 `Clone + Send + Sync + 'static`。匹配的订阅会被提交到本地 worker 池，发布不会等待 handler 完成。
+- `AckMode::Manual` handler 必须在返回前 ACK 或 NACK。缺少确认决策会被视为失败，可能重试或进入死信处理。
+- 具有相同 `ordering_key` 的事件会在每个 Topic 和订阅者内串行执行；没有顺序键的事件可以并发执行。
+- 丢弃 `Subscription` 句柄不会取消订阅；请调用句柄的取消 API。生命周期、重试、延迟和停机细节见用户指南。
 
-## 项目范围
+## 测试
 
-- `qubit-event-bus` 是进程内事件总线，不负责事件持久化或跨进程投递。
-- 外部 `EventBus` 实现可声明自己的 `Subscription<T>: SubscriptionHandle<T>`；`LocalEventBus` 的固有方法仍返回本地 `Subscription<T>`。丢弃句柄不会自动取消订阅。
-- 订阅注册与关闭共用生命周期边界：关闭开始后拒绝新订阅，清理结束前拒绝重新启动。
-- 订阅处理器会在可配置的 `rs-thread-pool` 固定工作线程池中执行。发布操作会在调度处理器工作后返回。
-- 通过 `LocalEventBus` 发布的 payload 需要满足 `Clone + Send + Sync + 'static`。
-- 死信策略返回 `EventEnvelope<DeadLetterPayload>`，因此一个死信 Topic 可以接收来自多个源事件类型的归档记录。
-- `standard_dead_letters_to`、`prefixed_dead_letters` 和 `discard_dead_letters` 覆盖常见死信路由策略，无需为简单场景编写自定义闭包。
-- 订阅级死信策略返回 `Ok(None)` 时，会禁用本次失败投递对 factory 默认死信策略的回退。若订阅级和类型级默认策略都不存在，本地 factory 可以使用全局默认死信策略。
-- 拦截器在 `LocalEventBusFactory` 上配置，并在创建 bus 前固定下来。`LocalEventBus` 不再提供运行时 interceptor 变更入口；运行时错误观测使用 `add_error_observer`。
-- 显式传入的发布和订阅配置会与类型级 factory 默认配置合并。确认模式、优先级等订阅标量配置只有在 builder 中显式设置时才覆盖默认值。
-- 使用 `AckMode::Manual` 时，handler 必须在返回前 ACK 或 NACK。NACK、以及返回 `Ok` 但未作确认决策，都会作为处理失败先参与重试，终态再进入错误处理器和死信路由。handler 返回后才 ACK 无法改变已完成投递的结果。
-- 订阅错误处理器按注册顺序执行，直到某个处理器记录新的确认决策，或把决策改为 ACK。
-- `publish` 及 envelope 版本返回 `PublishReceipt`，逐个报告订阅者是已接受、被过滤还是被拒绝。发布调用成功只表示完成了投递决策，不表示处理器已经执行完成。
-- `publish_all` 会按输入顺序提交 envelope，并返回包含逐事件回执和全局失败的 `BatchPublishResult`。带有相同 `ordering_key` 的 envelope 会按 topic 和订阅者串行投递；没有顺序键的 envelope 可以并发执行。
-- `delay` 会让本地订阅处理至少推迟指定时长，等待期间不占用处理器 worker。若到期时工作队列拒绝移交，handler 不会运行；每条受影响投递通过 `add_error_observer` 发出带事件 ID、主题名和订阅者 ID 的 `ExecutionRejected`，随后计入 idle。有序 lane 被拒绝时会逐条报告已接纳投递。发布成功不保证最终送达。
-- 事务 trait 以 `StagedEvent` 作为核心批次抽象。类型化便利方法会降级为 staged event，因此后端可以原子提交异构事件批次。
-- `LocalEventBus` 接受 retry policy 的限额、退避和显式订阅重试取消令牌，但不提供 attempt/flow 硬超时，也不会打断正在运行的同步 handler。
-- 重试转换会保留结构化的超时、取消、回调失败和基础设施终态，以及最后一次尝试失败（包括业务错误）。读取对应的 `EventBusError` 结构体及其 `last_failure`，不要假设业务错误总会被直接返回。
-- 不要在同一个 bus 的订阅工作线程中调用阻塞式 `shutdown`；订阅代码中应使用 `shutdown_nonblocking` 或 `shutdown_with_timeout`。
-- `shutdown_with_timeout` 返回超时后，旧订阅工作进入 idle 之前，`start` 会拒绝重新启动。
-- `wait_for_idle` 和 `wait_for_idle_timeout` 面向测试和需要等待已调度处理器完成的受控关闭流程。从订阅者自身 worker 调用时会返回 `EventBusError::WouldDeadlock`。
-- `LocalEventBusFactory` 默认将排队中的订阅投递限制为 `DEFAULT_MAX_IN_FLIGHT_DELIVERIES`（4096），可通过 `set_max_in_flight_deliveries` 设置其他正数限制。
-
-## 重试分类与线程占用
-
-配置重试策略后，默认的 `EventBusRetryRule` 只重试 `HandlerFailed`、
-`InterceptorFailed` 和 `ExecutionRejected`。配置、类型、生命周期、handler panic
-及重试基础设施错误会立即终止。发布和订阅选项构造器可通过 `.retry_rule(rule)`
-注册先于默认分类执行的规则；返回 `RetryDecision::UseDefault` 可交回默认规则。
-仅设置规则不会启用重试。显式规则覆盖类型默认值，克隆的选项共享规则实例。
-
-本地发布与 handler 重试都是同步流程。退避等待会占用调用线程或 handler 工作线程，
-并保留当前投递的顺序位置；ACK、死信处理和停机排空仍沿同一投递流程完成。
-设置线程池和重试预算时需要考虑这段占用时间。重试策略不会自动安排独立重投递，
-也不会在等待时释放工作线程。允许重试的 handler 和拦截器必须能够接受重复执行。
-
-### 显式取消订阅重试
-
-当前版本使用 `qubit-retry` 0.25。应用如果自行构造共享的 `RetryPolicy` 或
-`RetryCancellationToken`，直接依赖应使用兼容版本。通过
-`SubscribeOptionsBuilder::retry_cancellation_token` 设置令牌，并把克隆交给应用的停止流程。
-该选项默认是 `None`；克隆共享取消状态，显式令牌覆盖类型默认值，未设置时继承类型默认令牌。
-只有令牌不会启用重试；未配置重试策略时，它不改变直接调用 handler 的行为。
-
-调用 `cancel()` 会阻止下一次尝试并唤醒退避等待，但不能打断已运行的 handler。
-尝试成功时，仍走原有成功和 ACK 流程。如果 handler 返回 `Ok` 却显式调用了 NACK，
-`run_handler_with_retry` 仍会根据这个确认决定将本次尝试判为失败。handler 失败后观察到取消，当前投递会沿既有
-终态错误通知、确认/NACK 和死信路径处理一次；错误处理器仍可通过 ACK 阻止死信路由。
-终态处理结束后释放当前顺序位置。
-
-令牌不能重置。后续事件若使用同一已取消令牌，会在重试流程首次准入前终止，因此新的生命周期
-需要新令牌。该配置只作用于订阅重试，不改变发布重试。`shutdown` 和取消订阅不会自动取消令牌，
-graceful shutdown 仍会排空已调度工作；如果应用希望停机时终止重试，必须显式取消其令牌。
-
-## 从 0.10 迁移到 0.11
-
-泛型 `EventBus` 实现现在必须声明 `type Subscription<T>`，其返回类型需实现
-`SubscriptionHandle<T>`。原先在泛型 `EventBus` 代码中写死本地
-`Subscription<T>` 返回类型的地方，应改为 `B::Subscription<T>`。
-`LocalEventBus` 的固有方法仍返回原来的具体句柄。
-
-使用 `AckMode::Manual` 时，返回 `Ok` 却没有 ACK/NACK 现在会作为 handler
-失败参与重试与死信路由。需要成功投递时应在返回前 ACK。延迟投递到期时若工作队列
-拒绝移交，现在会向错误观察器报告并丢弃；调度线程不会代替 worker 执行 handler。
-如果应用需要监测此类丢失，应注册错误观察器。
-
-## 0.10 的历史迁移说明
-
-四类控制终态（`RetryTimedOut`、`RetryCancelled`、`RetryCallbackFailed` 和
-`RetryInfrastructureFailed`）会保留 `last_failure`，其中也可能是业务错误。
-普通 `Aborted` 和 `Exhausted` 的业务失败仍会直接返回业务错误。handler 失败后发生取消时，
-标准死信元数据会分类为 `retry_cancelled`；ACK/NACK 行为和投递顺序保持不变。
-
-```rust
-if let qubit_event_bus::EventBusError::RetryCancelled {
-    phase, last_failure, context,
-} = &error {
-    if let Some(qubit_retry::AttemptFailure::Error(business)) = last_failure.as_deref() {
-        let _ = (business, phase, context);
-    }
-}
-```
-
-## 0.10 的完成诊断
-
-转换 `RetryError<EventBusError>` 时，完成诊断为空就保持原有领域错误；非空时以
-`RetryCompletionDiagnostics` 包装领域错误、`Arc<RetryContext>` 和有序诊断 Vec。
-使用 `retry_completion_source()`、`completion_callback_failures()` 或标准 `Error::source()` 读取。
-克隆保留上下文身份和相等性。默认重试规则将该包装视为终止错误；错误处理器和死信保留
-`retry_completion_diagnostics` 分类及原始领域消息。穷举匹配需要处理新增变体。
-内置成功重试流程不注册完成观察者，因此显式丢弃空诊断。
-
-## 贡献
-
-欢迎提交 issue 和 pull request。
-
-为了让维护和评审更顺畅，请尽量遵循以下约定：
-
-- bug 报告、设计问题或较大的功能建议，先提交 issue 讨论
-- pull request 尽量聚焦一个行为变更、问题修复或文档更新
-- 遵循现有 `rs-*` 项目使用的 Rust 编码风格
-- 修改运行时行为时，请补充相应测试
-- 公共 API 行为变化时，请同步更新 README
-
-向本项目提交贡献，即表示你同意该贡献使用与本项目相同的许可证。
+运行仓库检查：`./ci-check.sh`。异步发布的测试应在断言 handler 效果前调用 `wait_for_idle` 或 `wait_for_idle_timeout`。
 
 ## 许可证
 
 本项目使用 [Apache License, Version 2.0](LICENSE) 许可证。
+
+## 贡献
+
+欢迎提交 issue 和 pull request。请保持修改聚焦；修改运行时行为时补充回归测试；公共行为变化时同步更新中英文 README。
+
+## 作者
+
+Haixing Hu（<starfish.hu@gmail.com>）
