@@ -1787,9 +1787,7 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
 fn test_global_publisher_interceptors_run_before_typed_interceptors() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-            metadata.with_header("order", "global")
-        })
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| metadata.with_header("order", "global"))
         .expect("global publisher interceptor should register");
     factory
         .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
@@ -1805,16 +1803,12 @@ fn test_global_publisher_interceptors_run_before_typed_interceptors() {
     })
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_owned())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_owned()).expect("publish should work");
 
     let event = event_receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("subscriber should receive event");
-    assert_eq!(
-        event.headers().get("order").map(String::as_str),
-        Some("global->typed")
-    );
+    assert_eq!(event.headers().get("order").map(String::as_str), Some("global->typed"));
     bus.wait_for_idle(&topic).expect("topic should become idle");
 }
 
@@ -4421,10 +4415,7 @@ fn test_shutdown_with_timeout_from_own_worker_returns_timeout() {
     let result = result_receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("handler should report timed shutdown result");
-    assert!(matches!(
-        result,
-        Err(EventBusError::ShutdownTimedOut { .. })
-    ));
+    assert!(matches!(result, Err(EventBusError::ShutdownTimedOut { .. })));
     bus.wait_for_idle(&topic).expect("topic should become idle");
 }
 
