@@ -9,6 +9,15 @@
 
 #[cfg(coverage)]
 mod coverage;
+mod admission;
+mod dead_letter;
+mod delay;
+mod dispatch;
+mod interceptor;
+mod lifecycle;
+mod retry_delivery;
+mod subscription_entry;
+mod worker_context;
 
 use std::any::Any;
 use std::any::TypeId;
