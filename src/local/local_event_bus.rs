@@ -36,7 +36,7 @@ use qubit_thread_pool::FixedThreadPool;
 
 use super::erased_subscription::DispatchAdmission;
 use super::erased_subscription::ErasedSubscription;
-use super::local_event_bus_factory::DEFAULT_MAX_IN_FLIGHT_DELIVERIES;
+use crate::core::delivery_limits::DeliveryLimits;
 use super::local_event_bus_inner::LocalEventBusInner;
 use super::local_event_bus_inner::LocalEventBusRuntimeOptions;
 use super::ordering_lane_key::OrderingLaneKey;
@@ -388,7 +388,7 @@ impl LocalEventBus {
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: default_subscription_handler_pool_size(),
-            subscription_handler_queue_capacity: Some(DEFAULT_MAX_IN_FLIGHT_DELIVERIES),
+            delivery_limits: DeliveryLimits::default(),
         })
     }
 

@@ -43,6 +43,7 @@ use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 use crate::DeliveryFailure;
 use crate::EventBusError;
 use crate::EventBusResult;
+use crate::core::delivery_limits::DeliveryLimits;
 use crate::PublishOptions;
 use crate::SubscribeOptions;
 use crate::TopicKey;
@@ -65,20 +66,18 @@ pub(crate) struct LocalEventBusRuntimeOptions {
     pub(crate) publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
     pub(crate) subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
     pub(crate) subscription_handler_pool_size: usize,
-    pub(crate) subscription_handler_queue_capacity: Option<usize>,
+    pub(crate) delivery_limits: DeliveryLimits,
 }
 
 /// RAII reservation for one accepted subscriber delivery.
 pub(crate) enum DeliveryPermit {
     Counted(Arc<AtomicUsize>),
-    Unbounded,
 }
 
 impl Drop for DeliveryPermit {
     fn drop(&mut self) {
-        if let Self::Counted(in_flight) = self {
-            in_flight.fetch_sub(1, Ordering::SeqCst);
-        }
+        let Self::Counted(in_flight) = self;
+        in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -273,7 +272,7 @@ pub(crate) struct LocalEventBusInner {
     default_dead_letter_strategies: TypeErasedDefaults,
     global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
     subscription_handler_pool_size: usize,
-    subscription_handler_queue_capacity: Option<usize>,
+    delivery_limits: DeliveryLimits,
 }
 
 impl LocalEventBusInner {
@@ -283,7 +282,7 @@ impl LocalEventBusInner {
     /// - `default_subscribe_options`: Typed default subscription options.
     /// - `subscription_handler_pool_size`: Worker count for subscriber
     ///   handlers.
-    /// - `subscription_handler_queue_capacity`: Optional queued handler limit.
+    /// - `delivery_limits`: Independent admission and executor queue limits.
     ///
     /// # Returns
     /// Shared state initialized in the stopped lifecycle state.
@@ -307,15 +306,13 @@ impl LocalEventBusInner {
             default_dead_letter_strategies: options.default_dead_letter_strategies,
             global_default_dead_letter_strategy: options.global_default_dead_letter_strategy,
             subscription_handler_pool_size: options.subscription_handler_pool_size,
-            subscription_handler_queue_capacity: options.subscription_handler_queue_capacity,
+            delivery_limits: options.delivery_limits,
         }
     }
 
     /// Acquires one global delivery budget permit.
     pub(crate) fn try_acquire_delivery_permit(&self) -> EventBusResult<DeliveryPermit> {
-        let Some(limit) = self.subscription_handler_queue_capacity else {
-            return Ok(DeliveryPermit::Unbounded);
-        };
+        let limit = self.delivery_limits.max_in_flight();
         self.in_flight_delivery_count
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 (current < limit).then_some(current + 1)
@@ -998,7 +995,7 @@ impl LocalEventBusInner {
 
     /// Reserves one local ordered-lane queue slot.
     fn reserve_ordered_queue_slot(&self, lifecycle: &LocalEventBusLifecycle) -> EventBusResult<()> {
-        let Some(capacity) = self.subscription_handler_queue_capacity else {
+        let Some(capacity) = self.delivery_limits.handler_queue_capacity() else {
             return Ok(());
         };
         let executor_queued = lifecycle
@@ -1388,7 +1385,7 @@ impl LocalEventBusInner {
         let mut builder = FixedThreadPool::builder()
             .pool_size(self.subscription_handler_pool_size)
             .thread_name_prefix("qubit-event-bus-subscriber");
-        if let Some(capacity) = self.subscription_handler_queue_capacity {
+        if let Some(capacity) = self.delivery_limits.handler_queue_capacity() {
             builder = builder.queue_capacity(capacity);
         }
         builder.build()
@@ -1863,7 +1860,7 @@ mod tests {
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: 1,
-            subscription_handler_queue_capacity: None,
+            delivery_limits: DeliveryLimits::default(),
         });
 
         let first = inner

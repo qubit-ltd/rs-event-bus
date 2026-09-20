@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 
 use qubit_event_bus::DispatchStatus;
+use qubit_event_bus::DeliveryLimits;
 use qubit_event_bus::EventBusError;
 use qubit_event_bus::EventEnvelope;
 use qubit_event_bus::LocalEventBusFactory;
@@ -49,7 +50,7 @@ fn test_batch_publish_counts_item_with_rejected_delivery_as_failure() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_max_in_flight_deliveries(1)
+        .set_delivery_limits(DeliveryLimits::new(1, None))
         .expect("one in-flight delivery should be accepted");
     let bus = factory.create_started().expect("bus should start");
     let topic = Topic::<String>::try_new("batch-contract-rejected")
