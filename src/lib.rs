@@ -30,6 +30,7 @@ pub use core::DEAD_LETTER_SUBSCRIBER_ID;
 pub use core::DEAD_LETTER_TOPIC;
 pub use core::DeadLetterOriginalPayload;
 pub use core::DeadLetterOutcome;
+pub use core::delivery_limits::DeliveryLimits;
 pub use core::DeadLetterPayload;
 pub use core::DeadLetterRecord;
 pub use core::DeadLetterStrategy;

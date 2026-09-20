@@ -6,6 +6,7 @@ use qubit_event_bus::DEAD_LETTER_TOPIC;
 use qubit_event_bus::DeadLetterOriginalPayload;
 use qubit_event_bus::DeadLetterPayload;
 use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::DeliveryLimits;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusError;
 use qubit_event_bus::EventBusFactory;
@@ -506,22 +507,22 @@ fn test_local_event_bus_factory_validates_handler_pool_options() {
             .expect_err("zero pool size should be rejected"),
         EventBusError::invalid_argument("pool_size", "subscription handler pool size must be greater than zero",)
     );
-    assert_eq!(
+    assert!(
         factory
-            .set_subscription_handler_queue_capacity(Some(0))
-            .expect_err("zero queue capacity should be rejected"),
-        EventBusError::invalid_argument(
-            "capacity",
-            "subscription handler queue capacity must be greater than zero",
-        )
+            .set_delivery_limits(DeliveryLimits::new(0, None))
+            .is_err(),
+        "zero in-flight limit should be rejected"
+    );
+    assert!(
+        factory
+            .set_delivery_limits(DeliveryLimits::new(1, Some(0)))
+            .is_err(),
+        "zero handler queue capacity should be rejected"
     );
     factory
         .set_subscription_handler_pool_size(1)
         .expect("positive pool size should be accepted");
     factory
-        .set_subscription_handler_queue_capacity(Some(1))
-        .expect("positive queue capacity should be accepted");
-    factory
-        .set_subscription_handler_queue_capacity(None)
-        .expect("unbounded queue should be accepted");
+        .set_delivery_limits(DeliveryLimits::new(2, Some(1)))
+        .expect("independent delivery limits should be accepted");
 }

@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use qubit_argument::NumericArgument;
-use qubit_argument::OptionArgument;
 
 use super::local_event_bus::create_publisher_interceptor_entry;
 use super::local_event_bus::create_subscriber_interceptor_entry;
@@ -23,7 +22,6 @@ use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 use crate::DeadLetterStrategyAnyCallback;
 use crate::DeadLetterStrategyCallback;
 use crate::core::delivery_limits::DeliveryLimits;
-use crate::core::delivery_limits::DEFAULT_MAX_IN_FLIGHT_DELIVERIES;
 use crate::EventBusError;
 use crate::EventBusFactory;
 use crate::EventBusResult;

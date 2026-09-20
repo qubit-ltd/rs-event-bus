@@ -212,7 +212,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         publisher_interceptors: vec![Arc::new(CoverageWrongPublisherInterceptor)],
         subscriber_interceptors: Vec::new(),
         subscription_handler_pool_size: 1,
-        subscription_handler_queue_capacity: None,
+        delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
     });
     wrong_publisher_bus.start().expect("coverage bus should start");
     let publisher_error = wrong_publisher_bus
@@ -273,7 +273,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
             coverage_subscriber_passthrough,
         )],
         subscription_handler_pool_size: 1,
-        subscription_handler_queue_capacity: None,
+        delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
     });
     let publisher_output = direct_interceptor_bus
         .apply_publisher_interceptors(EventEnvelope::create(string_topic.clone(), "payload".to_string()))
@@ -297,7 +297,7 @@ pub fn coverage_exercise_local_event_bus_defensive_paths() -> Vec<EventBusError>
         publisher_interceptors: Vec::new(),
         subscriber_interceptors: vec![Arc::new(CoverageWrongSubscriberInterceptor)],
         subscription_handler_pool_size: 1,
-        subscription_handler_queue_capacity: None,
+        delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
     });
     wrong_subscriber_bus.start().expect("coverage bus should start");
     let subscriber_error = wrong_subscriber_bus

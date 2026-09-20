@@ -144,7 +144,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
             publisher_interceptors: Vec::new(),
             subscriber_interceptors: Vec::new(),
             subscription_handler_pool_size: 1,
-            subscription_handler_queue_capacity: None,
+            delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
         })
     }
 
@@ -201,7 +201,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         publisher_interceptors: Vec::new(),
         subscriber_interceptors: Vec::new(),
         subscription_handler_pool_size: 1,
-        subscription_handler_queue_capacity: None,
+        delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
     });
     assert!(
         default_options_inner
@@ -319,7 +319,7 @@ pub fn coverage_exercise_local_event_bus_inner_defensive_paths() -> Vec<EventBus
         publisher_interceptors: Vec::new(),
         subscriber_interceptors: Vec::new(),
         subscription_handler_pool_size: 0,
-        subscription_handler_queue_capacity: None,
+        delivery_limits: crate::core::delivery_limits::DeliveryLimits::default(),
     });
     errors.push(
         invalid_executor_inner

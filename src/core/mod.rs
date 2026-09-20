@@ -12,6 +12,7 @@ mod acknowledgement;
 #[cfg(coverage)]
 mod coverage;
 mod dead_letter_record;
+pub(crate) mod delivery_limits;
 mod delivery_failure;
 mod event_bus;
 mod event_bus_error;

@@ -26,6 +26,7 @@ use qubit_event_bus::DEAD_LETTER_FAILURE_TYPE;
 use qubit_event_bus::DEAD_LETTER_SUBSCRIBER_ID;
 use qubit_event_bus::DeadLetterPayload;
 use qubit_event_bus::DeadLetterRecord;
+use qubit_event_bus::DeliveryLimits;
 use qubit_event_bus::DispatchStatus;
 use qubit_event_bus::EventBusError;
 use qubit_event_bus::EventBusResult;
@@ -1299,7 +1300,7 @@ fn test_delayed_delivery_rejection_does_not_block_scheduler() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_max_in_flight_deliveries(2)
+        .set_delivery_limits(DeliveryLimits::new(2, None))
         .expect("bounded in-flight limit should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("delayed-saturated-at-expiry");
@@ -1507,7 +1508,7 @@ fn test_ordering_key_delivery_respects_bounded_queue_capacity() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_max_in_flight_deliveries(2)
+        .set_delivery_limits(DeliveryLimits::new(2, None))
         .expect("bounded in-flight limit should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("ordered-bounded-handler-queue");
@@ -4290,7 +4291,7 @@ fn test_bounded_handler_queue_rejects_when_saturated() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_max_in_flight_deliveries(2)
+        .set_delivery_limits(DeliveryLimits::new(2, None))
         .expect("bounded in-flight limit should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("bounded-handler-queue");
@@ -4339,7 +4340,7 @@ fn test_cancelled_queued_delivery_skips_handler() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_subscription_handler_queue_capacity(Some(2))
+        .set_delivery_limits(DeliveryLimits::new(4096, Some(2)))
         .expect("bounded queue should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("cancelled-queued-delivery");
@@ -4386,7 +4387,7 @@ fn test_cancelled_queued_delayed_delivery_skips_delay_wait() {
         .set_subscription_handler_pool_size(1)
         .expect("single worker should be accepted");
     factory
-        .set_subscription_handler_queue_capacity(Some(2))
+        .set_delivery_limits(DeliveryLimits::new(4096, Some(2)))
         .expect("bounded queue should be accepted");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("cancelled-queued-delayed-delivery");
