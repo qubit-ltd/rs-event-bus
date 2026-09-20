@@ -27,6 +27,16 @@ impl DeliveryLimits {
         }
     }
 
+    /// Creates limits with an optional bounded handler queue.
+    pub const fn bounded(max_in_flight: usize, handler_queue_capacity: Option<usize>) -> Self {
+        Self::new(max_in_flight, handler_queue_capacity)
+    }
+
+    /// Creates limits with an unbounded handler queue.
+    pub const fn unbounded(max_in_flight: usize) -> Self {
+        Self::new(max_in_flight, None)
+    }
+
     /// Returns the maximum number of accepted deliveries.
     pub const fn max_in_flight(&self) -> usize {
         self.max_in_flight
