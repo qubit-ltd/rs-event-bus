@@ -9,8 +9,10 @@
 //! Shared state for the local event bus.
 
 mod admission;
+mod lifecycle;
 mod ordering_lane;
 mod processing_tracker;
+mod scheduling;
 use std::any::Any;
 use std::any::TypeId;
 use std::cmp::Reverse;
@@ -22,21 +24,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 pub(crate) use admission::DeliveryPermit;
+use lifecycle::LifecycleState;
+use lifecycle::LocalEventBusLifecycle;
 use ordering_lane::OrderedProcessingLane;
 use processing_tracker::ProcessingTracker;
 use qubit_collections::map::OrderedIndexMap;
-use qubit_executor::CancelResult;
-use qubit_executor::ExecutorService;
-use qubit_executor::ExecutorServiceBuilderError;
-use qubit_executor::ScheduledExecutorService;
-use qubit_executor::SingleThreadScheduledExecutorService;
-use qubit_thread_pool::FixedThreadPool;
 
 use super::erased_subscription::ErasedSubscription;
 use super::local_event_bus::PublisherInterceptorAny;
 use super::local_event_bus::SubscriberInterceptorAny;
 use super::ordering_lane_key::OrderingLaneKey;
-use super::processing_task::ProcessingTask;
 use super::publisher_interceptor_entry::PublisherInterceptorEntry;
 use super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
 use crate::DeliveryFailure;
@@ -45,7 +42,6 @@ use crate::EventBusResult;
 use crate::PublishOptions;
 use crate::SubscribeOptions;
 use crate::TopicKey;
-use crate::core::SubscriptionState;
 use crate::core::delivery_limits::DeliveryLimits;
 use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
 
@@ -69,7 +65,7 @@ pub(crate) struct LocalEventBusRuntimeOptions {
 }
 /// Shared mutable state for [`crate::LocalEventBus`].
 pub(crate) struct LocalEventBusInner {
-    pub(super) lifecycle: Mutex<LocalEventBusLifecycle>,
+    lifecycle: Mutex<LocalEventBusLifecycle>,
     subscriptions: Mutex<HashMap<TopicKey, TopicSubscriptions>>,
     global_publisher_interceptors: Mutex<Vec<Arc<dyn PublisherInterceptorAny>>>,
     global_subscriber_interceptors: Mutex<Vec<Arc<dyn SubscriberInterceptorAny>>>,
@@ -123,116 +119,6 @@ impl LocalEventBusInner {
             subscription_handler_pool_size: options.subscription_handler_pool_size,
             delivery_limits: options.delivery_limits,
         }
-    }
-
-    /// Marks the bus as started.
-    ///
-    /// # Returns
-    /// `true` when this call changed state from stopped to started.
-    pub(crate) fn mark_started(&self) -> EventBusResult<bool> {
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        match lifecycle.state {
-            LifecycleState::Started => return Ok(false),
-            LifecycleState::Stopping => {
-                return Err(EventBusError::start_failed("previous shutdown is still in progress"));
-            }
-            LifecycleState::Stopped => {}
-        }
-        if lifecycle.executor.is_some() || lifecycle.delay_scheduler.is_some() {
-            return Err(EventBusError::start_failed(
-                "previous shutdown is still draining subscriber work",
-            ));
-        }
-        if self.processing_tracker.has_active()? {
-            return Err(EventBusError::start_failed(
-                "previous shutdown still has active subscriber work",
-            ));
-        }
-        let executor = self
-            .build_subscription_handler_executor()
-            .map_err(start_failed_from_thread_pool_error)?;
-        let delay_scheduler = self
-            .build_delay_scheduler()
-            .map_err(start_failed_from_thread_pool_error)?;
-        lifecycle.executor = Some(executor);
-        lifecycle.delay_scheduler = Some(delay_scheduler);
-        lifecycle.state = LifecycleState::Started;
-        Ok(true)
-    }
-
-    /// Marks the bus as stopping while keeping its handler executor alive.
-    ///
-    /// # Returns
-    /// `true` when this call changed state from started to stopping.
-    pub(crate) fn mark_stopping(&self) -> bool {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        if lifecycle.state != LifecycleState::Started {
-            return false;
-        }
-        lifecycle.state = LifecycleState::Stopping;
-        true
-    }
-
-    /// Marks the bus as stopped and removes its handler executor.
-    ///
-    /// # Returns
-    /// Handler executor when this call changed state from started to stopped.
-    pub(crate) fn mark_stopped(&self) -> Option<FixedThreadPool> {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return None;
-        };
-        if lifecycle.state != LifecycleState::Started {
-            return None;
-        }
-        lifecycle.state = LifecycleState::Stopping;
-        lifecycle.executor.take()
-    }
-
-    /// Removes the handler executor after the bus has entered stopping state.
-    ///
-    /// # Returns
-    /// Handler executor if one is still owned by the bus.
-    pub(crate) fn take_executor(&self) -> Option<FixedThreadPool> {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return None;
-        };
-        lifecycle.executor.take()
-    }
-
-    /// Removes the delayed-delivery scheduler after the bus has entered
-    /// stopping state.
-    ///
-    /// # Returns
-    /// Delayed-delivery scheduler if one is still owned by the bus.
-    pub(crate) fn take_delay_scheduler(&self) -> Option<SingleThreadScheduledExecutorService> {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return None;
-        };
-        lifecycle.delay_scheduler.take()
-    }
-
-    /// Completes a shutdown after subscriptions and runtime resources are
-    /// cleared.
-    pub(crate) fn complete_shutdown(&self) {
-        if let Ok(mut lifecycle) = self.lifecycle.lock() {
-            lifecycle.state = LifecycleState::Stopped;
-        }
-    }
-
-    /// Returns whether the bus is currently started.
-    ///
-    /// # Returns
-    /// `true` if publishing and subscribing are allowed.
-    pub(crate) fn is_started(&self) -> bool {
-        self.lifecycle
-            .lock()
-            .map(|lifecycle| lifecycle.state == LifecycleState::Started)
-            .unwrap_or(false)
     }
 
     /// Allocates a new subscription ID.
@@ -559,257 +445,6 @@ impl LocalEventBusInner {
     /// timeout elapses first.
     pub(crate) fn wait_for_all_idle_timeout(&self, timeout: Duration) -> EventBusResult<bool> {
         self.processing_tracker.wait_for_all_idle_timeout(timeout)
-    }
-
-    /// Submits subscriber processing work to the handler pool.
-    ///
-    /// # Parameters
-    /// - `task`: One-shot task that owns one subscriber delivery.
-    ///
-    /// # Returns
-    /// `Ok(())` when the pool accepts the task.
-    ///
-    /// # Errors
-    /// Returns lock-poisoning or executor rejection errors before the task
-    /// runs.
-    pub(crate) fn submit_processing_task<F>(&self, task: F, allow_stopping: bool) -> EventBusResult<()>
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        let executor = executor_for_dispatch(&lifecycle, allow_stopping)?;
-        submit_processing_task_to_executor(executor, task)
-    }
-
-    /// Schedules delayed subscriber processing without occupying a handler
-    /// worker.
-    ///
-    /// # Parameters
-    /// - `task`: Subscriber processing task accepted by dispatch.
-    /// - `delay`: Delay before the task can enter the handler pool.
-    /// - `subscription_state`: State used to wake the delay when the
-    ///   subscription is cancelled.
-    ///
-    /// # Returns
-    /// `Ok(())` after the delay wait has been scheduled.
-    ///
-    /// # Errors
-    /// Returns executor admission errors if the bus is not accepting dispatch
-    /// or the delayed-delivery executor rejects the delay waiter.
-    pub(crate) fn submit_delayed_processing_task(
-        self: &Arc<Self>,
-        task: ProcessingTask,
-        delay: Duration,
-        subscription_state: Arc<SubscriptionState>,
-        allow_stopping: bool,
-    ) -> EventBusResult<()> {
-        let lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("lifecycle"))?;
-        let delay_scheduler = delay_scheduler_for_dispatch(&lifecycle, allow_stopping)?;
-        let bus = Arc::clone(self);
-        let task_slot = Arc::new(Mutex::new(Some(task)));
-        let registration = Arc::new(Mutex::new(None::<usize>));
-        let fired = Arc::new(Mutex::new(false));
-        let task_for_delay = Arc::clone(&task_slot);
-        let registration_for_delay = Arc::clone(&registration);
-        let fired_for_delay = Arc::clone(&fired);
-        let subscription_for_delay = Arc::clone(&subscription_state);
-        let scheduled = delay_scheduler.schedule(delay, move || {
-            if let Ok(mut fired) = fired_for_delay.lock() {
-                *fired = true;
-            }
-            if let Ok(mut registration) = registration_for_delay.lock()
-                && let Some(registration_id) = registration.take()
-            {
-                subscription_for_delay.unregister_delay_cancellation(registration_id);
-            }
-            if subscription_for_delay.is_active() {
-                let task_for_executor = Arc::clone(&task_for_delay);
-                let result = bus.submit_processing_task(
-                    move || {
-                        if let Ok(mut task) = task_for_executor.lock()
-                            && let Some(task) = task.take()
-                        {
-                            task.run();
-                        }
-                    },
-                    true,
-                );
-                match result {
-                    Ok(()) => {}
-                    Err(error) => {
-                        let recovered_task = match task_for_delay.lock() {
-                            Ok(mut task) => task.take(),
-                            Err(_) => None,
-                        };
-                        if let Some(task) = recovered_task {
-                            task.reject(&error);
-                        }
-                    }
-                }
-            }
-            Ok::<(), EventBusError>(())
-        });
-        let handle = match scheduled {
-            Ok(handle) => handle,
-            Err(error) => {
-                return Err(EventBusError::execution_rejected(error.to_string()));
-            }
-        };
-        if fired.lock().map(|fired| *fired).unwrap_or(true) {
-            return Ok(());
-        }
-        let task_for_cancel = Arc::clone(&task_slot);
-        let handle_for_cancel = Arc::new(Mutex::new(Some(handle)));
-        let registration_id = subscription_state.register_delay_cancellation(move || {
-            if let Ok(mut handle) = handle_for_cancel.lock()
-                && let Some(handle) = handle.take()
-                && handle.cancel() == CancelResult::Cancelled
-                && let Ok(mut task) = task_for_cancel.lock()
-            {
-                let _ = task.take();
-            }
-        });
-        if let Some(registration_id) = registration_id
-            && let Ok(mut registration) = registration.lock()
-        {
-            if fired.lock().map(|fired| *fired).unwrap_or(true) {
-                subscription_state.unregister_delay_cancellation(registration_id);
-            } else {
-                *registration = Some(registration_id);
-            }
-        }
-        Ok(())
-    }
-
-    /// Builds the subscription handler executor.
-    ///
-    /// # Returns
-    /// A fixed thread pool configured for subscriber processing.
-    ///
-    /// # Errors
-    /// Returns executor build errors from `rs-thread-pool`.
-    fn build_subscription_handler_executor(&self) -> Result<FixedThreadPool, ExecutorServiceBuilderError> {
-        let mut builder = FixedThreadPool::builder()
-            .pool_size(self.subscription_handler_pool_size)
-            .thread_name_prefix("qubit-event-bus-subscriber");
-        if let Some(capacity) = self.delivery_limits.handler_queue_capacity() {
-            builder = builder.queue_capacity(capacity);
-        }
-        builder.build()
-    }
-
-    /// Builds the delayed-delivery scheduled executor service.
-    ///
-    /// # Returns
-    /// A scheduled executor service used to wait for delayed deliveries.
-    ///
-    /// # Errors
-    /// Returns executor build errors from `rs-executor`.
-    fn build_delay_scheduler(&self) -> Result<SingleThreadScheduledExecutorService, ExecutorServiceBuilderError> {
-        SingleThreadScheduledExecutorService::new("qubit-event-bus-delay")
-    }
-}
-
-/// Returns the executor if the current lifecycle allows dispatch.
-pub(super) fn executor_for_dispatch(
-    lifecycle: &LocalEventBusLifecycle,
-    allow_stopping: bool,
-) -> EventBusResult<&FixedThreadPool> {
-    if lifecycle.state != LifecycleState::Started && !(allow_stopping && lifecycle.state == LifecycleState::Stopping) {
-        return Err(EventBusError::not_started());
-    }
-    lifecycle.executor.as_ref().ok_or_else(EventBusError::not_started)
-}
-
-/// Returns the delayed-delivery scheduler if the lifecycle allows dispatch.
-pub(super) fn delay_scheduler_for_dispatch(
-    lifecycle: &LocalEventBusLifecycle,
-    allow_stopping: bool,
-) -> EventBusResult<&SingleThreadScheduledExecutorService> {
-    if lifecycle.state != LifecycleState::Started && !(allow_stopping && lifecycle.state == LifecycleState::Stopping) {
-        return Err(EventBusError::not_started());
-    }
-    lifecycle
-        .delay_scheduler
-        .as_ref()
-        .ok_or_else(EventBusError::not_started)
-}
-
-/// Converts an executor build failure into a local event-bus startup failure.
-fn start_failed_from_thread_pool_error(error: ExecutorServiceBuilderError) -> EventBusError {
-    EventBusError::start_failed(error.to_string())
-}
-
-/// Submits subscriber processing work to the executor.
-pub(super) fn submit_processing_task_to_executor<F>(executor: &FixedThreadPool, task: F) -> EventBusResult<()>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let mut task = Some(task);
-    executor
-        .submit_callable(move || {
-            let task = take_subscription_task(&mut task)?;
-            task();
-            Ok::<(), EventBusError>(())
-        })
-        .map(|_handle| ())
-        .map_err(|error| EventBusError::execution_rejected(error.to_string()))
-}
-
-/// Takes a one-shot subscription task from executor state.
-///
-/// # Parameters
-/// - `task`: Mutable one-shot task slot.
-///
-/// # Returns
-/// Task to invoke exactly once.
-///
-/// # Errors
-/// Returns [`EventBusError::HandlerFailed`] when the executor invokes the same
-/// callable more than once.
-fn take_subscription_task<F>(task: &mut Option<F>) -> EventBusResult<F>
-where
-    F: FnOnce() + Send + 'static,
-{
-    match task.take() {
-        Some(task) => Ok(task),
-        None => Err(EventBusError::handler_failed(
-            "subscription task was invoked more than once",
-        )),
-    }
-}
-
-/// Lifecycle state protected by the local event bus lifecycle lock.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum LifecycleState {
-    Stopped,
-    Started,
-    Stopping,
-}
-
-pub(super) struct LocalEventBusLifecycle {
-    state: LifecycleState,
-    pub(super) executor: Option<FixedThreadPool>,
-    delay_scheduler: Option<SingleThreadScheduledExecutorService>,
-}
-
-impl LocalEventBusLifecycle {
-    /// Creates a stopped lifecycle without a handler executor.
-    ///
-    /// # Returns
-    /// Stopped lifecycle state.
-    fn stopped() -> Self {
-        Self {
-            state: LifecycleState::Stopped,
-            executor: None,
-            delay_scheduler: None,
-        }
     }
 }
 

@@ -19,10 +19,10 @@ use qubit_executor::ScheduledExecutorService;
 use qubit_thread_pool::FixedThreadPool;
 
 use super::LocalEventBusInner;
-use super::LocalEventBusLifecycle;
-use super::delay_scheduler_for_dispatch;
-use super::executor_for_dispatch;
-use super::submit_processing_task_to_executor;
+use super::lifecycle::LocalEventBusLifecycle;
+use super::lifecycle::delay_scheduler_for_dispatch;
+use super::lifecycle::executor_for_dispatch;
+use super::scheduling::submit_processing_task_to_executor;
 use crate::EventBusError;
 use crate::EventBusResult;
 use crate::core::SubscriptionState;
