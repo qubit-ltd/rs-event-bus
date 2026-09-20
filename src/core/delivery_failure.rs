@@ -12,6 +12,13 @@ use crate::EventBusError;
 use crate::PublishReceipt;
 
 /// Dead-letter result attached to a final delivery failure.
+///
+/// ```
+/// use qubit_event_bus::DeadLetterOutcome;
+///
+/// let outcome = DeadLetterOutcome::NotConfigured;
+/// assert!(matches!(outcome, DeadLetterOutcome::NotConfigured));
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DeadLetterOutcome {
     /// No dead-letter strategy applied.
@@ -33,6 +40,17 @@ pub enum DeadLetterOutcome {
 
 /// Structured report emitted once after a subscriber delivery reaches a
 /// terminal failure.
+///
+/// A `DeliveryFailure` is supplied to delivery-failure observers by the
+/// backend. The fields are intentionally read-only; this example shows the
+/// public type used by observer code without constructing an internal report.
+///
+/// ```
+/// use qubit_event_bus::DeliveryFailure;
+///
+/// let report: Option<DeliveryFailure> = None;
+/// assert!(report.is_none());
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DeliveryFailure {
     event_id: String,
