@@ -195,10 +195,27 @@ impl BatchPublishResult {
         self.items.len()
     }
     /// Returns items whose receipt contains at least one accepted delivery.
+    ///
+    /// Dropped, filtered-only, rejected-only, and globally failed items are not
+    /// counted. This count is not mutually exclusive with `failure_count()`:
+    /// one item may have both accepted and rejected subscriber deliveries.
     pub fn accepted_count(&self) -> usize {
         self.items
             .iter()
-            .filter(|item| item.result().is_ok())
+            .filter(|item| {
+                matches!(
+                    item.result(),
+                    Ok(receipt)
+                        if matches!(
+                            receipt.outcome(),
+                            PublishOutcome::Dispatched(items)
+                                if items.iter().any(|item| matches!(
+                                    item.status(),
+                                    DispatchStatus::Accepted
+                                ))
+                        )
+                )
+            })
             .count()
     }
     /// Returns publisher-dropped items.
