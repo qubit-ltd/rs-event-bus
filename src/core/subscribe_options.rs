@@ -206,6 +206,7 @@ where
 ///
 /// # Returns
 /// Strategy that always returns `Ok(None)`.
+#[must_use]
 pub fn discard_dead_letters<T>() -> impl DeadLetterStrategyCallback<T>
 where
     T: 'static,
@@ -220,6 +221,7 @@ where
 ///
 /// # Returns
 /// Strategy that stores a [`DeadLetterRecord`] with diagnostic metadata.
+#[must_use]
 pub fn standard_dead_letters_to<T>(dead_letter_topic: Topic<DeadLetterPayload>) -> impl DeadLetterStrategyCallback<T>
 where
     T: Clone + Send + Sync + 'static,
@@ -242,6 +244,7 @@ where
 ///
 /// # Returns
 /// Strategy that creates a dead-letter topic from the original topic name.
+#[must_use]
 pub fn prefixed_dead_letters<T>(prefix: &str) -> impl DeadLetterStrategyCallback<T>
 where
     T: Clone + Send + Sync + 'static,
@@ -285,6 +288,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Builder with default auto acknowledgement and no retry.
+    #[must_use]
     pub fn builder() -> SubscribeOptionsBuilder<T> {
         SubscribeOptionsBuilder::new()
     }
@@ -293,6 +297,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Options with auto acknowledgement and no filter.
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             ack_mode: AckMode::Auto,
@@ -312,12 +317,16 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Configured acknowledgement mode.
+    #[must_use]
+    #[inline]
     pub const fn ack_mode(&self) -> AckMode {
         self.ack_mode
     }
 
     /// Returns the shared application rule, or `None` for default
     /// classification.
+    #[must_use]
+    #[inline]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<EventBusError>>> {
         self.retry_rule.as_ref()
     }
@@ -326,12 +335,16 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// `Some` when subscriber retry is configured.
+    #[must_use]
+    #[inline]
     pub fn retry_options(&self) -> Option<&RetryPolicy> {
         self.retry_options.as_ref()
     }
 
     /// Returns the shared explicit cancellation token, or `None` when absent.
     /// The token only applies when a retry policy is configured.
+    #[must_use]
+    #[inline]
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }
@@ -340,6 +353,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Priority value. Higher values are submitted first by the local backend.
+    #[must_use]
+    #[inline]
     pub const fn priority(&self) -> i32 {
         self.priority
     }
@@ -348,6 +363,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// Handler count.
+    #[must_use]
+    #[inline]
     pub fn error_handler_count(&self) -> usize {
         self.error_handlers.len()
     }
@@ -400,6 +417,7 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// `true` when the event should be handled. Returns `false` if the filter
     /// panics, so direct callers do not receive user callback unwinds.
+    #[must_use]
     pub fn should_handle(&self, envelope: &EventEnvelope<T>) -> bool {
         self.try_should_handle(envelope).unwrap_or(false)
     }

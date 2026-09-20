@@ -11,6 +11,23 @@
 use crate::EventBusError;
 
 /// Result of publishing one event to the local dispatch path.
+///
+/// The receipt describes publisher admission and subscriber admission. It
+/// does not wait for subscriber handlers to finish.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{PublishOutcome, PublishReceipt};
+///
+/// let receipt = PublishReceipt::new(
+///     "input-1".to_owned(),
+///     Some("dispatched-1".to_owned()),
+///     PublishOutcome::Dropped,
+/// );
+/// assert_eq!(receipt.input_event_id(), "input-1");
+/// assert!(!receipt.has_rejections());
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PublishReceipt {
     input_event_id: String,
@@ -20,6 +37,7 @@ pub struct PublishReceipt {
 
 impl PublishReceipt {
     /// Creates a receipt for a published event.
+    #[must_use]
     pub fn new(input_event_id: String, dispatched_event_id: Option<String>, outcome: PublishOutcome) -> Self {
         Self {
             input_event_id,
@@ -29,27 +47,58 @@ impl PublishReceipt {
     }
 
     /// Returns the identifier supplied by the publisher.
+    ///
+    /// # Returns
+    /// The input envelope's identifier, before any publisher interceptor
+    /// transforms it.
+    #[must_use]
+    #[inline]
     pub fn input_event_id(&self) -> &str {
         &self.input_event_id
     }
 
     /// Returns the identifier after publisher interceptors ran.
+    ///
+    /// # Returns
+    /// `Some` with the dispatched envelope's identifier when interception
+    /// produced an envelope, or `None` when the event was dropped.
+    #[must_use]
+    #[inline]
     pub fn dispatched_event_id(&self) -> Option<&str> {
         self.dispatched_event_id.as_deref()
     }
 
     /// Returns the dispatch outcome.
+    ///
+    /// # Returns
+    /// [`PublishOutcome::Dropped`] when interception stopped publication, or
+    /// [`PublishOutcome::Dispatched`] with one result per matching subscriber.
+    #[must_use]
+    #[inline]
     pub fn outcome(&self) -> &PublishOutcome {
         &self.outcome
     }
 
     /// Returns whether any subscriber delivery was rejected.
+    ///
+    /// # Returns
+    /// `true` when at least one dispatched subscriber has a rejected status;
+    /// publisher drops and filtered deliveries return `false`.
+    #[must_use]
+    #[inline]
     pub fn has_rejections(&self) -> bool {
         matches!(&self.outcome, PublishOutcome::Dispatched(items) if items.iter().any(|item| matches!(item.status(), DispatchStatus::Rejected(_))))
     }
 }
 
 /// Outcome of publisher interception and subscriber dispatch.
+///
+/// ```
+/// use qubit_event_bus::PublishOutcome;
+///
+/// let outcome = PublishOutcome::Dropped;
+/// assert!(matches!(outcome, PublishOutcome::Dropped));
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PublishOutcome {
     /// The publisher interceptor intentionally dropped the event.
@@ -59,6 +108,19 @@ pub enum PublishOutcome {
 }
 
 /// Result for one subscriber in a publish snapshot.
+///
+/// A value is obtained from [`PublishReceipt::outcome`] after a publish.
+///
+/// ```
+/// use qubit_event_bus::{PublishOutcome, PublishReceipt};
+///
+/// let receipt = PublishReceipt::new("input".into(), None, PublishOutcome::Dropped);
+/// if let PublishOutcome::Dispatched(results) = receipt.outcome() {
+///     for result in results {
+///         let _subscriber_id = result.subscriber_id();
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SubscriberDispatchResult {
     subscription_id: usize,
@@ -77,22 +139,45 @@ impl SubscriberDispatchResult {
     }
 
     /// Returns the unique subscription identifier.
+    ///
+    /// # Returns
+    /// The internal identifier assigned when this subscription was registered.
+    #[must_use]
+    #[inline]
     pub fn subscription_id(&self) -> usize {
         self.subscription_id
     }
 
     /// Returns the application subscriber identifier.
+    ///
+    /// # Returns
+    /// The caller-provided identifier for the subscriber, not the subscription
+    /// identifier.
+    #[must_use]
+    #[inline]
     pub fn subscriber_id(&self) -> &str {
         &self.subscriber_id
     }
 
     /// Returns the admission status.
+    ///
+    /// # Returns
+    /// The subscriber admission result; it does not represent handler
+    /// completion.
+    #[must_use]
+    #[inline]
     pub fn status(&self) -> &DispatchStatus {
         &self.status
     }
 }
 
 /// Admission status for one subscriber delivery.
+///
+/// ```
+/// use qubit_event_bus::DispatchStatus;
+///
+/// assert!(matches!(DispatchStatus::Accepted, DispatchStatus::Accepted));
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DispatchStatus {
     /// The subscriber task was accepted.
@@ -104,6 +189,8 @@ pub enum DispatchStatus {
 }
 
 /// One item in a best-effort batch publish.
+///
+/// Batch items are returned by [`BatchPublishResult::items`] in input order.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishItem {
     index: usize,
@@ -112,6 +199,8 @@ pub struct BatchPublishItem {
 }
 
 /// Compatibility view of batch items that failed before admission.
+///
+/// Batch failures are available from [`BatchPublishResult::failures`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishFailure {
     index: usize,
@@ -120,20 +209,37 @@ pub struct BatchPublishFailure {
 }
 impl BatchPublishFailure {
     /// Returns the input index.
+    ///
+    /// # Returns
+    /// Zero-based position of the event in the batch passed to `publish_all`.
+    #[must_use]
+    #[inline]
     pub fn index(&self) -> usize {
         self.index
     }
     /// Returns the input event identifier.
+    ///
+    /// # Returns
+    /// Identifier of the input event whose publication failed before a receipt
+    /// could be produced.
+    #[must_use]
+    #[inline]
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
     /// Returns the global publication error.
+    ///
+    /// # Returns
+    /// Error raised before subscriber admission for this batch item.
+    #[must_use]
+    #[inline]
     pub fn error(&self) -> &EventBusError {
         &self.error
     }
 }
 
 impl BatchPublishItem {
+    /// Returns an item produced by a best-effort batch publication.
     pub(crate) fn new(index: usize, event_id: String, result: Result<PublishReceipt, EventBusError>) -> Self {
         Self {
             index,
@@ -142,20 +248,50 @@ impl BatchPublishItem {
         }
     }
     /// Returns the input index.
+    ///
+    /// # Returns
+    /// Zero-based position of this event in the original batch.
+    #[must_use]
+    #[inline]
     pub fn index(&self) -> usize {
         self.index
     }
     /// Returns the original event identifier.
+    ///
+    /// # Returns
+    /// Identifier from the input envelope, before publisher interception.
+    #[must_use]
+    #[inline]
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
     /// Returns the per-event publish result.
+    ///
+    /// # Returns
+    /// `Ok` with a receipt when publishing reached admission, or `Err` with
+    /// the global publication error.
+    #[must_use]
+    #[inline]
     pub fn result(&self) -> &Result<PublishReceipt, EventBusError> {
         &self.result
     }
 }
 
 /// Summary of best-effort batch publication.
+///
+/// ```
+/// use qubit_event_bus::{EventEnvelope, LocalEventBus, Topic};
+///
+/// let bus = LocalEventBus::started().unwrap();
+/// let topic = Topic::<String>::try_new("batch.docs").unwrap();
+/// let result = bus
+///     .publish_all(vec![EventEnvelope::create(topic, "payload".to_owned())])
+///     .unwrap();
+/// assert_eq!(result.total_count(), 1);
+/// for item in result.items() {
+///     assert_eq!(item.index(), 0);
+/// }
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishResult {
     items: Vec<BatchPublishItem>,
@@ -178,10 +314,21 @@ impl BatchPublishResult {
         Self { items, failures }
     }
     /// Returns per-event results in input order.
+    ///
+    /// # Returns
+    /// All batch items, including successful, dropped, rejected, and globally
+    /// failed publications.
+    #[must_use]
+    #[inline]
     pub fn items(&self) -> &[BatchPublishItem] {
         &self.items
     }
     /// Returns the input item count.
+    ///
+    /// # Returns
+    /// Number of events supplied to the batch operation.
+    #[must_use]
+    #[inline]
     pub fn total_count(&self) -> usize {
         self.items.len()
     }
@@ -190,6 +337,7 @@ impl BatchPublishResult {
     /// Dropped, filtered-only, rejected-only, and globally failed items are not
     /// counted. This count is not mutually exclusive with `failure_count()`:
     /// one item may have both accepted and rejected subscriber deliveries.
+    #[must_use]
     pub fn accepted_count(&self) -> usize {
         self.items
             .iter()
@@ -210,6 +358,10 @@ impl BatchPublishResult {
             .count()
     }
     /// Returns publisher-dropped items.
+    ///
+    /// # Returns
+    /// Number of items whose publisher interceptor returned no envelope.
+    #[must_use]
     pub fn dropped_count(&self) -> usize {
         self.items
             .iter()
@@ -217,6 +369,11 @@ impl BatchPublishResult {
             .count()
     }
     /// Returns items with a global publish error or subscriber rejection.
+    ///
+    /// # Returns
+    /// Number of items with either a global error or at least one rejected
+    /// subscriber. This count can overlap with `accepted_count()`.
+    #[must_use]
     pub fn failure_count(&self) -> usize {
         self.items
             .iter()
@@ -224,10 +381,19 @@ impl BatchPublishResult {
             .count()
     }
     /// Returns items that have a global publish error.
+    ///
+    /// # Returns
+    /// Global publication failures keyed by the original batch index.
+    #[must_use]
+    #[inline]
     pub fn failures(&self) -> &[BatchPublishFailure] {
         &self.failures
     }
     /// Returns whether no item had a global error or subscriber rejection.
+    ///
+    /// # Returns
+    /// `true` when every item avoided global errors and subscriber rejections.
+    #[must_use]
     pub fn is_success(&self) -> bool {
         self.failure_count() == 0
     }
