@@ -13,7 +13,7 @@ use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
 use super::LocalEventBus;
-use super::run_with_retry;
+use super::run_dispatch_with_retry;
 use crate::BatchPublishItem;
 use crate::BatchPublishResult;
 use crate::DeadLetterPayload;
@@ -133,7 +133,7 @@ impl LocalEventBus {
             return Err(error);
         }
         let original_envelope = envelope.clone();
-        let envelope = match run_with_retry(options.retry_options(), options.retry_rule(), None, || {
+        let envelope = match run_dispatch_with_retry(options.retry_options(), options.retry_rule(), || {
             let Some(envelope) = self.apply_global_publisher_interceptors(original_envelope.clone())? else {
                 return Ok(None);
             };
@@ -297,7 +297,7 @@ impl LocalEventBus {
         let mut results = Vec::with_capacity(subscriptions.len());
         for subscription in subscriptions {
             let subscription = Arc::clone(&subscription);
-            let status = match run_with_retry(retry_options, retry_rule, None, || {
+            let status = match run_dispatch_with_retry(retry_options, retry_rule, || {
                 subscription.dispatch(Box::new(envelope.clone()), Arc::clone(&self.inner), allow_stopping)
             }) {
                 Ok(DispatchAdmission::Accepted) => DispatchStatus::Accepted,

@@ -11,11 +11,15 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use super::super::local_event_bus_inner::LocalEventBusInner;
 use super::LocalEventBus;
+use super::retry_delivery::HandlerDelivery;
+use super::retry_delivery::HandlerRunFailure;
 use crate::Acknowledgement;
 use crate::DeadLetterOriginalPayload;
 use crate::DeadLetterOutcome;
 use crate::DeadLetterPayload;
+use crate::DeliveryFailure;
 use crate::DispatchStatus;
 use crate::EventBusError;
 use crate::EventBusResult;
@@ -29,6 +33,39 @@ use crate::core::subscribe_options::normalize_dead_letter_error;
 
 /// Handles a terminal subscriber failure.
 pub(super) fn handle_subscription_failure<T>(
+    inner: &Arc<LocalEventBusInner>,
+    subscriber_id: &str,
+    options: &SubscribeOptions<T>,
+    failure: HandlerRunFailure<T>,
+) where
+    T: Clone + Send + Sync + 'static,
+{
+    let HandlerRunFailure {
+        subscription_id,
+        error,
+        delivery,
+    } = failure;
+    let HandlerDelivery {
+        delivered,
+        acknowledgement,
+    } = delivery;
+    let event_bus = LocalEventBus {
+        inner: Arc::clone(inner),
+    };
+    let dead_letter = route_dead_letter(options, subscriber_id, &delivered, &error, &acknowledgement, &event_bus);
+    let failure = DeliveryFailure::new(
+        delivered.id().to_string(),
+        delivered.topic().name().to_string(),
+        subscription_id,
+        subscriber_id.to_string(),
+        error,
+        acknowledgement.is_acked(),
+        dead_letter,
+    );
+    inner.observe_delivery_failure(&failure);
+}
+
+fn route_dead_letter<T>(
     options: &SubscribeOptions<T>,
     subscriber_id: &str,
     delivered: &EventEnvelope<T>,

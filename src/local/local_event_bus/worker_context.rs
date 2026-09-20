@@ -33,12 +33,17 @@ pub(super) struct SubscriptionWorkerContext {
 
 impl SubscriptionWorkerContext {
     /// Marks the current thread as processing subscriber work for a bus.
-    pub(super) fn enter(bus_id: usize) -> Self {
+    fn enter(bus_id: usize) -> Self {
         SUBSCRIPTION_WORKER_BUS_IDS.with(|bus_ids| {
             bus_ids.borrow_mut().push(bus_id);
         });
         Self { bus_id }
     }
+}
+
+/// Marks the current thread as processing subscriber work for a bus.
+pub(super) fn enter_subscription_worker(bus_id: usize) -> SubscriptionWorkerContext {
+    SubscriptionWorkerContext::enter(bus_id)
 }
 
 impl Drop for SubscriptionWorkerContext {
