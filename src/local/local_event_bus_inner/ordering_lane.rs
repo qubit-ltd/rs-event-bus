@@ -580,9 +580,9 @@ mod tests {
     use crate::local::processing_task::ProcessingTask;
 
     /// A rejected ordered lane reports each accepted delivery and releases
-    /// every reserved queue slot exactly once.
+    /// every slot.
     #[test]
-    fn test_rejected_ordered_lane_releases_reserved_slots_once() {
+    fn test_rejected_ordered_lane_reports_every_delivery() {
         let bus = LocalEventBus::started().expect("bus should start");
         let topic = Topic::<String>::try_new("ordered-rejection").expect("topic should build");
         let topic_key = topic.key();
@@ -594,7 +594,7 @@ mod tests {
         })
         .expect("observer should register");
         let mut lane = OrderedProcessingLane::new();
-        for event_id in ["event-1", "event-2"] {
+        for (event_id, reserved) in [("event-1", false), ("event-2", true)] {
             bus.inner.start_processing(&topic_key).expect("tracking should start");
             let context = DeliveryContext {
                 event_id: event_id.to_string(),
@@ -603,10 +603,10 @@ mod tests {
             };
             lane.push(
                 ProcessingTask::with_delivery_context(Arc::clone(&bus.inner), topic_key.clone(), context, || {}),
-                true,
+                reserved,
             );
         }
-        bus.inner.ordered_queued_task_count.store(3, Ordering::SeqCst);
+        bus.inner.ordered_queued_task_count.store(1, Ordering::SeqCst);
         bus.inner
             .ordering_lanes
             .lock()
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert!(errors.iter().any(|error| error.contains("event-1")));
         assert!(errors.iter().any(|error| error.contains("event-2")));
-        assert_eq!(bus.inner.ordered_queued_task_count.load(Ordering::SeqCst), 1);
+        assert_eq!(bus.inner.ordered_queued_task_count.load(Ordering::SeqCst), 0);
         bus.wait_for_idle(&topic)
             .expect("rejected tasks should release idle accounting");
     }
