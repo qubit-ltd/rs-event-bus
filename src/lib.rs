@@ -59,10 +59,6 @@ pub use core::Subscription;
 pub use core::SubscriptionHandle;
 pub use core::Topic;
 pub use core::TopicKey;
-#[cfg(coverage)]
-pub use core::coverage_exercise_core_defensive_paths;
-#[cfg(coverage)]
-pub use core::coverage_exercise_event_bus_factory_default_regions;
 pub use core::discard_dead_letters;
 pub use core::prefixed_dead_letters;
 pub use core::standard_dead_letters_to;
@@ -78,9 +74,3 @@ pub use local::SubscriberInterceptor;
 pub use local::SubscriberInterceptorAny;
 pub use local::SubscriberInterceptorAnyChain;
 pub use local::SubscriberInterceptorChain;
-#[cfg(coverage)]
-pub use local::coverage_exercise_local_event_bus_defensive_paths;
-#[cfg(coverage)]
-pub use local::coverage_exercise_local_event_bus_inner_defensive_paths;
-#[cfg(coverage)]
-pub use local::coverage_exercise_subscriber_interceptor_chain_defensive_paths;

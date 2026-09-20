@@ -13,10 +13,6 @@ use qubit_event_bus::PublishReceipt;
 use qubit_event_bus::SubscribeOptions;
 use qubit_event_bus::Subscription;
 use qubit_event_bus::Topic;
-#[cfg(coverage)]
-use qubit_event_bus::coverage_exercise_core_defensive_paths;
-#[cfg(coverage)]
-use qubit_event_bus::coverage_exercise_event_bus_factory_default_regions;
 
 #[derive(Clone, Debug)]
 struct FailingStartBus;
@@ -202,19 +198,4 @@ fn test_event_bus_factory_create_started_returns_started_bus() {
     let bus = EventBusFactory::create_started(&factory).expect("start should succeed");
 
     assert!(bus.shutdown());
-}
-
-#[cfg(coverage)]
-#[test]
-fn test_coverage_event_bus_factory_default_regions() {
-    let errors = coverage_exercise_event_bus_factory_default_regions();
-    let observations = coverage_exercise_core_defensive_paths();
-
-    assert_eq!(errors.len(), 16);
-    assert!(
-        errors
-            .iter()
-            .all(|error| error.kind() == "unsupported_operation")
-    );
-    assert!(observations.into_iter().all(|observed| observed));
 }

@@ -7,8 +7,6 @@
 // =============================================================================
 //! Shared state for the local event bus.
 
-#[cfg(coverage)]
-mod coverage;
 mod ordering_lane;
 mod processing_tracker;
 
@@ -25,8 +23,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-#[cfg(coverage)]
-pub use coverage::coverage_exercise_local_event_bus_inner_defensive_paths;
 use qubit_collections::map::OrderedIndexMap;
 use qubit_executor::CancelResult;
 use qubit_executor::ExecutorService;
@@ -502,25 +498,6 @@ impl LocalEventBusInner {
         self.global_default_dead_letter_strategy.clone()
     }
 
-    /// Adds a global publisher interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Interceptor applied to every published payload type.
-    ///
-    /// # Returns
-    /// `Ok(())` when the entry is stored.
-    #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn add_global_publisher_interceptor(
-        &self,
-        interceptor: Arc<dyn PublisherInterceptorAny>,
-    ) -> EventBusResult<()> {
-        self.global_publisher_interceptors
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
-            .push(interceptor);
-        Ok(())
-    }
-
     /// Returns registered global publisher interceptors.
     ///
     /// # Returns
@@ -533,25 +510,6 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("global_publisher_interceptors"))?
             .clone())
-    }
-
-    /// Adds a publisher interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Type-erased interceptor entry.
-    ///
-    /// # Returns
-    /// `Ok(())` when the entry is stored.
-    #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn add_publisher_interceptor(
-        &self,
-        interceptor: Arc<dyn PublisherInterceptorEntry>,
-    ) -> EventBusResult<()> {
-        self.publisher_interceptors
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("publisher_interceptors"))?
-            .push(interceptor);
-        Ok(())
     }
 
     /// Returns registered publisher interceptors.
@@ -568,25 +526,6 @@ impl LocalEventBusInner {
             .clone())
     }
 
-    /// Adds a type-erased subscriber interceptor entry.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Shared typed interceptor adapter.
-    ///
-    /// # Returns
-    /// `Ok(())` when the entry is stored.
-    #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn add_subscriber_interceptor(
-        &self,
-        interceptor: Arc<dyn SubscriberInterceptorEntry>,
-    ) -> EventBusResult<()> {
-        self.subscriber_interceptors
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
-            .push(interceptor);
-        Ok(())
-    }
-
     /// Returns registered subscriber interceptors.
     ///
     /// # Returns
@@ -599,25 +538,6 @@ impl LocalEventBusInner {
             .lock()
             .map_err(|_| EventBusError::lock_poisoned("subscriber_interceptors"))?
             .clone())
-    }
-
-    /// Adds a global subscriber interceptor.
-    ///
-    /// # Parameters
-    /// - `interceptor`: Interceptor applied to every subscriber payload type.
-    ///
-    /// # Returns
-    /// `Ok(())` when the entry is stored.
-    #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn add_global_subscriber_interceptor(
-        &self,
-        interceptor: Arc<dyn SubscriberInterceptorAny>,
-    ) -> EventBusResult<()> {
-        self.global_subscriber_interceptors
-            .lock()
-            .map_err(|_| EventBusError::lock_poisoned("global_subscriber_interceptors"))?
-            .push(interceptor);
-        Ok(())
     }
 
     /// Returns registered global subscriber interceptors.
