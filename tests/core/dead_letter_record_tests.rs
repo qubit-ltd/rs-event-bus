@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 use qubit_event_bus::DEAD_LETTER_EVENT_ID;
 use qubit_event_bus::DEAD_LETTER_FAILURE_TYPE;
 use qubit_event_bus::DEAD_LETTER_ORDERING_KEY;
