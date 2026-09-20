@@ -52,6 +52,16 @@ reason = "Type-erased metadata is the interceptor-facing view of the public even
 
 [[exceptions]]
 rule = "public-type-layout"
+path = "src/core/publish_receipt.rs"
+reason = "Publish receipt value objects share one public dispatch contract."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/core/delivery_failure.rs"
+reason = "Delivery failure and dead-letter outcome value objects share one public failure contract."
+
+[[exceptions]]
+rule = "public-type-layout"
 path = "src/core/subscribe_options.rs"
 reason = "Dead-letter strategy contracts are documented next to SubscribeOptions."
 
