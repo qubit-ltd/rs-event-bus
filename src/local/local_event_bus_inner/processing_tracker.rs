@@ -187,3 +187,108 @@ impl ProcessingTracker {
 fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration> {
     timeout.checked_sub(started_at.elapsed())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::ProcessingTracker;
+    use crate::EventBusError;
+    use crate::TopicKey;
+
+    fn topic_key<T: 'static>(name: &str) -> TopicKey {
+        TopicKey::new(name.to_owned(), TypeId::of::<T>())
+    }
+
+    #[test]
+    fn test_processing_tracker_counts_topics_and_notifies_last_finish() {
+        let tracker = Arc::new(ProcessingTracker::new());
+        let string_topic = topic_key::<String>("shared-name");
+        let integer_topic = topic_key::<i32>("shared-name");
+
+        assert!(!tracker.has_active().expect("empty tracker should be readable"));
+        assert!(
+            tracker
+                .wait_for_idle_timeout(&string_topic, Duration::ZERO)
+                .expect("empty topic should be idle")
+        );
+
+        tracker.start(&string_topic).expect("first work should start");
+        tracker.start(&string_topic).expect("second work should start");
+        tracker.start(&integer_topic).expect("other topic work should start");
+        assert!(tracker.has_active().expect("active tracker should be readable"));
+        assert!(
+            !tracker
+                .wait_for_idle_timeout(&string_topic, Duration::from_millis(1))
+                .expect("busy topic timeout should be observable")
+        );
+
+        tracker.finish(&string_topic);
+        assert!(
+            !tracker
+                .wait_for_idle_timeout(&string_topic, Duration::from_millis(1))
+                .expect("one remaining task should keep the topic busy")
+        );
+        assert!(
+            !tracker
+                .wait_for_all_idle_timeout(Duration::from_millis(1))
+                .expect("another topic should keep the tracker busy")
+        );
+
+        let waiting_tracker = Arc::clone(&tracker);
+        let waiting_topic = string_topic.clone();
+        let waiter = thread::spawn(move || {
+            waiting_tracker
+                .wait_for_idle(&waiting_topic)
+                .expect("last finish should wake the topic waiter");
+        });
+        tracker.finish(&string_topic);
+        waiter.join().expect("topic waiter should finish");
+
+        tracker.finish(&integer_topic);
+        tracker.wait_for_all_idle().expect("all work should be finished");
+        assert!(
+            tracker
+                .wait_for_all_idle_timeout(Duration::ZERO)
+                .expect("empty tracker should be idle")
+        );
+        assert!(!tracker.has_active().expect("finished tracker should be readable"));
+    }
+
+    #[test]
+    fn test_processing_tracker_reports_poisoned_state_for_every_wait_mode() {
+        let tracker = Arc::new(ProcessingTracker::new());
+        let topic = topic_key::<String>("poisoned");
+        let poisoned = Arc::clone(&tracker);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.counts.lock().expect("tracker should initially lock");
+                panic!("poison processing tracker for error-path coverage");
+            })
+            .join()
+            .is_err()
+        );
+
+        assert!(matches!(tracker.start(&topic), Err(EventBusError::LockPoisoned { .. })));
+        assert!(matches!(
+            tracker.wait_for_idle(&topic),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+        assert!(matches!(
+            tracker.wait_for_idle_timeout(&topic, std::time::Duration::ZERO),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+        assert!(matches!(
+            tracker.wait_for_all_idle(),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+        assert!(matches!(
+            tracker.wait_for_all_idle_timeout(std::time::Duration::ZERO),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+        assert!(matches!(tracker.has_active(), Err(EventBusError::LockPoisoned { .. })));
+    }
+}

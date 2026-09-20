@@ -8,7 +8,9 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use qubit_event_bus::EventBusResult;
 use qubit_event_bus::EventEnvelope;
+use qubit_event_bus::IntoPublisherInterceptorResult;
 use qubit_event_bus::LocalEventBusFactory;
 use qubit_event_bus::Topic;
 
@@ -38,4 +40,24 @@ fn test_publisher_interceptor_entry_can_enrich_matching_payload_type() {
         received.lock().expect("received headers should lock").as_slice(),
         [Some("true".to_string())]
     );
+}
+
+#[test]
+fn test_publisher_interceptor_result_conversions_preserve_envelopes() {
+    let topic = Topic::<String>::try_new("publisher-result-conversions").expect("topic should build");
+    let envelope = EventEnvelope::create(topic, "payload".to_owned());
+
+    let direct = envelope
+        .clone()
+        .into_publisher_interceptor_result()
+        .expect("direct envelope should convert")
+        .expect("direct envelope should remain present");
+    assert_eq!(direct.payload(), "payload");
+
+    let result: EventBusResult<EventEnvelope<String>> = Ok(envelope);
+    let converted = result
+        .into_publisher_interceptor_result()
+        .expect("successful result should convert")
+        .expect("successful result should remain present");
+    assert_eq!(converted.payload(), "payload");
 }

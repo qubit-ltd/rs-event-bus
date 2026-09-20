@@ -225,7 +225,9 @@ impl LocalEventBusInner {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::sync::atomic::Ordering;
+    use std::thread;
 
     use super::LocalEventBusInner;
     use super::LocalEventBusRuntimeOptions;
@@ -270,5 +272,105 @@ mod tests {
             0,
             "unbounded permits must not mutate the bounded counter"
         );
+    }
+
+    #[test]
+    fn test_interceptor_and_observer_registries_report_poisoned_locks() {
+        let inner = Arc::new(LocalEventBusInner::new(LocalEventBusRuntimeOptions {
+            default_publish_options: HashMap::new(),
+            default_subscribe_options: HashMap::new(),
+            default_dead_letter_strategies: HashMap::new(),
+            global_default_dead_letter_strategy: None,
+            global_publisher_interceptors: Vec::new(),
+            global_subscriber_interceptors: Vec::new(),
+            publisher_interceptors: Vec::new(),
+            subscriber_interceptors: Vec::new(),
+            subscription_handler_pool_size: 1,
+            delivery_limits: DeliveryLimits::default(),
+        }));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.global_publisher_interceptors.lock().unwrap();
+                panic!("poison global publisher interceptors");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.global_publisher_interceptors(),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.publisher_interceptors.lock().unwrap();
+                panic!("poison publisher interceptors");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.publisher_interceptors(),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.subscriber_interceptors.lock().unwrap();
+                panic!("poison subscriber interceptors");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.subscriber_interceptors(),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.global_subscriber_interceptors.lock().unwrap();
+                panic!("poison global subscriber interceptors");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.global_subscriber_interceptors(),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.error_observers.lock().unwrap();
+                panic!("poison error observers");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.add_error_observer(Arc::new(|_| {})),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
+
+        let poisoned = Arc::clone(&inner);
+        assert!(
+            thread::spawn(move || {
+                let _guard = poisoned.delivery_failure_observers.lock().unwrap();
+                panic!("poison delivery failure observers");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            inner.add_delivery_failure_observer(Arc::new(|_| {})),
+            Err(EventBusError::LockPoisoned { .. })
+        ));
     }
 }

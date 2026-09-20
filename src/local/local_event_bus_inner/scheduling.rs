@@ -194,3 +194,20 @@ where
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::take_subscription_task;
+    use crate::EventBusError;
+
+    #[test]
+    fn test_subscription_task_can_only_be_taken_once() {
+        let mut task = Some(|| {});
+
+        assert!(take_subscription_task(&mut task).is_ok());
+        assert!(matches!(
+            take_subscription_task(&mut task),
+            Err(EventBusError::HandlerFailed { .. })
+        ));
+    }
+}

@@ -65,6 +65,7 @@ fn test_event_bus_error_kind_covers_all_variants() {
             EventBusError::shutdown_timed_out(Duration::from_millis(10)),
             "shutdown_timed_out",
         ),
+        (EventBusError::would_deadlock("shutdown"), "would_deadlock"),
         (EventBusError::lock_poisoned("subscriptions"), "lock_poisoned"),
         (EventBusError::type_mismatch("String", "i32"), "type_mismatch"),
         (
@@ -76,6 +77,34 @@ fn test_event_bus_error_kind_covers_all_variants() {
     for (error, expected_kind) in cases {
         assert_eq!(error.kind(), expected_kind);
     }
+}
+
+#[test]
+fn test_retry_completion_diagnostics_expose_source_and_callbacks() {
+    let callback = RetryCallbackFailure::new(
+        RetryCallbackKind::Observer,
+        1,
+        RetryCallbackPhase::TerminalFailure,
+        RetryPanic::StaticStr("completion panic"),
+    );
+    let error = EventBusError::RetryCompletionDiagnostics {
+        source: Box::new(EventBusError::handler_failed("domain failure")),
+        context: Arc::new(RetryContext::new(2, 2)),
+        diagnostics: vec![callback.clone()].into_boxed_slice(),
+    };
+
+    assert_eq!(error.kind(), "retry_completion_diagnostics");
+    assert_eq!(
+        error
+            .retry_completion_source()
+            .expect("wrapper should expose its source"),
+        &EventBusError::handler_failed("domain failure")
+    );
+    assert_eq!(error.completion_callback_failures(), &[callback]);
+
+    let plain = EventBusError::handler_failed("plain failure");
+    assert!(plain.retry_completion_source().is_none());
+    assert!(plain.completion_callback_failures().is_empty());
 }
 
 #[test]

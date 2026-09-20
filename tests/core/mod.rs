@@ -12,6 +12,7 @@ mod acknowledgement_tests;
 mod batch_publish_result_tests;
 mod dead_letter_record_tests;
 mod delivery_failure_tests;
+mod delivery_limits_tests;
 mod error_tests;
 mod event_bus_error_tests;
 mod event_bus_factory_tests;
