@@ -81,8 +81,7 @@ impl ProcessingTask {
     where
         F: FnOnce() + Send + 'static,
     {
-        let mut processing_task =
-            Self::with_delivery_context(bus, topic_key, delivery_context, task);
+        let mut processing_task = Self::with_delivery_context(bus, topic_key, delivery_context, task);
         processing_task.permit = Some(permit);
         processing_task
     }
@@ -97,8 +96,7 @@ impl ProcessingTask {
             ),
             None => format!("delayed delivery rejected: {cause}"),
         };
-        self.bus
-            .observe_error(&EventBusError::execution_rejected(message));
+        self.bus.observe_error(&EventBusError::execution_rejected(message));
     }
 
     /// Runs the processing task exactly once.

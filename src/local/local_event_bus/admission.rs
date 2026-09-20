@@ -2,5 +2,3 @@
 //!
 //! The implementation remains in the legacy parent during the incremental
 //! mechanical split; this module is the stable responsibility boundary.
-
-pub(super) use super::{HandlerDelivery, HandlerRunFailure};

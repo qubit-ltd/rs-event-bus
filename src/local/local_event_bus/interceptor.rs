@@ -1,9 +1,11 @@
 //! Publisher and subscriber interceptor implementations.
 
-use super::super::subscriber_interceptor_chain::{
-    SubscriberInterceptorAnyChain, SubscriberInterceptorChain,
-};
-use crate::{EventBusResult, EventEnvelope, EventEnvelopeMetadata, IntoEventBusResult};
+use super::super::subscriber_interceptor_chain::SubscriberInterceptorAnyChain;
+use super::super::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use crate::EventBusResult;
+use crate::EventEnvelope;
+use crate::EventEnvelopeMetadata;
+use crate::IntoEventBusResult;
 
 /// Converts typed publisher interceptor return values into a common result.
 pub trait IntoPublisherInterceptorResult<T: Clone + Send + Sync + 'static> {
@@ -63,34 +65,25 @@ where
 /// Converts global publisher interceptor return values into a common result.
 pub trait IntoPublisherInterceptorAnyResult {
     /// Converts this value into an optional metadata result.
-    fn into_publisher_interceptor_any_result(self)
-        -> EventBusResult<Option<EventEnvelopeMetadata>>;
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>>;
 }
 impl IntoPublisherInterceptorAnyResult for EventEnvelopeMetadata {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         Ok(Some(self))
     }
 }
 impl IntoPublisherInterceptorAnyResult for Option<EventEnvelopeMetadata> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         Ok(self)
     }
 }
 impl IntoPublisherInterceptorAnyResult for EventBusResult<EventEnvelopeMetadata> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self.map(Some)
     }
 }
 impl IntoPublisherInterceptorAnyResult for EventBusResult<Option<EventEnvelopeMetadata>> {
-    fn into_publisher_interceptor_any_result(
-        self,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn into_publisher_interceptor_any_result(self) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self
     }
 }
@@ -98,20 +91,14 @@ impl IntoPublisherInterceptorAnyResult for EventBusResult<Option<EventEnvelopeMe
 /// Intercepts outgoing metadata for every payload type.
 pub trait PublisherInterceptorAny: Send + Sync + 'static {
     /// Applies the interceptor to outgoing event metadata.
-    fn on_publish(
-        &self,
-        metadata: EventEnvelopeMetadata,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>>;
+    fn on_publish(&self, metadata: EventEnvelopeMetadata) -> EventBusResult<Option<EventEnvelopeMetadata>>;
 }
 impl<F, R> PublisherInterceptorAny for F
 where
     F: Fn(EventEnvelopeMetadata) -> R + Send + Sync + 'static,
     R: IntoPublisherInterceptorAnyResult + 'static,
 {
-    fn on_publish(
-        &self,
-        metadata: EventEnvelopeMetadata,
-    ) -> EventBusResult<Option<EventEnvelopeMetadata>> {
+    fn on_publish(&self, metadata: EventEnvelopeMetadata) -> EventBusResult<Option<EventEnvelopeMetadata>> {
         self(metadata).into_publisher_interceptor_any_result()
     }
 }
@@ -119,11 +106,7 @@ where
 /// Intercepts typed subscriber processing.
 pub trait SubscriberInterceptor<T: Clone + Send + Sync + 'static>: Send + Sync + 'static {
     /// Applies the interceptor to an incoming event and continuation chain.
-    fn on_consume(
-        &self,
-        envelope: EventEnvelope<T>,
-        chain: SubscriberInterceptorChain<T>,
-    ) -> EventBusResult<()>;
+    fn on_consume(&self, envelope: EventEnvelope<T>, chain: SubscriberInterceptorChain<T>) -> EventBusResult<()>;
 }
 impl<T, F, R> SubscriberInterceptor<T> for F
 where
@@ -131,11 +114,7 @@ where
     F: Fn(EventEnvelope<T>, SubscriberInterceptorChain<T>) -> R + Send + Sync + 'static,
     R: IntoEventBusResult + 'static,
 {
-    fn on_consume(
-        &self,
-        envelope: EventEnvelope<T>,
-        chain: SubscriberInterceptorChain<T>,
-    ) -> EventBusResult<()> {
+    fn on_consume(&self, envelope: EventEnvelope<T>, chain: SubscriberInterceptorChain<T>) -> EventBusResult<()> {
         self(envelope, chain).into_event_bus_result()
     }
 }
@@ -143,22 +122,14 @@ where
 /// Intercepts subscriber processing for every payload type.
 pub trait SubscriberInterceptorAny: Send + Sync + 'static {
     /// Applies the interceptor to incoming event metadata and continuation.
-    fn on_consume(
-        &self,
-        metadata: EventEnvelopeMetadata,
-        chain: SubscriberInterceptorAnyChain,
-    ) -> EventBusResult<()>;
+    fn on_consume(&self, metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain) -> EventBusResult<()>;
 }
 impl<F, R> SubscriberInterceptorAny for F
 where
     F: Fn(EventEnvelopeMetadata, SubscriberInterceptorAnyChain) -> R + Send + Sync + 'static,
     R: IntoEventBusResult + 'static,
 {
-    fn on_consume(
-        &self,
-        metadata: EventEnvelopeMetadata,
-        chain: SubscriberInterceptorAnyChain,
-    ) -> EventBusResult<()> {
+    fn on_consume(&self, metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain) -> EventBusResult<()> {
         self(metadata, chain).into_event_bus_result()
     }
 }

@@ -435,10 +435,7 @@ impl Display for EventBusError {
                 write!(formatter, "event bus shutdown timed out after {timeout:?}")
             }
             Self::WouldDeadlock { operation } => {
-                write!(
-                    formatter,
-                    "blocking event bus operation would deadlock: {operation}"
-                )
+                write!(formatter, "blocking event bus operation would deadlock: {operation}")
             }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")
@@ -453,9 +450,7 @@ impl Display for EventBusError {
                 write!(formatter, "unsupported event bus operation: {operation}")
             }
             Self::RetryCompletionDiagnostics {
-                source,
-                diagnostics,
-                ..
+                source, diagnostics, ..
             } => {
                 write!(
                     formatter,
@@ -547,10 +542,7 @@ impl From<RetryError<EventBusError>> for EventBusError {
                     "retry aborted: {last_failure} after {} attempt(s)",
                     context.attempts()
                 )),
-                None => Self::handler_failed(format!(
-                    "retry aborted after {} attempt(s)",
-                    context.attempts()
-                )),
+                None => Self::handler_failed(format!("retry aborted after {} attempt(s)", context.attempts())),
             },
             RetryErrorReason::Exhausted { limit } => match last_failure {
                 Some(AttemptFailure::Error(error)) => error,
@@ -583,10 +575,7 @@ impl From<RetryError<EventBusError>> for EventBusError {
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            _ => Self::handler_failed(format!(
-                "retry stopped after {} attempt(s)",
-                context.attempts()
-            )),
+            _ => Self::handler_failed(format!("retry stopped after {} attempt(s)", context.attempts())),
         };
         if diagnostics.is_empty() {
             mapped

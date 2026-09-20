@@ -158,11 +158,7 @@ fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
         })
         .error_handler(move |_, event, error, acknowledgement| {
             failure_sender
-                .send((
-                    event.payload().clone(),
-                    error.clone(),
-                    acknowledgement.clone(),
-                ))
+                .send((event.payload().clone(), error.clone(), acknowledgement.clone()))
                 .expect("controller waits for failure");
         })
         .dead_letter_strategy(standard_dead_letters_to(dead_letter_topic.clone()))
@@ -184,17 +180,13 @@ fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
     })
     .expect("dead letter subscriber registers");
 
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("same-key"),
-    )
-    .expect("first publish");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("same-key"))
+        .expect("first publish");
     retry_receiver
         .recv_timeout(Duration::from_secs(2))
         .expect("retry selected");
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"),
-    )
-    .expect("queue second delivery on the same ordering lane");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"))
+        .expect("queue second delivery on the same ordering lane");
     token.cancel();
     let (payload, error, acknowledgement) = failure_receiver
         .recv_timeout(Duration::from_secs(2))
@@ -247,8 +239,7 @@ fn test_retry_cancellation_interrupts_backoff_and_releases_ordering_lane() {
     assert!(acknowledgement.is_nacked());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     bus.wait_for_idle(&topic).expect("source drained");
-    bus.wait_for_idle(&dead_letter_topic)
-        .expect("dead letters drained");
+    bus.wait_for_idle(&dead_letter_topic).expect("dead letters drained");
     assert!(failure_receiver.try_recv().is_err());
     assert!(dead_letter_receiver.try_recv().is_err());
 }
@@ -288,14 +279,12 @@ fn test_retry_cancellation_defaults_and_explicit_override_share_sources() {
     )
     .expect("explicit subscriber");
     default_token.cancel();
-    bus.publish(&topic, "first".to_string())
-        .expect("first publish");
+    bus.publish(&topic, "first".to_string()).expect("first publish");
     bus.wait_for_idle(&topic).expect("first drained");
     assert_eq!(defaults_calls.load(Ordering::SeqCst), 0);
     assert_eq!(explicit_calls.load(Ordering::SeqCst), 1);
     explicit_token.cancel();
-    bus.publish(&topic, "second".to_string())
-        .expect("second publish");
+    bus.publish(&topic, "second".to_string()).expect("second publish");
     bus.wait_for_idle(&topic).expect("second drained");
     assert_eq!(defaults_calls.load(Ordering::SeqCst), 0);
     assert_eq!(explicit_calls.load(Ordering::SeqCst), 1);
@@ -320,12 +309,7 @@ fn test_retry_cancellation_during_success_preserves_auto_acknowledgement() {
         move |event| {
             handler_token.cancel();
             sender
-                .send(
-                    event
-                        .acknowledgement()
-                        .expect("delivery acknowledgement")
-                        .clone(),
-                )
+                .send(event.acknowledgement().expect("delivery acknowledgement").clone())
                 .expect("controller waits for successful delivery");
             Ok(())
         },
@@ -343,9 +327,7 @@ fn test_retry_cancellation_during_success_preserves_auto_acknowledgement() {
     )
     .expect("subscriber registers");
     bus.publish(&topic, "payload".to_string()).expect("publish");
-    let acknowledgement = receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("handler succeeds");
+    let acknowledgement = receiver.recv_timeout(Duration::from_secs(2)).expect("handler succeeds");
     bus.wait_for_idle(&topic).expect("delivery drained");
     assert!(acknowledgement.is_acked());
     assert_eq!(errors.load(Ordering::SeqCst), 0);
@@ -403,15 +385,11 @@ fn test_retry_cancellation_token_is_not_cancelled_by_shutdown() {
         &topic,
         move |_| {
             if captured_calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                started_sender
-                    .send(())
-                    .expect("controller waits for first attempt");
+                started_sender.send(()).expect("controller waits for first attempt");
                 handler_gate.wait();
                 Err(EventBusError::handler_failed("retry while draining"))
             } else {
-                finished_sender
-                    .send(())
-                    .expect("controller waits for retry");
+                finished_sender.send(()).expect("controller waits for retry");
                 Ok(())
             }
         },
@@ -491,10 +469,7 @@ fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
             .expect_err("the failure observer should terminate the retry")
     };
 
-    assert!(matches!(
-        retry_error.reason(),
-        RetryErrorReason::CallbackFailed { .. }
-    ));
+    assert!(matches!(retry_error.reason(), RetryErrorReason::CallbackFailed { .. }));
     let EventBusError::RetryCallbackFailed {
         last_failure: Some(last_failure),
         ..
@@ -502,8 +477,7 @@ fn test_retry_conversion_prefers_business_error_over_callback_terminal() {
     else {
         panic!("the callback terminal should retain its business error");
     };
-    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref()
-    else {
+    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref() else {
         panic!("the callback terminal should retain a business attempt failure");
     };
     assert_eq!(message, "callback business sentinel");
@@ -536,10 +510,7 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
         })
         .expect_err("observer cancellation should terminate the retry");
 
-    assert!(matches!(
-        retry_error.reason(),
-        RetryErrorReason::Cancelled { .. }
-    ));
+    assert!(matches!(retry_error.reason(), RetryErrorReason::Cancelled { .. }));
     let EventBusError::RetryCancelled {
         last_failure: Some(last_failure),
         ..
@@ -547,8 +518,7 @@ fn test_retry_conversion_prefers_business_error_over_cancelled_terminal() {
     else {
         panic!("the cancellation terminal should retain its business error");
     };
-    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref()
-    else {
+    let AttemptFailure::Error(EventBusError::HandlerFailed { message }) = last_failure.as_ref() else {
         panic!("the cancellation terminal should retain a business attempt failure");
     };
     assert_eq!(message, "cancelled business sentinel");
@@ -661,10 +631,7 @@ fn test_retry_conversion_preserves_infrastructure_terminal() {
     else {
         panic!("infrastructure failure should use the structured retry wrapper");
     };
-    assert!(matches!(
-        failure,
-        RetryInfrastructureFailure::WorkerSpawn { .. }
-    ));
+    assert!(matches!(failure, RetryInfrastructureFailure::WorkerSpawn { .. }));
     assert!(last_failure.is_none());
     assert_eq!(context.attempts(), 0);
 }
@@ -828,10 +795,7 @@ fn test_retry_conversion_preserves_infrastructure_panicked_last_failure() {
     else {
         panic!("infrastructure failure should use the retry wrapper");
     };
-    assert!(matches!(
-        failure,
-        RetryInfrastructureFailure::WorkerStillRunning { .. }
-    ));
+    assert!(matches!(failure, RetryInfrastructureFailure::WorkerStillRunning { .. }));
     let Some(AttemptFailure::Panicked { panic }) = last_failure.as_deref() else {
         panic!("infrastructure failure should retain the earlier panic");
     };
@@ -849,11 +813,7 @@ fn wait_for_count(counter: &Arc<(Mutex<usize>, Condvar)>, expected: usize) {
     while *count < expected {
         let remaining = TEST_WAIT_TIMEOUT
             .checked_sub(started_at.elapsed())
-            .unwrap_or_else(|| {
-                panic!(
-                    "timed out waiting for counter to reach {expected}; current value is {count}"
-                )
-            });
+            .unwrap_or_else(|| panic!("timed out waiting for counter to reach {expected}; current value is {count}"));
         let (next_count, wait_result) = condvar
             .wait_timeout(count, remaining)
             .expect("counter wait should not poison");
@@ -959,16 +919,12 @@ fn test_publish_delivers_event_to_single_subscriber() {
     let captured = Arc::clone(&received);
 
     bus.subscribe("sub-1", &topic, move |event| {
-        captured
-            .lock()
-            .expect("received events should lock")
-            .push(event);
+        captured.lock().expect("received events should lock").push(event);
         Ok(())
     })
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(received_payloads(&received), vec!["payload".to_string()]);
@@ -989,10 +945,8 @@ fn test_publish_delay_defers_local_delivery() {
 
     let delay = Duration::from_millis(80);
     let started_at = Instant::now();
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "payload".to_string()).with_delay(delay),
-    )
-    .expect("publish should accept delayed event");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "payload".to_string()).with_delay(delay))
+        .expect("publish should accept delayed event");
 
     assert!(
         received_rx.recv_timeout(Duration::from_millis(25)).is_err(),
@@ -1030,8 +984,7 @@ fn test_delayed_delivery_does_not_occupy_handler_worker() {
 
     let published_at = Instant::now();
     bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "delayed".to_string())
-            .with_delay(Duration::from_millis(250)),
+        EventEnvelope::create(topic.clone(), "delayed".to_string()).with_delay(Duration::from_millis(250)),
     )
     .expect("delayed publish should work");
     bus.publish(&topic, "immediate".to_string())
@@ -1072,14 +1025,12 @@ fn test_short_delayed_delivery_does_not_wait_behind_long_delays() {
     let published_at = Instant::now();
     for index in 0..4 {
         bus.publish_envelope(
-            EventEnvelope::create(topic.clone(), format!("long-{index}"))
-                .with_delay(Duration::from_millis(300)),
+            EventEnvelope::create(topic.clone(), format!("long-{index}")).with_delay(Duration::from_millis(300)),
         )
         .expect("long delayed publish should work");
     }
     bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "short".to_string())
-            .with_delay(Duration::from_millis(30)),
+        EventEnvelope::create(topic.clone(), "short".to_string()).with_delay(Duration::from_millis(30)),
     )
     .expect("short delayed publish should work");
 
@@ -1122,10 +1073,7 @@ fn test_delivery_failure_observer_reports_terminal_handler_failure_once() {
     let failures = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&failures);
     bus.add_delivery_failure_observer(move |failure| {
-        captured
-            .lock()
-            .expect("failures should lock")
-            .push(failure.clone())
+        captured.lock().expect("failures should lock").push(failure.clone())
     })
     .expect("observer should register");
     bus.subscribe("failing", &topic, |_event| {
@@ -1235,10 +1183,8 @@ fn test_ordered_delayed_delivery_preserves_same_key_order() {
             .with_delay(Duration::from_millis(120)),
     )
     .expect("first delayed publish should work");
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"),
-    )
-    .expect("second publish should work");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("same-key"))
+        .expect("second publish should work");
 
     assert!(
         received_rx.recv_timeout(Duration::from_millis(50)).is_err(),
@@ -1284,9 +1230,7 @@ fn test_ordered_huge_delay_does_not_become_immediately_ready() {
         received_rx.recv_timeout(Duration::from_millis(50)).is_err(),
         "huge ordered delay should not overflow into immediate delivery"
     );
-    subscription
-        .cancel()
-        .expect("subscription cancellation should succeed");
+    subscription.cancel().expect("subscription cancellation should succeed");
     assert!(
         bus.wait_for_idle_timeout(&topic, Duration::from_millis(150))
             .expect("cancelled huge delayed delivery should become idle")
@@ -1309,9 +1253,7 @@ fn test_delayed_delivery_rejection_does_not_block_scheduler() {
     let (received_tx, received_rx) = mpsc::channel::<String>();
     bus.subscribe("sub", &topic, move |event| {
         let payload = event.payload().clone();
-        received_tx
-            .send(payload.clone())
-            .expect("received payload should send");
+        received_tx.send(payload.clone()).expect("received payload should send");
         if payload == "first" {
             wait_for_gate(&captured_release);
         }
@@ -1329,10 +1271,10 @@ fn test_delayed_delivery_rejection_does_not_block_scheduler() {
     );
     bus.publish(&topic, "second".to_string())
         .expect("second publish should fill the handler queue");
-    let first_delay = EventEnvelope::create(topic.clone(), "delayed-1".to_string())
-        .with_delay(Duration::from_millis(30));
-    let second_delay = EventEnvelope::create(topic.clone(), "delayed-2".to_string())
-        .with_delay(Duration::from_millis(40));
+    let first_delay =
+        EventEnvelope::create(topic.clone(), "delayed-1".to_string()).with_delay(Duration::from_millis(30));
+    let second_delay =
+        EventEnvelope::create(topic.clone(), "delayed-2".to_string()).with_delay(Duration::from_millis(40));
     let first_receipt = bus
         .publish_envelope(first_delay)
         .expect("first delay should return a receipt");
@@ -1344,10 +1286,7 @@ fn test_delayed_delivery_rejection_does_not_block_scheduler() {
             matches!(receipt.outcome(), PublishOutcome::Dispatched(items) if matches!(items[0].status(), DispatchStatus::Rejected(EventBusError::ExecutionRejected { .. })))
         );
     }
-    assert!(
-        received_rx.try_recv().is_err(),
-        "rejected handlers must not run"
-    );
+    assert!(received_rx.try_recv().is_err(), "rejected handlers must not run");
     release_gate(&release);
     assert_eq!(
         received_rx
@@ -1370,26 +1309,17 @@ fn test_concurrent_subscribe_and_shutdown_never_retains_old_subscriptions() {
         let worker = std::thread::spawn(move || {
             worker_barrier.wait();
             (0..20)
-                .filter_map(|index| {
-                    worker_bus
-                        .subscribe(format!("sub-{index}"), &worker_topic, |_| ())
-                        .ok()
-                })
+                .filter_map(|index| worker_bus.subscribe(format!("sub-{index}"), &worker_topic, |_| ()).ok())
                 .collect::<Vec<_>>()
         });
         barrier.wait();
         assert!(bus.shutdown());
         let subscriptions = worker.join().expect("subscription worker should finish");
-        assert!(
-            subscriptions
-                .iter()
-                .all(|subscription| !subscription.is_active())
-        );
+        assert!(subscriptions.iter().all(|subscription| !subscription.is_active()));
         assert!(bus.start().expect("restart should work after cleanup"));
         bus.publish(&topic, "after-restart".to_string())
             .expect("publish should work");
-        bus.wait_for_idle(&topic)
-            .expect("restarted topic should become idle");
+        bus.wait_for_idle(&topic).expect("restarted topic should become idle");
         assert!(bus.shutdown());
     }
 }
@@ -1454,14 +1384,10 @@ fn test_ordering_key_serializes_same_key_delivery_on_multi_worker_pool() {
             let (lock, condvar) = &*captured_release;
             let mut released = lock.lock().expect("release gate should lock");
             while !*released {
-                released = condvar
-                    .wait(released)
-                    .expect("release gate wait should not poison");
+                released = condvar.wait(released).expect("release gate wait should not poison");
             }
         } else if event.payload() == "second" {
-            second_started_tx
-                .send(())
-                .expect("second start should send");
+            second_started_tx.send(()).expect("second start should send");
         }
         captured_sequence
             .lock()
@@ -1471,22 +1397,16 @@ fn test_ordering_key_serializes_same_key_delivery_on_multi_worker_pool() {
     })
     .expect("subscribe should work");
 
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
-    )
-    .expect("first publish should work");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"))
+        .expect("first publish should work");
     first_started_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("first handler should start");
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"),
-    )
-    .expect("second publish should work");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"))
+        .expect("second publish should work");
 
     assert!(
-        second_started_rx
-            .recv_timeout(Duration::from_millis(30))
-            .is_err(),
+        second_started_rx.recv_timeout(Duration::from_millis(30)).is_err(),
         "same ordering key should wait for the previous delivery"
     );
     release_gate(&release);
@@ -1533,20 +1453,13 @@ fn test_ordering_key_delivery_respects_bounded_queue_capacity() {
     })
     .expect("subscription should register");
 
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
-    )
-    .expect("first publish should occupy the ordered lane");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"))
+        .expect("first publish should occupy the ordered lane");
     wait_for_count(&started, 1);
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"),
-    )
-    .expect("second publish should fill the ordered lane queue");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "second".to_string()).with_ordering_key("account-1"))
+        .expect("second publish should fill the ordered lane queue");
     let receipt = bus
-        .publish_envelope(
-            EventEnvelope::create(topic.clone(), "third".to_string())
-                .with_ordering_key("account-1"),
-        )
+        .publish_envelope(EventEnvelope::create(topic.clone(), "third".to_string()).with_ordering_key("account-1"))
         .expect("third ordered publish should return a receipt");
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
@@ -1594,19 +1507,13 @@ fn test_ordering_key_yields_between_keys_on_single_worker_pool() {
     })
     .expect("subscription should register");
 
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "a1".to_string()).with_ordering_key("account-a"),
-    )
-    .expect("first A event should publish");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "a1".to_string()).with_ordering_key("account-a"))
+        .expect("first A event should publish");
     wait_for_count(&first_started, 1);
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "a2".to_string()).with_ordering_key("account-a"),
-    )
-    .expect("second A event should queue");
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "b1".to_string()).with_ordering_key("account-b"),
-    )
-    .expect("B event should queue behind the running worker");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "a2".to_string()).with_ordering_key("account-a"))
+        .expect("second A event should queue");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "b1".to_string()).with_ordering_key("account-b"))
+        .expect("B event should queue behind the running worker");
 
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
@@ -1626,26 +1533,18 @@ fn test_publish_broadcasts_to_multiple_subscribers() {
     for index in 0..3 {
         let captured = Arc::clone(&received);
         bus.subscribe(format!("sub-{index}"), &topic, move |event| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event);
+            captured.lock().expect("received events should lock").push(event);
             Ok(())
         })
         .expect("subscribe should work");
     }
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(
         received_payloads(&received),
-        vec![
-            "payload".to_string(),
-            "payload".to_string(),
-            "payload".to_string()
-        ]
+        vec!["payload".to_string(), "payload".to_string(), "payload".to_string()]
     );
 }
 
@@ -1659,29 +1558,22 @@ fn test_topic_isolation_and_unsubscribe() {
 
     let subscription = bus
         .subscribe("sub-1", &target, move |event| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event);
+            captured.lock().expect("received events should lock").push(event);
             Ok(())
         })
         .expect("subscribe should work");
 
-    bus.publish(&other, "ignored".to_string())
-        .expect("publish should work");
-    bus.wait_for_idle(&other)
-        .expect("other topic should become idle");
+    bus.publish(&other, "ignored".to_string()).expect("publish should work");
+    bus.wait_for_idle(&other).expect("other topic should become idle");
     bus.publish(&target, "received".to_string())
         .expect("publish should work");
-    bus.wait_for_idle(&target)
-        .expect("target topic should become idle");
+    bus.wait_for_idle(&target).expect("target topic should become idle");
     subscription.cancel().expect("cancel should work");
     subscription.cancel().expect("cancel should be idempotent");
     assert!(!subscription.is_active());
     bus.publish(&target, "ignored-after-cancel".to_string())
         .expect("publish should work");
-    bus.wait_for_idle(&target)
-        .expect("target topic should become idle");
+    bus.wait_for_idle(&target).expect("target topic should become idle");
 
     assert_eq!(received_payloads(&received), vec!["received".to_string()]);
 }
@@ -1716,10 +1608,7 @@ fn test_subscribe_options_filter_events() {
         "sub-1",
         &topic,
         move |event| {
-            captured
-                .lock()
-                .expect("received events should lock")
-                .push(event);
+            captured.lock().expect("received events should lock").push(event);
             Ok(())
         },
         options,
@@ -1807,43 +1696,31 @@ fn test_publisher_interceptor_can_modify_or_drop_events() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
     bus.subscribe("sub-1", &topic, move |event| {
-        captured
-            .lock()
-            .expect("received events should lock")
-            .push(event);
+        captured.lock().expect("received events should lock").push(event);
         Ok(())
     })
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.publish(&dropped, "dropped".to_string())
         .expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
-    bus.wait_for_idle(&dropped)
-        .expect("topic should become idle");
+    bus.wait_for_idle(&dropped).expect("topic should become idle");
 
     let events = received.lock().expect("received events should lock");
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].headers().get("intercepted"),
-        Some(&"true".to_string())
-    );
+    assert_eq!(events[0].headers().get("intercepted"), Some(&"true".to_string()));
 }
 
 #[test]
 fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-            metadata.with_header("global-bare", "seen")
-        })
+        .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| metadata.with_header("global-bare", "seen"))
         .expect("global publisher interceptor should register");
     factory
         .add_global_publisher_interceptor(|metadata: EventEnvelopeMetadata| {
-            Ok::<EventEnvelopeMetadata, EventBusError>(
-                metadata.with_header("global-result", "seen"),
-            )
+            Ok::<EventEnvelopeMetadata, EventBusError>(metadata.with_header("global-result", "seen"))
         })
         .expect("global publisher interceptor should register");
     factory
@@ -1852,42 +1729,32 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
                 Ok::<Option<EventEnvelopeMetadata>, EventBusError>(None)
             } else {
                 let payload_type_name = metadata.payload_type_name();
-                Ok(Some(
-                    metadata.with_header("global-publisher", payload_type_name),
-                ))
+                Ok(Some(metadata.with_header("global-publisher", payload_type_name)))
             }
         })
         .expect("global publisher interceptor should register");
     let bus = factory.create_started().expect("bus should start");
     let string_topic = create_topic("global-publisher-string");
-    let number_topic =
-        Topic::<i32>::try_new("global-publisher-number").expect("number topic should build");
+    let number_topic = Topic::<i32>::try_new("global-publisher-number").expect("number topic should build");
     let dropped_topic = create_topic("global-publisher-dropped");
     let string_received = Arc::new(Mutex::new(Vec::new()));
     let number_received = Arc::new(Mutex::new(Vec::new()));
     let captured_strings = Arc::clone(&string_received);
     let captured_numbers = Arc::clone(&number_received);
     bus.subscribe("string-sub", &string_topic, move |event| {
-        captured_strings
-            .lock()
-            .expect("string events should lock")
-            .push(event);
+        captured_strings.lock().expect("string events should lock").push(event);
         Ok(())
     })
     .expect("string subscription should register");
     bus.subscribe("number-sub", &number_topic, move |event| {
-        captured_numbers
-            .lock()
-            .expect("number events should lock")
-            .push(event);
+        captured_numbers.lock().expect("number events should lock").push(event);
         Ok(())
     })
     .expect("number subscription should register");
 
     bus.publish(&string_topic, "payload".to_string())
         .expect("string publish should work");
-    bus.publish(&number_topic, 7)
-        .expect("number publish should work");
+    bus.publish(&number_topic, 7).expect("number publish should work");
     bus.publish(&dropped_topic, "dropped".to_string())
         .expect("dropped publish should be accepted");
     bus.wait_for_idle(&string_topic)
@@ -1905,10 +1772,7 @@ fn test_global_publisher_interceptor_applies_to_all_payload_types_and_can_drop()
         string_events[0].headers().get("global-publisher"),
         Some(&string_events[0].topic().payload_type_name().to_string())
     );
-    assert_eq!(
-        string_events[0].headers().get("global-bare"),
-        Some(&"seen".to_string())
-    );
+    assert_eq!(string_events[0].headers().get("global-bare"), Some(&"seen".to_string()));
     assert_eq!(
         string_events[0].headers().get("global-result"),
         Some(&"seen".to_string())
@@ -1948,11 +1812,7 @@ fn test_global_publisher_interceptor_error_is_reported_to_publish_error_handling
         .expect_err("global publisher interceptor error should reject publish");
 
     assert_eq!(error.kind(), "interceptor_failed");
-    assert!(
-        error
-            .to_string()
-            .contains("global publisher interceptor failed")
-    );
+    assert!(error.to_string().contains("global publisher interceptor failed"));
     let publish_errors = publish_errors.lock().expect("publish errors should lock");
     assert_eq!(publish_errors.len(), 1);
     assert_eq!(publish_errors[0].kind(), "interceptor_failed");
@@ -1962,11 +1822,9 @@ fn test_global_publisher_interceptor_error_is_reported_to_publish_error_handling
 fn test_global_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_global_publisher_interceptor(
-            |_metadata: EventEnvelopeMetadata| -> EventEnvelopeMetadata {
-                panic!("global publisher interceptor panic");
-            },
-        )
+        .add_global_publisher_interceptor(|_metadata: EventEnvelopeMetadata| -> EventEnvelopeMetadata {
+            panic!("global publisher interceptor panic");
+        })
         .expect("global publisher interceptor should register");
     let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("global-publisher-interceptor-panic");
@@ -1977,22 +1835,16 @@ fn test_global_publisher_interceptor_panic_is_reported_to_publish_error_handling
     };
 
     assert_eq!(error.kind(), "interceptor_failed");
-    assert!(
-        error
-            .to_string()
-            .contains("global publisher interceptor panicked")
-    );
+    assert!(error.to_string().contains("global publisher interceptor panicked"));
 }
 
 #[test]
 fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_publisher_interceptor::<String, _>(
-            |_event: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
-                panic!("publisher interceptor panic");
-            },
-        )
+        .add_publisher_interceptor::<String, _>(|_event: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
+            panic!("publisher interceptor panic");
+        })
         .expect("interceptor should be registered");
     let bus = factory.create_started().expect("bus should start");
     let topic = create_topic("publisher-interceptor-panic");
@@ -2020,11 +1872,8 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
         .build();
     let error = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        bus.publish_envelope_with_options(
-            EventEnvelope::create(topic, "payload".to_string()),
-            options,
-        )
-        .expect_err("publisher interceptor panic should become publish error")
+        bus.publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options)
+            .expect_err("publisher interceptor panic should become publish error")
     };
 
     assert_eq!(error.kind(), "interceptor_failed");
@@ -2033,11 +1882,7 @@ fn test_publisher_interceptor_panic_is_reported_to_publish_error_handling() {
     assert_eq!(publish_errors.len(), 1);
     assert_eq!(publish_errors[0].kind(), "interceptor_failed");
     let observed_errors = observed_errors.lock().expect("observed errors should lock");
-    assert!(
-        observed_errors
-            .iter()
-            .any(|error| error.kind() == "interceptor_failed")
-    );
+    assert!(observed_errors.iter().any(|error| error.kind() == "interceptor_failed"));
     assert!(observed_errors.iter().any(|error| matches!(
         error,
         EventBusError::ErrorHandlerFailed { phase, message }
@@ -2074,10 +1919,7 @@ fn test_publish_retry_retries_publisher_interceptor_failures() {
         .build();
     let result = {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        bus.publish_envelope_with_options(
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-            options,
-        )
+        bus.publish_envelope_with_options(EventEnvelope::create(topic.clone(), "payload".to_string()), options)
     };
 
     result.expect("transient interceptor failure should be retried");
@@ -2102,9 +1944,7 @@ fn test_retry_eventually_succeeds() {
         move |_| {
             let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
             if attempt < 3 {
-                Err(EventBusError::handler_failed(format!(
-                    "attempt {attempt} failed"
-                )))
+                Err(EventBusError::handler_failed(format!("attempt {attempt} failed")))
             } else {
                 Ok(())
             }
@@ -2113,8 +1953,7 @@ fn test_retry_eventually_succeeds() {
     )
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -2177,20 +2016,14 @@ fn test_retry_success_ignores_nack_from_failed_attempt() {
     })
     .expect("dead letter subscriber should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     assert_eq!(errors.load(Ordering::SeqCst), 0);
-    assert!(
-        dead_letters
-            .lock()
-            .expect("dead letters should lock")
-            .is_empty()
-    );
+    assert!(dead_letters.lock().expect("dead letters should lock").is_empty());
 }
 
 #[test]
@@ -2215,9 +2048,7 @@ fn test_manual_nack_returning_ok_is_retried() {
         &topic,
         move |event| {
             let attempt = captured_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-            let acknowledgement = event
-                .acknowledgement()
-                .expect("acknowledgement should be injected");
+            let acknowledgement = event.acknowledgement().expect("acknowledgement should be injected");
             if attempt == 1 {
                 acknowledgement.nack();
             } else {
@@ -2229,8 +2060,7 @@ fn test_manual_nack_returning_ok_is_retried() {
     )
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
@@ -2274,9 +2104,7 @@ fn test_retry_failure_ignores_ack_from_failed_attempt() {
                     .expect("acknowledgement should be injected")
                     .ack();
             }
-            Err(EventBusError::handler_failed(format!(
-                "attempt {attempt} failed"
-            )))
+            Err(EventBusError::handler_failed(format!("attempt {attempt} failed")))
         },
         options,
     )
@@ -2291,18 +2119,14 @@ fn test_retry_failure_ignores_ack_from_failed_attempt() {
     })
     .expect("dead letter subscriber should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     assert_eq!(errors.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        dead_letters.lock().expect("dead letters should lock").len(),
-        1
-    );
+    assert_eq!(dead_letters.lock().expect("dead letters should lock").len(), 1);
 }
 
 #[test]
@@ -2361,8 +2185,7 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
     })
     .expect("dead letter subscriber should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
@@ -2372,10 +2195,7 @@ fn test_exhausted_retry_calls_error_handler_and_dead_letter_strategy() {
     let events = dead_letters.lock().expect("dead letters should lock");
     assert_eq!(events.len(), 1);
     assert!(events[0].is_dead_letter());
-    assert_eq!(
-        events[0].headers().get("subscriber-id"),
-        Some(&"sub-1".to_string())
-    );
+    assert_eq!(events[0].headers().get("subscriber-id"), Some(&"sub-1".to_string()));
     let payload = events[0]
         .payload()
         .downcast_original_payload_ref::<String>()
@@ -2417,8 +2237,7 @@ fn test_standard_dead_letter_strategy_helper_routes_standard_payload() {
     )
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
@@ -2435,9 +2254,7 @@ fn test_standard_dead_letter_strategy_helper_routes_standard_payload() {
         "sub"
     );
     assert_eq!(
-        events[0]
-            .payload()
-            .downcast_original_payload_ref::<String>(),
+        events[0].payload().downcast_original_payload_ref::<String>(),
         Some(&"payload".to_string())
     );
 }
@@ -2468,18 +2285,12 @@ fn test_discard_dead_letter_strategy_helper_suppresses_dead_letter_routing() {
     )
     .expect("subscription should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
 
-    assert!(
-        dead_letters
-            .lock()
-            .expect("dead letters should lock")
-            .is_empty()
-    );
+    assert!(dead_letters.lock().expect("dead letters should lock").is_empty());
 }
 
 #[test]
@@ -2488,18 +2299,13 @@ fn test_manual_ack_is_exposed_to_handler() {
     let topic = create_topic("manual-ack");
     let acknowledgements = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&acknowledgements);
-    let options = SubscribeOptions::<String>::builder()
-        .ack_mode(AckMode::Manual)
-        .build();
+    let options = SubscribeOptions::<String>::builder().ack_mode(AckMode::Manual).build();
 
     bus.subscribe_with_options(
         "sub-1",
         &topic,
         move |event| {
-            let acknowledgement = event
-                .acknowledgement()
-                .expect("manual ack should be injected")
-                .clone();
+            let acknowledgement = event.acknowledgement().expect("manual ack should be injected").clone();
             acknowledgement.ack();
             captured
                 .lock()
@@ -2511,13 +2317,10 @@ fn test_manual_ack_is_exposed_to_handler() {
     )
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
-    let acknowledgements = acknowledgements
-        .lock()
-        .expect("acknowledgements should lock");
+    let acknowledgements = acknowledgements.lock().expect("acknowledgements should lock");
     assert_eq!(acknowledgements.len(), 1);
     assert!(acknowledgements[0].is_acked());
     assert!(!acknowledgements[0].is_nacked());
@@ -2550,12 +2353,7 @@ fn test_manual_pending_ack_retries_then_routes_dead_letter() {
         "sub",
         &topic,
         move |event| {
-            assert!(
-                !event
-                    .acknowledgement()
-                    .expect("ack should exist")
-                    .is_completed()
-            );
+            assert!(!event.acknowledgement().expect("ack should exist").is_completed());
             captured_attempts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         },
@@ -2566,8 +2364,7 @@ fn test_manual_pending_ack_retries_then_routes_dead_letter() {
         captured_dead_letters.fetch_add(1, Ordering::SeqCst);
     })
     .expect("dead-letter subscription should register");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letters should become idle");
@@ -2598,8 +2395,7 @@ fn test_manual_pending_ack_error_handler_can_suppress_dead_letter() {
         .build();
     bus.subscribe_with_options("sub", &topic, |_| (), options)
         .expect("subscription should register");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     assert_eq!(dead_letters.load(Ordering::SeqCst), 0);
 }
@@ -2635,10 +2431,7 @@ fn test_manual_nack_is_treated_as_subscription_failure() {
         "sub-1",
         &topic,
         move |event| {
-            event
-                .acknowledgement()
-                .expect("manual ack should be injected")
-                .nack();
+            event.acknowledgement().expect("manual ack should be injected").nack();
             Ok(())
         },
         options,
@@ -2655,8 +2448,7 @@ fn test_manual_nack_is_treated_as_subscription_failure() {
     })
     .expect("dead letter subscriber should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
@@ -2696,13 +2488,8 @@ fn test_subscribe_error_handler_ack_short_circuits_failure_handling() {
         })
         .build();
 
-    bus.subscribe_with_options(
-        "sub-1",
-        &topic,
-        |_| Err(EventBusError::handler_failed("boom")),
-        options,
-    )
-    .expect("subscribe should work");
+    bus.subscribe_with_options("sub-1", &topic, |_| Err(EventBusError::handler_failed("boom")), options)
+        .expect("subscribe should work");
 
     let captured_dead_letters = Arc::clone(&dead_letters);
     bus.subscribe("dlq-sub", &dead_letter_topic, move |event| {
@@ -2714,20 +2501,14 @@ fn test_subscribe_error_handler_ack_short_circuits_failure_handling() {
     })
     .expect("dead letter subscriber should register");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
     bus.wait_for_idle(&dead_letter_topic)
         .expect("dead letter topic should become idle");
 
     assert_eq!(first_errors.load(Ordering::SeqCst), 1);
     assert_eq!(second_errors.load(Ordering::SeqCst), 0);
-    assert!(
-        dead_letters
-            .lock()
-            .expect("dead letters should lock")
-            .is_empty()
-    );
+    assert!(dead_letters.lock().expect("dead letters should lock").is_empty());
 }
 
 #[test]
@@ -2756,18 +2537,14 @@ fn test_manual_nack_notifies_all_error_handlers_until_acknowledged() {
         "sub-1",
         &topic,
         |event| {
-            event
-                .acknowledgement()
-                .expect("manual ack should be injected")
-                .nack();
+            event.acknowledgement().expect("manual ack should be injected").nack();
             Ok(())
         },
         options,
     )
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(first_errors.load(Ordering::SeqCst), 1);
@@ -2800,10 +2577,8 @@ fn test_handler_panic_is_reported_and_does_not_block_idle_wait() {
 
     {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        bus.publish(&topic, "payload".to_string())
-            .expect("publish should work");
-        bus.wait_for_idle(&topic)
-            .expect("topic should become idle after panic");
+        bus.publish(&topic, "payload".to_string()).expect("publish should work");
+        bus.wait_for_idle(&topic).expect("topic should become idle after panic");
     }
 
     assert_eq!(errors.load(Ordering::SeqCst), 1);
@@ -2852,10 +2627,7 @@ fn test_subscriber_interceptor_wraps_handler_and_can_short_circuit() {
     let captured_handler = Arc::clone(&sequence);
 
     bus.subscribe("sub-1", &handled_topic, move |event| {
-        assert_eq!(
-            event.headers().get("intercepted"),
-            Some(&"true".to_string())
-        );
+        assert_eq!(event.headers().get("intercepted"), Some(&"true".to_string()));
         captured_handler
             .lock()
             .expect("sequence should lock")
@@ -2915,9 +2687,7 @@ fn test_configured_handler_pool_limits_concurrent_subscriber_work() {
         let running = captured_current.fetch_add(1, Ordering::SeqCst) + 1;
         captured_max_seen.fetch_max(running, Ordering::SeqCst);
         if event.payload() == "first" {
-            started_tx
-                .send(())
-                .expect("started signal should be received");
+            started_tx.send(()).expect("started signal should be received");
             captured_release_rx
                 .lock()
                 .expect("release receiver should lock")
@@ -2975,8 +2745,7 @@ fn test_global_subscriber_interceptor_wraps_all_payload_types_and_can_short_circ
         .expect("global subscriber interceptor should register");
     let bus = factory.create_started().expect("bus should start");
     let string_topic = create_topic("global-subscriber-string");
-    let number_topic =
-        Topic::<i32>::try_new("global-subscriber-number").expect("number topic should build");
+    let number_topic = Topic::<i32>::try_new("global-subscriber-number").expect("number topic should build");
     let dropped_topic = create_topic("global-subscriber-dropped");
     let captured_string_sequence = Arc::clone(&sequence);
     bus.subscribe("string-sub", &string_topic, move |event| {
@@ -3006,8 +2775,7 @@ fn test_global_subscriber_interceptor_wraps_all_payload_types_and_can_short_circ
 
     bus.publish(&string_topic, "payload".to_string())
         .expect("string publish should work");
-    bus.publish(&number_topic, 9)
-        .expect("number publish should work");
+    bus.publish(&number_topic, 9).expect("number publish should work");
     bus.publish(&dropped_topic, "ignored".to_string())
         .expect("dropped publish should work");
     bus.wait_for_idle(&string_topic)
@@ -3041,9 +2809,7 @@ fn test_global_subscriber_interceptor_error_is_observed() {
     factory
         .add_global_subscriber_interceptor(
             |_metadata: EventEnvelopeMetadata, _chain: SubscriberInterceptorAnyChain| {
-                Err(EventBusError::handler_failed(
-                    "global subscriber interceptor failed",
-                ))
+                Err(EventBusError::handler_failed("global subscriber interceptor failed"))
             },
         )
         .expect("global subscriber interceptor should register");
@@ -3068,9 +2834,7 @@ fn test_global_subscriber_interceptor_error_is_observed() {
         .expect("publish should succeed");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(subscribe_errors.iter().any(|error| matches!(
         error,
         EventBusError::InterceptorFailed { phase, message }
@@ -3083,9 +2847,7 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_error() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_global_subscriber_interceptor(
-            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
-                chain.proceed()
-            },
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| chain.proceed(),
         )
         .expect("global subscriber interceptor should register");
     let bus = factory.create_started().expect("bus should start");
@@ -3118,9 +2880,7 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_error() {
         .expect("publish should succeed");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert_eq!(
         subscribe_errors.as_slice(),
         [EventBusError::handler_failed(
@@ -3134,9 +2894,7 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_panic() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_global_subscriber_interceptor(
-            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| {
-                chain.proceed()
-            },
+            |_metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain| chain.proceed(),
         )
         .expect("global subscriber interceptor should register");
     let bus = factory.create_started().expect("bus should start");
@@ -3169,13 +2927,8 @@ fn test_global_subscriber_interceptor_preserves_downstream_handler_panic() {
         bus.wait_for_idle(&topic).expect("topic should become idle");
     }
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
-    assert_eq!(
-        subscribe_errors.as_slice(),
-        [EventBusError::handler_panicked()]
-    );
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
+    assert_eq!(subscribe_errors.as_slice(), [EventBusError::handler_panicked()]);
 }
 
 #[test]
@@ -3222,9 +2975,7 @@ fn test_subscriber_interceptor_owned_equal_error_is_reported_as_interceptor_fail
         .expect("publish should succeed");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(matches!(
         subscribe_errors.as_slice(),
         [EventBusError::InterceptorFailed { phase, message }]
@@ -3292,8 +3043,7 @@ fn assert_retry_interceptor_replacement_is_owned(case: &str, retry_error: fn() -
                 if let Err(error) = chain.proceed(event) {
                     let weak_context = Arc::downgrade(retry_context_for_interceptor_test(&error));
                     drop(error);
-                    captured_fingerprint_retained_context
-                        .store(weak_context.upgrade().is_some(), Ordering::SeqCst);
+                    captured_fingerprint_retained_context.store(weak_context.upgrade().is_some(), Ordering::SeqCst);
                 }
                 Err(retry_error())
             },
@@ -3324,9 +3074,7 @@ fn assert_retry_interceptor_replacement_is_owned(case: &str, retry_error: fn() -
         fingerprint_retained_context.load(Ordering::SeqCst),
         "{case}: the provenance record should retain the context allocation"
     );
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(
         matches!(
             subscribe_errors.as_slice(),
@@ -3339,34 +3087,22 @@ fn assert_retry_interceptor_replacement_is_owned(case: &str, retry_error: fn() -
 
 #[test]
 fn test_subscriber_interceptor_replaced_retry_timed_out_is_interceptor_failure() {
-    assert_retry_interceptor_replacement_is_owned(
-        "timed-out",
-        retry_timed_out_for_interceptor_test,
-    );
+    assert_retry_interceptor_replacement_is_owned("timed-out", retry_timed_out_for_interceptor_test);
 }
 
 #[test]
 fn test_subscriber_interceptor_replaced_retry_cancelled_is_interceptor_failure() {
-    assert_retry_interceptor_replacement_is_owned(
-        "cancelled",
-        retry_cancelled_for_interceptor_test,
-    );
+    assert_retry_interceptor_replacement_is_owned("cancelled", retry_cancelled_for_interceptor_test);
 }
 
 #[test]
 fn test_subscriber_interceptor_replaced_retry_callback_is_interceptor_failure() {
-    assert_retry_interceptor_replacement_is_owned(
-        "callback",
-        retry_callback_failed_for_interceptor_test,
-    );
+    assert_retry_interceptor_replacement_is_owned("callback", retry_callback_failed_for_interceptor_test);
 }
 
 #[test]
 fn test_subscriber_interceptor_replaced_retry_infrastructure_is_interceptor_failure() {
-    assert_retry_interceptor_replacement_is_owned(
-        "infrastructure",
-        retry_infrastructure_failed_for_interceptor_test,
-    );
+    assert_retry_interceptor_replacement_is_owned("infrastructure", retry_infrastructure_failed_for_interceptor_test);
 }
 
 #[test]
@@ -3374,9 +3110,7 @@ fn test_global_subscriber_interceptor_panic_is_observed() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_global_subscriber_interceptor(
-            |_metadata: EventEnvelopeMetadata,
-             _chain: SubscriberInterceptorAnyChain|
-             -> EventBusResult<()> {
+            |_metadata: EventEnvelopeMetadata, _chain: SubscriberInterceptorAnyChain| -> EventBusResult<()> {
                 panic!("global subscriber interceptor panic");
             },
         )
@@ -3404,9 +3138,7 @@ fn test_global_subscriber_interceptor_panic_is_observed() {
         bus.wait_for_idle(&topic).expect("topic should become idle");
     }
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(subscribe_errors.iter().any(|error| matches!(
         error,
         EventBusError::InterceptorFailed { phase, message }
@@ -3420,9 +3152,7 @@ fn test_subscriber_interceptor_error_is_reported_as_interceptor_failure() {
     factory
         .add_subscriber_interceptor::<String, _>(
             |_event: EventEnvelope<String>, _chain: SubscriberInterceptorChain<String>| {
-                Err(EventBusError::handler_failed(
-                    "typed subscriber interceptor failed",
-                ))
+                Err(EventBusError::handler_failed("typed subscriber interceptor failed"))
             },
         )
         .expect("subscriber interceptor should register");
@@ -3458,9 +3188,7 @@ fn test_subscriber_interceptor_error_is_reported_as_interceptor_failure() {
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert!(!handler_called.load(Ordering::SeqCst));
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(matches!(
         subscribe_errors.as_slice(),
         [EventBusError::InterceptorFailed { phase, message }]
@@ -3473,9 +3201,7 @@ fn test_subscriber_interceptor_panic_is_reported_as_interceptor_failure() {
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_subscriber_interceptor::<String, _>(
-            |_event: EventEnvelope<String>,
-             _chain: SubscriberInterceptorChain<String>|
-             -> EventBusResult<()> {
+            |_event: EventEnvelope<String>, _chain: SubscriberInterceptorChain<String>| -> EventBusResult<()> {
                 panic!("typed subscriber interceptor panic");
             },
         )
@@ -3503,9 +3229,7 @@ fn test_subscriber_interceptor_panic_is_reported_as_interceptor_failure() {
         bus.wait_for_idle(&topic).expect("topic should become idle");
     }
 
-    let subscribe_errors = subscribe_errors
-        .lock()
-        .expect("subscribe errors should lock");
+    let subscribe_errors = subscribe_errors.lock().expect("subscribe errors should lock");
     assert!(matches!(
         subscribe_errors.as_slice(),
         [EventBusError::InterceptorFailed { phase, message }]
@@ -3525,10 +3249,7 @@ fn test_publish_all_delivers_each_envelope() {
     let captured = Arc::clone(&received);
 
     bus.subscribe("sub-1", &topic, move |event| {
-        captured
-            .lock()
-            .expect("received events should lock")
-            .push(event);
+        captured.lock().expect("received events should lock").push(event);
         Ok(())
     })
     .expect("subscribe should work");
@@ -3537,9 +3258,7 @@ fn test_publish_all_delivers_each_envelope() {
         .into_iter()
         .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
         .collect::<Vec<_>>();
-    let batch_result = bus
-        .publish_all(envelopes)
-        .expect("batch publish should work");
+    let batch_result = bus.publish_all(envelopes).expect("batch publish should work");
     assert_eq!(batch_result.total_count(), 2);
     assert_eq!(batch_result.accepted_count(), 2);
     assert_eq!(batch_result.dropped_count(), 0);
@@ -3559,13 +3278,11 @@ fn test_publish_all_delivers_each_envelope() {
 fn test_publish_all_reports_dropped_envelopes_separately_from_accepted() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-            if event.payload() == "drop" {
-                None
-            } else {
-                Some(event)
-            }
-        })
+        .add_publisher_interceptor::<String, _>(
+            |event: EventEnvelope<String>| {
+                if event.payload() == "drop" { None } else { Some(event) }
+            },
+        )
         .expect("interceptor should register");
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("batch-dropped");
@@ -3595,10 +3312,7 @@ fn test_publish_all_reports_dropped_envelopes_separately_from_accepted() {
     assert_eq!(batch_result.failure_count(), 0);
     assert!(batch_result.is_success());
     assert_eq!(
-        received
-            .lock()
-            .expect("received events should lock")
-            .as_slice(),
+        received.lock().expect("received events should lock").as_slice(),
         ["keep".to_string()]
     );
 }
@@ -3609,10 +3323,7 @@ fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
     factory
         .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
             if event.payload() == "bad" {
-                Err(EventBusError::interceptor_failed(
-                    "publish",
-                    "bad payload rejected",
-                ))
+                Err(EventBusError::interceptor_failed("publish", "bad payload rejected"))
             } else {
                 Ok(Some(event))
             }
@@ -3649,19 +3360,10 @@ fn test_publish_all_reports_failures_and_continues_remaining_envelopes() {
     assert!(!batch_result.is_success());
     assert_eq!(batch_result.failures()[0].index(), 1);
     assert_eq!(batch_result.failures()[0].event_id(), failed_event_id);
-    assert_eq!(
-        batch_result.failures()[0].error().kind(),
-        "interceptor_failed"
-    );
-    let mut received = received
-        .lock()
-        .expect("received events should lock")
-        .clone();
+    assert_eq!(batch_result.failures()[0].error().kind(), "interceptor_failed");
+    let mut received = received.lock().expect("received events should lock").clone();
     received.sort();
-    assert_eq!(
-        received.as_slice(),
-        ["ok-1".to_string(), "ok-2".to_string()]
-    );
+    assert_eq!(received.as_slice(), ["ok-1".to_string(), "ok-2".to_string()]);
 }
 
 #[test]
@@ -3699,9 +3401,7 @@ fn test_publish_all_accepts_merged_default_publish_policy() {
         .map(|payload| EventEnvelope::create(topic.clone(), payload.to_string()))
         .collect::<Vec<_>>();
 
-    let result = bus
-        .publish_all(envelopes)
-        .expect("policy should be accepted");
+    let result = bus.publish_all(envelopes).expect("policy should be accepted");
     assert_eq!(result.accepted_count(), 0);
 }
 
@@ -3722,8 +3422,7 @@ fn test_subscribe_accepts_policy_without_execution_timeout() {
 #[test]
 fn test_factory_creates_started_bus_with_default_options() {
     let mut factory = LocalEventBusFactory::new();
-    factory
-        .set_default_subscribe_options(SubscribeOptions::<String>::builder().priority(5).build());
+    factory.set_default_subscribe_options(SubscribeOptions::<String>::builder().priority(5).build());
 
     let bus = factory.create_started().expect("factory should start bus");
     let topic = create_topic("factory");
@@ -3747,9 +3446,7 @@ fn test_subscriber_priority_controls_delivery_order() {
     let (started_tx, started_rx) = mpsc::channel();
     let captured_release = Arc::clone(&release);
     bus.subscribe("blocker", &blocker_topic, move |_| {
-        started_tx
-            .send(())
-            .expect("blocker start should be observed");
+        started_tx.send(()).expect("blocker start should be observed");
         wait_for_gate(&captured_release);
     })
     .expect("blocker subscriber should register");
@@ -3786,8 +3483,7 @@ fn test_subscriber_priority_controls_delivery_order() {
     started_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("blocker should start");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     release_gate(&release);
     bus.wait_for_idle(&blocker_topic)
         .expect("blocker topic should become idle");
@@ -3812,9 +3508,7 @@ fn test_subscriber_equal_priority_preserves_registration_order() {
     let (started_tx, started_rx) = mpsc::channel();
     let captured_release = Arc::clone(&release);
     bus.subscribe("blocker", &blocker_topic, move |_| {
-        started_tx
-            .send(())
-            .expect("blocker start should be observed");
+        started_tx.send(()).expect("blocker start should be observed");
         wait_for_gate(&captured_release);
     })
     .expect("blocker subscriber should register");
@@ -3851,8 +3545,7 @@ fn test_subscriber_equal_priority_preserves_registration_order() {
     started_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("blocker should start");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     release_gate(&release);
     bus.wait_for_idle(&blocker_topic)
         .expect("blocker topic should become idle");
@@ -3905,28 +3598,18 @@ fn test_factory_applies_default_publish_options_and_interceptors() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
     bus.subscribe("sub-1", &topic, move |event| {
-        captured
-            .lock()
-            .expect("received events should lock")
-            .push(event);
+        captured.lock().expect("received events should lock").push(event);
         Ok(())
     })
     .expect("subscribe should work");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     let events = received.lock().expect("received events should lock");
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].headers().get("factory"),
-        Some(&"true".to_string())
-    );
-    assert_eq!(
-        events[0].headers().get("subscriber-factory"),
-        Some(&"true".to_string())
-    );
+    assert_eq!(events[0].headers().get("factory"), Some(&"true".to_string()));
+    assert_eq!(events[0].headers().get("subscriber-factory"), Some(&"true".to_string()));
 }
 
 #[test]
@@ -3996,8 +3679,7 @@ fn test_subscribe_with_options_merges_factory_default_subscribe_options() {
         )
         .expect("subscription should merge defaults");
 
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     assert_eq!(subscription.options().priority(), 7);
@@ -4021,11 +3703,7 @@ fn test_publish_error_handler_failure_is_observed_and_isolated() {
     let second_handlers = Arc::new(AtomicUsize::new(0));
     let captured_second_handlers = Arc::clone(&second_handlers);
     let options = PublishOptions::<String>::builder()
-        .error_handler(|_event, _error| {
-            Err(EventBusError::handler_failed(
-                "publish error handler failed",
-            ))
-        })
+        .error_handler(|_event, _error| Err(EventBusError::handler_failed("publish error handler failed")))
         .error_handler(move |_event, error| {
             assert_eq!(error, &EventBusError::not_started());
             captured_second_handlers.fetch_add(1, Ordering::SeqCst);
@@ -4034,11 +3712,8 @@ fn test_publish_error_handler_failure_is_observed_and_isolated() {
         .build();
 
     assert_eq!(
-        bus.publish_envelope_with_options(
-            EventEnvelope::create(topic, "payload".to_string()),
-            options,
-        )
-        .expect_err("stopped bus should reject publish"),
+        bus.publish_envelope_with_options(EventEnvelope::create(topic, "payload".to_string()), options,)
+            .expect_err("stopped bus should reject publish"),
         EventBusError::not_started()
     );
 
@@ -4077,8 +3752,7 @@ fn test_subscribe_error_handler_failure_is_observed() {
         options,
     )
     .expect("subscribe should work");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     let observed = observed.lock().expect("observed errors should lock");
@@ -4144,20 +3818,14 @@ fn test_subscribe_error_handler_panic_does_not_block_later_ack() {
     .expect("dead letter subscriber should register");
     {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        bus.publish(&topic, "payload".to_string())
-            .expect("publish should work");
+        bus.publish(&topic, "payload".to_string()).expect("publish should work");
         bus.wait_for_idle(&topic).expect("topic should become idle");
         bus.wait_for_idle(&dead_letter_topic)
             .expect("dead letter topic should become idle");
     }
 
     assert_eq!(second_handlers.load(Ordering::SeqCst), 1);
-    assert!(
-        dead_letters
-            .lock()
-            .expect("dead letters should lock")
-            .is_empty()
-    );
+    assert!(dead_letters.lock().expect("dead letters should lock").is_empty());
     let observed = observed.lock().expect("observed errors should lock");
     assert!(observed.iter().any(|error| matches!(
         error,
@@ -4192,8 +3860,7 @@ fn test_dead_letter_strategy_error_is_observed() {
         options,
     )
     .expect("subscribe should work");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     let observed = observed.lock().expect("observed errors should lock");
@@ -4219,9 +3886,7 @@ fn test_dead_letter_strategy_dead_letter_error_is_preserved() {
     .expect("error observer should register");
     let options = SubscribeOptions::<String>::builder()
         .dead_letter_strategy(|_subscriber_id, _failed, _error, _options| {
-            Err(EventBusError::dead_letter_failed(
-                "already dead-letter failed",
-            ))
+            Err(EventBusError::dead_letter_failed("already dead-letter failed"))
         })
         .build();
 
@@ -4232,8 +3897,7 @@ fn test_dead_letter_strategy_dead_letter_error_is_preserved() {
         options,
     )
     .expect("subscribe should work");
-    bus.publish(&topic, "payload".to_string())
-        .expect("publish should work");
+    bus.publish(&topic, "payload".to_string()).expect("publish should work");
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
     let observed = observed.lock().expect("observed errors should lock");
@@ -4272,8 +3936,7 @@ fn test_dead_letter_strategy_panic_is_observed() {
     .expect("subscribe should work");
     {
         let _panic_hook_guard = PanicHookGuard::suppress();
-        bus.publish(&topic, "payload".to_string())
-            .expect("publish should work");
+        bus.publish(&topic, "payload".to_string()).expect("publish should work");
         bus.wait_for_idle(&topic).expect("topic should become idle");
     }
 
@@ -4371,9 +4034,7 @@ fn test_cancelled_queued_delivery_skips_handler() {
     wait_for_count(&started, 1);
     bus.publish(&topic, "second".to_string())
         .expect("second publish should queue behind the worker");
-    subscription
-        .cancel()
-        .expect("subscription cancellation should succeed");
+    subscription.cancel().expect("subscription cancellation should succeed");
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
 
@@ -4417,13 +4078,10 @@ fn test_cancelled_queued_delayed_delivery_skips_delay_wait() {
         .expect("first publish should occupy the worker");
     wait_for_count(&started, 1);
     bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "second".to_string())
-            .with_delay(Duration::from_millis(500)),
+        EventEnvelope::create(topic.clone(), "second".to_string()).with_delay(Duration::from_millis(500)),
     )
     .expect("delayed publish should queue behind the worker");
-    subscription
-        .cancel()
-        .expect("subscription cancellation should succeed");
+    subscription.cancel().expect("subscription cancellation should succeed");
 
     let wait_started_at = Instant::now();
     release_gate(&release);
@@ -4462,9 +4120,7 @@ fn test_cancelled_ordered_delayed_delivery_skips_delay_wait() {
     .expect("ordered delayed publish should queue");
     thread::sleep(Duration::from_millis(30));
     let wait_started_at = Instant::now();
-    subscription
-        .cancel()
-        .expect("subscription cancellation should succeed");
+    subscription.cancel().expect("subscription cancellation should succeed");
 
     assert!(
         bus.wait_for_idle_timeout(&topic, Duration::from_millis(150))
@@ -4531,11 +4187,8 @@ fn test_shutdown_panics_when_called_from_own_subscription_worker() {
     let handler_bus = bus.clone();
     let (result_tx, result_rx) = mpsc::channel();
     bus.subscribe("sub", &topic, move |_event| {
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler_bus.shutdown()));
-        result_tx
-            .send(result.is_err())
-            .expect("shutdown result should send");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler_bus.shutdown()));
+        result_tx.send(result.is_err()).expect("shutdown result should send");
         Ok(())
     })
     .expect("subscription should register");
@@ -4646,18 +4299,15 @@ fn test_publish_racing_shutdown_rejects_existing_ordering_lane_submission() {
     })
     .expect("subscription should register");
 
-    bus.publish_envelope(
-        EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"),
-    )
-    .expect("first publish should occupy the ordered lane");
+    bus.publish_envelope(EventEnvelope::create(topic.clone(), "first".to_string()).with_ordering_key("account-1"))
+        .expect("first publish should occupy the ordered lane");
     wait_for_count(&started, 1);
 
     let publisher_bus = bus.clone();
     let publish_topic = topic.clone();
     let publisher = thread::spawn(move || {
         publisher_bus.publish_envelope(
-            EventEnvelope::create(publish_topic, "after-shutdown".to_string())
-                .with_ordering_key("account-1"),
+            EventEnvelope::create(publish_topic, "after-shutdown".to_string()).with_ordering_key("account-1"),
         )
     });
     wait_for_gate(&interceptor_ready);
@@ -4787,10 +4437,7 @@ fn test_start_rejects_restart_after_shutdown_timeout_until_handlers_finish() {
 
     release_gate(&release);
     bus.wait_for_idle(&topic).expect("topic should become idle");
-    assert!(
-        bus.start()
-            .expect("restart should work after old handlers finish")
-    );
+    assert!(bus.start().expect("restart should work after old handlers finish"));
     assert!(bus.shutdown());
 }
 
@@ -4845,9 +4492,7 @@ fn test_shutdown_routes_dead_letter_for_handler_failure_during_graceful_shutdown
                     .wait(released)
                     .expect("release gate wait should not poison");
             }
-            Err(EventBusError::handler_failed(
-                "handler failed during shutdown",
-            ))
+            Err(EventBusError::handler_failed("handler failed during shutdown"))
         },
         options,
     )
@@ -4873,11 +4518,7 @@ fn test_shutdown_routes_dead_letter_for_handler_failure_during_graceful_shutdown
     );
 
     release_gate(&release);
-    assert!(
-        shutdown_thread
-            .join()
-            .expect("shutdown thread should finish")
-    );
+    assert!(shutdown_thread.join().expect("shutdown thread should finish"));
 
     let events = dead_letters.lock().expect("dead letters should lock");
     assert_eq!(events.len(), 1);
@@ -4935,9 +4576,7 @@ fn test_shutdown_routes_delayed_dead_letter_during_graceful_shutdown() {
             drop(started_count);
 
             wait_for_gate(&captured_release);
-            Err(EventBusError::handler_failed(
-                "handler failed during shutdown",
-            ))
+            Err(EventBusError::handler_failed("handler failed during shutdown"))
         },
         options,
     )
@@ -4963,11 +4602,7 @@ fn test_shutdown_routes_delayed_dead_letter_during_graceful_shutdown() {
     );
 
     release_gate(&release);
-    assert!(
-        shutdown_thread
-            .join()
-            .expect("shutdown thread should finish")
-    );
+    assert!(shutdown_thread.join().expect("shutdown thread should finish"));
 
     let dead_letter = dead_letter_rx
         .recv_timeout(Duration::from_secs(1))
@@ -5010,13 +4645,8 @@ fn test_dead_letter_publish_failure_is_observed() {
             panic!("dead-letter filter panic");
         })
         .build();
-    bus.subscribe_with_options(
-        "dlq-sub",
-        &dead_letter_topic,
-        |_event| Ok(()),
-        dead_letter_options,
-    )
-    .expect("dead letter subscriber should register");
+    bus.subscribe_with_options("dlq-sub", &dead_letter_topic, |_event| Ok(()), dead_letter_options)
+        .expect("dead letter subscriber should register");
     bus.subscribe_with_options(
         "sub",
         &topic,
@@ -5055,13 +4685,10 @@ fn test_retry_aborts_permanent_handler_error() {
             captured.fetch_add(1, Ordering::SeqCst);
             Err(EventBusError::invalid_argument("payload", "invalid"))
         },
-        SubscribeOptions::builder()
-            .retry_options(retry_options(3))
-            .build(),
+        SubscribeOptions::builder().retry_options(retry_options(3)).build(),
     )
     .expect("subscribe");
-    bus.publish(&topic, "bad payload".to_string())
-        .expect("enqueue");
+    bus.publish(&topic, "bad payload".to_string()).expect("enqueue");
     bus.wait_for_idle(&topic).expect("drained");
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
@@ -5123,9 +4750,7 @@ fn test_retry_rule_defaults_and_explicit_override_are_applied() {
             Err(EventBusError::handler_failed("explicit retry"))
         },
         SubscribeOptions::builder()
-            .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| {
-                RetryDecision::UseDefault
-            })
+            .retry_rule(|_: &AttemptFailure<EventBusError>, _: &RetryContext| RetryDecision::UseDefault)
             .build(),
     )
     .expect("explicit subscriber");
@@ -5140,9 +4765,7 @@ fn test_retry_rule_defaults_and_explicit_override_are_applied() {
 #[test]
 fn test_retry_backoff_retains_single_handler_worker() {
     let mut factory = LocalEventBusFactory::new();
-    factory
-        .set_subscription_handler_pool_size(1)
-        .expect("one worker");
+    factory.set_subscription_handler_pool_size(1).expect("one worker");
     let bus = factory.create_started().expect("bus starts");
     let topic = create_topic("retry-single-worker");
     let (started_sender, started_receiver) = mpsc::channel();
@@ -5160,10 +4783,7 @@ fn test_retry_backoff_retains_single_handler_worker() {
         "ordered",
         &topic,
         move |event| {
-            recorded
-                .lock()
-                .expect("records")
-                .push(event.payload().clone());
+            recorded.lock().expect("records").push(event.payload().clone());
             if event.payload() == "first" && first_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                 started_sender.send(()).expect("controller alive");
                 operation_gate.wait();
@@ -5174,19 +4794,14 @@ fn test_retry_backoff_retains_single_handler_worker() {
         SubscribeOptions::builder().retry_options(policy).build(),
     )
     .expect("subscribe");
-    bus.publish(&topic, "first".to_string())
-        .expect("first enqueue");
+    bus.publish(&topic, "first".to_string()).expect("first enqueue");
     started_receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("first started");
-    bus.publish(&topic, "second".to_string())
-        .expect("second enqueue");
+    bus.publish(&topic, "second".to_string()).expect("second enqueue");
     gate.wait();
     bus.wait_for_idle(&topic).expect("drained");
-    assert_eq!(
-        *calls.lock().expect("records"),
-        ["first", "first", "second"]
-    );
+    assert_eq!(*calls.lock().expect("records"), ["first", "first", "second"]);
 }
 
 /// A publisher rule inherited from type defaults may suppress interceptor
@@ -5197,12 +4812,10 @@ fn test_retry_custom_publisher_rule_survives_defaults_and_clone() {
     let captured = Arc::clone(&attempts);
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_publisher_interceptor::<String, _>(
-            move |_: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
-                captured.fetch_add(1, Ordering::SeqCst);
-                panic!("publisher fails");
-            },
-        )
+        .add_publisher_interceptor::<String, _>(move |_: EventEnvelope<String>| -> Option<EventEnvelope<String>> {
+            captured.fetch_add(1, Ordering::SeqCst);
+            panic!("publisher fails");
+        })
         .expect("register interceptor");
     let defaults = PublishOptions::<String>::builder()
         .retry_options(retry_options(3))
@@ -5219,10 +4832,7 @@ fn test_retry_custom_publisher_rule_survives_defaults_and_clone() {
             PublishOptions::empty(),
         )
     };
-    assert!(matches!(
-        result,
-        Err(EventBusError::InterceptorFailed { .. })
-    ));
+    assert!(matches!(result, Err(EventBusError::InterceptorFailed { .. })));
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
@@ -5242,10 +4852,7 @@ fn retry_completion_for_interceptor_test() -> EventBusError {
 
 #[test]
 fn test_subscriber_interceptor_replaced_completion_wrapper_is_interceptor_failure() {
-    assert_retry_interceptor_replacement_is_owned(
-        "completion",
-        retry_completion_for_interceptor_test,
-    );
+    assert_retry_interceptor_replacement_is_owned("completion", retry_completion_for_interceptor_test);
 }
 
 #[test]
@@ -5253,9 +4860,7 @@ fn test_completion_wrapper_reaches_error_handler_and_dead_letter_without_retry()
     let mut factory = LocalEventBusFactory::new();
     factory
         .add_subscriber_interceptor::<String, _>(
-            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| {
-                chain.proceed(event)
-            },
+            |event: EventEnvelope<String>, chain: SubscriberInterceptorChain<String>| chain.proceed(event),
         )
         .expect("passthrough interceptor");
     let bus = factory.create_started().expect("bus starts");
@@ -5287,14 +4892,10 @@ fn test_completion_wrapper_reaches_error_handler_and_dead_letter_without_retry()
     })
     .unwrap();
     bus.publish(&topic, "payload".to_owned()).unwrap();
-    let error = failure_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap();
+    let error = failure_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(error, retry_completion_for_interceptor_test());
     assert_eq!(error.completion_callback_failures().len(), 1);
-    let event = dead_letter_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap();
+    let event = dead_letter_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(
         event
             .payload()

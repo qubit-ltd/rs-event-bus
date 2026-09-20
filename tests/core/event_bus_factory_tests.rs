@@ -72,11 +72,7 @@ impl EventBus for FailingStartBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -136,11 +132,7 @@ impl EventBus for SuccessfulStartBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(
-        &self,
-        _topic: &Topic<T>,
-        _timeout: Duration,
-    ) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {

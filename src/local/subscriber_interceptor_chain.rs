@@ -155,10 +155,7 @@ impl SubscriberInterceptorAnyChain {
         next: Arc<dyn Fn() -> EventBusResult<()> + Send + Sync + 'static>,
         downstream_error: DownstreamErrorSlot,
     ) -> Self {
-        Self {
-            next,
-            downstream_error,
-        }
+        Self { next, downstream_error }
     }
 
     /// Continues subscriber processing, consuming this one-shot chain handle.
@@ -202,10 +199,7 @@ where
         next: Arc<dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static>,
         downstream_error: DownstreamErrorSlot,
     ) -> Self {
-        Self {
-            next,
-            downstream_error,
-        }
+        Self { next, downstream_error }
     }
 
     /// Continues subscriber processing, consuming this one-shot chain handle.
@@ -254,18 +248,11 @@ pub(crate) fn create_downstream_error_slot() -> DownstreamErrorSlot {
 /// # Returns
 /// `true` when `error` has the same provenance as a recorded downstream
 /// failure.
-pub(crate) fn is_recorded_downstream_error(
-    downstream_error: &DownstreamErrorSlot,
-    error: &EventBusError,
-) -> bool {
+pub(crate) fn is_recorded_downstream_error(downstream_error: &DownstreamErrorSlot, error: &EventBusError) -> bool {
     let fingerprint = ErrorFingerprint::from_error(error);
     downstream_error
         .lock()
-        .map(|recorded| {
-            recorded
-                .iter()
-                .any(|record| record.fingerprint == fingerprint)
-        })
+        .map(|recorded| recorded.iter().any(|record| record.fingerprint == fingerprint))
         .unwrap_or(false)
 }
 
@@ -311,17 +298,13 @@ impl ErrorFingerprint {
     fn from_error(error: &EventBusError) -> Self {
         match error {
             EventBusError::NotStarted => Self::NotStarted,
-            EventBusError::StartFailed { message } => {
-                Self::StartFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::StartFailed { message } => Self::StartFailed(OwnedStringFingerprint::new(message)),
             EventBusError::InvalidArgument { field, message } => Self::InvalidArgument {
                 field,
                 message: OwnedStringFingerprint::new(message),
             },
             EventBusError::MissingField { field } => Self::MissingField { field },
-            EventBusError::HandlerFailed { message } => {
-                Self::HandlerFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::HandlerFailed { message } => Self::HandlerFailed(OwnedStringFingerprint::new(message)),
             EventBusError::HandlerPanicked => Self::HandlerPanicked,
             EventBusError::InterceptorFailed { phase, message } => Self::InterceptorFailed {
                 phase,
@@ -331,29 +314,19 @@ impl ErrorFingerprint {
                 phase,
                 message: OwnedStringFingerprint::new(message),
             },
-            EventBusError::DeadLetterFailed { message } => {
-                Self::DeadLetterFailed(OwnedStringFingerprint::new(message))
-            }
+            EventBusError::DeadLetterFailed { message } => Self::DeadLetterFailed(OwnedStringFingerprint::new(message)),
             EventBusError::ExecutionRejected { message } => {
                 Self::ExecutionRejected(OwnedStringFingerprint::new(message))
             }
-            EventBusError::ShutdownTimedOut { timeout } => {
-                Self::ShutdownTimedOut { timeout: *timeout }
-            }
+            EventBusError::ShutdownTimedOut { timeout } => Self::ShutdownTimedOut { timeout: *timeout },
             EventBusError::WouldDeadlock { operation } => Self::WouldDeadlock { operation },
             EventBusError::LockPoisoned { resource } => Self::LockPoisoned { resource },
-            EventBusError::TypeMismatch { expected, actual } => {
-                Self::TypeMismatch { expected, actual }
-            }
-            EventBusError::UnsupportedOperation { operation } => {
-                Self::UnsupportedOperation { operation }
-            }
+            EventBusError::TypeMismatch { expected, actual } => Self::TypeMismatch { expected, actual },
+            EventBusError::UnsupportedOperation { operation } => Self::UnsupportedOperation { operation },
             EventBusError::RetryCompletionDiagnostics { context, .. } => {
                 Self::RetryCompletionDiagnostics(RetryContextFingerprint::new(context))
             }
-            EventBusError::RetryTimedOut { context, .. } => {
-                Self::RetryTimedOut(RetryContextFingerprint::new(context))
-            }
+            EventBusError::RetryTimedOut { context, .. } => Self::RetryTimedOut(RetryContextFingerprint::new(context)),
             EventBusError::RetryCancelled { context, .. } => {
                 Self::RetryCancelled(RetryContextFingerprint::new(context))
             }

@@ -84,3 +84,8 @@ reason = "Runtime options are crate-internal constructor state paired with Local
 rule = "public-type-layout"
 path = "src/local/subscriber_interceptor_chain.rs"
 reason = "Typed and global subscriber chain handles share the same invocation model."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/local/local_event_bus/interceptor.rs"
+reason = "Typed and global publisher/subscriber interceptor contracts are co-located as one public extension point."
