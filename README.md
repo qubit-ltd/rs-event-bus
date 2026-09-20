@@ -3,7 +3,6 @@
 [![Rust CI](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml/badge.svg)](https://github.com/qubit-ltd/rs-event-bus/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://qubit-ltd.github.io/rs-event-bus/coverage-badge.json)](https://qubit-ltd.github.io/rs-event-bus/coverage/)
 [![Crates.io](https://img.shields.io/crates/v/qubit-event-bus.svg?color=blue)](https://crates.io/crates/qubit-event-bus)
-[![Docs.rs](https://docs.rs/qubit-event-bus/badge.svg)](https://docs.rs/qubit-event-bus)
 [![Rust](https://img.shields.io/badge/rust-1.94+-blue.svg?logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
@@ -71,18 +70,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Events sharing an `ordering_key` are serialized per topic and subscriber. Events without one may execute concurrently.
 - Dropping a `Subscription` handle does not unsubscribe it; call its cancellation API. See the user guide for lifecycle, retry, delay, and shutdown details.
 
+## Learn More
+
+- [API reference](https://docs.rs/qubit-event-bus)
+- [English user guide](doc/user_guide.md)
+- [中文用户指南](doc/user_guide.zh_CN.md)
+- [Design guide](doc/design.md)
+- [设计说明](doc/design.zh_CN.md)
+- [中文 README](README.zh_CN.md)
+
 ## Testing
 
-Run the repository checks with `./ci-check.sh`. Tests that publish asynchronously should call `wait_for_idle` or `wait_for_idle_timeout` before asserting handler effects.
+```bash
+# Run tests with the default feature set
+cargo test
+
+# Run tests with all declared features
+cargo test --all-features
+
+# Project CI checks
+./ci-check.sh
+
+# Check code coverage
+./coverage.sh
+```
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
+full license text.
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep changes focused, include regression tests for runtime behavior, and update both README languages when public behavior changes.
+Contributions are welcome. Please follow the Rust API guidelines, keep public
+API documentation and tests current, and run `./align-ci.sh` to format code and
+`./ci-check.sh` to satisfy CI requirements before submitting a pull request.
 
 ## Author
 
-Haixing Hu (<starfish.hu@gmail.com>)
+**Haixing Hu** - *Qubit Co. Ltd.*
+
+Repository: [https://github.com/qubit-ltd/rs-event-bus](https://github.com/qubit-ltd/rs-event-bus)

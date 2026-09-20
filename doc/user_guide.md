@@ -2,6 +2,14 @@
 
 This guide targets `qubit-event-bus` 0.11 and Rust 1.94+. It is for application developers embedding a typed, in-process event bus. The examples use `LocalEventBus`; the crate also exposes the `EventBus` and `EventBusFactory` contracts for other backends.
 
+[中文用户指南](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
+
+## Purpose and audience
+
+Use this guide when an application needs typed in-process publish/subscribe
+dispatch with explicit admission, acknowledgement, retry, and shutdown
+semantics. It does not describe durable messaging or cross-process delivery.
+
 ## Conceptual model
 
 An event has a typed `Topic<T>`, an `EventEnvelope<T>`, and zero or more matching subscriptions. A publish call performs publisher interception and subscriber admission, then schedules accepted handler work on the local worker pool. A `PublishReceipt` reports that admission snapshot; it does not wait for handlers.
@@ -107,13 +115,34 @@ Configure typed or global publisher/subscriber interceptors on `LocalEventBusFac
 
 Dead-letter strategies can be attached to subscription options or factory defaults. `standard_dead_letters_to`, `prefixed_dead_letters`, and `discard_dead_letters` cover common routing needs. `DeliveryFailure` observers receive terminal failures after retry, error handling, and dead-letter routing finish.
 
-## Lifecycle, errors, and troubleshooting
+## Errors and diagnostics
 
 - Publishing or subscribing a stopped bus returns a lifecycle error. `shutdown()` is blocking; from a subscriber worker use `shutdown_nonblocking()` or `shutdown_with_timeout()`.
 - `wait_for_idle` and `wait_for_idle_timeout` are for tests and controlled draining. Calling them from the bus's own subscriber worker returns `EventBusError::WouldDeadlock`.
 - After `shutdown_with_timeout` reports a timeout, `start()` remains rejected until old subscriber work becomes idle.
 - A successful publish means dispatch admission completed, not eventual handler delivery. Inspect receipt statuses and register error/delivery-failure observers when losses matter.
 - For a delayed delivery rejected at expiry, the handler does not run; observe `ExecutionRejected` through `add_error_observer`.
+
+## Troubleshooting
+
+- If a handler assertion runs too early, inspect the `PublishReceipt` and wait with
+  `wait_for_idle` or `wait_for_idle_timeout` before checking handler effects.
+- If a delivery is rejected, inspect the receipt's `DispatchStatus` and register
+  `add_error_observer`; for terminal failures also register
+  `add_delivery_failure_observer`.
+- If shutdown or draining reports `WouldDeadlock`, move the call out of the
+  subscriber worker, or use `shutdown_nonblocking` / `shutdown_with_timeout`.
+- If retries do not happen, verify that both a retry rule and retry options are
+  configured; a rule by itself does not enable retries.
+
+## Limitations and best practices
+
+The local bus does not promise durable delivery, cross-process routing, handler
+interruption, or atomic batches. Keep payloads `Clone + Send + Sync + 'static`,
+configure capacity before creating the bus, and treat a successful publish as
+admission only. Use ordering keys only where per-topic, per-subscriber
+serialization is required, because retry backoff occupies the current worker
+and ordering lane.
 
 ## Migration notes
 

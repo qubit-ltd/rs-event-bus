@@ -2,6 +2,13 @@
 
 本指南面向使用 `qubit-event-bus` 0.11 和 Rust 1.94+ 的应用开发者。示例采用 `LocalEventBus`；crate 同时提供供其他后端实现的 `EventBus` 与 `EventBusFactory` 契约。
 
+[English user guide](user_guide.md) · [README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+
+## 手册目标与读者
+
+当应用需要在进程内进行类型安全的发布/订阅，并明确处理准入、确认、重试
+和停机语义时，可按本指南操作。本指南不涵盖持久化消息或跨进程投递。
+
 ## 概念模型
 
 事件由类型化的 `Topic<T>`、`EventEnvelope<T>` 以及一个或多个匹配的订阅组成。发布调用先经过发布拦截，再执行订阅准入，随后把已接纳的 handler 工作提交到本地 worker 池。`PublishReceipt` 描述这次准入快照，不会等待 handler 完成。
@@ -107,13 +114,32 @@ let bus = factory.create_started()?;
 
 死信策略可以设置在订阅选项或 factory 默认值中。`standard_dead_letters_to`、`prefixed_dead_letters` 和 `discard_dead_letters` 覆盖常见路由需求。`DeliveryFailure` 观察器会在重试、错误处理和死信路由结束后收到终态失败。
 
-## 生命周期、错误和排障
+## 错误与诊断
 
 - 对停止状态的 bus 发布或订阅会返回生命周期错误。`shutdown()` 会阻塞；在订阅 worker 中应使用 `shutdown_nonblocking()` 或 `shutdown_with_timeout()`。
 - `wait_for_idle` 和 `wait_for_idle_timeout` 用于测试及受控排空。从 bus 自己的订阅 worker 调用会返回 `EventBusError::WouldDeadlock`。
 - `shutdown_with_timeout` 报告超时后，旧订阅工作进入 idle 前，`start()` 仍会被拒绝。
 - 发布成功表示完成了投递准入，不表示 handler 最终送达。需要关注丢失时，请检查回执状态并注册错误/投递失败观察器。
 - 延迟投递到期时若队列拒绝，handler 不会执行；可通过 `add_error_observer` 观察 `ExecutionRejected`。
+
+## 排障
+
+- 如果 handler 断言执行过早，请先检查 `PublishReceipt`，再使用
+  `wait_for_idle` 或 `wait_for_idle_timeout`，确认 handler 效果后再断言。
+- 如果投递被拒绝，请检查回执中的 `DispatchStatus` 并注册
+  `add_error_observer`；需要观察终态失败时，再注册
+  `add_delivery_failure_observer`。
+- 如果停机或排空返回 `WouldDeadlock`，请把调用移出订阅 worker，或使用
+  `shutdown_nonblocking` / `shutdown_with_timeout`。
+- 如果没有发生重试，请确认同时配置了重试规则和重试选项；只有规则不会自动
+  启用重试。
+
+## 限制与最佳实践
+
+本地总线不承诺持久投递、跨进程路由、打断 handler 或批量原子性。payload 应满足
+`Clone + Send + Sync + 'static`；在创建 bus 前配置容量；把发布成功理解为完成准入，
+而不是 handler 已完成。只有确实需要按 Topic 和订阅者串行处理时才使用顺序键，
+因为重试退避会占用当前 worker 和顺序 lane。
 
 ## 迁移说明
 
