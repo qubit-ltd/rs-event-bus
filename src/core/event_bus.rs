@@ -104,10 +104,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns backend-specific publishing errors.
-    fn publish_envelope<T>(
-        &self,
-        envelope: EventEnvelope<T>,
-    ) -> EventBusResult<crate::PublishReceipt>
+    fn publish_envelope<T>(&self, envelope: EventEnvelope<T>) -> EventBusResult<crate::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static,
     {

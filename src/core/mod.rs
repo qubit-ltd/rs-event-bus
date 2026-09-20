@@ -10,8 +10,8 @@
 mod ack_mode;
 mod acknowledgement;
 mod dead_letter_record;
-pub(crate) mod delivery_limits;
 mod delivery_failure;
+pub(crate) mod delivery_limits;
 mod event_bus;
 mod event_bus_error;
 mod event_bus_factory;

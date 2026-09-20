@@ -508,15 +508,11 @@ fn test_local_event_bus_factory_validates_handler_pool_options() {
         EventBusError::invalid_argument("pool_size", "subscription handler pool size must be greater than zero",)
     );
     assert!(
-        factory
-            .set_delivery_limits(DeliveryLimits::new(0, None))
-            .is_err(),
+        factory.set_delivery_limits(DeliveryLimits::new(0, None)).is_err(),
         "zero in-flight limit should be rejected"
     );
     assert!(
-        factory
-            .set_delivery_limits(DeliveryLimits::new(1, Some(0)))
-            .is_err(),
+        factory.set_delivery_limits(DeliveryLimits::new(1, Some(0))).is_err(),
         "zero handler queue capacity should be rejected"
     );
     factory

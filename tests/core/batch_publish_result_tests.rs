@@ -3,8 +3,8 @@ use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::mpsc;
 
-use qubit_event_bus::DispatchStatus;
 use qubit_event_bus::DeliveryLimits;
+use qubit_event_bus::DispatchStatus;
 use qubit_event_bus::EventBusError;
 use qubit_event_bus::EventEnvelope;
 use qubit_event_bus::LocalEventBusFactory;
@@ -16,17 +16,14 @@ use qubit_event_bus::Topic;
 fn test_batch_publish_counts_dropped_items_separately_from_accepted_items() {
     let mut factory = LocalEventBusFactory::new();
     factory
-        .add_publisher_interceptor::<String, _>(|event: EventEnvelope<String>| {
-            if event.payload() == "drop" {
-                None
-            } else {
-                Some(event)
-            }
-        })
+        .add_publisher_interceptor::<String, _>(
+            |event: EventEnvelope<String>| {
+                if event.payload() == "drop" { None } else { Some(event) }
+            },
+        )
         .expect("publisher interceptor should register");
     let bus = factory.create_started().expect("bus should start");
-    let topic = Topic::<String>::try_new("batch-contract-dropped")
-        .expect("topic should build");
+    let topic = Topic::<String>::try_new("batch-contract-dropped").expect("topic should build");
 
     bus.subscribe("subscriber", &topic, |_| ())
         .expect("subscriber should register");
@@ -53,8 +50,7 @@ fn test_batch_publish_counts_item_with_rejected_delivery_as_failure() {
         .set_delivery_limits(DeliveryLimits::new(1, None))
         .expect("one in-flight delivery should be accepted");
     let bus = factory.create_started().expect("bus should start");
-    let topic = Topic::<String>::try_new("batch-contract-rejected")
-        .expect("topic should build");
+    let topic = Topic::<String>::try_new("batch-contract-rejected").expect("topic should build");
     let (started_sender, started_receiver) = mpsc::channel();
     let release = Arc::new((Mutex::new(false), Condvar::new()));
     let handler_release = Arc::clone(&release);
@@ -63,15 +59,11 @@ fn test_batch_publish_counts_item_with_rejected_delivery_as_failure() {
         "accepted",
         &topic,
         move |_| {
-            started_sender
-                .send(())
-                .expect("test should receive handler start");
+            started_sender.send(()).expect("test should receive handler start");
             let (release_lock, release_condvar) = &*handler_release;
             let mut released = release_lock.lock().expect("release gate should lock");
             while !*released {
-                released = release_condvar
-                    .wait(released)
-                    .expect("release gate should not poison");
+                released = release_condvar.wait(released).expect("release gate should not poison");
             }
         },
         SubscribeOptions::builder().priority(1).build(),
@@ -81,9 +73,7 @@ fn test_batch_publish_counts_item_with_rejected_delivery_as_failure() {
         .expect("rejected subscriber should register");
 
     let event = EventEnvelope::create(topic.clone(), "payload".to_string());
-    let result = bus
-        .publish_all(vec![event])
-        .expect("batch should return a receipt");
+    let result = bus.publish_all(vec![event]).expect("batch should return a receipt");
     started_receiver
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("first subscriber should start");

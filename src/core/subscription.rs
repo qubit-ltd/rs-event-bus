@@ -16,6 +16,7 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+
 use crate::EventBusResult;
 use crate::SubscribeOptions;
 use crate::Topic;
@@ -226,5 +227,4 @@ impl SubscriptionState {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
-
 }

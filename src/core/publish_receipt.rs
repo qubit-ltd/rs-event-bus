@@ -17,11 +17,7 @@ pub struct PublishReceipt {
 
 impl PublishReceipt {
     /// Creates a receipt for a published event.
-    pub fn new(
-        input_event_id: String,
-        dispatched_event_id: Option<String>,
-        outcome: PublishOutcome,
-    ) -> Self {
+    pub fn new(input_event_id: String, dispatched_event_id: Option<String>, outcome: PublishOutcome) -> Self {
         Self {
             input_event_id,
             dispatched_event_id,
@@ -69,11 +65,7 @@ pub struct SubscriberDispatchResult {
 
 impl SubscriberDispatchResult {
     /// Creates a subscriber dispatch result.
-    pub(crate) fn new(
-        subscription_id: usize,
-        subscriber_id: String,
-        status: DispatchStatus,
-    ) -> Self {
+    pub(crate) fn new(subscription_id: usize, subscriber_id: String, status: DispatchStatus) -> Self {
         Self {
             subscription_id,
             subscriber_id,
@@ -139,11 +131,7 @@ impl BatchPublishFailure {
 }
 
 impl BatchPublishItem {
-    pub(crate) fn new(
-        index: usize,
-        event_id: String,
-        result: Result<PublishReceipt, EventBusError>,
-    ) -> Self {
+    pub(crate) fn new(index: usize, event_id: String, result: Result<PublishReceipt, EventBusError>) -> Self {
         Self {
             index,
             event_id,
@@ -229,10 +217,7 @@ impl BatchPublishResult {
     pub fn failure_count(&self) -> usize {
         self.items
             .iter()
-            .filter(|item| {
-                item.result().is_err()
-                    || matches!(item.result(), Ok(receipt) if receipt.has_rejections())
-            })
+            .filter(|item| item.result().is_err() || matches!(item.result(), Ok(receipt) if receipt.has_rejections()))
             .count()
     }
     /// Returns items that have a global publish error.
