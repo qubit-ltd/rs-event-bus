@@ -84,6 +84,11 @@ pub enum EventBusError {
         /// Timeout used for the shutdown wait.
         timeout: Duration,
     },
+    /// A blocking wait was requested from a subscriber worker of the same bus.
+    WouldDeadlock {
+        /// Name of the blocking operation.
+        operation: &'static str,
+    },
     /// Shared state lock was poisoned.
     LockPoisoned {
         /// Shared resource name.
@@ -295,6 +300,11 @@ impl EventBusError {
         Self::ShutdownTimedOut { timeout }
     }
 
+    /// Creates a same-worker wait error.
+    pub const fn would_deadlock(operation: &'static str) -> Self {
+        Self::WouldDeadlock { operation }
+    }
+
     /// Creates [`EventBusError::LockPoisoned`].
     ///
     /// # Parameters
@@ -374,6 +384,7 @@ impl EventBusError {
             Self::DeadLetterFailed { .. } => "dead_letter_failed",
             Self::ExecutionRejected { .. } => "execution_rejected",
             Self::ShutdownTimedOut { .. } => "shutdown_timed_out",
+            Self::WouldDeadlock { .. } => "would_deadlock",
             Self::LockPoisoned { .. } => "lock_poisoned",
             Self::TypeMismatch { .. } => "type_mismatch",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
@@ -423,6 +434,12 @@ impl Display for EventBusError {
             Self::ShutdownTimedOut { timeout } => {
                 write!(formatter, "event bus shutdown timed out after {timeout:?}")
             }
+            Self::WouldDeadlock { operation } => {
+                write!(
+                    formatter,
+                    "blocking event bus operation would deadlock: {operation}"
+                )
+            }
             Self::LockPoisoned { resource } => {
                 write!(formatter, "shared state lock was poisoned: {resource}")
             }
@@ -436,7 +453,9 @@ impl Display for EventBusError {
                 write!(formatter, "unsupported event bus operation: {operation}")
             }
             Self::RetryCompletionDiagnostics {
-                source, diagnostics, ..
+                source,
+                diagnostics,
+                ..
             } => {
                 write!(
                     formatter,
@@ -528,7 +547,10 @@ impl From<RetryError<EventBusError>> for EventBusError {
                     "retry aborted: {last_failure} after {} attempt(s)",
                     context.attempts()
                 )),
-                None => Self::handler_failed(format!("retry aborted after {} attempt(s)", context.attempts())),
+                None => Self::handler_failed(format!(
+                    "retry aborted after {} attempt(s)",
+                    context.attempts()
+                )),
             },
             RetryErrorReason::Exhausted { limit } => match last_failure {
                 Some(AttemptFailure::Error(error)) => error,
@@ -561,7 +583,10 @@ impl From<RetryError<EventBusError>> for EventBusError {
                 last_failure: last_failure.map(Box::new),
                 context: Arc::clone(&context),
             },
-            _ => Self::handler_failed(format!("retry stopped after {} attempt(s)", context.attempts())),
+            _ => Self::handler_failed(format!(
+                "retry stopped after {} attempt(s)",
+                context.attempts()
+            )),
         };
         if diagnostics.is_empty() {
             mapped
