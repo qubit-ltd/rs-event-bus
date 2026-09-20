@@ -82,3 +82,6 @@ external/
 
 # Locally installed pinned rs-infra tools
 .infra/tools/bin/
+
+# Local git worktrees
+.worktrees/
