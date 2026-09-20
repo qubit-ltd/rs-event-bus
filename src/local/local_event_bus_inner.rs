@@ -69,13 +69,16 @@ pub(crate) struct LocalEventBusRuntimeOptions {
 }
 
 /// RAII reservation for one accepted subscriber delivery.
-pub(crate) struct DeliveryPermit {
-    in_flight: Arc<AtomicUsize>,
+pub(crate) enum DeliveryPermit {
+    Counted(Arc<AtomicUsize>),
+    Unbounded,
 }
 
 impl Drop for DeliveryPermit {
     fn drop(&mut self) {
-        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        if let Self::Counted(in_flight) = self {
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -311,17 +314,13 @@ impl LocalEventBusInner {
     /// Acquires one global delivery budget permit.
     pub(crate) fn try_acquire_delivery_permit(&self) -> EventBusResult<DeliveryPermit> {
         let Some(limit) = self.subscription_handler_queue_capacity else {
-            return Ok(DeliveryPermit {
-                in_flight: Arc::clone(&self.in_flight_delivery_count),
-            });
+            return Ok(DeliveryPermit::Unbounded);
         };
         self.in_flight_delivery_count
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 (current < limit).then_some(current + 1)
             })
-            .map(|_| DeliveryPermit {
-                in_flight: Arc::clone(&self.in_flight_delivery_count),
-            })
+            .map(|_| DeliveryPermit::Counted(Arc::clone(&self.in_flight_delivery_count)))
             .map_err(|_| {
                 EventBusError::execution_rejected("maximum in-flight deliveries are saturated")
             })
