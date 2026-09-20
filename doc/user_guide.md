@@ -111,13 +111,15 @@ Matching handlers run on the subscription worker pool. Events with the same `ord
 
 Configure typed or global publisher/subscriber interceptors on `LocalEventBusFactory` before `create()` or `create_started()`. Runtime interceptor mutation is not part of `LocalEventBus`.
 
+Publisher dispatch runs global interceptors before typed interceptors. Each stage observes the envelope produced by the previous stage.
+
 `RetryPolicy` controls retry attempts and backoff. A retry rule classifies failures; a rule alone does not enable retries. Subscriber retry cancellation uses `SubscribeOptionsBuilder::retry_cancellation_token`; cancellation wakes backoff and prevents the next attempt but cannot interrupt a handler already running.
 
 Dead-letter strategies can be attached to subscription options or factory defaults. `standard_dead_letters_to`, `prefixed_dead_letters`, and `discard_dead_letters` cover common routing needs. `DeliveryFailure` observers receive terminal failures after retry, error handling, and dead-letter routing finish.
 
 ## Errors and diagnostics
 
-- Publishing or subscribing a stopped bus returns a lifecycle error. `shutdown()` is blocking; from a subscriber worker use `shutdown_nonblocking()` or `shutdown_with_timeout()`.
+- Publishing or subscribing a stopped bus returns a lifecycle error. `shutdown()` is blocking. From a subscriber handler, request shutdown with `shutdown_nonblocking()`; `shutdown_with_timeout()` cannot complete while that handler is active and reports `ShutdownTimedOut`, so use it only where a caller requires bounded waiting.
 - `wait_for_idle` and `wait_for_idle_timeout` are for tests and controlled draining. Calling them from the bus's own subscriber worker returns `EventBusError::WouldDeadlock`.
 - After `shutdown_with_timeout` reports a timeout, `start()` remains rejected until old subscriber work becomes idle.
 - A successful publish means dispatch admission completed, not eventual handler delivery. Inspect receipt statuses and register error/delivery-failure observers when losses matter.
@@ -131,7 +133,9 @@ Dead-letter strategies can be attached to subscription options or factory defaul
   `add_error_observer`; for terminal failures also register
   `add_delivery_failure_observer`.
 - If shutdown or draining reports `WouldDeadlock`, move the call out of the
-  subscriber worker, or use `shutdown_nonblocking` / `shutdown_with_timeout`.
+  subscriber worker or request shutdown there with `shutdown_nonblocking`.
+  Use `shutdown_with_timeout` outside the active handler when bounded waiting
+  is required.
 - If retries do not happen, verify that both a retry rule and retry options are
   configured; a rule by itself does not enable retries.
 
@@ -158,5 +162,6 @@ Generic `EventBus` implementations expose a backend-owned associated `Subscripti
 
 - [API reference](https://docs.rs/qubit-event-bus)
 - [Design guide](design.md)
+- [Changelog](../CHANGELOG.md)
 - [中文用户指南](user_guide.zh_CN.md)
 - [设计说明（中文）](design.zh_CN.md)

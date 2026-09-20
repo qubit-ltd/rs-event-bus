@@ -68,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Published payloads must be `Clone + Send + Sync + 'static`. Matching subscribers are scheduled on the local worker pool; publishing does not wait for handler completion.
 - `AckMode::Manual` handlers must ACK or NACK before returning. A missing decision is a failure and may retry or reach dead-letter handling.
 - Events sharing an `ordering_key` are serialized per topic and subscriber. Events without one may execute concurrently.
+- Inside a handler, request shutdown with `shutdown_nonblocking()`. `shutdown_with_timeout()` cannot complete while that handler remains active and reports a timeout; reserve it for callers that require a bounded wait.
 - Dropping a `Subscription` handle does not unsubscribe it; call its cancellation API. See the user guide for lifecycle, retry, delay, and shutdown details.
 
 ## Learn More
@@ -77,6 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [中文用户指南](doc/user_guide.zh_CN.md)
 - [Design guide](doc/design.md)
 - [设计说明](doc/design.zh_CN.md)
+- [Changelog](CHANGELOG.md)
+- [中文更新日志](CHANGELOG.zh_CN.md)
 - [中文 README](README.zh_CN.md)
 
 ## Testing
