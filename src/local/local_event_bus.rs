@@ -43,9 +43,8 @@ pub(super) use interceptor::create_subscriber_interceptor_entry;
 type HandlerFn<T> = dyn Fn(EventEnvelope<T>) -> EventBusResult<()> + Send + Sync + 'static;
 use retry_delivery::normalize_subscriber_interceptor_result;
 use retry_delivery::process_subscription_event;
-use retry_delivery::run_with_retry;
-use worker_context::SubscriptionWorkerContext;
-use worker_context::is_current_subscription_worker_for_bus;
+use retry_delivery::run_dispatch_with_retry;
+use worker_context::enter_subscription_worker;
 use worker_context::local_event_bus_id;
 
 /// Thread-safe in-process event bus.

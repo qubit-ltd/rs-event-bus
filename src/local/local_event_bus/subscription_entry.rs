@@ -22,7 +22,7 @@ use super::super::processing_task::ProcessingTask;
 use super::HandlerFn;
 use super::LocalEventBus;
 use super::LocalEventBusInner;
-use super::SubscriptionWorkerContext;
+use super::enter_subscription_worker;
 use super::local_event_bus_id;
 use super::process_subscription_event;
 use crate::EventBusError;
@@ -107,7 +107,7 @@ where
             delivery_context,
             delivery_permit,
             move || {
-                let _worker_context = SubscriptionWorkerContext::enter(bus_id);
+                let _worker_context = enter_subscription_worker(bus_id);
                 if !active.is_active() {
                     return;
                 }

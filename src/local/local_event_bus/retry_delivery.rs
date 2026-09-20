@@ -25,7 +25,6 @@ use super::LocalEventBus;
 use super::dead_letter::handle_subscription_failure;
 use crate::AckMode;
 use crate::Acknowledgement;
-use crate::DeliveryFailure;
 use crate::EventBusError;
 use crate::EventBusResult;
 use crate::EventBusRetryRule;
@@ -34,9 +33,9 @@ use crate::SubscribeOptions;
 use crate::core::SubscriptionState;
 
 #[derive(Clone)]
-struct HandlerDelivery<T: Clone + Send + Sync + 'static> {
-    delivered: EventEnvelope<T>,
-    acknowledgement: Acknowledgement,
+pub(super) struct HandlerDelivery<T: Clone + Send + Sync + 'static> {
+    pub(super) delivered: EventEnvelope<T>,
+    pub(super) acknowledgement: Acknowledgement,
 }
 
 impl<T> HandlerDelivery<T>
@@ -53,9 +52,10 @@ where
     }
 }
 
-struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
-    error: EventBusError,
-    delivery: HandlerDelivery<T>,
+pub(super) struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
+    pub(super) subscription_id: usize,
+    pub(super) error: EventBusError,
+    pub(super) delivery: HandlerDelivery<T>,
 }
 
 pub(super) fn process_subscription_event<T>(
@@ -72,38 +72,20 @@ pub(super) fn process_subscription_event<T>(
     if !active.is_active() {
         return;
     }
-    match run_handler_with_retry(&handler, &options, envelope) {
+    match run_handler_with_retry(&handler, &options, subscription_id, envelope) {
         Ok(delivery) => {
             if options.ack_mode() == AckMode::Auto && !delivery.acknowledgement.is_completed() {
                 delivery.acknowledgement.ack();
             }
         }
-        Err(failure) => {
-            let dead_letter = handle_subscription_failure(
-                &options,
-                &subscriber_id,
-                &failure.delivery.delivered,
-                &failure.error,
-                &failure.delivery.acknowledgement,
-                &event_bus,
-            );
-            let failure = DeliveryFailure::new(
-                failure.delivery.delivered.id().to_string(),
-                failure.delivery.delivered.topic().name().to_string(),
-                subscription_id,
-                subscriber_id,
-                failure.error,
-                failure.delivery.acknowledgement.is_acked(),
-                dead_letter,
-            );
-            event_bus.inner.observe_delivery_failure(&failure);
-        }
+        Err(failure) => handle_subscription_failure(&event_bus.inner, &subscriber_id, &options, *failure),
     }
 }
 
 fn run_handler_with_retry<T>(
     handler: &Arc<HandlerFn<T>>,
     options: &SubscribeOptions<T>,
+    subscription_id: usize,
     envelope: EventEnvelope<T>,
 ) -> Result<HandlerDelivery<T>, Box<HandlerRunFailure<T>>>
 where
@@ -133,7 +115,11 @@ where
                 Some(delivery) => delivery,
                 None => HandlerDelivery::new(&envelope),
             };
-            Err(Box::new(HandlerRunFailure { error, delivery }))
+            Err(Box::new(HandlerRunFailure {
+                subscription_id,
+                error,
+                delivery,
+            }))
         }
     }
 }
@@ -172,7 +158,19 @@ fn normalize_subscriber_interceptor_error(error: EventBusError) -> EventBusError
     }
 }
 
-pub(super) fn run_with_retry<T, F>(
+/// Runs a dispatch operation through the shared retry implementation.
+pub(super) fn run_dispatch_with_retry<T, F>(
+    retry_options: Option<&RetryPolicy>,
+    retry_rule: Option<&Arc<dyn RetryRule<EventBusError>>>,
+    operation: F,
+) -> EventBusResult<T>
+where
+    F: FnMut() -> EventBusResult<T>,
+{
+    run_with_retry(retry_options, retry_rule, None, operation)
+}
+
+fn run_with_retry<T, F>(
     retry_options: Option<&RetryPolicy>,
     retry_rule: Option<&Arc<dyn RetryRule<EventBusError>>>,
     cancellation: Option<&RetryCancellationToken>,
