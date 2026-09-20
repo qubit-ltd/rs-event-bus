@@ -28,6 +28,17 @@ use crate::local::local_event_bus_inner::LocalEventBusInner;
 ///
 /// Dropping the handle does not automatically cancel the subscription. Call
 /// [`cancel`](Self::cancel) to unsubscribe.
+///
+/// ```
+/// use qubit_event_bus::{LocalEventBus, Topic};
+///
+/// let bus = LocalEventBus::started().unwrap();
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// let subscription = bus.subscribe("audit", &topic, |_event| ());
+/// let subscription = subscription.unwrap();
+/// assert_eq!(subscription.subscriber_id(), "audit");
+/// subscription.cancel().unwrap();
+/// ```
 pub struct Subscription<T: 'static> {
     pub(crate) id: usize,
     pub(crate) subscriber_id: String,

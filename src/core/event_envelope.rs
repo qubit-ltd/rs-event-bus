@@ -47,6 +47,15 @@ pub struct EventEnvelope<T: 'static> {
 /// Type-erased event metadata exposed to global interceptors.
 ///
 /// Metadata is normally obtained from [`EventEnvelope::metadata`].
+///
+/// ```
+/// use qubit_event_bus::{EventEnvelope, Topic};
+///
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// let envelope = EventEnvelope::create(topic, "order-1".to_owned());
+/// let metadata = envelope.metadata();
+/// assert_eq!(metadata.topic_name(), "orders.created");
+/// ```
 #[derive(Debug, Clone)]
 pub struct EventEnvelopeMetadata {
     id: String,
