@@ -9,6 +9,8 @@
 
 #[cfg(coverage)]
 mod coverage;
+mod ordering_lane;
+mod processing_tracker;
 
 use std::any::Any;
 use std::any::TypeId;
