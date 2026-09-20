@@ -1692,12 +1692,14 @@ fn remaining_timeout(started_at: Instant, timeout: Duration) -> Option<Duration>
 #[cfg(test)]
 mod tests {
     use std::any::Any;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
     use std::thread;
 
     use super::LocalEventBusInner;
+    use super::LocalEventBusRuntimeOptions;
     use super::OrderedProcessingLane;
     use crate::EventBusError;
     use crate::EventBusResult;
@@ -1848,5 +1850,36 @@ mod tests {
         );
         bus.wait_for_idle(&topic)
             .expect("rejected tasks should release idle accounting");
+    }
+
+    #[test]
+    fn test_unbounded_delivery_permit_preserves_counter() {
+        let inner = LocalEventBusInner::new(LocalEventBusRuntimeOptions {
+            default_publish_options: HashMap::new(),
+            default_subscribe_options: HashMap::new(),
+            default_dead_letter_strategies: HashMap::new(),
+            global_default_dead_letter_strategy: None,
+            global_publisher_interceptors: Vec::new(),
+            global_subscriber_interceptors: Vec::new(),
+            publisher_interceptors: Vec::new(),
+            subscriber_interceptors: Vec::new(),
+            subscription_handler_pool_size: 1,
+            subscription_handler_queue_capacity: None,
+        });
+
+        let first = inner
+            .try_acquire_delivery_permit()
+            .expect("unbounded permit should be available");
+        drop(first);
+        let second = inner
+            .try_acquire_delivery_permit()
+            .expect("unbounded permit should remain available");
+        drop(second);
+
+        assert_eq!(
+            inner.in_flight_delivery_count.load(Ordering::SeqCst),
+            0,
+            "unbounded permits must not mutate the bounded counter"
+        );
     }
 }
