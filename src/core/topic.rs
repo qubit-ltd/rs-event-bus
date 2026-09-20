@@ -26,6 +26,15 @@ use crate::TopicKey;
 ///
 /// `T` is the payload type associated with the topic. Two topics are equal only
 /// when both the topic name and payload type match.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::Topic;
+///
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// assert_eq!(topic.name(), "orders.created");
+/// ```
 #[derive(Debug)]
 pub struct Topic<T: 'static> {
     name: String,

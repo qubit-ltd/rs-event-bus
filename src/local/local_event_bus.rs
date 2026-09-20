@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
 //! Thread-safe in-process event bus.
 
 mod admission;
@@ -131,6 +132,18 @@ struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
 /// handlers on background threads. Publishing schedules work and returns after
 /// dispatch, while [`wait_for_idle`](Self::wait_for_idle) can be used by tests
 /// to wait for all handler work for a topic.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{LocalEventBus, Topic};
+///
+/// let bus = LocalEventBus::started().unwrap();
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// bus.subscribe("audit", &topic, |_| {}).unwrap();
+/// bus.publish(&topic, "order-1001".to_string()).unwrap();
+/// bus.wait_for_idle(&topic).unwrap();
+/// ```
 #[derive(Clone)]
 pub struct LocalEventBus {
     pub(crate) inner: Arc<LocalEventBusInner>,

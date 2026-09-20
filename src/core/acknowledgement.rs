@@ -20,6 +20,16 @@ const NACKED: u8 = 2;
 /// The handle is cheap to clone. All clones share the same completion state, so
 /// a handler can move one clone into helper code while tests or error handlers
 /// still observe the final ACK/NACK decision.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::Acknowledgement;
+///
+/// let acknowledgement = Acknowledgement::new();
+/// acknowledgement.ack();
+/// assert!(acknowledgement.is_acked());
+/// ```
 #[derive(Debug, Clone)]
 pub struct Acknowledgement {
     state: Arc<AtomicU8>,

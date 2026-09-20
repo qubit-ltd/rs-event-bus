@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
 //! Publisher and subscriber interceptor implementations.
 
 use super::super::subscriber_interceptor_chain::SubscriberInterceptorAnyChain;

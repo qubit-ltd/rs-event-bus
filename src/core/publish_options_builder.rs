@@ -20,6 +20,15 @@ use crate::IntoEventBusResult;
 use crate::PublishOptions;
 
 /// Builder used to create [`PublishOptions`].
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::PublishOptions;
+///
+/// let options = PublishOptions::<String>::builder().build();
+/// assert!(options.retry_options().is_none());
+/// ```
 pub struct PublishOptionsBuilder<T: 'static> {
     retry_options: Option<RetryPolicy>,
     retry_rule: Option<Arc<dyn RetryRule<EventBusError>>>,

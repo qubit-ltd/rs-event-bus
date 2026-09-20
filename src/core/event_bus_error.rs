@@ -27,6 +27,15 @@ use qubit_retry::RetryTimeoutScope;
 pub type EventBusResult<T> = Result<T, EventBusError>;
 
 /// Error returned by event bus configuration, publishing, or subscription work.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::EventBusError;
+///
+/// let error = EventBusError::invalid_argument("topic", "name is blank");
+/// assert_eq!(error.kind(), "invalid_argument");
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventBusError {
     /// Operation requires a started event bus.

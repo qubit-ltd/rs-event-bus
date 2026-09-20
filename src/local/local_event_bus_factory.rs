@@ -47,6 +47,16 @@ fn default_subscription_handler_pool_size() -> usize {
 }
 
 /// Factory used to create [`LocalEventBus`] instances with default options.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{LocalEventBusFactory, Topic};
+///
+/// let bus = LocalEventBusFactory::new().create_started().unwrap();
+/// let topic = Topic::<String>::try_new("orders.created").unwrap();
+/// bus.publish(&topic, "order-1001".to_string()).unwrap();
+/// ```
 pub struct LocalEventBusFactory {
     default_publish_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     default_subscribe_options: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,

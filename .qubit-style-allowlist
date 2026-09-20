@@ -1,0 +1,11 @@
+multiple-public-types | src/core/delivery_failure.rs | Delivery failure and dead-letter outcome form one public failure contract.
+multiple-public-types | src/core/event_envelope.rs | Typed envelope and erased metadata are one public event contract.
+multiple-public-types | src/core/publish_receipt.rs | Publish receipt value objects share one dispatch result contract.
+multiple-public-types | src/core/subscribe_options.rs | Dead-letter strategy contracts are documented beside subscription options.
+multiple-public-types | src/core/subscription.rs | Subscription handle and its shared cancellation state are one contract.
+multiple-public-types | src/local/erased_subscription.rs | Admission and erased subscription are one private dispatch boundary.
+multiple-public-types | src/local/local_event_bus.rs | Local runtime adapters are documented beside the event bus entry point.
+multiple-public-types | src/local/local_event_bus/interceptor.rs | Interceptor traits form one extension-point module.
+multiple-public-types | src/local/local_event_bus_inner.rs | Runtime state and its lifecycle types share one private boundary.
+multiple-public-types | src/local/processing_task.rs | Delivery context and processing task form one accounting unit.
+multiple-public-types | src/local/subscriber_interceptor_chain.rs | Typed and erased chains share one continuation model.
