@@ -9,8 +9,6 @@
 
 mod ack_mode;
 mod acknowledgement;
-#[cfg(coverage)]
-mod coverage;
 mod dead_letter_record;
 pub(crate) mod delivery_limits;
 mod delivery_failure;
@@ -32,8 +30,6 @@ mod topic_key;
 
 pub use ack_mode::AckMode;
 pub use acknowledgement::Acknowledgement;
-#[cfg(coverage)]
-pub use coverage::coverage_exercise_core_defensive_paths;
 pub use dead_letter_record::DEAD_LETTER_EVENT_ID;
 pub use dead_letter_record::DEAD_LETTER_FAILED_AT_UNIX_MILLIS;
 pub use dead_letter_record::DEAD_LETTER_FAILURE_REASON;
@@ -52,8 +48,6 @@ pub use event_bus::EventBus;
 pub use event_bus_error::EventBusError;
 pub use event_bus_error::EventBusResult;
 pub use event_bus_factory::EventBusFactory;
-#[cfg(coverage)]
-pub use event_bus_factory::coverage_exercise_event_bus_factory_default_regions;
 pub use event_bus_retry_rule::EventBusRetryRule;
 pub use event_envelope::EventEnvelope;
 pub use event_envelope::EventEnvelopeMetadata;

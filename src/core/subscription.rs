@@ -16,17 +16,11 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::time::Instant;
-
 use crate::EventBusResult;
 use crate::SubscribeOptions;
 use crate::Topic;
 use crate::TopicKey;
 use crate::local::local_event_bus_inner::LocalEventBusInner;
-
-#[cfg_attr(not(coverage), allow(dead_code))]
-const MAX_DELAY_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
 
 /// Handle returned from a successful subscription.
 ///
@@ -219,37 +213,6 @@ impl SubscriptionState {
         cancellations.remove(&id);
     }
 
-    /// Waits until a delay elapses or the subscription becomes inactive.
-    ///
-    /// # Parameters
-    /// - `delay`: Delay duration to wait.
-    ///
-    /// # Returns
-    /// `true` if the delay elapsed while the subscription stayed active.
-    #[cfg_attr(not(coverage), allow(dead_code))]
-    pub(crate) fn wait_until_delay_elapsed_or_inactive(&self, delay: Duration) -> bool {
-        if delay.is_zero() {
-            return self.is_active();
-        }
-        let started_at = Instant::now();
-        let mut guard = self.delay_mutex_guard();
-        while self.is_active() {
-            let Some(remaining) = delay.checked_sub(started_at.elapsed()) else {
-                return self.is_active();
-            };
-            let wait_duration = remaining.min(MAX_DELAY_WAIT_SLICE);
-            let (next_guard, timeout_result) = match self.delay_condvar.wait_timeout(guard, wait_duration) {
-                Ok(result) => result,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            guard = next_guard;
-            if timeout_result.timed_out() && remaining <= wait_duration {
-                return self.is_active();
-            }
-        }
-        false
-    }
-
     fn delay_mutex_guard(&self) -> MutexGuard<'_, ()> {
         match self.delay_mutex.lock() {
             Ok(guard) => guard,
@@ -264,22 +227,4 @@ impl SubscriptionState {
         }
     }
 
-    #[cfg(coverage)]
-    pub(crate) fn coverage_poison_delay_mutex(&self) {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = self.delay_mutex.lock().expect("delay mutex should lock");
-            panic!("coverage poison");
-        }));
-    }
-
-    #[cfg(coverage)]
-    pub(crate) fn coverage_poison_delay_cancellations(&self) {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = self
-                .delay_cancellations
-                .lock()
-                .expect("delay cancellations should lock");
-            panic!("coverage poison");
-        }));
-    }
 }

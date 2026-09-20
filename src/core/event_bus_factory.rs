@@ -210,23 +210,3 @@ pub trait EventBusFactory {
         ))
     }
 }
-
-/// Exercises coverage-only regions for trait default method bookkeeping.
-///
-/// The source-based coverage engine emits generic placeholder regions for trait
-/// defaults that cannot be called directly through a concrete implementation.
-///
-/// # Returns
-/// Unsupported-operation errors created on straight-line covered regions.
-#[cfg(coverage)]
-pub fn coverage_exercise_event_bus_factory_default_regions() -> Vec<EventBusError> {
-    vec![
-        EventBusError::unsupported_operation("create_started:default"),
-        EventBusError::unsupported_operation("create_started:startup"),
-        EventBusError::unsupported_operation("create_started:error"),
-        EventBusError::unsupported_operation("create_started:success"),
-        EventBusError::unsupported_operation("factory:create"),
-        EventBusError::unsupported_operation("factory:bus"),
-        EventBusError::unsupported_operation("factory:defaults"),
-    ]
-}
