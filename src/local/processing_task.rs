@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use super::local_event_bus_inner::DeliveryPermit;
 use super::local_event_bus_inner::LocalEventBusInner;
 use crate::EventBusError;
 use crate::TopicKey;
@@ -27,6 +28,7 @@ pub(crate) struct ProcessingTask {
     task: Option<Box<dyn FnOnce() + Send + 'static>>,
     finished: bool,
     delivery_context: Option<DeliveryContext>,
+    permit: Option<DeliveryPermit>,
 }
 
 impl ProcessingTask {
@@ -49,6 +51,7 @@ impl ProcessingTask {
             task: Some(Box::new(task)),
             finished: false,
             delivery_context: None,
+            permit: None,
         }
     }
 
@@ -67,6 +70,23 @@ impl ProcessingTask {
         processing_task
     }
 
+    /// Creates a delivery task that owns an in-flight budget permit.
+    pub(crate) fn with_delivery_context_and_permit<F>(
+        bus: Arc<LocalEventBusInner>,
+        topic_key: TopicKey,
+        delivery_context: DeliveryContext,
+        permit: DeliveryPermit,
+        task: F,
+    ) -> Self
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let mut processing_task =
+            Self::with_delivery_context(bus, topic_key, delivery_context, task);
+        processing_task.permit = Some(permit);
+        processing_task
+    }
+
     /// Reports a rejected delayed delivery, then releases its idle accounting.
     pub(crate) fn reject(self, cause: &EventBusError) {
         let context = self.delivery_context.as_ref();
@@ -77,7 +97,8 @@ impl ProcessingTask {
             ),
             None => format!("delayed delivery rejected: {cause}"),
         };
-        self.bus.observe_error(&EventBusError::execution_rejected(message));
+        self.bus
+            .observe_error(&EventBusError::execution_rejected(message));
     }
 
     /// Runs the processing task exactly once.

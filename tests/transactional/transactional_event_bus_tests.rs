@@ -57,11 +57,15 @@ impl EventBus for RecordingTransactionalBus {
         &self,
         _envelope: EventEnvelope<T>,
         _options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    ) -> EventBusResult<qubit_event_bus::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static,
     {
-        Ok(())
+        Ok(qubit_event_bus::PublishReceipt::new(
+            "test".to_string(),
+            Some("test".to_string()),
+            qubit_event_bus::PublishOutcome::Dispatched(Vec::new()),
+        ))
     }
 
     fn subscribe_with_options<T, S, F, R>(
@@ -87,7 +91,11 @@ impl EventBus for RecordingTransactionalBus {
         Ok(())
     }
 
-    fn wait_for_idle_timeout<T>(&self, _topic: &Topic<T>, _timeout: Duration) -> EventBusResult<bool>
+    fn wait_for_idle_timeout<T>(
+        &self,
+        _topic: &Topic<T>,
+        _timeout: Duration,
+    ) -> EventBusResult<bool>
     where
         T: 'static,
     {
@@ -102,12 +110,18 @@ impl TransactionalEventBus for RecordingTransactionalBus {
         Ok(RecordingPublisher)
     }
 
-    fn publish_batch_atomically_staged(&self, events: Vec<Box<dyn StagedEvent>>) -> EventBusResult<()> {
+    fn publish_batch_atomically_staged(
+        &self,
+        events: Vec<Box<dyn StagedEvent>>,
+    ) -> EventBusResult<()> {
         let topics = events
             .iter()
             .map(|event| event.metadata().topic_name().to_string())
             .collect::<Vec<_>>();
-        self.batches.lock().expect("recorded batches should lock").push(topics);
+        self.batches
+            .lock()
+            .expect("recorded batches should lock")
+            .push(topics);
         Ok(())
     }
 }
@@ -139,7 +153,10 @@ fn test_transactional_event_bus_typed_batch_delegates_to_staged_batch() {
     .expect("typed atomic batch should stage through erased batch");
 
     assert_eq!(
-        bus.batches.lock().expect("recorded batches should lock").as_slice(),
+        bus.batches
+            .lock()
+            .expect("recorded batches should lock")
+            .as_slice(),
         &[vec![
             "transactional-typed-batch".to_string(),
             "transactional-typed-batch".to_string()
@@ -150,8 +167,10 @@ fn test_transactional_event_bus_typed_batch_delegates_to_staged_batch() {
 #[test]
 fn test_transactional_event_bus_accepts_heterogeneous_staged_batch() {
     let bus = RecordingTransactionalBus::default();
-    let string_topic = Topic::<String>::try_new("transactional-heterogeneous-string").expect("topic should build");
-    let number_topic = Topic::<i64>::try_new("transactional-heterogeneous-number").expect("topic should build");
+    let string_topic =
+        Topic::<String>::try_new("transactional-heterogeneous-string").expect("topic should build");
+    let number_topic =
+        Topic::<i64>::try_new("transactional-heterogeneous-number").expect("topic should build");
     let events: Vec<Box<dyn StagedEvent>> = vec![
         Box::new(StagedEventEnvelope::new(
             EventEnvelope::create(string_topic, "payload".to_string()),
@@ -167,7 +186,10 @@ fn test_transactional_event_bus_accepts_heterogeneous_staged_batch() {
         .expect("heterogeneous staged batch should be accepted");
 
     assert_eq!(
-        bus.batches.lock().expect("recorded batches should lock").as_slice(),
+        bus.batches
+            .lock()
+            .expect("recorded batches should lock")
+            .as_slice(),
         &[vec![
             "transactional-heterogeneous-string".to_string(),
             "transactional-heterogeneous-number".to_string()

@@ -9,137 +9,15 @@
 
 use std::time::Duration;
 
+use crate::BatchPublishItem;
+use crate::BatchPublishResult;
 use crate::DeadLetterPayload;
-use crate::EventBusError;
 use crate::EventBusResult;
 use crate::EventEnvelope;
 use crate::IntoEventBusResult;
 use crate::PublishOptions;
 use crate::SubscribeOptions;
 use crate::Topic;
-
-/// Failure captured while best-effort batch publishing continues.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BatchPublishFailure {
-    index: usize,
-    event_id: String,
-    error: EventBusError,
-}
-
-impl BatchPublishFailure {
-    /// Creates a batch publish failure record.
-    pub(crate) fn new(index: usize, event_id: String, error: EventBusError) -> Self {
-        Self { index, event_id, error }
-    }
-
-    /// Returns the input index of the failed envelope.
-    ///
-    /// # Returns
-    /// Zero-based index in the input batch.
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    /// Returns the failed event ID.
-    ///
-    /// # Returns
-    /// Stable event identifier captured before publishing.
-    pub fn event_id(&self) -> &str {
-        &self.event_id
-    }
-
-    /// Returns the final publish error.
-    ///
-    /// # Returns
-    /// Error returned for this envelope after publish retries.
-    pub fn error(&self) -> &EventBusError {
-        &self.error
-    }
-}
-
-/// Result summary returned by best-effort batch publishing.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BatchPublishResult {
-    total_count: usize,
-    accepted_count: usize,
-    dropped_count: usize,
-    failures: Vec<BatchPublishFailure>,
-}
-
-impl BatchPublishResult {
-    /// Creates an empty batch publish result.
-    pub(crate) fn new(total_count: usize) -> Self {
-        Self {
-            total_count,
-            accepted_count: 0,
-            dropped_count: 0,
-            failures: Vec::new(),
-        }
-    }
-
-    /// Records one accepted envelope submission.
-    pub(crate) fn record_accepted(&mut self) {
-        self.accepted_count += 1;
-    }
-
-    /// Records one envelope dropped by publisher interceptors.
-    pub(crate) fn record_dropped(&mut self) {
-        self.dropped_count += 1;
-    }
-
-    /// Records one failed envelope submission.
-    pub(crate) fn record_failure(&mut self, failure: BatchPublishFailure) {
-        self.failures.push(failure);
-    }
-
-    /// Returns the total number of envelopes in the batch.
-    ///
-    /// # Returns
-    /// Input envelope count.
-    pub fn total_count(&self) -> usize {
-        self.total_count
-    }
-
-    /// Returns the number of envelopes accepted by the backend.
-    ///
-    /// # Returns
-    /// Accepted submission count.
-    pub fn accepted_count(&self) -> usize {
-        self.accepted_count
-    }
-
-    /// Returns the number of envelopes dropped before dispatch.
-    ///
-    /// # Returns
-    /// Drop count reported by publisher interceptors.
-    pub fn dropped_count(&self) -> usize {
-        self.dropped_count
-    }
-
-    /// Returns the number of failed envelope submissions.
-    ///
-    /// # Returns
-    /// Failure count.
-    pub fn failure_count(&self) -> usize {
-        self.failures.len()
-    }
-
-    /// Returns captured per-envelope failures.
-    ///
-    /// # Returns
-    /// Failures in input order.
-    pub fn failures(&self) -> &[BatchPublishFailure] {
-        &self.failures
-    }
-
-    /// Returns whether the batch completed without per-envelope failures.
-    ///
-    /// # Returns
-    /// `true` when every envelope was accepted or intentionally dropped.
-    pub fn is_success(&self) -> bool {
-        self.failures.is_empty()
-    }
-}
 
 /// Common event bus contract implemented by concrete backends.
 ///
@@ -180,12 +58,12 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// - `payload`: Event payload.
     ///
     /// # Returns
-    /// `Ok(())` after the backend accepts the event.
+    /// Returns a [`crate::PublishReceipt`] describing subscriber admission.
     ///
     /// # Errors
     /// Returns backend-specific errors such as a stopped bus or dispatch
     /// failure.
-    fn publish<T>(&self, topic: &Topic<T>, payload: T) -> EventBusResult<()>
+    fn publish<T>(&self, topic: &Topic<T>, payload: T) -> EventBusResult<crate::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -200,11 +78,16 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// - `options`: Publish options applied to this event.
     ///
     /// # Returns
-    /// `Ok(())` after the backend accepts the event.
+    /// Returns a [`crate::PublishReceipt`] describing subscriber admission.
     ///
     /// # Errors
     /// Returns backend-specific publish errors.
-    fn publish_with_options<T>(&self, topic: &Topic<T>, payload: T, options: PublishOptions<T>) -> EventBusResult<()>
+    fn publish_with_options<T>(
+        &self,
+        topic: &Topic<T>,
+        payload: T,
+        options: PublishOptions<T>,
+    ) -> EventBusResult<crate::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -217,11 +100,14 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// - `envelope`: Event envelope to publish.
     ///
     /// # Returns
-    /// `Ok(())` after the backend accepts the event.
+    /// Returns a [`crate::PublishReceipt`] describing subscriber admission.
     ///
     /// # Errors
     /// Returns backend-specific publishing errors.
-    fn publish_envelope<T>(&self, envelope: EventEnvelope<T>) -> EventBusResult<()>
+    fn publish_envelope<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+    ) -> EventBusResult<crate::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -235,7 +121,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     /// - `options`: Publish options applied to this event.
     ///
     /// # Returns
-    /// `Ok(())` after the backend accepts the event.
+    /// Returns a [`crate::PublishReceipt`] describing subscriber admission.
     ///
     /// # Errors
     /// Returns backend-specific publishing errors.
@@ -243,7 +129,7 @@ pub trait EventBus: Clone + Send + Sync + 'static {
         &self,
         envelope: EventEnvelope<T>,
         options: PublishOptions<T>,
-    ) -> EventBusResult<()>
+    ) -> EventBusResult<crate::PublishReceipt>
     where
         T: Clone + Send + Sync + 'static;
 
@@ -292,17 +178,15 @@ pub trait EventBus: Clone + Send + Sync + 'static {
     where
         T: Clone + Send + Sync + 'static,
     {
-        let mut result = BatchPublishResult::new(envelopes.len());
+        let mut items = Vec::with_capacity(envelopes.len());
         for (index, envelope) in envelopes.into_iter().enumerate() {
             let event_id = envelope.id().to_string();
             match self.publish_envelope_with_options(envelope, options.clone()) {
-                Ok(()) => result.record_accepted(),
-                Err(error) => {
-                    result.record_failure(BatchPublishFailure::new(index, event_id, error));
-                }
+                Ok(receipt) => items.push(BatchPublishItem::new(index, event_id, Ok(receipt))),
+                Err(error) => items.push(BatchPublishItem::new(index, event_id, Err(error))),
             }
         }
-        Ok(result)
+        Ok(BatchPublishResult::new(items))
     }
 
     /// Subscribes a handler using backend default options.
