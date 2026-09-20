@@ -257,11 +257,7 @@ impl LocalEventBus {
     ///
     /// # Errors
     /// Returns a lock-poisoning error if tracker state is unavailable.
-    pub fn wait_for_idle_timeout<T>(
-        &self,
-        topic: &Topic<T>,
-        timeout: Duration,
-    ) -> EventBusResult<bool>
+    pub fn wait_for_idle_timeout<T>(&self, topic: &Topic<T>, timeout: Duration) -> EventBusResult<bool>
     where
         T: 'static,
     {
