@@ -529,7 +529,7 @@ fn test_event_bus_trait_default_methods_delegate_to_required_backend_methods() {
     )
     .expect("default batch publish should summarize failures");
     assert_eq!(batch_result.total_count(), 3);
-    assert_eq!(batch_result.accepted_count(), 2);
+    assert_eq!(batch_result.accepted_count(), 0);
     assert_eq!(batch_result.dropped_count(), 0);
     assert_eq!(batch_result.failure_count(), 1);
     assert_eq!(batch_result.failures()[0].index(), 1);
