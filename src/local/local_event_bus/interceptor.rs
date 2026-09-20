@@ -8,12 +8,26 @@
 // qubit-style: allow multiple-public-types
 //! Publisher and subscriber interceptor implementations.
 
+use std::any::Any;
+use std::any::TypeId;
+use std::any::type_name;
+use std::panic;
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+
 use super::super::subscriber_interceptor_chain::SubscriberInterceptorAnyChain;
 use super::super::subscriber_interceptor_chain::SubscriberInterceptorChain;
+use super::super::subscriber_interceptor_chain::create_downstream_error_slot;
+use super::super::subscriber_interceptor_entry::SubscriberInterceptorEntry;
+use super::HandlerFn;
+use super::LocalEventBus;
+use super::normalize_subscriber_interceptor_result;
+use crate::EventBusError;
 use crate::EventBusResult;
 use crate::EventEnvelope;
 use crate::EventEnvelopeMetadata;
 use crate::IntoEventBusResult;
+use crate::local::publisher_interceptor_entry::PublisherInterceptorEntry;
 
 /// Converts typed publisher interceptor return values into a common result.
 pub trait IntoPublisherInterceptorResult<T: Clone + Send + Sync + 'static> {
@@ -139,5 +153,211 @@ where
 {
     fn on_consume(&self, metadata: EventEnvelopeMetadata, chain: SubscriberInterceptorAnyChain) -> EventBusResult<()> {
         self(metadata, chain).into_event_bus_result()
+    }
+}
+
+type PublisherInterceptorFn<T> = dyn PublisherInterceptor<T>;
+type SubscriberInterceptorFn<T> = dyn SubscriberInterceptor<T>;
+
+/// Typed publisher interceptor adapter.
+struct TypedPublisherInterceptor<T: Clone + Send + Sync + 'static> {
+    interceptor: Arc<PublisherInterceptorFn<T>>,
+}
+
+/// Creates a type-erased publisher interceptor entry.
+///
+/// # Parameters
+/// - `interceptor`: Typed publisher interceptor callback.
+///
+/// # Returns
+/// Type-erased entry suitable for local bus storage.
+pub(in crate::local) fn create_publisher_interceptor_entry<T, I>(interceptor: I) -> Arc<dyn PublisherInterceptorEntry>
+where
+    T: Clone + Send + Sync + 'static,
+    I: PublisherInterceptor<T>,
+{
+    Arc::new(TypedPublisherInterceptor::<T> {
+        interceptor: Arc::new(interceptor),
+    })
+}
+
+impl<T> PublisherInterceptorEntry for TypedPublisherInterceptor<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Returns the payload [`TypeId`] handled by this interceptor.
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    /// Downcasts and applies the typed interceptor.
+    fn intercept(&self, envelope: Box<dyn Any + Send>) -> EventBusResult<Option<Box<dyn Any + Send>>> {
+        let envelope = envelope
+            .downcast::<EventEnvelope<T>>()
+            .map_err(|_| EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown"))?;
+        match panic::catch_unwind(AssertUnwindSafe(|| self.interceptor.on_publish(*envelope))) {
+            Ok(Ok(envelope)) => Ok(envelope.map(|envelope| Box::new(envelope) as Box<dyn Any + Send>)),
+            Ok(Err(error)) => Err(EventBusError::interceptor_failed("publish", error.to_string())),
+            Err(_) => Err(EventBusError::interceptor_failed(
+                "publish",
+                "publisher interceptor panicked",
+            )),
+        }
+    }
+}
+
+/// Typed subscriber interceptor adapter.
+struct TypedSubscriberInterceptor<T: Clone + Send + Sync + 'static> {
+    interceptor: Arc<SubscriberInterceptorFn<T>>,
+}
+
+/// Creates a type-erased subscriber interceptor entry.
+///
+/// # Parameters
+/// - `interceptor`: Typed subscriber interceptor callback.
+///
+/// # Returns
+/// Type-erased entry suitable for local bus storage.
+pub(in crate::local) fn create_subscriber_interceptor_entry<T, I>(interceptor: I) -> Arc<dyn SubscriberInterceptorEntry>
+where
+    T: Clone + Send + Sync + 'static,
+    I: SubscriberInterceptor<T>,
+{
+    Arc::new(TypedSubscriberInterceptor::<T> {
+        interceptor: Arc::new(interceptor),
+    })
+}
+
+impl<T> SubscriberInterceptorEntry for TypedSubscriberInterceptor<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Returns the payload [`TypeId`] handled by this interceptor.
+    fn payload_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    /// Downcasts and wraps the typed handler.
+    fn wrap_handler(&self, handler: Box<dyn Any + Send + Sync>) -> EventBusResult<Box<dyn Any + Send + Sync>> {
+        let next = handler
+            .downcast::<Arc<HandlerFn<T>>>()
+            .map_err(|_| EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown"))?;
+        let next = *next;
+        let interceptor = Arc::clone(&self.interceptor);
+        let wrapped: Arc<HandlerFn<T>> = Arc::new(move |event| {
+            let downstream_error = create_downstream_error_slot();
+            let next_chain =
+                SubscriberInterceptorChain::with_downstream_error(Arc::clone(&next), Arc::clone(&downstream_error));
+            let result = panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_consume(event, next_chain)));
+            normalize_subscriber_interceptor_result(result, &downstream_error, "subscriber interceptor panicked")
+        });
+        Ok(Box::new(wrapped))
+    }
+}
+
+impl LocalEventBus {
+    /// Applies global publisher interceptors in registration order.
+    pub(super) fn apply_global_publisher_interceptors<T>(
+        &self,
+        mut envelope: EventEnvelope<T>,
+    ) -> EventBusResult<Option<EventEnvelope<T>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        for interceptor in self.inner.global_publisher_interceptors()? {
+            let metadata = envelope.metadata();
+            let metadata = match panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_publish(metadata))) {
+                Ok(Ok(Some(metadata))) => metadata,
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(error)) => {
+                    return Err(EventBusError::interceptor_failed("publish", error.to_string()));
+                }
+                Err(_) => {
+                    return Err(EventBusError::interceptor_failed(
+                        "publish",
+                        "global publisher interceptor panicked",
+                    ));
+                }
+            };
+            envelope.apply_metadata(metadata);
+        }
+        Ok(Some(envelope))
+    }
+
+    /// Applies typed publisher interceptors in registration order.
+    pub(super) fn apply_typed_publisher_interceptors<T>(
+        &self,
+        envelope: EventEnvelope<T>,
+    ) -> EventBusResult<Option<EventEnvelope<T>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let interceptors = self.inner.publisher_interceptors()?;
+        let mut current: Option<Box<dyn Any + Send>> = Some(Box::new(envelope));
+        for interceptor in interceptors {
+            if interceptor.payload_type_id() == TypeId::of::<T>()
+                && let Some(boxed) = current.take()
+            {
+                current = interceptor.intercept(boxed)?;
+            }
+        }
+        current
+            .map(|boxed| {
+                boxed
+                    .downcast::<EventEnvelope<T>>()
+                    .map(|envelope| *envelope)
+                    .map_err(|_| EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown"))
+            })
+            .transpose()
+    }
+
+    /// Applies matching subscriber interceptors to a handler.
+    pub(super) fn apply_subscriber_interceptors<T>(
+        &self,
+        handler: Arc<HandlerFn<T>>,
+    ) -> EventBusResult<Arc<HandlerFn<T>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let interceptors = self.inner.subscriber_interceptors()?;
+        let mut chain = Box::new(handler) as Box<dyn Any + Send + Sync>;
+        for interceptor in interceptors.into_iter().rev() {
+            if interceptor.payload_type_id() == TypeId::of::<T>() {
+                chain = interceptor.wrap_handler(chain)?;
+            }
+        }
+        let handler = chain
+            .downcast::<Arc<HandlerFn<T>>>()
+            .map(|handler| *handler)
+            .map_err(|_| EventBusError::type_mismatch(type_name::<Arc<HandlerFn<T>>>(), "unknown"))?;
+        self.apply_global_subscriber_interceptors(handler)
+    }
+
+    /// Applies global subscriber interceptors around a typed handler chain.
+    fn apply_global_subscriber_interceptors<T>(&self, handler: Arc<HandlerFn<T>>) -> EventBusResult<Arc<HandlerFn<T>>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let mut chain = handler;
+        for interceptor in self.inner.global_subscriber_interceptors()?.into_iter().rev() {
+            let next = Arc::clone(&chain);
+            chain = Arc::new(move |event: EventEnvelope<T>| {
+                let metadata = event.metadata();
+                let next = Arc::clone(&next);
+                let event_for_next = event.clone();
+                let downstream_error = create_downstream_error_slot();
+                let chain = SubscriberInterceptorAnyChain::with_downstream_error(
+                    Arc::new(move || next(event_for_next.clone())),
+                    Arc::clone(&downstream_error),
+                );
+                let result = panic::catch_unwind(AssertUnwindSafe(|| interceptor.on_consume(metadata, chain)));
+                normalize_subscriber_interceptor_result(
+                    result,
+                    &downstream_error,
+                    "global subscriber interceptor panicked",
+                )
+            });
+        }
+        Ok(chain)
     }
 }
