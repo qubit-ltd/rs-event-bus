@@ -7,8 +7,6 @@
 // =============================================================================
 //! Thread-safe in-process event bus.
 
-#[cfg(coverage)]
-mod coverage;
 mod admission;
 mod dead_letter;
 mod delay;
@@ -18,6 +16,7 @@ mod lifecycle;
 mod retry_delivery;
 mod subscription_entry;
 mod worker_context;
+use subscription_entry::TypedSubscriptionEntry;
 
 pub use interceptor::{
     IntoPublisherInterceptorAnyResult, IntoPublisherInterceptorResult,
@@ -37,8 +36,6 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-#[cfg(coverage)]
-pub use coverage::coverage_exercise_local_event_bus_defensive_paths;
 use qubit_argument::StringArgument;
 use qubit_executor::ExecutorService;
 use qubit_executor::SingleThreadScheduledExecutorService;
@@ -1270,132 +1267,6 @@ where
             )
         });
         Ok(Box::new(wrapped))
-    }
-}
-
-/// Typed subscription entry stored in the subscription map.
-struct TypedSubscriptionEntry<T: Clone + Send + Sync + 'static> {
-    id: usize,
-    subscriber_id: String,
-    topic: Topic<T>,
-    active: Arc<SubscriptionState>,
-    handler: Arc<HandlerFn<T>>,
-    options: SubscribeOptions<T>,
-}
-
-impl<T> ErasedSubscription for TypedSubscriptionEntry<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Returns subscription ID.
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn subscriber_id(&self) -> &str {
-        &self.subscriber_id
-    }
-
-    /// Returns subscription priority.
-    fn priority(&self) -> i32 {
-        self.options.priority()
-    }
-
-    /// Marks this subscription inactive.
-    fn deactivate(&self) {
-        self.active.deactivate();
-    }
-
-    /// Downcasts and schedules handler processing.
-    fn dispatch(
-        &self,
-        envelope: Box<dyn Any + Send>,
-        bus: Arc<LocalEventBusInner>,
-        allow_stopping: bool,
-    ) -> EventBusResult<DispatchAdmission> {
-        if !self.active.is_active() {
-            return Ok(DispatchAdmission::Filtered);
-        }
-        let envelope = envelope.downcast::<EventEnvelope<T>>().map_err(|_| {
-            EventBusError::type_mismatch(type_name::<EventEnvelope<T>>(), "unknown")
-        })?;
-        if !self.options.try_should_handle(&envelope)? {
-            return Ok(DispatchAdmission::Filtered);
-        }
-        let topic_key = self.topic.key();
-        let delivery_permit = bus.try_acquire_delivery_permit()?;
-        bus.start_processing(&topic_key)?;
-        let ordering_lane_key = envelope
-            .ordering_key()
-            .map(|ordering_key| OrderingLaneKey::new(topic_key.clone(), ordering_key, self.id));
-        let delay = envelope.delay();
-        let active = Arc::clone(&self.active);
-        let delayed_active = Arc::clone(&self.active);
-        let handler = Arc::clone(&self.handler);
-        let options = self.options.clone();
-        let subscriber_id = self.subscriber_id.clone();
-        let subscription_id = self.id;
-        let event_bus = LocalEventBus {
-            inner: Arc::clone(&bus),
-        };
-        let bus_id = local_event_bus_id(&bus);
-        let delivery_context = DeliveryContext {
-            event_id: envelope.id().to_string(),
-            topic_name: self.topic.name().to_string(),
-            subscriber_id: self.subscriber_id.clone(),
-        };
-        let processing_task = ProcessingTask::with_delivery_context_and_permit(
-            Arc::clone(&bus),
-            topic_key,
-            delivery_context,
-            delivery_permit,
-            move || {
-                let _worker_context = SubscriptionWorkerContext::enter(bus_id);
-                if !active.is_active() {
-                    return;
-                }
-                process_subscription_event(
-                    active,
-                    handler,
-                    options,
-                    subscription_id,
-                    subscriber_id,
-                    *envelope,
-                    event_bus,
-                );
-            },
-        );
-        let result = if let Some(ordering_lane_key) = ordering_lane_key {
-            if let Some(delay) = delay
-                && !delay.is_zero()
-            {
-                bus.submit_delayed_ordered_processing_task(
-                    ordering_lane_key,
-                    processing_task,
-                    delay,
-                    delayed_active,
-                    allow_stopping,
-                )
-            } else {
-                bus.submit_ordered_processing_task(
-                    ordering_lane_key,
-                    processing_task,
-                    allow_stopping,
-                )
-            }
-        } else if let Some(delay) = delay
-            && !delay.is_zero()
-        {
-            bus.submit_delayed_processing_task(
-                processing_task,
-                delay,
-                delayed_active,
-                allow_stopping,
-            )
-        } else {
-            bus.submit_processing_task(move || processing_task.run(), allow_stopping)
-        };
-        result.map(|_| DispatchAdmission::Accepted)
     }
 }
 
