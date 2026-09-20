@@ -9,6 +9,7 @@
 
 mod ack_mode_tests;
 mod acknowledgement_tests;
+mod batch_publish_result_tests;
 mod dead_letter_record_tests;
 mod error_tests;
 mod event_bus_error_tests;
