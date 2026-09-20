@@ -1701,6 +1701,7 @@ mod tests {
     use crate::EventBusResult;
     use crate::LocalEventBus;
     use crate::Topic;
+    use crate::core::delivery_limits::DeliveryLimits;
     use crate::local::erased_subscription::DispatchAdmission;
     use crate::local::erased_subscription::ErasedSubscription;
     use crate::local::ordering_lane_key::OrderingLaneKey;
