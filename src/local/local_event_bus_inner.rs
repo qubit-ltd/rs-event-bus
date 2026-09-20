@@ -9,8 +9,6 @@
 
 mod ordering_lane;
 mod processing_tracker;
-use processing_tracker::ProcessingTracker;
-
 use std::any::Any;
 use std::any::TypeId;
 use std::cmp::Reverse;
@@ -23,6 +21,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use processing_tracker::ProcessingTracker;
 use qubit_collections::map::OrderedIndexMap;
 use qubit_executor::CancelResult;
 use qubit_executor::ExecutorService;

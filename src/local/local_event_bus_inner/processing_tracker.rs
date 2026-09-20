@@ -3,9 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Condvar;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
-use crate::{EventBusError, EventBusResult, TopicKey};
+use crate::EventBusError;
+use crate::EventBusResult;
+use crate::TopicKey;
 /// Tracks active handler work per topic.
 pub(super) struct ProcessingTracker {
     counts: Mutex<HashMap<TopicKey, usize>>,
