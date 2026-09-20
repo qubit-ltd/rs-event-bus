@@ -85,6 +85,8 @@ impl<T: 'static> Subscription<T> {
     ///
     /// # Returns
     /// ID supplied when subscribing.
+    #[must_use]
+    #[inline]
     pub fn subscriber_id(&self) -> &str {
         &self.subscriber_id
     }
@@ -93,6 +95,8 @@ impl<T: 'static> Subscription<T> {
     ///
     /// # Returns
     /// Type-safe topic metadata.
+    #[must_use]
+    #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
     }
@@ -101,6 +105,8 @@ impl<T: 'static> Subscription<T> {
     ///
     /// # Returns
     /// Immutable options captured at subscription time.
+    #[must_use]
+    #[inline]
     pub const fn options(&self) -> &SubscribeOptions<T> {
         &self.options
     }
@@ -109,6 +115,8 @@ impl<T: 'static> Subscription<T> {
     ///
     /// # Returns
     /// `true` until [`cancel`](Self::cancel) succeeds.
+    #[must_use]
+    #[inline]
     pub fn is_active(&self) -> bool {
         self.active.is_active()
     }

@@ -54,6 +54,7 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Errors
     /// Returns [`EventBusError::InvalidArgument`] when `name` is blank.
+    #[must_use]
     pub fn try_new(name: impl Into<String>) -> EventBusResult<Self> {
         let name = name
             .into()
@@ -71,6 +72,8 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// The immutable topic name.
+    #[must_use]
+    #[inline]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -79,6 +82,8 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// Type identifier for payload `T`.
+    #[must_use]
+    #[inline]
     pub fn payload_type_id(&self) -> TypeId {
         self.payload_type_id
     }
@@ -87,6 +92,8 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// Fully qualified payload type name.
+    #[must_use]
+    #[inline]
     pub fn payload_type_name(&self) -> &'static str {
         self.payload_type_name
     }
@@ -95,6 +102,7 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// A key containing the topic name and payload type.
+    #[must_use]
     pub fn key(&self) -> TopicKey {
         TopicKey::new(self.name.clone(), self.payload_type_id)
     }

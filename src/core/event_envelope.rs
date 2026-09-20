@@ -64,6 +64,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Stable event identifier.
+    #[must_use]
+    #[inline]
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -72,6 +74,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Topic name without payload type information.
+    #[must_use]
+    #[inline]
     pub fn topic_name(&self) -> &str {
         &self.topic_name
     }
@@ -80,6 +84,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Fully qualified payload type name.
+    #[must_use]
+    #[inline]
     pub fn payload_type_name(&self) -> &'static str {
         self.payload_type_name
     }
@@ -88,6 +94,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Immutable header map.
+    #[must_use]
+    #[inline]
     pub fn headers(&self) -> &HashMap<String, String> {
         &self.headers
     }
@@ -96,6 +104,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// `Some` when an ordering key was configured.
+    #[must_use]
+    #[inline]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
     }
@@ -104,6 +114,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Timestamp assigned when the envelope was built.
+    #[must_use]
+    #[inline]
     pub fn timestamp(&self) -> SystemTime {
         self.timestamp
     }
@@ -112,6 +124,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// `Some` when delayed delivery metadata was configured.
+    #[must_use]
+    #[inline]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }
@@ -120,6 +134,8 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// `true` if the source envelope is already a dead letter.
+    #[must_use]
+    #[inline]
     pub fn is_dead_letter(&self) -> bool {
         self.dead_letter
     }
@@ -132,6 +148,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata.
+    #[must_use]
     pub fn with_header(mut self, key: &str, value: impl ToString) -> Self {
         self.headers.insert(key.to_string(), value.to_string());
         self
@@ -144,6 +161,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata.
+    #[must_use]
     pub fn without_header(mut self, key: &str) -> Self {
         self.headers.remove(key);
         self
@@ -156,6 +174,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata.
+    #[must_use]
     pub fn with_ordering_key(mut self, ordering_key: &str) -> Self {
         self.ordering_key = Some(ordering_key.to_string());
         self
@@ -165,6 +184,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata without an ordering key.
+    #[must_use]
     pub fn without_ordering_key(mut self) -> Self {
         self.ordering_key = None;
         self
@@ -177,6 +197,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata.
+    #[must_use]
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
@@ -186,6 +207,7 @@ impl EventEnvelopeMetadata {
     ///
     /// # Returns
     /// Updated metadata without a delay.
+    #[must_use]
     pub fn without_delay(mut self) -> Self {
         self.delay = None;
         self
@@ -201,6 +223,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// A new event envelope with empty headers.
+    #[must_use]
     pub fn create(topic: Topic<T>, payload: T) -> Self {
         Self {
             id: generate_event_id(),
@@ -219,6 +242,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// A builder with generated ID and current timestamp defaults.
+    #[must_use]
     pub fn builder() -> EventEnvelopeBuilder<T> {
         EventEnvelopeBuilder::new()
     }
@@ -248,6 +272,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Stable event identifier.
+    #[must_use]
+    #[inline]
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -256,6 +282,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Type-safe topic metadata.
+    #[must_use]
+    #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
     }
@@ -264,6 +292,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Immutable payload reference.
+    #[must_use]
+    #[inline]
     pub fn payload(&self) -> &T {
         &self.payload
     }
@@ -272,6 +302,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Immutable header map.
+    #[must_use]
+    #[inline]
     pub fn headers(&self) -> &HashMap<String, String> {
         &self.headers
     }
@@ -280,6 +312,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Cloned event metadata without exposing the typed payload.
+    #[must_use]
     pub fn metadata(&self) -> EventEnvelopeMetadata {
         EventEnvelopeMetadata {
             id: self.id.clone(),
@@ -297,6 +330,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// `Some` when an ordering key was configured.
+    #[must_use]
+    #[inline]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
     }
@@ -305,6 +340,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Timestamp assigned when the envelope was built.
+    #[must_use]
+    #[inline]
     pub fn timestamp(&self) -> SystemTime {
         self.timestamp
     }
@@ -313,6 +350,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// `Some` when delayed delivery metadata was configured.
+    #[must_use]
+    #[inline]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }
@@ -321,6 +360,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// `Some` for envelopes delivered to subscriber handlers.
+    #[must_use]
+    #[inline]
     pub fn acknowledgement(&self) -> Option<&Acknowledgement> {
         self.acknowledgement.as_ref()
     }
@@ -329,6 +370,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// `true` if the envelope has already been routed to a dead-letter flow.
+    #[must_use]
+    #[inline]
     pub fn is_dead_letter(&self) -> bool {
         self.dead_letter
     }
@@ -341,6 +384,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
+    #[must_use]
     pub fn with_header(mut self, key: impl Into<String>, value: impl ToString) -> Self {
         self.headers.insert(key.into(), value.to_string());
         self
@@ -353,6 +397,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
+    #[must_use]
     pub fn with_ordering_key(mut self, ordering_key: impl Into<String>) -> Self {
         self.ordering_key = Some(ordering_key.into());
         self
@@ -365,6 +410,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
+    #[must_use]
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
@@ -377,6 +423,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope.
+    #[must_use]
     pub fn with_acknowledgement(mut self, acknowledgement: Acknowledgement) -> Self {
         self.acknowledgement = Some(acknowledgement);
         self
@@ -386,6 +433,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// Updated envelope with dead-letter marker enabled.
+    #[must_use]
     pub fn as_dead_letter(mut self) -> Self {
         self.dead_letter = true;
         self

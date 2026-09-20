@@ -65,30 +65,44 @@ impl DeliveryFailure {
         }
     }
     /// Returns the delivered event identifier.
+    #[must_use]
+    #[inline]
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
     /// Returns the topic name.
+    #[must_use]
+    #[inline]
     pub fn topic_name(&self) -> &str {
         &self.topic_name
     }
     /// Returns the subscription identifier.
+    #[must_use]
+    #[inline]
     pub fn subscription_id(&self) -> usize {
         self.subscription_id
     }
     /// Returns the subscriber identifier.
+    #[must_use]
+    #[inline]
     pub fn subscriber_id(&self) -> &str {
         &self.subscriber_id
     }
     /// Returns the terminal processing error.
+    #[must_use]
+    #[inline]
     pub fn error(&self) -> &EventBusError {
         &self.error
     }
     /// Returns whether an error handler acknowledged the failure.
+    #[must_use]
+    #[inline]
     pub fn acknowledged_by_error_handler(&self) -> bool {
         self.acknowledged_by_error_handler
     }
     /// Returns the dead-letter result.
+    #[must_use]
+    #[inline]
     pub fn dead_letter(&self) -> &DeadLetterOutcome {
         &self.dead_letter
     }

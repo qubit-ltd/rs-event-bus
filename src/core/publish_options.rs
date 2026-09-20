@@ -43,6 +43,7 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// Builder with no retry policy and no error handlers.
+    #[must_use]
     pub fn builder() -> PublishOptionsBuilder<T> {
         PublishOptionsBuilder::new()
     }
@@ -51,6 +52,7 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// Options with default behavior.
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             retry_options: None,
@@ -61,6 +63,8 @@ impl<T: 'static> PublishOptions<T> {
 
     /// Returns the shared application rule, or `None` for default
     /// classification.
+    #[must_use]
+    #[inline]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<EventBusError>>> {
         self.retry_rule.as_ref()
     }
@@ -69,6 +73,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// `Some` when publish retry is configured.
+    #[must_use]
+    #[inline]
     pub fn retry_options(&self) -> Option<&RetryPolicy> {
         self.retry_options.as_ref()
     }
@@ -77,6 +83,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// Handler count.
+    #[must_use]
+    #[inline]
     pub fn error_handler_count(&self) -> usize {
         self.error_handlers.len()
     }

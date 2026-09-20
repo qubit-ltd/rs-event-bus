@@ -31,6 +31,7 @@ pub struct DeliveryLimits {
 
 impl DeliveryLimits {
     /// Creates delivery limits.
+    #[must_use]
     pub const fn new(max_in_flight: usize, handler_queue_capacity: Option<usize>) -> Self {
         Self {
             max_in_flight,
@@ -39,26 +40,33 @@ impl DeliveryLimits {
     }
 
     /// Creates limits with an optional bounded handler queue.
+    #[must_use]
     pub const fn bounded(max_in_flight: usize, handler_queue_capacity: Option<usize>) -> Self {
         Self::new(max_in_flight, handler_queue_capacity)
     }
 
     /// Creates limits with an unbounded handler queue.
+    #[must_use]
     pub const fn unbounded(max_in_flight: usize) -> Self {
         Self::new(max_in_flight, None)
     }
 
     /// Returns the maximum number of accepted deliveries.
+    #[must_use]
+    #[inline]
     pub const fn max_in_flight(&self) -> usize {
         self.max_in_flight
     }
 
     /// Returns the optional executor queue capacity.
+    #[must_use]
+    #[inline]
     pub const fn handler_queue_capacity(&self) -> Option<usize> {
         self.handler_queue_capacity
     }
 
     /// Validates configured limits.
+    #[must_use]
     pub fn validate(self) -> EventBusResult<Self> {
         if self.max_in_flight == 0 {
             return Err(EventBusError::invalid_argument(

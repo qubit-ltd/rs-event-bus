@@ -40,6 +40,7 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// A handle whose state is neither ACKED nor NACKED.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(PENDING)),
@@ -66,6 +67,8 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// `true` if the latest acknowledgement decision is ACK.
+    #[must_use]
+    #[inline]
     pub fn is_acked(&self) -> bool {
         self.state.load(Ordering::SeqCst) == ACKED
     }
@@ -74,6 +77,8 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// `true` if the latest acknowledgement decision is NACK.
+    #[must_use]
+    #[inline]
     pub fn is_nacked(&self) -> bool {
         self.state.load(Ordering::SeqCst) == NACKED
     }
@@ -82,6 +87,8 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// `true` after either [`ack`](Self::ack) or [`nack`](Self::nack).
+    #[must_use]
+    #[inline]
     pub fn is_completed(&self) -> bool {
         self.state.load(Ordering::SeqCst) != PENDING
     }
