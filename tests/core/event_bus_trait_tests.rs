@@ -36,10 +36,6 @@ use qubit_event_bus::SubscriberInterceptorChain;
 use qubit_event_bus::Subscription;
 use qubit_event_bus::SubscriptionHandle;
 use qubit_event_bus::Topic;
-use qubit_event_bus::TransactionalEventBus;
-use qubit_event_bus::TransactionalPublisher;
-use qubit_event_bus::UnsupportedTransactionalEventBus;
-use qubit_event_bus::UnsupportedTransactionalPublisher;
 
 struct ForeignSubscription<T: Clone + Send + Sync + 'static> {
     subscriber_id: String,
@@ -250,7 +246,6 @@ struct DefaultingFactory;
 
 impl EventBusFactory for DefaultingFactory {
     type Bus = DefaultingEventBus;
-    type TransactionalBus = UnsupportedTransactionalEventBus;
 
     fn create(&self) -> Self::Bus {
         DefaultingEventBus::default()
@@ -580,7 +575,6 @@ fn test_event_bus_factory_trait_creates_local_event_buses() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    assert!(!EventBusFactory::is_transactional_supported(&factory));
     assert_eq!(
         EventBus::publish(&bus, &topic, "accepted".to_string())
             .expect_err("factory-created bus should start stopped"),
@@ -613,49 +607,11 @@ fn test_event_bus_factory_trait_creates_local_event_buses() {
 }
 
 #[test]
-fn test_event_bus_factory_trait_rejects_transactional_create_when_unsupported() {
-    let factory = LocalEventBusFactory::new();
-    let topic = create_topic("trait-transactional");
-
-    assert_eq!(
-        EventBusFactory::create_transactional(&factory)
-            .expect_err("local factory should reject transactional creation"),
-        EventBusError::unsupported_operation("create_transactional")
-    );
-
-    let unsupported_bus = UnsupportedTransactionalEventBus::new();
-    assert_eq!(
-        TransactionalEventBus::create_transactional_publisher(&unsupported_bus)
-            .expect_err("placeholder bus should reject publisher creation"),
-        EventBusError::unsupported_operation("create_transactional_publisher")
-    );
-
-    let mut publisher = UnsupportedTransactionalPublisher::new();
-    assert_eq!(
-        TransactionalPublisher::publish(&mut publisher, &topic, "payload".to_string())
-            .expect_err("placeholder publisher should reject staged publish"),
-        EventBusError::unsupported_operation("transactional_publish")
-    );
-    assert_eq!(
-        TransactionalPublisher::commit(&mut publisher)
-            .expect_err("placeholder publisher should reject commit"),
-        EventBusError::unsupported_operation("transactional_commit")
-    );
-    assert!(TransactionalPublisher::rollback(&mut publisher).is_ok());
-}
-
-#[test]
 fn test_event_bus_factory_trait_default_methods() {
     let mut factory = DefaultingFactory;
     let bus = EventBusFactory::create_started(&factory).expect("default factory should start bus");
 
     assert_eq!(bus.start_count.load(Ordering::SeqCst), 1);
-    assert!(!EventBusFactory::is_transactional_supported(&factory));
-    assert_eq!(
-        EventBusFactory::create_transactional(&factory)
-            .expect_err("default factory should reject transactional creation"),
-        EventBusError::unsupported_operation("create_transactional")
-    );
     assert_eq!(
         EventBusFactory::set_default_publish_options::<String>(
             &mut factory,
@@ -726,54 +682,5 @@ fn test_event_bus_factory_trait_default_methods() {
         )
         .expect_err("default factory should reject global subscriber interceptors"),
         EventBusError::unsupported_operation("add_global_subscriber_interceptor")
-    );
-}
-
-#[test]
-fn test_unsupported_transactional_event_bus_rejects_all_operations() {
-    let bus = UnsupportedTransactionalEventBus::new();
-    let topic = create_topic("unsupported-transactional");
-
-    assert!(!EventBus::start(&bus).expect("unsupported start should be idempotent"));
-    assert!(!EventBus::shutdown(&bus));
-    assert_eq!(
-        EventBus::publish_envelope_with_options(
-            &bus,
-            EventEnvelope::create(topic.clone(), "payload".to_string()),
-            PublishOptions::empty(),
-        )
-        .expect_err("placeholder bus should reject publish"),
-        EventBusError::unsupported_operation("publish")
-    );
-    assert_eq!(
-        expect_subscription_error(
-            EventBus::subscribe_with_options(
-                &bus,
-                "sub",
-                &topic,
-                |_| (),
-                SubscribeOptions::empty()
-            ),
-            "placeholder bus should reject subscribe",
-        ),
-        EventBusError::unsupported_operation("subscribe")
-    );
-    assert_eq!(
-        EventBus::wait_for_idle(&bus, &topic).expect_err("placeholder bus should reject wait"),
-        EventBusError::unsupported_operation("wait_for_idle")
-    );
-    assert_eq!(
-        EventBus::wait_for_idle_timeout(&bus, &topic, Duration::from_millis(1))
-            .expect_err("placeholder bus should reject timeout wait"),
-        EventBusError::unsupported_operation("wait_for_idle_timeout")
-    );
-    assert_eq!(
-        TransactionalEventBus::publish_batch_atomically(
-            &bus,
-            vec![EventEnvelope::create(topic.clone(), "payload".to_string())],
-            PublishOptions::empty(),
-        )
-        .expect_err("placeholder bus should reject atomic batch publish"),
-        EventBusError::unsupported_operation("publish_batch_atomically")
     );
 }

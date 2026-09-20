@@ -13,7 +13,6 @@
 
 mod core;
 mod local;
-mod transactional;
 
 pub use core::AckMode;
 pub use core::Acknowledgement;
@@ -84,9 +83,3 @@ pub use local::coverage_exercise_local_event_bus_defensive_paths;
 pub use local::coverage_exercise_local_event_bus_inner_defensive_paths;
 #[cfg(coverage)]
 pub use local::coverage_exercise_subscriber_interceptor_chain_defensive_paths;
-pub use transactional::StagedEvent;
-pub use transactional::StagedEventEnvelope;
-pub use transactional::TransactionalEventBus;
-pub use transactional::TransactionalPublisher;
-pub use transactional::UnsupportedTransactionalEventBus;
-pub use transactional::UnsupportedTransactionalPublisher;
