@@ -315,4 +315,33 @@ mod tests {
         assert!(handle.cancel().is_err());
         assert!(handle.is_active(), "failed cancellation must remain retryable");
     }
+
+    #[test]
+    fn test_subscription_storage_exposes_registered_entry_contract() {
+        let bus = LocalEventBus::started().expect("bus should start");
+        let topic = Topic::<String>::try_new("stored-subscription-contract").expect("topic should build");
+        let subscription: Arc<dyn ErasedSubscription> = Arc::new(TestSubscription);
+        bus.inner
+            .add_subscription(topic.key(), Arc::clone(&subscription))
+            .expect("test subscription should be stored");
+
+        let stored = bus
+            .inner
+            .subscriptions_for(&topic.key())
+            .expect("stored subscription should be readable");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id(), 1);
+        assert_eq!(stored[0].subscriber_id(), "test");
+        assert_eq!(stored[0].priority(), 0);
+        assert!(matches!(
+            stored[0]
+                .dispatch(Box::new("payload".to_owned()), Arc::clone(&bus.inner), false)
+                .expect("test dispatch should succeed"),
+            DispatchAdmission::Accepted
+        ));
+
+        bus.inner
+            .unsubscribe(&topic.key(), 1)
+            .expect("stored subscription should deactivate");
+    }
 }

@@ -6,6 +6,7 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 use qubit_event_bus::LocalEventBus;
+use qubit_event_bus::SubscriptionHandle;
 use qubit_event_bus::Topic;
 
 #[test]
@@ -21,6 +22,11 @@ fn test_subscription_exposes_id_topic_options_and_active_state() {
     assert_eq!(subscription.options().priority(), 0);
     assert!(subscription.is_active());
 
-    subscription.cancel().expect("cancel should succeed");
-    assert!(!subscription.is_active());
+    let handle: &dyn SubscriptionHandle<String> = &subscription;
+    assert_eq!(handle.subscriber_id(), "sub-1");
+    assert_eq!(handle.topic(), &topic);
+    assert_eq!(handle.options().priority(), 0);
+    assert!(handle.is_active());
+    handle.cancel().expect("cancel should succeed");
+    assert!(!handle.is_active());
 }

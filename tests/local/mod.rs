@@ -7,6 +7,7 @@
 // =============================================================================
 //! Tests for local event bus implementations.
 
+mod delivery_failure_contract_tests;
 mod erased_subscription_tests;
 mod local_event_bus_factory_tests;
 mod local_event_bus_inner_tests;
