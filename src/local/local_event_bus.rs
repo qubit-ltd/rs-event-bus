@@ -1430,7 +1430,7 @@ where
                 };
                 let observed = EventBusError::dead_letter_failed(reason);
                 event_bus.inner.observe_error(&observed);
-                DeadLetterOutcome::Publication(receipt)
+                DeadLetterOutcome::Rejected(receipt)
             }
             Ok(receipt) => DeadLetterOutcome::Publication(receipt),
             Err(error) => {
