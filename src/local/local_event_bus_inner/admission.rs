@@ -8,17 +8,24 @@
 //! Delivery admission for the local event bus.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use super::LocalEventBusInner;
 use crate::EventBusError;
 use crate::EventBusResult;
 
-/// RAII reservation for one accepted subscriber delivery.
-pub(crate) enum DeliveryPermit {
-    Counted(Arc<AtomicUsize>),
+mod delivery_permit {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    /// RAII reservation for one accepted subscriber delivery.
+    pub(crate) enum DeliveryPermit {
+        /// Reservation backed by the shared in-flight counter.
+        Counted(Arc<AtomicUsize>),
+    }
 }
+
+pub(crate) use delivery_permit::DeliveryPermit;
 
 impl Drop for DeliveryPermit {
     /// Releases the delivery reservation when its processing task is dropped.

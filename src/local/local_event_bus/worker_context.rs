@@ -12,6 +12,14 @@ use std::sync::Arc;
 
 use super::super::local_event_bus_inner::LocalEventBusInner;
 
+mod subscription_worker_context {
+    pub struct SubscriptionWorkerContext {
+        pub(super) bus_id: usize,
+    }
+}
+
+use subscription_worker_context::SubscriptionWorkerContext;
+
 thread_local! {
     static SUBSCRIPTION_WORKER_BUS_IDS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
@@ -27,10 +35,6 @@ pub(super) fn is_current_subscription_worker_for_bus(bus_id: usize) -> bool {
 }
 
 /// Thread-local marker for subscriber worker execution.
-pub(super) struct SubscriptionWorkerContext {
-    bus_id: usize,
-}
-
 impl SubscriptionWorkerContext {
     /// Marks the current thread as processing subscriber work for a bus.
     fn enter(bus_id: usize) -> Self {
