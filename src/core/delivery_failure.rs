@@ -63,6 +63,20 @@ pub struct DeliveryFailure {
 }
 
 impl DeliveryFailure {
+    /// Creates a terminal delivery-failure report for observer notification.
+    ///
+    /// # Parameters
+    /// - `event_id`: Identifier of the delivered event.
+    /// - `topic_name`: Topic name of the delivered event.
+    /// - `subscription_id`: Internal subscription identifier.
+    /// - `subscriber_id`: Application subscriber identifier.
+    /// - `error`: Terminal processing error.
+    /// - `acknowledged_by_error_handler`: Whether an error handler ACKed the
+    ///   event.
+    /// - `dead_letter`: Result of dead-letter handling.
+    ///
+    /// # Returns
+    /// A report containing the final delivery state.
     pub(crate) fn new(
         event_id: String,
         topic_name: String,
