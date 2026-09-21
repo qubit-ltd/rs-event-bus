@@ -33,14 +33,23 @@ static NEXT_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 /// ```
 #[derive(Debug, Clone)]
 pub struct EventEnvelope<T: 'static> {
+    /// Stable identifier assigned when the envelope is created or built.
     id: String,
+    /// Type-safe topic associated with the payload.
     topic: Topic<T>,
+    /// Business payload delivered to subscribers.
     payload: T,
+    /// String headers carried with the event.
     headers: HashMap<String, String>,
+    /// Optional key used to serialize delivery within a subscriber lane.
     ordering_key: Option<String>,
+    /// Timestamp assigned when the envelope was created or built.
     timestamp: SystemTime,
+    /// Optional delay requested before subscriber delivery.
     delay: Option<Duration>,
+    /// Optional acknowledgement handle visible to the subscriber handler.
     acknowledgement: Option<Acknowledgement>,
+    /// Whether the envelope has been routed through a dead-letter flow.
     dead_letter: bool,
 }
 
@@ -58,13 +67,21 @@ pub struct EventEnvelope<T: 'static> {
 /// ```
 #[derive(Debug, Clone)]
 pub struct EventEnvelopeMetadata {
+    /// Stable identifier copied from the source envelope.
     id: String,
+    /// Topic name without the payload type.
     topic_name: String,
+    /// Fully qualified Rust payload type name.
     payload_type_name: &'static str,
+    /// String headers copied from the source envelope.
     headers: HashMap<String, String>,
+    /// Optional ordering key copied from the source envelope.
     ordering_key: Option<String>,
+    /// Timestamp copied from the source envelope.
     timestamp: SystemTime,
+    /// Optional delivery delay copied from the source envelope.
     delay: Option<Duration>,
+    /// Whether the source envelope is a dead letter.
     dead_letter: bool,
 }
 

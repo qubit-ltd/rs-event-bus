@@ -310,6 +310,13 @@ impl EventBusError {
     }
 
     /// Creates a same-worker wait error.
+    ///
+    /// # Parameters
+    /// - `operation`: Blocking operation that would wait for the current
+    ///   worker.
+    ///
+    /// # Returns
+    /// Error identifying the operation that would deadlock.
     pub const fn would_deadlock(operation: &'static str) -> Self {
         Self::WouldDeadlock { operation }
     }

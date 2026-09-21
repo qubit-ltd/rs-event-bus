@@ -40,12 +40,19 @@ use crate::local::local_event_bus_inner::LocalEventBusInner;
 /// subscription.cancel().unwrap();
 /// ```
 pub struct Subscription<T: 'static> {
+    /// Internal subscription identifier.
     pub(crate) id: usize,
+    /// Application-provided subscriber identifier.
     pub(crate) subscriber_id: String,
+    /// Type-safe topic subscribed to by this handle.
     pub(crate) topic: Topic<T>,
+    /// Type-erased key used by the local subscription map.
     pub(crate) topic_key: TopicKey,
+    /// Effective options captured at registration time.
     pub(crate) options: SubscribeOptions<T>,
+    /// Shared active state used by delayed deliveries.
     pub(crate) active: Arc<SubscriptionState>,
+    /// Weak reference to the owning local bus.
     pub(crate) bus: Weak<LocalEventBusInner>,
 }
 

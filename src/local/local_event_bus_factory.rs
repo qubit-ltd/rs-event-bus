@@ -233,6 +233,16 @@ impl LocalEventBusFactory {
     }
 
     /// Sets independent subscriber delivery limits.
+    ///
+    /// # Parameters
+    /// - `limits`: Admission and handler-queue limits to validate and store.
+    ///
+    /// # Returns
+    /// `Ok(())` when the limits are valid and stored.
+    ///
+    /// # Errors
+    /// Returns [`EventBusError::InvalidArgument`] when any configured limit is
+    /// zero.
     pub fn set_delivery_limits(&mut self, limits: DeliveryLimits) -> EventBusResult<()> {
         self.delivery_limits = limits.validate()?;
         Ok(())

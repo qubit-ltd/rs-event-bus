@@ -6,6 +6,7 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 use qubit_event_bus::DeadLetterOutcome;
+use qubit_event_bus::EventBusError;
 use qubit_event_bus::PublishOutcome;
 use qubit_event_bus::PublishReceipt;
 
@@ -38,7 +39,7 @@ fn test_dead_letter_outcomes_preserve_terminal_views() {
         DeadLetterOutcome::Publication(receipt)
     );
     assert!(matches!(
-        DeadLetterOutcome::Failed(qubit_event_bus::EventBusError::dead_letter_failed("failed")),
+        DeadLetterOutcome::Failed(EventBusError::dead_letter_failed("failed")),
         DeadLetterOutcome::Failed(error) if error.kind() == "dead_letter_failed"
     ));
 }

@@ -30,8 +30,11 @@ use crate::EventBusError;
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PublishReceipt {
+    /// Identifier supplied by the publisher before interception.
     input_event_id: String,
+    /// Identifier of the envelope after interception, if it was dispatched.
     dispatched_event_id: Option<String>,
+    /// Interception and subscriber-admission outcome.
     outcome: PublishOutcome,
 }
 
@@ -123,8 +126,11 @@ pub enum PublishOutcome {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SubscriberDispatchResult {
+    /// Internal identifier assigned to the subscription.
     subscription_id: usize,
+    /// Application subscriber identifier.
     subscriber_id: String,
+    /// Admission status for this subscriber.
     status: DispatchStatus,
 }
 
@@ -193,8 +199,11 @@ pub enum DispatchStatus {
 /// Batch items are returned by [`BatchPublishResult::items`] in input order.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishItem {
+    /// Zero-based input position of this envelope.
     index: usize,
+    /// Identifier of the input envelope.
     event_id: String,
+    /// Per-envelope admission result.
     result: Result<PublishReceipt, EventBusError>,
 }
 
@@ -203,8 +212,11 @@ pub struct BatchPublishItem {
 /// Batch failures are available from [`BatchPublishResult::failures`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishFailure {
+    /// Zero-based input position of the failed envelope.
     index: usize,
+    /// Identifier of the failed input envelope.
     event_id: String,
+    /// Error raised before a publish receipt was produced.
     error: EventBusError,
 }
 impl BatchPublishFailure {
@@ -293,7 +305,9 @@ impl BatchPublishItem {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BatchPublishResult {
+    /// Per-envelope results in input order.
     items: Vec<BatchPublishItem>,
+    /// Global publication failures derived from `items`.
     failures: Vec<BatchPublishFailure>,
 }
 

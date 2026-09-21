@@ -50,15 +50,25 @@ type TopicSubscriptions = OrderedIndexMap<usize, Reverse<i32>, Arc<dyn ErasedSub
 
 /// Runtime options used to construct a local event bus.
 pub(crate) struct LocalEventBusRuntimeOptions {
+    /// Type-erased publish defaults keyed by payload type.
     pub(crate) default_publish_options: TypeErasedDefaults,
+    /// Type-erased subscribe defaults keyed by payload type.
     pub(crate) default_subscribe_options: TypeErasedDefaults,
+    /// Type-erased typed dead-letter strategies keyed by payload type.
     pub(crate) default_dead_letter_strategies: TypeErasedDefaults,
+    /// Fallback dead-letter strategy for all payload types.
     pub(crate) global_default_dead_letter_strategy: Option<Arc<DeadLetterStrategyAnyFn>>,
+    /// Global publisher interceptors copied into a new bus.
     pub(crate) global_publisher_interceptors: Vec<Arc<dyn PublisherInterceptorAny>>,
+    /// Global subscriber interceptors copied into a new bus.
     pub(crate) global_subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorAny>>,
+    /// Typed publisher interceptors copied into a new bus.
     pub(crate) publisher_interceptors: Vec<Arc<dyn PublisherInterceptorEntry>>,
+    /// Typed subscriber interceptors copied into a new bus.
     pub(crate) subscriber_interceptors: Vec<Arc<dyn SubscriberInterceptorEntry>>,
+    /// Number of handler-pool workers.
     pub(crate) subscription_handler_pool_size: usize,
+    /// Independent delivery admission and queue limits.
     pub(crate) delivery_limits: DeliveryLimits,
 }
 /// Shared mutable state for [`crate::LocalEventBus`].

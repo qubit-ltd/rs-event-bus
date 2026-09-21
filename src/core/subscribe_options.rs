@@ -83,10 +83,12 @@ where
 }
 
 struct ClosureDeadLetterStrategy<F> {
+    /// User callback invoked to create a dead-letter envelope.
     callback: F,
 }
 
 impl<F> ClosureDeadLetterStrategy<F> {
+    /// Wraps a callback as a typed dead-letter strategy.
     fn new(callback: F) -> Self {
         Self { callback }
     }
@@ -168,10 +170,12 @@ impl<F> DeadLetterStrategyAnyCallback for F where
 }
 
 struct ClosureDeadLetterStrategyAny<F> {
+    /// User callback invoked by the type-erased strategy.
     callback: F,
 }
 
 impl<F> ClosureDeadLetterStrategyAny<F> {
+    /// Wraps a callback as a type-erased dead-letter strategy.
     fn new(callback: F) -> Self {
         Self { callback }
     }
