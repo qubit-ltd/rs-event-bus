@@ -24,11 +24,17 @@ use crate::EventBusError;
 use crate::EventBusResult;
 use crate::Topic;
 
-/// Keeps the bus in the stopping state until shutdown cleanup has finished.
-struct ShutdownCompletionGuard<'a> {
-    bus: &'a LocalEventBus,
+mod shutdown_completion_guard {
+    use super::LocalEventBus;
+
+    pub(super) struct ShutdownCompletionGuard<'a> {
+        pub(super) bus: &'a LocalEventBus,
+    }
 }
 
+use shutdown_completion_guard::ShutdownCompletionGuard;
+
+/// Keeps the bus in the stopping state until shutdown cleanup has finished.
 impl Drop for ShutdownCompletionGuard<'_> {
     fn drop(&mut self) {
         if let Some(executor) = self.bus.inner.take_executor() {

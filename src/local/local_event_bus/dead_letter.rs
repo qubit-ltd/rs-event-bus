@@ -31,6 +31,25 @@ use crate::core::subscribe_options::DeadLetterStrategyAnyFn;
 use crate::core::subscribe_options::DeadLetterStrategyFn;
 use crate::core::subscribe_options::normalize_dead_letter_error;
 
+mod dead_letter_creation {
+    use super::DeadLetterPayload;
+    use crate::EventBusError;
+    use crate::EventEnvelope;
+
+    pub(super) enum DeadLetterCreation {
+        /// No strategy was configured.
+        NotConfigured,
+        /// A configured strategy intentionally dropped the event.
+        Dropped,
+        /// A strategy created a dead-letter envelope.
+        Envelope(EventEnvelope<DeadLetterPayload>),
+        /// Strategy execution failed.
+        Failed(EventBusError),
+    }
+}
+
+use dead_letter_creation::DeadLetterCreation;
+
 /// Handles a terminal subscriber failure.
 pub(super) fn handle_subscription_failure<T>(
     inner: &Arc<LocalEventBusInner>,
@@ -115,13 +134,6 @@ where
         };
     }
     DeadLetterOutcome::NotConfigured
-}
-
-enum DeadLetterCreation {
-    NotConfigured,
-    Dropped,
-    Envelope(EventEnvelope<DeadLetterPayload>),
-    Failed(EventBusError),
 }
 
 fn create_dead_letter_for_failure<T>(

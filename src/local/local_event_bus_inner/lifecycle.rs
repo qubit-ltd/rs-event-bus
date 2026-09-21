@@ -15,20 +15,34 @@ use super::LocalEventBusInner;
 use crate::EventBusError;
 use crate::EventBusResult;
 
-/// Lifecycle state protected by the local event bus lifecycle lock.
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum LifecycleState {
-    Stopped,
-    Started,
-    Stopping,
+mod lifecycle_types {
+    use qubit_executor::SingleThreadScheduledExecutorService;
+    use qubit_thread_pool::FixedThreadPool;
+
+    /// Lifecycle state protected by the local event bus lifecycle lock.
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub enum LifecycleState {
+        /// Bus accepts no work and owns no active runtime resources.
+        Stopped,
+        /// Bus accepts publish and subscribe operations.
+        Started,
+        /// Bus rejects new external work while draining accepted work.
+        Stopping,
+    }
+
+    /// Lifecycle state and runtime resources owned by the local event bus.
+    pub struct LocalEventBusLifecycle {
+        /// Current lifecycle state.
+        pub(in crate::local::local_event_bus_inner) state: LifecycleState,
+        /// Subscriber handler executor, when running or draining.
+        pub(in crate::local::local_event_bus_inner) executor: Option<FixedThreadPool>,
+        /// Delayed-delivery scheduler, when running or draining.
+        pub(in crate::local::local_event_bus_inner) delay_scheduler: Option<SingleThreadScheduledExecutorService>,
+    }
 }
 
-/// Lifecycle state and runtime resources owned by the local event bus.
-pub(super) struct LocalEventBusLifecycle {
-    pub(super) state: LifecycleState,
-    pub(super) executor: Option<FixedThreadPool>,
-    pub(super) delay_scheduler: Option<SingleThreadScheduledExecutorService>,
-}
+pub(super) use lifecycle_types::LifecycleState;
+pub(super) use lifecycle_types::LocalEventBusLifecycle;
 
 impl LocalEventBusLifecycle {
     /// Creates a stopped lifecycle without runtime resources.

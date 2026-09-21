@@ -29,14 +29,66 @@ use crate::core::SubscriptionState;
 use crate::local::ordering_lane_key::OrderingLaneKey;
 use crate::local::processing_task::ProcessingTask;
 
-/// Ordered subscriber task plus its local queue-capacity reservation.
-struct OrderedProcessingEntry {
-    task: ProcessingTask,
-    reserved_queue_slot: bool,
-    delay_started_at: Option<Instant>,
-    delay: Option<Duration>,
-    subscription_state: Option<Arc<SubscriptionState>>,
+mod lane_types {
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::super::LocalEventBusInner;
+    use crate::core::SubscriptionState;
+    use crate::local::ordering_lane_key::OrderingLaneKey;
+    use crate::local::processing_task::ProcessingTask;
+
+    pub struct OrderedProcessingEntry {
+        /// Processing task held by this queue entry.
+        pub(super) task: ProcessingTask,
+        /// Whether this entry consumes a queue-capacity reservation.
+        pub(super) reserved_queue_slot: bool,
+        /// Instant at which delayed waiting began.
+        pub(super) delay_started_at: Option<Instant>,
+        /// Requested delay for this entry.
+        pub(super) delay: Option<Duration>,
+        /// Subscription state used to cancel delayed work.
+        pub(super) subscription_state: Option<Arc<SubscriptionState>>,
+    }
+
+    pub struct OrderedProcessingLane {
+        /// FIFO entries waiting for the lane runner.
+        pub(super) queued: VecDeque<OrderedProcessingEntry>,
+    }
+
+    pub enum OrderedLaneTask {
+        /// Ready task that can run immediately.
+        Ready(ProcessingTask),
+        /// Front task waiting for its delay to elapse.
+        Delayed(Duration, Arc<SubscriptionState>),
+    }
+
+    pub struct OrderedLaneRunnerGuard {
+        /// Shared bus used to cancel abandoned lane work.
+        pub(super) bus: Arc<LocalEventBusInner>,
+        /// Lane to cancel on early drop, if still armed.
+        pub(super) lane_key: Option<OrderingLaneKey>,
+    }
+
+    pub enum OrderedLaneTurn {
+        /// No queued work remains.
+        Drained,
+        /// A new lane runner was submitted.
+        Rescheduled,
+        /// Queue admission required continuing in the current worker.
+        ContinueInline,
+        /// Lane processing was cancelled after an error.
+        Cancelled,
+    }
 }
+
+use lane_types::OrderedLaneRunnerGuard;
+use lane_types::OrderedLaneTask;
+use lane_types::OrderedLaneTurn;
+use lane_types::OrderedProcessingEntry;
+pub(super) use lane_types::OrderedProcessingLane;
 
 impl OrderedProcessingEntry {
     /// Creates an ordered processing entry.
@@ -81,11 +133,6 @@ impl OrderedProcessingEntry {
             .filter(|remaining| !remaining.is_zero())
             .map(|remaining| (remaining, Arc::clone(subscription_state)))
     }
-}
-
-/// Queue of ordered tasks waiting behind the active lane task.
-pub(super) struct OrderedProcessingLane {
-    queued: VecDeque<OrderedProcessingEntry>,
 }
 
 impl OrderedProcessingLane {
@@ -154,18 +201,6 @@ impl OrderedProcessingLane {
     }
 }
 
-/// Work found at the front of an ordered lane.
-enum OrderedLaneTask {
-    Ready(ProcessingTask),
-    Delayed(Duration, Arc<SubscriptionState>),
-}
-
-/// Guard that cancels queued lane tasks if an ordered lane runner exits early.
-struct OrderedLaneRunnerGuard {
-    bus: Arc<LocalEventBusInner>,
-    lane_key: Option<OrderingLaneKey>,
-}
-
 impl OrderedLaneRunnerGuard {
     /// Creates a lane runner guard.
     fn new(bus: Arc<LocalEventBusInner>, lane_key: OrderingLaneKey) -> Self {
@@ -188,14 +223,6 @@ impl Drop for OrderedLaneRunnerGuard {
             self.bus.cancel_ordered_lane(&lane_key);
         }
     }
-}
-
-/// Continuation decision after one ordered lane task finishes.
-enum OrderedLaneTurn {
-    Drained,
-    Rescheduled,
-    ContinueInline,
-    Cancelled,
 }
 
 impl LocalEventBusInner {

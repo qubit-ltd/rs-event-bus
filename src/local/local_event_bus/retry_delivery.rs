@@ -32,16 +32,37 @@ use crate::EventEnvelope;
 use crate::SubscribeOptions;
 use crate::core::SubscriptionState;
 
-#[derive(Clone)]
-pub(super) struct HandlerDelivery<T: Clone + Send + Sync + 'static> {
-    pub(super) delivered: EventEnvelope<T>,
-    pub(super) acknowledgement: Acknowledgement,
+mod handler_types {
+    use super::Acknowledgement;
+    use super::EventBusError;
+    use super::EventEnvelope;
+
+    #[derive(Clone)]
+    pub struct HandlerDelivery<T: Clone + Send + Sync + 'static> {
+        /// Envelope delivered to the current handler attempt.
+        pub(in crate::local::local_event_bus) delivered: EventEnvelope<T>,
+        /// Shared acknowledgement state for the attempt.
+        pub(in crate::local::local_event_bus) acknowledgement: Acknowledgement,
+    }
+
+    pub struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
+        /// Subscription that produced the terminal failure.
+        pub(in crate::local::local_event_bus) subscription_id: usize,
+        /// Final error after retry and acknowledgement processing.
+        pub(in crate::local::local_event_bus) error: EventBusError,
+        /// Last attempted delivery and its acknowledgement state.
+        pub(in crate::local::local_event_bus) delivery: HandlerDelivery<T>,
+    }
 }
+
+pub(super) use handler_types::HandlerDelivery;
+pub(super) use handler_types::HandlerRunFailure;
 
 impl<T> HandlerDelivery<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    /// Creates an attempt delivery with a fresh acknowledgement handle.
     fn new(envelope: &EventEnvelope<T>) -> Self {
         let acknowledgement = Acknowledgement::new();
         let delivered = envelope.clone().with_acknowledgement(acknowledgement.clone());
@@ -50,12 +71,6 @@ where
             acknowledgement,
         }
     }
-}
-
-pub(super) struct HandlerRunFailure<T: Clone + Send + Sync + 'static> {
-    pub(super) subscription_id: usize,
-    pub(super) error: EventBusError,
-    pub(super) delivery: HandlerDelivery<T>,
 }
 
 pub(super) fn process_subscription_event<T>(
