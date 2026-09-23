@@ -1,5 +1,6 @@
 //! Ordered best-effort batch publication results.
 
+use super::AdmissionStatus;
 use super::PublishAcknowledgement;
 use super::PublishReceipt;
 use crate::error::PublishError;
@@ -26,20 +27,44 @@ impl BatchPublishResult {
     pub fn total_count(&self) -> usize {
         self.items.len()
     }
-    /// Counts publications accepted by a provider, including destination
-    /// admissions.
+    /// Counts broker-accepted publications and local publications with at least
+    /// one accepted destination. Empty, filtered-only, and rejected-only
+    /// destination lists contribute zero; this does not count handler
+    /// completion.
     pub fn accepted_count(&self) -> usize {
         self.items
             .iter()
-            .filter(|item| matches!(item, Ok(receipt) if !receipt.acknowledgement().is_dropped()))
+            .filter(|item| match item {
+                Ok(receipt) => match receipt.acknowledgement() {
+                    PublishAcknowledgement::Accepted { .. } => true,
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
+                        .iter()
+                        .any(|destination| matches!(destination.status(), AdmissionStatus::Accepted)),
+                    PublishAcknowledgement::DroppedByInterceptor => false,
+                },
+                Err(_) => false,
+            })
             .count()
     }
     /// Counts events intentionally dropped by a publisher interceptor.
     pub fn dropped_count(&self) -> usize {
         self.items.iter().filter(|item| matches!(item, Ok(receipt) if matches!(receipt.acknowledgement(), PublishAcknowledgement::DroppedByInterceptor))).count()
     }
-    /// Counts requests that failed before a successful publication receipt.
+    /// Counts failed publications and local receipts with at least one rejected
+    /// destination. A mixed local receipt contributes to both accepted and
+    /// failure counts; neither count describes handler completion.
     pub fn failure_count(&self) -> usize {
-        self.items.iter().filter(|item| item.is_err()).count()
+        self.items
+            .iter()
+            .filter(|item| match item {
+                Err(_) => true,
+                Ok(receipt) => match receipt.acknowledgement() {
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
+                        .iter()
+                        .any(|destination| matches!(destination.status(), AdmissionStatus::Rejected(_))),
+                    _ => false,
+                },
+            })
+            .count()
     }
 }
