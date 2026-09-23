@@ -1,0 +1,16 @@
+//! SPI shutdown policy.
+
+use std::time::Duration;
+
+/// Provider shutdown behavior requested by its owning facade.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ShutdownMode {
+    /// Drain provider work for at most the given time.
+    Graceful {
+        /// Maximum time to wait for provider work to finish.
+        timeout: Duration,
+    },
+    /// Stop immediately without draining.
+    Immediate,
+}
