@@ -192,15 +192,18 @@ dependencies = [
 
 [[package]]
 name = "qubit-event-bus"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "qubit-argument",
  "qubit-clock",
  "qubit-collections",
  "qubit-executor",
+ "qubit-id",
  "qubit-metadata",
  "qubit-retry",
+ "qubit-spi",
  "qubit-thread-pool",
+ "thiserror",
 ]
 
 [[package]]
@@ -232,6 +235,17 @@ name = "qubit-function"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f6ad59d1256f6c62bc2fe153bdd87f224d7cfd7fa81b58dd8ab03aa4836f21a"
+
+[[package]]
+name = "qubit-id"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81a4ddf466a87d57a9b9a33f635e9e6395631a8b8e7e1d1139f2f53f6958a4f1"
+dependencies = [
+ "parking_lot",
+ "qubit-clock",
+ "thiserror",
+]
 
 [[package]]
 name = "qubit-lock"
@@ -273,6 +287,17 @@ dependencies = [
  "fastrand",
  "qubit-budget 0.7.1",
  "qubit-clock",
+ "thiserror",
+]
+
+[[package]]
+name = "qubit-spi"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "705f883acee6205ffe6edcee7b73450c0137de014b6b8b80253c07111b8e54e5"
+dependencies = [
+ "parking_lot",
+ "qubit-collections",
  "thiserror",
 ]
 

@@ -5,72 +5,31 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! # Qubit Event Bus
-//!
-//! A lightweight, thread-safe in-process event bus for Rust.
+//! Type-safe event bus facade and provider SPI.
 
 #![deny(missing_docs)]
 
-mod core;
-mod local;
+pub mod codec;
+pub mod error;
+pub mod facade;
+pub mod local;
+pub mod model;
+pub mod pipeline;
+pub mod registry;
+pub mod spi;
 
-pub use core::AckMode;
-pub use core::Acknowledgement;
-pub use core::BatchPublishFailure;
-pub use core::BatchPublishItem;
-pub use core::BatchPublishResult;
-pub use core::DEAD_LETTER_EVENT_ID;
-pub use core::DEAD_LETTER_FAILED_AT_UNIX_MILLIS;
-pub use core::DEAD_LETTER_FAILURE_REASON;
-pub use core::DEAD_LETTER_FAILURE_TYPE;
-pub use core::DEAD_LETTER_MARKER;
-pub use core::DEAD_LETTER_ORDERING_KEY;
-pub use core::DEAD_LETTER_PAYLOAD_TYPE;
-pub use core::DEAD_LETTER_SUBSCRIBER_ID;
-pub use core::DEAD_LETTER_TOPIC;
-pub use core::DeadLetterOriginalPayload;
-pub use core::DeadLetterOutcome;
-pub use core::DeadLetterPayload;
-pub use core::DeadLetterRecord;
-pub use core::DeadLetterStrategy;
-pub use core::DeadLetterStrategyAny;
-pub use core::DeadLetterStrategyAnyCallback;
-pub use core::DeadLetterStrategyCallback;
-pub use core::DeliveryFailure;
-pub use core::DispatchStatus;
-pub use core::EventBus;
-pub use core::EventBusError;
-pub use core::EventBusFactory;
-pub use core::EventBusResult;
-pub use core::EventBusRetryRule;
-pub use core::EventEnvelope;
-pub use core::EventEnvelopeBuilder;
-pub use core::EventEnvelopeMetadata;
-pub use core::IntoEventBusResult;
-pub use core::PublishOptions;
-pub use core::PublishOptionsBuilder;
-pub use core::PublishOutcome;
-pub use core::PublishReceipt;
-pub use core::SubscribeOptions;
-pub use core::SubscribeOptionsBuilder;
-pub use core::SubscriberDispatchResult;
-pub use core::Subscription;
-pub use core::SubscriptionHandle;
-pub use core::Topic;
-pub use core::TopicKey;
-pub use core::delivery_limits::DeliveryLimits;
-pub use core::discard_dead_letters;
-pub use core::prefixed_dead_letters;
-pub use core::standard_dead_letters_to;
-
-pub use local::DEFAULT_MAX_IN_FLIGHT_DELIVERIES;
-pub use local::IntoPublisherInterceptorAnyResult;
-pub use local::IntoPublisherInterceptorResult;
-pub use local::LocalEventBus;
-pub use local::LocalEventBusFactory;
-pub use local::PublisherInterceptor;
-pub use local::PublisherInterceptorAny;
-pub use local::SubscriberInterceptor;
-pub use local::SubscriberInterceptorAny;
-pub use local::SubscriberInterceptorAnyChain;
-pub use local::SubscriberInterceptorChain;
+pub use error::CapabilityError;
+pub use error::CodecError;
+pub use error::ConfigurationError;
+pub use error::DeliveryError;
+pub use error::EventBusError;
+pub use error::LifecycleError;
+pub use error::ProviderError;
+pub use error::PublishError;
+pub use error::ReceiveError;
+pub use error::SettlementError;
+pub use error::ShutdownError;
+pub use error::SpiError;
+pub use error::SubscribeError;
+pub use model::EventId;
+pub use model::SubscriberId;
