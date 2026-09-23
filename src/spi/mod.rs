@@ -5,4 +5,4 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Built-in local event bus provider.
+//! Object-safe backend service provider interfaces.

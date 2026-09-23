@@ -5,4 +5,4 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Built-in local event bus provider.
+//! Type-safe synchronous and asynchronous event bus facades.
