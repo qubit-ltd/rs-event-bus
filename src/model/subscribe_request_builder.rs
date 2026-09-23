@@ -44,18 +44,33 @@ pub enum SubscribeRequestBuildError {
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::model::{AckMode, SubscribeOptions, SubscribeRequest, Topic};
+/// use qubit_event_bus::model::{AckMode, FailureDirective, SubscribeOptions, SubscribeRequest, Topic};
 /// use qubit_event_bus::SubscriberId;
 /// let options = SubscribeOptions::<String>::builder()
 ///     .ack_mode(AckMode::Manual)
+///     .error_handler(|_, _| FailureDirective::Discard)
+///     .interceptor(|delivery| Ok(Some(delivery)))
 ///     .build();
 /// let request = SubscribeRequest::builder()
+///     .subscriber_id(SubscriberId::new("old")?)
 ///     .subscriber_id(SubscriberId::new("audit")?)
+///     .topic(Topic::<String>::new("orders.old")?)
 ///     .topic(Topic::<String>::new("orders.created")?)
+///     .priority(1)
+///     .error_handler(|_, _| panic!("replaced by options"))
+///     .interceptor(|_| panic!("replaced by options"))
 ///     .options(options)
 ///     .ack_mode(AckMode::Auto)
+///     .priority(10)
+///     .error_handler(|_, _| FailureDirective::Discard)
+///     .interceptor(|delivery| Ok(Some(delivery)))
 ///     .build()?;
+/// assert_eq!(request.subscriber_id().as_str(), "audit");
+/// assert_eq!(request.topic().name(), "orders.created");
 /// assert_eq!(request.options().ack_mode(), AckMode::Auto);
+/// assert_eq!(request.options().priority(), 10);
+/// assert_eq!(request.options().error_handlers().len(), 2);
+/// assert_eq!(request.options().interceptors().len(), 2);
 /// # Ok(())
 /// # }
 /// ```
@@ -178,7 +193,15 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
         self
     }
 
-    /// Validates required fields and policy, then creates a request.
+    /// Consumes the builder after validating identity, topic and portable
+    /// options. A later `options` call replaces earlier policy callbacks.
+    /// Backend capability checks occur when the facade opens the subscription.
+    ///
+    /// # Errors
+    /// Returns `MissingField` without a subscriber ID or topic,
+    /// `InvalidRetryConfiguration` when a rule or cancellation token has no
+    /// retry policy, and `InvalidProviderOption` for a non-namespaced option
+    /// key or a control character in its key or value.
     pub fn build(self) -> Result<SubscribeRequest<T>, SubscribeRequestBuildError> {
         let subscriber_id = self
             .subscriber_id

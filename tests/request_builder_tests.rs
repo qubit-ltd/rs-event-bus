@@ -9,10 +9,12 @@ use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::model::AckMode;
 use qubit_event_bus::model::Acknowledgement;
 use qubit_event_bus::model::AcknowledgementError;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::BatchPublishResult;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::DeliveryContext;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
@@ -223,6 +225,84 @@ fn batch_counts_admission_drop_and_failure_without_handler_completion() -> Resul
     assert_eq!(batch.failure_count(), 1);
     assert!(batch.items()[0].is_ok());
     assert!(batch.items()[2].is_err());
+    Ok(())
+}
+
+#[test]
+fn batch_counts_destination_admissions_without_claiming_handler_completion() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderId::new("local")?;
+    let receipt =
+        |name: &str, acknowledgement: PublishAcknowledgement| -> Result<PublishReceipt, Box<dyn std::error::Error>> {
+            let id = EventId::new(name)?;
+            Ok(PublishReceipt::new(
+                id.clone(),
+                Some(id),
+                provider.clone(),
+                acknowledgement,
+            ))
+        };
+    let admission = |number: u64,
+                     subscriber: &str,
+                     status: AdmissionStatus|
+     -> Result<DestinationAdmission, Box<dyn std::error::Error>> {
+        Ok(DestinationAdmission::new(
+            Id::new(number),
+            SubscriberId::new(subscriber)?,
+            status,
+        ))
+    };
+    let batch = BatchPublishResult::new(vec![
+        Ok(receipt(
+            "broker",
+            PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            },
+        )?),
+        Ok(receipt(
+            "local-accepted",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, "accepted", AdmissionStatus::Accepted)?]),
+        )?),
+        Ok(receipt(
+            "local-empty",
+            PublishAcknowledgement::DestinationAdmissions(vec![]),
+        )?),
+        Ok(receipt(
+            "local-rejected",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(
+                2,
+                "rejected",
+                AdmissionStatus::Rejected("full".into()),
+            )?]),
+        )?),
+        Ok(receipt(
+            "local-mixed",
+            PublishAcknowledgement::DestinationAdmissions(vec![
+                admission(3, "accepted-2", AdmissionStatus::Accepted)?,
+                admission(4, "rejected-2", AdmissionStatus::Rejected("closed".into()))?,
+            ]),
+        )?),
+        Ok(receipt(
+            "local-filtered",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(5, "filtered", AdmissionStatus::Filtered)?]),
+        )?),
+        Ok(PublishReceipt::new(
+            EventId::new("dropped")?,
+            None,
+            provider,
+            PublishAcknowledgement::DroppedByInterceptor,
+        )),
+        Err(PublishError::Closed),
+    ]);
+    assert_eq!(batch.total_count(), 8);
+    assert_eq!(batch.accepted_count(), 3);
+    assert_eq!(batch.dropped_count(), 1);
+    assert_eq!(batch.failure_count(), 3);
+    assert_eq!(
+        batch.items()[2].as_ref().unwrap().input_event_id().as_str(),
+        "local-empty"
+    );
+    assert!(batch.items()[7].is_err());
     Ok(())
 }
 

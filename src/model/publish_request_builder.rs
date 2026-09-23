@@ -44,14 +44,71 @@ pub enum PublishRequestBuildError {
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use qubit_event_bus::model::{PublishRequest, Topic};
-/// let topic = Topic::<String>::new("orders.created")?;
 /// let request = PublishRequest::builder()
-///     .topic(topic)
-///     .payload("one".to_owned())
+///     .topic(Topic::<String>::new("orders.old")?)
+///     .topic(Topic::<String>::new("orders.created")?)
+///     .payload("old".to_owned())
+///     .payload("new".to_owned())
 ///     .header("source", "first")
-///     .headers([("source", "second")])
+///     .headers([("source", "second"), ("trace", "t-1")])
+///     .header("source", "third")
 ///     .build()?;
-/// assert_eq!(request.header("source"), Some("second"));
+/// assert_eq!(request.topic().name(), "orders.created");
+/// assert_eq!(request.envelope().payload(), "new");
+/// assert_eq!(request.header("source"), Some("third"));
+/// assert_eq!(request.header("trace"), Some("t-1"));
+/// # Ok(())
+/// # }
+/// ```
+///
+/// `options` discards earlier policy callbacks; callbacks added afterward are
+/// appended to those in the replacement options, in call order:
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::sync::{Arc, Mutex};
+/// use qubit_event_bus::PublishError;
+/// use qubit_event_bus::model::{FailureDirective, PublishOptions, PublishRequest, Topic};
+/// let calls = Arc::new(Mutex::new(Vec::new()));
+/// let first = calls.clone();
+/// let second = calls.clone();
+/// let options = PublishOptions::<String>::builder()
+///     .error_handler(move |_, _| {
+///         first.lock().unwrap().push("options");
+///         FailureDirective::Discard
+///     })
+///     .interceptor(move |event| {
+///         second.lock().unwrap().push("interceptor-options");
+///         Ok(Some(event))
+///     })
+///     .build();
+/// let third = calls.clone();
+/// let fourth = calls.clone();
+/// let request = PublishRequest::builder()
+///     .topic(Topic::<String>::new("orders.created")?)
+///     .payload("one".to_owned())
+///     .error_handler(|_, _| panic!("replaced by options"))
+///     .interceptor(|_| panic!("replaced by options"))
+///     .options(options)
+///     .interceptor(move |event| {
+///         third.lock().unwrap().push("interceptor-after");
+///         Ok(Some(event))
+///     })
+///     .error_handler(move |_, _| {
+///         fourth.lock().unwrap().push("after");
+///         FailureDirective::Discard
+///     })
+///     .build()?;
+/// let mut event = request.envelope().clone();
+/// for interceptor in request.options().interceptors() {
+///     event = interceptor(event)?.unwrap();
+/// }
+/// for handler in request.options().error_handlers() {
+///     handler(&event, &PublishError::Closed);
+/// }
+/// assert_eq!(*calls.lock().unwrap(), [
+///     "interceptor-options", "interceptor-after", "options", "after"
+/// ]);
 /// # Ok(())
 /// # }
 /// ```
@@ -166,7 +223,16 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self
     }
 
-    /// Validates required fields, headers and policy, then creates a request.
+    /// Consumes the builder and creates a request, generating an event ID and
+    /// timestamp when neither was supplied. Existing headers are merged by
+    /// key; a later `options` call replaces earlier policy callbacks.
+    ///
+    /// # Errors
+    /// Returns `MissingField` without a topic or payload, `InvalidHeader` for
+    /// malformed header metadata, `InvalidOrderingKey` for a blank or control
+    /// containing key, and `InvalidRetryConfiguration` when a rule or
+    /// cancellation token has no retry policy. `Duration` is nonnegative, so
+    /// zero delay is accepted.
     pub fn build(self) -> Result<PublishRequest<T>, PublishRequestBuildError> {
         let topic = self.topic.ok_or(PublishRequestBuildError::MissingField("topic"))?;
         let payload = self.payload.ok_or(PublishRequestBuildError::MissingField("payload"))?;
