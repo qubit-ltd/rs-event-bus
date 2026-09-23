@@ -6,3 +6,9 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Payload codec contracts and registration.
+
+mod codec_registry;
+mod event_codec;
+
+pub use codec_registry::CodecRegistry;
+pub use event_codec::EventCodec;
