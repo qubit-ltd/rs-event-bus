@@ -1,5 +1,7 @@
 use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::DeliveryGap;
 use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_id::Id;
 
@@ -20,4 +22,16 @@ fn test_settlement_token_rejects_a_different_subscription_origin() {
 
     assert!(token.belongs_to(owning_subscription));
     assert!(!token.belongs_to(another_subscription));
+}
+
+#[test]
+fn test_external_provider_can_construct_a_gap_receive_outcome() {
+    let gap = DeliveryGap::new("provider reported lag", Some(3));
+    let outcome = ReceiveOutcome::Gap(gap);
+
+    let ReceiveOutcome::Gap(gap) = outcome else {
+        panic!("expected a gap outcome");
+    };
+    assert_eq!(gap.reason.as_ref(), "provider reported lag");
+    assert_eq!(gap.missed, Some(3));
 }

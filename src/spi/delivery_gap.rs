@@ -9,3 +9,13 @@ pub struct DeliveryGap {
     /// Optional count of messages known to have been missed.
     pub missed: Option<u64>,
 }
+
+impl DeliveryGap {
+    /// Creates a provider-reported gap with an optional known missed-message count.
+    pub fn new(reason: impl Into<Box<str>>, missed: Option<u64>) -> Self {
+        Self {
+            reason: reason.into(),
+            missed,
+        }
+    }
+}
