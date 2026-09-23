@@ -7,6 +7,10 @@
 // =============================================================================
 //! Shared integration test helpers.
 
+pub(crate) mod fake_spi;
+pub(crate) mod manual_async;
+#[allow(dead_code)]
 mod panic_hook;
 
+#[allow(unused_imports)]
 pub(crate) use panic_hook::PanicHookGuard;
