@@ -67,6 +67,47 @@ subscription.cancel()?;
 
 `wait_for_idle` tracks work received by this facade for this topic. It does not mean a remote provider or every consumer in a distributed system is globally idle.
 
+### Decide what to do with a publish receipt
+
+`publish` returning `Ok(receipt)` means the provider returned an acknowledgement. Inspect that acknowledgement before deciding whether application work needs compensation:
+
+```rust
+use qubit_event_bus::model::{AdmissionStatus, DestinationAdmission, PublishAcknowledgement, PublishReceipt};
+
+let receipt: PublishReceipt = todo!("use the receipt returned by EventBus::publish");
+
+match receipt.acknowledgement() {
+    PublishAcknowledgement::Accepted { .. } => {
+        // The broker accepted the event; it may not expose consumer identities.
+    }
+    PublishAcknowledgement::DroppedByInterceptor => {
+        // An interceptor intentionally stopped dispatch.
+    }
+    PublishAcknowledgement::DestinationAdmissions(destinations) => {
+        if destinations.is_empty() {
+            // The provider reported no destinations (for example, no local subscribers).
+        }
+        for destination in destinations {
+            match destination.status() {
+                AdmissionStatus::Accepted => record_admission(destination),
+                AdmissionStatus::Filtered => record_filtered(destination),
+                AdmissionStatus::Rejected(reason) => record_rejection(destination, reason),
+                _ => record_unknown_status(destination),
+            }
+        }
+    }
+    _ => record_unknown_acknowledgement(),
+}
+
+fn record_admission(_: &DestinationAdmission) {}
+fn record_filtered(_: &DestinationAdmission) {}
+fn record_rejection(_: &DestinationAdmission, _: &str) {}
+fn record_unknown_status(_: &DestinationAdmission) {}
+fn record_unknown_acknowledgement() {}
+```
+
+The recording functions above stand for application-owned policy. A local provider can accept one subscriber and reject another because its bounded queue is full; that partial result is still a successful receipt. `Filtered` means intentional exclusion, not queue pressure. Avoid blindly publishing the same event again after a partial result: an accepted subscriber could receive a duplicate. Use an idempotency key, or route rejected business work through an explicit compensation/retry policy.
+
 ## Core workflow and choices
 
 ### Add event metadata
@@ -155,10 +196,10 @@ Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveErr
 - Diagnostic observers run synchronously on the thread emitting the diagnostic. Panics are contained, but a blocking observer can delay that thread; diagnostics are not buffered in a separate queue.
 - Capability flags are the provider's declared contract. Select required capabilities explicitly and document any stronger provider-specific guarantee separately.
 - Settlement retries after an uncertain async result require providers to make the same token/disposition idempotent. A conflicting disposition for one token must fail.
-- Shutdown stops admission and coordinates subscriptions. `Immediate` drops work that has not started and receives no more messages, but waits for the active handler, settlement, subscription close, and SPI shutdown so it can return all errors. Rust cannot forcibly interrupt a handler. `Graceful` also drains active work and applies a deadline to the wait. SPI `shutdown(mode)` closes provider transport resources; the facade owns the preceding stop/settle/close order.
+- Shutdown stops admission and coordinates subscriptions. `Immediate` drops work that has not started and receives no more messages, but waits for the active handler, settlement, subscription close, and SPI shutdown so it can return all errors. Rust cannot forcibly interrupt a handler. Synchronous `Graceful` applies its deadline to the caller's wait for the whole close sequence, including already admitted publish/subscribe SPI calls, receiver close, and provider shutdown. When it returns `TimedOut`, the bus remains `Closing`, rejects new operations, and one background coordinator continues cleanup; call shutdown again to wait for its result, or request `Immediate` to strengthen the attempt. A blocked synchronous provider call or handler can keep that coordinator alive. Async shutdown is driven by its future; dropping a timed-out/cancelled future does not roll back provider side effects, so async providers must support idempotent close/shutdown retries. SPI `shutdown(mode)` closes provider transport resources; the facade owns the preceding stop/settle/close order.
 
 ## Further reading
 
 - [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
-- [Architecture status (English)](design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md)
+- [Architecture status (English)](design.md) · [SPI design (English)](spi_design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md)
 - [Changelog](../CHANGELOG.md) · [中文用户指南](user_guide.zh_CN.md)

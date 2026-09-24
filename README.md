@@ -11,6 +11,8 @@
 
 The local provider is useful when an application needs to fan an order event out to local consumers—for example, an audit subscriber and a cache updater—without introducing a broker. A publish receipt describes provider admission, not completed handler work, so the application can explicitly wait for tracked delivery work when it needs an observable result.
 
+Local publish admission is per destination: an empty list reports no destinations, and a partial result can include both accepted and rejected subscribers. Inspect the receipt before retrying; resending the whole event can duplicate delivery to destinations that already accepted it. Synchronous graceful shutdown bounds the caller's wait; after `TimedOut`, the bus remains closed to new work while background cleanup continues.
+
 ## Installation
 
 ```toml
@@ -63,7 +65,7 @@ The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or R
 ## Learn more
 
 - [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
-- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
+- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design (English)](doc/spi_design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
 - [API reference](https://docs.rs/qubit-event-bus)
 - [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh_CN.md)
 - [中文 README](README.zh_CN.md)

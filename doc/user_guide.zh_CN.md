@@ -67,6 +67,46 @@ subscription.cancel()?;
 
 `wait_for_idle` 只跟踪当前 facade 对该 Topic 已接收的工作，不意味着远端 provider 或分布式系统里的所有消费者都已空闲。
 
+### 根据发布回执决定后续处理
+
+`publish` 返回 `Ok(receipt)` 表示 provider 已返回接纳回执。应用应先检查 acknowledgement，再决定是否需要业务补偿：
+
+```rust
+use qubit_event_bus::model::{AdmissionStatus, DestinationAdmission, PublishAcknowledgement, PublishReceipt};
+
+let receipt: PublishReceipt = todo!("使用 EventBus::publish 返回的回执");
+match receipt.acknowledgement() {
+    PublishAcknowledgement::Accepted { .. } => {
+        // broker 已接纳事件；它可能不公开消费者身份。
+    }
+    PublishAcknowledgement::DroppedByInterceptor => {
+        // 拦截器有意停止了分发。
+    }
+    PublishAcknowledgement::DestinationAdmissions(destinations) => {
+        if destinations.is_empty() {
+            // provider 没有报告目的地，例如当前没有本地订阅者。
+        }
+        for destination in destinations {
+            match destination.status() {
+                AdmissionStatus::Accepted => record_admission(destination),
+                AdmissionStatus::Filtered => record_filtered(destination),
+                AdmissionStatus::Rejected(reason) => record_rejection(destination, reason),
+                _ => record_unknown_status(destination),
+            }
+        }
+    }
+    _ => record_unknown_acknowledgement(),
+}
+
+fn record_admission(_: &DestinationAdmission) {}
+fn record_filtered(_: &DestinationAdmission) {}
+fn record_rejection(_: &DestinationAdmission, _: &str) {}
+fn record_unknown_status(_: &DestinationAdmission) {}
+fn record_unknown_acknowledgement() {}
+```
+
+以上 `record_*` 函数代表应用自己的策略。本地 provider 可能因某个有界队列已满而接纳一个订阅者、拒绝另一个；这种部分结果仍然是成功回执。`Filtered` 表示有意排除，不代表队列满。部分接纳后不要盲目重发整条事件，否则已接纳的订阅者可能收到重复投递。需要时使用幂等键，或通过显式补偿/重试策略处理被拒绝的业务工作。
+
 ## 核心流程与策略
 
 ### 添加事件元数据
@@ -155,10 +195,10 @@ async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 - 诊断 observer 在触发诊断的线程上同步调用。observer panic 会被隔离，但阻塞的 observer 会延迟该线程；诊断不会进入独立缓冲队列。
 - 能力标志是 provider 对自身契约的声明。按需要求能力，并单独记录具体 provider 的增强保证。
 - 异步 settlement 的不确定结果可能导致重试；provider 必须让相同 token 和 disposition 的重复操作幂等，同一 token 使用冲突 disposition 时必须失败。
-- shutdown 会停止准入并协调订阅。`Immediate` 会丢弃尚未开始的队列工作，不再接收新消息；但会等待当前 handler 完成、settlement、subscription close 和 SPI shutdown，以便同步返回完整错误。Rust 无法强制中断 handler。`Graceful` 对 receiver close、活跃工作排空和 SPI shutdown 使用同一个总 deadline；超时后 bus 保持 Closing，可再次调用 shutdown 继续清理。异步 close/shutdown Future 取消后可能已有 provider 副作用，provider 必须支持安全幂等重试。SPI 的 `shutdown(mode)` 只关闭 provider 传输资源；先停止消费、完成当前投递和 close 的顺序由 facade 保证。
+- shutdown 会停止准入并协调订阅。`Immediate` 会丢弃尚未开始的队列工作，不再接收新消息；但会等待当前 handler 完成、settlement、subscription close 和 SPI shutdown，以便同步返回完整错误。Rust 无法强制中断 handler。同步 `Graceful` 的期限限制调用方等待完整关闭过程的时间，包括已准入的 publish/subscribe SPI 调用、receiver close 和 provider shutdown。返回 `TimedOut` 时 bus 保持 `Closing`、拒绝新操作，并由唯一后台协调者继续清理；再次调用 shutdown 可继续等待，或用 `Immediate` 加强当前尝试。阻塞中的同步 provider 调用或 handler 可能让协调线程持续存在。异步 shutdown 由调用者驱动 future；丢弃超时/取消的 future 不会回滚 provider 副作用，因此异步 provider 必须支持幂等 close/shutdown 重试。SPI 的 `shutdown(mode)` 只关闭 provider 传输资源；先停止消费、完成当前投递和 close 的顺序由 facade 保证。
 
 ## 延伸阅读
 
 - [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
-- [架构设计（中文）](design.zh_CN.md) · [正式 SPI 设计](spi_design.zh_CN.md)
+- [架构设计（中文）](design.zh_CN.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md) · [SPI design (English)](spi_design.md)
 - [中文更新日志](../CHANGELOG.zh_CN.md) · [English user guide](user_guide.md)
