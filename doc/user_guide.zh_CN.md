@@ -1,163 +1,164 @@
 # Qubit Event Bus 用户指南
 
-本指南面向使用 `qubit-event-bus` 0.11 和 Rust 1.94+ 的应用开发者。示例采用 `LocalEventBus`；crate 同时提供供其他后端实现的 `EventBus` 与 `EventBusFactory` 契约。
+本指南对应 `qubit-event-bus` 0.12 和 Rust 1.94 及以上版本，面向希望获得类型安全事件分发、又不想让业务代码绑定某种传输方式的 Rust 开发者。crate 自带同步进程内 provider；其他传输需要由独立的 provider 适配器实现。
 
-[English user guide](user_guide.md) · [README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+[English user guide](user_guide.md) · [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-## 手册目标与读者
+## 手册目标与能力边界
 
-当应用需要在进程内进行类型安全的发布/订阅，并明确处理准入、确认、重试
-和停机语义时，可按本指南操作。本指南不涵盖持久化消息或跨进程投递。
+假设订单服务在接收订单后要通知审计 handler。事件总线为发布方和订阅方提供共享的类型化 Topic，并用回执报告准入结果。若调用方要观察 handler 是否执行，可以等待 facade 跟踪的工作完成。内置 local provider 适用于进程内分发；它不是消息代理，不持久化消息，也不负责跨进程路由。
+
+facade 将应用策略与具体传输分开：同步和 runtime-neutral 异步 API 位于对象安全的 `EventBusSpi`、`AsyncEventBusSpi` 之上。本 crate 目前只内置同步 local provider，不包含 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器。
 
 ## 概念模型
 
-事件由类型化的 `Topic<T>`、`EventEnvelope<T>` 以及一个或多个匹配的订阅组成。发布调用先经过发布拦截，再执行订阅准入，随后把已接纳的 handler 工作提交到本地 worker 池。`PublishReceipt` 描述这次准入快照，不会等待 handler 完成。
+- `Topic<T>` 将经过校验的主题名称绑定到 Rust payload 类型。
+- `PublishRequest<T>` 包含 Topic、payload、envelope 元数据和发布策略。`new(topic, payload)` 使用默认选项并生成事件 ID；builder 可设置 headers、顺序键、延迟、重试和拦截器。
+- `SubscribeRequest<T>` 包含 `SubscriberId`、Topic 和 `SubscribeOptions<T>`。`new(subscriber_id, topic)` 使用默认选项；builder 可配置 ACK、过滤器、中间件、重试、死信策略和 provider 专属命名空间选项。
+- `Delivery<T>` 提供事件、投递上下文和 ACK/NACK 句柄；它不是传输层 settlement token。
+- `PublishReceipt` 返回 provider 身份及准入确认，不表示 handler 已完成。
+- provider SPI 传输类型擦除后的 payload 并接收 provider 专属订阅请求。`qubit-spi` registry 负责选择和创建 provider。
 
-`LocalEventBus` 明确不提供事务语义。`publish_all` 按输入 envelope 尽力提交；单个事件出错后仍会继续，并返回 `BatchPublishResult`。当前版本没有事务 staged-event 契约。
+订阅中间件分为同步和异步两种。一个 `SubscribeRequest` 可以保存其中任一种或两种，但同步 `EventBus` 遇到异步中间件、异步 `AsyncEventBus` 遇到同步中间件时，都会以配置错误拒绝建立订阅。这避免了在异步 executor 中阻塞，也避免把同步回调伪装成可 await 的函数。
 
-## 场景：记录订单事件
+## 场景：在本地记录订单事件
 
-成功标准是审计订阅者收到订单，并且测试在退出前能够观察到 handler 的执行结果。
+本例的成功标准是审计订阅者收到 `order-1001`，并且调用方能在退出前确认 handler 已执行。
 
-### 安装和启动
+### 安装与创建总线
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.11"
+qubit-event-bus = "0.12"
 ```
 
 ```rust
-use qubit_event_bus::{LocalEventBus, Topic};
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::EventBus;
 
-let bus = LocalEventBus::started()?;
-let orders = Topic::<String>::try_new("orders.created")?;
+let bus = EventBus::local(LocalEventBusConfig::default())?;
 ```
 
-`LocalEventBus::new()` 创建停止状态的 bus；调用 `start()` 启动，或者使用常见的 `started()` 完成创建并启动。
+local provider 默认给每个订阅配置最多 1024 条待接收消息。可通过 `LocalEventBusConfig::new().queue_capacity(n)` 设置其他正数上限。
 
-### 订阅和发布
+### 订阅、发布并检查结果
 
 ```rust
 use std::sync::{Arc, Mutex};
 
+use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::{DeliveryError, SubscriberId};
+
+let orders = Topic::<String>::new("orders.created")?;
 let received = Arc::new(Mutex::new(Vec::new()));
 let captured = Arc::clone(&received);
-bus.subscribe("audit-log", &orders, move |event| {
-    captured.lock().expect("received events should lock").push(event.payload().clone());
-    Ok(())
+let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
+let subscription = bus.subscribe(request, move |delivery| {
+    captured.lock().expect("received events should lock").push(delivery.payload().clone());
+    Ok::<(), DeliveryError>(())
 })?;
 
-let receipt = bus.publish(&orders, "order-1001".to_string())?;
-assert!(matches!(receipt.outcome(), qubit_event_bus::PublishOutcome::Dispatched(_)));
-bus.wait_for_idle(&orders)?;
-assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001".to_string()]);
+let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
+assert_eq!(receipt.provider_id().as_str(), "local");
+bus.wait_for_idle(&orders, None)?;
+assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
+subscription.cancel()?;
 ```
 
-订阅 handler 接收 `EventEnvelope<T>`，可以查看请求头、事件 ID、顺序键、延迟和 payload。通过 `LocalEventBus` 发布的 payload 必须满足 `Clone + Send + Sync + 'static`。
+`wait_for_idle` 只跟踪当前 facade 对该 Topic 已接收的工作，不意味着远端 provider 或分布式系统里的所有消费者都已空闲。
 
-## 核心工作流
+## 核心流程与策略
 
-需要显式 envelope 元数据时使用 `publish_envelope`；需要发布重试或错误回调配置时使用 `publish_with_options` 或 `publish_envelope_with_options`。`subscribe_with_options` 可以增加确认模式、过滤器、优先级、重试、错误处理器和死信策略。
+### 添加事件元数据
 
-手动确认时，必须在返回前做出决定：
+要设置 envelope 字段但不手动创建 envelope 时，使用 request builder：
 
 ```rust
-use qubit_event_bus::{AckMode, SubscribeOptions};
+use std::time::Duration;
+use qubit_event_bus::model::{PublishRequest, Topic};
 
-let options = SubscribeOptions::<String>::builder()
-    .ack_mode(AckMode::Manual)
-    .build();
-bus.subscribe_with_options("manual-audit", &orders, |event| {
-    event.acknowledgement().expect("manual ACK should be available").ack();
+let request = PublishRequest::builder()
+    .topic(Topic::<String>::new("orders.created")?)
+    .payload("order-1002".to_owned())
+    .header("trace-id", "trace-42")
+    .ordering_key("customer-7")
+    .delay(Duration::from_millis(25))
+    .build()?;
+```
+
+`x-qubit-event-bus-dead-letter` 是 facade 保留的 header。应用和拦截器都不能设置或删除它；provider 传输事件时必须保留该标记。
+
+### 确认、重试与错误处理
+
+自动确认模式会在 handler 成功返回后 ACK。使用 `AckMode::Manual` 时，handler 必须在返回前调用 `delivery.acknowledgement().ack()` 或 `.nack()`；未作决定属于投递失败。
+
+重试类型直接来自 `qubit-retry`，`qubit-event-bus` 不会重新导出它们。配置重试时，应用应显式依赖两个 crate：
+
+```toml
+[dependencies]
+qubit-event-bus = "0.12"
+qubit-retry = "0.25"
+```
+
+在 builder/options 中直接使用 `qubit_retry::RetryPolicy`，必要时实现或传入 `qubit_retry::RetryRule`。重试分类规则本身不会启用重试：还必须提供 retry policy。取消令牌会阻止下一次尝试，但无法中断正在运行的同步 handler。
+
+`FailureDirective` 在配置策略和 provider 能力允许的范围内选择重试请求、重新入队、死信或丢弃等处理。异步取消发生在 provider 可能已经接纳死信、但发布 future 尚未返回时，runner 恢复后可能再次发布同一死信。因此该路径按至少一次处理；需要去重时应基于事件 ID 或业务幂等键实现。
+
+facade 生成的死信 payload 类型为 `model::DeadLetterEvent<T>`。消费者可用该类型订阅配置的死信 topic，并读取原事件、失败的 `SubscriberId` 和终态错误文本。原始 `EventEnvelope<T>` 通过 `Arc` 共享，`T` 不需要实现 `Clone`。使用编码传输的 provider 需要为 `DeadLetterEvent<T>` 注册 codec。
+
+`PublishFailureContext<T>` 是发布终态错误 handler 读取事件信息的视图。它共享 payload，并保留事件 ID、Topic、headers、顺序键、时间戳和延迟，因此 `T` 不需要实现 `Clone`。如果没有 retry policy，SPI publish 直接失败也会触发该 handler；配置了 retry policy 时，则在重试进入终态失败后触发。请求构建、能力检查、编解码和 interceptor 等预检错误不会经过该 handler。
+
+### 同步与异步中间件
+
+`SubscriberInterceptor<T>` 是同步中间件，接收 continuation；`AsyncSubscriberInterceptor<T>` 返回 crate 提供的 runtime-neutral boxed future，并接收异步 continuation。中间件按注册顺序执行；不调用 continuation 即表示短路内层中间件和 handler。同步总线若配置异步中间件，或异步总线若配置同步中间件，会在建立订阅时返回配置错误。
+
+## 选择 provider
+
+内置同步 provider 可通过 `EventBus::local(LocalEventBusConfig)` 直接使用。需要显式选择时，创建 `EventBusRegistry`、注册 provider definition，可选设置 `qubit_spi::ProviderSelection`，再将 `EventBusConfig` 传给 `create`。`EventBusRegistry::with_local()` 注册 canonical ID 为 `local`、别名为 `memory` 和 `in-process` 的内置 provider。
+
+`qubit-spi` 的 fallback 只发生在创建后端的阶段。运行期间 publish/receive 失败时不会静默切换传输。`RequiredCapabilities` 可在创建阶段拒绝不满足 durability、settlement、ordering、replay、delay、payload mode 或 publish visibility 要求的 provider。Provider options 是由适配器解释的命名空间键值数据；由于配置可调试输出，不要把凭据放进去。
+
+异步 facade 不绑定某个运行时，也不会替调用方启动消费 task。通过 `AsyncEventBusRegistry` 创建后端特定的异步 provider，再由应用 executor 驱动 `AsyncSubscription`。`AsyncEventBus::new` 默认使用 `qubit-clock` 提供的标准单调 timer；需要替换时可用 `with_timer` 或 `with_config_and_timer` 注入其他 `qubit_clock::Timer`。空闲等待、优雅停机 deadline 和异步重试退避都依赖 timer future 在 deadline 到达时唤醒 executor；event-bus 不会另建计时线程。
+
+```rust
+use qubit_event_bus::model::{SubscribeRequest, Topic};
+use qubit_event_bus::{AsyncEventBus, DeliveryError, SubscriberId};
+
+async fn consume(bus: &AsyncEventBus) -> Result<(), Box<dyn std::error::Error>> {
+    let topic = Topic::<String>::new("orders.created")?;
+    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic);
+    let mut subscription = bus.subscribe(request).await?;
+    subscription.run(|delivery| async move {
+        audit(delivery.payload()).await?;
+        Ok::<(), DeliveryError>(())
+    }).await?;
     Ok(())
-}, options)?;
+}
+
+async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 ```
 
-返回 `Ok(())` 却没有 ACK 或 NACK 会被视为 handler 失败，随后参与重试，再进入错误处理或死信流程。handler 返回后作出的确认无法改变这次投递。
-
-## 批量发布与准入
-
-`publish_all` 和 `publish_all_with_options` 按输入顺序提交 envelope。通过 `BatchPublishItem::result()` 查看每个事件的 `PublishReceipt` 或全局 `EventBusError`。
-
-`BatchPublishResult` 提供三个有意区分的视图：
-
-| 方法 | 含义 |
-| --- | --- |
-| `accepted_count()` | 至少有一个订阅状态为 `DispatchStatus::Accepted` 的输入项数量。 |
-| `dropped_count()` | 被发布拦截器丢弃的项数量。 |
-| `failure_count()` | 全局失败项，或包含任一被订阅者拒绝投递的项数量。 |
-
-这些计数不互斥：一个项可以同时拥有已接纳和被拒绝的订阅，因此同时计入 `accepted_count()` 和 `failure_count()`。`accepted_count()` 不代表 handler 已成功完成。
-
-## 容量和并发
-
-在创建 bus 前配置本地准入上限和执行队列容量：
-
-```rust
-use qubit_event_bus::{DeliveryLimits, LocalEventBusFactory};
-
-let mut factory = LocalEventBusFactory::new();
-factory.set_delivery_limits(DeliveryLimits::bounded(4096, Some(128)))?;
-factory.set_subscription_handler_pool_size(4)?;
-let bus = factory.create_started()?;
-```
-
-`max_in_flight` 和提供时的 `handler_queue_capacity` 必须大于零。默认值是 `DeliveryLimits::default()`：4096 个已接纳的 in-flight 投递，且不显式限制 handler 队列容量。队列拒绝表现为 `DispatchStatus::Rejected(EventBusError::ExecutionRejected { .. })`，对应 handler 不会执行；需要监控执行失败时可使用 `add_error_observer`。
-
-匹配的 handler 在订阅 worker 池中执行。相同 `ordering_key` 的事件会在每个 Topic 和订阅者内串行执行；没有顺序键的事件可以并发执行。重试退避会占用调用线程或 handler worker，因此应一并规划 worker 数量和重试预算。
-
-## 拦截器、重试和死信
-
-在 `LocalEventBusFactory` 上配置类型化或全局发布/订阅拦截器，再调用 `create()` 或 `create_started()`。`LocalEventBus` 不提供运行时修改拦截器的入口。
-
-发布分发先执行全局拦截器，再执行类型化拦截器；每个阶段都会接收上一阶段产出的 envelope。
-
-`RetryPolicy` 控制尝试次数和退避；重试规则负责分类失败，仅设置规则不会启用重试。订阅重试可通过 `SubscribeOptionsBuilder::retry_cancellation_token` 使用取消令牌；取消会唤醒退避并阻止下一次尝试，但不能打断已经运行的 handler。
-
-死信策略可以设置在订阅选项或 factory 默认值中。`standard_dead_letters_to`、`prefixed_dead_letters` 和 `discard_dead_letters` 覆盖常见路由需求。`DeliveryFailure` 观察器会在重试、错误处理和死信路由结束后收到终态失败。
+此函数假设 `bus` 已由异步 provider adapter 创建。本 crate 没有内置 async local provider，也不附带第三方传输适配器。
 
 ## 错误与诊断
 
-- 对停止状态的 bus 发布或订阅会返回生命周期错误。`shutdown()` 会阻塞。在订阅 handler 中应使用 `shutdown_nonblocking()` 请求停机；当前 handler 仍活跃时，`shutdown_with_timeout()` 无法完成并会返回 `ShutdownTimedOut`，因此它只适用于必须有界等待的调用方。
-- `wait_for_idle` 和 `wait_for_idle_timeout` 用于测试及受控排空。从 bus 自己的订阅 worker 调用会返回 `EventBusError::WouldDeadlock`。
-- `shutdown_with_timeout` 报告超时后，旧订阅工作进入 idle 前，`start()` 仍会被拒绝。
-- 发布成功表示完成了投递准入，不表示 handler 最终送达。需要关注丢失时，请检查回执状态并注册错误/投递失败观察器。
-- 延迟投递到期时若队列拒绝，handler 不会执行；可通过 `add_error_observer` 观察 `ExecutionRejected`。
+错误按操作区分为 `PublishError`、`SubscribeError`、`ReceiveError`、`LifecycleError` 和 `ShutdownError`；SPI/provider 错误尽可能保留 source 链。检查发布回执中的 acknowledgement；若需要观察 provider gap、不支持的 disposition 或回调故障，可注册 `observe_diagnostics`。从本总线自己的同步 worker 调用 `wait_for_idle` 或 shutdown 会得到 `WouldDeadlock`，不会让 worker 等待自己。
 
-## 排障
-
-- 如果 handler 断言执行过早，请先检查 `PublishReceipt`，再使用
-  `wait_for_idle` 或 `wait_for_idle_timeout`，确认 handler 效果后再断言。
-- 如果投递被拒绝，请检查回执中的 `DispatchStatus` 并注册
-  `add_error_observer`；需要观察终态失败时，再注册
-  `add_delivery_failure_observer`。
-- 如果停机或排空返回 `WouldDeadlock`，请把调用移出订阅 worker，或在其中使用
-  `shutdown_nonblocking` 请求停机。需要有界等待时，应在活跃 handler 之外调用
-  `shutdown_with_timeout`。
-- 如果没有发生重试，请确认同时配置了重试规则和重试选项；只有规则不会自动
-  启用重试。
+`Subscription::cancel` 会显式停止订阅；从外部调用时会等待同步 worker 收尾。丢弃同步 handle 本身不会取消订阅。异步订阅使用 `AsyncSubscription::close().await` 确定性释放资源并返回 close 错误。丢弃异步订阅 handle 会立即丢弃暂停的 session 和 provider receiver；provider 必须在 receiver 被丢弃时恢复未结算 delivery。`run` 不会 spawn；丢弃其 future 会暂停并保留在途 delivery future 与 permit。再次调用 `run` 会续跑这些旧 future（新 handler 只处理之后收到的消息），bus shutdown 也能接管暂停 session。异步 receiver 的 close/drop 契约必须保证未结算 delivery 仍可恢复，并且绝不能隐式确认。
 
 ## 限制与最佳实践
 
-本地总线不承诺持久投递、跨进程路由、打断 handler 或批量原子性。payload 应满足
-`Clone + Send + Sync + 'static`；在创建 bus 前配置容量；把发布成功理解为完成准入，
-而不是 handler 已完成。只有确实需要按 Topic 和订阅者串行处理时才使用顺序键，
-因为重试退避会占用当前 worker 和顺序 lane。
-
-## 迁移说明
-
-旧的事务 API（`TransactionalEventBus`、`TransactionalPublisher`、`StagedEvent` 和 `StagedEventEnvelope`）已删除。只有在能够接受 best-effort、非原子语义时才用普通 `publish_all` 替代；否则应由应用或具体后端自行协调事务。
-
-`DeliveryLimits` 取代单一的 in-flight 调优入口。使用 `DeliveryLimits::bounded(max_in_flight, handler_queue_capacity)` 或 `DeliveryLimits::unbounded(max_in_flight)` 配合 `LocalEventBusFactory::set_delivery_limits`；零值会被拒绝。
-
-使用 `BatchPublishResult::accepted_count()` 的代码需要按当前语义处理：它表示订阅准入，不是输入项数量、已完成 handler 数量或所有订阅成功的数量。拒绝详情应结合 `failure_count()` 和每个回执的状态读取。
-
-泛型 `EventBus` 实现通过关联类型暴露后端自有的 `Subscription<T>`，并约束为实现 `SubscriptionHandle<T>`。泛型代码应使用 `B::Subscription<T>`，不要写死本地具体的 `Subscription<T>`。
+- publish 成功表示 provider 返回了准入确认，不表示订阅 handler 已完成。
+- `publish_all` 按输入顺序分别尝试请求，并保留各自结果；它不是原子操作。
+- local 队列容量限制每个订阅的待接收消息数，不是全局 broker 配额。local provider 仅在进程内工作，不提供持久性。
+- 两种 facade 都有 bus-wide 准入上限。同步 facade 用 `with_sync_delivery_scheduler(...)` 配置 `max_in_flight` 与 handler queue capacity；异步 facade 用 `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` 配置（默认 4）。异步 permit 覆盖每条已接收消息的 lane wait、中间件、handler/retry 及最终 settlement；不同顺序键可并行，同一顺序键保持顺序。每个订阅最多暂存一条尚未准入的消息；空闲的 receive 不占用 permit。
+- 诊断 observer 在触发诊断的线程上同步调用。observer panic 会被隔离，但阻塞的 observer 会延迟该线程；诊断不会进入独立缓冲队列。
+- 能力标志是 provider 对自身契约的声明。按需要求能力，并单独记录具体 provider 的增强保证。
+- 异步 settlement 的不确定结果可能导致重试；provider 必须让相同 token 和 disposition 的重复操作幂等，同一 token 使用冲突 disposition 时必须失败。
+- shutdown 会停止准入并协调订阅。`Immediate` 会丢弃尚未开始的队列工作，不再接收新消息；但会等待当前 handler 完成、settlement、subscription close 和 SPI shutdown，以便同步返回完整错误。Rust 无法强制中断 handler。`Graceful` 对 receiver close、活跃工作排空和 SPI shutdown 使用同一个总 deadline；超时后 bus 保持 Closing，可再次调用 shutdown 继续清理。异步 close/shutdown Future 取消后可能已有 provider 副作用，provider 必须支持安全幂等重试。SPI 的 `shutdown(mode)` 只关闭 provider 传输资源；先停止消费、完成当前投递和 close 的顺序由 facade 保证。
 
 ## 延伸阅读
 
-- [API 文档](https://docs.rs/qubit-event-bus)
-- [English user guide](user_guide.md)
-- [设计说明](design.zh_CN.md)
-- [Design guide](design.md)
-- [中文更新日志](../CHANGELOG.zh_CN.md)
+- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+- [架构设计（中文）](design.zh_CN.md) · [正式 SPI 设计](spi_design.zh_CN.md)
+- [中文更新日志](../CHANGELOG.zh_CN.md) · [English user guide](user_guide.md)

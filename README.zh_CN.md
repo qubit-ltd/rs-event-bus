@@ -7,15 +7,15 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![English Document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
 
-`qubit-event-bus` 是一个轻量、线程安全的 Rust 进程内发布/订阅事件总线，提供类型化 Topic 和 envelope、可配置的确认与重试、拦截器、死信路由、投递失败观测以及 best-effort 批量发布能力。
+`qubit-event-bus` 为应用提供统一、类型安全的事件总线 API，并把传输方式隔离在精简的 provider SPI 后面。进程内使用时可直接选择内置 local provider；需要接入其他传输时，由对应 provider 实现并注册 SPI。facade 统一处理可移植的请求、拦截器、重试、确认、诊断和生命周期语义，应用无需绑定某一种 channel 或 broker API。
 
-它是进程内组件，不负责事件持久化，也不负责跨进程投递。完整的场景教程、API 细节、迁移说明和运行限制请阅读[中文用户指南](doc/user_guide.zh_CN.md)或 [English user guide](doc/user_guide.md)；运行时模型见[设计说明](doc/design.zh_CN.md)和 [design guide](doc/design.md)。
+例如，订单创建后，审计记录和缓存更新都可以订阅同一 Topic。使用本地 provider 时不必先部署消息代理。发布回执反映的是 provider 是否接纳消息，而不是 handler 是否已经处理完；需要确认处理结果时，应用可以显式等待总线跟踪的投递工作。
 
 ## 安装
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.11"
+qubit-event-bus = "0.12"
 ```
 
 ## 快速开始
@@ -23,63 +23,49 @@ qubit-event-bus = "0.11"
 ```rust
 use std::sync::{Arc, Mutex};
 
-use qubit_event_bus::{LocalEventBus, Topic};
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::{EventBus, SubscriberId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bus = LocalEventBus::started()?;
-    let topic = Topic::<String>::try_new("orders.created")?;
+    let bus = EventBus::local(LocalEventBusConfig::default())?;
+    let orders = Topic::<String>::new("orders.created")?;
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.subscribe("audit-log", &topic, move |event| {
-        captured.lock().expect("received events should lock").push(event.payload().clone());
-        Ok(())
+    let subscriber = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
+    let _subscription = bus.subscribe(subscriber, move |delivery| {
+        captured.lock().expect("received events should lock").push(delivery.payload().clone());
+        Ok::<(), qubit_event_bus::DeliveryError>(())
     })?;
-    bus.publish(&topic, "order-1001".to_string())?;
-    bus.wait_for_idle(&topic)?;
 
-    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001".to_string()]);
+    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
+    assert_eq!(receipt.provider_id().as_str(), "local");
+    bus.wait_for_idle(&orders, None)?;
+    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
+    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
+        timeout: std::time::Duration::from_secs(2),
+    })?;
     Ok(())
 }
 ```
 
-`publish` 返回描述准入结果的 `PublishReceipt`，不代表 handler 已完成。测试或受控停机流程需要观察 handler 效果时，应调用 `wait_for_idle`。
+## 能力与边界
 
-## API 速览
+- 提供类型化的 `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>`、事件 envelope、delivery 和 publish receipt。
+- 提供同步及 runtime-neutral 异步 facade，底层均通过对象安全的 provider SPI 工作。
+- 通过 `qubit-spi` registry 完成 provider 发现和创建，并在创建时检查能力及执行 fallback。
+- 内置每订阅者有界队列的进程内 provider（`LocalEventBusProvider`）。
+- 在后端能力允许时，由 facade 统一处理拦截器、重试、ACK/NACK、死信、顺序、诊断和生命周期。
 
-| 需求 | API |
-| --- | --- |
-| 创建总线 | `LocalEventBus::new`、`LocalEventBus::started`、`LocalEventBusFactory` |
-| 定义类型安全 Topic | `Topic::<T>::try_new` |
-| 发布一个或多个事件 | `publish`、`publish_envelope`、`publish_all`、`BatchPublishResult` |
-| 订阅 handler | `subscribe`、`subscribe_with_options`、`Subscription` |
-| 配置投递容量 | `DeliveryLimits::bounded`、`DeliveryLimits::unbounded`、`LocalEventBusFactory::set_delivery_limits` |
-| 配置重试和 ACK/NACK | `SubscribeOptions`、`RetryPolicy`、`AckMode`、`Acknowledgement` |
-| 配置拦截器 | `PublisherInterceptor`、`SubscriberInterceptor` 及其 global 版本 |
-| 路由死信 | `standard_dead_letters_to`、`prefixed_dead_letters`、`discard_dead_letters` |
-| 观测终态失败 | `add_delivery_failure_observer`、`DeliveryFailure` |
-| 停止和测试 | `shutdown`、`shutdown_nonblocking`、`shutdown_with_timeout`、`wait_for_idle` |
-
-## 重要语义
-
-- `LocalEventBus` 不提供事务语义。`publish_all` 是 best effort：按输入顺序提交每个 envelope，并记录每个事件的结果，不保证全有或全无。
-- `BatchPublishResult::accepted_count()` 统计其回执中至少有一个订阅投递为 `DispatchStatus::Accepted` 的输入项。它不是已完成 handler 的数量；同一个项还可能因另一个订阅者拒绝而计入 `failure_count()`。
-- `DeliveryLimits` 分别控制已接纳的 in-flight 投递上限和可选的 handler 执行队列容量。两个值（若提供）都必须大于零；按需使用 `DeliveryLimits::bounded` 或 `DeliveryLimits::unbounded`。默认是 `DeliveryLimits::default()`（`4096`，不显式限制队列容量）。
-- 发布 payload 必须满足 `Clone + Send + Sync + 'static`。匹配的订阅会被提交到本地 worker 池，发布不会等待 handler 完成。
-- `AckMode::Manual` handler 必须在返回前 ACK 或 NACK。缺少确认决策会被视为失败，可能重试或进入死信处理。
-- 具有相同 `ordering_key` 的事件会在每个 Topic 和订阅者内串行执行；没有顺序键的事件可以并发执行。
-- handler 内需要请求停机时应调用 `shutdown_nonblocking()`。当前 handler 仍在运行时，`shutdown_with_timeout()` 无法完成并会报告超时；它只适用于必须有界等待的调用方。
-- 丢弃 `Subscription` 句柄不会取消订阅；请调用句柄的取消 API。生命周期、重试、延迟和停机细节见用户指南。
+本 crate 不包含 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 的适配器；也不承诺持久化、跨进程投递、事务批量发布或恰好一次处理。具体后端若提供更强保证，应由该后端单独说明。
 
 ## 延伸阅读
 
+- [中文用户指南](doc/user_guide.zh_CN.md) · [English user guide](doc/user_guide.md)
+- [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
 - [API 文档](https://docs.rs/qubit-event-bus)
-- [English user guide](doc/user_guide.md)
-- [中文用户指南](doc/user_guide.zh_CN.md)
-- [Design guide](doc/design.md)
-- [设计说明](doc/design.zh_CN.md)
-- [中文更新日志](CHANGELOG.zh_CN.md)
-- [Changelog](CHANGELOG.md)
+- [中文更新日志](CHANGELOG.zh_CN.md) · [Changelog](CHANGELOG.md)
 - [English README](README.md)
 
 ## 测试

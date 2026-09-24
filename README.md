@@ -7,15 +7,15 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
 
-`qubit-event-bus` is a lightweight, thread-safe, in-process publish/subscribe event bus for Rust. It provides typed topics and envelopes, configurable acknowledgements and retries, interceptors, dead-letter routing, delivery-failure observation, and best-effort batch publishing.
+`qubit-event-bus` gives applications one typed event-bus API while keeping transport choice behind a small provider SPI. Use its built-in local provider for in-process dispatch, or implement/register a provider for another transport; the facade owns portable request handling, middleware, retry, settlement, diagnostics, and lifecycle behavior instead of tying applications to a channel or broker API.
 
-It is an in-process component: it does not persist events or deliver them across processes. For the complete scenario, API details, migration notes, and operational limits, see the [English user guide](doc/user_guide.md) or [中文用户指南](doc/user_guide.zh_CN.md). The [design guide](doc/design.md) and [设计说明](doc/design.zh_CN.md) describe the runtime model.
+The local provider is useful when an application needs to fan an order event out to local consumers—for example, an audit subscriber and a cache updater—without introducing a broker. A publish receipt describes provider admission, not completed handler work, so the application can explicitly wait for tracked delivery work when it needs an observable result.
 
 ## Installation
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.11"
+qubit-event-bus = "0.12"
 ```
 
 ## Quick start
@@ -23,63 +23,49 @@ qubit-event-bus = "0.11"
 ```rust
 use std::sync::{Arc, Mutex};
 
-use qubit_event_bus::{LocalEventBus, Topic};
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::{EventBus, SubscriberId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bus = LocalEventBus::started()?;
-    let topic = Topic::<String>::try_new("orders.created")?;
+    let bus = EventBus::local(LocalEventBusConfig::default())?;
+    let orders = Topic::<String>::new("orders.created")?;
     let received = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&received);
 
-    bus.subscribe("audit-log", &topic, move |event| {
-        captured.lock().expect("received events should lock").push(event.payload().clone());
-        Ok(())
+    let subscriber = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
+    let _subscription = bus.subscribe(subscriber, move |delivery| {
+        captured.lock().expect("received events should lock").push(delivery.payload().clone());
+        Ok::<(), qubit_event_bus::DeliveryError>(())
     })?;
-    bus.publish(&topic, "order-1001".to_string())?;
-    bus.wait_for_idle(&topic)?;
 
-    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001".to_string()]);
+    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
+    assert_eq!(receipt.provider_id().as_str(), "local");
+    bus.wait_for_idle(&orders, None)?;
+    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
+    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
+        timeout: std::time::Duration::from_secs(2),
+    })?;
     Ok(())
 }
 ```
 
-`publish` returns a `PublishReceipt` describing admission, not handler completion. Use `wait_for_idle` in tests or controlled shutdown flows when the handler result must be observable.
+## What it provides
 
-## API at a glance
+- Typed `Topic<T>`, `PublishRequest<T>`, `SubscribeRequest<T>`, envelopes, deliveries, and publication receipts.
+- Synchronous and runtime-neutral asynchronous facades over object-safe provider SPI contracts.
+- Provider discovery and creation through `qubit-spi` registries, with creation-time capability checks and fallback.
+- A built-in bounded-queue, in-process provider (`LocalEventBusProvider`).
+- Facade-level interception, retry through the caller's direct `qubit-retry` dependency, ACK/NACK, dead-letter handling, ordering, diagnostics, and lifecycle controls where supported by provider capabilities.
 
-| Need | API |
-| --- | --- |
-| Create a bus | `LocalEventBus::new`, `LocalEventBus::started`, `LocalEventBusFactory` |
-| Define a typed topic | `Topic::<T>::try_new` |
-| Publish one or many events | `publish`, `publish_envelope`, `publish_all`, `BatchPublishResult` |
-| Subscribe handlers | `subscribe`, `subscribe_with_options`, `Subscription` |
-| Configure delivery capacity | `DeliveryLimits::bounded`, `DeliveryLimits::unbounded`, `LocalEventBusFactory::set_delivery_limits` |
-| Configure retries and ACK/NACK | `SubscribeOptions`, `RetryPolicy`, `AckMode`, `Acknowledgement` |
-| Configure interceptors | `PublisherInterceptor`, `SubscriberInterceptor`, and their global variants |
-| Route dead letters | `standard_dead_letters_to`, `prefixed_dead_letters`, `discard_dead_letters` |
-| Observe terminal failures | `add_delivery_failure_observer`, `DeliveryFailure` |
-| Stop and test | `shutdown`, `shutdown_nonblocking`, `shutdown_with_timeout`, `wait_for_idle` |
+The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
-## Important semantics
+## Learn more
 
-- `LocalEventBus` is non-transactional. `publish_all` is best effort: it submits every input envelope in order and records each per-event result. It does not provide atomic all-or-nothing publication.
-- `BatchPublishResult::accepted_count()` counts input items whose receipt has at least one `DispatchStatus::Accepted` subscriber delivery. It is not a count of completed handlers, and it may coexist with `failure_count()` when another subscriber rejected the same item.
-- `DeliveryLimits` independently configures the maximum accepted in-flight deliveries and an optional handler executor queue capacity. Both values must be positive when present; use `DeliveryLimits::bounded` or `DeliveryLimits::unbounded` as appropriate. The default is `DeliveryLimits::default()` (`4096`, no explicit queue capacity).
-- Published payloads must be `Clone + Send + Sync + 'static`. Matching subscribers are scheduled on the local worker pool; publishing does not wait for handler completion.
-- `AckMode::Manual` handlers must ACK or NACK before returning. A missing decision is a failure and may retry or reach dead-letter handling.
-- Events sharing an `ordering_key` are serialized per topic and subscriber. Events without one may execute concurrently.
-- Inside a handler, request shutdown with `shutdown_nonblocking()`. `shutdown_with_timeout()` cannot complete while that handler remains active and reports a timeout; reserve it for callers that require a bounded wait.
-- Dropping a `Subscription` handle does not unsubscribe it; call its cancellation API. See the user guide for lifecycle, retry, delay, and shutdown details.
-
-## Learn More
-
+- [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
+- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
 - [API reference](https://docs.rs/qubit-event-bus)
-- [English user guide](doc/user_guide.md)
-- [中文用户指南](doc/user_guide.zh_CN.md)
-- [Design guide](doc/design.md)
-- [设计说明](doc/design.zh_CN.md)
-- [Changelog](CHANGELOG.md)
-- [中文更新日志](CHANGELOG.zh_CN.md)
+- [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh_CN.md)
 - [中文 README](README.zh_CN.md)
 
 ## Testing
