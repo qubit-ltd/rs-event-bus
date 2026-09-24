@@ -34,6 +34,8 @@ use qubit_id::Id;
 use super::AsyncSubscription;
 use super::DiagnosticObserverHandle;
 use super::EventBusFacadeConfig;
+use super::PublishMetrics;
+use super::PublishMetricsSnapshot;
 use super::WaitOutcome;
 use super::async_subscription::is_current_bus_poll;
 use super::diagnostic_observer::ObserverEntry;
@@ -108,6 +110,7 @@ pub(super) struct AsyncEventBusInner {
     pub(super) ordering_lanes: AsyncOrderingLanes<()>,
     pub(super) admission: Arc<AsyncAdmission>,
     pub(super) timer: Arc<dyn Timer>,
+    publish_metrics: PublishMetrics,
 }
 
 /// Bus-wide asynchronous delivery admission. Waiters are woken whenever a
@@ -475,6 +478,7 @@ impl AsyncEventBus {
                 ordering_lanes: AsyncOrderingLanes::new(),
                 admission: AsyncAdmission::new(admission_limit),
                 timer,
+                publish_metrics: PublishMetrics::default(),
             }),
         }
     }
@@ -485,7 +489,10 @@ impl AsyncEventBus {
         &self,
         request: PublishRequest<T>,
     ) -> Result<PublishReceipt, PublishError> {
-        let _publish = self.inner.begin_publish().ok_or(PublishError::Closed)?;
+        let Some(_publish) = self.inner.begin_publish() else {
+            self.inner.publish_metrics.record_error();
+            return Err(PublishError::Closed);
+        };
         let observers = self.observer_snapshot();
         self.inner
             .publisher
@@ -497,7 +504,20 @@ impl AsyncEventBus {
                 self.inner.timer.clone(),
             )
             .await
-            .map_err(publish_pipeline_error)
+            .map_err(|failure| {
+                self.inner.publish_metrics.record_error();
+                publish_pipeline_error(failure)
+            })
+            .map(|receipt| {
+                self.inner.publish_metrics.record_receipt(&receipt);
+                receipt
+            })
+    }
+
+    /// Returns the shared publication counters for this facade and its clones.
+    #[must_use]
+    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
+        self.inner.publish_metrics.snapshot()
     }
 
     /// Publishes each request in order and retains each independent result.

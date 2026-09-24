@@ -101,6 +101,7 @@ struct PublisherCoverageSpi {
     payload_modes: PayloadModes,
     retryable_failures: usize,
     terminal_failure: bool,
+    acknowledgement: Option<PublishAcknowledgement>,
     attempts: AtomicUsize,
     payload_was_encoded: Mutex<Vec<bool>>,
 }
@@ -111,9 +112,15 @@ impl PublisherCoverageSpi {
             payload_modes,
             retryable_failures,
             terminal_failure,
+            acknowledgement: None,
             attempts: AtomicUsize::new(0),
             payload_was_encoded: Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_acknowledgement(mut self, acknowledgement: PublishAcknowledgement) -> Self {
+        self.acknowledgement = Some(acknowledgement);
+        self
     }
 }
 
@@ -139,6 +146,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
             .unwrap()
             .push(matches!(message.payload(), TransportPayload::Encoded(_)));
         let should_fail = attempt < self.retryable_failures || self.terminal_failure;
+        let acknowledgement = self.acknowledgement.clone();
         Box::pin(async move {
             if should_fail {
                 Err(SpiError::Operation {
@@ -150,10 +158,10 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
                     source: Box::new(std::io::Error::other("injected async provider failure")),
                 })
             } else {
-                Ok(PublishAcknowledgement::Accepted {
+                Ok(acknowledgement.unwrap_or(PublishAcknowledgement::Accepted {
                     provider_message_id: None,
                     metadata: Default::default(),
-                })
+                }))
             }
         })
     }
@@ -216,6 +224,115 @@ fn async_publisher_retries_a_retryable_failure_then_succeeds() {
     assert_eq!(receipt.input_event_id().as_str().len(), 36);
     assert_eq!(spi.attempts.load(Ordering::Acquire), 2);
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
+    use qubit_event_bus::EventBusFacadeConfig;
+    use qubit_event_bus::facade::PublishMetricsSnapshot;
+
+    let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false));
+    let bus = AsyncEventBus::new(ProviderId::new("async-publisher-metrics").unwrap(), spi);
+    assert_eq!(bus.publish_metrics(), PublishMetricsSnapshot::default());
+    let clone = bus.clone();
+    let requests = [
+        PublishRequest::builder().topic(topic()).payload(1_u32).build().unwrap(),
+        PublishRequest::builder().topic(topic()).payload(2_u32).build().unwrap(),
+    ];
+    let batch = block_on(clone.publish_all(requests));
+    assert_eq!(batch.total_count(), 2);
+    assert!(batch.items().iter().all(Result::is_ok));
+    assert_eq!(bus.publish_metrics().attempts, 2);
+    assert_eq!(bus.publish_metrics().opaque_accepted, 2);
+
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    let closed = block_on(bus.publish(PublishRequest::builder().topic(topic()).payload(3_u32).build().unwrap()));
+    assert!(matches!(closed, Err(PublishError::Closed)));
+    assert_eq!(clone.publish_metrics().attempts, 3);
+    assert_eq!(clone.publish_metrics().errors, 1);
+
+    let dropped_bus = AsyncEventBus::with_config(
+        ProviderId::new("async-publisher-metrics-dropped").unwrap(),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
+        EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
+    );
+    block_on(dropped_bus.publish(PublishRequest::builder().topic(topic()).payload(4_u32).build().unwrap()))
+        .unwrap();
+    let dropped = dropped_bus.publish_metrics();
+    assert_eq!(dropped.attempts, 1);
+    assert_eq!(dropped.dropped, 1);
+    assert_eq!(dropped.errors, 0);
+
+    use qubit_event_bus::model::AdmissionStatus;
+    use qubit_event_bus::model::DestinationAdmission;
+    use qubit_id::Id;
+    use qubit_event_bus::SubscriberId;
+    let mixed_ack = PublishAcknowledgement::DestinationAdmissions(vec![
+        DestinationAdmission::new(
+            Id::new(10),
+            SubscriberId::new("accepted-async-metrics").unwrap(),
+            AdmissionStatus::Accepted,
+        ),
+        DestinationAdmission::new(
+            Id::new(11),
+            SubscriberId::new("filtered-async-metrics").unwrap(),
+            AdmissionStatus::Filtered,
+        ),
+        DestinationAdmission::new(
+            Id::new(12),
+            SubscriberId::new("rejected-async-metrics").unwrap(),
+            AdmissionStatus::Rejected("injected rejection".into()),
+        ),
+    ]);
+    let destination_bus = AsyncEventBus::new(
+        ProviderId::new("async-publisher-metrics-destinations").unwrap(),
+        Arc::new(
+            PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(mixed_ack),
+        ),
+    );
+    block_on(destination_bus.publish(PublishRequest::builder().topic(topic()).payload(5_u32).build().unwrap()))
+        .unwrap();
+    let destination_metrics = destination_bus.publish_metrics();
+    assert_eq!(destination_metrics.accepted_destinations, 1);
+    assert_eq!(destination_metrics.filtered_destinations, 1);
+    assert_eq!(destination_metrics.rejected_destinations, 1);
+
+    let empty_bus = AsyncEventBus::new(
+        ProviderId::new("async-publisher-metrics-empty").unwrap(),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(
+            PublishAcknowledgement::DestinationAdmissions(Vec::new()),
+        )),
+    );
+    block_on(empty_bus.publish(PublishRequest::builder().topic(topic()).payload(6_u32).build().unwrap())).unwrap();
+    assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
+
+    let failing_bus = AsyncEventBus::new(
+        ProviderId::new("async-publisher-metrics-error").unwrap(),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, true)),
+    );
+    assert!(block_on(failing_bus.publish(PublishRequest::builder().topic(topic()).payload(7_u32).build().unwrap())).is_err());
+    let failure_metrics = failing_bus.publish_metrics();
+    assert_eq!(failure_metrics.attempts, 1);
+    assert_eq!(failure_metrics.errors, 1);
+
+    let concurrent_bus = AsyncEventBus::new(
+        ProviderId::new("async-publisher-metrics-concurrent").unwrap(),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
+    );
+    let workers = (0..8)
+        .map(|index| {
+            let worker_bus = concurrent_bus.clone();
+            std::thread::spawn(move || {
+                block_on(worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()))
+                    .expect("concurrent publish should be accepted");
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().expect("async publisher thread should finish");
+    }
+    assert_eq!(concurrent_bus.publish_metrics().attempts, 8);
+    assert_eq!(concurrent_bus.publish_metrics().opaque_accepted, 8);
 }
 
 #[test]
