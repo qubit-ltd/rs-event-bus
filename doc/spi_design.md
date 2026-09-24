@@ -108,6 +108,8 @@ The local provider uses a bounded queue per subscription. Its capacity counts qu
 
 Ordering is a facade/provider contract described by capability. The facade coordinates order where supported; providers must preserve the ordering guarantees they advertise. Delayed delivery is likewise capability-gated and may be provider-native or represented through transport metadata only when the adapter can honor the contract.
 
+The synchronous facade's delivery scheduler selects eligible queued handler work in round-robin order across subscriptions, subject to in-flight limits and ordering-key eligibility. Subscription options do not expose a priority, and the API makes no priority-based scheduling guarantee. A `PerKey` subscription is admitted only when the provider declares `PerKey` or `PerSubscription` ordering capability.
+
 ## Diagnostics and error model
 
 Errors are separated by operation, including publish, subscribe, receive, lifecycle, and shutdown. Provider sources should remain available through the error chain. Diagnostics are observations, not replacements for operation results.

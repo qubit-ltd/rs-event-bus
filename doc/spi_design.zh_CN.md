@@ -396,7 +396,7 @@ let subscription = bus.subscribe(request, |delivery| {
 })?;
 ```
 
-`SubscribeRequest::new` 使用 automatic ACK、无 filter、无 retry、无 error handler、无 dead-letter、priority `0`、无 consumer group、ephemeral durability、从新消息开始消费以及空 provider options。若具体 provider 无法支持这组默认值，建立订阅时返回明确的 configuration 或 capability error，不进行静默转换。
+`SubscribeRequest::new` 使用 automatic ACK、无 filter、无 retry、无 error handler、无 dead-letter、无 consumer group、ephemeral durability、从新消息开始消费以及空 provider options。若具体 provider 无法支持这组默认值，建立订阅时返回明确的 configuration 或 capability error，不进行静默转换。
 
 `SubscribeRequestBuilder<T>` 同样不要求调用方先创建 `SubscribeOptions<T>`：
 
@@ -409,11 +409,12 @@ let request = SubscribeRequest::builder()
     .retry_policy(RetryPolicy::builder().max_attempts(3).build()?)
     .error_handler(handle_delivery_failure)
     .dead_letter(DeadLetterPolicy::topic("orders.dead")?)
-    .priority(10)
     .build()?;
 ```
 
-builder 覆盖 subscriber ID、topic、ACK mode、filter、retry policy/rule/cancellation、error handlers、dead-letter、priority、ordering policy、consumer group、durability、start position 和 provider options，同时提供 `options(SubscribeOptions<T>)` 复用已有配置。`build()` 缺少 subscriber ID 或 topic 时返回 `SubscribeRequestBuildError`，并在建立 SPI subscription 之前验证 options 与 required capabilities。
+builder 覆盖 subscriber ID、topic、ACK mode、filter、retry policy/rule/cancellation、error handlers、dead-letter、ordering policy、consumer group、durability、start position 和 provider options，同时提供 `options(SubscribeOptions<T>)` 复用已有配置。`build()` 缺少 subscriber ID 或 topic 时返回 `SubscribeRequestBuildError`，并在建立 SPI subscription 之前验证 options 与 required capabilities。
+
+订阅没有 priority 设置或基于优先级的调度保证。同步 facade 的 delivery scheduler 会在各订阅之间轮转选择符合条件的排队 handler 工作，同时遵守 bus-wide in-flight 上限和 ordering-key lane 限制。请求 `OrderingPolicy::PerKey` 时，provider 必须声明 `OrderingCapability::PerKey` 或 `PerSubscription`；否则 facade 会在调用 SPI `subscribe` 前拒绝该订阅。
 
 两个 request builder 遵循相同的组合规则：标量字段最后一次设置生效；`header` 按 key 覆盖而 `headers` 按迭代顺序合并；可重复的 interceptor 和 error handler 按调用顺序追加；`options(...)` 在调用位置整体替换 policy 状态，后续链式 policy 方法再覆盖或追加。rustdoc 必须为这些规则提供断言示例。
 
@@ -710,7 +711,7 @@ pub struct SpiSubscriptionRequest {
 
 `payload_type_id` 由 facade 从 `Topic<T>` 传入，供支持原生 Rust payload 的 provider 在路由前拒绝同名异类型的活跃订阅或发布。编码 provider 可以忽略此 Rust 进程内类型标识。
 
-filter、interceptor、handler priority、application retry、error handler 和 dead-letter 不进入 SPI。
+filter、interceptor、application retry、error handler 和 dead-letter 不进入 SPI；API 不提供 priority 配置，也不会按该规则调度。
 
 Kafka isolation level、RabbitMQ exchange/queue 参数、Redis stream trimming 等使用命名空间化 `ProviderOptions`。provider 只解释自己的命名空间；其命名空间下的未知键必须报错。核心 crate 不为这些选项赋予跨 provider 语义。
 
