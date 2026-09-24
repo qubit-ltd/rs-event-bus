@@ -1,6 +1,6 @@
 # Qubit Event Bus 0.12 架构说明
 
-[English 架构状态页](design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md)
+[Architecture status (English)](design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md) · [SPI design (English)](spi_design.md)
 
 本文说明 0.12 代码中实际落地的架构。扩展能力和未来后端只有在明确标注“后续扩展”时才表示尚未实现；正式 SPI 契约及迁移细节见[正式 SPI 设计](spi_design.zh_CN.md)。
 
@@ -19,7 +19,7 @@
 
 ## 发布与订阅
 
-发布请求由 facade 校验并执行 publisher interceptors，再根据 provider capability、codec 和 payload mode 进行检查/转换，之后调用 SPI。`PublishReceipt` 说明 provider 对发布的确认以及实际使用的 provider ID，不代表 handler 已执行或完成。`publish_all` 按输入顺序独立提交请求并保留各项结果，不提供事务或回滚。
+发布请求由 facade 校验并执行 publisher interceptors，再根据 provider capability、codec 和 payload mode 进行检查/转换，之后调用 SPI。`PublishReceipt` 说明 provider 对发布的确认以及实际使用的 provider ID，不代表 handler 已执行或完成。`DestinationAdmissions` 可能为空，也可能包含 accepted、filtered 和 rejected 目的地；部分拒绝仍是成功回执，重发整条事件可能让已接纳目的地重复收到消息。`publish_all` 按输入顺序独立提交请求并保留各项结果，不提供事务或回滚。
 
 订阅建立后，provider receiver 由 facade 持有：同步 facade 为其管理 worker；异步 facade 返回由调用方 executor 驱动的 `AsyncSubscription::run`，本身不 spawn。异步消费仍是 runtime-neutral，但其 owned delivery future 使用 bus-wide `max_in_flight` 准入；不同 ordering key 可以并行，同一 key 保序。取消 `run` 只暂停并保留在途 future 与 permit；再次 `run` 会续跑旧任务，并用新 handler 处理新消息，bus shutdown 也可接管并收敛暂停 session。消费路径包括接收、gap/错误处理、解码、过滤、准入与 ordering、middleware、handler、重试、错误策略、死信和 settlement。idle wait、graceful deadline 和异步 retry 使用 `qubit-clock` 的 timer。`AsyncEventBus::new` 使用标准单调 timer，`with_timer` / `with_config_and_timer` 允许注入共享 `qubit_clock::Timer`，deadline 需要由其 future 在到期时唤醒 executor。
 
@@ -37,7 +37,7 @@ Sync/async SPI 都借用 `SettlementToken`。同一 token 与 disposition 重复
 
 丢弃 `AsyncSubscription::run` future 会暂停并保留 delivery task，后续 `run` 可续跑；丢弃 subscription handle 则会释放暂停的 session 与 receiver。provider 必须在 receiver 被丢弃时恢复未结算消息。需要确定性异步清理并读取 close 错误时，应调用 `AsyncSubscription::close().await`。
 
-Facade shutdown 先停止准入和接收，再按所选模式协调 delivery、handler、settlement 和 receiver close，最终调用 SPI shutdown。`Immediate` 丢弃尚未开始的队列工作，但仍等待当前 handler/投递完成、close 和 SPI shutdown，以便完整返回错误；它不会强行终止用户代码。SPI 的 shutdown 方法只负责 provider 传输资源本身，不能替代 facade 的停机协调。`Graceful` 对 receiver close、活跃工作排空及 SPI shutdown 使用同一个总 deadline；超时后 bus 保持 Closing，可再次调用 shutdown 继续清理。异步 close/shutdown Future 被取消或超时并不代表 provider 副作用已回滚，因此 provider 必须支持幂等重试。同步 worker 中等待自身 shutdown 或 idle 会返回 `WouldDeadlock`。
+Facade shutdown 先停止准入和接收，再按所选模式协调 delivery、handler、settlement 和 receiver close，最终调用 SPI shutdown。`Immediate` 丢弃尚未开始的队列工作，但仍等待当前 handler/投递完成、close 和 SPI shutdown，以便完整返回错误；它不会强行终止用户代码。同步 graceful shutdown 使用每个 bus 唯一的后台协调者：调用方 deadline 覆盖已准入的 publish/subscribe、worker drain 与 close、以及 provider shutdown。返回 `TimedOut` 后 bus 保持 Closing 并拒绝新操作，后台协调者继续清理；再次调用可等待结果，或用 `Immediate` 加强当前尝试。阻塞的同步 SPI 方法或 handler 可能让协调线程持续存在。异步 deadline 使用 `qubit-clock` timer；丢弃 async shutdown future 可能让 provider 副作用继续进行，因此 provider 必须支持幂等重试。SPI 的 shutdown 方法只负责 provider 传输资源本身，不能替代 facade 的停机协调。同步 worker 中等待自身 shutdown 或 idle 会返回 `WouldDeadlock`。
 
 ## 发布失败上下文
 

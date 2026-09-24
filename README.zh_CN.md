@@ -11,6 +11,8 @@
 
 例如，订单创建后，审计记录和缓存更新都可以订阅同一 Topic。使用本地 provider 时不必先部署消息代理。发布回执反映的是 provider 是否接纳消息，而不是 handler 是否已经处理完；需要确认处理结果时，应用可以显式等待总线跟踪的投递工作。
 
+本地 provider 按目的地逐个报告接纳情况：空列表表示没有报告目的地，部分结果可能同时包含已接纳和被拒绝的订阅者。重试前先检查回执；重发整条事件可能让已接纳的目的地重复收到消息。同步 graceful shutdown 限制调用方的等待时间；返回 `TimedOut` 后，总线仍拒绝新工作，后台清理会继续。
+
 ## 安装
 
 ```toml
@@ -63,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 延伸阅读
 
 - [中文用户指南](doc/user_guide.zh_CN.md) · [English user guide](doc/user_guide.md)
-- [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
+- [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md) · [SPI design (English)](doc/spi_design.md)
 - [API 文档](https://docs.rs/qubit-event-bus)
 - [中文更新日志](CHANGELOG.zh_CN.md) · [Changelog](CHANGELOG.md)
 - [English README](README.md)
