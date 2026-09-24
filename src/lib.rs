@@ -39,6 +39,7 @@ pub use facade::DiagnosticObserverHandle;
 pub use facade::EventBus;
 pub use facade::EventBusFacadeConfig;
 pub use facade::IntoHandlerResult;
+pub use facade::PublishMetricsSnapshot;
 pub use facade::Subscription;
 pub use facade::WaitOutcome;
 pub use model::EventId;
