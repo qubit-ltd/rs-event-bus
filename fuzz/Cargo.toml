@@ -1,0 +1,29 @@
+[package]
+name = "qubit-event-bus-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+qubit-event-bus = { path = ".." }
+
+[[bin]]
+name = "transport_envelope"
+path = "fuzz_targets/transport_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_options"
+path = "fuzz_targets/provider_options.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
