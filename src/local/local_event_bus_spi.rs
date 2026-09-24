@@ -7,10 +7,12 @@
 // =============================================================================
 //! Synchronous in-process transport SPI.
 
+use std::any::TypeId;
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::time::Duration;
 use std::time::Instant;
 
 use super::LocalEventBusConfig;
@@ -38,6 +40,7 @@ use crate::spi::SettlementCapabilities;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
 
 /// Synchronous local backend with one bounded queue per subscription.
@@ -59,6 +62,55 @@ impl LocalEventBusSpi {
 }
 
 impl EventBusSpi for LocalEventBusSpi {
+    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
+        let started = Instant::now();
+        loop {
+            let (version, queues) = {
+                let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.queues.retain(|_, queue| queue.strong_count() > 0);
+                (
+                    state.change_version,
+                    state
+                        .queues
+                        .values()
+                        .filter_map(std::sync::Weak::upgrade)
+                        .filter(|queue| queue.topic == *topic)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let busy = queues.iter().any(|queue| {
+                let state = queue.lock();
+                !state.messages.is_empty() || !state.in_flight.is_empty()
+            });
+            if !busy {
+                return Ok(Some(true));
+            }
+            let Some(timeout) = timeout else {
+                let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if state.change_version != version {
+                    continue;
+                }
+                drop(self.shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner));
+                continue;
+            };
+            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                return Ok(Some(false));
+            };
+            let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.change_version != version {
+                continue;
+            }
+            let (_state, result) = self
+                .shared
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            if result.timed_out() {
+                return Ok(Some(false));
+            }
+        }
+    }
+
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,
@@ -78,17 +130,25 @@ impl EventBusSpi for LocalEventBusSpi {
         validate_message(&message, &topic)?;
         let event = LocalEvent::transport(topic.clone(), &message)
             .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
+        let payload_type_id = native_payload_type_id(message.payload());
         let queues = {
             let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.closed {
                 return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
             }
             state.queues.retain(|_, queue| queue.strong_count() > 0);
-            state
+            let queues = state
                 .queues
                 .values()
                 .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            if queues
+                .iter()
+                .any(|queue| queue.topic == topic && queue.payload_type_id != payload_type_id)
+            {
+                return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
+            }
+            queues
         };
         let mut admissions = Vec::new();
         let mut admitted_any = false;
@@ -99,7 +159,7 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = queue.lock();
             let status = if state.closed {
                 AdmissionStatus::Rejected("subscription is closed".into())
-            } else if state.messages.len() + state.deferred_retries.len() >= queue.capacity {
+            } else if state.messages.len() + state.in_flight.len() >= queue.capacity {
                 AdmissionStatus::Rejected("subscription queue is full".into())
             } else {
                 state.messages.push_back(event.clone());
@@ -121,6 +181,7 @@ impl EventBusSpi for LocalEventBusSpi {
         let queue = Arc::new(LocalQueue {
             id,
             topic: request.topic().clone(),
+            payload_type_id: request.payload_type_id(),
             subscriber_id: request.subscriber_id().clone(),
             capacity: self.shared.capacity,
             state: Mutex::new(LocalQueueState::default()),
@@ -142,6 +203,21 @@ impl EventBusSpi for LocalEventBusSpi {
                 "subscribe",
                 Some(request.topic().as_str()),
                 "unsupported_subscription_options",
+            ));
+        }
+        state.queues.retain(|_, queue| queue.strong_count() > 0);
+        let has_type_conflict = state
+            .queues
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|existing| {
+                existing.topic == *request.topic() && existing.payload_type_id != request.payload_type_id()
+            });
+        if has_type_conflict {
+            return Err(operation_error(
+                "subscribe",
+                Some(request.topic().as_str()),
+                "topic_type_conflict",
             ));
         }
         if state.queues.get(&id).and_then(std::sync::Weak::upgrade).is_some() {
@@ -188,7 +264,7 @@ impl EventBusSpi for LocalEventBusSpi {
                     };
                     let busy = queues.iter().any(|queue| {
                         let state = queue.lock();
-                        !state.messages.is_empty() || !state.deferred_retries.is_empty() || !state.in_flight.is_empty()
+                        !state.messages.is_empty() || !state.in_flight.is_empty()
                     });
                     if !busy {
                         break ShutdownOutcome::Complete;
@@ -224,7 +300,6 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = queue.lock();
             state.closed = true;
             state.messages.clear();
-            state.deferred_retries.clear();
             state.in_flight.clear();
             queue.ready.notify_all();
             drop(state);
@@ -248,6 +323,14 @@ fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress)
             Some(topic.as_str()),
             "unsupported_payload_mode",
         )),
+    }
+}
+
+/// Returns the concrete Rust type carried by a validated native payload.
+fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
+    match payload {
+        TransportPayload::Native(value) => value.as_ref().type_id(),
+        TransportPayload::Encoded(_) => unreachable!("local payload mode validation runs first"),
     }
 }
 

@@ -1039,7 +1039,8 @@ fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
         let (wake_sender, wake_receiver) = std::sync::mpsc::channel();
         let waker = Waker::from(Arc::new(WakeOnSignal(wake_sender)));
         let mut context = Context::from_waker(&waker);
-        let mut waiting = Box::pin(bus.wait_for_idle(&delivered_topic, Some(std::time::Duration::from_millis(15))));
+        let mut waiting =
+            Box::pin(bus.wait_for_received_deliveries(&delivered_topic, Some(std::time::Duration::from_millis(15))));
         let first_poll_pending = matches!(waiting.as_mut().poll(&mut context), Poll::Pending);
         let timer_woke = wake_receiver
             .recv_timeout(std::time::Duration::from_millis(200))
@@ -1120,7 +1121,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         let cancel_waker = Waker::from(Arc::new(WakeOnSignal(cancel_sender)));
         let mut cancel_context = Context::from_waker(&cancel_waker);
         let mut cancelled_wait =
-            Box::pin(bus.wait_for_idle(&delivered_topic, Some(std::time::Duration::from_secs(60))));
+            Box::pin(bus.wait_for_received_deliveries(&delivered_topic, Some(std::time::Duration::from_secs(60))));
         assert!(matches!(
             cancelled_wait.as_mut().poll(&mut cancel_context),
             Poll::Pending
@@ -1136,7 +1137,9 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         let bus_for_wait = bus.clone();
         let topic_for_wait = delivered_topic.clone();
         let waiter = std::thread::spawn(move || {
-            block_on(bus_for_wait.wait_for_idle(&topic_for_wait, Some(std::time::Duration::from_secs(30))))
+            block_on(
+                bus_for_wait.wait_for_received_deliveries(&topic_for_wait, Some(std::time::Duration::from_secs(30))),
+            )
         });
         assert!(clock.wait_for_waiters(1, std::time::Duration::from_secs(1)));
         assert_eq!(clock.pending_waiters(), 1);
@@ -1205,6 +1208,21 @@ fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() 
         Diagnostic::SettlementUnavailable { event_id, requested: DeliveryDisposition::Reject, .. }
             if event_id.as_str() == "unsettled-event"
     )));
+}
+
+#[test]
+fn async_dropping_diagnostic_observer_releases_its_callback_capture() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi);
+    let captured = Arc::new(());
+    let weak = Arc::downgrade(&captured);
+    let handle = bus.observe_diagnostics(move |_| {
+        let _keep_capture = &captured;
+    });
+
+    drop(handle);
+
+    assert!(weak.upgrade().is_none());
 }
 
 #[test]
@@ -1340,7 +1358,10 @@ fn async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_r
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(delivered.load(Ordering::Acquire), 1);
-        assert_eq!(bus.wait_for_idle(&topic(), None).await.unwrap(), WaitOutcome::Idle);
+        assert_eq!(
+            bus.wait_for_received_deliveries(&topic(), None).await.unwrap(),
+            WaitOutcome::Idle
+        );
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
     });
@@ -2249,7 +2270,7 @@ fn dropping_idle_wait_unregisters_signal_waker() {
     let waker = Waker::from(Arc::new(WakeOnSignal(sender)));
     let mut context = Context::from_waker(&waker);
     let waiting_topic = topic();
-    let mut waiting = Box::pin(bus.wait_for_idle(&waiting_topic, None));
+    let mut waiting = Box::pin(bus.wait_for_received_deliveries(&waiting_topic, None));
     assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
     drop(waiting);
 

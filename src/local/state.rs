@@ -9,6 +9,7 @@
 
 //! Shared queue state for local subscriptions.
 
+use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -137,9 +138,6 @@ impl SharedPayload {
 pub(super) struct LocalQueueState {
     /// Pending events, including those whose native delay has not expired.
     pub(super) messages: VecDeque<LocalEvent>,
-    /// Requeues accepted by a settlement while the bounded pending queue was
-    /// full. These are promoted as normal receive operations free capacity.
-    pub(super) deferred_retries: VecDeque<LocalEvent>,
     /// Received but not yet terminally settled delivery attempts.
     pub(super) in_flight: HashMap<Box<str>, LocalInFlight>,
     /// Whether receive calls should stop and return `Closed`.
@@ -154,9 +152,11 @@ pub(super) struct LocalQueue {
     pub(super) id: Id,
     /// Topic this queue receives.
     pub(super) topic: TopicAddress,
+    /// Native payload type enforced for every publication routed here.
+    pub(super) payload_type_id: TypeId,
     /// Logical subscriber identity reported by publish admissions.
     pub(super) subscriber_id: crate::model::SubscriberId,
-    /// Maximum number of events waiting in `messages`.
+    /// Maximum number of queued and unsettled events for this subscription.
     pub(super) capacity: usize,
     /// Queue state shared by publisher and its single receiver.
     pub(super) state: Mutex<LocalQueueState>,

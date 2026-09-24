@@ -151,6 +151,7 @@ pub(crate) fn subscription_request_with_id(id: u64) -> SpiSubscriptionRequest {
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
+        std::any::TypeId::of::<u32>(),
     )
 }
 

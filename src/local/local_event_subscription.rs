@@ -42,31 +42,8 @@ impl LocalEventSubscription {
 
 /// Finds the first ready queued message for any ordering key.
 fn next_ready_index(state: &super::state::LocalQueueState, now: Instant) -> Option<usize> {
-    let blocked_keys: HashSet<_> = state
-        .deferred_retries
-        .iter()
-        .map(|event| event.ordering_key.clone())
-        .collect();
     let mut seen = HashSet::new();
     state.messages.iter().enumerate().find_map(|(index, event)| {
-        if blocked_keys.contains(&event.ordering_key) {
-            return None;
-        }
-        if !seen.insert(event.ordering_key.clone()) {
-            return None;
-        }
-        event
-            .not_before
-            .is_none_or(|not_before| not_before <= now)
-            .then_some(index)
-    })
-}
-
-/// Finds the first ready deferred retry while preserving order among retries
-/// sharing an ordering key.
-fn next_ready_retry_index(state: &super::state::LocalQueueState, now: Instant) -> Option<usize> {
-    let mut seen = HashSet::new();
-    state.deferred_retries.iter().enumerate().find_map(|(index, event)| {
         if !seen.insert(event.ordering_key.clone()) {
             return None;
         }
@@ -81,9 +58,8 @@ fn next_ready_retry_index(state: &super::state::LocalQueueState, now: Instant) -
 fn next_ready_delay(state: &super::state::LocalQueueState, now: Instant) -> Option<Duration> {
     let mut seen = HashSet::new();
     state
-        .deferred_retries
+        .messages
         .iter()
-        .chain(state.messages.iter())
         .filter(|event| seen.insert(event.ordering_key.clone()))
         .filter_map(|event| event.not_before)
         .map(|not_before| not_before.saturating_duration_since(now))
@@ -99,12 +75,8 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 return Ok(ReceiveOutcome::Closed);
             }
             let now = Instant::now();
-            let retry_index = next_ready_retry_index(&state, now);
             let message_index = next_ready_index(&state, now);
-            if let Some(event) = retry_index
-                .and_then(|index| state.deferred_retries.remove(index))
-                .or_else(|| message_index.and_then(|index| state.messages.remove(index)))
-            {
+            if let Some(event) = message_index.and_then(|index| state.messages.remove(index)) {
                 let sequence = state.next_delivery_token.checked_add(1).ok_or_else(|| {
                     operation_error("receive", Some(self.queue.topic.as_str()), "settlement_token_exhausted")
                 })?;
@@ -188,11 +160,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             .remove(token_state.token_id.as_ref())
             .expect("in-flight event was validated above");
         if disposition == DeliveryDisposition::Retry {
-            if state.messages.len() >= self.queue.capacity {
-                state.deferred_retries.push_back(event.event);
-            } else {
-                state.messages.push_front(event.event);
-            }
+            state.messages.push_front(event.event);
             self.queue.ready.notify_one();
         }
         token_state.disposition = Some(disposition);
@@ -208,7 +176,6 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             if !state.closed {
                 state.closed = true;
                 state.messages.clear();
-                state.deferred_retries.clear();
                 state.in_flight.clear();
                 self.queue.ready.notify_all();
             }

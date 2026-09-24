@@ -16,6 +16,7 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -35,6 +36,7 @@ use super::DiagnosticObserverHandle;
 use super::EventBusFacadeConfig;
 use super::WaitOutcome;
 use super::async_subscription::is_current_bus_poll;
+use super::diagnostic_observer::ObserverEntry;
 use crate::error::CapabilityError;
 use crate::error::LifecycleError;
 use crate::error::PublishError;
@@ -101,7 +103,7 @@ pub(super) struct AsyncEventBusInner {
     pub(super) controls: Mutex<HashMap<Id, Arc<dyn AsyncShutdownDriver>>>,
     close_errors: Mutex<Vec<Arc<SubscriptionCloseFailure>>>,
     close_error_snapshot: Mutex<Option<Arc<SubscriptionCloseErrors>>>,
-    pub(super) observers: Mutex<Vec<Arc<AsyncObserverEntry>>>,
+    pub(super) observers: Mutex<Vec<Weak<ObserverEntry>>>,
     pub(super) tracker: Arc<AsyncTracker>,
     pub(super) ordering_lanes: AsyncOrderingLanes<()>,
     pub(super) admission: Arc<AsyncAdmission>,
@@ -233,11 +235,6 @@ pub(super) enum BusState {
     Running,
     Closing,
     Closed,
-}
-
-pub(super) struct AsyncObserverEntry {
-    active: Arc<AtomicBool>,
-    callback: Arc<DiagnosticObserver>,
 }
 
 pub(super) trait AsyncShutdownDriver: Send + Sync {
@@ -549,6 +546,7 @@ impl AsyncEventBus {
             options.durability(),
             options.start_position().clone(),
             options.provider_options().clone(),
+            topic.payload_type_id(),
         );
         let subscribe =
             std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.spi.subscribe(spi_request))).map_err(|panic| {
@@ -593,8 +591,12 @@ impl AsyncEventBus {
         Ok(subscription)
     }
 
-    /// Waits until this facade has no tracked delivery for the selected topic.
-    pub async fn wait_for_idle<T: 'static>(
+    /// Waits until this facade has no delivery it has already received for the
+    /// selected topic.
+    ///
+    /// This does not query the provider's queue and does not establish global
+    /// idleness on a remote broker.
+    pub async fn wait_for_received_deliveries<T: 'static>(
         &self,
         topic: &crate::model::Topic<T>,
         timeout: Option<Duration>,
@@ -611,16 +613,18 @@ impl AsyncEventBus {
     where
         F: Fn(&Diagnostic) + Send + Sync + 'static,
     {
-        let entry = Arc::new(AsyncObserverEntry {
-            active: Arc::new(AtomicBool::new(true)),
+        let entry = Arc::new(ObserverEntry {
+            active: AtomicBool::new(true),
             callback: Arc::new(observer),
         });
-        self.inner
+        let mut entries = self
+            .inner
             .observers
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(entry.clone());
-        DiagnosticObserverHandle::new(entry.active.clone())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|entry| entry.strong_count() > 0);
+        entries.push(Arc::downgrade(&entry));
+        DiagnosticObserverHandle::new(entry)
     }
 
     pub(super) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
@@ -858,10 +862,11 @@ impl AsyncEventBusInner {
         Some(AsyncSubscribeGuard(self.tracker.clone()))
     }
     pub(super) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        self.observers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        observers.retain(|entry| entry.strong_count() > 0);
+        observers
             .iter()
+            .filter_map(Weak::upgrade)
             .filter(|entry| entry.active.load(Ordering::Acquire))
             .map(|entry| entry.callback.clone())
             .collect()

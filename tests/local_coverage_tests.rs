@@ -60,6 +60,7 @@ fn subscribe(spi: &dyn EventBusSpi, id: u64, topic: &str) -> Box<dyn EventSubscr
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
+        std::any::TypeId::of::<u32>(),
     ))
     .expect("valid local subscription is accepted")
 }
@@ -149,7 +150,7 @@ fn test_immediate_shutdown_wakes_a_blocked_receiver() {
 }
 
 #[test]
-fn test_capacity_is_per_subscription_and_excludes_in_flight_messages() {
+fn test_capacity_is_per_subscription_and_includes_in_flight_messages() {
     let spi = create_local(1);
     let mut first = subscribe(spi.as_ref(), 3, "coverage.capacity");
     let _second = subscribe(spi.as_ref(), 4, "coverage.capacity");
@@ -178,7 +179,6 @@ fn test_capacity_is_per_subscription_and_excludes_in_flight_messages() {
     assert_eq!(2, second_admissions.len());
     assert!(second_admissions.iter().all(|admission| {
         matches!(admission.status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
-            == (admission.subscription_id() == Id::new(4))
     }));
 
     let token = in_flight
@@ -186,18 +186,25 @@ fn test_capacity_is_per_subscription_and_excludes_in_flight_messages() {
         .expect("delivery includes a settlement token");
     first
         .settle(&token, DeliveryDisposition::Accept)
-        .expect("in-flight settlement remains valid after independent admission");
+        .expect("terminal settlement releases one capacity reservation");
+    let next_admissions = destination_admissions(
+        spi.publish(outbound("coverage.capacity", "capacity-3", 3, None, None))
+            .expect("publication returns per-destination outcomes"),
+    );
+    assert!(next_admissions.iter().all(|admission| {
+        matches!(admission.status(), AdmissionStatus::Accepted) == (admission.subscription_id() == Id::new(3))
+    }));
     assert!(matches!(
         first
             .receive(Duration::ZERO)
-            .expect("first queue is available after receive"),
+            .expect("newly admitted event is available"),
         ReceiveOutcome::Message(_)
     ));
 }
 
 #[test]
 fn test_retry_at_full_queue_preserves_the_original_in_flight_delivery() {
-    let spi = create_local(1);
+    let spi = create_local(2);
     let mut subscription = subscribe(spi.as_ref(), 5, "coverage.retry-capacity");
     spi.publish(outbound(
         "coverage.retry-capacity",
@@ -227,15 +234,15 @@ fn test_retry_at_full_queue_preserves_the_original_in_flight_delivery() {
 
     subscription
         .settle(&token, DeliveryDisposition::Retry)
-        .expect("retry is retained until bounded queue capacity becomes available");
+        .expect("retry reuses the reservation held by its in-flight delivery");
     subscription
         .settle(&token, DeliveryDisposition::Retry)
-        .expect("repeated retry settlement is idempotent while deferred");
+        .expect("repeated retry settlement is idempotent after requeue");
     let ReceiveOutcome::Message(retry) = subscription
         .receive(Duration::ZERO)
-        .expect("deferred retry takes precedence over a same-key successor")
+        .expect("retry remains at the head of the full queue")
     else {
-        panic!("deferred retry is available");
+        panic!("retried event is available");
     };
     assert_eq!("retry-original", retry.id().as_str());
     let ReceiveOutcome::Message(filler) = subscription
