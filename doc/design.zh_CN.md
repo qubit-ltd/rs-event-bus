@@ -1,64 +1,48 @@
-# 事件总线设计说明
+# Qubit Event Bus 0.12 架构说明
 
-## 范围
+[English 架构状态页](design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md)
 
-`qubit-event-bus` 是进程内的类型化分发层。`LocalEventBus` 管理生命周期和运行时状态；`LocalEventBusFactory` 管理默认值及不可变配置，并将配置复制到新建的 bus。实现有意不持久化事件、不协调进程间投递，也不提供事务发布。
+本文说明 0.12 代码中实际落地的架构。扩展能力和未来后端只有在明确标注“后续扩展”时才表示尚未实现；正式 SPI 契约及迁移细节见[正式 SPI 设计](spi_design.zh_CN.md)。
 
-## 分发路径
+## 架构边界
 
 ```text
-publisher
-  -> EventEnvelope<T>
-  -> 发布拦截器（global，再 typed）
-  -> 订阅快照
-  -> 过滤与投递准入
-  -> PublishReceipt / BatchPublishResult
-  -> 本地 worker 池
-  -> 订阅拦截器
-  -> handler + ACK/NACK
-  -> 重试 / 错误处理器 / 死信
-  -> DeliveryFailure 观察器
+应用
+  ├─ EventBus / AsyncEventBus：类型安全 facade、策略执行与生命周期
+  ├─ model / codec / pipeline：事件模型、类型擦除、拦截与投递策略
+  ├─ EventBusSpi / AsyncEventBusSpi：对象安全的最小传输契约
+  └─ qubit-spi registry：provider 发现、选择、创建与创建期 fallback
+       └─ LocalEventBusProvider（本 crate 内置的同步进程内实现）
 ```
 
-准入和执行是两个阶段。回执中的 `Accepted` 表示投递任务取得准入并已提交，不表示 handler 已执行或成功。被拒绝的任务会体现在回执中，也可以通过错误观察器观测。best-effort 批量路径保留输入顺序，并记录每个事件的全局错误，不会回滚此前已提交的事件。
+应用通过 `Topic<T>`、`PublishRequest<T>` 和 `SubscribeRequest<T>` 操作总线，不需要直接处理 transport payload。Provider SPI 只负责发布、创建接收端、接收消息、结算和关闭，不接管 handler 或应用中间件。扩展 provider 可以位于独立 crate，但本 crate 当前只提供 local 同步 provider；任何其他后端都不得被误认为已随包发布。
 
-## 类型边界
+## 发布与订阅
 
-`Topic<T>` 将 Topic 名称与 payload 类型绑定。`EventEnvelope<T>` 携带 payload 和元数据。`EventBus` trait 通过关联类型 `Subscription<T>: SubscriptionHandle<T>` 明确句柄由后端拥有；本地固有方法返回具体的本地订阅句柄。
+发布请求由 facade 校验并执行 publisher interceptors，再根据 provider capability、codec 和 payload mode 进行检查/转换，之后调用 SPI。`PublishReceipt` 说明 provider 对发布的确认以及实际使用的 provider ID，不代表 handler 已执行或完成。`publish_all` 按输入顺序独立提交请求并保留各项结果，不提供事务或回滚。
 
-`PublishReceipt` 包含输入事件 ID、拦截器执行后的分发 ID，以及 `Dropped` 或 `SubscriberDispatchResult` 列表。`BatchPublishResult::accepted_count()` 统计至少有一个订阅状态为 accepted 的项；`failure_count()` 包含全局错误和任一订阅被拒绝的项。因此一个项可以同时计入两个数量，这属于设计语义。
+订阅建立后，provider receiver 由 facade 持有：同步 facade 为其管理 worker；异步 facade 返回由调用方 executor 驱动的 `AsyncSubscription::run`，本身不 spawn。异步消费仍是 runtime-neutral，但其 owned delivery future 使用 bus-wide `max_in_flight` 准入；不同 ordering key 可以并行，同一 key 保序。取消 `run` 只暂停并保留在途 future 与 permit；再次 `run` 会续跑旧任务，并用新 handler 处理新消息，bus shutdown 也可接管并收敛暂停 session。消费路径包括接收、gap/错误处理、解码、过滤、准入与 ordering、middleware、handler、重试、错误策略、死信和 settlement。idle wait、graceful deadline 和异步 retry 使用 `qubit-clock` 的 timer。`AsyncEventBus::new` 使用标准单调 timer，`with_timer` / `with_config_and_timer` 允许注入共享 `qubit_clock::Timer`，deadline 需要由其 future 在到期时唤醒 executor。
 
-## 容量模型
+同步 `SubscriberInterceptor<T>` 与异步 `AsyncSubscriberInterceptor<T>` 都可保存在同一 `SubscribeOptions<T>` 中，但 facade 不会跨执行模型适配：sync bus 配置了 async middleware，或 async bus 配置了 sync middleware时，订阅配置会被拒绝。
 
-`DeliveryLimits` 分离两个控制项：
+## 标识与传输
 
-| 控制项 | 作用 |
-| --- | --- |
-| `max_in_flight` | 本地运行时同时持有准入订阅投递的最大数量。 |
-| `handler_queue_capacity` | 传给 handler executor 队列的可选容量上限。 |
+`SubscriberId` 是经验证、可由调用方命名的逻辑订阅者 ID。每条订阅的内部对象 ID 为 `qubit_id::Id`，只在 bus 实例内关联 subscription、delivery 和诊断。`EventId` 则写入事件 envelope 和传输消息，默认使用 UUID v4，面向跨进程/跨后端传递与重放。它不能简化成内部递增 `u64`：后者无法提供跨进程唯一性，也无法在进程重启后保留事件身份。
 
-`DeliveryLimits::bounded` 同时配置两个值，`DeliveryLimits::unbounded` 则为指定的 in-flight 上限保留不设界的 executor 队列。零值会被拒绝。`Default` 使用 `DEFAULT_MAX_IN_FLIGHT_DELIVERIES`（4096），且不显式限制 handler 队列。`LocalEventBusFactory::set_delivery_limits` 会校验该值，并将其复制到新建 bus 的运行时配置中。
+Provider capability 显式描述 payload 模式、settlement、ordering、延迟、durability、consumer group、replay、发布保证与发布可见性。Registry 可要求 capability 并在创建阶段 fallback；backend 创建成功后，运行期发布、订阅、接收或结算错误不会静默切换 provider。能力声明不是自动获得的保证，具体 provider 必须如实实现并记录其边界。
 
-准入 permit 在调度前取得，在处理进入终态路径时释放。因此背压会在准入阶段可见，而发布者仍无需同步等待 handler 完成。
+## 结算和关闭
 
-## 顺序、延迟和重试
+Sync/async SPI 都借用 `SettlementToken`。同一 token 与 disposition 重复结算必须幂等并返回一致结果；冲突 disposition 必须失败。Async settle future 取消后，facade 可用原 token 和相同 disposition 重试，provider 必须让执行中及完成后的请求均满足幂等合同。
 
-带 `ordering_key` 的 envelope 选择由 Topic、顺序键和订阅 ID 组成的 lane；同一 lane 中的工作串行执行。没有顺序键的工作直接提交，可以并发执行。延迟工作在 handler worker 之外等待；如果到期时队列准入失败，则跳过 handler 并报告 `ExecutionRejected`。
+丢弃 `AsyncSubscription::run` future 会暂停并保留 delivery task，后续 `run` 可续跑；丢弃 subscription handle 则会释放暂停的 session 与 receiver。provider 必须在 receiver 被丢弃时恢复未结算消息。需要确定性异步清理并读取 close 错误时，应调用 `AsyncSubscription::close().await`。
 
-重试策略在发布或 handler 执行路径中同步运行，因此退避会占用当前线程和顺序位置。取消重试会阻止下一次尝试并唤醒退避，但不能打断已经运行的同步 handler。
+Facade shutdown 先停止准入和接收，再按所选模式协调 delivery、handler、settlement 和 receiver close，最终调用 SPI shutdown。`Immediate` 丢弃尚未开始的队列工作，但仍等待当前 handler/投递完成、close 和 SPI shutdown，以便完整返回错误；它不会强行终止用户代码。SPI 的 shutdown 方法只负责 provider 传输资源本身，不能替代 facade 的停机协调。`Graceful` 对 receiver close、活跃工作排空及 SPI shutdown 使用同一个总 deadline；超时后 bus 保持 Closing，可再次调用 shutdown 继续清理。异步 close/shutdown Future 被取消或超时并不代表 provider 副作用已回滚，因此 provider 必须支持幂等重试。同步 worker 中等待自身 shutdown 或 idle 会返回 `WouldDeadlock`。
 
-## 确认和终态处理
+## 发布失败上下文
 
-自动确认在 handler 成功返回后完成。手动模式要求 handler 在返回前 ACK 或 NACK。缺少确认决策和显式 NACK 都属于失败；随后由重试分类决定是否再次尝试，重试结束后运行错误处理器和死信策略。该流程完成后发出终态 `DeliveryFailure`。
+配置的 publish error handler 在 SPI publish 直接失败（没有 retry policy）或重试达到终态失败时接收 `PublishFailureContext<T>`。该上下文通过 `Arc<T>` 共享 payload，并提供事件 ID、topic、headers、ordering key、timestamp 和 delay，因此 payload 不需要实现 `Clone`。请求构造、能力检查、编解码或 interceptor 等预检失败不会触发它。回调不能改变已结束的发布结果。
 
-## 生命周期不变量
+## 非目标
 
-运行时有 stopped、starting、started 和 stopping 边界。关闭开始后拒绝新注册，旧工作排空前拒绝重新启动。从同一个 bus 的订阅 worker 调用阻塞式 shutdown 会造成死锁，因此 `wait_for_idle` 会检测该情况。handler 中应使用 `shutdown_nonblocking()` 请求停机；由于当前 handler 仍处于活跃状态，`shutdown_with_timeout()` 会报告超时，只适用于必须有界等待的调用方。
-
-## 配置归属
-
-Factory 按类型保存发布/订阅选项和死信策略的默认值，并提供面向元数据的全局拦截器及死信处理。拦截器在创建时复制到 bus，运行时不提供修改入口；这样可以保持分发快照稳定，同时仍可通过 bus API 注册运行时错误观察器。
-
-## 非目标和扩展点
-
-本 crate 不承诺持久投递、跨进程路由、打断 handler 或批量原子性。其他后端可以实现 `EventBus` 并提供更强保证，但必须由后端文档明确说明。需要事务的应用应由自己的事务管理器或具体后端协调发布。
+0.12 不内置 Tokio、crossbeam、flume、bus、RabbitMQ、Kafka 或 Redis provider，也不承诺持久投递、跨进程路由、事务批量发布或恰好一次。第三方 provider 可具备更强语义，但应通过 capability 和自身文档明确说明。`qubit-event-bus` 不重新导出 `qubit-retry`；高级 retry 配置由应用显式直接依赖 `qubit-retry`。
