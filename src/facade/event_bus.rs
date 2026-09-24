@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -33,6 +33,8 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryFallback;
 
+use super::DiagnosticObserverHandle;
+use super::diagnostic_observer::ObserverEntry;
 use crate::error::CapabilityError;
 use crate::error::ConfigurationError;
 use crate::error::DeliveryAttemptError;
@@ -158,7 +160,7 @@ pub(super) struct EventBusInner {
     close_errors: Mutex<Vec<Arc<SubscriptionCloseFailure>>>,
     close_error_snapshot: Mutex<Option<Arc<SubscriptionCloseErrors>>>,
     next_subscription_id: AtomicU64,
-    observers: Mutex<Vec<Arc<ObserverEntry>>>,
+    observers: Mutex<Vec<Weak<ObserverEntry>>>,
     shutdown_gate: Mutex<ShutdownState>,
     shutdown_coordinator: ShutdownCoordinator,
     scheduler: Arc<SyncDeliveryScheduler>,
@@ -235,11 +237,6 @@ impl Drop for OperationPermit<'_> {
     }
 }
 
-struct ObserverEntry {
-    active: Arc<AtomicBool>,
-    callback: Arc<DiagnosticObserver>,
-}
-
 enum CoordinatorMessage {
     Settlement {
         token: Option<SettlementToken>,
@@ -284,25 +281,6 @@ impl OwnerSettlementRouter {
         {
             let _ = wait.recv();
         }
-    }
-}
-
-/// A registration that remains active until this handle is dropped.
-pub struct DiagnosticObserverHandle {
-    active: Arc<AtomicBool>,
-}
-
-impl Drop for DiagnosticObserverHandle {
-    /// Deactivates this observer without waiting for a callback already in
-    /// progress.
-    fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
-    }
-}
-
-impl DiagnosticObserverHandle {
-    pub(crate) fn new(active: Arc<AtomicBool>) -> Self {
-        Self { active }
     }
 }
 
@@ -441,6 +419,7 @@ impl EventBus {
             options.durability(),
             options.start_position().clone(),
             options.provider_options().clone(),
+            topic.payload_type_id(),
         );
         let spi_subscription = self.inner.spi.subscribe(spi_request)?;
         let spi_subscription_slot = Arc::new(Mutex::new(Some(spi_subscription)));
@@ -518,7 +497,8 @@ impl EventBus {
         }
     }
 
-    /// Waits until this facade has completed work already received for `topic`.
+    /// Waits until the provider reports that `topic` has no queued or unsettled
+    /// messages.
     ///
     /// This is local to this facade and does not establish that a remote broker
     /// or other consumers are globally idle. A call from one of this bus's
@@ -527,7 +507,8 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns `WouldDeadlock` when called within a synchronous callback or
-    /// worker owned by this bus.
+    /// worker owned by this bus, `IdleWaitUnsupported` when the provider has no
+    /// topic-idle reporting capability, or the original SPI error.
     pub fn wait_for_idle<T: 'static>(
         &self,
         topic: &Topic<T>,
@@ -537,6 +518,29 @@ impl EventBus {
         if is_current_bus_context(identity) {
             return Err(LifecycleError::WouldDeadlock {
                 operation: "wait_for_idle",
+            });
+        }
+        let address = TopicAddress::new(topic.name()).expect("typed topic names are valid SPI addresses");
+        self.inner
+            .spi
+            .wait_for_topic_idle(&address, timeout)?
+            .map(|idle| if idle { WaitOutcome::Idle } else { WaitOutcome::TimedOut })
+            .ok_or(LifecycleError::IdleWaitUnsupported)
+    }
+
+    /// Waits until this facade has completed work already received for `topic`.
+    ///
+    /// This is local to this facade and does not establish that a remote broker
+    /// or other consumers are globally idle.
+    pub fn wait_for_received_deliveries<T: 'static>(
+        &self,
+        topic: &Topic<T>,
+        timeout: Option<Duration>,
+    ) -> Result<WaitOutcome, LifecycleError> {
+        let identity = Arc::as_ptr(&self.inner) as usize;
+        if is_current_bus_context(identity) {
+            return Err(LifecycleError::WouldDeadlock {
+                operation: "wait_for_received_deliveries",
             });
         }
         Ok(self.inner.tracker.wait_for_idle(topic.name(), timeout))
@@ -551,17 +555,17 @@ impl EventBus {
         F: Fn(&Diagnostic) + Send + Sync + 'static,
     {
         let entry = Arc::new(ObserverEntry {
-            active: Arc::new(AtomicBool::new(true)),
+            active: std::sync::atomic::AtomicBool::new(true),
             callback: Arc::new(observer),
         });
-        self.inner
+        let mut entries = self
+            .inner
             .observers
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(entry.clone());
-        DiagnosticObserverHandle {
-            active: entry.active.clone(),
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|entry| entry.strong_count() > 0);
+        entries.push(Arc::downgrade(&entry));
+        DiagnosticObserverHandle::new(entry)
     }
 
     /// Stops operation admission, completes active deliveries, and shuts down
@@ -681,8 +685,13 @@ impl EventBusInner {
     /// Returns an immutable snapshot of currently active observer callbacks.
     fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
         let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        observers.retain(|entry| entry.active.load(Ordering::Acquire));
-        observers.iter().map(|entry| entry.callback.clone()).collect()
+        observers.retain(|entry| entry.strong_count() > 0);
+        observers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|entry| entry.active.load(Ordering::Acquire))
+            .map(|entry| entry.callback.clone())
+            .collect()
     }
 
     /// Emits a diagnostic with observer panic isolation and no registry lock

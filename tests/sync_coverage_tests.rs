@@ -463,7 +463,7 @@ fn callback_reentrant_wait_and_shutdown_return_would_deadlock() {
                 topic(),
             ),
             move |_| {
-                let wait = callback_bus.wait_for_idle(&topic(), Some(Duration::from_secs(1)));
+                let wait = callback_bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1)));
                 let shutdown = callback_bus.shutdown(ShutdownMode::Immediate);
                 result_tx
                     .send((wait, shutdown))
@@ -479,7 +479,7 @@ fn callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     assert!(matches!(
         wait,
         Err(LifecycleError::WouldDeadlock {
-            operation: "wait_for_idle"
+            operation: "wait_for_received_deliveries"
         })
     ));
     assert!(matches!(
@@ -577,7 +577,8 @@ fn same_ordering_key_is_independent_between_subscriptions() {
 
     assert_eq!(
         WaitOutcome::Idle,
-        bus.wait_for_idle(&topic(), Some(Duration::from_secs(2))).unwrap()
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .unwrap()
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
@@ -638,12 +639,12 @@ fn same_ordering_key_is_independent_between_topics() {
     release_tx.send(()).expect("first topic handler gate remains alive");
     assert_eq!(
         WaitOutcome::Idle,
-        bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
             .expect("first topic becomes idle")
     );
     assert_eq!(
         WaitOutcome::Idle,
-        bus.wait_for_idle(&other_topic(), Some(Duration::from_secs(2)))
+        bus.wait_for_received_deliveries(&other_topic(), Some(Duration::from_secs(2)))
             .expect("second topic becomes idle")
     );
     first.cancel().expect("first subscription closes");
@@ -711,7 +712,8 @@ fn max_in_flight_capacity_is_shared_across_subscriptions() {
 
     assert_eq!(
         WaitOutcome::Idle,
-        bus.wait_for_idle(&topic(), Some(Duration::from_secs(2))).unwrap()
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .unwrap()
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
@@ -771,7 +773,7 @@ fn graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() {
 
     assert_eq!(
         WaitOutcome::TimedOut,
-        bus.wait_for_idle(&topic(), Some(Duration::ZERO))
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::ZERO))
             .expect("idle wait itself succeeds with a timeout outcome")
     );
 

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Type-erased subscription request passed to a provider.
 
+use std::any::TypeId;
+
 use qubit_id::Id;
 
 use super::TopicAddress;
@@ -26,10 +28,12 @@ pub struct SpiSubscriptionRequest {
     durability: SubscriptionDurability,
     start_position: StartPosition,
     provider_options: ProviderOptions,
+    payload_type_id: TypeId,
 }
 
 impl SpiSubscriptionRequest {
     /// Creates a provider subscription request.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         subscription_id: Id,
         topic: TopicAddress,
@@ -38,6 +42,7 @@ impl SpiSubscriptionRequest {
         durability: SubscriptionDurability,
         start_position: StartPosition,
         provider_options: ProviderOptions,
+        payload_type_id: TypeId,
     ) -> Self {
         Self {
             subscription_id,
@@ -47,6 +52,7 @@ impl SpiSubscriptionRequest {
             durability,
             start_position,
             provider_options,
+            payload_type_id,
         }
     }
     /// Returns the bus-local subscription ID.
@@ -76,5 +82,14 @@ impl SpiSubscriptionRequest {
     /// Returns provider-specific options.
     pub fn provider_options(&self) -> &ProviderOptions {
         &self.provider_options
+    }
+
+    /// Returns the Rust payload type associated with the typed topic.
+    ///
+    /// Providers that route encoded payloads may ignore this in-process type
+    /// identity. The local native provider uses it to reject same-name topics
+    /// with incompatible payload types.
+    pub fn payload_type_id(&self) -> TypeId {
+        self.payload_type_id
     }
 }

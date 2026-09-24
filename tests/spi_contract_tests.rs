@@ -7,6 +7,10 @@
 // =============================================================================
 mod support;
 
+use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::StartPosition;
+use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryGap;
@@ -21,6 +25,8 @@ use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TopicAddress;
 use qubit_id::Id;
 
 fn assert_sync_object_safe(_: Option<&dyn EventBusSpi>) {}
@@ -30,6 +36,39 @@ fn assert_async_object_safe(_: Option<&dyn AsyncEventBusSpi>) {}
 fn test_spi_traits_are_object_safe() {
     assert_sync_object_safe(None);
     assert_async_object_safe(None);
+}
+
+#[test]
+fn spi_idle_wait_defaults_to_unsupported() {
+    use std::time::Duration;
+
+    use qubit_event_bus::spi::EventBusSpi;
+
+    let provider = support::fake_spi::FakeEventBusSpi::new();
+    let topic = TopicAddress::new("contract.idle").expect("valid topic");
+
+    assert_eq!(
+        provider.wait_for_topic_idle(&topic, Some(Duration::ZERO)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn spi_subscription_request_preserves_payload_type_identity() {
+    use std::any::TypeId;
+
+    let request = SpiSubscriptionRequest::new(
+        Id::new(42),
+        TopicAddress::new("contract.typed").expect("valid topic"),
+        SubscriberId::new("typed-subscriber").expect("valid subscriber ID"),
+        None,
+        SubscriptionDurability::Ephemeral,
+        StartPosition::New,
+        ProviderOptions::new(),
+        TypeId::of::<u32>(),
+    );
+
+    assert_eq!(request.payload_type_id(), TypeId::of::<u32>());
 }
 
 #[test]

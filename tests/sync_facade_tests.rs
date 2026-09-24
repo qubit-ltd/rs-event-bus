@@ -967,7 +967,7 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
         panic_was_observed.load(Ordering::Acquire),
         "codec panic should be diagnosed"
     );
-    bus.wait_for_idle(&encoded_topic, Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
         .expect("panic path settles");
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
@@ -1006,7 +1006,7 @@ fn panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     handler_entered_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("handler starts");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry rule panic settles");
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
@@ -1105,7 +1105,8 @@ fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscr
         terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
         "cancel-retry-lane"
     );
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2))).unwrap();
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .unwrap();
     assert!(
         token.is_cancelled(),
         "external cancellation must remain observable on caller-owned token"
@@ -1116,7 +1117,8 @@ fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscr
         terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
         "cancel-retry-lane"
     );
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2))).unwrap();
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .unwrap();
     assert_eq!(
         attempts.load(Ordering::Acquire),
         1,
@@ -1189,7 +1191,7 @@ fn subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
             .expect("handler invoked"),
         "hello"
     );
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("handler and settlement complete");
     assert_eq!(backend.settlement_calls(), 1);
 
@@ -1330,7 +1332,7 @@ fn per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
     key_a_second_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("same-key task runs after prior settlement");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all keyed work completes");
     subscription.cancel().expect("cancel");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
@@ -1411,7 +1413,7 @@ fn global_max_in_flight_includes_queued_deliveries_before_admission() {
             .recv_timeout(Duration::from_secs(2))
             .expect("each accepted delivery completes");
     }
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all admitted work settles");
     subscription.cancel().expect("cancel");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
@@ -1478,7 +1480,7 @@ fn saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
             .recv_timeout(Duration::from_secs(2))
             .expect("each provider message reaches the handler");
     }
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all messages settle after capacity returns");
     assert_eq!(calls.load(Ordering::Acquire), 4);
     assert_eq!(backend.settlement_calls(), 4);
@@ -1545,7 +1547,7 @@ fn zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() 
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second handler starts after its key is free");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("both messages settle");
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 2);
@@ -1831,7 +1833,7 @@ fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     ];
     handled.sort_unstable();
     assert_eq!(handled, ["acked", "nacked", "pending"]);
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("manual ACKs settle");
     let dispositions = backend.settlement_dispositions();
     assert_eq!(dispositions.len(), 3);
@@ -1902,7 +1904,7 @@ fn subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     completed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt completes");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry completes");
     assert_eq!(
         *calls.lock().unwrap(),
@@ -1964,7 +1966,8 @@ fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both(
         .unwrap();
     bus.publish(request("ordered".into())).unwrap();
     done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2))).unwrap();
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .unwrap();
     assert_eq!(
         *calls.lock().unwrap(),
         [
@@ -2310,7 +2313,7 @@ fn blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
             ),
             move |_| {
                 idle_tx
-                    .send(idle_bus.wait_for_idle(&topic(), Some(Duration::from_secs(1))))
+                    .send(idle_bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1))))
                     .expect("test receiver remains alive");
                 shutdown_tx
                     .send(shutdown_bus.shutdown(ShutdownMode::Graceful {
@@ -2524,7 +2527,7 @@ fn natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_schedule
     second_done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("admitted queued handler completes");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("both admitted deliveries settle");
     let close_deadline = std::time::Instant::now() + Duration::from_secs(2);
     while backend.close_calls() == 0 && std::time::Instant::now() < close_deadline {
@@ -2833,12 +2836,26 @@ fn diagnostic_observers_receive_terminal_delivery_failures_and_isolate_panics() 
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("failed delivery reaches terminal diagnostic");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("diagnosed delivery has completed");
     assert_eq!(observed.load(Ordering::Acquire), 1);
 
     drop((subscription, observer, panic_observer));
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn dropping_diagnostic_observer_releases_its_callback_capture() {
+    let (bus, _) = create_bus();
+    let captured = Arc::new(());
+    let weak = Arc::downgrade(&captured);
+    let handle = bus.observe_diagnostics(move |_| {
+        let _keep_capture = &captured;
+    });
+
+    drop(handle);
+
+    assert!(weak.upgrade().is_none());
 }
 
 #[test]
@@ -2882,7 +2899,7 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
     done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt succeeds");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry flow completes");
     assert_eq!(attempts.load(Ordering::Acquire), 2);
     assert_eq!(error_callbacks.load(Ordering::Acquire), 1);
@@ -2923,7 +2940,7 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
         .expect("subscription starts");
     bus.publish(request("discard".into())).expect("publish");
     entered_rx.recv_timeout(Duration::from_secs(2)).expect("handler starts");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("discard reaches terminal state");
     assert_eq!(attempts.load(Ordering::Acquire), 1);
     assert_eq!(callbacks.load(Ordering::Acquire), 1);
@@ -2964,7 +2981,7 @@ fn dead_letter_publish_failure_requeues_instead_of_rejecting_original_message() 
     settled_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("dead-letter failure diagnostic");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("failed dead-letter attempt completes");
     assert_eq!(backend.publish_calls(), 2);
     assert_eq!(backend.published_topics(), ["sync.events".into()]);
@@ -3000,7 +3017,7 @@ fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
     handler_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("marked handler runs");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("marked delivery completes");
     assert!(observed.load(Ordering::SeqCst));
     assert_eq!(backend.publish_calls(), 0);
@@ -3037,7 +3054,7 @@ fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() 
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("terminal handling completes");
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
@@ -3078,7 +3095,7 @@ fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("terminal handling completes");
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");

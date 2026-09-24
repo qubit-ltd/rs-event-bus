@@ -31,6 +31,9 @@ pub enum LifecycleError {
     /// The bus has already closed.
     #[error("event bus is closed")]
     Closed,
+    /// The selected provider cannot report whether its topic queue is empty.
+    #[error("the event bus provider does not support waiting for topic idle")]
+    IdleWaitUnsupported,
     /// The backend lifecycle operation failed.
     #[error(transparent)]
     Spi(#[from] SpiError),

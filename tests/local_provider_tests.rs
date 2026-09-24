@@ -7,6 +7,8 @@
 // =============================================================================
 //! Contract tests for the built-in synchronous local SPI provider.
 
+mod support;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -17,6 +19,7 @@ use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
+use qubit_event_bus::error::LifecycleError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
@@ -26,6 +29,7 @@ use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
+use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
@@ -88,6 +92,10 @@ fn outbound_with_key_and_delay(topic: &str, value: u32, key: &str, delay: Option
 }
 
 fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
+    request_with_payload_type(id, topic, std::any::TypeId::of::<u32>())
+}
+
+fn request_with_payload_type(id: u64, topic: &str, payload_type_id: std::any::TypeId) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(id),
         TopicAddress::new(topic).unwrap(),
@@ -96,6 +104,7 @@ fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
+        payload_type_id,
     )
 }
 
@@ -249,6 +258,214 @@ fn local_provider_admits_only_matching_topic_subscriptions_and_reports_capacity_
     assert!(
         matches!(no_subscribers, PublishAcknowledgement::DestinationAdmissions(destinations) if destinations.is_empty())
     );
+}
+
+#[test]
+fn topic_type_conflict_rejects_second_subscription() {
+    let spi = create(&LocalEventBusConfig::default());
+    let first = spi.subscribe(request(101, "typed.topic")).unwrap();
+    let conflict = match spi.subscribe(request_with_payload_type(
+        102,
+        "typed.topic",
+        std::any::TypeId::of::<String>(),
+    )) {
+        Ok(_) => panic!("the same topic name cannot have conflicting native payload types"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        conflict,
+        SpiError::Operation {
+            kind: "topic_type_conflict",
+            ..
+        }
+    ));
+    drop(first);
+
+    let replacement = spi
+        .subscribe(request_with_payload_type(
+            103,
+            "typed.topic",
+            std::any::TypeId::of::<String>(),
+        ))
+        .expect("a topic may use a new payload type after its last subscriber closes");
+    drop(replacement);
+}
+
+#[test]
+fn topic_type_conflict_publish_is_atomic() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut first = spi.subscribe(request(111, "typed.publish")).unwrap();
+    let mut second = spi.subscribe(request(112, "typed.publish")).unwrap();
+    let message = OutboundMessage::new(
+        TopicAddress::new("typed.publish").unwrap(),
+        EventId::new("typed-conflict").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(String::from("wrong type"))),
+    );
+
+    let error = spi.publish(message).unwrap_err();
+    assert!(matches!(
+        error,
+        SpiError::Operation {
+            kind: "topic_type_conflict",
+            ..
+        }
+    ));
+    assert!(matches!(
+        first.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    assert!(matches!(
+        second.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+}
+
+#[test]
+fn capacity_counts_in_flight() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
+    let mut subscription = spi.subscribe(request(121, "capacity.inflight")).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(accepted) =
+        spi.publish(outbound("capacity.inflight", 1)).unwrap()
+    else {
+        panic!("local provider returns destination admissions");
+    };
+    assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("first event should be received");
+    };
+
+    let PublishAcknowledgement::DestinationAdmissions(rejected) =
+        spi.publish(outbound("capacity.inflight", 2)).unwrap()
+    else {
+        panic!("local provider returns destination admissions");
+    };
+    assert!(matches!(rejected[0].status(), AdmissionStatus::Rejected(_)));
+
+    subscription
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(accepted) =
+        spi.publish(outbound("capacity.inflight", 3)).unwrap()
+    else {
+        panic!("local provider returns destination admissions");
+    };
+    assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
+}
+
+#[test]
+fn capacity_retry_preserves_reservation() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
+    let mut subscription = spi.subscribe(request(122, "capacity.retry")).unwrap();
+    spi.publish(outbound("capacity.retry", 1)).unwrap();
+    let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("event should be received");
+    };
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.retry", 2)).unwrap()
+    else {
+        panic!("local provider returns destination admissions");
+    };
+    assert!(matches!(rejected[0].status(), AdmissionStatus::Rejected(_)));
+    subscription
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Retry)
+        .unwrap();
+    assert!(matches!(
+        subscription.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+}
+
+#[test]
+fn idle_wait_includes_delayed_queued_message() {
+    let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(2)).unwrap();
+    let topic = Topic::<u32>::new("idle.delayed").unwrap();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(SubscriberId::new("idle-delayed").unwrap(), topic.clone()),
+            |_| {},
+        )
+        .unwrap();
+    let request = PublishRequest::builder()
+        .topic(topic.clone())
+        .payload(1)
+        .delay(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    bus.publish(request).unwrap();
+
+    assert_eq!(
+        bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
+        qubit_event_bus::WaitOutcome::TimedOut
+    );
+    subscription.cancel().unwrap();
+    bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn idle_wait_includes_in_flight_message() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut receiver = spi.subscribe(request(131, "idle.inflight")).unwrap();
+    let bus = EventBus::new(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<u32>::new("idle.inflight").unwrap();
+    bus.publish(PublishRequest::new(topic.clone(), 7).unwrap()).unwrap();
+    let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
+        panic!("published message is available");
+    };
+
+    assert_eq!(
+        bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
+        qubit_event_bus::WaitOutcome::TimedOut
+    );
+    receiver
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+    assert_eq!(
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(1))).unwrap(),
+        qubit_event_bus::WaitOutcome::Idle
+    );
+}
+
+#[test]
+fn idle_wait_wakes_when_subscription_closes() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
+    let mut receiver = spi.subscribe(request(132, "idle.close")).unwrap();
+    let bus = EventBus::new(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<u32>::new("idle.close").unwrap();
+    bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
+    assert_eq!(
+        bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
+        qubit_event_bus::WaitOutcome::TimedOut
+    );
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let waiter_bus = bus.clone();
+    let waiter_topic = topic.clone();
+    let waiter = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        result_tx.send(waiter_bus.wait_for_idle(&waiter_topic, None)).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    receiver.close().unwrap();
+    assert_eq!(
+        result_rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
+        qubit_event_bus::WaitOutcome::Idle
+    );
+    waiter.join().unwrap();
+}
+
+#[test]
+fn idle_wait_is_unsupported_for_generic_provider() {
+    let spi = Arc::new(support::fake_spi::FakeEventBusSpi::new());
+    let bus = EventBus::new(ProviderId::new("fake").unwrap(), spi);
+    let topic = Topic::<u32>::new("idle.unsupported").unwrap();
+
+    assert!(matches!(
+        bus.wait_for_idle(&topic, Some(Duration::ZERO)),
+        Err(LifecycleError::IdleWaitUnsupported)
+    ));
 }
 
 /// Verifies that the local facade serializes deliveries with a shared key in
@@ -444,8 +661,8 @@ fn local_subscription_redelivers_retry_and_settlement_is_idempotent() {
 }
 
 #[test]
-fn local_subscription_defers_retry_when_regular_queue_is_full_without_losing_same_key_order() {
-    let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
+fn local_subscription_retry_preserves_same_key_order_at_capacity() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut subscription = spi.subscribe(request(41, "events")).unwrap();
     spi.publish(outbound_with_key_and_delay("events", 1, "orders", None))
         .unwrap();
@@ -458,10 +675,10 @@ fn local_subscription_defers_retry_when_regular_queue_is_full_without_losing_sam
         .unwrap();
     subscription
         .settle(&first_token, DeliveryDisposition::Retry)
-        .expect("full regular queue defers the retry without losing it");
+        .expect("retry reuses the reservation held by its in-flight delivery");
 
     let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap() else {
-        panic!("deferred retry is immediately available");
+        panic!("retried event is immediately available");
     };
     assert_eq!("event-1", redelivery.id().as_str());
     subscription

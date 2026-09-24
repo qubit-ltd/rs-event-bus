@@ -12,13 +12,15 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-/// Result of waiting for work already received by this facade instance.
+/// Result of waiting for topic work reported by a provider or tracked by a
+/// facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum WaitOutcome {
-    /// No tracked delivery work remains for the requested topic.
+    /// The selected provider or facade reports no outstanding work for the
+    /// topic.
     Idle,
-    /// The deadline elapsed while tracked work remained.
+    /// The deadline elapsed while outstanding work remained.
     TimedOut,
 }
 

@@ -11,7 +11,7 @@ use crate::error::ConfigurationError;
 use crate::model::ProviderOptions;
 use crate::registry::EventBusConfig;
 
-/// Default number of pending messages allowed per subscription.
+/// Default number of outstanding messages allowed per subscription.
 const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 /// Provider option key used to serialize the local queue limit.
 const QUEUE_CAPACITY_OPTION: &str = "local.queue_capacity";
@@ -36,7 +36,8 @@ impl LocalEventBusConfig {
         }
     }
 
-    /// Sets the maximum number of pending messages for each subscription.
+    /// Sets the maximum number of queued or unsettled messages for each
+    /// subscription.
     #[must_use]
     pub const fn queue_capacity(mut self, capacity: usize) -> Self {
         self.queue_capacity = capacity;

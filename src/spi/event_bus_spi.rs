@@ -7,12 +7,15 @@
 // =============================================================================
 //! Synchronous event bus backend contract.
 
+use std::time::Duration;
+
 use super::EventBusCapabilities;
 use super::EventSubscriptionSpi;
 use super::OutboundMessage;
 use super::ShutdownMode;
 use super::ShutdownOutcome;
 use super::SpiSubscriptionRequest;
+use super::TopicAddress;
 use crate::error::SpiError;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
@@ -113,6 +116,16 @@ pub trait EventBusSpi: Send + Sync + 'static {
 
     /// Creates one single-owner subscription receiver.
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>;
+
+    /// Waits until this provider has no outstanding delivery for `topic`.
+    ///
+    /// Returns `Ok(None)` when the provider cannot make this guarantee. A
+    /// returned `true` means all queued and unsettled deliveries are gone;
+    /// `false` means the timeout elapsed first. This does not report whether a
+    /// handler succeeded.
+    fn wait_for_topic_idle(&self, _topic: &TopicAddress, _timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
+        Ok(None)
+    }
 
     /// Closes this backend according to the requested shutdown mode.
     ///

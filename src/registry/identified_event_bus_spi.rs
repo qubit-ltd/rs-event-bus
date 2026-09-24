@@ -7,6 +7,8 @@
 // =============================================================================
 //! Provider-identity proxy for a synchronous SPI output.
 
+use std::time::Duration;
+
 use crate::error::SpiError;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
@@ -17,6 +19,7 @@ use crate::spi::OutboundMessage;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::TopicAddress;
 
 /// Delegates every operation while attaching the descriptor that created the
 /// SPI.
@@ -49,6 +52,10 @@ impl EventBusSpi for IdentifiedEventBusSpi {
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.inner.subscribe(request)
+    }
+
+    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
+        self.inner.wait_for_topic_idle(topic, timeout)
     }
 
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {

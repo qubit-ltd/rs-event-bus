@@ -470,6 +470,7 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
         SubscriptionDurability::Durable,
         StartPosition::At("cursor-7".into()),
         provider_options.clone(),
+        std::any::TypeId::of::<String>(),
     );
     assert_eq!(request.subscription_id(), Id::new(7));
     assert_eq!(request.topic().as_str(), "orders.created");
@@ -487,6 +488,7 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
+        std::any::TypeId::of::<String>(),
     );
     assert!(standalone.group().is_none());
     assert!(standalone.provider_options().is_empty());
