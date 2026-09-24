@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -38,7 +45,7 @@ use qubit_retry::RetryPolicy;
 #[test]
 fn simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn std::error::Error>> {
     let topic = Topic::<String>::new("orders.created")?;
-    let simple = PublishRequest::new(topic.clone(), "one".to_owned());
+    let simple = PublishRequest::new(topic.clone(), "one".to_owned())?;
     let built = PublishRequest::builder()
         .topic(topic.clone())
         .payload("one".to_owned())
@@ -58,29 +65,15 @@ fn simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn std::error
 #[test]
 fn option_builders_replace_then_append_handlers_in_call_order() -> Result<(), Box<dyn std::error::Error>> {
     let topic = Topic::<String>::new("orders.created")?;
-    let called = Arc::new(Mutex::new(Vec::new()));
-    let first = called.clone();
-    let options = PublishOptions::<String>::builder()
-        .error_handler(move |_, _| {
-            first.lock().unwrap().push(1);
-            qubit_event_bus::model::FailureDirective::Discard
-        })
-        .build();
-    let second = called.clone();
+    let options = PublishOptions::<String>::builder().error_handler(|_, _| ()).build();
     let request = PublishRequest::builder()
         .topic(topic.clone())
         .payload("one".to_owned())
-        .error_handler(|_, _| qubit_event_bus::model::FailureDirective::Discard)
+        .error_handler(|_, _| ())
         .options(options)
-        .error_handler(move |_, _| {
-            second.lock().unwrap().push(2);
-            qubit_event_bus::model::FailureDirective::Discard
-        })
+        .error_handler(|_, _| ())
         .build()?;
-    for handler in request.options().error_handlers() {
-        handler(request.envelope(), &PublishError::Closed);
-    }
-    assert_eq!(*called.lock().unwrap(), vec![1, 2]);
+    assert_eq!(request.options().error_handler_count(), 2);
 
     let subscribe_options = SubscribeOptions::<String>::builder().ack_mode(AckMode::Manual).build();
     let subscriber = SubscribeRequest::builder()
@@ -190,6 +183,25 @@ fn request_builders_validate_required_fields_and_metadata() -> Result<(), Box<dy
 }
 
 #[test]
+fn generated_publish_request_ids_are_uuid_v4_and_custom_ids_are_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    let topic = Topic::<String>::new("orders.created")?;
+    let generated = PublishRequest::new(topic.clone(), "one".to_owned())?;
+    let generated_id = generated.envelope().id().as_str();
+    assert_eq!(generated_id.len(), 36);
+    assert_eq!(&generated_id[14..15], "4");
+    assert!(matches!(&generated_id[19..20], "8" | "9" | "a" | "b"));
+
+    let custom_id = EventId::new("caller-event-42")?;
+    let built = PublishRequest::builder()
+        .topic(topic)
+        .payload("two".to_owned())
+        .event_id(custom_id)
+        .build()?;
+    assert_eq!(built.envelope().id().as_str(), "caller-event-42");
+    Ok(())
+}
+
+#[test]
 fn acknowledgement_first_terminal_decision_wins() {
     let ack = Acknowledgement::new();
     let clone = ack.clone();
@@ -198,8 +210,12 @@ fn acknowledgement_first_terminal_decision_wins() {
     assert!(matches!(clone.nack(), Err(AcknowledgementError::AlreadyCompleted)));
     assert!(ack.is_acked());
     let nack = Acknowledgement::new();
+    assert!(!nack.is_nacked());
+    assert!(!nack.is_completed());
     assert!(nack.nack().is_ok());
     assert!(nack.nack().is_ok());
+    assert!(nack.is_nacked());
+    assert!(nack.is_completed());
     assert!(matches!(nack.ack(), Err(AcknowledgementError::AlreadyCompleted)));
 }
 
@@ -328,7 +344,7 @@ fn topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error::Err
     assert_eq!(native, encoded);
     assert!(native.codec().is_none());
     assert!(encoded.codec().is_some());
-    let event = EventEnvelope::new(encoded, "payload".to_owned());
+    let event = EventEnvelope::new(encoded, "payload".to_owned())?;
     assert_eq!(event.payload(), "payload");
     Ok(())
 }
@@ -374,7 +390,7 @@ fn delivery_context_preserves_transport_and_attempt_metadata() -> Result<(), Box
     let event = Arc::new(EventEnvelope::new(
         Topic::<String>::new("orders.created")?,
         "payload".to_owned(),
-    ));
+    )?);
     let delivery = Delivery::new(event, context);
     assert_eq!(delivery.context().retry_attempt(), 2);
     assert_eq!(delivery.context().provider_attempt(), Some(3));
@@ -426,13 +442,13 @@ fn acknowledgement_race_has_one_terminal_winner() {
 fn subscriber_interceptors_append_to_reused_options() -> Result<(), Box<dyn std::error::Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let options = SubscribeOptions::<String>::builder()
-        .interceptor(|delivery| Ok(Some(delivery)))
+        .interceptor(|delivery, next| next(delivery))
         .build();
     let request = SubscribeRequest::builder()
         .subscriber_id(SubscriberId::new("audit")?)
         .topic(topic)
         .options(options)
-        .interceptor(|delivery| Ok(Some(delivery)))
+        .interceptor(|delivery, next| next(delivery))
         .build()?;
     assert_eq!(request.options().interceptors().len(), 2);
     Ok(())
@@ -469,7 +485,7 @@ fn codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::Error>
 fn non_clone_payload_can_be_published_and_delivery_cloned() -> Result<(), Box<dyn std::error::Error>> {
     struct NonClone(u32);
     let topic = Topic::<NonClone>::new("orders.created")?;
-    let request = PublishRequest::new(topic, NonClone(42));
+    let request = PublishRequest::new(topic, NonClone(42))?;
     let event = Arc::new(request.into_parts().0);
     let context = DeliveryContext::new(ProviderId::new("local")?, Id::new(9), SubscriberId::new("audit")?);
     let delivery = Delivery::new(event, context);

@@ -1,8 +1,18 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Tiny executor used to prove the async SPI does not require a runtime.
 
 use std::future::Future;
 use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 
 struct ThreadWake(std::thread::Thread);
 impl Wake for ThreadWake {
