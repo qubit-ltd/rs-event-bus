@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Complete publication request construction and validation.
 
 use std::sync::Arc;
@@ -10,11 +17,11 @@ use qubit_retry::RetryRule;
 
 use super::EventEnvelope;
 use super::EventId;
-use super::FailureDirective;
 use super::Headers;
 use super::PublishOptions;
 use super::PublishRequest;
 use super::Topic;
+use crate::error::EventIdGenerationError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
 
@@ -22,6 +29,9 @@ use crate::error::PublishError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PublishRequestBuildError {
+    /// Random ID generation failed before an event ID was explicitly supplied.
+    #[error("failed to generate publish event ID")]
+    EventIdGeneration(#[source] EventIdGenerationError),
     /// A required request field was omitted.
     #[error("missing required publish request field: {0}")]
     MissingField(&'static str),
@@ -67,15 +77,13 @@ pub enum PublishRequestBuildError {
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::sync::{Arc, Mutex};
-/// use qubit_event_bus::PublishError;
-/// use qubit_event_bus::model::{FailureDirective, PublishOptions, PublishRequest, Topic};
+/// use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
 /// let calls = Arc::new(Mutex::new(Vec::new()));
 /// let first = calls.clone();
 /// let second = calls.clone();
 /// let options = PublishOptions::<String>::builder()
 ///     .error_handler(move |_, _| {
 ///         first.lock().unwrap().push("options");
-///         FailureDirective::Discard
 ///     })
 ///     .interceptor(move |event| {
 ///         second.lock().unwrap().push("interceptor-options");
@@ -96,19 +104,13 @@ pub enum PublishRequestBuildError {
 ///     })
 ///     .error_handler(move |_, _| {
 ///         fourth.lock().unwrap().push("after");
-///         FailureDirective::Discard
 ///     })
 ///     .build()?;
 /// let mut event = request.envelope().clone();
 /// for interceptor in request.options().interceptors() {
 ///     event = interceptor(event)?.unwrap();
 /// }
-/// for handler in request.options().error_handlers() {
-///     handler(&event, &PublishError::Closed);
-/// }
-/// assert_eq!(*calls.lock().unwrap(), [
-///     "interceptor-options", "interceptor-after", "options", "after"
-/// ]);
+/// assert_eq!(*calls.lock().unwrap(), ["interceptor-options", "interceptor-after"]);
 /// # Ok(())
 /// # }
 /// ```
@@ -152,7 +154,8 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self.event_id = Some(value);
         self
     }
-    /// Adds or replaces a header by key. Validation occurs in `build`.
+    /// Adds or replaces a header by key. Validation occurs in `build`; reserved
+    /// facade-owned headers are rejected there.
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
@@ -201,10 +204,16 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self.options.retry_cancellation_token = Some(value);
         self
     }
-    /// Appends a publish error handler after previously registered handlers.
+    /// Appends a terminal publish failure handler in registration order.
+    ///
+    /// The handler runs when the SPI publish operation fails directly (with no
+    /// retry policy) or configured retries reach a terminal error. It is not
+    /// called for request, capability, codec, or interceptor preflight errors.
+    /// It returns no action and cannot change the outcome. Panics are isolated
+    /// and do not prevent later handlers from running.
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&EventEnvelope<T>, &PublishError) -> FailureDirective + Send + Sync + 'static,
+        F: Fn(&super::PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
     {
         self.options.error_handlers.push(Arc::new(handler));
         self
@@ -231,13 +240,25 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// Returns `MissingField` without a topic or payload, `InvalidHeader` for
     /// malformed header metadata, `InvalidOrderingKey` for a blank or control
     /// containing key, and `InvalidRetryConfiguration` when a rule or
-    /// cancellation token has no retry policy. `Duration` is nonnegative, so
+    /// cancellation token has no retry policy. Returns `EventIdGeneration`
+    /// when no explicit ID was supplied and UUID generation failed; its source
+    /// retains the underlying generator error. `Duration` is nonnegative, so
     /// zero delay is accepted.
     pub fn build(self) -> Result<PublishRequest<T>, PublishRequestBuildError> {
+        self.build_with_event_id_generator(EventId::generate)
+    }
+
+    /// Completes request validation while invoking the supplied ID source only
+    /// when the caller did not provide an event ID.
+    fn build_with_event_id_generator<F>(self, generate: F) -> Result<PublishRequest<T>, PublishRequestBuildError>
+    where
+        F: FnOnce() -> Result<EventId, EventIdGenerationError>,
+    {
         let topic = self.topic.ok_or(PublishRequestBuildError::MissingField("topic"))?;
         let payload = self.payload.ok_or(PublishRequestBuildError::MissingField("payload"))?;
         for (key, value) in &self.headers {
-            if key.is_empty()
+            if key.eq_ignore_ascii_case(super::DEAD_LETTER_HEADER)
+                || key.is_empty()
                 || !key
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
@@ -258,10 +279,14 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         {
             return Err(PublishRequestBuildError::InvalidRetryConfiguration);
         }
-        let mut envelope = EventEnvelope::new(topic, payload);
-        if let Some(id) = self.event_id {
-            envelope.id = id;
-        }
+        let mut envelope = match self.event_id {
+            Some(id) => EventEnvelope::with_id(topic, payload, id),
+            None => EventEnvelope::with_id(
+                topic,
+                payload,
+                generate().map_err(PublishRequestBuildError::EventIdGeneration)?,
+            ),
+        };
         envelope.headers = self.headers;
         envelope.ordering_key = self.ordering_key.map(String::into_boxed_str);
         if let Some(timestamp) = self.timestamp {
@@ -275,5 +300,49 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
 impl<T: Send + Sync + 'static> Default for PublishRequestBuilder<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::PublishRequestBuilder;
+    use crate::error::EventIdGenerationError;
+    use crate::model::EventId;
+    use crate::model::Topic;
+
+    /// Confirms an explicit ID bypasses the potentially fallible random source.
+    #[test]
+    fn test_build_with_event_id_does_not_invoke_generator() {
+        let request = PublishRequestBuilder::new()
+            .topic(Topic::<String>::new("orders.created").expect("valid test topic"))
+            .payload("payload".to_owned())
+            .event_id(EventId::new("caller-event").expect("valid test ID"))
+            .build_with_event_id_generator(|| panic!("explicit ID must bypass generation"))
+            .expect("explicit ID should build without random generation");
+
+        assert_eq!(request.envelope().id().as_str(), "caller-event");
+    }
+
+    /// Confirms builder errors preserve the random generator error chain.
+    #[test]
+    fn test_build_propagates_event_id_generation_error_source() {
+        let result = PublishRequestBuilder::new()
+            .topic(Topic::<String>::new("orders.created").expect("valid test topic"))
+            .payload("payload".to_owned())
+            .build_with_event_id_generator(|| {
+                Err(EventIdGenerationError::new(
+                    qubit_id::IdGenerationError::HostOutOfRange { host: 1, max: 0 },
+                ))
+            });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("injected generation failure should be returned"),
+        };
+
+        let generation_error = Error::source(&error).expect("builder error should expose generation error");
+        let generator_error = Error::source(generation_error).expect("generation error should expose source");
+        assert!(generator_error.to_string().contains("host id 1 is out of range"));
     }
 }

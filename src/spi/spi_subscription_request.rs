@@ -1,14 +1,23 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Type-erased subscription request passed to a provider.
 
 use qubit_id::Id;
 
-use crate::model::{
-    ConsumerGroup, ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability,
-};
-
 use super::TopicAddress;
+use crate::model::ConsumerGroup;
+use crate::model::ProviderOptions;
+use crate::model::StartPosition;
+use crate::model::SubscriberId;
+use crate::model::SubscriptionDurability;
 
-/// Transport-only subscription settings; application pipeline policy stays in the facade.
+/// Transport-only subscription settings; application pipeline policy stays in
+/// the facade.
 pub struct SpiSubscriptionRequest {
     subscription_id: Id,
     topic: TopicAddress,

@@ -52,3 +52,20 @@ impl ConfigurationError {
         Self::InvalidEventId { value: value.into() }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigurationError;
+
+    #[test]
+    fn invalid_subscriber_id_retains_the_rejected_value() {
+        let error = ConfigurationError::invalid_subscriber_id(" bad-id");
+        assert!(matches!(error, ConfigurationError::InvalidSubscriberId { value } if value.as_ref() == " bad-id"));
+    }
+
+    #[test]
+    fn invalid_event_id_retains_the_rejected_value() {
+        let error = ConfigurationError::invalid_event_id(" bad-event");
+        assert!(matches!(error, ConfigurationError::InvalidEventId { value } if value.as_ref() == " bad-event"));
+    }
+}

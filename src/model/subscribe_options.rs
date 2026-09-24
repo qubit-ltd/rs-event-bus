@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Per-subscription processing, retry and provider options.
 
 use std::collections::BTreeMap;
@@ -9,10 +16,27 @@ use qubit_retry::RetryRule;
 
 use super::Delivery;
 use super::EventEnvelope;
-use super::FailureDirective;
 use crate::error::ConfigurationError;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
+use crate::spi::SpiFuture;
+
+/// The next action requested by a subscriber delivery error handler.
+///
+/// This directive applies only to subscriber delivery lifecycle decisions;
+/// publish error handlers are terminal observers and return `()`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum FailureDirective {
+    /// Let the configured delivery retry policy make another attempt.
+    Retry,
+    /// Ask a capable provider to deliver the message again.
+    Requeue,
+    /// Send the failed event through the dead-letter policy.
+    DeadLetter,
+    /// Stop processing this delivery failure.
+    Discard,
+}
 
 /// How handler completion is acknowledged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,9 +131,23 @@ pub type EventFilter<T> = dyn Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'sta
 /// A subscriber failure callback evaluated in registration order.
 pub type SubscribeErrorHandler<T> =
     dyn Fn(&EventEnvelope<T>, &DeliveryError) -> FailureDirective + Send + Sync + 'static;
-/// A typed subscriber interceptor that may transform or skip a delivery.
+/// Single-use synchronous middleware continuation for the next subscriber
+/// stage. Dropping it short-circuits the inner middleware and handler;
+/// consuming it more than once is prevented by its `FnOnce` type.
+pub type SubscriberNext<T> = Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
+/// Synchronous typed subscriber middleware; invoke `next` to continue.
 pub type SubscriberInterceptor<T> =
-    dyn Fn(Delivery<T>) -> Result<Option<Delivery<T>>, DeliveryError> + Send + Sync + 'static;
+    dyn Fn(Delivery<T>, SubscriberNext<T>) -> Result<(), DeliveryError> + Send + Sync + 'static;
+/// Single-use runtime-neutral async continuation. The returned future owns its
+/// stage inputs, and dropping the continuation short-circuits inner work.
+pub type AsyncSubscriberNext<T> =
+    Box<dyn FnOnce(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + 'static>;
+/// Runtime-neutral async typed subscriber middleware; invoke `next` to
+/// continue.
+pub type AsyncSubscriberInterceptor<T> = dyn Fn(Delivery<T>, AsyncSubscriberNext<T>) -> SpiFuture<'static, Result<(), DeliveryError>>
+    + Send
+    + Sync
+    + 'static;
 
 /// Immutable options applied to one subscription request.
 pub struct SubscribeOptions<T: 'static> {
@@ -120,6 +158,7 @@ pub struct SubscribeOptions<T: 'static> {
     pub(crate) retry_cancellation_token: Option<RetryCancellationToken>,
     pub(crate) error_handlers: Vec<Arc<SubscribeErrorHandler<T>>>,
     pub(crate) interceptors: Vec<Arc<SubscriberInterceptor<T>>>,
+    pub(crate) async_interceptors: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
     pub(crate) dead_letter: Option<DeadLetterPolicy>,
     pub(crate) priority: i32,
     pub(crate) ordering_policy: OrderingPolicy,
@@ -139,6 +178,7 @@ impl<T: 'static> Default for SubscribeOptions<T> {
             retry_cancellation_token: None,
             error_handlers: Vec::new(),
             interceptors: Vec::new(),
+            async_interceptors: Vec::new(),
             dead_letter: None,
             priority: 0,
             ordering_policy: OrderingPolicy::Unordered,
@@ -160,6 +200,7 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
             retry_cancellation_token: self.retry_cancellation_token.clone(),
             error_handlers: self.error_handlers.clone(),
             interceptors: self.interceptors.clone(),
+            async_interceptors: self.async_interceptors.clone(),
             dead_letter: self.dead_letter.clone(),
             priority: self.priority,
             ordering_policy: self.ordering_policy,
@@ -207,6 +248,10 @@ impl<T: 'static> SubscribeOptions<T> {
     /// Returns typed subscriber interceptors in registration order.
     pub fn interceptors(&self) -> &[Arc<SubscriberInterceptor<T>>] {
         &self.interceptors
+    }
+    /// Returns async typed subscriber middleware in registration order.
+    pub fn async_interceptors(&self) -> &[Arc<AsyncSubscriberInterceptor<T>>] {
+        &self.async_interceptors
     }
     /// Returns dead-letter policy, or `None` when disabled.
     pub fn dead_letter(&self) -> Option<&DeadLetterPolicy> {
@@ -286,9 +331,20 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Appends a typed subscriber interceptor in registration order.
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(Delivery<T>) -> Result<Option<Delivery<T>>, DeliveryError> + Send + Sync + 'static,
+        F: Fn(Delivery<T>, SubscriberNext<T>) -> Result<(), DeliveryError> + Send + Sync + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
+        self
+    }
+    /// Appends runtime-neutral async typed middleware in registration order.
+    pub fn async_interceptor<F>(mut self, value: F) -> Self
+    where
+        F: Fn(Delivery<T>, AsyncSubscriberNext<T>) -> SpiFuture<'static, Result<(), DeliveryError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.options.async_interceptors.push(Arc::new(value));
         self
     }
     /// Replaces the dead-letter policy.

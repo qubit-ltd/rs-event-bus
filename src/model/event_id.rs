@@ -8,6 +8,7 @@
 //! Validated event identifier.
 
 use crate::error::ConfigurationError;
+use crate::error::EventIdGenerationError;
 
 /// A validated event identifier carried across providers.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -15,6 +16,25 @@ use crate::error::ConfigurationError;
 pub struct EventId(Box<str>);
 
 impl EventId {
+    /// Generates a globally portable UUID v4 event identifier.
+    ///
+    /// # Errors
+    /// Returns [`EventIdGenerationError`] if the operating-system random source
+    /// cannot provide the bytes needed by the UUID generator.
+    pub fn generate() -> Result<Self, EventIdGenerationError> {
+        Self::generate_with(|| qubit_id::UuidV4Generator::new().generate().map(|uuid| uuid.to_string()))
+    }
+
+    /// Adapts a fallible identifier source to the validated event ID type.
+    fn generate_with<F>(generator: F) -> Result<Self, EventIdGenerationError>
+    where
+        F: FnOnce() -> Result<String, qubit_id::IdGenerationError>,
+    {
+        let value = generator().map_err(EventIdGenerationError::new)?;
+        // UUID v4 has a fixed, valid representation under EventId's portable rules.
+        Ok(Self(value.into_boxed_str()))
+    }
+
     /// Validates and owns an event identifier.
     ///
     /// Empty identifiers, leading or trailing whitespace, control characters,
@@ -32,5 +52,21 @@ impl EventId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::EventId;
+
+    /// Confirms generator failures stay recoverable and preserve their source.
+    #[test]
+    fn test_generate_with_preserves_generator_failure_source() {
+        let result = EventId::generate_with(|| Err(qubit_id::IdGenerationError::HostOutOfRange { host: 1, max: 0 }));
+        let error = result.expect_err("the injected generator should fail");
+        let source = Error::source(&error).expect("wrapper should expose generator error");
+        assert!(source.to_string().contains("host id 1 is out of range"));
     }
 }

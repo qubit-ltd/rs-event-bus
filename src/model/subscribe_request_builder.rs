@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Complete subscription request construction and validation.
 
 use std::sync::Arc;
@@ -7,6 +14,7 @@ use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
 use super::AckMode;
+use super::AsyncSubscriberNext;
 use super::ConsumerGroup;
 use super::DeadLetterPolicy;
 use super::Delivery;
@@ -18,6 +26,7 @@ use super::StartPosition;
 use super::SubscribeOptions;
 use super::SubscribeRequest;
 use super::SubscriberId;
+use super::SubscriberNext;
 use super::SubscriptionDurability;
 use super::Topic;
 use crate::error::DeliveryAttemptError;
@@ -49,7 +58,7 @@ pub enum SubscribeRequestBuildError {
 /// let options = SubscribeOptions::<String>::builder()
 ///     .ack_mode(AckMode::Manual)
 ///     .error_handler(|_, _| FailureDirective::Discard)
-///     .interceptor(|delivery| Ok(Some(delivery)))
+///     .interceptor(|delivery, next| next(delivery))
 ///     .build();
 /// let request = SubscribeRequest::builder()
 ///     .subscriber_id(SubscriberId::new("old")?)
@@ -58,12 +67,12 @@ pub enum SubscribeRequestBuildError {
 ///     .topic(Topic::<String>::new("orders.created")?)
 ///     .priority(1)
 ///     .error_handler(|_, _| panic!("replaced by options"))
-///     .interceptor(|_| panic!("replaced by options"))
+///     .interceptor(|delivery, next| next(delivery))
 ///     .options(options)
 ///     .ack_mode(AckMode::Auto)
 ///     .priority(10)
 ///     .error_handler(|_, _| FailureDirective::Discard)
-///     .interceptor(|delivery| Ok(Some(delivery)))
+///     .interceptor(|delivery, next| next(delivery))
 ///     .build()?;
 /// assert_eq!(request.subscriber_id().as_str(), "audit");
 /// assert_eq!(request.topic().name(), "orders.created");
@@ -141,9 +150,20 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     /// Appends a typed subscriber interceptor in registration order.
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(Delivery<T>) -> Result<Option<Delivery<T>>, DeliveryError> + Send + Sync + 'static,
+        F: Fn(Delivery<T>, SubscriberNext<T>) -> Result<(), DeliveryError> + Send + Sync + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
+        self
+    }
+    /// Appends runtime-neutral async middleware in registration order.
+    pub fn async_interceptor<F>(mut self, value: F) -> Self
+    where
+        F: Fn(Delivery<T>, AsyncSubscriberNext<T>) -> crate::spi::SpiFuture<'static, Result<(), DeliveryError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.options.async_interceptors.push(Arc::new(value));
         self
     }
     /// Replaces the dead-letter policy.

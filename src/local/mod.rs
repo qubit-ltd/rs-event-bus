@@ -6,3 +6,12 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Built-in local event bus provider.
+
+mod config;
+mod provider;
+mod spi;
+mod state;
+mod subscription;
+
+pub use config::LocalEventBusConfig;
+pub use provider::LocalEventBusProvider;

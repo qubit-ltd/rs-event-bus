@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! SPI shutdown policy.
 
 use std::time::Duration;
@@ -8,7 +15,8 @@ use std::time::Duration;
 pub enum ShutdownMode {
     /// Drain provider work for at most the given time.
     Graceful {
-        /// Maximum time to wait for provider work to finish.
+        /// Maximum time for the complete facade shutdown, including receiver
+        /// close, active-work coordination, and provider SPI shutdown.
         timeout: Duration,
     },
     /// Stop immediately without draining.

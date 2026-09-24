@@ -20,6 +20,9 @@ pub enum ReceiveError {
     /// An inbound payload could not be decoded.
     #[error(transparent)]
     Codec(#[from] CodecError),
+    /// The injected timer failed while backing off a provider settlement retry.
+    #[error("event bus timer failed while retrying settlement: {0}")]
+    Timer(#[from] qubit_clock::TimeError),
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,
