@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Metadata describing messages missed by a receiver.
 
 /// Provider-reported loss or omission in a subscription's observed stream.
@@ -11,7 +18,8 @@ pub struct DeliveryGap {
 }
 
 impl DeliveryGap {
-    /// Creates a provider-reported gap with an optional known missed-message count.
+    /// Creates a provider-reported gap with an optional known missed-message
+    /// count.
     pub fn new(reason: impl Into<Box<str>>, missed: Option<u64>) -> Self {
         Self {
             reason: reason.into(),

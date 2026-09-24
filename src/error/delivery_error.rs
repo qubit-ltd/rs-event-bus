@@ -9,7 +9,10 @@
 
 use std::error::Error;
 
+use qubit_retry::RetryError;
+
 use crate::error::CodecError;
+use crate::error::DeliveryAttemptError;
 use crate::error::SpiError;
 
 /// An event delivery could not complete successfully.
@@ -29,4 +32,7 @@ pub enum DeliveryError {
     /// The backend failed while processing the delivery.
     #[error(transparent)]
     Spi(#[from] SpiError),
+    /// The configured `qubit-retry` policy ended without a successful attempt.
+    #[error("delivery retry policy terminated: {0}")]
+    Retry(#[source] Box<RetryError<DeliveryAttemptError>>),
 }

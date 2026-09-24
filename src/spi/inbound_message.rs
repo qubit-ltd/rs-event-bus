@@ -1,13 +1,21 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Message received from provider SPI.
 
 use std::time::SystemTime;
-
-use crate::model::{EventId, Headers, ProviderMessageMetadata};
 
 use super::OrderingKey;
 use super::SettlementToken;
 use super::TopicAddress;
 use super::TransportPayload;
+use crate::model::EventId;
+use crate::model::Headers;
+use crate::model::ProviderMessageMetadata;
 
 /// Type-erased event delivered by a backend to the facade.
 pub struct InboundMessage {
@@ -77,6 +85,37 @@ impl InboundMessage {
     pub fn take_settlement(&mut self) -> Option<SettlementToken> {
         self.settlement.take()
     }
+
+    /// Consumes the provider message and transfers every transport field to the
+    /// facade.
+    ///
+    /// This is the ownership-taking receive path: it allows the facade to
+    /// downcast a native `Arc<dyn Any>` without imposing `Clone` on payloads
+    /// and keeps settlement-token ownership tied to the received message.
+    pub fn into_parts(
+        self,
+    ) -> (
+        TopicAddress,
+        EventId,
+        SystemTime,
+        Headers,
+        Option<OrderingKey>,
+        TransportPayload,
+        Option<SettlementToken>,
+        ProviderMessageMetadata,
+    ) {
+        (
+            self.topic,
+            self.id,
+            self.timestamp,
+            self.headers,
+            self.ordering_key,
+            self.payload,
+            self.settlement,
+            self.provider_metadata,
+        )
+    }
+
     /// Returns non-sensitive provider metadata.
     pub fn provider_metadata(&self) -> &ProviderMessageMetadata {
         &self.provider_metadata

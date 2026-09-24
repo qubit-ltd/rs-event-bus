@@ -1,13 +1,20 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Message sent from facade to provider SPI.
 
 use std::time::Duration;
 use std::time::SystemTime;
 
-use crate::model::{EventId, Headers};
-
 use super::OrderingKey;
 use super::TopicAddress;
 use super::TransportPayload;
+use crate::model::EventId;
+use crate::model::Headers;
 
 /// Type-erased publication request delivered to a backend.
 pub struct OutboundMessage {

@@ -7,10 +7,12 @@
 // =============================================================================
 //! Graceful and immediate shutdown failures.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::LifecycleError;
 use crate::error::SpiError;
+use crate::error::SubscriptionCloseErrors;
 
 /// The event bus could not finish its requested shutdown.
 #[derive(Debug, thiserror::Error)]
@@ -28,4 +30,7 @@ pub enum ShutdownError {
     /// The backend failed to shut down.
     #[error(transparent)]
     Spi(#[from] SpiError),
+    /// One or more provider subscriptions failed to close.
+    #[error(transparent)]
+    SubscriptionClose(Arc<SubscriptionCloseErrors>),
 }

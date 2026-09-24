@@ -1,9 +1,17 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! One typed publication input for the facade.
 
 use super::EventEnvelope;
 use super::PublishOptions;
 use super::PublishRequestBuilder;
 use super::Topic;
+use crate::error::EventIdGenerationError;
 
 /// An envelope and its per-publication policy.
 pub struct PublishRequest<T: 'static> {
@@ -12,10 +20,14 @@ pub struct PublishRequest<T: 'static> {
 }
 
 impl<T: Send + Sync + 'static> PublishRequest<T> {
-    /// Creates a simple request with generated envelope metadata and default
+    /// Creates a simple request with generated UUID v4 metadata and default
     /// options.
-    pub fn new(topic: Topic<T>, payload: T) -> Self {
-        Self::from_envelope(EventEnvelope::new(topic, payload))
+    ///
+    /// # Errors
+    /// Returns [`EventIdGenerationError`] if the operating-system random source
+    /// cannot provide bytes for the generated identifier.
+    pub fn new(topic: Topic<T>, payload: T) -> Result<Self, EventIdGenerationError> {
+        Ok(Self::from_envelope(EventEnvelope::new(topic, payload)?))
     }
     /// Creates a request from an existing envelope for replay or forwarding.
     pub fn from_envelope(envelope: EventEnvelope<T>) -> Self {

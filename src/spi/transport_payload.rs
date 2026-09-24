@@ -1,8 +1,16 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Payload forms accepted by transport backends.
 
-use super::EncodedPayload;
 use std::any::Any;
 use std::sync::Arc;
+
+use super::EncodedPayload;
 
 /// Type-erased native or encoded event payload.
 #[non_exhaustive]

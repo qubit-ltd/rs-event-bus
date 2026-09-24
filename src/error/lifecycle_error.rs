@@ -7,14 +7,21 @@
 // =============================================================================
 //! Event bus lifecycle and idle-wait failures.
 
+use std::sync::Arc;
+
 use crate::error::SpiError;
+use crate::error::SubscriptionCloseErrors;
 
 /// A lifecycle operation could not complete.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LifecycleError {
-    /// Waiting from the bus's own worker would deadlock.
-    #[error("{operation} would deadlock on this event bus worker")]
+    /// The injected timer failed while registering or completing a deadline.
+    #[error("event bus timer failed: {0}")]
+    Timer(#[from] qubit_clock::TimeError),
+    /// Waiting from a synchronous callback or worker owned by the bus would
+    /// deadlock.
+    #[error("{operation} would deadlock in this event bus execution context")]
     WouldDeadlock {
         /// Blocking operation requested by the caller.
         operation: &'static str,
@@ -25,4 +32,7 @@ pub enum LifecycleError {
     /// The backend lifecycle operation failed.
     #[error(transparent)]
     Spi(#[from] SpiError),
+    /// One or more provider subscriptions failed to close.
+    #[error(transparent)]
+    SubscriptionClose(Arc<SubscriptionCloseErrors>),
 }

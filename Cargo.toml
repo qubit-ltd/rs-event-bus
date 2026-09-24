@@ -30,17 +30,18 @@ doctest = true
 
 [dependencies]
 qubit-argument = { version = "0.4" }
+qubit-clock = "0.13"
 qubit-collections = { version = "0.2" }
 qubit-executor = { version = "0.8" }
-qubit-id = "0.6"
+qubit-id = { version = "0.6", features = ["uuid"] }
 qubit-metadata = { version = "0.6", default-features = false }
-qubit-retry = { version = "0.25", features = ["worker"] }
+qubit-retry = { version = "0.25", features = ["worker", "async"] }
 qubit-spi = "0.13"
 qubit-thread-pool = "0.10"
 thiserror = "2"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 
 [dev-dependencies]
-qubit-clock = "0.13"
+loom = "0.7"

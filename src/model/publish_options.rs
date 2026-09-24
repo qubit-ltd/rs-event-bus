@@ -1,4 +1,11 @@
-//! Per-publication retry and failure handling policy.
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Per-publication retry policy and terminal failure observers.
 
 use std::sync::Arc;
 
@@ -7,25 +14,12 @@ use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
 use super::EventEnvelope;
+use super::PublishFailureContext;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
 
-/// The next action requested by an application error handler.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum FailureDirective {
-    /// Let retry policy make another application attempt.
-    Retry,
-    /// Ask a capable provider to deliver the message again.
-    Requeue,
-    /// Send the failed event through the dead-letter policy.
-    DeadLetter,
-    /// Stop processing this failure.
-    Discard,
-}
-
-/// A publish failure callback; callbacks are invoked in registration order.
-pub type PublishErrorHandler<T> = dyn Fn(&EventEnvelope<T>, &PublishError) -> FailureDirective + Send + Sync + 'static;
+/// A terminal publish failure observer; callbacks run in registration order.
+pub type PublishErrorHandler<T> = dyn Fn(&PublishFailureContext<T>, &PublishError) + Send + Sync + 'static;
 /// A typed publisher interceptor that may transform or drop an envelope.
 pub type PublisherInterceptor<T> =
     dyn Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static;
@@ -85,7 +79,7 @@ impl<T: 'static> PublishOptions<T> {
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }
-    /// Returns publish error callbacks in registration order.
+    /// Returns terminal publish failure observers in registration order.
     pub fn error_handlers(&self) -> &[Arc<PublishErrorHandler<T>>] {
         &self.error_handlers
     }
@@ -126,10 +120,17 @@ impl<T: 'static> PublishOptionsBuilder<T> {
         self.options.retry_cancellation_token = Some(value);
         self
     }
-    /// Appends an error handler in registration order.
+    /// Appends a terminal publish failure handler in registration order.
+    ///
+    /// The handler runs when the SPI publish operation fails directly (with no
+    /// retry policy) or when configured retries reach a terminal error. It does
+    /// not run for request, capability, codec, or interceptor preflight errors.
+    /// It receives the original payload and event metadata, returns no action,
+    /// and cannot change or retry the publication outcome. A panic is isolated;
+    /// later handlers still run and the returned publish error records it.
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&EventEnvelope<T>, &PublishError) -> FailureDirective + Send + Sync + 'static,
+        F: Fn(&PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
     {
         self.options.error_handlers.push(Arc::new(handler));
         self

@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Subscriber delivery views and transport context.
 
 use std::sync::Arc;
@@ -129,6 +136,19 @@ impl<T: 'static> Delivery<T> {
     /// Returns the received envelope.
     pub fn event(&self) -> &EventEnvelope<T> {
         &self.event
+    }
+    /// Returns a shared owner for use by retry and dead-letter policies.
+    pub(crate) fn event_arc(&self) -> Arc<EventEnvelope<T>> {
+        self.event.clone()
+    }
+    /// Creates a fresh per-attempt acknowledgement while retaining event
+    /// context.
+    pub(crate) fn next_attempt(&self, retry_attempt: u32) -> Self {
+        Self {
+            event: self.event.clone(),
+            context: self.context.clone().with_retry_attempt(retry_attempt),
+            acknowledgement: Acknowledgement::new(),
+        }
     }
     /// Returns provider and subscriber context.
     pub fn context(&self) -> &DeliveryContext {

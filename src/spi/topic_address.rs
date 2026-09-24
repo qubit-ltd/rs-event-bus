@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 //! Validated type-erased topic address.
 
 use crate::error::ConfigurationError;
@@ -12,10 +19,7 @@ impl TopicAddress {
     /// Returns [`ConfigurationError::InvalidField`] for an empty or oversized
     /// name, surrounding whitespace, or control characters.
     pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if !(1..=255).contains(&value.len())
-            || value.trim() != value
-            || value.chars().any(char::is_control)
-        {
+        if !(1..=255).contains(&value.len()) || value.trim() != value || value.chars().any(char::is_control) {
             return Err(ConfigurationError::InvalidField {
                 field: "topic",
                 message: "must be 1..=255 bytes without surrounding whitespace or controls".into(),
