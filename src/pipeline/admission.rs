@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Bounded delivery admission and drop-based permit release.
 
 use std::sync::Arc;

@@ -16,7 +16,7 @@ use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
 use super::LocalEventBusConfig;
-use super::spi::LocalEventBusSpi;
+use super::local_event_bus_spi::LocalEventBusSpi;
 use crate::registry::EventBusConfig;
 use crate::registry::EventBusProviderError;
 use crate::registry::EventBusSpec;

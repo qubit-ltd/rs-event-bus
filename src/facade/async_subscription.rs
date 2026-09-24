@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Caller-driven asynchronous subscription runner.
 
 use std::cell::RefCell;

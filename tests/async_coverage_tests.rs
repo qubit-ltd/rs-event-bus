@@ -29,14 +29,18 @@ use qubit_clock::Timer;
 use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::Diagnostic;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::PublishError;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
+use qubit_event_bus::SpiError;
 use qubit_event_bus::SubscribeError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DEAD_LETTER_HEADER;
+use qubit_event_bus::model::DEAD_LETTER_HEADER_VALUE;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::FailureDirective;
@@ -45,6 +49,7 @@ use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
@@ -71,7 +76,8 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_retry::RetryPolicy;
-use support::manual_async::block_on;
+
+use crate::support::manual_async::block_on;
 
 struct FailingTimer {
     clock: StdMonotonicClock,
@@ -126,10 +132,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
         )
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, qubit_event_bus::SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
         self.payload_was_encoded
             .lock()
@@ -138,7 +141,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
         let should_fail = attempt < self.retryable_failures || self.terminal_failure;
         Box::pin(async move {
             if should_fail {
-                Err(qubit_event_bus::SpiError::Operation {
+                Err(SpiError::Operation {
                     provider_id: "async-publisher-coverage".into(),
                     operation: "publish",
                     resource: None,
@@ -158,14 +161,11 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
     fn subscribe<'a>(
         &'a self,
         _request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, qubit_event_bus::SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         Box::pin(async { unreachable!("publisher coverage SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, qubit_event_bus::SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -232,11 +232,7 @@ fn async_global_publisher_interceptor_edits_only_validated_headers() {
         metadata.set_header("trace", "global-1")?;
         assert!(metadata.set_header("bad key", "value").is_err());
         assert_eq!(metadata.remove_header("origin").as_deref(), Some("application"));
-        assert!(
-            metadata
-                .remove_header(qubit_event_bus::model::DEAD_LETTER_HEADER)
-                .is_none()
-        );
+        assert!(metadata.remove_header(DEAD_LETTER_HEADER).is_none());
         Ok(true)
     });
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false));
@@ -264,7 +260,7 @@ fn async_string_delivery_runs_error_handler_and_terminates_failure() {
     use qubit_event_bus::model::SubscribeOptions;
     use qubit_event_bus::spi::InboundMessage;
 
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("async-string-delivery").unwrap(), spi.clone());
     let request = SubscribeRequest::new(
         SubscriberId::new("string-worker").unwrap(),
@@ -306,7 +302,7 @@ fn async_string_delivery_runs_error_handler_and_terminates_failure() {
 
 #[test]
 fn failed_timer_registration_surfaces_after_a_failed_settlement() {
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let timer = Arc::new(FailingTimer {
         clock: StdMonotonicClock::new(),
     });
@@ -316,7 +312,7 @@ fn failed_timer_registration_surfaces_after_a_failed_settlement() {
     let error = block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.fail_next_settle();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "timer-failure-token",
         ))));
@@ -426,13 +422,10 @@ struct CloseFailingSpi {
 
 impl AsyncEventBusSpi for CloseFailingSpi {
     fn capabilities(&self) -> EventBusCapabilities {
-        support::fake_spi::full_capabilities()
+        crate::support::fake_spi::full_capabilities()
     }
 
-    fn publish<'a>(
-        &'a self,
-        _message: qubit_event_bus::spi::OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, qubit_event_bus::SpiError>> {
+    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async {
             Ok(PublishAcknowledgement::Accepted {
                 provider_message_id: None,
@@ -444,7 +437,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
     fn subscribe<'a>(
         &'a self,
         _request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, qubit_event_bus::SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         let receives = self.receives.clone();
         let close_attempts = self.close_attempts.clone();
         let receiver_drops = self.receiver_drops.clone();
@@ -460,10 +453,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, qubit_event_bus::SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -477,10 +467,7 @@ struct CloseFailingReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
-    fn receive<'a>(
-        &'a mut self,
-        _timeout: Duration,
-    ) -> SpiFuture<'a, Result<ReceiveOutcome, qubit_event_bus::SpiError>> {
+    fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.receives.fetch_add(1, Ordering::AcqRel);
         Box::pin(CancellableReceive {
             dropped: self.receive_future_drops.clone(),
@@ -491,16 +478,16 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
         &'a mut self,
         _token: &SettlementToken,
         _disposition: DeliveryDisposition,
-    ) -> SpiFuture<'a, Result<(), qubit_event_bus::SpiError>> {
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), qubit_event_bus::SpiError>> {
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.total_close_attempts.fetch_add(1, Ordering::AcqRel);
         let attempt = self.close_attempts.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
             if attempt == 0 {
-                Err(qubit_event_bus::SpiError::Operation {
+                Err(SpiError::Operation {
                     provider_id: "close-failing".into(),
                     operation: "close",
                     resource: None,
@@ -520,7 +507,7 @@ struct CancellableReceive {
 }
 
 impl Future for CancellableReceive {
-    type Output = Result<ReceiveOutcome, qubit_event_bus::SpiError>;
+    type Output = Result<ReceiveOutcome, SpiError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
@@ -608,7 +595,7 @@ fn shutdown_aggregates_multiple_async_subscription_close_failures() {
 
 #[test]
 fn publish_and_subscribe_are_rejected_after_async_shutdown() {
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi);
 
     block_on(async {
@@ -709,7 +696,7 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
     use std::sync::atomic::Ordering;
     use std::task::Poll;
 
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     let handler_started = Arc::new(AtomicBool::new(false));
     let release_handler = Arc::new(AtomicBool::new(false));
@@ -734,7 +721,7 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
     });
     assert_eq!(idle_subscription.subscriber_id().as_str(), "idle-during-close");
     assert!(idle_subscription.id().value() > 0);
-    spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         active_subscription.id(),
         "shutdown-close-branch",
     ))));
@@ -771,7 +758,7 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(matches!(
-        support::manual_async::poll_once(shutdown.as_mut()),
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
         Poll::Pending
     ));
     let closes_before = spi
@@ -803,7 +790,7 @@ fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
     use qubit_clock::ManualMonotonicClock;
     use qubit_clock::MonotonicClock;
 
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();
     let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer());
     let handler_started = Arc::new(AtomicBool::new(false));
@@ -815,7 +802,7 @@ fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
         topic(),
     )))
     .unwrap();
-    spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "graceful-timeout-event",
     ))));
@@ -852,13 +839,13 @@ fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
     let timeout = Duration::from_secs(5);
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }));
     assert!(matches!(
-        support::manual_async::poll_once(graceful.as_mut()),
+        crate::support::manual_async::poll_once(graceful.as_mut()),
         Poll::Pending
     ));
     assert!(clock.wait_for_waiters(1, Duration::from_secs(1)));
     clock.advance(timeout).unwrap();
     assert!(matches!(
-        support::manual_async::poll_once(graceful.as_mut()),
+        crate::support::manual_async::poll_once(graceful.as_mut()),
         Poll::Ready(Err(ShutdownError::TimedOut { timeout: elapsed })) if elapsed == timeout
     ));
 
@@ -896,15 +883,9 @@ impl AsyncEventBusSpi for DeadLetterCaptureSpi {
         )
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, qubit_event_bus::SpiError>> {
-        let is_dead_letter = message
-            .headers()
-            .get(qubit_event_bus::model::DEAD_LETTER_HEADER)
-            .map(|value| value.as_ref())
-            == Some(qubit_event_bus::model::DEAD_LETTER_HEADER_VALUE);
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        let is_dead_letter =
+            message.headers().get(DEAD_LETTER_HEADER).map(|value| value.as_ref()) == Some(DEAD_LETTER_HEADER_VALUE);
         self.published
             .lock()
             .unwrap()
@@ -920,7 +901,7 @@ impl AsyncEventBusSpi for DeadLetterCaptureSpi {
     fn subscribe<'a>(
         &'a self,
         _request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, qubit_event_bus::SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         let messages = self.messages.clone();
         let receive_wakers = self.receive_wakers.clone();
         let settlements = self.settlements.clone();
@@ -933,10 +914,7 @@ impl AsyncEventBusSpi for DeadLetterCaptureSpi {
         })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, qubit_event_bus::SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -948,10 +926,7 @@ struct DeadLetterCaptureReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
-    fn receive<'a>(
-        &'a mut self,
-        _timeout: Duration,
-    ) -> SpiFuture<'a, Result<ReceiveOutcome, qubit_event_bus::SpiError>> {
+    fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         let messages = self.messages.clone();
         let receive_wakers = self.receive_wakers.clone();
         Box::pin(async move {
@@ -973,12 +948,12 @@ impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
         &'a mut self,
         _token: &SettlementToken,
         _disposition: DeliveryDisposition,
-    ) -> SpiFuture<'a, Result<(), qubit_event_bus::SpiError>> {
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
         self.settlements.fetch_add(1, Ordering::AcqRel);
         Box::pin(async { Ok(()) })
     }
 
-    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), qubit_event_bus::SpiError>> {
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -987,7 +962,7 @@ impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
 fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
     let spi = Arc::new(DeadLetterCaptureSpi::default());
     let bus = AsyncEventBus::new(ProviderId::new("dead-letter-capture").unwrap(), spi.clone());
-    let options = qubit_event_bus::model::SubscribeOptions::<u32>::builder()
+    let options = SubscribeOptions::<u32>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("async.dead").unwrap())
         .build();
@@ -1033,7 +1008,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
 
     let string_spi = Arc::new(DeadLetterCaptureSpi::default());
     let string_bus = AsyncEventBus::new(ProviderId::new("dead-letter-string").unwrap(), string_spi.clone());
-    let string_options = qubit_event_bus::model::SubscribeOptions::<String>::builder()
+    let string_options = SubscribeOptions::<String>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("async.dead.string").unwrap())
         .build();
@@ -1085,7 +1060,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
 
     let non_clone_spi = Arc::new(DeadLetterCaptureSpi::default());
     let non_clone_bus = AsyncEventBus::new(ProviderId::new("dead-letter-non-clone").unwrap(), non_clone_spi.clone());
-    let non_clone_options = qubit_event_bus::model::SubscribeOptions::<NonCloneDeadLetterPayload>::builder()
+    let non_clone_options = SubscribeOptions::<NonCloneDeadLetterPayload>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("async.dead.non-clone").unwrap())
         .build();
@@ -1141,18 +1116,18 @@ struct NonCloneDeadLetterPayload;
 
 #[test]
 fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
-    fn run_case(panic_filter: bool) -> (usize, Vec<qubit_event_bus::spi::DeliveryDisposition>, bool) {
-        let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    fn run_case(panic_filter: bool) -> (usize, Vec<DeliveryDisposition>, bool) {
+        let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
         let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
         let handler_calls = Arc::new(AtomicUsize::new(0));
         let delivery_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = delivery_failed.clone();
         let _observer = bus.observe_diagnostics(move |diagnostic| {
-            if matches!(diagnostic, qubit_event_bus::Diagnostic::DeliveryFailed { .. }) {
+            if matches!(diagnostic, Diagnostic::DeliveryFailed { .. }) {
                 observed.store(true, Ordering::Release);
             }
         });
-        let options = qubit_event_bus::model::SubscribeOptions::<u32>::builder()
+        let options = SubscribeOptions::<u32>::builder()
             .filter(move |_| {
                 if panic_filter {
                     panic!("filter panic");
@@ -1169,7 +1144,7 @@ fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
                 )
                 .await
                 .unwrap();
-            spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
                 subscription.id(),
                 "filter-event",
             ))));
@@ -1210,16 +1185,16 @@ fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
 
 #[test]
 fn async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
-    let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     let internal_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = internal_failure.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, qubit_event_bus::Diagnostic::InternalFailure { .. }) {
+        if matches!(diagnostic, Diagnostic::InternalFailure { .. }) {
             observed.store(true, Ordering::Release);
         }
     });
-    let options = qubit_event_bus::model::SubscribeOptions::<u32>::builder()
+    let options = SubscribeOptions::<u32>::builder()
         .error_handler(|_, _| -> FailureDirective { panic!("error handler panic") })
         .build();
 
@@ -1227,7 +1202,7 @@ fn async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
         SubscribeRequest::new(SubscriberId::new("async-error-handler-panic").unwrap(), topic()).with_options(options),
     ))
     .unwrap();
-    spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "error-handler-panic-event",
     ))));

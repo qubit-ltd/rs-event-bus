@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use qubit_clock::TimeError;
+
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 
@@ -18,7 +20,7 @@ use crate::error::SubscriptionCloseErrors;
 pub enum LifecycleError {
     /// The injected timer failed while registering or completing a deadline.
     #[error("event bus timer failed: {0}")]
-    Timer(#[from] qubit_clock::TimeError),
+    Timer(#[from] TimeError),
     /// Waiting from a synchronous callback or worker owned by the bus would
     /// deadlock.
     #[error("{operation} would deadlock in this event bus execution context")]

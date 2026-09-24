@@ -9,10 +9,12 @@
 
 use std::sync::Arc;
 
+use qubit_spi::ProviderDefinition;
 use qubit_spi::ProviderDescriptor;
 use qubit_spi::ProviderId;
 use qubit_spi::ProviderRegistry;
 use qubit_spi::ProviderSelection;
+use qubit_spi::error::ProviderCreationError;
 use qubit_spi::error::ProviderResolutionError;
 use qubit_spi::error::RegistryMutationError;
 
@@ -66,7 +68,7 @@ impl EventBusRegistry {
     /// Registers an owned synchronous provider.
     pub fn register<P>(&self, provider: P) -> Result<(), RegistryMutationError>
     where
-        P: qubit_spi::ProviderDefinition<EventBusSpec>,
+        P: ProviderDefinition<EventBusSpec>,
     {
         let provider: Arc<EventBusProvider> = Arc::new(provider);
         self.register_shared(provider)
@@ -74,8 +76,7 @@ impl EventBusRegistry {
 
     /// Registers a shared synchronous provider.
     pub fn register_shared(&self, provider: Arc<EventBusProvider>) -> Result<(), RegistryMutationError> {
-        let adapter: Arc<dyn qubit_spi::ProviderDefinition<EventBusSpec>> =
-            Arc::new(EventBusProviderAdapter::new(provider));
+        let adapter: Arc<dyn ProviderDefinition<EventBusSpec>> = Arc::new(EventBusProviderAdapter::new(provider));
         self.providers.register_shared(adapter)
     }
 
@@ -157,7 +158,7 @@ fn provider_resolution_error(error: ProviderResolutionError) -> ProviderError {
     }
 }
 
-fn provider_creation_error(error: qubit_spi::error::ProviderCreationError<EventBusProviderError>) -> ProviderError {
+fn provider_creation_error(error: ProviderCreationError<EventBusProviderError>) -> ProviderError {
     ProviderError::Creation {
         source: Box::new(error),
     }

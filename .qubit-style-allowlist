@@ -9,3 +9,27 @@ multiple-public-types | src/local/local_event_bus/interceptor.rs | Interceptor t
 multiple-public-types | src/local/local_event_bus_inner.rs | Runtime state and its lifecycle types share one private boundary.
 multiple-public-types | src/local/processing_task.rs | Delivery context and processing task form one accounting unit.
 multiple-public-types | src/local/subscriber_interceptor_chain.rs | Typed and erased chains share one continuation model.
+multiple-public-types | src/error/subscription_close_errors.rs | The close failure record and its aggregate error form one source-preserving lifecycle error contract.
+multiple-public-types | src/facade/async_event_bus.rs | The async facade, admission permits, shutdown signals, and tracker guards implement one private bus lifecycle with shared synchronization ownership.
+multiple-public-types | src/facade/async_subscription.rs | The subscription handle and its session, retained delivery futures, leases, and signals form one private runner state machine.
+multiple-public-types | src/facade/event_bus.rs | The sync facade and its admission gate, coordinator messages, observer handle, and shared inner state form one lifecycle boundary.
+multiple-public-types | src/facade/event_bus_facade_config.rs | The facade root config and its sync/async admission limit values are constructed and consumed as one policy contract.
+multiple-public-types | src/facade/lifecycle.rs | Idle outcomes, lifecycle states, and context guards share the facade lifecycle and deadlock-detection contract.
+multiple-public-types | src/facade/subscription.rs | The public subscription handle and private control state share one cancellation and close contract.
+multiple-public-types | src/facade/sync_delivery_scheduler.rs | Queued jobs, reservations, scheduler state, and scheduler owner share one bounded scheduling protocol.
+multiple-public-types | src/facade/tracker.rs | The tracker state and delivery guard are one counter/RAII accounting implementation.
+multiple-public-types | src/local/state.rs | Local events, queues, settlement records, and shared state form one in-process provider state graph with joint locking invariants.
+multiple-public-types | src/model/acknowledgement.rs | Acknowledgement handle, state, and state-transition errors form one public settlement control contract.
+multiple-public-types | src/model/delivery.rs | Delivery and its context are one handler-facing value and ownership contract.
+multiple-public-types | src/model/destination_admission.rs | Admission status and destination report are inseparable parts of one publish acknowledgement value.
+multiple-public-types | src/model/publish_options.rs | Publish options and their builder define one construction and validation contract.
+multiple-public-types | src/model/publish_request_builder.rs | The builder and its validation/generation error describe one request-construction contract.
+multiple-public-types | src/model/subscribe_options.rs | Subscription policy enums, options, and builder form one cohesive subscription configuration vocabulary.
+multiple-public-types | src/model/subscribe_request_builder.rs | The builder and its validation error describe one subscription request-construction contract.
+multiple-public-types | src/model/topic.rs | Topic identity and its content-type/schema metadata are one typed routing contract.
+multiple-public-types | src/pipeline/admission.rs | The bus-wide admission tracker and its RAII permit share one counter invariant.
+multiple-public-types | src/pipeline/diagnostic.rs | Diagnostic values and internal failure origin/context are emitted and interpreted together by the portable pipeline.
+multiple-public-types | src/pipeline/ordering_lane.rs | Sync and async lane states, turns, and guards jointly implement one per-key ordering protocol.
+multiple-public-types | src/pipeline/publisher.rs | The publisher pipeline and its prepared outbound value share one validation-to-dispatch ownership flow.
+multiple-public-types | src/pipeline/retry.rs | Retry-specific panic-catching future machinery is private to the retry adapters and is kept with the retry control flow.
+multiple-public-types | src/pipeline/subscriber.rs | Delivery outcomes, terminal actions, and panic-catching future machinery implement one subscriber execution pipeline.

@@ -9,6 +9,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use qubit_clock::MonotonicClock;
+use qubit_clock::StdMonotonicClock;
+use qubit_id::Id;
+use qubit_retry::RetryPolicy;
 
 use crate::codec::EventCodec;
 use crate::error::CodecError;
@@ -94,7 +97,7 @@ impl EventBusSpi for FakeBus {
         if state.reject_destination {
             Ok(PublishAcknowledgement::DestinationAdmissions(vec![
                 DestinationAdmission::new(
-                    qubit_id::Id::new(1),
+                    Id::new(1),
                     SubscriberId::new("subscriber").unwrap(),
                     AdmissionStatus::Rejected("queue full".into()),
                 ),
@@ -244,7 +247,7 @@ fn retry_exhaustion_preserves_retry_source_and_failure_origin() {
     let (spi, _) = bus(PayloadModes::Native, usize::MAX);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(2).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
     let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
@@ -260,7 +263,7 @@ fn retry_replays_the_same_prepared_message_until_provider_accepts() {
     let (spi, state) = bus(PayloadModes::Native, 1);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(2).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
     pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap();
     assert_eq!(state.lock().unwrap().calls, 2);
@@ -382,7 +385,7 @@ fn async_publish_is_runtime_neutral() {
         request(PublishOptions::new()),
         &[],
         &[],
-        qubit_clock::StdMonotonicClock::new().new_timer(),
+        StdMonotonicClock::new().new_timer(),
     );
     let mut future = std::pin::pin!(future);
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
@@ -399,14 +402,14 @@ fn async_publish_retries_after_retryable_failure_without_runtime() {
     let (spi, state) = bus(PayloadModes::Native, 1);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(2).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
     let receipt = block_on(pipeline.publish_async(
         spi.as_ref(),
         request(options),
         &[],
         &[],
-        qubit_clock::StdMonotonicClock::new().new_timer(),
+        StdMonotonicClock::new().new_timer(),
     ))
     .unwrap();
     assert!(!receipt.acknowledgement().is_dropped());
@@ -425,7 +428,7 @@ fn publish_error_observers_receive_shared_non_clone_payload_and_metadata() {
     let capture = seen.clone();
     let timestamp = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
     let options = PublishOptions::<NonClonePayload>::builder()
-        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(1).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
         .error_handler(move |context, _error| {
             *capture.lock().unwrap() = Some((
                 context.payload().value,
@@ -470,7 +473,7 @@ fn publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
     let first = calls.clone();
     let second = calls.clone();
     let options = PublishOptions::builder()
-        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(1).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
         .error_handler(move |_, _| {
             first.lock().unwrap().push("panicking");
             panic!("observer panic");

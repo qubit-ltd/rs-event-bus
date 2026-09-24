@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use qubit_spi::AsyncProviderDefinition;
 use qubit_spi::AsyncProviderRegistry;
 use qubit_spi::ProviderDescriptor;
 use qubit_spi::ProviderId;
@@ -57,7 +58,7 @@ impl AsyncEventBusRegistry {
     /// Registers an owned asynchronous provider.
     pub fn register<P>(&self, provider: P) -> Result<(), RegistryMutationError>
     where
-        P: qubit_spi::AsyncProviderDefinition<EventBusSpec>,
+        P: AsyncProviderDefinition<EventBusSpec>,
     {
         let provider: Arc<AsyncEventBusProvider> = Arc::new(provider);
         self.register_shared(provider)
@@ -65,7 +66,7 @@ impl AsyncEventBusRegistry {
 
     /// Registers a shared asynchronous provider.
     pub fn register_shared(&self, provider: Arc<AsyncEventBusProvider>) -> Result<(), RegistryMutationError> {
-        let adapter: Arc<dyn qubit_spi::AsyncProviderDefinition<EventBusSpec>> =
+        let adapter: Arc<dyn AsyncProviderDefinition<EventBusSpec>> =
             Arc::new(AsyncEventBusProviderAdapter::new(provider));
         self.providers.register_shared(adapter)
     }

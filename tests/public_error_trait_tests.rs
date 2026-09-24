@@ -10,6 +10,10 @@ use std::error::Error;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
+use qubit_retry::Retry;
+use qubit_retry::RetryConfig;
+use qubit_retry::RetryErrorReason;
+use qubit_retry::RetryFallback;
 
 #[test]
 fn publish_error_handler_panic_preserves_source_chain() {
@@ -25,12 +29,12 @@ fn publish_error_handler_panic_preserves_source_chain() {
 
 #[test]
 fn retry_error_converts_to_publish_error_without_losing_terminal_reason() {
-    let config = qubit_retry::RetryConfig::<PublishAttemptError>::builder()
+    let config = RetryConfig::<PublishAttemptError>::builder()
         .max_attempts(1)
-        .fallback(qubit_retry::RetryFallback::Retry)
+        .fallback(RetryFallback::Retry)
         .build()
         .unwrap();
-    let retry_error = qubit_retry::Retry::new(&config)
+    let retry_error = Retry::new(&config)
         .run(|| {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
@@ -44,9 +48,6 @@ fn retry_error_converts_to_publish_error_without_losing_terminal_reason() {
     let PublishError::Retry(retry_error) = publish_error else {
         panic!("retry outcome should remain a retry publish error");
     };
-    assert!(matches!(
-        retry_error.reason(),
-        qubit_retry::RetryErrorReason::Exhausted { .. }
-    ));
+    assert!(matches!(retry_error.reason(), RetryErrorReason::Exhausted { .. }));
     assert_eq!(retry_error.last_error().unwrap().kind(), "injected");
 }

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Receiving failures.
 
+use qubit_clock::TimeError;
+
 use crate::error::CodecError;
 use crate::error::SpiError;
 
@@ -22,7 +24,7 @@ pub enum ReceiveError {
     Codec(#[from] CodecError),
     /// The injected timer failed while backing off a provider settlement retry.
     #[error("event bus timer failed while retrying settlement: {0}")]
-    Timer(#[from] qubit_clock::TimeError),
+    Timer(#[from] TimeError),
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,

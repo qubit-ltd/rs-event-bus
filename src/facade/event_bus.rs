@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Synchronous type-safe event-bus facade over an object-safe provider SPI.
 
 use std::any::Any;
@@ -54,6 +56,7 @@ use crate::facade::SubscriptionControl;
 use crate::facade::WaitOutcome;
 use crate::facade::is_current_bus_context;
 use crate::facade::receive_poll_interval;
+use crate::facade::shutdown_coordinator::ShutdownCoordinator;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::local::LocalEventBusConfig;
 use crate::model::BatchPublishResult;
@@ -157,6 +160,7 @@ pub(super) struct EventBusInner {
     next_subscription_id: AtomicU64,
     observers: Mutex<Vec<Arc<ObserverEntry>>>,
     shutdown_gate: Mutex<ShutdownState>,
+    shutdown_coordinator: ShutdownCoordinator,
     scheduler: Arc<SyncDeliveryScheduler>,
 }
 
@@ -164,16 +168,16 @@ struct ShutdownState {
     outcome: Option<ShutdownOutcome>,
 }
 
-#[derive(Default)]
 /// Linearizes new public publish/subscribe calls against provider shutdown.
+#[derive(Default)]
 struct OperationGate {
     state: Mutex<OperationGateState>,
     changed: Condvar,
 }
 
-#[derive(Default)]
 /// Counts calls that entered the facade while it was still accepting
 /// operations.
+#[derive(Default)]
 struct OperationGateState {
     closing: bool,
     active: usize,
@@ -196,11 +200,16 @@ impl OperationGate {
         Some(OperationPermit { gate: self })
     }
 
-    /// Closes operation admission and waits for every previously admitted SPI
-    /// call to finish.
-    fn stop_and_wait(&self) {
+    /// Closes operation admission without waiting for existing calls.
+    fn close_admission(&self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.closing = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits for every previously admitted SPI call to finish.
+    fn wait_for_idle(&self) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         while state.active != 0 {
             state = self
                 .changed
@@ -347,6 +356,7 @@ impl EventBus {
                 next_subscription_id: AtomicU64::new(1),
                 observers: Mutex::new(Vec::new()),
                 shutdown_gate: Mutex::new(ShutdownState { outcome: None }),
+                shutdown_coordinator: ShutdownCoordinator::new(),
                 scheduler,
             }),
         }
@@ -566,22 +576,31 @@ impl EventBus {
     /// `Retry`. Immediate shutdown returns admitted queued deliveries with
     /// `Retry`, allows active handlers and settlements to finish, and then
     /// closes subscriptions. Graceful shutdown applies its timeout to the
-    /// drain; either mode may wait indefinitely for active user code, which
-    /// Rust cannot forcibly stop.
+    /// caller's wait for the entire close sequence. If the deadline expires,
+    /// this method returns `TimedOut` while one background coordinator keeps
+    /// closing the bus; new operations remain rejected. Call shutdown again to
+    /// wait for the result, or use `Immediate` to strengthen an active attempt.
+    /// The coordinator cannot forcibly stop a blocked synchronous SPI call or
+    /// user handler, so it can remain alive until that code returns.
     /// Calling either mode from a synchronous callback or worker owned by this
     /// bus returns `WouldDeadlock` instead of waiting for the current
     /// operation permit.
     ///
     /// # Errors
     /// Returns `WouldDeadlock` for a call from a bus callback or worker,
-    /// `TimedOut` when graceful draining exceeds its deadline, and
-    /// provider/close failures without suppressing their source errors.
+    /// `TimedOut` when the full graceful close has not completed by its
+    /// deadline, a coordinator thread could not start, and provider/close
+    /// failures without suppressing their source errors.
     pub fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, ShutdownError> {
         let identity = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_context(identity) {
             return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
         }
-        self.inner.operations.stop_and_wait();
+        let timeout = match mode {
+            ShutdownMode::Graceful { timeout } => Some(timeout),
+            ShutdownMode::Immediate => None,
+        };
+        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         {
             let mut state = self.lock_lifecycle();
             if *state == LifecycleState::Closed {
@@ -598,42 +617,41 @@ impl EventBus {
             }
             *state = LifecycleState::Closing;
         }
-        let controls = self.inner.subscription_snapshot();
-        self.inner
-            .scheduler
-            .stop_admission(matches!(mode, ShutdownMode::Immediate));
-        for control in &controls {
-            control.request_cancel();
-        }
+        self.inner.operations.close_admission();
 
-        let started = Instant::now();
-        let timeout = match mode {
-            ShutdownMode::Graceful { timeout } => Some(timeout),
-            ShutdownMode::Immediate => None,
-        };
-        if !self.inner.tracker.wait_for_workers(timeout)
-            && let ShutdownMode::Graceful { timeout } = mode
-        {
-            return Err(ShutdownError::TimedOut { timeout });
+        loop {
+            let (start, generation) = self.inner.shutdown_coordinator.begin(mode);
+            self.inner
+                .scheduler
+                .stop_admission(matches!(mode, ShutdownMode::Immediate));
+            for control in &self.inner.subscription_snapshot() {
+                control.request_cancel();
+            }
+            if start {
+                let inner = self.inner.clone();
+                let spawn = thread::Builder::new()
+                    .name("event-bus-shutdown".to_owned())
+                    .spawn(move || inner.run_shutdown(generation));
+                if let Err(error) = spawn {
+                    self.inner.shutdown_coordinator.abort_start(generation);
+                    return Err(ShutdownError::CoordinatorStart(error));
+                }
+            }
+            let (timed_out, result) = self.inner.shutdown_coordinator.wait(generation, deadline);
+            if timed_out {
+                return Err(ShutdownError::TimedOut {
+                    timeout: timeout.expect("only graceful shutdown has a deadline"),
+                });
+            }
+            let Some(result) = result else {
+                continue;
+            };
+            let outcome = result.map_err(clone_spi_error)?;
+            if let Some(errors) = self.inner.close_errors_snapshot() {
+                return Err(ShutdownError::SubscriptionClose(errors));
+            }
+            return Ok(outcome);
         }
-        for control in &controls {
-            self.inner.join_control(control)?;
-        }
-        self.inner.scheduler.join();
-        let provider_mode = match mode {
-            ShutdownMode::Immediate => ShutdownMode::Immediate,
-            ShutdownMode::Graceful { timeout } => ShutdownMode::Graceful {
-                timeout: timeout.saturating_sub(started.elapsed()),
-            },
-        };
-        let outcome = self.inner.shutdown_provider_once(provider_mode)?;
-        if self.inner.tracker.workers_are_idle() {
-            *self.lock_lifecycle() = LifecycleState::Closed;
-        }
-        if let Some(errors) = self.inner.close_errors_snapshot() {
-            return Err(ShutdownError::SubscriptionClose(errors));
-        }
-        Ok(outcome)
     }
 
     /// Locks the lifecycle state while recovering from internal poison.
@@ -715,29 +733,73 @@ impl EventBusInner {
     }
 
     /// Joins one worker after the caller has established it has finished.
-    fn join_control(&self, control: &Arc<SubscriptionControl>) -> Result<(), ShutdownError> {
+    fn join_control(&self, control: &Arc<SubscriptionControl>) -> Result<(), SpiError> {
         let worker = control
             .worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(worker) = worker {
-            worker.join().map_err(|_| {
-                ShutdownError::Spi(SpiError::Operation {
-                    provider_id: self.provider_id.as_str().into(),
-                    operation: "subscription_worker",
-                    resource: Some(control.subscriber_id.as_str().into()),
-                    kind: "worker_panicked",
-                    retryable: None,
-                    source: Box::new(std::io::Error::other("subscription worker panicked")),
-                })
+            worker.join().map_err(|_| SpiError::Operation {
+                provider_id: self.provider_id.as_str().into(),
+                operation: "subscription_worker",
+                resource: Some(control.subscriber_id.as_str().into()),
+                kind: "worker_panicked",
+                retryable: None,
+                source: Box::new(std::io::Error::other("subscription worker panicked")),
             })?;
         }
         Ok(())
     }
 
+    /// Completes one shutdown attempt on the dedicated coordinator thread.
+    fn run_shutdown(self: Arc<Self>, generation: u64) {
+        let bus_identity = Arc::as_ptr(&self) as usize;
+        let _context = BusContextGuard::enter(bus_identity);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.perform_shutdown(generation)))
+            .unwrap_or_else(|panic| {
+                Err(SpiError::Operation {
+                    provider_id: self.provider_id.as_str().into(),
+                    operation: "shutdown_coordinator",
+                    resource: None,
+                    kind: "coordinator_panicked",
+                    retryable: None,
+                    source: Box::new(std::io::Error::other(panic_message(panic.as_ref()))),
+                })
+            });
+        let failure_message = result.as_ref().err().map(ToString::to_string);
+        self.shutdown_coordinator.finish(generation, result);
+        if let Some(message) = failure_message {
+            self.emit_internal("shutdown_coordinator", message);
+        }
+    }
+
+    /// Waits for admitted calls and workers, then closes provider resources.
+    fn perform_shutdown(&self, generation: u64) -> Result<ShutdownOutcome, SpiError> {
+        self.operations.wait_for_idle();
+        let controls = self.subscription_snapshot();
+        self.scheduler.stop_admission(matches!(
+            self.shutdown_coordinator.mode(generation),
+            ShutdownMode::Immediate
+        ));
+        for control in &controls {
+            control.request_cancel();
+        }
+        self.tracker.wait_for_workers(None);
+        for control in &controls {
+            self.join_control(control)?;
+        }
+        self.scheduler.join();
+        let mode = self.shutdown_coordinator.mode(generation);
+        let outcome = self.shutdown_provider_once(mode)?;
+        if self.tracker.workers_are_idle() {
+            *self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = LifecycleState::Closed;
+        }
+        Ok(outcome)
+    }
+
     /// Shuts down the provider once and caches its successful outcome.
-    fn shutdown_provider_once(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, ShutdownError> {
+    fn shutdown_provider_once(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         let mut state = self
             .shutdown_gate
             .lock()
@@ -748,6 +810,43 @@ impl EventBusInner {
         let outcome = self.spi.shutdown(mode)?;
         state.outcome = Some(outcome);
         Ok(outcome)
+    }
+}
+
+/// Recreates a shared SPI error while retaining the original error in its
+/// source chain for each concurrent shutdown caller.
+fn clone_spi_error(error: Arc<SpiError>) -> SpiError {
+    match error.as_ref() {
+        SpiError::Operation {
+            provider_id,
+            operation,
+            resource,
+            kind,
+            retryable,
+            ..
+        } => SpiError::Operation {
+            provider_id: provider_id.clone(),
+            operation,
+            resource: resource.clone(),
+            kind,
+            retryable: *retryable,
+            source: Box::new(error),
+        },
+        SpiError::InvalidSettlementToken {
+            provider_id,
+            operation,
+            resource,
+            reason,
+            retryable,
+            ..
+        } => SpiError::InvalidSettlementToken {
+            provider_id: provider_id.clone(),
+            operation,
+            resource: resource.clone(),
+            reason,
+            retryable: *retryable,
+            source: Box::new(error),
+        },
     }
 }
 

@@ -31,6 +31,7 @@ use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
 use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::PayloadModes;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
@@ -170,10 +171,7 @@ fn test_sync_spi_default_identity_and_trait_object_contract() {
     let provider = support::fake_spi::FakeEventBusSpi::new();
     let erased: Arc<dyn EventBusSpi> = Arc::new(provider);
     assert!(erased.provider_id().is_none(), "provider identity defaults to absent");
-    assert_eq!(
-        erased.capabilities().payload_modes(),
-        qubit_event_bus::spi::PayloadModes::Native
-    );
+    assert_eq!(erased.capabilities().payload_modes(), PayloadModes::Native);
 
     fn accepts_object_safe_spi(_: &dyn EventBusSpi) {}
     accepts_object_safe_spi(erased.as_ref());

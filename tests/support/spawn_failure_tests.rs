@@ -43,6 +43,24 @@ use crate::spi::SpiSubscriptionRequest;
 struct EmptySpi;
 
 #[test]
+fn provider_panic_error_has_stable_operation_context() {
+    let provider_id = ProviderId::new("panic-test").expect("valid provider ID");
+    let error = super::provider_panic(&provider_id, "publish");
+    assert!(matches!(
+        &error,
+        SpiError::Operation {
+            operation: "publish",
+            kind: "spi_panicked",
+            ..
+        }
+    ));
+    assert_eq!(
+        std::error::Error::source(&error).unwrap().to_string(),
+        "provider SPI panicked"
+    );
+}
+
+#[test]
 fn test_unit_handler_result_converts_to_success() {
     assert!(().into_handler_result().is_ok());
 }

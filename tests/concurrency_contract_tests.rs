@@ -13,6 +13,7 @@
 
 #![cfg(loom)]
 
+use loom::model;
 use loom::sync::Arc;
 use loom::sync::Condvar;
 use loom::sync::Mutex;
@@ -23,7 +24,7 @@ use loom::thread;
 
 #[test]
 fn admission_permit_is_released_exactly_once_under_competing_cleanup() {
-    loom::model(|| {
+    model(|| {
         let active = Arc::new(AtomicUsize::new(1));
         let released = Arc::new(AtomicBool::new(false));
         let release = |active: &AtomicUsize, released: &AtomicBool| {
@@ -48,7 +49,7 @@ fn admission_permit_is_released_exactly_once_under_competing_cleanup() {
 
 #[test]
 fn cancelling_an_ordering_lane_advances_the_next_waiter() {
-    loom::model(|| {
+    model(|| {
         let lane = Arc::new((Mutex::new((true, false)), Condvar::new()));
         let next_lane = lane.clone();
         let next = thread::spawn(move || {
@@ -76,7 +77,7 @@ fn cancelling_an_ordering_lane_advances_the_next_waiter() {
 
 #[test]
 fn subscription_cancel_racing_receive_never_starts_after_cancel_wins() {
-    loom::model(|| {
+    model(|| {
         #[derive(Default)]
         struct State {
             cancelled: bool,
@@ -109,7 +110,7 @@ fn subscription_cancel_racing_receive_never_starts_after_cancel_wins() {
 
 #[test]
 fn graceful_shutdown_and_publish_have_one_admission_linearization_point() {
-    loom::model(|| {
+    model(|| {
         #[derive(Default)]
         struct State {
             closed: bool,
