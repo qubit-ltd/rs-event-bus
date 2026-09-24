@@ -157,6 +157,49 @@ fn capabilities(durability: DurabilityCapability) -> EventBusCapabilities {
 }
 
 #[test]
+fn registry_per_key_capability_accepts_per_subscription_and_rejects_per_partition() {
+    for (ordering, accepted) in [
+        (OrderingCapability::PerSubscription, true),
+        (OrderingCapability::PerPartition, false),
+    ] {
+        let registry = EventBusRegistry::new();
+        registry
+            .register(StubProvider {
+                id: "ordering-test",
+                aliases: &[],
+                capabilities: EventBusCapabilities::new(
+                    PayloadModes::Native,
+                    SettlementCapabilities::AcceptOnly,
+                    ordering,
+                    DelayedDeliveryCapability::None,
+                    DurabilityCapability::Ephemeral,
+                    false,
+                    ReplayCapability::None,
+                    PublishGuarantee::Accepted,
+                    PublishVisibility::Opaque,
+                ),
+                creates: Arc::new(AtomicUsize::new(0)),
+                publish_fails: false,
+                create_unavailable: false,
+            })
+            .expect("provider registration succeeds");
+        let result = registry.create_selected(
+            &ProviderSelection::named("ordering-test").expect("valid selection"),
+            &EventBusConfig::default()
+                .with_required_capabilities(RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey)),
+        );
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "per-subscription ordering satisfies per-key requirement"
+            );
+        } else {
+            assert!(matches!(result, Err(ProviderError::Creation { .. })));
+        }
+    }
+}
+
+#[test]
 fn registry_resolves_alias_and_snapshots_provider_descriptor() {
     let registry = EventBusRegistry::new();
     let creates = Arc::new(AtomicUsize::new(0));

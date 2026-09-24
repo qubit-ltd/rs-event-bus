@@ -83,7 +83,6 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
     assert!(defaults.interceptors().is_empty());
     assert!(defaults.async_interceptors().is_empty());
     assert!(defaults.dead_letter().is_none());
-    assert_eq!(defaults.priority(), 0);
     assert_eq!(defaults.ordering_policy(), OrderingPolicy::Unordered);
     assert!(defaults.consumer_group().is_none());
     assert_eq!(defaults.durability(), SubscriptionDurability::Ephemeral);
@@ -100,7 +99,6 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
         .interceptor(|delivery, next| next(delivery))
         .async_interceptor(|delivery, next| next(delivery))
         .dead_letter(DeadLetterPolicy::topic("dead.events")?)
-        .priority(-3)
         .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("workers")?)
         .durability(SubscriptionDurability::Durable)
@@ -125,7 +123,6 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
     assert_eq!(options.interceptors().len(), 1);
     assert_eq!(options.async_interceptors().len(), 1);
     assert!(matches!(options.dead_letter(), Some(DeadLetterPolicy::Topic(name)) if name.as_ref() == "dead.events"));
-    assert_eq!(options.priority(), -3);
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
     assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
     assert_eq!(options.durability(), SubscriptionDurability::Durable);
@@ -199,7 +196,6 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
         .interceptor(|delivery, next| next(delivery))
         .async_interceptor(|delivery, next| next(delivery))
         .dead_letter(DeadLetterPolicy::topic("dead.events")?)
-        .priority(9)
         .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("workers")?)
         .durability(SubscriptionDurability::Durable)
@@ -231,7 +227,6 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
     assert_eq!(options.interceptors().len(), 1);
     assert_eq!(options.async_interceptors().len(), 1);
     assert!(matches!(options.dead_letter(), Some(DeadLetterPolicy::Topic(name)) if name.as_ref() == "dead.events"));
-    assert_eq!(options.priority(), 9);
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
     assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
     assert_eq!(options.durability(), SubscriptionDurability::Durable);
@@ -324,13 +319,15 @@ fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> R
     let subscriber_id = SubscriberId::new("audit")?;
     let topic = Topic::<u32>::new("orders.created")?;
     let options = SubscribeOptions::<u32>::builder()
-        .priority(7)
+        .ack_mode(AckMode::Manual)
+        .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("auditors")?)
         .build();
     let request = SubscribeRequest::new(subscriber_id.clone(), topic.clone()).with_options(options);
     assert_eq!(request.subscriber_id(), &subscriber_id);
     assert_eq!(request.topic(), &topic);
-    assert_eq!(request.options().priority(), 7);
+    assert_eq!(request.options().ack_mode(), AckMode::Manual);
+    assert_eq!(request.options().ordering_policy(), OrderingPolicy::PerKey);
     let (actual_id, actual_topic, actual_options) = request.into_parts();
     assert_eq!(actual_id, subscriber_id);
     assert_eq!(actual_topic, topic);
@@ -338,6 +335,8 @@ fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> R
         actual_options.consumer_group().expect("configured group").as_str(),
         "auditors"
     );
+    assert_eq!(actual_options.ack_mode(), AckMode::Manual);
+    assert_eq!(actual_options.ordering_policy(), OrderingPolicy::PerKey);
     Ok(())
 }
 

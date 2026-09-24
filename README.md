@@ -13,6 +13,8 @@ The local provider is useful when an application needs to fan an order event out
 
 Local publish admission is per destination: an empty list reports no destinations, and a partial result can include both accepted and rejected subscribers. Inspect the receipt before retrying; resending the whole event can duplicate delivery to destinations that already accepted it. Synchronous graceful shutdown bounds the caller's wait; after `TimedOut`, the bus remains closed to new work while background cleanup continues.
 
+`PublishReceipt::check_admission` evaluates the provider's completed receipt without publishing again or changing it; it does not wait for handlers. A successful check after partial admission still means some destinations rejected the event, so do not blindly republish the whole event. `EventBus::publish_metrics()` and `AsyncEventBus::publish_metrics()` expose admission counters; snapshots load fields independently and do not indicate handler completion. A `PerKey` subscription requires a provider that declares either `PerKey` or `PerSubscription` ordering. Subscription priority has been removed because it did not affect delivery order. Keep the synchronous `Subscription` handle and call `cancel()` explicitly; dropping it alone leaves its worker subscribed.
+
 ## Installation
 
 ```toml

@@ -134,10 +134,16 @@ impl RequiredCapabilities {
         {
             missing.push("settlement");
         }
-        if let Some(required) = self.ordering
-            && capabilities.ordering() != required
-        {
-            missing.push("ordering");
+        if let Some(required) = self.ordering {
+            let actual = capabilities.ordering();
+            let satisfied = if required == OrderingCapability::PerKey {
+                actual.supports_per_key()
+            } else {
+                actual == required
+            };
+            if !satisfied {
+                missing.push("ordering");
+            }
         }
         if let Some(required) = self.delayed_delivery
             && required == DelayedDeliveryCapability::Native

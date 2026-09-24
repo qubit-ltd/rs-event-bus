@@ -100,6 +100,7 @@ impl SubscriptionControl {
 ///
 /// Dropping the handle does not cancel its worker. Call [`Self::cancel`] or
 /// shut down the owning bus explicitly.
+#[must_use = "dropping a subscription handle does not cancel it; call cancel() or shut down the bus"]
 pub struct Subscription {
     control: Arc<SubscriptionControl>,
     bus_identity: usize,

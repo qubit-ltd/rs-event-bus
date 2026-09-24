@@ -53,6 +53,8 @@ use crate::facade::DeliveryTrackerGuard;
 use crate::facade::EventBusFacadeConfig;
 use crate::facade::LifecycleState;
 use crate::facade::LifecycleTracker;
+use crate::facade::PublishMetrics;
+use crate::facade::PublishMetricsSnapshot;
 use crate::facade::Subscription;
 use crate::facade::SubscriptionControl;
 use crate::facade::WaitOutcome;
@@ -164,6 +166,7 @@ pub(super) struct EventBusInner {
     shutdown_gate: Mutex<ShutdownState>,
     shutdown_coordinator: ShutdownCoordinator,
     scheduler: Arc<SyncDeliveryScheduler>,
+    publish_metrics: PublishMetrics,
 }
 
 struct ShutdownState {
@@ -336,6 +339,7 @@ impl EventBus {
                 shutdown_gate: Mutex::new(ShutdownState { outcome: None }),
                 shutdown_coordinator: ShutdownCoordinator::new(),
                 scheduler,
+                publish_metrics: PublishMetrics::default(),
             }),
         }
     }
@@ -350,7 +354,11 @@ impl EventBus {
         &self,
         request: PublishRequest<T>,
     ) -> Result<PublishReceipt, PublishError> {
-        let _operation = self.inner.operations.enter().ok_or(PublishError::Closed)?;
+        self.inner.publish_metrics.record_attempt();
+        let Some(_operation) = self.inner.operations.enter() else {
+            self.inner.publish_metrics.record_error();
+            return Err(PublishError::Closed);
+        };
         let bus_identity = Arc::as_ptr(&self.inner) as usize;
         let _call_context = BusContextGuard::enter(bus_identity);
         let observers = self.inner.observer_snapshot();
@@ -362,7 +370,19 @@ impl EventBus {
                 self.inner.facade_config.global_publisher_interceptors(),
                 &observers,
             )
-            .map_err(publish_pipeline_error)
+            .map_err(|failure| {
+                self.inner.publish_metrics.record_error();
+                publish_pipeline_error(failure)
+            })
+            .inspect(|receipt| {
+                self.inner.publish_metrics.record_receipt(receipt);
+            })
+    }
+
+    /// Returns the shared publication counters for this facade and its clones.
+    #[must_use]
+    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
+        self.inner.publish_metrics.snapshot()
     }
 
     /// Publishes requests independently in input order and retains each result.
@@ -385,8 +405,8 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns `Closed` after shutdown begins, `Capability` for unsupported
-    /// manual acknowledgement, `Configuration` for runtime-model mismatches,
-    /// or the provider subscription error.
+    /// manual acknowledgement or per-key ordering, `Configuration` for
+    /// runtime-model mismatches, or the provider subscription error.
     pub fn subscribe<T, H, R>(&self, request: SubscribeRequest<T>, handler: H) -> Result<Subscription, SubscribeError>
     where
         T: Send + Sync + 'static,
@@ -406,6 +426,13 @@ impl EventBus {
         }
         let capabilities = self.inner.spi.capabilities();
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
+        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
+            && !capabilities.ordering().supports_per_key()
+        {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "ordering.per_key",
+            }));
+        }
         if capabilities.payload_modes() == PayloadModes::Encoded && topic.codec().is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }

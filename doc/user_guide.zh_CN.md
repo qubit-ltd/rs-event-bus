@@ -107,6 +107,10 @@ fn record_unknown_acknowledgement() {}
 
 以上 `record_*` 函数代表应用自己的策略。本地 provider 可能因某个有界队列已满而接纳一个订阅者、拒绝另一个；这种部分结果仍然是成功回执。`Filtered` 表示有意排除，不代表队列满。部分接纳后不要盲目重发整条事件，否则已接纳的订阅者可能收到重复投递。需要时使用幂等键，或通过显式补偿/重试策略处理被拒绝的业务工作。
 
+`receipt.check_admission(requirement)` 是对已返回回执的发布后检查。它不会再次发布，也不会等待 handler。`AdmissionRequirement::AtLeastOneAccepted` 要求至少一个报告的目的地接纳；`AtLeastOneAcceptedAndNoRejected` 还要求拒绝数为零。因此部分接纳可以使更严格的检查失败，即使已有目的地接纳了事件。不要把这个错误当作重发整条事件的信号。
+
+两种 facade 都提供 `publish_metrics()`。`PublishMetricsSnapshot` 的字段为 `attempts`、`errors`、`dropped`、`opaque_accepted`、`zero_destinations`、`accepted_destinations`、`filtered_destinations` 和 `rejected_destinations`。这些由 facade clone 共享的饱和计数器分别读取；并发发布时，一个快照的字段可能对应略有差异的时刻。它们统计 provider 准入，不表示 handler 完成或业务成功。provider 隐藏目的地的 `Accepted` 回执会增加 `opaque_accepted`，但不会披露接纳了多少目的地。
+
 ## 核心流程与策略
 
 ### 添加事件元数据
@@ -189,6 +193,7 @@ async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 ## 限制与最佳实践
 
 - publish 成功表示 provider 返回了准入确认，不表示订阅 handler 已完成。
+- 请求 `OrderingPolicy::PerKey` 的订阅只有在 provider 声明 `OrderingCapability::PerKey` 或 `PerSubscription` 时才会建立。旧订阅 `priority` 设置已删除，因为它不会影响调度。保留同步 `Subscription` 句柄并显式调用 `cancel()`；丢弃句柄不会停止其 worker。
 - `publish_all` 按输入顺序分别尝试请求，并保留各自结果；它不是原子操作。
 - local 队列容量限制每个订阅的排队及尚未 settlement 消息数；消息被接收后仍占用额度，直到 settlement。这不是全局 broker 配额。local provider 仅在进程内工作，不提供持久性。
 - 两种 facade 都有 bus-wide 准入上限。同步 facade 用 `with_sync_delivery_scheduler(...)` 配置 `max_in_flight` 与 handler queue capacity；异步 facade 用 `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` 配置（默认 4）。异步 permit 覆盖每条已接收消息的 lane wait、中间件、handler/retry 及最终 settlement；不同顺序键可并行，同一顺序键保持顺序。每个订阅最多暂存一条尚未准入的消息；空闲的 receive 不占用 permit。

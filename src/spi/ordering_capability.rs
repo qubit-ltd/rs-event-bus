@@ -20,3 +20,12 @@ pub enum OrderingCapability {
     /// Ordering is maintained within each partition.
     PerPartition,
 }
+
+impl OrderingCapability {
+    /// Returns whether this capability guarantees ordering for each key.
+    /// Per-subscription ordering also preserves order for each key.
+    #[must_use]
+    pub const fn supports_per_key(self) -> bool {
+        matches!(self, Self::PerKey | Self::PerSubscription)
+    }
+}

@@ -17,6 +17,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::error::DeliveryAttemptError;
@@ -120,6 +121,8 @@ struct TestBackend {
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
     settlement_capability: std::sync::atomic::AtomicUsize,
+    ordering_capability: AtomicUsize,
+    subscribe_calls: AtomicUsize,
     close_delay_ms: Arc<AtomicUsize>,
     close_panics: Arc<AtomicBool>,
     close_fails: Arc<AtomicBool>,
@@ -139,6 +142,8 @@ impl TestBackend {
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
             settlement_capability: std::sync::atomic::AtomicUsize::new(2),
+            ordering_capability: AtomicUsize::new(3),
+            subscribe_calls: AtomicUsize::new(0),
             close_delay_ms: Arc::new(AtomicUsize::new(0)),
             close_panics: Arc::new(AtomicBool::new(false)),
             close_fails: Arc::new(AtomicBool::new(false)),
@@ -169,6 +174,17 @@ impl TestBackend {
             },
             Ordering::Release,
         );
+    }
+
+    fn set_ordering_capability(&self, capability: OrderingCapability) {
+        let value = match capability {
+            OrderingCapability::None => 0,
+            OrderingCapability::PerPartition => 1,
+            OrderingCapability::PerKey => 2,
+            OrderingCapability::PerSubscription => 3,
+            _ => unreachable!("test only uses known ordering capabilities"),
+        };
+        self.ordering_capability.store(value, Ordering::Release);
     }
 
     fn set_close_delay(&self, delay: Duration) {
@@ -347,7 +363,12 @@ impl EventBusSpi for TestBackend {
                 1 => SettlementCapabilities::AcceptOnly,
                 _ => SettlementCapabilities::AcceptRetryReject,
             },
-            OrderingCapability::PerSubscription,
+            match self.ordering_capability.load(Ordering::Acquire) {
+                0 => OrderingCapability::None,
+                1 => OrderingCapability::PerPartition,
+                2 => OrderingCapability::PerKey,
+                _ => OrderingCapability::PerSubscription,
+            },
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
             false,
@@ -397,6 +418,7 @@ impl EventBusSpi for TestBackend {
     }
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        self.subscribe_calls.fetch_add(1, Ordering::AcqRel);
         Self::wait_at_gate(&self.subscribe_gate, "subscribe");
         let queue = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
         self.state
@@ -575,6 +597,50 @@ impl HandlerGate {
         *self.released.lock().expect("handler gate lock") = true;
         self.changed.notify_all();
     }
+}
+
+#[test]
+fn sync_per_key_capability_is_checked_before_spi_subscribe() {
+    for (capability, accepted) in [
+        (OrderingCapability::None, false),
+        (OrderingCapability::PerPartition, false),
+        (OrderingCapability::PerKey, true),
+        (OrderingCapability::PerSubscription, true),
+    ] {
+        let (bus, backend) = create_bus();
+        backend.set_ordering_capability(capability);
+        let options = SubscribeOptions::<String>::builder()
+            .ordering_policy(OrderingPolicy::PerKey)
+            .build();
+        let result = bus.subscribe(
+            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic()).with_options(options),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        );
+        if accepted {
+            let subscription = result.expect("provider supports per-key delivery");
+            assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 1);
+            subscription.cancel().expect("subscription cancels");
+        } else {
+            assert!(matches!(
+                result,
+                Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                    capability: "ordering.per_key"
+                }))
+            ));
+            assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 0);
+        }
+    }
+
+    let (bus, backend) = create_bus();
+    backend.set_ordering_capability(OrderingCapability::None);
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(SubscriberId::new("unordered").expect("valid subscriber"), topic()),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("default unordered subscription works without ordering capability");
+    assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 1);
+    subscription.cancel().expect("subscription cancels");
 }
 
 #[test]
