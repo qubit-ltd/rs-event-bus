@@ -33,6 +33,10 @@ local provider 在同名 Topic 的活跃订阅期间绑定唯一的原生 Rust p
 
 Provider capability 显式描述 payload 模式、settlement、ordering、延迟、durability、consumer group、replay、发布保证与发布可见性。Registry 可要求 capability 并在创建阶段 fallback；backend 创建成功后，运行期发布、订阅、接收或结算错误不会静默切换 provider。能力声明不是自动获得的保证，具体 provider 必须如实实现并记录其边界。
 
+顺序是 provider 契约。请求 `OrderingPolicy::PerKey` 的订阅只有在 provider 声明 `OrderingCapability::PerKey` 或更强的 `PerSubscription` 时才会建立；facade 会在调用 provider 的 `subscribe` 之前检查。旧订阅 priority 已删除，因为 facade 和 provider 都没有定义它的调度语义。
+
+`PublishReceipt::check_admission` 仅按当前回执报告的准入结果检查“至少一个目的地已接纳”或“至少一个已接纳且没有拒绝”这两种要求；它不会产生新的发布副作用，也无法撤销或重试原发布。每个 facade 的 `PublishMetricsSnapshot` 统计公开 publish 调用次数、错误、拦截器丢弃、不可见目的地的接纳、零目的地回执，以及 provider 报告的已接纳/过滤/拒绝目的地数。各字段独立读取，因此并发快照不保证来自同一个瞬间；这些计数均不表示 handler 已完成。同步 `Subscription` 句柄丢弃时不会取消订阅，调用方必须显式 `cancel()` 或关闭总线。
+
 ## 结算和关闭
 
 Sync/async SPI 都借用 `SettlementToken`。同一 token 与 disposition 重复结算必须幂等并返回一致结果；冲突 disposition 必须失败。Async settle future 取消后，facade 可用原 token 和相同 disposition 重试，provider 必须让执行中及完成后的请求均满足幂等合同。
