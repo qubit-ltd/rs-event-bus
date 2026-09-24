@@ -20,7 +20,11 @@ use crate::model::PublishReceipt;
 /// admission outcomes; they do not report subscriber handler completion.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PublishMetricsSnapshot {
-    /// Number of public `publish` calls, including calls rejected as closed.
+    /// Number of public publish attempts, including calls rejected as closed.
+    ///
+    /// A synchronous call becomes an attempt when the method is entered. An
+    /// asynchronous call becomes an attempt when its future is first polled;
+    /// creating and dropping an unpolled future does not count.
     pub attempts: u64,
     /// Number of calls that returned a publication error.
     pub errors: u64,
@@ -52,15 +56,18 @@ pub(crate) struct PublishMetrics {
 }
 
 impl PublishMetrics {
+    /// Records one public publish attempt.
+    pub(crate) fn record_attempt(&self) {
+        Self::increment(&self.attempts, 1);
+    }
+
     /// Records one failed public call.
     pub(crate) fn record_error(&self) {
-        Self::increment(&self.attempts, 1);
         Self::increment(&self.errors, 1);
     }
 
     /// Records one successful public call and its provider-reported outcome.
     pub(crate) fn record_receipt(&self, receipt: &PublishReceipt) {
-        Self::increment(&self.attempts, 1);
         match receipt.acknowledgement() {
             PublishAcknowledgement::DroppedByInterceptor => Self::increment(&self.dropped, 1),
             PublishAcknowledgement::Accepted { .. } => Self::increment(&self.opaque_accepted, 1),

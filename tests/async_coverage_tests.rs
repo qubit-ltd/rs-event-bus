@@ -102,6 +102,7 @@ struct PublisherCoverageSpi {
     retryable_failures: usize,
     terminal_failure: bool,
     acknowledgement: Option<PublishAcknowledgement>,
+    pending: bool,
     attempts: AtomicUsize,
     payload_was_encoded: Mutex<Vec<bool>>,
 }
@@ -113,6 +114,7 @@ impl PublisherCoverageSpi {
             retryable_failures,
             terminal_failure,
             acknowledgement: None,
+            pending: false,
             attempts: AtomicUsize::new(0),
             payload_was_encoded: Mutex::new(Vec::new()),
         }
@@ -120,6 +122,11 @@ impl PublisherCoverageSpi {
 
     fn with_acknowledgement(mut self, acknowledgement: PublishAcknowledgement) -> Self {
         self.acknowledgement = Some(acknowledgement);
+        self
+    }
+
+    fn with_pending(mut self) -> Self {
+        self.pending = true;
         self
     }
 }
@@ -147,8 +154,11 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
             .push(matches!(message.payload(), TransportPayload::Encoded(_)));
         let should_fail = attempt < self.retryable_failures || self.terminal_failure;
         let acknowledgement = self.acknowledgement.clone();
+        let pending = self.pending;
         Box::pin(async move {
-            if should_fail {
+            if pending {
+                std::future::pending::<Result<PublishAcknowledgement, SpiError>>().await
+            } else if should_fail {
                 Err(SpiError::Operation {
                     provider_id: "async-publisher-coverage".into(),
                     operation: "publish",
@@ -333,6 +343,23 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
     }
     assert_eq!(concurrent_bus.publish_metrics().attempts, 8);
     assert_eq!(concurrent_bus.publish_metrics().opaque_accepted, 8);
+}
+
+#[test]
+fn async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled() {
+    let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_pending());
+    let bus = AsyncEventBus::new(ProviderId::new("async-publisher-metrics-cancelled").unwrap(), spi);
+    let mut publish = Box::pin(bus.publish(PublishRequest::builder().topic(topic()).payload(8_u32).build().unwrap()));
+    let mut context = Context::from_waker(Waker::noop());
+
+    assert!(matches!(publish.as_mut().poll(&mut context), Poll::Pending));
+    let pending_metrics = bus.publish_metrics();
+    assert_eq!(pending_metrics.attempts, 1);
+    assert_eq!(pending_metrics.errors, 0);
+    assert_eq!(pending_metrics.opaque_accepted, 0);
+
+    drop(publish);
+    assert_eq!(bus.publish_metrics().attempts, 1);
 }
 
 #[test]
