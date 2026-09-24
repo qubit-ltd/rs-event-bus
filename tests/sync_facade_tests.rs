@@ -613,8 +613,7 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
         let result = bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic())
-                .with_options(options),
+            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic()).with_options(options),
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         );
         if accepted {

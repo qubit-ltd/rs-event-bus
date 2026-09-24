@@ -511,9 +511,8 @@ impl AsyncEventBus {
                 self.inner.publish_metrics.record_error();
                 publish_pipeline_error(failure)
             })
-            .map(|receipt| {
-                self.inner.publish_metrics.record_receipt(&receipt);
-                receipt
+            .inspect(|receipt| {
+                self.inner.publish_metrics.record_receipt(receipt);
             })
     }
 
@@ -556,7 +555,9 @@ impl AsyncEventBus {
         }
         let capabilities = self.inner.spi.capabilities();
         crate::pipeline::SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
+        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
+            && !capabilities.ordering().supports_per_key()
+        {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "ordering.per_key",
             }));

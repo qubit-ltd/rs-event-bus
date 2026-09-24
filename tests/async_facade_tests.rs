@@ -118,7 +118,10 @@ impl AsyncEventBusSpi for OrderingTestSpi {
         self.capabilities
     }
 
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<qubit_event_bus::model::PublishAcknowledgement, qubit_event_bus::error::SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<qubit_event_bus::model::PublishAcknowledgement, qubit_event_bus::error::SpiError>> {
         self.inner.publish(message)
     }
 
@@ -152,8 +155,7 @@ fn async_per_key_capability_is_checked_before_spi_subscribe() {
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
         let result = block_on(bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic())
-                .with_options(options),
+            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic()).with_options(options),
         ));
         if accepted {
             let mut subscription = result.expect("provider supports per-key delivery");

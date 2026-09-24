@@ -299,18 +299,21 @@ fn publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(destination_metrics.filtered_destinations, 1);
     assert_eq!(destination_metrics.rejected_destinations, 1);
 
-    let empty_bus = bus(Arc::new(CoverageSpi::new(PayloadModes::Native, false).with_acknowledgement(
-        PublishAcknowledgement::DestinationAdmissions(Vec::new()),
-    )));
+    let empty_bus = bus(Arc::new(
+        CoverageSpi::new(PayloadModes::Native, false)
+            .with_acknowledgement(PublishAcknowledgement::DestinationAdmissions(Vec::new())),
+    ));
     empty_bus
         .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 6_u32).unwrap())
         .unwrap();
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
 
     let failing_bus = bus(Arc::new(ScriptedFailureSpi::new(Some(false), 1)));
-    assert!(failing_bus
-        .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 7_u32).unwrap())
-        .is_err());
+    assert!(
+        failing_bus
+            .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 7_u32).unwrap())
+            .is_err()
+    );
     let failure_metrics = failing_bus.publish_metrics();
     assert_eq!(failure_metrics.attempts, 1);
     assert_eq!(failure_metrics.errors, 1);
