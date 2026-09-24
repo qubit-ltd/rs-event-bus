@@ -67,19 +67,16 @@ pub enum SubscribeRequestBuildError {
 ///     .subscriber_id(SubscriberId::new("audit")?)
 ///     .topic(Topic::<String>::new("orders.old")?)
 ///     .topic(Topic::<String>::new("orders.created")?)
-///     .priority(1)
 ///     .error_handler(|_, _| panic!("replaced by options"))
 ///     .interceptor(|delivery, next| next(delivery))
 ///     .options(options)
 ///     .ack_mode(AckMode::Auto)
-///     .priority(10)
 ///     .error_handler(|_, _| FailureDirective::Discard)
 ///     .interceptor(|delivery, next| next(delivery))
 ///     .build()?;
 /// assert_eq!(request.subscriber_id().as_str(), "audit");
 /// assert_eq!(request.topic().name(), "orders.created");
 /// assert_eq!(request.options().ack_mode(), AckMode::Auto);
-/// assert_eq!(request.options().priority(), 10);
 /// assert_eq!(request.options().error_handlers().len(), 2);
 /// assert_eq!(request.options().interceptors().len(), 2);
 /// # Ok(())
@@ -171,11 +168,6 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     /// Replaces the dead-letter policy.
     pub fn dead_letter(mut self, value: DeadLetterPolicy) -> Self {
         self.options.dead_letter = Some(value);
-        self
-    }
-    /// Replaces handler scheduling priority.
-    pub fn priority(mut self, value: i32) -> Self {
-        self.options.priority = value;
         self
     }
     /// Replaces the ordering policy.

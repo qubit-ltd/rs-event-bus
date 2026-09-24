@@ -162,7 +162,6 @@ pub struct SubscribeOptions<T: 'static> {
     pub(crate) interceptors: Vec<Arc<SubscriberInterceptor<T>>>,
     pub(crate) async_interceptors: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
     pub(crate) dead_letter: Option<DeadLetterPolicy>,
-    pub(crate) priority: i32,
     pub(crate) ordering_policy: OrderingPolicy,
     pub(crate) consumer_group: Option<ConsumerGroup>,
     pub(crate) durability: SubscriptionDurability,
@@ -182,7 +181,6 @@ impl<T: 'static> Default for SubscribeOptions<T> {
             interceptors: Vec::new(),
             async_interceptors: Vec::new(),
             dead_letter: None,
-            priority: 0,
             ordering_policy: OrderingPolicy::Unordered,
             consumer_group: None,
             durability: SubscriptionDurability::Ephemeral,
@@ -204,7 +202,6 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
             interceptors: self.interceptors.clone(),
             async_interceptors: self.async_interceptors.clone(),
             dead_letter: self.dead_letter.clone(),
-            priority: self.priority,
             ordering_policy: self.ordering_policy,
             consumer_group: self.consumer_group.clone(),
             durability: self.durability,
@@ -258,10 +255,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// Returns dead-letter policy, or `None` when disabled.
     pub fn dead_letter(&self) -> Option<&DeadLetterPolicy> {
         self.dead_letter.as_ref()
-    }
-    /// Returns handler scheduling priority.
-    pub fn priority(&self) -> i32 {
-        self.priority
     }
     /// Returns requested ordering behavior.
     pub fn ordering_policy(&self) -> OrderingPolicy {
@@ -352,11 +345,6 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// Replaces the dead-letter policy.
     pub fn dead_letter(mut self, value: DeadLetterPolicy) -> Self {
         self.options.dead_letter = Some(value);
-        self
-    }
-    /// Replaces handler priority.
-    pub fn priority(mut self, value: i32) -> Self {
-        self.options.priority = value;
         self
     }
     /// Replaces the ordering policy.
