@@ -47,6 +47,11 @@ reason = "Acknowledgement mode and receipt acknowledgement types share one publi
 
 [[exceptions]]
 rule = "public-type-layout"
+path = "src/model/admission_check.rs"
+reason = "Admission summary, requirement, and check error form one public receipt-checking contract."
+
+[[exceptions]]
+rule = "public-type-layout"
 path = "src/model/delivery.rs"
 reason = "Delivery and its context are a single handler-facing value contract."
 
