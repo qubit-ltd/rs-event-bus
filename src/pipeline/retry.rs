@@ -5,6 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+// qubit-style: allow type-file-name
+
 //! Publish-specific adapters for the `qubit-retry` execution API.
 
 use std::future::Future;
@@ -14,9 +17,11 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
+use qubit_clock::Timer;
 use qubit_retry::AsyncRetry;
 use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
@@ -40,7 +45,7 @@ pub(crate) fn publish_sync<F>(
     make_message: F,
     policy: Option<&RetryPolicy>,
     rule: Option<&Arc<dyn RetryRule<PublishAttemptError>>>,
-    cancellation: Option<&qubit_retry::RetryCancellationToken>,
+    cancellation: Option<&RetryCancellationToken>,
 ) -> Result<PublishAcknowledgement, PublishError>
 where
     F: Fn() -> OutboundMessage,
@@ -69,8 +74,8 @@ pub(crate) async fn publish_async<'a, F>(
     make_message: F,
     policy: Option<&RetryPolicy>,
     rule: Option<&Arc<dyn RetryRule<PublishAttemptError>>>,
-    cancellation: Option<&qubit_retry::RetryCancellationToken>,
-    timer: Arc<dyn qubit_clock::Timer>,
+    cancellation: Option<&RetryCancellationToken>,
+    timer: Arc<dyn Timer>,
 ) -> Result<PublishAcknowledgement, PublishError>
 where
     F: Fn() -> OutboundMessage + 'a,

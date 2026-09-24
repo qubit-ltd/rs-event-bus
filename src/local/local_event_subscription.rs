@@ -13,9 +13,9 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::spi::invalid_token_error;
-use super::spi::operation_error;
-use super::spi::signal_changed;
+use super::local_event_bus_spi::invalid_token_error;
+use super::local_event_bus_spi::operation_error;
+use super::local_event_bus_spi::signal_changed;
 use super::state::LocalQueue;
 use super::state::LocalSettlementState;
 use super::state::LocalSharedState;

@@ -8,31 +8,16 @@
 //! Receipt for one publication attempt.
 
 use super::EventId;
+use super::ProviderId;
 use super::PublishAcknowledgement;
-use crate::error::ConfigurationError;
-
-/// A validated provider identifier.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ProviderId(Box<str>);
-
-impl ProviderId {
-    /// Validates a nonblank provider identifier.
-    pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
-            return Err(ConfigurationError::InvalidField {
-                field: "provider_id",
-                message: "must be nonblank and contain no controls".into(),
-            });
-        }
-        Ok(Self(value.into()))
-    }
-    /// Returns the provider identifier.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 /// Publication admission, not subscriber handler completion.
+///
+/// Inspect [`Self::acknowledgement`] to learn what the provider reported. A
+/// receipt with destination admissions can contain both accepted and rejected
+/// destinations; retrying the original event may duplicate work for accepted
+/// destinations. Use an application idempotency key or retry only work that
+/// the application's delivery policy can safely repeat.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishReceipt {
     input_event_id: EventId,
@@ -69,6 +54,10 @@ impl PublishReceipt {
         &self.provider_id
     }
     /// Returns provider admission information; handlers may still be pending.
+    ///
+    /// `DestinationAdmissions([])` means no destinations were reported. It
+    /// does not prove that handler work completed or that a remote consumer
+    /// was globally idle.
     pub fn acknowledgement(&self) -> &PublishAcknowledgement {
         &self.acknowledgement
     }

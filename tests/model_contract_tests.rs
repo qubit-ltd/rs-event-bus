@@ -10,6 +10,7 @@ use std::sync::Arc;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::Topic;
 
 struct NonClonePayload(String);
@@ -42,7 +43,7 @@ fn caller_cannot_forge_reserved_dead_letter_header() -> Result<(), Box<dyn std::
     assert!(envelope.set_header("X-Qubit-Event-Bus-Dead-Letter", "v1").is_err());
     assert!(envelope.remove_header("X-Qubit-Event-Bus-Dead-Letter").is_err());
     assert!(
-        qubit_event_bus::model::PublishRequest::builder()
+        PublishRequest::builder()
             .topic(Topic::<String>::new("events.header")?)
             .payload("payload".to_owned())
             .header("x-qubit-event-bus-dead-letter", "v1")

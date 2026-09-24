@@ -15,6 +15,12 @@ use super::DestinationAdmission;
 pub type ProviderMessageMetadata = BTreeMap<String, String>;
 
 /// What the publish path has accepted, without promising handler completion.
+///
+/// A successful [`crate::EventBus::publish`] returns this value inside a
+/// [`crate::model::PublishReceipt`]. A rejected destination is an admission
+/// result, not a whole-request [`crate::error::PublishError`]: other
+/// destinations may already have accepted the event. Retrying the entire
+/// request can therefore deliver duplicates to destinations that accepted it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PublishAcknowledgement {
@@ -25,7 +31,12 @@ pub enum PublishAcknowledgement {
         /// Non-sensitive provider metadata such as partition or offset.
         metadata: ProviderMessageMetadata,
     },
-    /// A local provider can report admission for individual subscribers.
+    /// A provider can report admission for individual subscribers.
+    ///
+    /// An empty vector means that the provider reported no destinations. Each
+    /// [`DestinationAdmission`] distinguishes an accepted destination, one
+    /// intentionally filtered, and one rejected by admission policy or
+    /// capacity. `Filtered` is not a queue-capacity failure.
     DestinationAdmissions(Vec<DestinationAdmission>),
     /// A publisher interceptor intentionally stopped dispatch.
     DroppedByInterceptor,

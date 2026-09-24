@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::CodecError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::ConfigurationError;
@@ -505,10 +506,10 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
         fn schema_id(&self) -> Option<&SchemaId> {
             Some(&self.schema_id)
         }
-        fn encode(&self, value: &String) -> Result<Arc<[u8]>, qubit_event_bus::CodecError> {
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, qubit_event_bus::CodecError> {
+        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }

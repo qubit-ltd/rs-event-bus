@@ -27,6 +27,8 @@ use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DestinationAdmission;
+use qubit_event_bus::model::EventEnvelope;
+use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
@@ -53,9 +55,12 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TransportPayload;
+use qubit_id::Id;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
+use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
 use support::fake_spi::FakeEventBusSpi;
 use support::manual_async::block_on;
@@ -175,7 +180,7 @@ impl EventBusSpi for CoverageSpi {
 
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.publish_calls.fetch_add(1, Ordering::AcqRel);
-        if let qubit_event_bus::spi::TransportPayload::Native(payload) = message.payload() {
+        if let TransportPayload::Native(payload) = message.payload() {
             self.native_payload_types
                 .lock()
                 .unwrap()
@@ -184,7 +189,7 @@ impl EventBusSpi for CoverageSpi {
         if self.reject_admission {
             Ok(PublishAcknowledgement::DestinationAdmissions(vec![
                 DestinationAdmission::new(
-                    qubit_id::Id::new(1),
+                    Id::new(1),
                     SubscriberId::new("rejected-subscriber").expect("valid subscriber ID"),
                     AdmissionStatus::Rejected("injected admission rejection".into()),
                 ),
@@ -552,7 +557,7 @@ fn retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
     let PublishError::Retry(retry) = error else {
         panic!("retry policy failure should retain RetryError, got {error:?}");
     };
-    assert!(matches!(retry.reason(), qubit_retry::RetryErrorReason::Aborted));
+    assert!(matches!(retry.reason(), RetryErrorReason::Aborted));
     assert_eq!(retry.context().attempts(), 1);
     assert_eq!(
         spi.operation_log()
@@ -632,7 +637,7 @@ fn terminal_publish_error_handler_can_inspect_shared_non_clone_event_context() {
     let request = PublishRequest::builder()
         .topic(Topic::new("orders.non_clone").unwrap())
         .payload(NonClonePayload("payload-value".to_owned()))
-        .event_id(qubit_event_bus::model::EventId::new("failed-event").unwrap())
+        .event_id(EventId::new("failed-event").unwrap())
         .header("trace-id", "trace-123")
         .timestamp(created_at)
         .options(options)
@@ -662,11 +667,9 @@ fn typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let bus = bus(spi.clone());
     let options = PublishOptions::<u32>::builder()
-        .interceptor(
-            |_| -> Result<Option<qubit_event_bus::model::EventEnvelope<u32>>, PublishError> {
-                panic!("typed publisher middleware panic")
-            },
-        )
+        .interceptor(|_| -> Result<Option<EventEnvelope<u32>>, PublishError> {
+            panic!("typed publisher middleware panic")
+        })
         .build();
     let request = PublishRequest::new(Topic::new("interceptor.panic").unwrap(), 9_u32)
         .unwrap()

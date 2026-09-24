@@ -12,6 +12,8 @@ mod async_subscription;
 mod event_bus;
 mod event_bus_facade_config;
 mod lifecycle;
+mod shutdown_coordinator;
+mod shutdown_coordinator_state;
 mod subscription;
 mod sync_delivery_scheduler;
 mod tracker;

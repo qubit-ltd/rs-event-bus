@@ -7,11 +7,11 @@
 // =============================================================================
 //! Built-in local event bus provider.
 
-mod config;
-mod provider;
-mod spi;
+mod local_event_bus_config;
+mod local_event_bus_provider;
+mod local_event_bus_spi;
+mod local_event_subscription;
 mod state;
-mod subscription;
 
-pub use config::LocalEventBusConfig;
-pub use provider::LocalEventBusProvider;
+pub use local_event_bus_config::LocalEventBusConfig;
+pub use local_event_bus_provider::LocalEventBusProvider;

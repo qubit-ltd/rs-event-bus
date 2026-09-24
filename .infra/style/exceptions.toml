@@ -22,22 +22,22 @@ reason = "Lifecycle outcome and state types are intentionally co-located as one 
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/local/config.rs"
+path = "src/local/local_event_bus_config.rs"
 reason = "Local provider configuration types are grouped in the local provider configuration module."
 
 [[exceptions]]
 rule = "type-file-name"
-path = "src/local/config.rs"
+path = "src/local/local_event_bus_config.rs"
 reason = "LocalEventBusConfig is intentionally located in the local provider configuration module."
 
 [[exceptions]]
 rule = "type-file-name"
-path = "src/local/provider.rs"
+path = "src/local/local_event_bus_provider.rs"
 reason = "The provider constructor and provider implementation are kept together in the local provider module."
 
 [[exceptions]]
 rule = "type-file-name"
-path = "src/local/spi.rs"
+path = "src/local/local_event_bus_spi.rs"
 reason = "The local SPI implementation is grouped with its local transport adapter helpers."
 
 [[exceptions]]
@@ -87,15 +87,5 @@ reason = "Typed topic identity and its ordering key are a single public routing 
 
 [[exceptions]]
 rule = "type-file-name"
-path = "src/spi/capability.rs"
+path = "src/spi/event_bus_capabilities.rs"
 reason = "The aggregate provider capability struct is grouped with the capability enums it composes."
-
-[[exceptions]]
-rule = "test-redirect"
-path = "tests/sync_facade_tests.rs"
-reason = "This Cargo integration-test entry re-exports the crate namespaces required by the shared synchronous facade test module."
-
-[[exceptions]]
-rule = "explicit-imports"
-path = "tests/sync_facade_tests.rs"
-reason = "The integration-test namespace adapter intentionally re-exports the public module surfaces consumed by shared facade tests."

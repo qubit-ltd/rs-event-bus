@@ -15,12 +15,14 @@ use std::time::SystemTime;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
@@ -28,6 +30,7 @@ use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::StartPosition;
+use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
@@ -36,6 +39,7 @@ use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OrderingKey;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ReceiveOutcome;
@@ -159,8 +163,8 @@ fn local_facade_delivers_owned_string_payload_without_a_clone_bound() {
 
 #[test]
 fn local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
-    let facade = qubit_event_bus::EventBusFacadeConfig::new()
-        .with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
+    let facade =
+        EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
     let registry = EventBusRegistry::with_local().unwrap();
     let config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options())
@@ -228,20 +232,14 @@ fn local_provider_admits_only_matching_topic_subscriptions_and_reports_capacity_
         panic!("local provider reports per-destination admission");
     };
     assert_eq!(1, first_admission.len());
-    assert!(matches!(
-        first_admission[0].status(),
-        qubit_event_bus::model::AdmissionStatus::Accepted
-    ));
+    assert!(matches!(first_admission[0].status(), AdmissionStatus::Accepted));
 
     let second_admission = spi.publish(outbound("orders.created", 2)).unwrap();
     let PublishAcknowledgement::DestinationAdmissions(second_admission) = second_admission else {
         panic!("local provider reports per-destination admission");
     };
     assert_eq!(1, second_admission.len());
-    assert!(matches!(
-        second_admission[0].status(),
-        qubit_event_bus::model::AdmissionStatus::Rejected(_)
-    ));
+    assert!(matches!(second_admission[0].status(), AdmissionStatus::Rejected(_)));
     assert!(matches!(
         first.receive(Duration::ZERO).unwrap(),
         ReceiveOutcome::Message(_)
@@ -270,13 +268,13 @@ fn local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() {
     let active_by_handler = active.clone();
     let maximum_by_handler = max_active.clone();
     let done_by_handler = handler_done_tx.clone();
-    let options = qubit_event_bus::model::SubscribeOptions::builder()
+    let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(SubscriberId::new("ordered-local").unwrap(), topic.clone()).with_options(options),
-            move |delivery: qubit_event_bus::model::Delivery<u32>| {
+            move |delivery: Delivery<u32>| {
                 let current = active_by_handler.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
                 maximum_by_handler.fetch_max(current, std::sync::atomic::Ordering::AcqRel);
                 observed_by_handler.lock().unwrap().push(*delivery.payload());
@@ -324,11 +322,11 @@ fn local_facade_allows_a_different_ordering_key_to_progress_while_one_handler_is
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(SubscriberId::new("cross-key").unwrap(), topic.clone()).with_options(
-                qubit_event_bus::model::SubscribeOptions::builder()
+                SubscribeOptions::builder()
                     .ordering_policy(OrderingPolicy::PerKey)
                     .build(),
             ),
-            move |delivery: qubit_event_bus::model::Delivery<u32>| {
+            move |delivery: Delivery<u32>| {
                 if *delivery.payload() == 1 {
                     started_tx.send(()).unwrap();
                     release_rx.lock().unwrap().recv().unwrap();
@@ -371,11 +369,11 @@ fn local_facade_delayed_message_does_not_block_immediate_message_on_another_key(
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(SubscriberId::new("delay-cross-key").unwrap(), topic.clone()).with_options(
-                qubit_event_bus::model::SubscribeOptions::builder()
+                SubscribeOptions::builder()
                     .ordering_policy(OrderingPolicy::PerKey)
                     .build(),
             ),
-            move |delivery: qubit_event_bus::model::Delivery<u32>| {
+            move |delivery: Delivery<u32>| {
                 done_tx.send(*delivery.payload()).unwrap();
             },
         )
@@ -499,10 +497,7 @@ fn local_native_delay_hides_the_message_until_its_deadline() {
 #[test]
 fn local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_order() {
     let spi = create(&LocalEventBusConfig::default());
-    assert_eq!(
-        qubit_event_bus::spi::OrderingCapability::PerKey,
-        spi.capabilities().ordering()
-    );
+    assert_eq!(OrderingCapability::PerKey, spi.capabilities().ordering());
     let mut subscription = spi.subscribe(request(17, "events")).unwrap();
     spi.publish(outbound_with_key_and_delay(
         "events",

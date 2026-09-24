@@ -5,11 +5,15 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Sync and runtime-neutral async publication processing.
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+
+use qubit_clock::Timer;
 
 use crate::codec::CodecRegistry;
 use crate::error::CapabilityError;
@@ -28,7 +32,7 @@ use crate::pipeline::diagnostic::DiagnosticObserver;
 use crate::pipeline::diagnostic::PipelineFailure;
 use crate::pipeline::diagnostic::PipelineFailureOrigin;
 use crate::pipeline::diagnostic::emit_diagnostic;
-use crate::pipeline::interceptor::GlobalPublisherInterceptor;
+use crate::pipeline::global_publisher_interceptor::GlobalPublisherInterceptor;
 use crate::pipeline::retry;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::EncodedPayload;
@@ -143,7 +147,7 @@ impl PublisherPipeline {
         request: PublishRequest<T>,
         global_interceptors: &[GlobalPublisherInterceptor],
         observers: &[Arc<DiagnosticObserver>],
-        timer: Arc<dyn qubit_clock::Timer>,
+        timer: Arc<dyn Timer>,
     ) -> Result<PublishReceipt, PipelineFailure> {
         let (mut envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();

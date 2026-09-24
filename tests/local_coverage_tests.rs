@@ -16,6 +16,7 @@ use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderOptions;
@@ -83,9 +84,7 @@ fn outbound(
 }
 
 /// Extracts the local per-destination outcomes from a publication.
-fn destination_admissions(
-    acknowledgement: PublishAcknowledgement,
-) -> Vec<qubit_event_bus::model::DestinationAdmission> {
+fn destination_admissions(acknowledgement: PublishAcknowledgement) -> Vec<DestinationAdmission> {
     let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
         panic!("local provider reports one admission result per matching subscription");
     };

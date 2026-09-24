@@ -16,9 +16,17 @@ use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use qubit_event_bus::CodecError;
+use qubit_event_bus::ConfigurationError;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ReceiveError;
+use qubit_event_bus::ShutdownError;
+use qubit_event_bus::SubscribeError;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::error::DeliveryAttemptError;
+use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::DeliveryAdmissionConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
@@ -32,11 +40,15 @@ use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::InboundMessage;
 use qubit_event_bus::spi::SettlementToken;
@@ -45,9 +57,12 @@ use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+use qubit_id::Id;
+use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
-use support::fake_spi::FakeAsyncEventBusSpi;
-use support::manual_async::block_on;
+
+use crate::support::fake_spi::FakeAsyncEventBusSpi;
+use crate::support::manual_async::block_on;
 
 fn topic() -> Topic<u32> {
     Topic::new("test.topic").unwrap()
@@ -95,7 +110,7 @@ fn async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() 
         assert_eq!(string_batch.accepted_count(), 2);
 
         spi.fail_next_publish();
-        let failed_options = qubit_event_bus::model::PublishOptions::<String>::builder()
+        let failed_options = PublishOptions::<String>::builder()
             .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
             .build();
         let mixed_batch = bus
@@ -136,7 +151,7 @@ fn async_facade_publisher_interceptor_can_drop_without_spi_publish() {
     });
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
-    let options = qubit_event_bus::model::PublishOptions::<u32>::builder()
+    let options = PublishOptions::<u32>::builder()
         .interceptor(move |mut envelope| {
             typed_order.lock().unwrap().push("typed");
             envelope.set_header("origin", "typed").expect("valid header");
@@ -170,9 +185,7 @@ fn async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     let options = PublishOptions::<u32>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
-        .retry_rule(
-            |_: &AttemptFailure<qubit_event_bus::error::PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
-        )
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .build();
 
     block_on(async {
@@ -183,10 +196,7 @@ fn async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
         let PublishError::Retry(retry) = error else {
             panic!("typed RetryError must reach async facade caller");
         };
-        assert!(matches!(
-            retry.reason(),
-            qubit_retry::RetryErrorReason::Exhausted { .. }
-        ));
+        assert!(matches!(retry.reason(), RetryErrorReason::Exhausted { .. }));
         assert_eq!(retry.context().attempts(), 1);
         let attempt_error = retry.last_error().expect("attempt error retained");
         assert_eq!(attempt_error.kind(), "fake_failure");
@@ -578,7 +588,7 @@ fn immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler()
     ))
     .unwrap();
     for payload in [1, 2] {
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             format!("immediate-lane-{payload}"),
         ))));
@@ -652,7 +662,7 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
     ))
     .unwrap();
     for payload in [1_u32, 2_u32] {
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             format!("immediate-race-{payload}"),
         ))));
@@ -684,7 +694,7 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
         }
     }));
     for _ in 0..100 {
-        let _ = support::manual_async::poll_once(run.as_mut());
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
         if calls.load(Ordering::Acquire) == 1 && spi.operation_log().iter().filter(|op| **op == "receive").count() >= 2
         {
             break;
@@ -696,7 +706,7 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(matches!(
-        support::manual_async::poll_once(shutdown.as_mut()),
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
         Poll::Pending
     ));
     release_first.store(true, Ordering::Release);
@@ -705,7 +715,7 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
     }
     let mut outcome = None;
     for _ in 0..100 {
-        if let Poll::Ready(result) = support::manual_async::poll_once(shutdown.as_mut()) {
+        if let Poll::Ready(result) = crate::support::manual_async::poll_once(shutdown.as_mut()) {
             outcome = Some(result);
             break;
         }
@@ -761,7 +771,7 @@ fn cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() 
 
         let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
         assert!(matches!(
-            support::manual_async::poll_once(shutdown.as_mut()),
+            crate::support::manual_async::poll_once(shutdown.as_mut()),
             Poll::Pending
         ));
         assert_eq!(spi.operation_log(), ["subscribe", "close"]);
@@ -792,7 +802,7 @@ fn graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
 
         assert!(matches!(
             bus.shutdown(ShutdownMode::Graceful { timeout }).await,
-            Err(qubit_event_bus::ShutdownError::TimedOut { timeout: elapsed }) if elapsed == timeout
+            Err(ShutdownError::TimedOut { timeout: elapsed }) if elapsed == timeout
         ));
         assert_eq!(spi.operation_log(), ["subscribe", "close"]);
 
@@ -848,7 +858,7 @@ fn shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     subscriber.join().unwrap();
     shutdown_thread.join().unwrap();
 
-    assert!(matches!(subscribe_result, Err(qubit_event_bus::SubscribeError::Closed)));
+    assert!(matches!(subscribe_result, Err(SubscribeError::Closed)));
     assert_eq!(shutdown_result.unwrap(), ShutdownOutcome::Complete);
     assert!(
         !shutdown_was_early,
@@ -873,13 +883,13 @@ fn cancelling_pending_subscribe_releases_admission_for_shutdown() {
     let request = SubscribeRequest::new(SubscriberId::new("cancel-pending-subscribe").unwrap(), topic());
     let mut subscribe = Box::pin(bus.subscribe(request));
     assert!(matches!(
-        support::manual_async::poll_once(subscribe.as_mut()),
+        crate::support::manual_async::poll_once(subscribe.as_mut()),
         Poll::Pending
     ));
     drop(subscribe);
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
-    let outcome = match support::manual_async::poll_once(shutdown.as_mut()) {
+    let outcome = match crate::support::manual_async::poll_once(shutdown.as_mut()) {
         Poll::Ready(result) => result.unwrap(),
         Poll::Pending => panic!("cancelled subscribe must release its admission guard"),
     };
@@ -906,9 +916,9 @@ fn asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subs
         Err(error) => error,
     };
     match error {
-        qubit_event_bus::error::SubscribeError::Configuration(
-            qubit_event_bus::error::ConfigurationError::InvalidField { field, .. },
-        ) => assert_eq!(field, "sync_subscriber_interceptor"),
+        SubscribeError::Configuration(ConfigurationError::InvalidField { field, .. }) => {
+            assert_eq!(field, "sync_subscriber_interceptor")
+        }
         other => panic!("expected runtime-model configuration error, got {other}"),
     }
     assert!(spi.operation_log().is_empty());
@@ -931,7 +941,7 @@ fn async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(None));
+        spi.enqueue(crate::support::fake_spi::inbound_message(None));
         let observed_by_handler = observed.clone();
         let bus_by_handler = bus.clone();
         let runner = std::thread::spawn(move || {
@@ -947,9 +957,9 @@ fn async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
                         let would_deadlock = |result| {
                             matches!(
                                 result,
-                                Poll::Ready(Err(qubit_event_bus::ShutdownError::Lifecycle(
-                                    qubit_event_bus::LifecycleError::WouldDeadlock { operation: "shutdown" }
-                                )))
+                                Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                                    operation: "shutdown"
+                                })))
                             )
                         };
                         let graceful_rejected = would_deadlock(graceful.as_mut().poll(context));
@@ -996,7 +1006,7 @@ fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(None));
+        spi.enqueue(crate::support::fake_spi::inbound_message(None));
         let started = handler_started.clone();
         let release = release_handler.clone();
         let saved_waker = handler_waker.clone();
@@ -1046,10 +1056,7 @@ fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
 
         assert!(first_poll_pending);
         assert!(timer_woke, "timeout must wake the waiter without another bus signal");
-        assert!(matches!(
-            timeout_result,
-            Some(Poll::Ready(Ok(qubit_event_bus::WaitOutcome::TimedOut)))
-        ));
+        assert!(matches!(timeout_result, Some(Poll::Ready(Ok(WaitOutcome::TimedOut)))));
     });
 }
 
@@ -1079,7 +1086,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(None));
+        spi.enqueue(crate::support::fake_spi::inbound_message(None));
         let started_by_handler = started.clone();
         let release_by_handler = release.clone();
         let waker_by_handler = handler_waker.clone();
@@ -1134,10 +1141,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         assert!(clock.wait_for_waiters(1, std::time::Duration::from_secs(1)));
         assert_eq!(clock.pending_waiters(), 1);
         clock.advance(std::time::Duration::from_secs(30)).unwrap();
-        assert!(matches!(
-            waiter.join().unwrap(),
-            Ok(qubit_event_bus::WaitOutcome::TimedOut)
-        ));
+        assert!(matches!(waiter.join().unwrap(), Ok(WaitOutcome::TimedOut)));
         assert!(clock.wait_for_waiters(0, std::time::Duration::from_secs(1)));
         assert_eq!(clock.pending_waiters(), 0);
 
@@ -1153,7 +1157,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
 #[test]
 fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
-        support::fake_spi::native_no_settlement_capabilities(),
+        crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1198,7 +1202,7 @@ fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() 
     });
     assert_eq!(spi.settlement_count(), 0);
     assert!(diagnostics.lock().unwrap().iter().any(|item| matches!(item,
-        Diagnostic::SettlementUnavailable { event_id, requested: qubit_event_bus::spi::DeliveryDisposition::Reject, .. }
+        Diagnostic::SettlementUnavailable { event_id, requested: DeliveryDisposition::Reject, .. }
             if event_id.as_str() == "unsettled-event"
     )));
 }
@@ -1206,7 +1210,7 @@ fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() 
 #[test]
 fn async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
-        support::fake_spi::native_no_settlement_capabilities(),
+        crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1228,7 +1232,7 @@ fn async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
             Headers::new(),
             None,
             TransportPayload::Native(Arc::new(1_u32)),
-            Some(SettlementToken::new(qubit_id::Id::new(9_999), "wrong-owner")),
+            Some(SettlementToken::new(Id::new(9_999), "wrong-owner")),
             Default::default(),
         ));
         let runner = std::thread::spawn(move || {
@@ -1262,7 +1266,7 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
     let mut headers = Headers::new();
     headers.insert("x-qubit-event-bus-dead-letter".into(), "v1".into());
     let options = SubscribeOptions::builder()
-        .error_handler(|_, _| qubit_event_bus::model::FailureDirective::DeadLetter)
+        .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap())
         .build();
 
@@ -1303,10 +1307,7 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
         runner.join().unwrap().unwrap();
         assert!(observed.load(Ordering::SeqCst));
         assert_eq!(spi.operation_log().iter().filter(|call| **call == "publish").count(), 0);
-        assert_eq!(
-            spi.settlement_dispositions(),
-            [qubit_event_bus::spi::DeliveryDisposition::Reject]
-        );
+        assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     });
 }
 
@@ -1339,10 +1340,7 @@ fn async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_r
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(delivered.load(Ordering::Acquire), 1);
-        assert_eq!(
-            bus.wait_for_idle(&topic(), None).await.unwrap(),
-            qubit_event_bus::WaitOutcome::Idle
-        );
+        assert_eq!(bus.wait_for_idle(&topic(), None).await.unwrap(), WaitOutcome::Idle);
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
     });
@@ -1464,7 +1462,7 @@ fn async_facade_global_middleware_wraps_typed_middleware_and_handler() {
 #[test]
 fn async_facade_rejects_sync_global_subscriber_middleware() {
     let config = EventBusFacadeConfig::new()
-        .subscriber_interceptor(|_delivery: Delivery<u32>, _next: qubit_event_bus::model::SubscriberNext<u32>| Ok(()));
+        .subscriber_interceptor(|_delivery: Delivery<u32>, _next: SubscriberNext<u32>| Ok(()));
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
     block_on(async {
@@ -1476,12 +1474,10 @@ fn async_facade_rejects_sync_global_subscriber_middleware() {
             .await;
         assert!(matches!(
             result,
-            Err(qubit_event_bus::SubscribeError::Configuration(
-                qubit_event_bus::ConfigurationError::InvalidField {
-                    field: "sync_subscriber_interceptor",
-                    ..
-                }
-            ))
+            Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "sync_subscriber_interceptor",
+                ..
+            }))
         ));
         assert!(spi.operation_log().is_empty());
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
@@ -1530,7 +1526,7 @@ fn async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy(
     let attempts = Arc::new(AtomicUsize::new(0));
     let options = SubscribeOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .error_handler(|_, _| qubit_event_bus::model::FailureDirective::Retry)
+        .error_handler(|_, _| FailureDirective::Retry)
         .build();
     let request = SubscribeRequest::new(SubscriberId::new("async-retry").unwrap(), topic()).with_options(options);
 
@@ -1569,13 +1565,9 @@ fn async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy(
 #[test]
 fn async_manual_acknowledgement_requires_an_explicit_ack() {
     for (subscriber, action, expected) in [
-        ("async-manual-ack", 1, qubit_event_bus::spi::DeliveryDisposition::Accept),
-        ("async-manual-nack", 2, qubit_event_bus::spi::DeliveryDisposition::Retry),
-        (
-            "async-manual-pending",
-            0,
-            qubit_event_bus::spi::DeliveryDisposition::Reject,
-        ),
+        ("async-manual-ack", 1, DeliveryDisposition::Accept),
+        ("async-manual-nack", 2, DeliveryDisposition::Retry),
+        ("async-manual-pending", 0, DeliveryDisposition::Reject),
     ] {
         let spi = Arc::new(FakeAsyncEventBusSpi::new());
         let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
@@ -1594,7 +1586,7 @@ fn async_manual_acknowledgement_requires_an_explicit_ack() {
                 .subscribe(SubscribeRequest::new(SubscriberId::new(subscriber).unwrap(), topic()).with_options(options))
                 .await
                 .unwrap();
-            spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
                 subscription.id(),
                 subscriber,
             ))));
@@ -1641,9 +1633,7 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     let handler_log = calls.clone();
     let options = SubscribeOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .retry_rule(
-            |_: &AttemptFailure<qubit_event_bus::error::DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry,
-        )
+        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .async_interceptor(move |delivery, next: AsyncSubscriberNext<u32>| {
             before.lock().unwrap().push("before");
             let after = after.clone();
@@ -1651,7 +1641,7 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
                 let result = next(delivery).await;
                 after.lock().unwrap().push("after");
                 result
-            }) as qubit_event_bus::spi::SpiFuture<'static, Result<(), DeliveryError>>
+            }) as SpiFuture<'static, Result<(), DeliveryError>>
         })
         .error_handler(move |_, _| {
             error.lock().unwrap().push("error");
@@ -1666,7 +1656,7 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
             )
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "middleware-retry",
         ))));
@@ -1695,10 +1685,7 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert_eq!(attempts.load(Ordering::Acquire), 2);
-        assert_eq!(
-            spi.settlement_dispositions(),
-            [qubit_event_bus::spi::DeliveryDisposition::Accept]
-        );
+        assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Accept]);
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
     });
@@ -1715,7 +1702,7 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
     fn run_case(
         directive: FailureDirective,
         fail_dead_letter_publish: bool,
-    ) -> (Vec<qubit_event_bus::spi::DeliveryDisposition>, Vec<&'static str>) {
+    ) -> (Vec<DeliveryDisposition>, Vec<&'static str>) {
         let spi = Arc::new(FakeAsyncEventBusSpi::new());
         let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
         let mut builder = SubscribeOptions::<u32>::builder().error_handler(move |_, _| directive);
@@ -1733,7 +1720,7 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
             if fail_dead_letter_publish {
                 spi.fail_next_publish();
             }
-            spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
                 subscription.id(),
                 "directive-event",
             ))));
@@ -1760,20 +1747,17 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
     }
 
     let (requeued, _) = run_case(FailureDirective::Requeue, false);
-    assert_eq!(requeued, [qubit_event_bus::spi::DeliveryDisposition::Retry]);
+    assert_eq!(requeued, [DeliveryDisposition::Retry]);
     let (discarded, _) = run_case(FailureDirective::Discard, false);
-    assert_eq!(discarded, [qubit_event_bus::spi::DeliveryDisposition::Reject]);
+    assert_eq!(discarded, [DeliveryDisposition::Reject]);
     let (dead_lettered, success_operations) = run_case(FailureDirective::DeadLetter, false);
-    assert!(dead_lettered.contains(&qubit_event_bus::spi::DeliveryDisposition::Reject));
+    assert!(dead_lettered.contains(&DeliveryDisposition::Reject));
     assert!(
         success_operations.contains(&"publish"),
         "dead-letter success publishes the record"
     );
     let (requeued_after_failure, failure_operations) = run_case(FailureDirective::DeadLetter, true);
-    assert_eq!(
-        requeued_after_failure,
-        [qubit_event_bus::spi::DeliveryDisposition::Retry]
-    );
+    assert_eq!(requeued_after_failure, [DeliveryDisposition::Retry]);
     assert!(
         failure_operations.contains(&"publish"),
         "dead-letter failure is attempted before requeue"
@@ -1814,7 +1798,7 @@ fn cancelling_the_run_future_preserves_an_already_received_delivery_for_resume()
             }
         }));
         for _ in 0..100 {
-            let _ = support::manual_async::poll_once(first_run.as_mut());
+            let _ = crate::support::manual_async::poll_once(first_run.as_mut());
             if first_started.load(Ordering::Acquire) {
                 break;
             }
@@ -1867,7 +1851,7 @@ fn dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "drop-recovery",
         ))));
@@ -1880,7 +1864,7 @@ fn dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery
             }
         }));
         for _ in 0..100 {
-            let _ = support::manual_async::poll_once(run.as_mut());
+            let _ = crate::support::manual_async::poll_once(run.as_mut());
             if handler_started.load(Ordering::Acquire) {
                 break;
             }
@@ -1915,7 +1899,7 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
         topic(),
     )))
     .unwrap();
-    spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "drop-takeover",
     ))));
@@ -1941,7 +1925,7 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
         }
     }));
     for _ in 0..100 {
-        let _ = support::manual_async::poll_once(run.as_mut());
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
         if started.load(Ordering::Acquire) {
             break;
         }
@@ -1952,7 +1936,7 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(matches!(
-        support::manual_async::poll_once(shutdown.as_mut()),
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
         Poll::Pending
     ));
     drop(subscription);
@@ -1962,7 +1946,7 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
     }
     let mut outcome = None;
     for _ in 0..100 {
-        if let Poll::Ready(result) = support::manual_async::poll_once(shutdown.as_mut()) {
+        if let Poll::Ready(result) = crate::support::manual_async::poll_once(shutdown.as_mut()) {
             outcome = Some(result);
             break;
         }
@@ -1984,7 +1968,7 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
             &self.0
         }
 
-        fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+        fn schema_id(&self) -> Option<&SchemaId> {
             None
         }
 
@@ -2067,7 +2051,7 @@ fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "paused-shutdown-token",
         ))));
@@ -2093,7 +2077,7 @@ fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
             }
         }));
         for _ in 0..100 {
-            let _ = support::manual_async::poll_once(run.as_mut());
+            let _ = crate::support::manual_async::poll_once(run.as_mut());
             if started.load(Ordering::Acquire) {
                 break;
             }
@@ -2122,7 +2106,7 @@ fn async_success_settles_the_provider_token_after_handler_completion() {
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "settlement-1",
         ))));
@@ -2155,7 +2139,7 @@ fn cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "cancelled-settle",
         ))));
@@ -2229,7 +2213,7 @@ fn dropping_idle_wait_unregisters_signal_waker() {
                     ))
                     .await
                     .unwrap();
-                spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+                spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
                     subscription.id(),
                     "stale-waker-token",
                 ))));
@@ -2300,7 +2284,7 @@ fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.fail_next_settle();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "settlement-fail",
         ))));
@@ -2346,7 +2330,7 @@ fn cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() 
     let mut first_shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
 
     assert!(matches!(
-        support::manual_async::poll_once(first_shutdown.as_mut()),
+        crate::support::manual_async::poll_once(first_shutdown.as_mut()),
         Poll::Pending
     ));
     assert_eq!(1, spi.shutdown_transition_count());
@@ -2384,7 +2368,7 @@ fn async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
             .await
             .unwrap();
         spi.fail_all_settles();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "permanent-failure-token",
         ))));
@@ -2418,32 +2402,32 @@ fn permanent_settlement_failure_yields_to_same_executor_shutdown() {
     )))
     .unwrap();
     spi.fail_all_settles();
-    spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "same-executor-token",
     ))));
 
     let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
     assert!(matches!(
-        support::manual_async::poll_once(runner.as_mut()),
+        crate::support::manual_async::poll_once(runner.as_mut()),
         Poll::Pending
     ));
     assert!(matches!(
-        support::manual_async::poll_once(runner.as_mut()),
+        crate::support::manual_async::poll_once(runner.as_mut()),
         Poll::Pending
     ));
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(matches!(
-        support::manual_async::poll_once(shutdown.as_mut()),
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
         Poll::Pending
     ));
     assert!(matches!(
-        support::manual_async::poll_once(runner.as_mut()),
+        crate::support::manual_async::poll_once(runner.as_mut()),
         Poll::Ready(Ok(()))
     ));
     assert!(matches!(
-        support::manual_async::poll_once(shutdown.as_mut()),
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
         Poll::Ready(Ok(_))
     ));
     assert_eq!(
@@ -2472,7 +2456,7 @@ fn async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_eve
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.fail_next_settle();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "decode-fail",
         ))));
@@ -2502,7 +2486,7 @@ fn async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() 
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.panic_next_receive();
         let error = subscription.run(|_| async { Ok(()) }).await.unwrap_err();
-        assert!(matches!(error, qubit_event_bus::ReceiveError::Spi(error) if error.kind() == "provider_panicked"));
+        assert!(matches!(error, ReceiveError::Spi(error) if error.kind() == "provider_panicked"));
         assert!(spi.operation_log().contains(&"close"));
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
@@ -2545,11 +2529,11 @@ fn immediate_shutdown_waits_for_runner_settlement_and_close_before_provider_shut
             ))
             .await
             .unwrap();
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "shutdown-order",
         ))));
-        spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
             subscription.id(),
             "shutdown-queued",
         ))));

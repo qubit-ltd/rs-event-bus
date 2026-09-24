@@ -48,6 +48,7 @@ use qubit_event_bus::spi::PublishVisibility;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
+use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
@@ -145,11 +146,7 @@ impl AsyncEventSubscriptionSpi for TestSubscription {
         Box::pin(async { Ok(ReceiveOutcome::TimedOut) })
     }
 
-    fn settle<'a>(
-        &'a mut self,
-        _: &qubit_event_bus::spi::SettlementToken,
-        _: DeliveryDisposition,
-    ) -> SpiFuture<'a, Result<(), SpiError>> {
+    fn settle<'a>(&'a mut self, _: &SettlementToken, _: DeliveryDisposition) -> SpiFuture<'a, Result<(), SpiError>> {
         Box::pin(async { Ok(()) })
     }
 

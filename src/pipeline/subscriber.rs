@@ -5,6 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+// qubit-style: allow type-file-name
+
 //! Subscriber processing semantics shared by sync and async facades.
 
 use std::future::Future;
@@ -13,6 +16,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+
+use qubit_retry::RetryError;
 
 use crate::error::CapabilityError;
 use crate::error::DeliveryAttemptError;
@@ -124,7 +129,7 @@ impl SubscriberPipeline {
     }
 
     /// Preserves retry terminal metadata and its full source chain publicly.
-    pub(crate) fn retry_error(error: qubit_retry::RetryError<DeliveryAttemptError>) -> DeliveryError {
+    pub(crate) fn retry_error(error: RetryError<DeliveryAttemptError>) -> DeliveryError {
         DeliveryError::Retry(Box::new(error))
     }
 

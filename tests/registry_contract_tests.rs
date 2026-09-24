@@ -31,6 +31,7 @@ use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::Topic;
@@ -108,7 +109,7 @@ impl EventBusSpi for StubSpi {
         self.capabilities
     }
 
-    fn publish(&self, _: OutboundMessage) -> Result<qubit_event_bus::model::PublishAcknowledgement, SpiError> {
+    fn publish(&self, _: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         if self.publish_fails {
             return Err(SpiError::Operation {
                 provider_id: "first".into(),
@@ -119,7 +120,7 @@ impl EventBusSpi for StubSpi {
                 source: Box::new(std::io::Error::other("publish failed")),
             });
         }
-        Ok(qubit_event_bus::model::PublishAcknowledgement::Accepted {
+        Ok(PublishAcknowledgement::Accepted {
             provider_message_id: None,
             metadata: Default::default(),
         })
@@ -447,15 +448,12 @@ impl AsyncEventBusSpi for StubAsyncSpi {
         self.capabilities
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<qubit_event_bus::model::PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         if matches!(message.payload(), TransportPayload::Encoded(_)) {
             self.encoded_messages.fetch_add(1, Ordering::SeqCst);
         }
         Box::pin(async {
-            Ok(qubit_event_bus::model::PublishAcknowledgement::Accepted {
+            Ok(PublishAcknowledgement::Accepted {
                 provider_message_id: None,
                 metadata: Default::default(),
             })

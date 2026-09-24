@@ -9,12 +9,12 @@
 
 mod async_event_bus_spi;
 mod async_event_subscription_spi;
-mod capability;
 mod delayed_delivery_capability;
 mod delivery_disposition;
 mod delivery_gap;
 mod durability_capability;
 mod encoded_payload;
+mod event_bus_capabilities;
 mod event_bus_spi;
 mod event_subscription_spi;
 mod inbound_message;
@@ -37,12 +37,12 @@ mod transport_payload;
 
 pub use async_event_bus_spi::AsyncEventBusSpi;
 pub use async_event_subscription_spi::AsyncEventSubscriptionSpi;
-pub use capability::EventBusCapabilities;
 pub use delayed_delivery_capability::DelayedDeliveryCapability;
 pub use delivery_disposition::DeliveryDisposition;
 pub use delivery_gap::DeliveryGap;
 pub use durability_capability::DurabilityCapability;
 pub use encoded_payload::EncodedPayload;
+pub use event_bus_capabilities::EventBusCapabilities;
 pub use event_bus_spi::EventBusSpi;
 pub use event_subscription_spi::EventSubscriptionSpi;
 pub use inbound_message::InboundMessage;

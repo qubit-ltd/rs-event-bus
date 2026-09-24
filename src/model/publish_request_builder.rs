@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Complete publication request construction and validation.
 
 use std::sync::Arc;
@@ -307,6 +309,8 @@ impl<T: Send + Sync + 'static> Default for PublishRequestBuilder<T> {
 mod tests {
     use std::error::Error;
 
+    use qubit_id::IdGenerationError;
+
     use super::PublishRequestBuilder;
     use crate::error::EventIdGenerationError;
     use crate::model::EventId;
@@ -332,9 +336,10 @@ mod tests {
             .topic(Topic::<String>::new("orders.created").expect("valid test topic"))
             .payload("payload".to_owned())
             .build_with_event_id_generator(|| {
-                Err(EventIdGenerationError::new(
-                    qubit_id::IdGenerationError::HostOutOfRange { host: 1, max: 0 },
-                ))
+                Err(EventIdGenerationError::new(IdGenerationError::HostOutOfRange {
+                    host: 1,
+                    max: 0,
+                }))
             });
         let error = match result {
             Err(error) => error,

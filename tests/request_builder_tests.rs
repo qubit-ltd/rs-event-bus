@@ -9,8 +9,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use qubit_event_bus::CodecError;
 use qubit_event_bus::PublishError;
 use qubit_event_bus::SubscriberId;
+use qubit_event_bus::codec::CodecRegistry;
+use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::model::AckMode;
@@ -30,6 +33,7 @@ use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::PublishRequestBuildError;
+use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
@@ -325,17 +329,17 @@ fn batch_counts_destination_admissions_without_claiming_handler_completion() -> 
 #[test]
 fn topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error::Error>> {
     struct StringCodec(ContentType);
-    impl qubit_event_bus::codec::EventCodec<String> for StringCodec {
+    impl EventCodec<String> for StringCodec {
         fn content_type(&self) -> &ContentType {
             &self.0
         }
-        fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+        fn schema_id(&self) -> Option<&SchemaId> {
             None
         }
-        fn encode(&self, value: &String) -> Result<Arc<[u8]>, qubit_event_bus::CodecError> {
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, qubit_event_bus::CodecError> {
+        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }
@@ -457,21 +461,21 @@ fn subscriber_interceptors_append_to_reused_options() -> Result<(), Box<dyn std:
 #[test]
 fn codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::Error>> {
     struct TextCodec(ContentType);
-    impl qubit_event_bus::codec::EventCodec<String> for TextCodec {
+    impl EventCodec<String> for TextCodec {
         fn content_type(&self) -> &ContentType {
             &self.0
         }
-        fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+        fn schema_id(&self) -> Option<&SchemaId> {
             None
         }
-        fn encode(&self, value: &String) -> Result<Arc<[u8]>, qubit_event_bus::CodecError> {
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, qubit_event_bus::CodecError> {
+        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }
-    let mut registry = qubit_event_bus::codec::CodecRegistry::new();
+    let mut registry = CodecRegistry::new();
     registry.register::<String>(Arc::new(TextCodec(ContentType::new("text/plain")?)));
     let codec = registry.get::<String>().unwrap();
     assert_eq!(codec.decode(&codec.encode(&"payload".to_owned())?)?, "payload");

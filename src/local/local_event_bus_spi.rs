@@ -14,11 +14,11 @@ use std::sync::PoisonError;
 use std::time::Instant;
 
 use super::LocalEventBusConfig;
+use super::local_event_subscription::LocalEventSubscription;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
 use super::state::LocalSharedState;
-use super::subscription::LocalEventSubscription;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;

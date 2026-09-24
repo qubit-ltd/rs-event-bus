@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! FIFO execution lanes keyed by subscription, topic, and ordering key.
 
 use std::collections::HashMap;

@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+// qubit-style: allow multiple-public-types
+
 //! Runtime-neutral asynchronous event-bus facade.
 
 use std::collections::HashMap;

@@ -24,6 +24,9 @@ pub enum ShutdownError {
         /// Grace period that elapsed.
         timeout: Duration,
     },
+    /// The dedicated synchronous shutdown coordinator could not be started.
+    #[error("failed to start event bus shutdown coordinator: {0}")]
+    CoordinatorStart(#[source] std::io::Error),
     /// A lifecycle guard rejected shutdown.
     #[error(transparent)]
     Lifecycle(#[from] LifecycleError),
