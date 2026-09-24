@@ -25,6 +25,7 @@ use qubit_event_bus::ShutdownError;
 use qubit_event_bus::SubscribeError;
 use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::facade::AsyncEventBus;
@@ -48,13 +49,19 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EncodedPayload;
+use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::InboundMessage;
+use qubit_event_bus::spi::OrderingCapability;
+use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
@@ -77,6 +84,101 @@ impl std::task::Wake for WakeOnSignal {
     fn wake_by_ref(self: &Arc<Self>) {
         let _ = self.0.send(());
     }
+}
+
+struct OrderingTestSpi {
+    inner: FakeAsyncEventBusSpi,
+    capabilities: EventBusCapabilities,
+    subscribe_calls: AtomicUsize,
+}
+
+impl OrderingTestSpi {
+    fn new(ordering: OrderingCapability) -> Self {
+        let base = EventBusCapabilities::new(
+            qubit_event_bus::spi::PayloadModes::Native,
+            qubit_event_bus::spi::SettlementCapabilities::AcceptRetryReject,
+            ordering,
+            qubit_event_bus::spi::DelayedDeliveryCapability::None,
+            qubit_event_bus::spi::DurabilityCapability::Ephemeral,
+            false,
+            qubit_event_bus::spi::ReplayCapability::None,
+            qubit_event_bus::spi::PublishGuarantee::Accepted,
+            qubit_event_bus::spi::PublishVisibility::Opaque,
+        );
+        Self {
+            inner: FakeAsyncEventBusSpi::with_capabilities(base),
+            capabilities: base,
+            subscribe_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl AsyncEventBusSpi for OrderingTestSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.capabilities
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<qubit_event_bus::model::PublishAcknowledgement, qubit_event_bus::error::SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, qubit_event_bus::error::SpiError>> {
+        self.subscribe_calls.fetch_add(1, Ordering::AcqRel);
+        self.inner.subscribe(request)
+    }
+
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, qubit_event_bus::error::SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[test]
+fn async_per_key_capability_is_checked_before_spi_subscribe() {
+    for (capability, accepted) in [
+        (OrderingCapability::None, false),
+        (OrderingCapability::PerPartition, false),
+        (OrderingCapability::PerKey, true),
+        (OrderingCapability::PerSubscription, true),
+    ] {
+        let spi = Arc::new(OrderingTestSpi::new(capability));
+        let bus = AsyncEventBus::new(ProviderId::new("ordering-test").expect("valid provider"), spi.clone());
+        let options = SubscribeOptions::<u32>::builder()
+            .ordering_policy(OrderingPolicy::PerKey)
+            .build();
+        let result = block_on(bus.subscribe(
+            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic())
+                .with_options(options),
+        ));
+        if accepted {
+            let mut subscription = result.expect("provider supports per-key delivery");
+            assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
+            block_on(subscription.close()).expect("subscription closes");
+        } else {
+            assert!(matches!(
+                result,
+                Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                    capability: "ordering.per_key"
+                }))
+            ));
+            assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 0);
+        }
+    }
+
+    let spi = Arc::new(OrderingTestSpi::new(OrderingCapability::None));
+    let bus = AsyncEventBus::new(ProviderId::new("ordering-test").expect("valid provider"), spi.clone());
+    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
+        SubscriberId::new("unordered").expect("valid subscriber"),
+        topic(),
+    )))
+    .expect("default unordered subscription works without ordering capability");
+    assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
+    block_on(subscription.close()).expect("subscription closes");
 }
 
 #[test]
