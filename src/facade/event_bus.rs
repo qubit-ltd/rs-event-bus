@@ -354,6 +354,7 @@ impl EventBus {
         &self,
         request: PublishRequest<T>,
     ) -> Result<PublishReceipt, PublishError> {
+        self.inner.publish_metrics.record_attempt();
         let Some(_operation) = self.inner.operations.enter() else {
             self.inner.publish_metrics.record_error();
             return Err(PublishError::Closed);

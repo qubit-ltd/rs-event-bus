@@ -489,6 +489,9 @@ impl AsyncEventBus {
         &self,
         request: PublishRequest<T>,
     ) -> Result<PublishReceipt, PublishError> {
+        // This body begins on the first poll, so a cancelled in-flight future
+        // still contributes an attempt without recording a fabricated outcome.
+        self.inner.publish_metrics.record_attempt();
         let Some(_publish) = self.inner.begin_publish() else {
             self.inner.publish_metrics.record_error();
             return Err(PublishError::Closed);
