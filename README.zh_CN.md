@@ -13,6 +13,8 @@
 
 本地 provider 按目的地逐个报告接纳情况：空列表表示没有报告目的地，部分结果可能同时包含已接纳和被拒绝的订阅者。重试前先检查回执；重发整条事件可能让已接纳的目的地重复收到消息。同步 graceful shutdown 限制调用方的等待时间；返回 `TimedOut` 后，总线仍拒绝新工作，后台清理会继续。
 
+`PublishReceipt::check_admission` 只检查本次发布已经返回的回执，不会再次发布或修改回执，也不会等待 handler。部分接纳时检查成功仍可能意味着其他目的地拒绝了事件，因此不要盲目重发整条事件。`EventBus::publish_metrics()` 和 `AsyncEventBus::publish_metrics()` 提供接纳计数；快照的各字段独立读取，不能表示 handler 已完成。`PerKey` 订阅要求 provider 声明 `PerKey` 或 `PerSubscription` 顺序能力。订阅 priority 已删除，因为它不会影响投递顺序。请保留同步 `Subscription` 句柄并显式调用 `cancel()`；仅丢弃句柄不会停止其 worker。
+
 ## 安装
 
 ```toml

@@ -8,6 +8,7 @@ All notable changes to `qubit-event-bus` are documented here.
 
 ### Breaking changes
 
+- Removed subscription priority options and builder methods; they never affected delivery scheduling. `PerKey` subscriptions now require a provider declaring `PerKey` or `PerSubscription` ordering.
 - Replaced the former bus/factory API with typed `EventBus` and `AsyncEventBus` facades, request builders, and object-safe provider SPI contracts.
 - Added `qubit-spi` provider registries and the built-in synchronous local provider. Third-party transport adapters are not bundled.
 - Split transport settlement from application acknowledgement and made repeated settlement with the same token/disposition idempotent by contract.
@@ -18,6 +19,7 @@ All notable changes to `qubit-event-bus` are documented here.
 
 ### Migration
 
+- Remove the subscription priority setting from options/builders. Retain synchronous `Subscription` handles and call `cancel()` explicitly; dropping a handle does not cancel its worker. Use `PublishReceipt::check_admission` to evaluate an already returned receipt and `publish_metrics()` for provider admission counters; neither reports handler completion.
 - Replace old `LocalEventBus` / factory usage with `EventBus::local(LocalEventBusConfig::default())` or create through `EventBusRegistry`.
 - Build `PublishRequest<T>` and `SubscribeRequest<T>` directly; handlers receive `Delivery<T>`.
 - Implement `EventBusSpi` or `AsyncEventBusSpi` for a backend and register its `qubit-spi` provider definition. No broker adapter is included in this release.

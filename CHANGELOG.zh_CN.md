@@ -8,6 +8,7 @@
 
 ### 破坏性变更
 
+- 删除订阅 priority 选项和 builder 方法；它们从未影响投递调度。`PerKey` 订阅现在要求 provider 声明 `PerKey` 或 `PerSubscription` 顺序能力。
 - 以类型化的 `EventBus`、`AsyncEventBus` facade、request builder 和对象安全 provider SPI 替代旧 bus/factory API。
 - 引入 `qubit-spi` provider registry 和内置同步 local provider；本 crate 不附带第三方传输适配器。
 - 将应用层 acknowledgement 与传输层 settlement 分开；同一 token 和 disposition 的重复 settlement 按契约幂等。
@@ -18,6 +19,7 @@
 
 ### 迁移
 
+- 从订阅 options/builder 中移除 priority 设置。保留同步 `Subscription` 句柄并显式调用 `cancel()`；丢弃句柄不会取消 worker。使用 `PublishReceipt::check_admission` 检查已返回的回执，使用 `publish_metrics()` 查看 provider 准入计数；两者都不代表 handler 已完成。
 - 将旧 `LocalEventBus` / factory 用法迁移到 `EventBus::local(LocalEventBusConfig::default())`，或通过 `EventBusRegistry` 创建。
 - 使用 `PublishRequest<T>` 和 `SubscribeRequest<T>` 构造请求；handler 接收 `Delivery<T>`。
 - 后端实现 `EventBusSpi` 或 `AsyncEventBusSpi` 并注册 `qubit-spi` provider definition。本版本没有随 crate 提供 broker adapter。
