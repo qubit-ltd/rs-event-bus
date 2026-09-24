@@ -201,7 +201,7 @@ impl AsyncEventBus {
     where
         T: Send + Sync + 'static;
 
-    pub async fn wait_for_idle<T>(
+    pub async fn wait_for_received_deliveries<T>(
         &self,
         topic: &Topic<T>,
         timeout: Option<Duration>,
@@ -495,6 +495,12 @@ pub trait EventBusSpi: Send + Sync + 'static {
         request: SpiSubscriptionRequest,
     ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>;
 
+    fn wait_for_topic_idle(
+        &self,
+        topic: &TopicAddress,
+        timeout: Option<Duration>,
+    ) -> Result<Option<bool>, SpiError>;
+
     fn shutdown(
         &self,
         mode: ShutdownMode,
@@ -503,6 +509,8 @@ pub trait EventBusSpi: Send + Sync + 'static {
 ```
 
 SPI 不包含 interceptor、handler、filter、retry、dead-letter 或 observer。
+
+`wait_for_topic_idle` 有默认实现并返回 `Ok(None)`，表示 provider 不提供此能力。实现可返回 `Ok(Some(true))` 表示没有该 Topic 的未完成消息，`Ok(Some(false))` 表示超时；SPI 错误保留为 `Err`。同步 facade 把不支持映射为 `LifecycleError::IdleWaitUnsupported`。
 
 底层订阅是单一所有者的 receiver：
 
@@ -579,6 +587,7 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
 ```rust
 pub struct OutboundMessage {
     topic: TopicAddress,
+    payload_type_id: TypeId,
     id: EventId,
     timestamp: SystemTime,
     headers: Headers,
@@ -698,6 +707,8 @@ pub struct SpiSubscriptionRequest {
 ```
 
 `SpiSubscriptionRequest` 是类型擦除后的 SPI 输入，不同于应用使用的泛型 `SubscribeRequest<T>`。其中 `Id` 来自 `qubit-id`，由 facade 在建立订阅前生成；`SubscriberId` 是调用方提供的已验证逻辑名称。SPI 必须原样保留两者，并在 admission、message metadata 和错误上下文中返回相同的 subscription ID。
+
+`payload_type_id` 由 facade 从 `Topic<T>` 传入，供支持原生 Rust payload 的 provider 在路由前拒绝同名异类型的活跃订阅或发布。编码 provider 可以忽略此 Rust 进程内类型标识。
 
 filter、interceptor、handler priority、application retry、error handler 和 dead-letter 不进入 SPI。
 
@@ -877,7 +888,7 @@ admission permit 使用 RAII 释放：delivery 进入终态、被取消或处理
 
 达到限制时不得无限增长。local SPI 可以在 publish receipt 中报告具体 subscription rejection；无法观察远端消费者的 broker 只能报告本次 publish 的 provider acknowledgement。
 
-实现状态：同步 facade 通过 `EventBusFacadeConfig::with_sync_delivery_scheduler` 配置 bus 级 `max_in_flight` 和 handler queue capacity；in-flight 限额覆盖排队、handler/retry/middleware 执行及最终 settlement，不同 ordering key 可并行、相同 key 保序。同步 scheduler 默认最多 4 个 in-flight delivery、最多排队 32 个 handler；队列容量设为 0 时仅允许交给空闲 worker 的直接移交。每个 subscription coordinator 至多暂存一个已经从 SPI 接收、尚未准入 scheduler 的消息，饱和或关闭时会按 Retry 能力归还，不会静默丢弃。异步 facade 由调用方驱动、不 spawn task，并通过 `DeliveryAdmissionConfig::max_in_flight` 使用 bus-wide 有界准入（默认 4）；permit 覆盖收到的消息、lane wait、middleware、handler/retry 到最终 settlement。单个 subscription 可同时持有多个 owned delivery future，不同 ordering key 并行、同 key 保序；每个 subscription 最多暂存一条未准入消息。取消 `run` future 会暂停并保留任务及 permit；重新 `run` 续跑旧任务，shutdown 可接管暂停 session。Immediate 会丢弃未开始的 lane waiter并依赖 SPI receiver close/drop 恢复未结算 token，已开始 handler 则继续等待并 settlement。`LocalEventBusConfig::queue_capacity` 仍是每个 local subscription 的 provider 接收队列上限。诊断通过同步 observer 直接回调，没有独立诊断队列；observer 会被隔离 panic，但阻塞的 observer 仍可能延迟触发它的线程。`EventBusFacadeConfig` 同时承载 codec registry 及按 payload type 注册的 global sync/async subscriber middleware。
+实现状态：同步 facade 通过 `EventBusFacadeConfig::with_sync_delivery_scheduler` 配置 bus 级 `max_in_flight` 和 handler queue capacity；in-flight 限额覆盖排队、handler/retry/middleware 执行及最终 settlement，不同 ordering key 可并行、相同 key 保序。同步 scheduler 默认最多 4 个 in-flight delivery、最多排队 32 个 handler；队列容量设为 0 时仅允许交给空闲 worker 的直接移交。每个 subscription coordinator 至多暂存一个已经从 SPI 接收、尚未准入 scheduler 的消息，饱和或关闭时会按 Retry 能力归还，不会静默丢弃。异步 facade 由调用方驱动、不 spawn task，并通过 `DeliveryAdmissionConfig::max_in_flight` 使用 bus-wide 有界准入（默认 4）；permit 覆盖收到的消息、lane wait、middleware、handler/retry 到最终 settlement。单个 subscription 可同时持有多个 owned delivery future，不同 ordering key 并行、同 key 保序；每个 subscription 最多暂存一条未准入消息。取消 `run` future 会暂停并保留任务及 permit；重新 `run` 续跑旧任务，shutdown 可接管暂停 session。Immediate 会丢弃未开始的 lane waiter并依赖 SPI receiver close/drop 恢复未结算 token，已开始 handler 则继续等待并 settlement。`LocalEventBusConfig::queue_capacity` 限制每个 local subscription 的排队及未 settlement 消息数；已经 receive 的消息仍占用容量，Retry 会保留额度。诊断通过同步 observer 直接回调，没有独立诊断队列；observer 会被隔离 panic，但阻塞的 observer 仍可能延迟触发它的线程。`EventBusFacadeConfig` 同时承载 codec registry 及按 payload type 注册的 global sync/async subscriber middleware。
 
 ## 错误模型
 
@@ -990,7 +1001,7 @@ Immediate shutdown 停止准入，不再接收新消息，并丢弃尚未开始�
 
 同步 handler 从自己的 bus worker 调用 Graceful shutdown 返回 `LifecycleError::WouldDeadlock`，不 panic。worker 内调用任意同 bus `Subscription::cancel` 都只请求取消、不等待 join，以规避不同 subscription worker 交叉等待；只有外部线程调用 cancel 才保证等待 worker close 完成。异步 subscription runner 若等待包含自身的 shutdown future，同样返回结构化错误。所有 shutdown 错误必须返回，不得静默吞掉 tracker 错误。
 
-`wait_for_idle` 只表示当前 facade 实例已经接收并跟踪的工作为空，不表示 Kafka topic、RabbitMQ queue 或其他远端消费者全局空闲。该限定必须出现在 rustdoc 和用户指南中。
+`EventBus::wait_for_idle` 查询同步 provider 的 Topic 队列及未 settlement 投递：SPI 返回 `Ok(Some(true))` 表示没有未完成消息，`Ok(Some(false))` 表示超时，`Ok(None)` 表示不支持；facade 将不支持映射为 `LifecycleError::IdleWaitUnsupported`。该等待不证明 handler 成功或远端 broker 全局空闲。旧的 facade 本地已接收工作统计改名为 `wait_for_received_deliveries`；异步 facade 只提供该方法，不承诺 provider 队列为空。
 
 ## `qubit-spi` 集成
 

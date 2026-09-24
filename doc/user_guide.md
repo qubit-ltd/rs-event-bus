@@ -39,7 +39,7 @@ use qubit_event_bus::EventBus;
 let bus = EventBus::local(LocalEventBusConfig::default())?;
 ```
 
-The local provider uses a bounded queue of 1024 pending messages per subscription by default. Set `LocalEventBusConfig::new().queue_capacity(n)` to choose another positive bound.
+The local provider limits each subscription to 1024 outstanding messages by default. Queued and received but unsettled messages both use this capacity. `Retry` returns the same reservation to the queue. Set `LocalEventBusConfig::new().queue_capacity(n)` to choose another positive bound.
 
 ### Register, publish, and observe
 
@@ -65,7 +65,7 @@ assert_eq!(received.lock().expect("received events should lock").as_slice(), &["
 subscription.cancel()?;
 ```
 
-`wait_for_idle` tracks work received by this facade for this topic. It does not mean a remote provider or every consumer in a distributed system is globally idle.
+`wait_for_idle` asks the provider whether this topic has queued or unsettled work. It does not report handler success or global activity on a remote broker. Providers that cannot report this return `LifecycleError::IdleWaitUnsupported`. Use `wait_for_received_deliveries` to wait for work received and tracked by this facade.
 
 ### Decide what to do with a publish receipt
 
@@ -183,7 +183,7 @@ This function assumes `bus` was created by an async provider adapter. No async l
 
 ## Errors and diagnostics
 
-Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveError`, `LifecycleError`, and `ShutdownError`) and retain SPI/provider sources where possible. Check a publish receipt's acknowledgement and register `observe_diagnostics` when provider gaps, unsupported dispositions, or callback failures need observation. `wait_for_idle` or bus shutdown invoked from the bus's own sync worker returns `WouldDeadlock` instead of blocking itself.
+Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveError`, `LifecycleError`, and `ShutdownError`) and retain SPI/provider sources where possible. Check a publish receipt's acknowledgement and register `observe_diagnostics` when provider gaps, unsupported dispositions, or callback failures need observation. Either `wait_for_idle`, `wait_for_received_deliveries`, or bus shutdown invoked from the bus's own sync worker returns `WouldDeadlock` instead of blocking itself.
 
 `Subscription::cancel` explicitly stops and joins a sync subscription from an external caller; dropping its handle does not unsubscribe. `AsyncSubscription::close().await` provides deterministic async cleanup and close errors. Dropping an async subscription handle immediately drops its paused receiver and owned work; the provider must recover unsettled deliveries on receiver drop. Async `run` does not spawn; dropping its future pauses and retains owned delivery futures and permits. A later `run` resumes those futures (the replacement handler only handles newly received messages), and bus shutdown can take over a paused session. The async receiver's close/drop contract must leave every unsettled delivery recoverable and must never acknowledge it implicitly.
 
@@ -191,7 +191,7 @@ Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveErr
 
 - A successful publish means the provider returned its admission acknowledgement. It does not prove subscriber handler completion.
 - `publish_all` attempts each request independently in input order and retains each result. It is not atomic.
-- Local queue capacity bounds pending messages per subscription; it is not a global broker quota. The local provider is in-process and non-durable.
+- Local queue capacity bounds queued and unsettled messages per subscription; a received message continues to occupy capacity until settlement. It is not a global broker quota. The local provider is in-process and non-durable.
 - Both facades bound admitted work bus-wide. Sync uses `with_sync_delivery_scheduler(...)` for `max_in_flight` and handler queue capacity. Async uses `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` (default 4); its permit covers each received message through lane wait, middleware, handler/retry, and settlement. Async subscriptions process different ordering keys concurrently while preserving order within each key. A received but unadmitted message is buffered per subscription; idle receive calls do not consume permits.
 - Diagnostic observers run synchronously on the thread emitting the diagnostic. Panics are contained, but a blocking observer can delay that thread; diagnostics are not buffered in a separate queue.
 - Capability flags are the provider's declared contract. Select required capabilities explicitly and document any stronger provider-specific guarantee separately.

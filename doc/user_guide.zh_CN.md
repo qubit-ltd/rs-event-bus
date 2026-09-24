@@ -39,7 +39,7 @@ use qubit_event_bus::EventBus;
 let bus = EventBus::local(LocalEventBusConfig::default())?;
 ```
 
-local provider 默认给每个订阅配置最多 1024 条待接收消息。可通过 `LocalEventBusConfig::new().queue_capacity(n)` 设置其他正数上限。
+local provider 默认限制每个订阅最多 1024 条未终结消息；队列中的消息和已接收但尚未 settlement 的消息都会占用容量，`Retry` 会将原消息放回队列并保留该额度。可通过 `LocalEventBusConfig::new().queue_capacity(n)` 设置其他正数上限。
 
 ### 订阅、发布并检查结果
 
@@ -65,7 +65,7 @@ assert_eq!(received.lock().expect("received events should lock").as_slice(), &["
 subscription.cancel()?;
 ```
 
-`wait_for_idle` 只跟踪当前 facade 对该 Topic 已接收的工作，不意味着远端 provider 或分布式系统里的所有消费者都已空闲。
+`wait_for_idle` 会询问 provider 该 Topic 是否仍有排队或尚未 settlement 的消息；它不表示 handler 成功，也不代表远端 broker 全局空闲。不支持此查询的 provider 会返回 `LifecycleError::IdleWaitUnsupported`。如需等待当前 facade 已接收并跟踪的工作，请用 `wait_for_received_deliveries`。
 
 ### 根据发布回执决定后续处理
 
@@ -182,7 +182,7 @@ async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 
 ## 错误与诊断
 
-错误按操作区分为 `PublishError`、`SubscribeError`、`ReceiveError`、`LifecycleError` 和 `ShutdownError`；SPI/provider 错误尽可能保留 source 链。检查发布回执中的 acknowledgement；若需要观察 provider gap、不支持的 disposition 或回调故障，可注册 `observe_diagnostics`。从本总线自己的同步 worker 调用 `wait_for_idle` 或 shutdown 会得到 `WouldDeadlock`，不会让 worker 等待自己。
+错误按操作区分为 `PublishError`、`SubscribeError`、`ReceiveError`、`LifecycleError` 和 `ShutdownError`；SPI/provider 错误尽可能保留 source 链。检查发布回执中的 acknowledgement；若需要观察 provider gap、不支持的 disposition 或回调故障，可注册 `observe_diagnostics`。从本总线自己的同步 worker 调用 `wait_for_idle`、`wait_for_received_deliveries` 或 shutdown 会得到 `WouldDeadlock`，不会让 worker 等待自己。
 
 `Subscription::cancel` 会显式停止订阅；从外部调用时会等待同步 worker 收尾。丢弃同步 handle 本身不会取消订阅。异步订阅使用 `AsyncSubscription::close().await` 确定性释放资源并返回 close 错误。丢弃异步订阅 handle 会立即丢弃暂停的 session 和 provider receiver；provider 必须在 receiver 被丢弃时恢复未结算 delivery。`run` 不会 spawn；丢弃其 future 会暂停并保留在途 delivery future 与 permit。再次调用 `run` 会续跑这些旧 future（新 handler 只处理之后收到的消息），bus shutdown 也能接管暂停 session。异步 receiver 的 close/drop 契约必须保证未结算 delivery 仍可恢复，并且绝不能隐式确认。
 
@@ -190,7 +190,7 @@ async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 
 - publish 成功表示 provider 返回了准入确认，不表示订阅 handler 已完成。
 - `publish_all` 按输入顺序分别尝试请求，并保留各自结果；它不是原子操作。
-- local 队列容量限制每个订阅的待接收消息数，不是全局 broker 配额。local provider 仅在进程内工作，不提供持久性。
+- local 队列容量限制每个订阅的排队及尚未 settlement 消息数；消息被接收后仍占用额度，直到 settlement。这不是全局 broker 配额。local provider 仅在进程内工作，不提供持久性。
 - 两种 facade 都有 bus-wide 准入上限。同步 facade 用 `with_sync_delivery_scheduler(...)` 配置 `max_in_flight` 与 handler queue capacity；异步 facade 用 `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` 配置（默认 4）。异步 permit 覆盖每条已接收消息的 lane wait、中间件、handler/retry 及最终 settlement；不同顺序键可并行，同一顺序键保持顺序。每个订阅最多暂存一条尚未准入的消息；空闲的 receive 不占用 permit。
 - 诊断 observer 在触发诊断的线程上同步调用。observer panic 会被隔离，但阻塞的 observer 会延迟该线程；诊断不会进入独立缓冲队列。
 - 能力标志是 provider 对自身契约的声明。按需要求能力，并单独记录具体 provider 的增强保证。

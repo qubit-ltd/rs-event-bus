@@ -17,6 +17,8 @@
 
 应用通过 `Topic<T>`、`PublishRequest<T>` 和 `SubscribeRequest<T>` 操作总线，不需要直接处理 transport payload。Provider SPI 只负责发布、创建接收端、接收消息、结算和关闭，不接管 handler 或应用中间件。扩展 provider 可以位于独立 crate，但本 crate 当前只提供 local 同步 provider；任何其他后端都不得被误认为已随包发布。
 
+local provider 在同名 Topic 的活跃订阅期间绑定唯一的原生 Rust payload 类型。每个订阅的队列容量同时覆盖排队和未 settlement 的投递，Retry 会保留原有额度。同步 `EventBus::wait_for_idle` 查询 provider 队列及结算状态；`wait_for_received_deliveries` 只等待当前 facade 已接收的工作。异步 facade 只提供后一种保证。
+
 ## 发布与订阅
 
 发布请求由 facade 校验并执行 publisher interceptors，再根据 provider capability、codec 和 payload mode 进行检查/转换，之后调用 SPI。`PublishReceipt` 说明 provider 对发布的确认以及实际使用的 provider ID，不代表 handler 已执行或完成。`DestinationAdmissions` 可能为空，也可能包含 accepted、filtered 和 rejected 目的地；部分拒绝仍是成功回执，重发整条事件可能让已接纳目的地重复收到消息。`publish_all` 按输入顺序独立提交请求并保留各项结果，不提供事务或回滚。

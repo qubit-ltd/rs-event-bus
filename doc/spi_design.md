@@ -12,6 +12,8 @@ The crate provides typed, portable event models and synchronous and runtime-neut
 
 The provider boundary transports erased payloads and provider-issued settlement tokens. It does not execute application handlers or own facade middleware. The application uses `Topic<T>`, `PublishRequest<T>`, `SubscribeRequest<T>`, and `Delivery<T>` rather than provider payload types.
 
+`SpiSubscriptionRequest` carries the topic's Rust `TypeId` so a native provider can reject same-name topics with conflicting payload types before routing. Encoded providers may ignore this process-local type identity. The synchronous `EventBusSpi::wait_for_topic_idle` method defaults to `Ok(None)`; providers that implement it report topic outstanding work as `Some(true)` when idle and `Some(false)` on timeout.
+
 The crate does not promise persistence, cross-process delivery, transactional batches, or exactly-once processing. It does not bundle Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. Provider-specific guarantees must be declared through capabilities where representable and documented by the adapter.
 
 ## Architecture
@@ -82,7 +84,7 @@ A subscription setup validates topic, payload mode, capability requirements, mid
 
 The delivery path can include receive, gap reporting, decode, filtering, bounded admission, ordering, middleware, handler, retry/error policy, dead-letter publication, and final settlement. Ordering keys may progress concurrently with other keys while preserving order within a key. In-flight limits are bus-wide and cover admitted delivery work through settlement. A message received but not admitted remains bounded per subscription and is returned through the provider's retry/recovery mechanism when admission is unavailable.
 
-`wait_for_idle` is local to one facade and topic. It does not prove that a remote broker or all consumers in a distributed system is globally idle.
+`EventBus::wait_for_idle` asks the synchronous provider whether the topic has queued or unsettled messages. The SPI returns `Ok(Some(true))` when none remain, `Ok(Some(false))` on timeout, and `Ok(None)` when this capability is unsupported; the facade maps the last case to `LifecycleError::IdleWaitUnsupported`. This does not prove handler success or global activity on a remote broker. `wait_for_received_deliveries` retains the old facade-local received-work tracking. The async facade exposes that operation as `wait_for_received_deliveries` and does not claim provider queue emptiness.
 
 ## Acknowledgement, NACK, and settlement
 
@@ -102,7 +104,7 @@ Dead-letter handling is at-least-once around uncertain asynchronous outcomes. A 
 
 ## Backpressure, ordering, and delay
 
-The local provider uses a bounded queue per subscription. Queue capacity is not a global broker quota. The facade also applies a bus-wide limit to admitted delivery work; sync configuration sets in-flight and handler-queue bounds, while async configuration sets `max_in_flight` (default 4). Limits cover queued or running facade work through final settlement.
+The local provider uses a bounded queue per subscription. Its capacity counts queued and unsettled messages, including messages already received by a consumer; `Retry` preserves the message's reservation. Queue capacity is not a global broker quota. The facade also applies a bus-wide limit to admitted delivery work; sync configuration sets in-flight and handler-queue bounds, while async configuration sets `max_in_flight` (default 4). Limits cover queued or running facade work through final settlement.
 
 Ordering is a facade/provider contract described by capability. The facade coordinates order where supported; providers must preserve the ordering guarantees they advertise. Delayed delivery is likewise capability-gated and may be provider-native or represented through transport metadata only when the adapter can honor the contract.
 
