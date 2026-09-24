@@ -1,91 +1,101 @@
 format = 1
 
 [[exceptions]]
-rule = "coverage-cfg"
-path = "src/core/event_bus_factory.rs"
-reason = "Compensate for source-based coverage placeholder regions on trait default methods."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/core/mod.rs"
-reason = "Re-export core coverage helpers only for coverage builds."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/core/subscription.rs"
-reason = "Poison private delay mutex only under coverage to exercise defensive recovery paths."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/lib.rs"
-reason = "Re-export coverage helpers only when cargo-llvm-cov builds with cfg(coverage)."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/local/local_event_bus.rs"
-reason = "Host LocalEventBus coverage helpers as a private child module for cfg(coverage) tests."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/local/local_event_bus_inner.rs"
-reason = "Host LocalEventBusInner coverage helpers as a private child module for cfg(coverage) tests."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/local/mod.rs"
-reason = "Re-export local coverage helpers only for coverage builds."
-
-[[exceptions]]
-rule = "coverage-cfg"
-path = "src/local/subscriber_interceptor_chain.rs"
-reason = "Exercise subscriber chain downstream provenance branches only for coverage builds."
+rule = "public-type-layout"
+path = "src/error/subscription_close_errors.rs"
+reason = "The close failure and aggregate error are one public lifecycle error contract and share its source-preserving representation."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/event_bus.rs"
-reason = "Batch result value objects are part of the EventBus batch publishing contract."
+path = "src/facade/event_bus.rs"
+reason = "The synchronous facade and its public construction entry points form one cohesive facade module."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/event_envelope.rs"
-reason = "Type-erased metadata is the interceptor-facing view of the public event envelope."
+path = "src/facade/event_bus_facade_config.rs"
+reason = "The facade configuration and synchronous scheduler limits are constructed and consumed together."
+
+[[exceptions]]
+rule = "type-file-name"
+path = "src/facade/lifecycle.rs"
+reason = "Lifecycle outcome and state types are intentionally co-located as one facade lifecycle contract."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/publish_receipt.rs"
-reason = "Publish receipt value objects share one public dispatch contract."
+path = "src/local/config.rs"
+reason = "Local provider configuration types are grouped in the local provider configuration module."
+
+[[exceptions]]
+rule = "type-file-name"
+path = "src/local/config.rs"
+reason = "LocalEventBusConfig is intentionally located in the local provider configuration module."
+
+[[exceptions]]
+rule = "type-file-name"
+path = "src/local/provider.rs"
+reason = "The provider constructor and provider implementation are kept together in the local provider module."
+
+[[exceptions]]
+rule = "type-file-name"
+path = "src/local/spi.rs"
+reason = "The local SPI implementation is grouped with its local transport adapter helpers."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/delivery_failure.rs"
-reason = "Delivery failure and dead-letter outcome value objects share one public failure contract."
+path = "src/model/acknowledgement.rs"
+reason = "Acknowledgement mode and receipt acknowledgement types share one public acknowledgement vocabulary."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/subscribe_options.rs"
-reason = "Dead-letter strategy contracts are documented next to SubscribeOptions."
+path = "src/model/delivery.rs"
+reason = "Delivery and its context are a single handler-facing value contract."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/core/subscription.rs"
-reason = "SubscriptionState is crate-internal shared cancellation state paired with the public Subscription handle."
+path = "src/model/destination_admission.rs"
+reason = "Destination admission result and rejection detail form one publish receipt component."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/local/local_event_bus.rs"
-reason = "Interceptor contracts are intentionally documented next to the LocalEventBus runtime entry point."
+path = "src/model/publish_options.rs"
+reason = "Publish option and visibility types are configured and interpreted together."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/local/local_event_bus_inner.rs"
-reason = "Runtime options are crate-internal constructor state paired with LocalEventBusInner."
+path = "src/model/publish_receipt.rs"
+reason = "The receipt and its batch result value types share one publish outcome contract."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/local/subscriber_interceptor_chain.rs"
-reason = "Typed and global subscriber chain handles share the same invocation model."
+path = "src/model/publish_request_builder.rs"
+reason = "The builder and its build error describe the same request-construction contract."
 
 [[exceptions]]
 rule = "public-type-layout"
-path = "src/local/local_event_bus/interceptor.rs"
-reason = "Typed and global publisher/subscriber interceptor contracts are co-located as one public extension point."
+path = "src/model/subscribe_options.rs"
+reason = "Subscription options and their policy enums are deliberately grouped as one builder-facing configuration API."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/model/subscribe_request_builder.rs"
+reason = "The builder and its build error describe the same request-construction contract."
+
+[[exceptions]]
+rule = "public-type-layout"
+path = "src/model/topic.rs"
+reason = "Typed topic identity and its ordering key are a single public routing vocabulary."
+
+[[exceptions]]
+rule = "type-file-name"
+path = "src/spi/capability.rs"
+reason = "The aggregate provider capability struct is grouped with the capability enums it composes."
+
+[[exceptions]]
+rule = "test-redirect"
+path = "tests/sync_facade_tests.rs"
+reason = "This Cargo integration-test entry re-exports the crate namespaces required by the shared synchronous facade test module."
+
+[[exceptions]]
+rule = "explicit-imports"
+path = "tests/sync_facade_tests.rs"
+reason = "The integration-test namespace adapter intentionally re-exports the public module surfaces consumed by shared facade tests."
