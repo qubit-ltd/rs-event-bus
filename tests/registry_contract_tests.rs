@@ -185,12 +185,14 @@ fn registry_per_key_capability_accepts_per_subscription_and_rejects_per_partitio
             .expect("provider registration succeeds");
         let result = registry.create_selected(
             &ProviderSelection::named("ordering-test").expect("valid selection"),
-            &EventBusConfig::default().with_required_capabilities(
-                RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey),
-            ),
+            &EventBusConfig::default()
+                .with_required_capabilities(RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey)),
         );
         if accepted {
-            assert!(result.is_ok(), "per-subscription ordering satisfies per-key requirement");
+            assert!(
+                result.is_ok(),
+                "per-subscription ordering satisfies per-key requirement"
+            );
         } else {
             assert!(matches!(result, Err(ProviderError::Creation { .. })));
         }

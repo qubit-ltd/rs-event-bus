@@ -266,17 +266,16 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
         EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
     );
-    block_on(dropped_bus.publish(PublishRequest::builder().topic(topic()).payload(4_u32).build().unwrap()))
-        .unwrap();
+    block_on(dropped_bus.publish(PublishRequest::builder().topic(topic()).payload(4_u32).build().unwrap())).unwrap();
     let dropped = dropped_bus.publish_metrics();
     assert_eq!(dropped.attempts, 1);
     assert_eq!(dropped.dropped, 1);
     assert_eq!(dropped.errors, 0);
 
+    use qubit_event_bus::SubscriberId;
     use qubit_event_bus::model::AdmissionStatus;
     use qubit_event_bus::model::DestinationAdmission;
     use qubit_id::Id;
-    use qubit_event_bus::SubscriberId;
     let mixed_ack = PublishAcknowledgement::DestinationAdmissions(vec![
         DestinationAdmission::new(
             Id::new(10),
@@ -296,9 +295,7 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
     ]);
     let destination_bus = AsyncEventBus::new(
         ProviderId::new("async-publisher-metrics-destinations").unwrap(),
-        Arc::new(
-            PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(mixed_ack),
-        ),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(mixed_ack)),
     );
     block_on(destination_bus.publish(PublishRequest::builder().topic(topic()).payload(5_u32).build().unwrap()))
         .unwrap();
@@ -309,9 +306,10 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
 
     let empty_bus = AsyncEventBus::new(
         ProviderId::new("async-publisher-metrics-empty").unwrap(),
-        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(
-            PublishAcknowledgement::DestinationAdmissions(Vec::new()),
-        )),
+        Arc::new(
+            PublisherCoverageSpi::new(PayloadModes::Native, 0, false)
+                .with_acknowledgement(PublishAcknowledgement::DestinationAdmissions(Vec::new())),
+        ),
     );
     block_on(empty_bus.publish(PublishRequest::builder().topic(topic()).payload(6_u32).build().unwrap())).unwrap();
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
@@ -320,7 +318,10 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
         ProviderId::new("async-publisher-metrics-error").unwrap(),
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, true)),
     );
-    assert!(block_on(failing_bus.publish(PublishRequest::builder().topic(topic()).payload(7_u32).build().unwrap())).is_err());
+    assert!(
+        block_on(failing_bus.publish(PublishRequest::builder().topic(topic()).payload(7_u32).build().unwrap()))
+            .is_err()
+    );
     let failure_metrics = failing_bus.publish_metrics();
     assert_eq!(failure_metrics.attempts, 1);
     assert_eq!(failure_metrics.errors, 1);
