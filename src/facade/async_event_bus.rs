@@ -533,6 +533,11 @@ impl AsyncEventBus {
         }
         let capabilities = self.inner.spi.capabilities();
         crate::pipeline::SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
+        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "ordering.per_key",
+            }));
+        }
         if capabilities.payload_modes() == PayloadModes::Encoded && topic.codec().is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }

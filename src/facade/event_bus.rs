@@ -385,7 +385,7 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns `Closed` after shutdown begins, `Capability` for unsupported
-    /// manual acknowledgement, `Configuration` for runtime-model mismatches,
+    /// manual acknowledgement or per-key ordering, `Configuration` for runtime-model mismatches,
     /// or the provider subscription error.
     pub fn subscribe<T, H, R>(&self, request: SubscribeRequest<T>, handler: H) -> Result<Subscription, SubscribeError>
     where
@@ -406,6 +406,11 @@ impl EventBus {
         }
         let capabilities = self.inner.spi.capabilities();
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
+        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "ordering.per_key",
+            }));
+        }
         if capabilities.payload_modes() == PayloadModes::Encoded && topic.codec().is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
