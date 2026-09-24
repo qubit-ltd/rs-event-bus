@@ -52,6 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+`wait_for_idle` checks that the local provider has no queued or unsettled messages for this topic. It does not prove handler success; providers without this capability return `LifecycleError::IdleWaitUnsupported`.
+
 ## What it provides
 
 - Typed `Topic<T>`, `PublishRequest<T>`, `SubscribeRequest<T>`, envelopes, deliveries, and publication receipts.

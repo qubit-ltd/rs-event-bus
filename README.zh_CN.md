@@ -52,6 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+`wait_for_idle` 会确认本地 provider 对该 Topic 没有排队或尚未 settlement 的消息，但不代表 handler 成功。不支持此能力的 provider 会返回 `LifecycleError::IdleWaitUnsupported`。
+
 ## 能力与边界
 
 - 提供类型化的 `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>`、事件 envelope、delivery 和 publish receipt。
