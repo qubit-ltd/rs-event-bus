@@ -137,8 +137,9 @@ fn publish_sample(topics: usize, subscribers: usize, target: usize) -> (u128, u6
         .collect::<Vec<_>>();
     let mut timings = Vec::with_capacity(EVENTS);
     for message in messages {
+        let message = black_box(message);
         let started = Instant::now();
-        let result = bus.publish(black_box(message));
+        let result = bus.publish(message);
         let elapsed = started.elapsed();
         assert_accepted(result.unwrap(), subscribers);
         timings.push(elapsed.as_nanos() as u64);
