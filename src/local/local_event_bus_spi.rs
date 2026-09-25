@@ -72,7 +72,7 @@ impl EventBusSpi for LocalEventBusSpi {
             };
             let busy = queues.iter().any(|queue| {
                 let state = queue.lock();
-                !state.messages.is_empty() || !state.in_flight.is_empty()
+                !state.is_pending_empty() || !state.in_flight.is_empty()
             });
             if !busy {
                 return Ok(Some(true));
@@ -146,10 +146,10 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = queue.lock();
             let status = if state.closed {
                 AdmissionStatus::Rejected("subscription is closed".into())
-            } else if state.messages.len() + state.in_flight.len() >= queue.capacity {
+            } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
                 AdmissionStatus::Rejected("subscription queue is full".into())
             } else {
-                state.messages.push_back(event.clone());
+                state.enqueue_back(event.clone());
                 queue.ready.notify_one();
                 admitted_any = true;
                 AdmissionStatus::Accepted
@@ -255,7 +255,7 @@ impl EventBusSpi for LocalEventBusSpi {
                     };
                     let busy = queues.iter().any(|queue| {
                         let state = queue.lock();
-                        !state.messages.is_empty() || !state.in_flight.is_empty()
+                        !state.is_pending_empty() || !state.in_flight.is_empty()
                     });
                     if !busy {
                         break ShutdownOutcome::Complete;
@@ -286,7 +286,7 @@ impl EventBusSpi for LocalEventBusSpi {
         for queue in queues {
             let mut state = queue.lock();
             state.closed = true;
-            state.messages.clear();
+            state.clear_pending();
             state.in_flight.clear();
             queue.ready.notify_all();
             drop(state);
