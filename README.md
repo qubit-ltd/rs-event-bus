@@ -11,7 +11,7 @@
 
 ## An order service example
 
-When order `order-1001` is created, the service publishes it to `orders.created`. Two subscribers record separate effects. A new local task can later subscribe to the same topic without changing the publishing code. The example waits until the local provider has no outstanding work on that topic, then checks both effects. This is a useful pattern for process-local side effects, not a guarantee that an order and its side effects are committed atomically.
+After an order transaction commits, the order service publishes `OrderCreated { order_id, customer_id, total_cents }` on `orders.created`. The audit subscriber appends an audit record; the customer-view subscriber updates its read model. Both subscribe to `Topic<OrderCreated>` independently, so a new consumer does not change the publisher. These are in-process side effects, not part of the order database transaction.
 
 ## Installation
 
@@ -23,55 +23,61 @@ qubit-event-bus = "0.12"
 ## Quick start
 
 ```rust
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::{EventBus, SubscriberId};
+use qubit_event_bus::model::{PublishReceipt, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::{DeliveryError, EventBus, SubscriberId, Subscription};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create an in-process bus and a typed topic shared by both subscribers.
-    let bus = EventBus::local(LocalEventBusConfig::default())?;
-    let orders = Topic::<String>::new("orders.created")?;
-    let audit = Arc::new(Mutex::new(Vec::new()));
-    let view = Arc::new(Mutex::new(Vec::new()));
+// Published after the order transaction commits.
+struct OrderCreated {
+    order_id: String,
+    customer_id: String,
+    total_cents: u64,
+}
 
-    // Register independent consumers; the publisher does not call either one.
-    let audit_log = Arc::clone(&audit);
-    let audit_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
-        move |delivery| {
-            audit_log.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
-    let customer_view = Arc::clone(&view);
-    let view_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
-        move |delivery| {
-            customer_view.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
+// The application supplies implementations backed by its audit and view stores.
+trait AuditLog: Send + Sync {
+    fn append_order_created(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
+}
+trait CustomerOrderView: Send + Sync {
+    fn upsert_order(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
+}
 
-    // Publish once. The receipt reports admission, not handler success.
-    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
-    assert_eq!(receipt.provider_id().as_str(), "local");
-    // Wait for local work to settle, then verify both business effects.
-    bus.wait_for_idle(&orders, None)?;
-    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
-    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
-    // Explicitly cancel subscriptions and close the bus to release resources.
-    audit_subscription.cancel()?;
-    view_subscription.cancel()?;
-    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
-        timeout: std::time::Duration::from_secs(2),
-    })?;
-    Ok(())
+// Called during application startup; retain the returned subscription.
+fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>)
+    -> Result<Subscription, Box<dyn std::error::Error>>
+{
+    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic);
+    Ok(bus.subscribe(request, move |delivery| {
+        audit.append_order_created(delivery.payload())
+    })?)
+}
+
+fn subscribe_customer_view(bus: &EventBus, view: Arc<dyn CustomerOrderView>)
+    -> Result<Subscription, Box<dyn std::error::Error>>
+{
+    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let request = SubscribeRequest::new(SubscriberId::new("customer-view")?, topic);
+    Ok(bus.subscribe(request, move |delivery| {
+        view.upsert_order(delivery.payload())
+    })?)
+}
+
+// Called by the order service only after its database commit succeeds.
+fn publish_order_created(
+    bus: &EventBus,
+    order_id: String,
+    customer_id: String,
+    total_cents: u64,
+) -> Result<PublishReceipt, Box<dyn std::error::Error>> {
+    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let event = OrderCreated { order_id, customer_id, total_cents };
+    Ok(bus.publish(PublishRequest::new(topic, event)?)?)
 }
 ```
 
-`publish` returns a receipt about provider admission, not handler success. `wait_for_idle` checks that the local provider has no queued or unsettled messages for this topic; the assertions check the business effects. Other providers may return `LifecycleError::IdleWaitUnsupported`. See the [user guide](doc/user_guide.md) for admission failures, retries, and cleanup.
+At startup, call both subscription functions and keep their `Subscription` handles in application state; cancel them during shutdown. After a successful order commit, call `publish_order_created`. Its receipt reports provider admission, not successful audit or view writes. The `AuditLog` and `CustomerOrderView` traits are application interfaces; connect them to your actual stores. See the [user guide](doc/user_guide.md) for admission failures and delivery policy.
 
 ## What it provides
 

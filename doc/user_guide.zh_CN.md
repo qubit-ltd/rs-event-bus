@@ -2,25 +2,23 @@
 
 [English user guide](user_guide.md) · [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.12 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 provider 只处理单进程内的消息，不持久化事件。
+本文适用于 `qubit-event-bus` 0.12 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 provider 只处理单进程内的消息，不持久化事件；不能用它单独保证审计记录或客户视图必然更新。
 
 ## 场景与验收目标
 
-订单服务已接受 `order-1001`，审计记录和客户视图都需要收到它。下面先为 `orders.created` 注册两个订阅者，再发布一次事件，等待本地待处理消息结算，最后分别检查两项效果。以后增加进程内任务时，只需增加订阅者，订单发布代码不用改。
-
-示例用内存数组模拟两项效果，便于直接运行。接入实际服务时，应换成真实的业务操作，并明确重复投递和失败时的处理方式。本库不把订单数据库事务与事件发布合并成原子操作。
+订单事务提交成功后，订单服务把 `OrderCreated { order_id, customer_id, total_cents }` 发布到 `orders.created`。审计订阅者写审计记录，客户视图订阅者更新查询视图。两者都订阅 `Topic<OrderCreated>`，发布方不依赖它们的实现。下面先用进程内集合模拟两处存储，以验证两个订阅者都收到事件；接入数据库时，应由应用定义存储失败处理和幂等策略。订单提交与事件发布是两个独立操作，进程退出或发布失败可能使已提交订单没有对应事件。如果业务要求可靠审计或最终必达，需要另行设计持久移交与补偿机制。
 
 ## 先理解几个对象
 
 | 对象 | 在订单场景中的作用 |
 | --- | --- |
-| `Topic<T>` | 将 `orders.created` 与 Rust 载荷类型绑定；两个订阅者共用 `Topic<String>`。 |
+| `Topic<T>` | 将 `orders.created` 与 Rust 载荷类型绑定；两个订阅者共用 `Topic<OrderCreated>`。 |
 | `SubscribeRequest<T>` | 指明订阅者和主题；返回的 `Subscription` 要保留，并显式取消。 |
 | `PublishRequest<T>` | 装入一次事件及其发布选项。 |
 | `PublishReceipt` | 记录 provider 是否接纳事件，不表示 handler 已完成。 |
 | `EventBus` 与 local provider | facade 处理通用策略；provider 向本进程的订阅者分发消息。 |
 
-## 安装并运行
+## 安装与接入
 
 应用需要 Rust 1.94 或以上版本。在 `Cargo.toml` 中添加：
 
@@ -29,64 +27,90 @@
 qubit-event-bus = "0.12"
 ```
 
-将以下代码保存为 `src/main.rs`，运行 `cargo run`：
+下面的完整示例可放入依赖本库的应用的 `src/main.rs`，用集合模拟审计记录和客户视图。实际订单服务应先完成数据库事务，再执行示例中的发布步骤：
 
 ```rust
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::{EventBus, SubscriberId};
+use qubit_event_bus::model::{AdmissionRequirement, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::{EventBus, SubscriberId, WaitOutcome};
+
+struct OrderCreated {
+    order_id: String,
+    customer_id: String,
+    total_cents: u64,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建进程内总线，两个订阅者共用同一个带类型的 Topic。
     let bus = EventBus::local(LocalEventBusConfig::default())?;
-    let orders = Topic::<String>::new("orders.created")?;
-    let audit = Arc::new(Mutex::new(Vec::new()));
-    let view = Arc::new(Mutex::new(Vec::new()));
+    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let audit_log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let customer_view = Arc::new(Mutex::new(Vec::<(String, String, u64)>::new()));
 
-    // 审计和客户视图独立订阅，发布方无需知道它们的实现。
-    let audit_log = Arc::clone(&audit);
-    let audit_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
-        move |delivery| {
-            audit_log.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
-    let customer_view = Arc::clone(&view);
-    let view_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
-        move |delivery| {
-            customer_view.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
-
-    // 只发布一次；回执说明 provider 的接纳结果，不说明处理已成功。
-    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
-    assert_eq!(receipt.provider_id().as_str(), "local");
-    // 等待本地待处理消息结算，再检查两个业务效果。
-    bus.wait_for_idle(&orders, None)?;
-    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
-    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
-    // 显式取消订阅，并关闭总线以释放 worker 和 provider 资源。
-    audit_subscription.cancel()?;
-    view_subscription.cancel()?;
-    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
-        timeout: std::time::Duration::from_secs(2),
+    let audit_store = Arc::clone(&audit_log);
+    let audit_request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic.clone());
+    let audit = bus.subscribe(audit_request, move |delivery| {
+        audit_store.lock().unwrap().push(delivery.payload().order_id.clone());
     })?;
+
+    let view_store = Arc::clone(&customer_view);
+    let view_request = SubscribeRequest::new(SubscriberId::new("customer-view")?, topic.clone());
+    let view = bus.subscribe(view_request, move |delivery| {
+        let event = delivery.payload();
+        view_store.lock().unwrap().push((
+            event.order_id.clone(),
+            event.customer_id.clone(),
+            event.total_cents,
+        ));
+    })?;
+
+    // 真实服务应在订单数据库事务提交成功后才执行这一发布步骤。
+    let event = OrderCreated {
+        order_id: "order-42".to_owned(),
+        customer_id: "customer-7".to_owned(),
+        total_cents: 1299,
+    };
+    let receipt = bus.publish(PublishRequest::new(topic.clone(), event)?)?;
+    receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+
+    assert_eq!(bus.wait_for_idle(&topic, Some(Duration::from_secs(2)))?, WaitOutcome::Idle);
+    assert_eq!(*audit_log.lock().unwrap(), ["order-42".to_owned()]);
+    assert_eq!(
+        *customer_view.lock().unwrap(),
+        [("order-42".to_owned(), "customer-7".to_owned(), 1299)],
+    );
+
+    audit.cancel()?;
+    view.cancel()?;
+    bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(2) })?;
     Ok(())
 }
 ```
 
-程序先创建两个订阅，再发布事件。`wait_for_idle` 等待本地 provider 在该 Topic 上没有排队或尚未结算的消息；后面的断言才验证业务效果。仅仅等待空闲，不能证明 handler 成功。`cancel()` 停止同步订阅的 worker，`shutdown` 关闭总线。不要从本总线自己的同步 handler 内调用这些会阻塞的生命周期方法；它们可能返回 `LifecycleError::WouldDeadlock`。
+`EventBus::local` 创建内置本地总线；两个 handler 分别写入演示用集合。`check_admission` 要求至少一个目的地接纳且没有拒绝，过滤掉的目的地不计作拒绝；`wait_for_idle` 等待此 Topic 的本地投递结算，然后示例检查集合内容，最后取消订阅并关闭总线。真实应用应在启动时注册并持有订阅，把集合替换为自己的存储实现，并从总线 worker 之外执行取消和关闭。回执与空闲状态都不能单独证明业务写入成功；生产环境还应记录 handler 的失败并安排重试或补偿。
 
 ## 有订阅者未接纳事件时
 
 `publish` 成功返回的只是 provider 的接纳报告，里面仍可能有被拒绝的目的地。使用 local provider 时，先看 `receipt.admission_outcome()`；需要知道具体订阅者的结果，再看 `receipt.acknowledgement()`。结果可能是全部接纳、部分接纳、全部未接纳、没有目的地、被拦截器丢弃，或 provider 不公开目的地的接纳。`receipt.check_admission(requirement)` 仅检查已有回执，不会再次发布，也不会等待消费者。
 
-假设审计订阅者已接纳，而客户视图订阅者因队列已满被拒绝，重发整条事件可能重复写入审计记录。应记录事件 ID 或业务幂等键，决定如何补偿被拒绝的工作，并让 handler 能安全处理所选重试策略。`Filtered` 表示按规则主动过滤，不是队列压力。`PublishError` 与“返回了部分接纳回执”是不同情况；重试前先看错误来源和可能已发生的接纳。
+如果需要定位被拒绝的订阅者，可在上述 `bus.publish(...)` 之后、`check_admission(...)` 之前检查回执：
+
+```rust
+use qubit_event_bus::model::{AdmissionStatus, PublishAcknowledgement};
+
+if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
+    for destination in destinations {
+        if let AdmissionStatus::Rejected(reason) = destination.status() {
+            eprintln!("{} 未接纳事件：{reason}", destination.subscriber_id().as_str());
+        }
+    }
+}
+```
+
+例如审计订阅者已接纳，而客户视图订阅者因队列已满被拒绝，重发整条事件可能重复写入审计记录。应记录事件 ID 或业务幂等键，针对未接纳的工作制定补偿方案，并让 handler 能安全处理可能重复的事件。`Filtered` 表示按规则主动过滤，不是队列压力。`PublishError` 与“返回了部分接纳回执”是不同情况；重试前先看错误来源和可能已发生的接纳。
 
 ## 策略与 provider 选择
 
