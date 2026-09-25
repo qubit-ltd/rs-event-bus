@@ -33,7 +33,7 @@ The following functions belong in the order service and its application wiring. 
 use std::sync::Arc;
 
 use qubit_event_bus::model::{PublishReceipt, PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::{DeliveryError, EventBus, SubscriberId, Subscription};
+use qubit_event_bus::{DeliveryError, EventBus, Subscription};
 
 // Published after the order transaction commits.
 struct OrderCreated {
@@ -55,7 +55,7 @@ fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>)
     -> Result<Subscription, Box<dyn std::error::Error>>
 {
     let topic = Topic::<OrderCreated>::new("orders.created")?;
-    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic);
+    let request = SubscribeRequest::new("audit-log", topic)?;
     Ok(bus.subscribe(request, move |delivery| {
         audit.append_order_created(delivery.payload())
     })?)
@@ -65,7 +65,7 @@ fn subscribe_customer_view(bus: &EventBus, view: Arc<dyn CustomerOrderView>)
     -> Result<Subscription, Box<dyn std::error::Error>>
 {
     let topic = Topic::<OrderCreated>::new("orders.created")?;
-    let request = SubscribeRequest::new(SubscriberId::new("customer-view")?, topic);
+    let request = SubscribeRequest::new("customer-view", topic)?;
     Ok(bus.subscribe(request, move |delivery| {
         view.upsert_order(delivery.payload())
     })?)

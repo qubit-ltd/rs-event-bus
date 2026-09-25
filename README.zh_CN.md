@@ -22,46 +22,117 @@ qubit-event-bus = "0.12"
 
 ## 快速开始
 
-```rust
-use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{AdmissionRequirement, PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::{EventBus, SubscriberId, WaitOutcome};
+订单、审计和客户视图属于应用的不同模块，共用一个事件类型。下面展示各模块与总线相接的部分；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 由应用连接实际存储。
 
-struct OrderCreated {
-    order_id: String,
+订单模块定义事件，供发布方和订阅方引用：
+
+```rust
+// src/orders/events.rs
+use qubit_event_bus::model::Topic;
+
+pub struct OrderCreated {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total_cents: u64,
 }
 
 impl OrderCreated {
-    const TOPIC_CREATED: Topic<Self> = Topic::new_static("orders.created");
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bus = EventBus::local(LocalEventBusConfig::default())?;
-    let topic = OrderCreated::TOPIC_CREATED;
-    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic.clone());
-    let audit = bus.subscribe(request, |delivery| {
-        println!("审计收到订单：{}", delivery.payload().order_id);
-    })?;
-
-    // 订单事务提交成功后再发布；这里只演示总线调用。
-    let event = OrderCreated { order_id: "order-42".to_owned() };
-    let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
-    receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted)?;
-    assert_eq!(
-        bus.wait_for_idle(&OrderCreated::TOPIC_CREATED, Some(std::time::Duration::from_secs(2)))?,
-        WaitOutcome::Idle,
-    );
-
-    audit.cancel()?;
-    bus.shutdown(ShutdownMode::Graceful {
-        timeout: std::time::Duration::from_secs(2),
-    })?;
-    Ok(())
+    pub const TOPIC: Topic<Self> = Topic::new_static("orders.created");
 }
 ```
 
-运行示例会打印收到的订单号。真实应用应在启动时创建并持有订阅，在订单事务提交后发布，关闭时显式取消订阅并关闭总线。回执检查只证明至少一个目的地报告接纳，不证明审计写入成功；完整的双订阅者场景、结果验证与失败处理见[用户手册](doc/user_guide.zh_CN.md)。
+订单服务在仓储确认事务提交后发布事件。它不依赖审计或客户视图模块：
+
+```rust
+// src/orders/service.rs
+use qubit_event_bus::model::{PublishReceipt, PublishRequest};
+use qubit_event_bus::EventBus;
+
+use super::events::OrderCreated;
+
+pub struct CreateOrder {
+    pub customer_id: String,
+    pub total_cents: u64,
+}
+
+pub struct CommittedOrder {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total_cents: u64,
+}
+
+pub trait OrderRepository: Send + Sync {
+    // 成功返回表示订单事务已提交。
+    fn create_and_commit(&self, command: CreateOrder)
+        -> Result<CommittedOrder, Box<dyn std::error::Error>>;
+}
+
+pub fn create_order(
+    repository: &dyn OrderRepository,
+    bus: &EventBus,
+    command: CreateOrder,
+) -> Result<PublishReceipt, Box<dyn std::error::Error>> {
+    let order = repository.create_and_commit(command)?;
+    let event = OrderCreated {
+        order_id: order.order_id,
+        customer_id: order.customer_id,
+        total_cents: order.total_cents,
+    };
+    Ok(bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?)
+}
+```
+
+审计模块在应用启动时建立自己的订阅，并把事件写入审计存储：
+
+```rust
+// src/audit.rs
+use std::sync::Arc;
+
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
+use crate::orders::events::OrderCreated;
+
+pub trait AuditStore: Send + Sync {
+    fn append_order_created(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
+}
+
+pub fn subscribe(bus: &EventBus, store: Arc<dyn AuditStore>)
+    -> Result<Subscription, Box<dyn std::error::Error>>
+{
+    let request = SubscribeRequest::new("audit-log", OrderCreated::TOPIC)?;
+    Ok(bus.subscribe(request, move |delivery| {
+        store.append_order_created(delivery.payload())
+    })?)
+}
+```
+
+客户视图模块独立订阅同一事件，更新查询视图：
+
+```rust
+// src/customer_view.rs
+use std::sync::Arc;
+
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
+use crate::orders::events::OrderCreated;
+
+pub trait CustomerViewStore: Send + Sync {
+    fn upsert_order(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
+}
+
+pub fn subscribe(bus: &EventBus, store: Arc<dyn CustomerViewStore>)
+    -> Result<Subscription, Box<dyn std::error::Error>>
+{
+    let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?;
+    Ok(bus.subscribe(request, move |delivery| {
+        store.upsert_order(delivery.payload())
+    })?)
+}
+```
+
+应用启动时用 `EventBus::local(LocalEventBusConfig::default())` 创建总线，调用两个订阅模块的 `subscribe`，并持有返回的 `Subscription`；关闭时显式取消订阅并关闭总线。订单请求调用 `create_order`。返回的 `PublishReceipt` 只报告 provider 的接纳情况，不代表两处存储写入成功；进程在事务提交后、发布前退出时也不会自动补发。接纳结果、投递策略和关闭流程见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 能力与边界
 

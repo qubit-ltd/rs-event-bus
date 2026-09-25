@@ -8,6 +8,7 @@ All notable changes to `qubit-event-bus` are documented here.
 
 ### Breaking changes
 
+- Change `SubscribeRequest::new` to accept a subscriber ID string and an owned `Topic<T>`, returning `Result` when the ID is invalid.
 - Rename `Topic::with_codec` to `Topic::new_with_codec` and `Topic::with_shared_codec` to `Topic::new_with_shared_codec`.
 
 ### Added
