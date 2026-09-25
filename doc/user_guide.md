@@ -71,6 +71,24 @@ subscription.cancel()?;
 
 `publish` returning `Ok(receipt)` means the provider returned an acknowledgement. Inspect that acknowledgement before deciding whether application work needs compensation:
 
+For a policy-level summary, use `receipt.admission_outcome()` first. It distinguishes acceptance with hidden destination details, complete acceptance, partial acceptance, no accepted destination, an empty destination snapshot, and interceptor drops. The summary does not report handler completion. Read `acknowledgement()` when the application needs subscriber identities or rejection reasons.
+
+```rust
+use qubit_event_bus::model::AdmissionOutcome;
+
+match receipt.admission_outcome() {
+    AdmissionOutcome::OpaqueAccepted => record_opaque_acceptance(),
+    AdmissionOutcome::Accepted(summary) => record_accepted(summary.accepted),
+    AdmissionOutcome::PartiallyAccepted(summary) => {
+        record_partial(summary.accepted, summary.rejected);
+    }
+    AdmissionOutcome::NoneAccepted(summary) => record_no_acceptance(summary),
+    AdmissionOutcome::NoDestinations => record_no_destinations(),
+    AdmissionOutcome::Dropped => record_interceptor_drop(),
+    _ => record_new_outcome(),
+}
+```
+
 ```rust
 use qubit_event_bus::model::{AdmissionStatus, DestinationAdmission, PublishAcknowledgement, PublishReceipt};
 
@@ -196,6 +214,7 @@ Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveErr
 - A successful publish means the provider returned its admission acknowledgement. It does not prove subscriber handler completion.
 - `publish_all` attempts each request independently in input order and retains each result. It is not atomic.
 - Local queue capacity bounds queued and unsettled messages per subscription; a received message continues to occupy capacity until settlement. It is not a global broker quota. The local provider is in-process and non-durable.
+- `LocalEventBusConfig::queue_capacity` counts queued and received-but-unsettled messages independently for each subscription. The facade's `max_in_flight` and handler queue capacity limit a separate layer of work; neither value is a total-bus memory budget.
 - Both facades bound admitted work bus-wide. Sync uses `with_sync_delivery_scheduler(...)` for `max_in_flight` and handler queue capacity. Async uses `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` (default 4); its permit covers each received message through lane wait, middleware, handler/retry, and settlement. Async subscriptions process different ordering keys concurrently while preserving order within each key. A received but unadmitted message is buffered per subscription; idle receive calls do not consume permits.
 - Diagnostic observers run synchronously on the thread emitting the diagnostic. Panics are contained, but a blocking observer can delay that thread; diagnostics are not buffered in a separate queue.
 - Capability flags are the provider's declared contract. Select required capabilities explicitly and document any stronger provider-specific guarantee separately.
@@ -206,6 +225,8 @@ Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveErr
 ### Local provider resource guidance
 
 The local provider is synchronous, in-process, and non-durable. Each synchronous subscription uses a blocking receive worker thread, so estimate subscription counts as a thread-resource decision as well as a queue-capacity decision. A Linux sample measured peaks of 6/21/133 process threads for 1/16/128 subscriptions. Median creation times were 0.226/1.592/7.551 ms and cancel plus immediate-shutdown times were 0.285/651.543/5359.302 ms. These figures came from a 6-CPU host under unrelated load, and teardown ranges were wide; they are observations, not capacity guarantees. Run `cargo bench --bench local_threads` to measure the current host.
+
+Start a separate async-local-provider design when a product deployment requires at least 128 simultaneous subscriptions and either fewer than 32 receive threads or a p95 shutdown time below one second. The design must prove cancellation-safe receive, idempotent settlement, lost-wakeup resistance, and shutdown deadline convergence before changing the SPI.
 
 `LocalEventBusConfig::new().queue_capacity(n)` sets the positive outstanding-message limit separately for each subscription. It includes queued and received-but-unsettled deliveries, and `Retry` retains its reservation. Size the limit for the backlog that one subscriber can safely retain, accounting for its processing rate and expected pauses; it is not a total-bus or application-wide memory budget. A delayed lane head blocks later messages with the same ordering key but does not prevent unrelated ready keys from progressing. The `rs-task` bounded application publisher policy is separate from this provider queue limit.
 

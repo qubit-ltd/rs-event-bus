@@ -71,6 +71,24 @@ subscription.cancel()?;
 
 `publish` 返回 `Ok(receipt)` 表示 provider 已返回接纳回执。应用应先检查 acknowledgement，再决定是否需要业务补偿：
 
+需要策略层面的摘要时，先调用 `receipt.admission_outcome()`。它能区分不公开目的地的接纳、全部接纳、部分接纳、没有目的地接纳、空目的地快照和拦截器丢弃。该摘要不表示 handler 已完成。需要订阅者身份或拒绝原因时，再读取 `acknowledgement()`。
+
+```rust
+use qubit_event_bus::model::AdmissionOutcome;
+
+match receipt.admission_outcome() {
+    AdmissionOutcome::OpaqueAccepted => record_opaque_acceptance(),
+    AdmissionOutcome::Accepted(summary) => record_accepted(summary.accepted),
+    AdmissionOutcome::PartiallyAccepted(summary) => {
+        record_partial(summary.accepted, summary.rejected);
+    }
+    AdmissionOutcome::NoneAccepted(summary) => record_no_acceptance(summary),
+    AdmissionOutcome::NoDestinations => record_no_destinations(),
+    AdmissionOutcome::Dropped => record_interceptor_drop(),
+    _ => record_new_outcome(),
+}
+```
+
 ```rust
 use qubit_event_bus::model::{AdmissionStatus, DestinationAdmission, PublishAcknowledgement, PublishReceipt};
 
@@ -208,7 +226,11 @@ local provider 是同步、进程内且不持久化的实现。每个同步订�
 
 `LocalEventBusConfig::new().queue_capacity(n)` 为每个订阅分别设置正数的未完成消息上限。排队中和已接收但尚未 settlement 的 delivery 都占用该额度，`Retry` 会保留原额度。应根据单个订阅者可安全保留的积压量设置上限，并考虑其处理速率和预期暂停时间；这不是整条总线或应用级的总内存预算。同一 ordering key 上延迟的队首会阻塞该 key 的后续消息，但不会阻止其他已就绪 key 前进。`rs-task` 中有界的应用发布策略与此 provider 队列上限是不同层次的策略。
 
+provider 队列容量与 facade 的 `max_in_flight`、handler queue capacity 分属不同层次，分别限制每订阅者的待处理消息和 facade 调度的工作量；都不能单独代表整条总线的内存预算。
+
 本地对比可运行 `cargo bench --bench local_scale -- publish`，观察不同 Topic 和订阅布局下的发布耗时与吞吐；运行 `cargo bench --bench local_scale -- receive`，观察不同队列深度和就绪 key 数量下的接收延迟。一组 Linux 样本显示多 Topic 路由 p95 有明显改善，但“1 个 Topic × 128 个订阅”的样本变慢；修正后的 depth-1024 接收样本中，长阻塞前缀场景的 p95 明显下降。结果受主机和负载影响，不能当作通用性能界限。本 crate 没有内置 async local provider；使用异步 facade 需要外部注册 async provider。实现取舍及样本细节见[0.12 架构说明](design.zh_CN.md#local-provider-的路由与资源)。
+
+当产品部署要求同时维持至少 128 个订阅，并且要求接收线程少于 32 个或关闭 p95 低于 1 秒时，应另行设计 async local provider。修改 SPI 前，该设计需证明 receive 取消不丢消息、settlement 幂等、防止丢失唤醒和关闭期限收敛。
 
 ## 延伸阅读
 
