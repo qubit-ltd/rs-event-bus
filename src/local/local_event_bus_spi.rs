@@ -67,16 +67,8 @@ impl EventBusSpi for LocalEventBusSpi {
         loop {
             let (version, queues) = {
                 let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                state.queues.retain(|_, queue| queue.strong_count() > 0);
-                (
-                    state.change_version,
-                    state
-                        .queues
-                        .values()
-                        .filter_map(std::sync::Weak::upgrade)
-                        .filter(|queue| queue.topic == *topic)
-                        .collect::<Vec<_>>(),
-                )
+                let queues = state.live_queues_for_topic(topic);
+                (state.change_version, queues)
             };
             let busy = queues.iter().any(|queue| {
                 let state = queue.lock();
@@ -136,16 +128,11 @@ impl EventBusSpi for LocalEventBusSpi {
             if state.closed {
                 return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
             }
-            state.queues.retain(|_, queue| queue.strong_count() > 0);
-            let queues = state
-                .queues
-                .values()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>();
-            if queues
-                .iter()
-                .any(|queue| queue.topic == topic && queue.payload_type_id != payload_type_id)
-            {
+            let queues = state.live_queues_for_topic(&topic);
+            let bucket = state.topics.get(&topic);
+            if bucket.is_some_and(|bucket| {
+                bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)
+            }) {
                 return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
             }
             queues
@@ -181,7 +168,6 @@ impl EventBusSpi for LocalEventBusSpi {
         let queue = Arc::new(LocalQueue {
             id,
             topic: request.topic().clone(),
-            payload_type_id: request.payload_type_id(),
             subscriber_id: request.subscriber_id().clone(),
             capacity: self.shared.capacity,
             state: Mutex::new(LocalQueueState::default()),
@@ -205,14 +191,13 @@ impl EventBusSpi for LocalEventBusSpi {
                 "unsupported_subscription_options",
             ));
         }
-        state.queues.retain(|_, queue| queue.strong_count() > 0);
+        let topic = request.topic().clone();
+        state.live_queues_for_topic(&topic);
         let has_type_conflict = state
-            .queues
-            .values()
-            .filter_map(std::sync::Weak::upgrade)
-            .any(|existing| {
-                existing.topic == *request.topic() && existing.payload_type_id != request.payload_type_id()
-            });
+            .topics
+            .get(&topic)
+            .and_then(|bucket| bucket.payload_type_id)
+            .is_some_and(|type_id| type_id != request.payload_type_id());
         if has_type_conflict {
             return Err(operation_error(
                 "subscribe",
@@ -220,14 +205,25 @@ impl EventBusSpi for LocalEventBusSpi {
                 "topic_type_conflict",
             ));
         }
-        if state.queues.get(&id).and_then(std::sync::Weak::upgrade).is_some() {
-            return Err(operation_error(
-                "subscribe",
-                Some(request.topic().as_str()),
-                "duplicate_subscription",
-            ));
+        if state.subscription_ids.contains(&id) {
+            let is_live = state
+                .topics
+                .values()
+                .find_map(|bucket| bucket.queues.get(&id).and_then(std::sync::Weak::upgrade))
+                .is_some();
+            if is_live {
+                return Err(operation_error(
+                    "subscribe",
+                    Some(request.topic().as_str()),
+                    "duplicate_subscription",
+                ));
+            }
+            state.remove_stale_id(id);
         }
-        state.queues.insert(id, Arc::downgrade(&queue));
+        let bucket = state.topics.entry(topic).or_default();
+        bucket.payload_type_id = Some(request.payload_type_id());
+        bucket.queues.insert(id, Arc::downgrade(&queue));
+        state.subscription_ids.insert(id);
         drop(state);
         Ok(Box::new(LocalEventSubscription::new(self.shared.clone(), queue)))
     }
@@ -252,15 +248,10 @@ impl EventBusSpi for LocalEventBusSpi {
                 let started = Instant::now();
                 loop {
                     let (version, queues) = {
-                        let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        (
-                            state.change_version,
-                            state
-                                .queues
-                                .values()
-                                .filter_map(std::sync::Weak::upgrade)
-                                .collect::<Vec<_>>(),
-                        )
+                        let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                        let version = state.change_version;
+                        let queues = state.live_queues();
+                        (version, queues)
                     };
                     let busy = queues.iter().any(|queue| {
                         let state = queue.lock();
@@ -289,12 +280,8 @@ impl EventBusSpi for LocalEventBusSpi {
         };
 
         let queues = {
-            let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state
-                .queues
-                .values()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>()
+            let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.live_queues()
         };
         for queue in queues {
             let mut state = queue.lock();

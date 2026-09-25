@@ -12,6 +12,7 @@
 use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -152,8 +153,6 @@ pub(super) struct LocalQueue {
     pub(super) id: Id,
     /// Topic this queue receives.
     pub(super) topic: TopicAddress,
-    /// Native payload type enforced for every publication routed here.
-    pub(super) payload_type_id: TypeId,
     /// Logical subscriber identity reported by publish admissions.
     pub(super) subscriber_id: crate::model::SubscriberId,
     /// Maximum number of queued and unsettled events for this subscription.
@@ -171,17 +170,111 @@ impl LocalQueue {
     }
 }
 
+/// Live subscriptions sharing one topic and native payload type.
+#[derive(Default)]
+pub(super) struct TopicSubscriptions {
+    /// Live queues indexed in stable subscription identifier order.
+    pub(super) queues: BTreeMap<Id, Weak<LocalQueue>>,
+    /// Payload type bound while this bucket has live subscriptions.
+    pub(super) payload_type_id: Option<TypeId>,
+}
+
+impl TopicSubscriptions {
+    /// Removes dead subscriptions and returns live queues in identifier order.
+    pub(super) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
+        self.queues.retain(|_, queue| queue.strong_count() > 0);
+        let queues = self
+            .queues
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        if queues.is_empty() {
+            self.payload_type_id = None;
+        }
+        queues
+    }
+
+    /// Removes an entry only when it still points to the closing queue.
+    pub(super) fn remove(&mut self, id: Id, queue: &Arc<LocalQueue>) -> bool {
+        let matches = self
+            .queues
+            .get(&id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|current| Arc::ptr_eq(&current, queue));
+        if matches {
+            self.queues.remove(&id);
+        }
+        if self.queues.is_empty() {
+            self.payload_type_id = None;
+        }
+        matches
+    }
+}
+
 /// Provider-wide routing table and shutdown state.
 #[derive(Default)]
 pub(super) struct BusState {
-    /// Live queues indexed by facade-generated subscription identity.
-    pub(super) queues: BTreeMap<Id, Weak<LocalQueue>>,
+    /// Topic-local queues and payload type bindings.
+    pub(super) topics: HashMap<TopicAddress, TopicSubscriptions>,
+    /// Live subscription identifiers are unique across the provider.
+    pub(super) subscription_ids: HashSet<Id>,
     /// Rejects new provider operations after shutdown begins.
     pub(super) closed: bool,
     /// Stable outcome returned by all later shutdown calls.
     pub(super) shutdown_outcome: Option<crate::spi::ShutdownOutcome>,
     /// Change counter that prevents missed graceful-shutdown notifications.
     pub(super) change_version: u64,
+}
+
+impl BusState {
+    /// Removes dead identifiers in one topic and returns its ordered live queues.
+    pub(super) fn live_queues_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<LocalQueue>> {
+        let Some(bucket) = self.topics.get_mut(topic) else {
+            return Vec::new();
+        };
+        let dead_ids = bucket
+            .queues
+            .iter()
+            .filter_map(|(id, queue)| (queue.strong_count() == 0).then_some(*id))
+            .collect::<Vec<_>>();
+        let queues = bucket.live_queues();
+        for id in dead_ids {
+            self.subscription_ids.remove(&id);
+        }
+        if bucket.queues.is_empty() {
+            self.topics.remove(topic);
+        }
+        queues
+    }
+
+    /// Collects all live queues while pruning stale topic entries and IDs.
+    pub(super) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
+        let topics = self.topics.keys().cloned().collect::<Vec<_>>();
+        let mut queues = Vec::new();
+        for topic in topics {
+            queues.extend(self.live_queues_for_topic(&topic));
+        }
+        queues
+    }
+
+    /// Removes one stale provider-wide identifier from whichever bucket owns it.
+    pub(super) fn remove_stale_id(&mut self, id: Id) {
+        for bucket in self.topics.values_mut() {
+            if bucket
+                .queues
+                .get(&id)
+                .is_some_and(|queue| queue.strong_count() == 0)
+            {
+                bucket.queues.remove(&id);
+                if bucket.queues.is_empty() {
+                    bucket.payload_type_id = None;
+                }
+                break;
+            }
+        }
+        self.subscription_ids.remove(&id);
+        self.topics.retain(|_, bucket| !bucket.queues.is_empty());
+    }
 }
 
 /// Shared router retained by the SPI and all active subscription receivers.

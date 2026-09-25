@@ -181,13 +181,20 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             }
         }
         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let same = state
-            .queues
-            .get(&self.queue.id)
-            .and_then(std::sync::Weak::upgrade)
-            .is_some_and(|current| Arc::ptr_eq(&current, &self.queue));
-        if same {
-            state.queues.remove(&self.queue.id);
+        let topic = self.queue.topic.clone();
+        let removed = state
+            .topics
+            .get_mut(&topic)
+            .is_some_and(|bucket| bucket.remove(self.queue.id, &self.queue));
+        if removed {
+            state.subscription_ids.remove(&self.queue.id);
+        }
+        if state
+            .topics
+            .get(&topic)
+            .is_some_and(|bucket| bucket.queues.is_empty())
+        {
+            state.topics.remove(&topic);
         }
         drop(state);
         signal_changed(&self.shared);
