@@ -49,3 +49,7 @@ loom = "0.7"
 [[bench]]
 name = "local_scale"
 harness = false
+
+[[bench]]
+name = "local_threads"
+harness = false
