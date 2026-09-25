@@ -756,6 +756,56 @@ fn local_subscription_retry_preserves_same_key_order_at_capacity() {
 }
 
 #[test]
+fn test_local_subscription_retry_preserves_key_fifo_while_other_key_progresses() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(3));
+    let mut subscription = spi.subscribe(request(142, "events")).unwrap();
+    spi.publish(outbound_with_key_and_delay(
+        "events",
+        1,
+        "orders",
+        Some(Duration::from_millis(20)),
+    ))
+    .unwrap();
+    spi.publish(outbound_with_key_and_delay("events", 2, "orders", None))
+        .unwrap();
+    spi.publish(outbound_with_key_and_delay("events", 3, "customers", None))
+        .unwrap();
+
+    let ReceiveOutcome::Message(mut other_key) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("an immediate ordering key can pass the delayed key head");
+    };
+    assert_eq!("event-3", other_key.id().as_str());
+    let other_token = other_key.take_settlement().expect("delivery requires settlement");
+    subscription
+        .settle(&other_token, DeliveryDisposition::Accept)
+        .expect("other key completes independently");
+
+    let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::from_secs(1)).unwrap() else {
+        panic!("the delayed order becomes ready");
+    };
+    assert_eq!("event-1", first.id().as_str());
+    let first_token = first.take_settlement().expect("delivery requires settlement");
+    subscription
+        .settle(&first_token, DeliveryDisposition::Retry)
+        .expect("retry restores the first event to its key lane");
+
+    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("the retried event is available");
+    };
+    assert_eq!("event-1", redelivery.id().as_str());
+    subscription
+        .settle(
+            &redelivery.take_settlement().expect("redelivery requires settlement"),
+            DeliveryDisposition::Accept,
+        )
+        .unwrap();
+    let ReceiveOutcome::Message(successor) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("the same-key successor follows the accepted redelivery");
+    };
+    assert_eq!("event-2", successor.id().as_str());
+}
+
+#[test]
 fn local_native_delay_hides_the_message_until_its_deadline() {
     let spi = create(&LocalEventBusConfig::default());
     assert_eq!(DelayedDeliveryCapability::Native, spi.capabilities().delayed_delivery());

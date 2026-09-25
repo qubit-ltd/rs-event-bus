@@ -10,7 +10,10 @@
 //! Shared queue state for local subscriptions.
 
 use std::any::TypeId;
+use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -19,6 +22,7 @@ use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
+use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -110,6 +114,55 @@ pub(super) struct LocalInFlight {
     pub(super) settlement: LocalSettlementHandle,
 }
 
+/// Key that groups events subject to the same per-key ordering constraint.
+type QueueKey = Option<OrderingKey>;
+
+/// A delayed lane head ordered by its deadline and insertion sequence.
+struct DelayedQueueHead {
+    /// Earliest instant at which this lane head may be received.
+    deadline: Instant,
+    /// Stable tie breaker for equal deadlines.
+    sequence: u64,
+    /// Lane whose current head is delayed.
+    key: QueueKey,
+    /// Lane generation used to discard stale heap entries.
+    version: u64,
+}
+
+impl PartialEq for DelayedQueueHead {
+    /// Compares heap identity by deadline and insertion sequence.
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.sequence == other.sequence
+    }
+}
+
+impl Eq for DelayedQueueHead {}
+
+impl PartialOrd for DelayedQueueHead {
+    /// Orders delayed heads by deadline, then by insertion sequence.
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DelayedQueueHead {
+    /// Orders delayed heads by deadline, then by insertion sequence.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.deadline
+            .cmp(&other.deadline)
+            .then_with(|| self.sequence.cmp(&other.sequence))
+    }
+}
+
+/// FIFO queue and generation for one ordering lane.
+#[derive(Default)]
+struct QueueLane {
+    /// Pending events belonging to this ordering key.
+    events: VecDeque<LocalEvent>,
+    /// Generation of the current head, invalidating older cached entries.
+    version: u64,
+}
+
 /// Cloneable transport payload forms used by the local queue.
 #[derive(Clone)]
 pub(super) enum SharedPayload {
@@ -137,14 +190,153 @@ impl SharedPayload {
 /// Mutable state owned by one subscription receiver.
 #[derive(Default)]
 pub(super) struct LocalQueueState {
-    /// Pending events, including those whose native delay has not expired.
-    pub(super) messages: VecDeque<LocalEvent>,
+    /// FIFO lanes keyed by ordering key, including the unkeyed lane.
+    lanes: HashMap<QueueKey, QueueLane>,
+    /// Number of pending events across all lanes.
+    pending_count: usize,
+    /// Ready lane heads in round-robin order, with their generations.
+    ready_lanes: VecDeque<(QueueKey, u64)>,
+    /// Delayed lane heads ordered by deadline with lazy stale-entry removal.
+    delayed_lanes: BinaryHeap<Reverse<DelayedQueueHead>>,
+    /// Stable tie breaker for delayed heads.
+    next_delay_sequence: u64,
     /// Received but not yet terminally settled delivery attempts.
     pub(super) in_flight: HashMap<Box<str>, LocalInFlight>,
     /// Whether receive calls should stop and return `Closed`.
     pub(super) closed: bool,
     /// Monotonic token component that distinguishes redelivery attempts.
     pub(super) next_delivery_token: u64,
+}
+
+impl LocalQueueState {
+    /// Adds an event to its lane tail and schedules a head when the lane was empty.
+    pub(super) fn enqueue_back(&mut self, event: LocalEvent) {
+        let key = event.ordering_key.clone();
+        let lane = self.lanes.entry(key.clone()).or_default();
+        let was_empty = lane.events.is_empty();
+        lane.events.push_back(event);
+        self.pending_count += 1;
+        if was_empty {
+            self.schedule_lane_head(key);
+        }
+    }
+
+    /// Restores a retried event at its lane front and reschedules the lane head.
+    pub(super) fn enqueue_front(&mut self, event: LocalEvent) {
+        let key = event.ordering_key.clone();
+        self.lanes.entry(key.clone()).or_default().events.push_front(event);
+        self.pending_count += 1;
+        self.schedule_lane_head(key);
+    }
+
+    /// Returns the total number of queued events across all lanes.
+    pub(super) fn pending_count(&self) -> usize {
+        self.pending_count
+    }
+
+    /// Returns whether no queued event remains.
+    pub(super) fn is_pending_empty(&self) -> bool {
+        self.pending_count == 0
+    }
+
+    /// Clears all pending events and cached lane schedules.
+    pub(super) fn clear_pending(&mut self) {
+        self.lanes.clear();
+        self.ready_lanes.clear();
+        self.delayed_lanes.clear();
+        self.pending_count = 0;
+    }
+
+    /// Pops one currently ready lane head, promoting expired delayed heads first.
+    pub(super) fn pop_ready(&mut self, now: Instant) -> Option<LocalEvent> {
+        self.promote_due_heads(now);
+        while let Some((key, version)) = self.ready_lanes.pop_front() {
+            let Some(lane) = self.lanes.get_mut(&key) else {
+                continue;
+            };
+            if lane.version != version {
+                continue;
+            }
+            if !lane
+                .events
+                .front()
+                .is_some_and(|event| event.not_before.is_none_or(|deadline| deadline <= now))
+            {
+                continue;
+            }
+            let event = lane.events.pop_front().expect("ready lane has a head");
+            self.pending_count -= 1;
+            if lane.events.is_empty() {
+                self.lanes.remove(&key);
+            } else {
+                self.schedule_lane_head(key);
+            }
+            return Some(event);
+        }
+        None
+    }
+
+    /// Returns the delay until the earliest live delayed lane head.
+    pub(super) fn next_ready_delay(&mut self, now: Instant) -> Option<Duration> {
+        self.discard_stale_delayed_heads();
+        self.delayed_lanes
+            .peek()
+            .map(|Reverse(head)| head.deadline.saturating_duration_since(now))
+    }
+
+    /// Increments a lane generation and schedules its current ready or delayed head.
+    fn schedule_lane_head(&mut self, key: QueueKey) {
+        let Some(lane) = self.lanes.get_mut(&key) else {
+            return;
+        };
+        lane.version = lane.version.wrapping_add(1);
+        let version = lane.version;
+        let Some(head) = lane.events.front() else {
+            return;
+        };
+        if head.not_before.is_none_or(|deadline| deadline <= Instant::now()) {
+            self.ready_lanes.push_back((key, version));
+        } else if let Some(deadline) = head.not_before {
+            self.next_delay_sequence = self.next_delay_sequence.wrapping_add(1);
+            self.delayed_lanes.push(Reverse(DelayedQueueHead {
+                deadline,
+                sequence: self.next_delay_sequence,
+                key,
+                version,
+            }));
+        }
+    }
+
+    /// Promotes all due, still-current delayed lane heads to the ready queue.
+    fn promote_due_heads(&mut self, now: Instant) {
+        self.discard_stale_delayed_heads();
+        while self
+            .delayed_lanes
+            .peek()
+            .is_some_and(|Reverse(head)| head.deadline <= now)
+        {
+            let Reverse(head) = self.delayed_lanes.pop().expect("peeked delayed head exists");
+            if self
+                .lanes
+                .get(&head.key)
+                .is_some_and(|lane| lane.version == head.version)
+            {
+                self.ready_lanes.push_back((head.key, head.version));
+            }
+            self.discard_stale_delayed_heads();
+        }
+    }
+
+    /// Removes delayed entries whose lane no longer has the recorded generation.
+    fn discard_stale_delayed_heads(&mut self) {
+        while self.delayed_lanes.peek().is_some_and(|Reverse(head)| {
+            self.lanes
+                .get(&head.key)
+                .is_none_or(|lane| lane.version != head.version)
+        }) {
+            self.delayed_lanes.pop();
+        }
+    }
 }
 
 /// One bounded FIFO queue and receiver lifecycle for a logical subscriber.

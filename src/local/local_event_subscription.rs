@@ -7,7 +7,6 @@
 // =============================================================================
 //! Single-owner synchronous receiver for a local subscription.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::time::Duration;
@@ -40,32 +39,6 @@ impl LocalEventSubscription {
     }
 }
 
-/// Finds the first ready queued message for any ordering key.
-fn next_ready_index(state: &super::state::LocalQueueState, now: Instant) -> Option<usize> {
-    let mut seen = HashSet::new();
-    state.messages.iter().enumerate().find_map(|(index, event)| {
-        if !seen.insert(event.ordering_key.clone()) {
-            return None;
-        }
-        event
-            .not_before
-            .is_none_or(|not_before| not_before <= now)
-            .then_some(index)
-    })
-}
-
-/// Finds the next delivery deadline among each key's queue head.
-fn next_ready_delay(state: &super::state::LocalQueueState, now: Instant) -> Option<Duration> {
-    let mut seen = HashSet::new();
-    state
-        .messages
-        .iter()
-        .filter(|event| seen.insert(event.ordering_key.clone()))
-        .filter_map(|event| event.not_before)
-        .map(|not_before| not_before.saturating_duration_since(now))
-        .min()
-}
-
 impl EventSubscriptionSpi for LocalEventSubscription {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
         let started = Instant::now();
@@ -75,8 +48,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 return Ok(ReceiveOutcome::Closed);
             }
             let now = Instant::now();
-            let message_index = next_ready_index(&state, now);
-            if let Some(event) = message_index.and_then(|index| state.messages.remove(index)) {
+            if let Some(event) = state.pop_ready(now) {
                 let sequence = state.next_delivery_token.checked_add(1).ok_or_else(|| {
                     operation_error("receive", Some(self.queue.topic.as_str()), "settlement_token_exhausted")
                 })?;
@@ -107,7 +79,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             if remaining.is_zero() {
                 return Ok(ReceiveOutcome::TimedOut);
             }
-            let delay = next_ready_delay(&state, now);
+            let delay = state.next_ready_delay(now);
             let wait_for = delay.filter(|delay| *delay < remaining).unwrap_or(remaining);
             let (next, result) = self
                 .queue
@@ -160,7 +132,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             .remove(token_state.token_id.as_ref())
             .expect("in-flight event was validated above");
         if disposition == DeliveryDisposition::Retry {
-            state.messages.push_front(event.event);
+            state.enqueue_front(event.event);
             self.queue.ready.notify_one();
         }
         token_state.disposition = Some(disposition);
@@ -175,7 +147,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             let mut state = self.queue.lock();
             if !state.closed {
                 state.closed = true;
-                state.messages.clear();
+                state.clear_pending();
                 state.in_flight.clear();
                 self.queue.ready.notify_all();
             }
