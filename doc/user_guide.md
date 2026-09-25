@@ -1,239 +1,119 @@
 # Qubit Event Bus user guide
 
-This guide describes `qubit-event-bus` 0.12 on Rust 1.94 or later. It is for Rust application developers who want typed event dispatch without coupling application code to a particular transport. The crate includes a synchronous in-process provider; third-party transport adapters are separate provider implementations.
+[中文用户手册](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-[中文用户指南](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
+This guide covers `qubit-event-bus` 0.12 on Rust 1.94 or later. It is for Rust application developers who need several local tasks to react to one business event. In an order service, calling the audit writer and customer-view updater directly from order creation makes that path depend on both implementations and their failure handling. With this bus, the order path publishes a typed event; each task owns its subscription. The included provider works within one process and does not persist events.
 
-## Purpose and boundaries
+## Scenario and success criteria
 
-Suppose an order service must notify an audit handler after accepting an order. The event bus gives the publisher and subscriber a shared typed topic and a receipt that describes admission. The application can wait for this facade's tracked work when it needs to observe a handler effect. The local provider is appropriate for in-process work; it is not a message broker and does not persist or route messages across processes.
+An order service has accepted `order-1001`. Its audit trail and customer view must each observe the order. We will register both consumers on `orders.created`, publish once, wait for local work to settle, and check both recorded effects. Adding another in-process consumer then requires another subscription, rather than a change to the order publisher.
 
-The facade separates application policy from provider transport. Synchronous and runtime-neutral asynchronous APIs sit above object-safe `EventBusSpi` and `AsyncEventBusSpi` contracts. Only the synchronous local provider ships in this crate. Tokio, crossbeam, flume, RabbitMQ, Kafka, and Redis adapters are not included.
+This example simulates the two effects with memory-backed vectors so it is runnable. In a real service, replace those writes with application operations and define how those operations handle repeated deliveries and failures. Publication and a database transaction are not atomic here.
 
 ## Conceptual model
 
-- `Topic<T>` binds a validated topic name to a Rust payload type.
-- `PublishRequest<T>` combines a typed topic, payload, envelope metadata, and publish policy. Its `new(topic, payload)` path supplies generated event identity and default options; its builder can set headers, ordering key, delay, retry, and interceptors.
-- `SubscribeRequest<T>` combines `SubscriberId`, topic, and `SubscribeOptions<T>`. `new(subscriber_id, topic)` is the default-options path; the builder configures acknowledgement, filtering, middleware, retry, dead-letter policy, and provider-specific namespaced options.
-- `Delivery<T>` exposes the event, delivery context, and ACK/NACK handle. It is not the transport settlement token.
-- `PublishReceipt` reports the provider admission acknowledgement and provider identity, not handler completion.
-- The provider SPI transports erased payloads and receives provider-specific subscription requests. `qubit-spi` registries select and create provider instances.
+| Object | Role in this scenario |
+| --- | --- |
+| `Topic<T>` | Gives `orders.created` a Rust payload type. Both subscribers use the same `Topic<String>`. |
+| `SubscribeRequest<T>` | Identifies a subscriber and its topic. The returned `Subscription` must be retained and explicitly cancelled. |
+| `PublishRequest<T>` | Carries one event and its publish options. |
+| `PublishReceipt` | Reports provider admission. It does not report handler completion. |
+| `EventBus` and local provider | The facade applies shared policy; the provider routes events to in-process subscribers. |
 
-Subscriber middleware has distinct sync and async forms. A `SubscribeRequest` can carry either or both, but a synchronous `EventBus` rejects async middleware and an `AsyncEventBus` rejects synchronous middleware with a configuration error. This avoids blocking an async executor or pretending a sync callback is awaitable.
+## Install and run the example
 
-## Scenario: record an order locally
-
-The success criterion is that an audit subscriber receives `order-1001` and the calling test can observe it before exit.
-
-### Install and create a bus
+Add the dependency to an application using Rust 1.94 or later:
 
 ```toml
 [dependencies]
 qubit-event-bus = "0.12"
 ```
 
-```rust
-use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::EventBus;
-
-let bus = EventBus::local(LocalEventBusConfig::default())?;
-```
-
-The local provider limits each subscription to 1024 outstanding messages by default. Queued and received but unsettled messages both use this capacity. `Retry` returns the same reservation to the queue. Set `LocalEventBusConfig::new().queue_capacity(n)` to choose another positive bound.
-
-### Register, publish, and observe
+Put this program in `src/main.rs` and run `cargo run`:
 
 ```rust
 use std::sync::{Arc, Mutex};
 
+use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::{DeliveryError, SubscriberId};
+use qubit_event_bus::{EventBus, SubscriberId};
 
-let orders = Topic::<String>::new("orders.created")?;
-let received = Arc::new(Mutex::new(Vec::new()));
-let captured = Arc::clone(&received);
-let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
-let subscription = bus.subscribe(request, move |delivery| {
-    captured.lock().expect("received events should lock").push(delivery.payload().clone());
-    Ok::<(), DeliveryError>(())
-})?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an in-process bus and a typed topic shared by both subscribers.
+    let bus = EventBus::local(LocalEventBusConfig::default())?;
+    let orders = Topic::<String>::new("orders.created")?;
+    let audit = Arc::new(Mutex::new(Vec::new()));
+    let view = Arc::new(Mutex::new(Vec::new()));
 
-let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
-assert_eq!(receipt.provider_id().as_str(), "local");
-bus.wait_for_idle(&orders, None)?;
-assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
-subscription.cancel()?;
-```
+    // Register independent consumers; the publisher does not call either one.
+    let audit_log = Arc::clone(&audit);
+    let audit_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
+        move |delivery| {
+            audit_log.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
+    let customer_view = Arc::clone(&view);
+    let view_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
+        move |delivery| {
+            customer_view.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
 
-`wait_for_idle` asks the provider whether this topic has queued or unsettled work. It does not report handler success or global activity on a remote broker. Providers that cannot report this return `LifecycleError::IdleWaitUnsupported`. Use `wait_for_received_deliveries` to wait for work received and tracked by this facade.
-
-### Decide what to do with a publish receipt
-
-`publish` returning `Ok(receipt)` means the provider returned an acknowledgement. Inspect that acknowledgement before deciding whether application work needs compensation:
-
-For a policy-level summary, use `receipt.admission_outcome()` first. It distinguishes acceptance with hidden destination details, complete acceptance, partial acceptance, no accepted destination, an empty destination snapshot, and interceptor drops. The summary does not report handler completion. Read `acknowledgement()` when the application needs subscriber identities or rejection reasons.
-
-```rust
-use qubit_event_bus::model::AdmissionOutcome;
-
-match receipt.admission_outcome() {
-    AdmissionOutcome::OpaqueAccepted => record_opaque_acceptance(),
-    AdmissionOutcome::Accepted(summary) => record_accepted(summary.accepted),
-    AdmissionOutcome::PartiallyAccepted(summary) => {
-        record_partial(summary.accepted, summary.rejected);
-    }
-    AdmissionOutcome::NoneAccepted(summary) => record_no_acceptance(summary),
-    AdmissionOutcome::NoDestinations => record_no_destinations(),
-    AdmissionOutcome::Dropped => record_interceptor_drop(),
-    _ => record_new_outcome(),
-}
-```
-
-```rust
-use qubit_event_bus::model::{AdmissionStatus, DestinationAdmission, PublishAcknowledgement, PublishReceipt};
-
-let receipt: PublishReceipt = todo!("use the receipt returned by EventBus::publish");
-
-match receipt.acknowledgement() {
-    PublishAcknowledgement::Accepted { .. } => {
-        // The broker accepted the event; it may not expose consumer identities.
-    }
-    PublishAcknowledgement::DroppedByInterceptor => {
-        // An interceptor intentionally stopped dispatch.
-    }
-    PublishAcknowledgement::DestinationAdmissions(destinations) => {
-        if destinations.is_empty() {
-            // The provider reported no destinations (for example, no local subscribers).
-        }
-        for destination in destinations {
-            match destination.status() {
-                AdmissionStatus::Accepted => record_admission(destination),
-                AdmissionStatus::Filtered => record_filtered(destination),
-                AdmissionStatus::Rejected(reason) => record_rejection(destination, reason),
-                _ => record_unknown_status(destination),
-            }
-        }
-    }
-    _ => record_unknown_acknowledgement(),
-}
-
-fn record_admission(_: &DestinationAdmission) {}
-fn record_filtered(_: &DestinationAdmission) {}
-fn record_rejection(_: &DestinationAdmission, _: &str) {}
-fn record_unknown_status(_: &DestinationAdmission) {}
-fn record_unknown_acknowledgement() {}
-```
-
-The recording functions above stand for application-owned policy. A local provider can accept one subscriber and reject another because its bounded queue is full; that partial result is still a successful receipt. `Filtered` means intentional exclusion, not queue pressure. Avoid blindly publishing the same event again after a partial result: an accepted subscriber could receive a duplicate. Use an idempotency key, or route rejected business work through an explicit compensation/retry policy.
-
-`receipt.check_admission(requirement)` is a post-publication check over the receipt already returned. It has no publication side effect and does not wait for handlers. `AdmissionRequirement::AtLeastOneAccepted` succeeds when at least one reported destination accepted; `AtLeastOneAcceptedAndNoRejected` also requires zero rejected destinations. A partial result can therefore fail the stricter check even though some destinations accepted it. Do not use that error as a signal to republish the whole event.
-
-Both facades expose `publish_metrics()`. Its `PublishMetricsSnapshot` fields are `attempts`, `errors`, `dropped`, `opaque_accepted`, `zero_destinations`, `accepted_destinations`, `filtered_destinations`, and `rejected_destinations`. The fields are independent saturating counters shared by facade clones; a snapshot reads each field independently, so concurrent publication can make it span slightly different instants. These are provider admission counts, not handler completion or business success. An `Accepted` receipt from a provider that hides destinations increments `opaque_accepted`; it does not reveal how many destinations accepted.
-
-## Core workflow and choices
-
-### Add event metadata
-
-Use the request builder when setting envelope fields without manually constructing an envelope:
-
-```rust
-use std::time::Duration;
-use qubit_event_bus::model::{PublishRequest, Topic};
-
-let request = PublishRequest::builder()
-    .topic(Topic::<String>::new("orders.created")?)
-    .payload("order-1002".to_owned())
-    .header("trace-id", "trace-42")
-    .ordering_key("customer-7")
-    .delay(Duration::from_millis(25))
-    .build()?;
-```
-
-The facade owns the reserved `x-qubit-event-bus-dead-letter` header. Applications and interceptors cannot set or remove it; providers must preserve it when transporting an event.
-
-### Acknowledgement, retry, and error policy
-
-Automatic acknowledgement accepts a successful handler result. With `AckMode::Manual`, the handler must call `delivery.acknowledgement().ack()` or `.nack()` before returning. Missing a decision is a delivery failure.
-
-Retry policy types intentionally come from a direct `qubit-retry` dependency; `qubit-event-bus` does not re-export them. Add both dependencies when configuring retries:
-
-```toml
-[dependencies]
-qubit-event-bus = "0.12"
-qubit-retry = "0.25"
-```
-
-Use `qubit_retry::RetryPolicy` and, where needed, `qubit_retry::RetryRule` in the request/options builder. A retry classification rule does not itself enable retries: supply a policy too. A retry cancellation token prevents a subsequent attempt, but cannot interrupt a synchronous handler already running.
-
-`FailureDirective` selects the terminal action (retry request, requeue, dead-letter, or discard) according to the configured policy and provider capabilities. Dead-letter handling is at-least-once around async cancellation: after an uncertain publish result, a resumed runner may publish the same dead letter again. Use event IDs or a business idempotency key for deduplication when required.
-
-Facade-generated dead-letter payloads use `model::DeadLetterEvent<T>`. A consumer can subscribe to the configured dead-letter topic with that payload type and inspect the original event, failed `SubscriberId`, and terminal error text. The original `EventEnvelope<T>` is shared through `Arc`; `T` does not need to implement `Clone`. Encoded providers need a codec registered for `DeadLetterEvent<T>`.
-
-Terminal publish error handlers receive `PublishFailureContext<T>`, which shares the payload and exposes event ID, topic, headers, ordering key, timestamp, and delay without requiring `T: Clone`. They run when the SPI publish operation fails directly if no retry policy is configured, or after configured retries reach a terminal failure. Request-building and other preflight errors do not invoke them.
-
-### Sync and async middleware
-
-`SubscriberInterceptor<T>` is synchronous and receives a continuation. `AsyncSubscriberInterceptor<T>` returns the crate's runtime-neutral boxed future and receives an async continuation. Middleware runs in registration order and may short-circuit by not invoking its continuation. A sync bus configured with async middleware or an async bus configured with sync middleware fails subscription setup with a configuration error.
-
-## Selecting a provider
-
-For the built-in sync path, `EventBus::local(LocalEventBusConfig)` is the shortcut. For explicit selection, create an `EventBusRegistry`, register provider definitions, optionally set a `qubit_spi::ProviderSelection`, and pass `EventBusConfig` to `create`. `EventBusRegistry::with_local()` registers the local provider with canonical ID `local` and aliases `memory` and `in-process`.
-
-The registry uses `qubit-spi` fallback only while creating a backend. It does not switch transports after a runtime publish/receive failure. `RequiredCapabilities` lets callers reject a provider at creation when required durability, settlement, ordering, replay, delay, payload mode, or publish visibility is unavailable. Provider options are opaque namespaced key/value data interpreted by the selected adapter; do not put credentials in these debuggable values.
-
-The async facade is runtime-neutral and does not spawn a consumer task. A backend-specific async provider is created through `AsyncEventBusRegistry`; the application drives the returned `AsyncSubscription` on its executor. `AsyncEventBus::new` uses the standard monotonic timer supplied by `qubit-clock`; `with_timer` or `with_config_and_timer` injects another `qubit_clock::Timer`. Idle waits, graceful-shutdown deadlines, and async retry delays rely on the timer future waking the executor when its deadline expires; the bus does not create a timer thread.
-
-```rust
-use qubit_event_bus::model::{SubscribeRequest, Topic};
-use qubit_event_bus::{AsyncEventBus, DeliveryError, SubscriberId};
-
-async fn consume(bus: &AsyncEventBus) -> Result<(), Box<dyn std::error::Error>> {
-    let topic = Topic::<String>::new("orders.created")?;
-    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic);
-    let mut subscription = bus.subscribe(request).await?;
-    subscription.run(|delivery| async move {
-        audit(delivery.payload()).await?;
-        Ok::<(), DeliveryError>(())
-    }).await?;
+    // Publish once. The receipt reports admission, not handler success.
+    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
+    assert_eq!(receipt.provider_id().as_str(), "local");
+    // Wait for local work to settle, then verify both business effects.
+    bus.wait_for_idle(&orders, None)?;
+    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
+    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
+    // Explicitly cancel subscriptions and close the bus to release resources.
+    audit_subscription.cancel()?;
+    view_subscription.cancel()?;
+    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
+        timeout: std::time::Duration::from_secs(2),
+    })?;
     Ok(())
 }
-
-async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 ```
 
-This function assumes `bus` was created by an async provider adapter. No async local provider or concrete third-party transport adapter is bundled here.
+The program creates the bus and two subscriptions before publishing. `wait_for_idle` waits until the local provider has no queued or unsettled messages for this topic. The assertions then verify the two effects; waiting alone cannot prove that either handler succeeded. `cancel()` stops the synchronous subscription workers, and `shutdown` closes the bus. Do not call these blocking lifecycle methods from one of this bus's own synchronous handlers; they can return `LifecycleError::WouldDeadlock`.
+
+## When publication is only partly accepted
+
+A successful `publish` call returns the provider's admission report, which can still contain rejected destinations. For the local provider, inspect `receipt.admission_outcome()` and then `receipt.acknowledgement()` when individual subscriber results matter. Possible outcomes include accepted, partly accepted, none accepted, no destinations, an interceptor drop, or opaque acceptance from a provider that does not reveal destinations. `receipt.check_admission(requirement)` checks this existing receipt; it does not publish again or wait for consumers.
+
+If the audit subscriber accepted an event but the customer-view subscriber's bounded queue rejected it, publishing the whole event again may duplicate audit work. Record the event ID or a business idempotency key, decide how to repair the rejected effect, and make each handler safe for any retry policy you choose. `Filtered` is an intentional exclusion, not queue pressure. A returned `PublishError` is separate from a receipt with partial admission; inspect its source before deciding whether a retry is safe.
+
+## Policy and provider choices
+
+- Use the request builders for headers, an ordering key, delay, interceptors, and retry options. The facade reserves the `x-qubit-event-bus-dead-letter` header. Retry policy types come from a direct `qubit-retry = "0.25"` dependency; a classification rule alone does not enable retries.
+- Automatic acknowledgement accepts a successful handler result. With `AckMode::Manual`, the handler must explicitly call `delivery.acknowledgement().ack()` or `.nack()`; returning without a decision is a delivery failure. Dead-letter delivery requires an appropriate topic and, with an encoded provider, a codec for `DeadLetterEvent<T>`.
+- `EventBus::local(LocalEventBusConfig::default())` is the built-in path. `EventBusRegistry::with_local()` registers the same provider as `local`, with `memory` and `in-process` aliases. `RequiredCapabilities` checks a provider's declared features at creation; registry fallback happens during creation, not after a runtime failure.
+- `AsyncEventBus` is runtime-neutral, but this crate supplies no async local provider or broker adapter. An application must provide an async SPI implementation and drive `AsyncSubscription::run` on its own executor; `run` does not spawn a task.
 
 ## Errors and diagnostics
 
-Errors are separated by operation (`PublishError`, `SubscribeError`, `ReceiveError`, `LifecycleError`, and `ShutdownError`) and retain SPI/provider sources where possible. Check a publish receipt's acknowledgement and register `observe_diagnostics` when provider gaps, unsupported dispositions, or callback failures need observation. Either `wait_for_idle`, `wait_for_received_deliveries`, or bus shutdown invoked from the bus's own sync worker returns `WouldDeadlock` instead of blocking itself.
+| Symptom | Check and response |
+| --- | --- |
+| `PublishError` | Check validation, codec/capability requirements, provider source, and whether any destination may already have accepted the event before retrying. |
+| Receipt says `NoDestinations` or `NoneAccepted` | Confirm subscriptions exist and are still active; inspect destination admissions for filtering or rejection. |
+| `LifecycleError::IdleWaitUnsupported` | The selected provider cannot report provider-wide topic idleness. `wait_for_received_deliveries` only tracks work this facade already received. |
+| A handler effect is missing after idle wait | Check handler results and application logs; idle means settled work, not business success. Register `observe_diagnostics` for provider gaps and callback or disposition failures. |
+| Shutdown times out | Synchronous graceful shutdown bounds the caller's wait. The bus rejects new work while background cleanup continues; call shutdown again to observe its result. |
 
-`Subscription::cancel` explicitly stops and joins a sync subscription from an external caller; dropping its handle does not unsubscribe. `AsyncSubscription::close().await` provides deterministic async cleanup and close errors. Dropping an async subscription handle immediately drops its paused receiver and owned work; the provider must recover unsettled deliveries on receiver drop. Async `run` does not spawn; dropping its future pauses and retains owned delivery futures and permits. A later `run` resumes those futures (the replacement handler only handles newly received messages), and bus shutdown can take over a paused session. The async receiver's close/drop contract must leave every unsettled delivery recoverable and must never acknowledge it implicitly.
+Errors are separated by operation, including `PublishError`, `SubscribeError`, `LifecycleError`, and `ShutdownError`. Diagnostic observers run synchronously on the emitting thread, so keep callbacks short. `publish_metrics()` counts admission outcomes; it is not a handler-success counter.
 
-## Limitations and best practices
+## Local provider resource guidance
 
-- A successful publish means the provider returned its admission acknowledgement. It does not prove subscriber handler completion.
-- `publish_all` attempts each request independently in input order and retains each result. It is not atomic.
-- Local queue capacity bounds queued and unsettled messages per subscription; a received message continues to occupy capacity until settlement. It is not a global broker quota. The local provider is in-process and non-durable.
-- `LocalEventBusConfig::queue_capacity` counts queued and received-but-unsettled messages independently for each subscription. The facade's `max_in_flight` and handler queue capacity limit a separate layer of work; neither value is a total-bus memory budget.
-- Both facades bound admitted work bus-wide. Sync uses `with_sync_delivery_scheduler(...)` for `max_in_flight` and handler queue capacity. Async uses `EventBusFacadeConfig::with_delivery_admission(DeliveryAdmissionConfig::new(max_in_flight)?)` (default 4); its permit covers each received message through lane wait, middleware, handler/retry, and settlement. Async subscriptions process different ordering keys concurrently while preserving order within each key. A received but unadmitted message is buffered per subscription; idle receive calls do not consume permits.
-- Diagnostic observers run synchronously on the thread emitting the diagnostic. Panics are contained, but a blocking observer can delay that thread; diagnostics are not buffered in a separate queue.
-- Capability flags are the provider's declared contract. Select required capabilities explicitly and document any stronger provider-specific guarantee separately.
-- A subscription requesting `OrderingPolicy::PerKey` is accepted only when its provider declares `OrderingCapability::PerKey` or `PerSubscription`. The old subscription `priority` setting was removed because it did not affect scheduling. Keep a synchronous `Subscription` handle and call `cancel()` explicitly; dropping the handle does not stop its worker.
-- Settlement retries after an uncertain async result require providers to make the same token/disposition idempotent. A conflicting disposition for one token must fail.
-- Shutdown stops admission and coordinates subscriptions. `Immediate` drops work that has not started and receives no more messages, but waits for the active handler, settlement, subscription close, and SPI shutdown so it can return all errors. Rust cannot forcibly interrupt a handler. Synchronous `Graceful` applies its deadline to the caller's wait for the whole close sequence, including already admitted publish/subscribe SPI calls, receiver close, and provider shutdown. When it returns `TimedOut`, the bus remains `Closing`, rejects new operations, and one background coordinator continues cleanup; call shutdown again to wait for its result, or request `Immediate` to strengthen the attempt. A blocked synchronous provider call or handler can keep that coordinator alive. Async shutdown is driven by its future; dropping a timed-out/cancelled future does not roll back provider side effects, so async providers must support idempotent close/shutdown retries. SPI `shutdown(mode)` closes provider transport resources; the facade owns the preceding stop/settle/close order.
+The included provider is synchronous, in-process, and non-durable. Each synchronous subscription has a blocking receive worker thread. `LocalEventBusConfig::new().queue_capacity(n)` sets a positive outstanding-message bound **per subscription** (default 1024), counting queued and received-but-unsettled messages. A retry keeps its reservation. The facade's scheduling limits are a separate layer; neither limit alone is a total memory budget. Size both subscriber count and queue capacity for the application's workload. `cargo bench --bench local_threads` and `cargo bench --bench local_scale` provide measurements on your own host, not portable guarantees.
 
-### Local provider resource guidance
-
-The local provider is synchronous, in-process, and non-durable. Each synchronous subscription uses a blocking receive worker thread, so estimate subscription counts as a thread-resource decision as well as a queue-capacity decision. A Linux sample measured peaks of 6/21/133 process threads for 1/16/128 subscriptions. Median creation times were 0.226/1.592/7.551 ms and cancel plus immediate-shutdown times were 0.285/651.543/5359.302 ms. These figures came from a 6-CPU host under unrelated load, and teardown ranges were wide; they are observations, not capacity guarantees. Run `cargo bench --bench local_threads` to measure the current host.
-
-Start a separate async-local-provider design when a product deployment requires at least 128 simultaneous subscriptions and either fewer than 32 receive threads or a p95 shutdown time below one second. The design must prove cancellation-safe receive, idempotent settlement, lost-wakeup resistance, and shutdown deadline convergence before changing the SPI.
-
-`LocalEventBusConfig::new().queue_capacity(n)` sets the positive outstanding-message limit separately for each subscription. It includes queued and received-but-unsettled deliveries, and `Retry` retains its reservation. Size the limit for the backlog that one subscriber can safely retain, accounting for its processing rate and expected pauses; it is not a total-bus or application-wide memory budget. A delayed lane head blocks later messages with the same ordering key but does not prevent unrelated ready keys from progressing. The `rs-task` bounded application publisher policy is separate from this provider queue limit.
-
-For local comparisons, `cargo bench --bench local_scale -- publish` measures publish timing and throughput across topic and subscriber layouts, while `cargo bench --bench local_scale -- receive` measures receive latency for queue-depth and ready-key scenarios. One Linux sample showed large p95 improvements in multi-topic routing, but a 1-topic/128-subscription case regressed; a corrected depth-1024 receive sample showed much lower p95 with a long blocked prefix. Results vary by host and load and are not portable limits. There is no built-in async local provider: an async facade requires an externally registered async provider. See [the implementation architecture status](design.md#local-provider-routing-and-resources) for the implementation tradeoffs and sample details.
+`publish_all` attempts each request independently and is not transactional. The local provider does not offer durable recovery or cross-process delivery. A provider must explicitly declare ordering and settlement capabilities before the facade can use them. For `OrderingPolicy::PerKey`, it must declare `PerKey` or `PerSubscription` ordering. If the business process requires a durable handoff or an atomic database-and-event commit, design that mechanism separately and use an appropriate provider.
 
 ## Further reading
 
-- [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
-- [Architecture status (English)](design.md) · [SPI design (English)](spi_design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md)
-- [Changelog](../CHANGELOG.md) · [中文用户指南](user_guide.zh_CN.md)
+- [README](../README.md) · [中文用户手册](user_guide.zh_CN.md) · [API reference](https://docs.rs/qubit-event-bus)
+- [Architecture status](design.md) · [SPI design](spi_design.md) · [Changelog](../CHANGELOG.md)

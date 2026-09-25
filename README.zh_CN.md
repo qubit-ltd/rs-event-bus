@@ -7,13 +7,11 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![English Document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
 
-`qubit-event-bus` 为应用提供统一、类型安全的事件总线 API，并把传输方式隔离在精简的 provider SPI 后面。进程内使用时可直接选择内置 local provider；需要接入其他传输时，由对应 provider 实现并注册 SPI。facade 统一处理可移植的请求、拦截器、重试、确认、诊断和生命周期语义，应用无需绑定某一种 channel 或 broker API。
+`qubit-event-bus` 解决订单服务中的一个实际问题：订单创建后，审计记录和客户视图更新都要得到通知。如果订单代码直接调用两套处理逻辑，每增加一个后续任务，就要改动订单流程并处理它的失败。使用本库，订单流程只发布一次带类型的事件，独立的订阅者分别处理自己的工作。内置 local provider 适合单进程内的任务；需要其他传输方式时，可通过 provider SPI 接入。
 
-例如，订单创建后，审计记录和缓存更新都可以订阅同一 Topic。使用本地 provider 时不必先部署消息代理。发布回执反映的是 provider 是否接纳消息，而不是 handler 是否已经处理完；需要确认处理结果时，应用可以显式等待总线跟踪的投递工作。
+## 订单服务实战场景
 
-本地 provider 按目的地逐个报告接纳情况：空列表表示没有报告目的地，部分结果可能同时包含已接纳和被拒绝的订阅者。使用 `receipt.admission_outcome()` 可区分接纳但不公开目的地、全部或部分接纳、没有目的地接纳、没有目的地以及拦截器丢弃；如需逐个查看订阅者结果，检查 `acknowledgement()`。分类结果不表示 handler 已完成。重试前先检查回执；重发整条事件可能让已接纳的目的地重复收到消息。同步 graceful shutdown 限制调用方的等待时间；返回 `TimedOut` 后，总线仍拒绝新工作，后台清理会继续。
-
-`PublishReceipt::check_admission` 只检查本次发布已经返回的回执，不会再次发布或修改回执，也不会等待 handler。部分接纳时检查成功仍可能意味着其他目的地拒绝了事件，因此不要盲目重发整条事件。`EventBus::publish_metrics()` 和 `AsyncEventBus::publish_metrics()` 提供接纳计数；快照的各字段独立读取，不能表示 handler 已完成。`PerKey` 订阅要求 provider 声明 `PerKey` 或 `PerSubscription` 顺序能力。订阅 priority 已删除，因为它不会影响投递顺序。请保留同步 `Subscription` 句柄并显式调用 `cancel()`；仅丢弃句柄不会停止其 worker。
+订单 `order-1001` 创建后，服务向 `orders.created` 发布事件。审计和客户视图各有一个订阅者；以后增加进程内任务时，不必改动发布事件的代码。示例等待本地 provider 处理完该 Topic 上的待处理消息，再分别检查两项效果。这个模式适合进程内的后续工作，但不保证订单与后续工作原子提交。
 
 ## 安装
 
@@ -32,21 +30,40 @@ use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
 use qubit_event_bus::{EventBus, SubscriberId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 创建进程内总线，两个订阅者共用同一个带类型的 Topic。
     let bus = EventBus::local(LocalEventBusConfig::default())?;
     let orders = Topic::<String>::new("orders.created")?;
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&received);
+    let audit = Arc::new(Mutex::new(Vec::new()));
+    let view = Arc::new(Mutex::new(Vec::new()));
 
-    let subscriber = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
-    let _subscription = bus.subscribe(subscriber, move |delivery| {
-        captured.lock().expect("received events should lock").push(delivery.payload().clone());
-        Ok::<(), qubit_event_bus::DeliveryError>(())
-    })?;
+    // 审计和客户视图独立订阅，发布方无需知道它们的实现。
+    let audit_log = Arc::clone(&audit);
+    let audit_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
+        move |delivery| {
+            audit_log.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
+    let customer_view = Arc::clone(&view);
+    let view_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
+        move |delivery| {
+            customer_view.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
 
+    // 只发布一次；回执说明 provider 的接纳结果，不说明处理已成功。
     let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
     assert_eq!(receipt.provider_id().as_str(), "local");
+    // 等待本地待处理消息结算，再检查两个业务效果。
     bus.wait_for_idle(&orders, None)?;
-    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
+    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
+    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
+    // 显式取消订阅，并关闭总线以释放 worker 和 provider 资源。
+    audit_subscription.cancel()?;
+    view_subscription.cancel()?;
     bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
         timeout: std::time::Duration::from_secs(2),
     })?;
@@ -54,27 +71,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`wait_for_idle` 会确认本地 provider 对该 Topic 没有排队或尚未 settlement 的消息，但不代表 handler 成功。不支持此能力的 provider 会返回 `LifecycleError::IdleWaitUnsupported`。
+`publish` 返回的是 provider 接纳事件的回执，不代表 handler 成功。`wait_for_idle` 确认本地 provider 在该 Topic 上没有排队或尚未结算的消息；代码中的断言才检查业务效果。其他 provider 可能返回 `LifecycleError::IdleWaitUnsupported`。接纳失败、重试和资源清理见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 能力与边界
 
-- 提供类型化的 `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>`、事件 envelope、delivery 和 publish receipt。
-- 提供同步及 runtime-neutral 异步 facade，底层均通过对象安全的 provider SPI 工作。
-- 通过 `qubit-spi` registry 完成 provider 发现和创建，并在创建时检查能力及执行 fallback。
-- 内置每订阅者有界队列的进程内 provider（`LocalEventBusProvider`）。
-- 在后端能力允许时，由 facade 统一处理拦截器、重试、ACK/NACK、死信、顺序、诊断和生命周期。
+- `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>` 将事件主题、发布和订阅保持为类型化 API。
+- 同步 facade 和不绑定运行时的异步 facade 使用对象安全的 provider SPI；`qubit-spi` registry 可在创建时选择 provider、检查能力并尝试 fallback。
+- 内置 local provider 为每个订阅者设置有界队列；facade 在 provider 能力允许时支持拦截器、重试、ACK/NACK、死信、顺序、诊断和关闭控制。
 
-本 crate 不包含 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 的适配器；也不承诺持久化、跨进程投递、事务批量发布或恰好一次处理。具体后端若提供更强保证，应由该后端单独说明。
-
-### 本地 provider 的规模与资源
-
-同步 local provider 按 Topic 分桶查找订阅，并用按 key 划分的 FIFO 队列调度消息。队列容量按订阅单独计算，包含排队中和已接收但尚未 settlement 的消息；`Retry` 会保留这份容量。某个 ordering key 上延迟的队首会阻塞同 key 后续消息，但其他已就绪的 key 仍可推进。每个同步订阅也会使用一个阻塞式接收 worker 线程。
-
-在一台 6 CPU 的 Linux 主机上，`cargo bench --bench local_scale -- publish` 的样本显示，两个“32 个 Topic × 16 个订阅者”场景的 p95 分别改善 70.8% 和 67.2%；“1 个 Topic × 128 个订阅者”场景的 p95 则慢了 21.3%。修正后的 depth-1024 接收样本中，16 个就绪 key 的 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns，可用 `cargo bench --bench local_scale -- receive` 复测。这些只是本机对比结果，不是跨机器的性能界限。`cargo bench --bench local_threads` 测量线程数高水位，以及订阅创建和取消加立即关闭的耗时；1/16/128 个订阅的线程峰值观测值为 6/21/133，关闭耗时中位数为 0.285/651.543/5359.302 ms。主机负载和较大的关闭耗时波动都会影响结果。该 provider 仅在进程内工作，不持久化消息，也没有内置 async local provider。队列容量和订阅数量的规划建议见[本地 provider 资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
+本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。同步 local provider 每个订阅者使用一个阻塞式接收 worker 线程；队列额度按订阅者计算，包含排队和已接收但尚未结算的消息。规划订阅数量和容量时，请阅读[资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
 
 ## 延伸阅读
 
-- [中文用户指南](doc/user_guide.zh_CN.md) · [English user guide](doc/user_guide.md)
+- [中文用户手册](doc/user_guide.zh_CN.md) · [English user guide](doc/user_guide.md)
 - [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md) · [SPI design (English)](doc/spi_design.md)
 - [API 文档](https://docs.rs/qubit-event-bus)
 - [中文更新日志](CHANGELOG.zh_CN.md) · [Changelog](CHANGELOG.md)
