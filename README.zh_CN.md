@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 同步 local provider 按 Topic 分桶查找订阅，并用按 key 划分的 FIFO 队列调度消息。队列容量按订阅单独计算，包含排队中和已接收但尚未 settlement 的消息；`Retry` 会保留这份容量。某个 ordering key 上延迟的队首会阻塞同 key 后续消息，但其他已就绪的 key 仍可推进。每个同步订阅也会使用一个阻塞式接收 worker 线程。
 
-在一台 6 CPU 的 Linux 主机上，`cargo bench --bench local_scale -- publish` 的样本显示，两个“32 个 Topic × 16 个订阅者”场景的 p95 分别改善 70.8% 和 67.2%；“1 个 Topic × 128 个订阅者”场景的 p95 则慢了 21.3%。修正后的 depth-1024 接收样本中，16 个就绪 key 的 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns，可用 `cargo bench --bench local_scale -- receive` 复测。这些只是本机对比结果，不是跨机器的性能界限。`cargo bench --bench local_threads` 测量线程数高水位，以及订阅创建和取消加立即关闭的耗时；1/16/128 个订阅的线程峰值观测值为 6/21/133，关闭耗时中位数为 0.285/651.543/5359.302 ms。主机负载和较大的关闭耗时波动都会影响结果。该 provider 仅在进程内工作，不持久化消息，也没有内置 async local provider。队列容量和订阅数量的规划建议见[本地 provider 资源指南](doc/user_guide.zh_CN.md#local-provider-资源指南)。
+在一台 6 CPU 的 Linux 主机上，`cargo bench --bench local_scale -- publish` 的样本显示，两个“32 个 Topic × 16 个订阅者”场景的 p95 分别改善 70.8% 和 67.2%；“1 个 Topic × 128 个订阅者”场景的 p95 则慢了 21.3%。修正后的 depth-1024 接收样本中，16 个就绪 key 的 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns，可用 `cargo bench --bench local_scale -- receive` 复测。这些只是本机对比结果，不是跨机器的性能界限。`cargo bench --bench local_threads` 测量线程数高水位，以及订阅创建和取消加立即关闭的耗时；1/16/128 个订阅的线程峰值观测值为 6/21/133，关闭耗时中位数为 0.285/651.543/5359.302 ms。主机负载和较大的关闭耗时波动都会影响结果。该 provider 仅在进程内工作，不持久化消息，也没有内置 async local provider。队列容量和订阅数量的规划建议见[本地 provider 资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
 
 ## 延伸阅读
 
