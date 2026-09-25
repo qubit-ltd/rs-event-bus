@@ -26,6 +26,21 @@ pub enum AdmissionStatus {
 }
 
 /// The admission result of one subscriber in the publication snapshot.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::AdmissionStatus;
+/// use qubit_event_bus::model::DestinationAdmission;
+/// use qubit_event_bus::model::SubscriberId;
+///
+/// let admission = DestinationAdmission::new(
+///     qubit_id::Id::new(1),
+///     SubscriberId::new("audit").unwrap(),
+///     AdmissionStatus::Accepted,
+/// );
+/// assert_eq!(admission.status(), &AdmissionStatus::Accepted);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DestinationAdmission {
     subscription_id: Id,

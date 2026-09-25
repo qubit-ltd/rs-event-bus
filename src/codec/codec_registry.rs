@@ -32,6 +32,8 @@ impl CodecRegistry {
     }
 
     /// Returns the codec for `T`, or `None` if it was not registered.
+    #[must_use]
+    #[inline]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<dyn EventCodec<T>>> {
         self.codecs
             .get(&TypeId::of::<T>())

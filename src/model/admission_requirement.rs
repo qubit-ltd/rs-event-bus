@@ -9,6 +9,15 @@
 
 /// The admission condition a caller requires before treating a receipt as
 /// usable.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::AdmissionRequirement;
+///
+/// let requirement = AdmissionRequirement::AtLeastOneAccepted;
+/// assert_eq!(requirement, AdmissionRequirement::AtLeastOneAccepted);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionRequirement {
     /// Require at least one destination to accept the event.

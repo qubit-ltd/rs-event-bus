@@ -13,6 +13,18 @@ use super::SubscriberId;
 use super::Topic;
 
 /// A logical subscriber identity, typed topic, and processing policy.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::SubscriberId;
+/// use qubit_event_bus::model::Topic;
+///
+/// let topic = Topic::<String>::new("orders.created").unwrap();
+/// let request = SubscribeRequest::new(SubscriberId::new("audit").unwrap(), topic);
+/// assert_eq!(request.subscriber_id().as_str(), "audit");
+/// ```
 pub struct SubscribeRequest<T: 'static> {
     subscriber_id: SubscriberId,
     topic: Topic<T>,
@@ -38,14 +50,20 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
         self
     }
     /// Returns the logical subscriber ID.
+    #[must_use = "the subscriber ID identifies the logical consumer"]
+    #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
     /// Returns the typed topic.
+    #[must_use]
+    #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
     }
     /// Returns subscription options.
+    #[must_use]
+    #[inline]
     pub fn options(&self) -> &SubscribeOptions<T> {
         &self.options
     }

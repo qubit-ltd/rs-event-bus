@@ -17,8 +17,10 @@ use crate::model::SchemaId;
 /// globally.
 pub trait EventCodec<T>: Send + Sync + 'static {
     /// Returns the encoded MIME content type.
+    #[must_use]
     fn content_type(&self) -> &ContentType;
     /// Returns a schema identifier, or `None` when the format has no schema.
+    #[must_use]
     fn schema_id(&self) -> Option<&SchemaId>;
     /// Encodes `value`; codec failures retain their source in [`CodecError`].
     fn encode(&self, value: &T) -> Result<Arc<[u8]>, CodecError>;

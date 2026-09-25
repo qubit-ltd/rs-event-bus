@@ -10,6 +10,15 @@
 use crate::error::ConfigurationError;
 
 /// A validated provider identifier.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::ProviderId;
+///
+/// let provider = ProviderId::new("local").unwrap();
+/// assert_eq!(provider.as_str(), "local");
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ProviderId(Box<str>);
 
@@ -26,6 +35,8 @@ impl ProviderId {
     }
 
     /// Returns the provider identifier.
+    #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
