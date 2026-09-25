@@ -138,7 +138,7 @@ Provider configuration belongs to the adapter. The facade owns portable settings
 
 ## Conformance and verification
 
-An adapter should verify at least the following:
+The repository's `tests/spi_conformance_tests.rs` uses private integration-test helpers to exercise the built-in provider, a channel-shaped SPI, and a broker-shaped fake. These helpers are not part of the crate's public API and are not shipped as a reusable provider-author conformance harness. Adapter authors can use the following list when building their own tests:
 
 1. Advertised payload, settlement, ordering, replay, delay, durability, and publish-visibility capabilities match observed behavior.
 2. Publish acknowledgement describes provider admission and does not claim handler completion.
@@ -151,6 +151,20 @@ An adapter should verify at least the following:
 9. Shutdown is safe when repeated and returns a stable outcome after completion.
 
 Facade contract tests should cover empty, partial, and fully rejected admission results; handler success/failure and manual settlement; cancellation and shutdown races; async future cancellation; error-source preservation; and the declared capability boundary. Concurrency tests should use barriers or channels rather than timing-only sleeps when checking ordering and races. Rustdoc examples, bilingual README and guide links, and project CI scripts should be checked before release.
+
+## 0.12 Implementation and verification status
+
+This section describes the validation available in the repository. It does not imply that every provider has the same capabilities or that every CI suite has run in every checkout.
+
+1. Integration tests exercise the built-in local provider's synchronous SPI behavior; `cargo test --all-features` runs these tests.
+2. Integration tests include a runtime-neutral fake async SPI and cover async receive cancellation boundaries. This verifies the facade/SPI contract; it is not a production async provider.
+3. Test helpers include a channel-shaped SPI and a broker-shaped fake to check adapter shapes. The crate does not ship a real channel or broker adapter.
+4. Crate tests cover sync and async facades, the local provider, pipeline, registry, settlement, and concurrency contracts. Each provider still needs to verify its own declared capabilities.
+5. Integration tests cover registry provider selection, creation-time capability validation, and fallback. Runtime errors do not trigger provider switching.
+6. Applications depend directly on `qubit-retry` for retry types; event-bus does not re-export retry types or expose its local executor implementation.
+7. Project CI configures tests, Clippy, strict rustdoc, the feature matrix, coverage, and optional advanced suites. A local test or package check does not establish that all remote CI suites have passed.
+8. The repository includes loom concurrency tests and fuzz targets. They do not replace stress or interoperability tests against real third-party providers.
+9. The README, user guide, and design documents describe sync/async boundaries, capabilities, settlement, and publish receipts. Documentation updates should remain aligned with implementation and concrete tests.
 
 ## Public API stability and migration
 
