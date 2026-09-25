@@ -28,20 +28,28 @@ use qubit_event_bus::model::{AdmissionRequirement, PublishRequest, SubscribeRequ
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::{EventBus, SubscriberId, WaitOutcome};
 
+struct OrderCreated {
+    order_id: String,
+}
+
+impl OrderCreated {
+    const TOPIC_CREATED: Topic<Self> = Topic::new_static("orders.created");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::default())?;
-    let topic = Topic::<String>::new("orders.created")?;
+    let topic = OrderCreated::TOPIC_CREATED;
     let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic.clone());
     let audit = bus.subscribe(request, |delivery| {
-        println!("审计收到订单：{}", delivery.payload());
+        println!("审计收到订单：{}", delivery.payload().order_id);
     })?;
 
     // 订单事务提交成功后再发布；这里只演示总线调用。
-    let receipt = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let event = OrderCreated { order_id: "order-42".to_owned() };
+    let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
     receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted)?;
-    let topic = Topic::<String>::new("orders.created")?;
     assert_eq!(
-        bus.wait_for_idle(&topic, Some(std::time::Duration::from_secs(2)))?,
+        bus.wait_for_idle(&OrderCreated::TOPIC_CREATED, Some(std::time::Duration::from_secs(2)))?,
         WaitOutcome::Idle,
     );
 

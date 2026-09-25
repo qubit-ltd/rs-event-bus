@@ -4,6 +4,16 @@
 
 All notable changes to `qubit-event-bus` are documented here.
 
+## Unreleased
+
+### Breaking changes
+
+- Rename `Topic::with_codec` to `Topic::new_with_codec` and `Topic::with_shared_codec` to `Topic::new_with_shared_codec`.
+
+### Added
+
+- Add const `new_static` constructors for `Topic`, `SubscriberId`, `ProviderId`, and `SchemaId`; `EventId` remains unchanged.
+
 ## 0.12.0 - 2026-09-24
 
 ### Breaking changes
