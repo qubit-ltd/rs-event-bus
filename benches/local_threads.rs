@@ -40,7 +40,7 @@ struct Sample {
 fn process_thread_count() -> io::Result<Option<usize>> {
     #[cfg(target_os = "linux")]
     {
-        return Ok(Some(std::fs::read_dir("/proc/self/task")?.count()));
+        Ok(Some(std::fs::read_dir("/proc/self/task")?.count()))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -187,7 +187,7 @@ fn run_isolated_sample(subscription_count: usize) -> io::Result<(bool, String)> 
     if status.success() && line.split(',').count() == 5 {
         Ok((false, line))
     } else {
-        Ok((false, format!("child_failed,,,,")))
+        Ok((false, "child_failed,,,,".to_owned()))
     }
 }
 
