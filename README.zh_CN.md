@@ -7,11 +7,11 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![English Document](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
 
-`qubit-event-bus` 解决订单服务中的一个实际问题：订单创建后，审计记录和客户视图更新都要得到通知。如果订单代码直接调用两套处理逻辑，每增加一个后续任务，就要改动订单流程并处理它的失败。使用本库，订单流程只发布一次带类型的事件，独立的订阅者分别处理自己的工作。内置 local provider 适合单进程内的任务；需要其他传输方式时，可通过 provider SPI 接入。
+`qubit-event-bus` 帮助 Rust 应用把业务事件的发布与后续处理分开。例如订单提交后，审计和客户视图可以各自订阅同一个带类型的事件，订单流程无须直接调用两套处理逻辑。内置 local provider 适合允许事件丢失、由应用自行补偿的单进程任务；需要其他传输方式时，可通过 provider SPI 接入。本库本身不提供订单事务与事件发布之间的可靠移交。
 
 ## 订单服务实战场景
 
-订单 `order-1001` 创建后，服务向 `orders.created` 发布事件。审计和客户视图各有一个订阅者；以后增加进程内任务时，不必改动发布事件的代码。示例等待本地 provider 处理完该 Topic 上的待处理消息，再分别检查两项效果。这个模式适合进程内的后续工作，但不保证订单与后续工作原子提交。
+订单事务提交成功后，订单服务向 `orders.created` 发布 `OrderCreated`。两个订阅者分别处理审计和客户视图更新；以后增加消费者，无须改动发布方。这里的进程内投递与订单数据库事务相互独立：如果审计记录必须可靠保存，应另行设计持久移交与补偿机制。
 
 ## 安装
 
@@ -23,55 +23,37 @@ qubit-event-bus = "0.12"
 ## 快速开始
 
 ```rust
-use std::sync::{Arc, Mutex};
-
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-use qubit_event_bus::{EventBus, SubscriberId};
+use qubit_event_bus::model::{AdmissionRequirement, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::{EventBus, SubscriberId, WaitOutcome};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建进程内总线，两个订阅者共用同一个带类型的 Topic。
     let bus = EventBus::local(LocalEventBusConfig::default())?;
-    let orders = Topic::<String>::new("orders.created")?;
-    let audit = Arc::new(Mutex::new(Vec::new()));
-    let view = Arc::new(Mutex::new(Vec::new()));
+    let topic = Topic::<String>::new("orders.created")?;
+    let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic.clone());
+    let audit = bus.subscribe(request, |delivery| {
+        println!("审计收到订单：{}", delivery.payload());
+    })?;
 
-    // 审计和客户视图独立订阅，发布方无需知道它们的实现。
-    let audit_log = Arc::clone(&audit);
-    let audit_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
-        move |delivery| {
-            audit_log.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
-    let customer_view = Arc::clone(&view);
-    let view_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
-        move |delivery| {
-            customer_view.lock().unwrap().push(delivery.payload().clone());
-            Ok::<(), qubit_event_bus::DeliveryError>(())
-        },
-    )?;
+    // 订单事务提交成功后再发布；这里只演示总线调用。
+    let receipt = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted)?;
+    let topic = Topic::<String>::new("orders.created")?;
+    assert_eq!(
+        bus.wait_for_idle(&topic, Some(std::time::Duration::from_secs(2)))?,
+        WaitOutcome::Idle,
+    );
 
-    // 只发布一次；回执说明 provider 的接纳结果，不说明处理已成功。
-    let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
-    assert_eq!(receipt.provider_id().as_str(), "local");
-    // 等待本地待处理消息结算，再检查两个业务效果。
-    bus.wait_for_idle(&orders, None)?;
-    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
-    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
-    // 显式取消订阅，并关闭总线以释放 worker 和 provider 资源。
-    audit_subscription.cancel()?;
-    view_subscription.cancel()?;
-    bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
+    audit.cancel()?;
+    bus.shutdown(ShutdownMode::Graceful {
         timeout: std::time::Duration::from_secs(2),
     })?;
     Ok(())
 }
 ```
 
-`publish` 返回的是 provider 接纳事件的回执，不代表 handler 成功。`wait_for_idle` 确认本地 provider 在该 Topic 上没有排队或尚未结算的消息；代码中的断言才检查业务效果。其他 provider 可能返回 `LifecycleError::IdleWaitUnsupported`。接纳失败、重试和资源清理见[用户手册](doc/user_guide.zh_CN.md)。
+运行示例会打印收到的订单号。真实应用应在启动时创建并持有订阅，在订单事务提交后发布，关闭时显式取消订阅并关闭总线。回执检查只证明至少一个目的地报告接纳，不证明审计写入成功；完整的双订阅者场景、结果验证与失败处理见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 能力与边界
 
