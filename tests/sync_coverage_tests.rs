@@ -350,10 +350,7 @@ fn publish_all_keeps_later_results_after_a_provider_failure() {
 fn provider_subscribe_failure_does_not_poison_later_subscription() {
     let (bus, spi, _) = create_bus(1, 1);
     spi.fail_next_subscribe();
-    let failed_request = SubscribeRequest::new(
-        SubscriberId::new("provider-subscribe-failure").expect("valid subscriber ID"),
-        topic(),
-    );
+    let failed_request = SubscribeRequest::new("provider-subscribe-failure", topic()).expect("valid subscriber ID");
     let Err(error) = bus.subscribe(failed_request, |_| {}) else {
         panic!("configured provider failure is propagated");
     };
@@ -368,10 +365,7 @@ fn provider_subscribe_failure_does_not_poison_later_subscription() {
 
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("provider-subscribe-recovery").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("provider-subscribe-recovery", topic()).expect("valid subscriber ID"),
             |_| {},
         )
         .expect("a failed admission leaves the facade usable");
@@ -407,7 +401,7 @@ fn shutdown_provider_error_is_retryable_and_closes_public_admission() {
     assert!(matches!(bus.publish(request("after-close")), Err(PublishError::Closed)));
     assert!(matches!(
         bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("after-close").expect("valid subscriber ID"), topic(),),
+            SubscribeRequest::new("after-close", topic()).expect("valid subscriber ID"),
             |_| {},
         ),
         Err(SubscribeError::Closed)
@@ -437,7 +431,10 @@ fn subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
     let (bus, _, _) = create_bus(1, 1);
     let expected_id = SubscriberId::new("handle-contract").expect("valid subscriber ID");
     let subscription = bus
-        .subscribe(SubscribeRequest::new(expected_id.clone(), topic()), |_| {})
+        .subscribe(
+            SubscribeRequest::new(expected_id.as_str(), topic()).expect("validated subscriber ID"),
+            |_| {},
+        )
         .expect("subscription starts");
 
     let object_id = subscription.id();
@@ -458,10 +455,7 @@ fn callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     let (result_tx, result_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("reentrant-lifecycle").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("reentrant-lifecycle", topic()).expect("valid subscriber ID"),
             move |_| {
                 let wait = callback_bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1)));
                 let shutdown = callback_bus.shutdown(ShutdownMode::Immediate);
@@ -506,10 +500,7 @@ fn dropping_diagnostic_handle_stops_future_close_failure_notifications() {
     });
     let first = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("observed-close-error").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("observed-close-error", topic()).expect("valid subscriber ID"),
             |_| {},
         )
         .expect("first subscription starts");
@@ -520,10 +511,7 @@ fn dropping_diagnostic_handle_stops_future_close_failure_notifications() {
     drop(observer);
     let second = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("unobserved-close-error").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("unobserved-close-error", topic()).expect("valid subscriber ID"),
             |_| {},
         )
         .expect("second subscription starts");
@@ -545,7 +533,8 @@ fn same_ordering_key_is_independent_between_subscriptions() {
     let first_release = release_rx.clone();
     let first = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("lane-first").expect("valid subscriber ID"), topic())
+            SubscribeRequest::new("lane-first", topic())
+                .expect("valid subscriber ID")
                 .with_options(keyed_options()),
             move |_| {
                 first_started_tx.send(()).expect("first observer remains alive");
@@ -559,7 +548,8 @@ fn same_ordering_key_is_independent_between_subscriptions() {
         .expect("first subscription starts");
     let second = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("lane-second").expect("valid subscriber ID"), topic())
+            SubscribeRequest::new("lane-second", topic())
+                .expect("valid subscriber ID")
                 .with_options(keyed_options()),
             move |_| second_started_tx.send(()).expect("second observer remains alive"),
         )
@@ -597,11 +587,9 @@ fn same_ordering_key_is_independent_between_topics() {
     let second_topic = other_topic();
     let first = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("topic-lane-first").expect("valid subscriber ID"),
-                first_topic.clone(),
-            )
-            .with_options(keyed_options()),
+            SubscribeRequest::new("topic-lane-first", first_topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(keyed_options()),
             move |_| {
                 first_started_tx.send(()).expect("first observer remains alive");
                 first_release_gate
@@ -614,11 +602,9 @@ fn same_ordering_key_is_independent_between_topics() {
         .expect("first subscription starts");
     let second = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("topic-lane-second").expect("valid subscriber ID"),
-                second_topic.clone(),
-            )
-            .with_options(keyed_options()),
+            SubscribeRequest::new("topic-lane-second", second_topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(keyed_options()),
             move |_| {
                 second_started_tx.send(()).expect("second observer remains alive");
             },
@@ -664,10 +650,7 @@ fn max_in_flight_capacity_is_shared_across_subscriptions() {
     let second_started_tx = started_tx.clone();
     let first = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("capacity-first").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("capacity-first", topic()).expect("valid subscriber ID"),
             move |_| {
                 first_started_tx.send("first").expect("handler observer remains alive");
                 first_release
@@ -680,10 +663,7 @@ fn max_in_flight_capacity_is_shared_across_subscriptions() {
         .expect("first subscription starts");
     let second = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("capacity-second").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("capacity-second", topic()).expect("valid subscriber ID"),
             move |_| {
                 second_started_tx
                     .send("second")
@@ -732,10 +712,7 @@ fn graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() {
     let second_release = release_rx.clone();
     let _first = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("timeout-close-a").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("timeout-close-a", topic()).expect("valid subscriber ID"),
             move |_| {
                 first_started_tx.send(()).expect("handler observer remains alive");
                 first_release
@@ -748,10 +725,7 @@ fn graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() {
         .expect("first subscription starts");
     let _second = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("timeout-close-b").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("timeout-close-b", topic()).expect("valid subscriber ID"),
             move |_| {
                 second_started_tx.send(()).expect("handler observer remains alive");
                 second_release

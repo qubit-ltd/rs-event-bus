@@ -48,7 +48,6 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
@@ -157,9 +156,13 @@ fn async_per_key_capability_is_checked_before_spi_subscribe() {
         let options = SubscribeOptions::<u32>::builder()
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
-        let result = block_on(bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic()).with_options(options),
-        ));
+        let result = block_on(
+            bus.subscribe(
+                SubscribeRequest::new("keyed", topic())
+                    .expect("valid subscriber")
+                    .with_options(options),
+            ),
+        );
         if accepted {
             let mut subscription = result.expect("provider supports per-key delivery");
             assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
@@ -177,11 +180,9 @@ fn async_per_key_capability_is_checked_before_spi_subscribe() {
 
     let spi = Arc::new(OrderingTestSpi::new(OrderingCapability::None));
     let bus = AsyncEventBus::new(ProviderId::new("ordering-test").expect("valid provider"), spi.clone());
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("unordered").expect("valid subscriber"),
-        topic(),
-    )))
-    .expect("default unordered subscription works without ordering capability");
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("unordered", topic()).expect("valid subscriber")))
+            .expect("default unordered subscription works without ordering capability");
     assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
     block_on(subscription.close()).expect("subscription closes");
 }
@@ -325,7 +326,7 @@ fn async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
 fn async_subscription_is_created_without_spawning_until_run_is_driven() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("async-test").unwrap(), topic());
+    let request = SubscribeRequest::new("async-test", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let subscription = bus.subscribe(request).await.unwrap();
@@ -350,11 +351,11 @@ fn async_facade_bounds_in_flight_deliveries_across_subscriptions() {
 
     let (mut first, mut second) = block_on(async {
         let first = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("first").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("first", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         let second = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("second").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("second", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         bus.publish(PublishRequest::new(topic(), 5).unwrap()).await.unwrap();
@@ -444,11 +445,9 @@ fn async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_released(
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config);
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("admission-progress").unwrap(),
-        topic(),
-    )))
-    .unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("admission-progress", topic()).expect("valid subscriber ID")))
+            .unwrap();
     block_on(async {
         bus.publish(PublishRequest::new(topic(), 1).unwrap()).await.unwrap();
         bus.publish(PublishRequest::new(topic(), 2).unwrap()).await.unwrap();
@@ -516,11 +515,11 @@ fn idle_async_subscription_does_not_consume_delivery_admission() {
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
     let (mut active, mut idle) = block_on(async {
         let active = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("active").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("active", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         let idle = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("idle").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("idle", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap();
@@ -561,11 +560,14 @@ fn async_subscription_runs_different_ordering_keys_concurrently() {
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
-    let mut subscription =
-        block_on(bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("parallel-keys").unwrap(), topic()).with_options(options),
-        ))
-        .unwrap();
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("parallel-keys", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
+    )
+    .unwrap();
     for (payload, key) in [(1, "left"), (2, "right")] {
         block_on(
             bus.publish(
@@ -627,7 +629,11 @@ fn async_subscription_preserves_order_for_the_same_ordering_key() {
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
     let mut subscription = block_on(
-        bus.subscribe(SubscribeRequest::new(SubscriberId::new("serial-key").unwrap(), topic()).with_options(options)),
+        bus.subscribe(
+            SubscribeRequest::new("serial-key", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
     )
     .unwrap();
     for payload in [1, 2] {
@@ -690,9 +696,13 @@ fn immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler()
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
-    let mut subscription = block_on(bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("immediate-lane-waiter").unwrap(), topic()).with_options(options),
-    ))
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("immediate-lane-waiter", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
+    )
     .unwrap();
     for payload in [1, 2] {
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -764,9 +774,13 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
-    let mut subscription = block_on(bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("immediate-lane-race").unwrap(), topic()).with_options(options),
-    ))
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("immediate-lane-race", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
+    )
     .unwrap();
     for payload in [1_u32, 2_u32] {
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -846,10 +860,7 @@ fn shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
 
     block_on(async {
         let subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("dropped-before-run").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("dropped-before-run", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         drop(subscription);
@@ -869,10 +880,7 @@ fn cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() 
 
     block_on(async {
         let _subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("cancel-pending-close").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("cancel-pending-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
 
@@ -900,10 +908,7 @@ fn graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
 
     block_on(async {
         let _subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("graceful-pending-close").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("graceful-pending-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
 
@@ -928,10 +933,10 @@ fn shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     let (subscribe_sender, subscribe_receiver) = std::sync::mpsc::channel();
     let subscribing_bus = bus.clone();
     let subscriber = std::thread::spawn(move || {
-        let result = block_on(subscribing_bus.subscribe(SubscribeRequest::new(
-            SubscriberId::new("subscribe-shutdown-race").unwrap(),
-            topic(),
-        )));
+        let result = block_on(
+            subscribing_bus
+                .subscribe(SubscribeRequest::new("subscribe-shutdown-race", topic()).expect("valid subscriber ID")),
+        );
         let _ = subscribe_sender.send(result);
     });
     for _ in 0..100 {
@@ -987,7 +992,7 @@ fn cancelling_pending_subscribe_releases_admission_for_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("cancel-pending-subscribe").unwrap(), topic());
+    let request = SubscribeRequest::new("cancel-pending-subscribe", topic()).expect("valid subscriber ID");
     let mut subscribe = Box::pin(bus.subscribe(request));
     assert!(matches!(
         crate::support::manual_async::poll_once(subscribe.as_mut()),
@@ -1015,8 +1020,9 @@ fn asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subs
     let options = SubscribeOptions::<u32>::builder()
         .interceptor(|delivery, next| next(delivery))
         .build();
-    let request =
-        SubscribeRequest::new(SubscriberId::new("sync-only-interceptor").unwrap(), topic()).with_options(options);
+    let request = SubscribeRequest::new("sync-only-interceptor", topic())
+        .expect("valid subscriber ID")
+        .with_options(options);
 
     let error = match block_on(bus.subscribe(request)) {
         Ok(_) => panic!("async facade must reject sync middleware"),
@@ -1042,10 +1048,7 @@ fn async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("self-shutdown").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("self-shutdown", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1107,10 +1110,7 @@ fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("idle-timeout").unwrap(),
-                delivered_topic.clone(),
-            ))
+            .subscribe(SubscribeRequest::new("idle-timeout", delivered_topic.clone()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1188,10 +1188,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("manual-timeout").unwrap(),
-                delivered_topic.clone(),
-            ))
+            .subscribe(SubscribeRequest::new("manual-timeout", delivered_topic.clone()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1276,7 +1273,7 @@ fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() 
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("no-reject").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("no-reject", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(InboundMessage::new(
@@ -1344,10 +1341,7 @@ fn async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("wrong-token").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("wrong-token", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(InboundMessage::new(
@@ -1397,7 +1391,11 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("marked").unwrap(), topic()).with_options(options))
+            .subscribe(
+                SubscribeRequest::new("marked", topic())
+                    .expect("valid subscriber ID")
+                    .with_options(options),
+            )
             .await
             .unwrap();
         spi.enqueue(InboundMessage::new(
@@ -1440,7 +1438,7 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
 fn async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_receive() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("async-run").unwrap(), topic());
+    let request = SubscribeRequest::new("async-run", topic()).expect("valid subscriber ID");
     let delivered = Arc::new(AtomicUsize::new(0));
 
     block_on(async {
@@ -1491,7 +1489,9 @@ fn async_middleware_wraps_the_handler_in_registration_order() {
             }) as SpiFuture<'static, Result<(), DeliveryError>>
         })
         .build();
-    let request = SubscribeRequest::new(SubscriberId::new("async-middleware").unwrap(), topic()).with_options(options);
+    let request = SubscribeRequest::new("async-middleware", topic())
+        .expect("valid subscriber ID")
+        .with_options(options);
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -1551,7 +1551,9 @@ fn async_facade_global_middleware_wraps_typed_middleware_and_handler() {
     block_on(async {
         let mut subscription = bus
             .subscribe(
-                SubscribeRequest::new(SubscriberId::new("async-global-chain").unwrap(), topic()).with_options(options),
+                SubscribeRequest::new("async-global-chain", topic())
+                    .expect("valid subscriber ID")
+                    .with_options(options),
             )
             .await
             .unwrap();
@@ -1595,10 +1597,7 @@ fn async_facade_rejects_sync_global_subscriber_middleware() {
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
     block_on(async {
         let result = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("bad-async-global").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("bad-async-global", topic()).expect("valid subscriber ID"))
             .await;
         assert!(matches!(
             result,
@@ -1623,7 +1622,7 @@ fn async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
             observed.store(true, Ordering::Release);
         }
     });
-    let request = SubscribeRequest::new(SubscriberId::new("async-panic").unwrap(), topic());
+    let request = SubscribeRequest::new("async-panic", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -1656,7 +1655,9 @@ fn async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy(
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .error_handler(|_, _| FailureDirective::Retry)
         .build();
-    let request = SubscribeRequest::new(SubscriberId::new("async-retry").unwrap(), topic()).with_options(options);
+    let request = SubscribeRequest::new("async-retry", topic())
+        .expect("valid subscriber ID")
+        .with_options(options);
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -1711,7 +1712,11 @@ fn async_manual_acknowledgement_requires_an_explicit_ack() {
             .build();
         block_on(async {
             let mut subscription = bus
-                .subscribe(SubscribeRequest::new(SubscriberId::new(subscriber).unwrap(), topic()).with_options(options))
+                .subscribe(
+                    SubscribeRequest::new(subscriber, topic())
+                        .expect("valid subscriber ID")
+                        .with_options(options),
+                )
                 .await
                 .unwrap();
             spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -1779,7 +1784,8 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     block_on(async {
         let mut subscription = bus
             .subscribe(
-                SubscribeRequest::new(SubscriberId::new("async-middleware-retry").unwrap(), topic())
+                SubscribeRequest::new("async-middleware-retry", topic())
+                    .expect("valid subscriber ID")
                     .with_options(options),
             )
             .await
@@ -1840,7 +1846,8 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
         block_on(async {
             let mut subscription = bus
                 .subscribe(
-                    SubscribeRequest::new(SubscriberId::new("async-directive").unwrap(), topic())
+                    SubscribeRequest::new("async-directive", topic())
+                        .expect("valid subscriber ID")
                         .with_options(builder.build()),
                 )
                 .await
@@ -1896,7 +1903,7 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
 fn cancelling_the_run_future_preserves_an_already_received_delivery_for_resume() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("async-resume").unwrap(), topic());
+    let request = SubscribeRequest::new("async-resume", topic()).expect("valid subscriber ID");
     let first_started = Arc::new(AtomicBool::new(false));
     let allow_completion = Arc::new(AtomicBool::new(false));
     let handler_calls = Arc::new(AtomicUsize::new(0));
@@ -1973,10 +1980,7 @@ fn dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("drop-paused").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("drop-paused", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -2022,11 +2026,9 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
     let started = Arc::new(AtomicBool::new(false));
     let finish = Arc::new(AtomicBool::new(false));
     let handler_wakers = Arc::new(std::sync::Mutex::new(Vec::<Waker>::new()));
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("drop-during-takeover").unwrap(),
-        topic(),
-    )))
-    .unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("drop-during-takeover", topic()).expect("valid subscriber ID")))
+            .unwrap();
     spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "drop-takeover",
@@ -2122,10 +2124,7 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("encoded-subscription").unwrap(),
-                topic,
-            ))
+            .subscribe(SubscribeRequest::new("encoded-subscription", topic).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(InboundMessage::new(
@@ -2173,10 +2172,7 @@ fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("paused-shutdown").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("paused-shutdown", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -2230,7 +2226,7 @@ fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
 fn async_success_settles_the_provider_token_after_handler_completion() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("async-settle").unwrap(), topic());
+    let request = SubscribeRequest::new("async-settle", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -2261,10 +2257,7 @@ fn cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
     let handler_calls = Arc::new(AtomicUsize::new(0));
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("settle-cancel").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("settle-cancel", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -2335,10 +2328,7 @@ fn dropping_idle_wait_unregisters_signal_waker() {
         std::thread::spawn(move || {
             block_on(async move {
                 let mut subscription = bus
-                    .subscribe(SubscribeRequest::new(
-                        SubscriberId::new("stale-waker").unwrap(),
-                        topic(),
-                    ))
+                    .subscribe(SubscribeRequest::new("stale-waker", topic()).expect("valid subscriber ID"))
                     .await
                     .unwrap();
                 spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -2407,7 +2397,7 @@ fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
         }
     });
     let handler_calls = Arc::new(AtomicUsize::new(0));
-    let request = SubscribeRequest::new(SubscriberId::new("async-settle-failure").unwrap(), topic());
+    let request = SubscribeRequest::new("async-settle-failure", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -2489,10 +2479,7 @@ fn async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("permanent-settlement-failure").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("permanent-settlement-failure", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.fail_all_settles();
@@ -2524,10 +2511,9 @@ fn permanent_settlement_failure_yields_to_same_executor_shutdown() {
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("same-executor-settlement-retry").unwrap(),
-        topic(),
-    )))
+    let mut subscription = block_on(
+        bus.subscribe(SubscribeRequest::new("same-executor-settlement-retry", topic()).expect("valid subscriber ID")),
+    )
     .unwrap();
     spi.fail_all_settles();
     spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
@@ -2579,7 +2565,7 @@ fn async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_eve
         }
     });
     let string_topic = Topic::<String>::new("test.topic").unwrap();
-    let request = SubscribeRequest::new(SubscriberId::new("decode-settle-failure").unwrap(), string_topic);
+    let request = SubscribeRequest::new("decode-settle-failure", string_topic).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -2608,7 +2594,7 @@ fn async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_eve
 fn async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(SubscriberId::new("async-spi-panic").unwrap(), topic());
+    let request = SubscribeRequest::new("async-spi-panic", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -2651,10 +2637,7 @@ fn immediate_shutdown_waits_for_runner_settlement_and_close_before_provider_shut
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("shutdown-order").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("shutdown-order", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(

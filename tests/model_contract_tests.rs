@@ -14,6 +14,7 @@ use qubit_event_bus::SubscriberId;
 use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
 struct NonClonePayload(String);
@@ -43,6 +44,20 @@ fn static_topic_constants_preserve_typed_topic_identity() -> Result<(), Box<dyn 
     assert_eq!(STATIC_TOPIC, runtime_topic);
     assert_eq!(topic_hash(&STATIC_TOPIC), topic_hash(&runtime_topic));
     assert_eq!(STATIC_TOPIC.clone(), runtime_topic);
+    Ok(())
+}
+
+#[test]
+fn subscribe_request_new_validates_string_id_and_takes_topic_by_value() -> Result<(), Box<dyn std::error::Error>> {
+    let request = SubscribeRequest::new("audit-log", STATIC_TOPIC)?;
+    assert_eq!(request.subscriber_id().as_str(), "audit-log");
+    assert_eq!(request.topic(), &STATIC_TOPIC);
+    assert!(matches!(
+        SubscribeRequest::new("_audit", STATIC_TOPIC),
+        Err(qubit_event_bus::error::ConfigurationError::InvalidSubscriberId { value })
+            if value.as_ref() == "_audit"
+    ));
+    assert_eq!(STATIC_TOPIC.name(), "events.static");
     Ok(())
 }
 

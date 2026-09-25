@@ -69,11 +69,11 @@ use crate::spi::TopicAddress;
 ///
 /// ```
 /// use qubit_event_bus::model::{SubscribeRequest, Topic};
-/// use qubit_event_bus::{AsyncEventBus, DeliveryError, SubscriberId};
+/// use qubit_event_bus::{AsyncEventBus, DeliveryError};
 ///
 /// async fn consume(bus: &AsyncEventBus) -> Result<(), Box<dyn std::error::Error>> {
 ///     let topic = Topic::<String>::new("orders.created")?;
-///     let request = SubscribeRequest::new(SubscriberId::new("audit")?, topic);
+///     let request = SubscribeRequest::new("audit", topic)?;
 ///     let mut subscription = bus.subscribe(request).await?;
 ///     subscription.run(|delivery| async move {
 ///         audit(delivery.payload()).await?;

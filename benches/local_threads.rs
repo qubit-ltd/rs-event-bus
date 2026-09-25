@@ -98,7 +98,10 @@ fn sample(subscription_count: usize) -> Sample {
                 break;
             }
         };
-        match bus.subscribe(SubscribeRequest::new(subscriber_id, topic.clone()), |_| {}) {
+        match bus.subscribe(
+            SubscribeRequest::new(subscriber_id.as_str(), topic.clone()).expect("validated subscriber ID"),
+            |_| {},
+        ) {
             Ok(subscription) => subscriptions.push(subscription),
             Err(_) => {
                 status = "subscribe_failed";
