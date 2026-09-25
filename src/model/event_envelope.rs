@@ -29,6 +29,17 @@ pub const DEAD_LETTER_HEADER: &str = "x-qubit-event-bus-dead-letter";
 pub const DEAD_LETTER_HEADER_VALUE: &str = "v1";
 
 /// A type-safe event before any subscriber delivery is created.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::EventEnvelope;
+/// use qubit_event_bus::model::Topic;
+///
+/// let topic = Topic::<String>::new("orders.created").unwrap();
+/// let event = EventEnvelope::new(topic, "order-1".to_owned()).unwrap();
+/// assert_eq!(event.payload(), "order-1");
+/// ```
 pub struct EventEnvelope<T: 'static> {
     pub(crate) id: EventId,
     pub(crate) topic: Topic<T>,

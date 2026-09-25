@@ -39,6 +39,16 @@ pub enum AcknowledgementError {
 }
 
 /// A cloneable, atomic acknowledgement handle. Clones share one terminal state.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::Acknowledgement;
+///
+/// let acknowledgement = Acknowledgement::new();
+/// acknowledgement.ack().unwrap();
+/// assert!(acknowledgement.is_acked());
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Acknowledgement {
     state: Arc<AtomicU8>,
@@ -59,6 +69,8 @@ impl Acknowledgement {
         self.complete(NACKED)
     }
     /// Returns the current state from the atomic handle.
+    #[must_use]
+    #[inline]
     pub fn state(&self) -> AcknowledgementState {
         match self.state.load(Ordering::Acquire) {
             ACKED => AcknowledgementState::Acknowledged,
@@ -67,14 +79,20 @@ impl Acknowledgement {
         }
     }
     /// Returns whether an ACK won the first completion race.
+    #[must_use]
+    #[inline]
     pub fn is_acked(&self) -> bool {
         self.state() == AcknowledgementState::Acknowledged
     }
     /// Returns whether a NACK won the first completion race.
+    #[must_use]
+    #[inline]
     pub fn is_nacked(&self) -> bool {
         self.state() == AcknowledgementState::NegativelyAcknowledged
     }
     /// Returns whether either terminal decision has been made.
+    #[must_use]
+    #[inline]
     pub fn is_completed(&self) -> bool {
         self.state() != AcknowledgementState::Pending
     }

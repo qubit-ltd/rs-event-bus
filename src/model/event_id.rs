@@ -14,6 +14,15 @@ use crate::error::ConfigurationError;
 use crate::error::EventIdGenerationError;
 
 /// A validated event identifier carried across providers.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::EventId;
+///
+/// let id = EventId::new("order-event-42").unwrap();
+/// assert_eq!(id.as_str(), "order-event-42");
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
 pub struct EventId(Box<str>);
@@ -53,6 +62,7 @@ impl EventId {
 
     /// Returns the original event identifier.
     #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }

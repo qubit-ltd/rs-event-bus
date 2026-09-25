@@ -13,6 +13,16 @@ use super::PublishReceipt;
 use crate::error::PublishError;
 
 /// Each result corresponds to the request at the same input position.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::BatchPublishResult;
+///
+/// let batch = BatchPublishResult::new(Vec::new());
+/// assert_eq!(batch.total_count(), 0);
+/// assert!(batch.items().is_empty());
+/// ```
 pub struct BatchPublishResult {
     items: Vec<Result<PublishReceipt, PublishError>>,
 }

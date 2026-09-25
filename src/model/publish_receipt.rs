@@ -22,6 +22,26 @@ use super::PublishAcknowledgement;
 /// destinations; retrying the original event may duplicate work for accepted
 /// destinations. Use an application idempotency key or retry only work that
 /// the application's delivery policy can safely repeat.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::ProviderId;
+/// use qubit_event_bus::model::PublishAcknowledgement;
+/// use qubit_event_bus::model::PublishReceipt;
+///
+/// let receipt = PublishReceipt::new(
+///     EventId::new("order-42").unwrap(),
+///     Some(EventId::new("order-42").unwrap()),
+///     ProviderId::new("local").unwrap(),
+///     PublishAcknowledgement::Accepted {
+///         provider_message_id: None,
+///         metadata: Default::default(),
+///     },
+/// );
+/// assert_eq!(receipt.provider_id().as_str(), "local");
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishReceipt {
     input_event_id: EventId,
@@ -46,14 +66,20 @@ impl PublishReceipt {
         }
     }
     /// Returns the original event ID before publisher interception.
+    #[must_use = "the input event ID identifies the original publication"]
+    #[inline]
     pub fn input_event_id(&self) -> &EventId {
         &self.input_event_id
     }
     /// Returns the dispatched event ID, or `None` when interception dropped it.
+    #[must_use]
+    #[inline]
     pub fn dispatched_event_id(&self) -> Option<&EventId> {
         self.dispatched_event_id.as_ref()
     }
     /// Returns the provider that produced the admission result.
+    #[must_use]
+    #[inline]
     pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id
     }
@@ -62,6 +88,8 @@ impl PublishReceipt {
     /// `DestinationAdmissions([])` means no destinations were reported. It
     /// does not prove that handler work completed or that a remote consumer
     /// was globally idle.
+    #[must_use]
+    #[inline]
     pub fn acknowledgement(&self) -> &PublishAcknowledgement {
         &self.acknowledgement
     }
@@ -73,6 +101,7 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The admission outcome reported by the provider or publisher interceptor.
+    #[must_use]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         self.acknowledgement.admission_outcome()
     }
@@ -82,6 +111,7 @@ impl PublishReceipt {
     /// Returns `Some` for per-destination results, including an empty list.
     /// Returns `None` when the provider hides destinations or interception
     /// dropped the publication before dispatch.
+    #[must_use]
     pub fn admission_summary(&self) -> Option<AdmissionSummary> {
         match self.admission_outcome() {
             AdmissionOutcome::Accepted(summary)

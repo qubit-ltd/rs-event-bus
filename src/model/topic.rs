@@ -20,6 +20,15 @@ use crate::codec::EventCodec;
 use crate::error::ConfigurationError;
 
 /// A validated MIME content type used by a codec.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::ContentType;
+///
+/// let content_type = ContentType::new("application/json").unwrap();
+/// assert_eq!(content_type.as_str(), "application/json");
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ContentType(Box<str>);
 
@@ -39,6 +48,8 @@ impl ContentType {
     }
 
     /// Returns the content type string.
+    #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -53,6 +64,15 @@ fn valid_mime_token(value: &str) -> bool {
 }
 
 /// A validated schema identifier supplied by an application codec.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::SchemaId;
+///
+/// let schema_id = SchemaId::new("order-v1").unwrap();
+/// assert_eq!(schema_id.as_str(), "order-v1");
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SchemaId(Box<str>);
 
@@ -69,12 +89,24 @@ impl SchemaId {
     }
 
     /// Returns the original schema identifier.
+    #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 /// A topic bound to one Rust payload type.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::Topic;
+///
+/// let topic = Topic::<String>::new("orders.created").unwrap();
+/// assert_eq!(topic.name(), "orders.created");
+/// assert!(topic.payload_type_name().contains("String"));
+/// ```
 pub struct Topic<T: 'static> {
     name: Box<str>,
     payload_type_id: TypeId,
@@ -115,26 +147,36 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the validated topic name.
+    #[must_use]
+    #[inline]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Returns the Rust payload type identity.
+    #[must_use]
+    #[inline]
     pub fn payload_type_id(&self) -> TypeId {
         self.payload_type_id
     }
 
     /// Returns the Rust payload type name for diagnostics.
+    #[must_use]
+    #[inline]
     pub fn payload_type_name(&self) -> &'static str {
         self.payload_type_name
     }
 
     /// Returns the configured codec, or `None` for a native-only topic.
+    #[must_use]
+    #[inline]
     pub fn codec(&self) -> Option<&Arc<dyn EventCodec<T>>> {
         self.codec.as_ref()
     }
 
     /// Returns the codec schema ID, or `None` when none was supplied.
+    #[must_use]
+    #[inline]
     pub fn schema_id(&self) -> Option<&SchemaId> {
         self.codec.as_ref().and_then(|codec| codec.schema_id())
     }

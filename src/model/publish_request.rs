@@ -14,6 +14,17 @@ use super::Topic;
 use crate::error::EventIdGenerationError;
 
 /// An envelope and its per-publication policy.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::Topic;
+///
+/// let topic = Topic::<String>::new("orders.created").unwrap();
+/// let request = PublishRequest::new(topic, "order-42".to_owned()).unwrap();
+/// assert_eq!(request.envelope().payload(), "order-42");
+/// ```
 pub struct PublishRequest<T: 'static> {
     envelope: EventEnvelope<T>,
     options: PublishOptions<T>,
@@ -46,18 +57,25 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
         self
     }
     /// Returns the typed topic.
+    #[must_use]
+    #[inline]
     pub fn topic(&self) -> &Topic<T> {
         self.envelope.topic()
     }
     /// Returns one header, or `None` when absent.
+    #[must_use]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.envelope.header(key)
     }
     /// Returns the complete envelope.
+    #[must_use]
+    #[inline]
     pub fn envelope(&self) -> &EventEnvelope<T> {
         &self.envelope
     }
     /// Returns per-publication options.
+    #[must_use]
+    #[inline]
     pub fn options(&self) -> &PublishOptions<T> {
         &self.options
     }

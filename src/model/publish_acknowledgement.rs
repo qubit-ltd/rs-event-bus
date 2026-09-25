@@ -24,6 +24,19 @@ pub type ProviderMessageMetadata = BTreeMap<String, String>;
 /// result, not a whole-request [`crate::error::PublishError`]: other
 /// destinations may already have accepted the event. Retrying the entire
 /// request can therefore deliver duplicates to destinations that accepted it.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::AdmissionOutcome;
+/// use qubit_event_bus::model::PublishAcknowledgement;
+///
+/// let acknowledgement = PublishAcknowledgement::Accepted {
+///     provider_message_id: Some("message-42".to_owned()),
+///     metadata: Default::default(),
+/// };
+/// assert_eq!(acknowledgement.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PublishAcknowledgement {
@@ -54,6 +67,7 @@ impl PublishAcknowledgement {
     ///
     /// # Returns
     /// The provider's admission result without implying handler completion.
+    #[must_use]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         match self {
             Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,
@@ -79,6 +93,8 @@ impl PublishAcknowledgement {
 
     /// Returns whether the publication was intentionally dropped before
     /// dispatch.
+    #[must_use]
+    #[inline]
     pub fn is_dropped(&self) -> bool {
         matches!(self, Self::DroppedByInterceptor)
     }
