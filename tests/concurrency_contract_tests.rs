@@ -151,27 +151,34 @@ fn graceful_shutdown_and_publish_have_one_admission_linearization_point() {
 #[cfg(not(loom))]
 mod local_spi_contract {
     use std::any::TypeId;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
+    use std::sync::Barrier;
     use std::thread;
     use std::time::SystemTime;
 
     use qubit_event_bus::EventBusConfig;
     use qubit_event_bus::error::SpiError;
-    use qubit_event_bus::local::{LocalEventBusConfig, LocalEventBusProvider};
-    use qubit_event_bus::model::{
-        AdmissionStatus, EventId, Headers, ProviderOptions, PublishAcknowledgement, StartPosition,
-        SubscriberId, SubscriptionDurability,
-    };
-    use qubit_event_bus::spi::{
-        EventBusSpi, OutboundMessage, ShutdownMode, SpiSubscriptionRequest, TopicAddress,
-        TransportPayload,
-    };
+    use qubit_event_bus::local::LocalEventBusConfig;
+    use qubit_event_bus::local::LocalEventBusProvider;
+    use qubit_event_bus::model::AdmissionStatus;
+    use qubit_event_bus::model::EventId;
+    use qubit_event_bus::model::Headers;
+    use qubit_event_bus::model::ProviderOptions;
+    use qubit_event_bus::model::PublishAcknowledgement;
+    use qubit_event_bus::model::StartPosition;
+    use qubit_event_bus::model::SubscriberId;
+    use qubit_event_bus::model::SubscriptionDurability;
+    use qubit_event_bus::spi::EventBusSpi;
+    use qubit_event_bus::spi::OutboundMessage;
+    use qubit_event_bus::spi::ShutdownMode;
+    use qubit_event_bus::spi::SpiSubscriptionRequest;
+    use qubit_event_bus::spi::TopicAddress;
+    use qubit_event_bus::spi::TransportPayload;
     use qubit_id::Id;
     use qubit_spi::ServiceProvider;
 
     fn create() -> Arc<dyn EventBusSpi> {
-        let config = EventBusConfig::default()
-            .with_provider_options(LocalEventBusConfig::default().provider_options());
+        let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::default().provider_options());
         LocalEventBusProvider.create_configured(&config).unwrap()
     }
 
@@ -203,10 +210,7 @@ mod local_spi_contract {
     fn assert_race_result(result: Result<PublishAcknowledgement, SpiError>, expected_id: Id) {
         match result {
             Ok(PublishAcknowledgement::DestinationAdmissions(admissions)) => {
-                assert!(
-                    admissions.len() <= 1,
-                    "one live subscription may appear at most once"
-                );
+                assert!(admissions.len() <= 1, "one live subscription may appear at most once");
                 for admission in admissions {
                     assert_eq!(
                         expected_id,
@@ -249,24 +253,17 @@ mod local_spi_contract {
             receiver.close().unwrap();
             assert_race_result(publish.join().unwrap(), expected_id);
             let after_close = spi.publish(outbound("race.target", "after-close")).unwrap();
-            assert!(
-                matches!(after_close, PublishAcknowledgement::DestinationAdmissions(items) if items.is_empty())
-            );
+            assert!(matches!(after_close, PublishAcknowledgement::DestinationAdmissions(items) if items.is_empty()));
 
             let shutdown_spi = create();
             let _receiver = shutdown_spi.subscribe(request(1, "race.target")).unwrap();
-            let _unrelated = shutdown_spi
-                .subscribe(request(2, "race.unrelated"))
-                .unwrap();
+            let _unrelated = shutdown_spi.subscribe(request(2, "race.unrelated")).unwrap();
             let barrier = Arc::new(Barrier::new(2));
             let publish_barrier = barrier.clone();
             let publisher = shutdown_spi.clone();
             let publish = thread::spawn(move || {
                 publish_barrier.wait();
-                publisher.publish(outbound(
-                    "race.target",
-                    &format!("shutdown-race-{iteration}"),
-                ))
+                publisher.publish(outbound("race.target", &format!("shutdown-race-{iteration}")))
             });
             barrier.wait();
             shutdown_spi.shutdown(ShutdownMode::Immediate).unwrap();

@@ -130,9 +130,7 @@ impl EventBusSpi for LocalEventBusSpi {
             }
             let queues = state.live_queues_for_topic(&topic);
             let bucket = state.topics.get(&topic);
-            if bucket.is_some_and(|bucket| {
-                bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)
-            }) {
+            if bucket.is_some_and(|bucket| bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)) {
                 return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
             }
             queues

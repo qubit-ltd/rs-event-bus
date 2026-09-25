@@ -215,7 +215,8 @@ pub(super) struct LocalQueueState {
 }
 
 impl LocalQueueState {
-    /// Adds an event to its lane tail and schedules a head when the lane was empty.
+    /// Adds an event to its lane tail and schedules a head when the lane was
+    /// empty.
     pub(super) fn enqueue_back(&mut self, event: LocalEvent) {
         let key = event.ordering_key.clone();
         let lane = self.lanes.entry(key.clone()).or_default();
@@ -227,7 +228,8 @@ impl LocalQueueState {
         }
     }
 
-    /// Restores a retried event at its lane front and reschedules the lane head.
+    /// Restores a retried event at its lane front and reschedules the lane
+    /// head.
     pub(super) fn enqueue_front(&mut self, event: LocalEvent) {
         let key = event.ordering_key.clone();
         self.lanes.entry(key.clone()).or_default().events.push_front(event);
@@ -255,7 +257,8 @@ impl LocalQueueState {
         self.delayed_stale_count = 0;
     }
 
-    /// Pops one currently ready lane head, promoting expired delayed heads first.
+    /// Pops one currently ready lane head, promoting expired delayed heads
+    /// first.
     pub(super) fn pop_ready(&mut self, now: Instant) -> Option<LocalEvent> {
         self.promote_due_heads(now);
         while let Some((key, version)) = self.ready_lanes.pop_front() {
@@ -292,7 +295,8 @@ impl LocalQueueState {
             .map(|Reverse(head)| head.deadline.saturating_duration_since(now))
     }
 
-    /// Increments a lane generation and schedules its current ready or delayed head.
+    /// Increments a lane generation and schedules its current ready or delayed
+    /// head.
     fn schedule_lane_head(&mut self, key: QueueKey) {
         let Some((version, deadline, invalidated_delayed_head)) = (|| {
             let lane = self.lanes.get_mut(&key)?;
@@ -357,19 +361,21 @@ impl LocalQueueState {
         }
     }
 
-    /// Removes delayed entries whose lane no longer has the recorded generation.
+    /// Removes delayed entries whose lane no longer has the recorded
+    /// generation.
     fn discard_stale_delayed_heads(&mut self) {
         while self.delayed_lanes.peek().is_some_and(|Reverse(head)| {
-            self.lanes.get(&head.key).is_none_or(|lane| {
-                lane.version != head.version || lane.delayed_version != Some(head.version)
-            })
+            self.lanes
+                .get(&head.key)
+                .is_none_or(|lane| lane.version != head.version || lane.delayed_version != Some(head.version))
         }) {
             self.delayed_lanes.pop();
             self.delayed_stale_count -= 1;
         }
     }
 
-    /// Rebuilds the delayed heap when stale entries exceed live heads or fixed slack.
+    /// Rebuilds the delayed heap when stale entries exceed live heads or fixed
+    /// slack.
     fn compact_delayed_heap_if_needed(&mut self) {
         if self.delayed_stale_count <= self.delayed_live_count.max(8) {
             return;
@@ -434,11 +440,7 @@ impl TopicSubscriptions {
     /// Removes dead subscriptions and returns live queues in identifier order.
     pub(super) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
         self.queues.retain(|_, queue| queue.strong_count() > 0);
-        let queues = self
-            .queues
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect::<Vec<_>>();
+        let queues = self.queues.values().filter_map(Weak::upgrade).collect::<Vec<_>>();
         if queues.is_empty() {
             self.payload_type_id = None;
         }
@@ -478,7 +480,8 @@ pub(super) struct BusState {
 }
 
 impl BusState {
-    /// Removes dead identifiers in one topic and returns its ordered live queues.
+    /// Removes dead identifiers in one topic and returns its ordered live
+    /// queues.
     pub(super) fn live_queues_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<LocalQueue>> {
         let Some(bucket) = self.topics.get_mut(topic) else {
             return Vec::new();
@@ -508,14 +511,11 @@ impl BusState {
         queues
     }
 
-    /// Removes one stale provider-wide identifier from whichever bucket owns it.
+    /// Removes one stale provider-wide identifier from whichever bucket owns
+    /// it.
     pub(super) fn remove_stale_id(&mut self, id: Id) {
         for bucket in self.topics.values_mut() {
-            if bucket
-                .queues
-                .get(&id)
-                .is_some_and(|queue| queue.strong_count() == 0)
-            {
+            if bucket.queues.get(&id).is_some_and(|queue| queue.strong_count() == 0) {
                 bucket.queues.remove(&id);
                 if bucket.queues.is_empty() {
                     bucket.payload_type_id = None;
@@ -629,11 +629,7 @@ mod tests {
             "key-a",
             Some(Duration::from_secs(2 * 60 * 60)),
         ));
-        state.enqueue_back(create_event(
-            "blocker",
-            "key-b",
-            Some(Duration::from_secs(60 * 60)),
-        ));
+        state.enqueue_back(create_event("blocker", "key-b", Some(Duration::from_secs(60 * 60))));
 
         let now = std::time::Instant::now();
         for _ in 0..128 {
