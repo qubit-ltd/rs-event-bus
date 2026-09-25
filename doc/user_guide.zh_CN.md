@@ -202,6 +202,14 @@ async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 - 异步 settlement 的不确定结果可能导致重试；provider 必须让相同 token 和 disposition 的重复操作幂等，同一 token 使用冲突 disposition 时必须失败。
 - shutdown 会停止准入并协调订阅。`Immediate` 会丢弃尚未开始的队列工作，不再接收新消息；但会等待当前 handler 完成、settlement、subscription close 和 SPI shutdown，以便同步返回完整错误。Rust 无法强制中断 handler。同步 `Graceful` 的期限限制调用方等待完整关闭过程的时间，包括已准入的 publish/subscribe SPI 调用、receiver close 和 provider shutdown。返回 `TimedOut` 时 bus 保持 `Closing`、拒绝新操作，并由唯一后台协调者继续清理；再次调用 shutdown 可继续等待，或用 `Immediate` 加强当前尝试。阻塞中的同步 provider 调用或 handler 可能让协调线程持续存在。异步 shutdown 由调用者驱动 future；丢弃超时/取消的 future 不会回滚 provider 副作用，因此异步 provider 必须支持幂等 close/shutdown 重试。SPI 的 `shutdown(mode)` 只关闭 provider 传输资源；先停止消费、完成当前投递和 close 的顺序由 facade 保证。
 
+### 本地 provider 资源指南
+
+local provider 是同步、进程内且不持久化的实现。每个同步订阅都会使用一个阻塞式接收 worker 线程，因此规划订阅数量时也要考虑线程资源。在一台 Linux 主机的样本中，1/16/128 个订阅对应的进程线程峰值为 6/21/133；创建耗时中位数为 0.226/1.592/7.551 ms，取消订阅并立即关闭的耗时中位数为 0.285/651.543/5359.302 ms。样本来自一台 6 CPU 主机，期间存在其他负载，且关闭耗时范围较宽；这些是观测值，不是容量保证。可运行 `cargo bench --bench local_threads` 测量当前主机。
+
+`LocalEventBusConfig::new().queue_capacity(n)` 为每个订阅分别设置正数的未完成消息上限。排队中和已接收但尚未 settlement 的 delivery 都占用该额度，`Retry` 会保留原额度。应根据单个订阅者可安全保留的积压量设置上限，并考虑其处理速率和预期暂停时间；这不是整条总线或应用级的总内存预算。同一 ordering key 上延迟的队首会阻塞该 key 的后续消息，但不会阻止其他已就绪 key 前进。`rs-task` 中有界的应用发布策略与此 provider 队列上限是不同层次的策略。
+
+本地对比可运行 `cargo bench --bench local_scale -- publish`，观察不同 Topic 和订阅布局下的发布耗时与吞吐；运行 `cargo bench --bench local_scale -- receive`，观察不同队列深度和就绪 key 数量下的接收延迟。一组 Linux 样本显示多 Topic 路由 p95 有明显改善，但“1 个 Topic × 128 个订阅”的样本变慢；修正后的 depth-1024 接收样本中，长阻塞前缀场景的 p95 明显下降。结果受主机和负载影响，不能当作通用性能界限。本 crate 没有内置 async local provider；使用异步 facade 需要外部注册 async provider。实现取舍及样本细节见[0.12 架构说明](design.zh_CN.md#local-provider-的路由与资源)。
+
 ## 延伸阅读
 
 - [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)

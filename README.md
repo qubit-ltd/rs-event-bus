@@ -66,6 +66,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
+### Local provider scale and resources
+
+The synchronous local provider routes publishes through per-topic subscription buckets and uses per-key FIFO lanes for queued deliveries. Queue capacity is per subscription and includes queued plus received-but-unsettled events; `Retry` keeps its reservation. A delayed head blocks later events with the same ordering key, while unrelated ready keys can proceed. Each synchronous subscription also uses a blocking receive worker thread.
+
+On one 6-CPU Linux host, `cargo bench --bench local_scale -- publish` improved p95 by 70.8% and 67.2% for two 32-topic/16-subscriber cases; the 1-topic/128-subscriber case was 21.3% slower in p95 in the sample. The corrected depth-1024 receive sample reduced p95 from 42,654 ns to 590 ns (16 ready keys) and from 41,590 ns to 539 ns (1 ready key); run it with `cargo bench --bench local_scale -- receive`. These are local comparisons, not portable limits. `cargo bench --bench local_threads` measures thread high-water mark and subscription creation/cancellation plus immediate-shutdown time; observed peaks were 6/21/133 threads for 1/16/128 subscriptions, with teardown medians of 0.285/651.543/5359.302 ms. Host load and wide teardown ranges affect these observations. The provider is non-durable and in-process; there is no built-in async local provider. See the [local provider guidance](doc/user_guide.md#local-provider-resource-guidance) before sizing queues or subscription counts.
+
 ## Learn more
 
 - [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
