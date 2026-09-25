@@ -4,6 +4,16 @@
 
 本文档记录 `qubit-event-bus` 的重要变更。
 
+## 未发布
+
+### 破坏性变更
+
+- 将 `Topic::with_codec` 重命名为 `Topic::new_with_codec`，将 `Topic::with_shared_codec` 重命名为 `Topic::new_with_shared_codec`。
+
+### 新增
+
+- 为 `Topic`、`SubscriberId`、`ProviderId` 和 `SchemaId` 增加 const `new_static` 构造函数；`EventId` 保持不变。
+
 ## 0.12.0 - 2026-09-24
 
 ### 破坏性变更

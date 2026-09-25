@@ -35,6 +35,10 @@ struct OrderCreated {
     total_cents: u64,
 }
 
+impl OrderCreated {
+    const TOPIC_CREATED: Topic<Self> = Topic::new_static("orders.created");
+}
+
 // The application supplies implementations backed by its audit and view stores.
 trait AuditLog: Send + Sync {
     fn append_order_created(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
@@ -47,7 +51,7 @@ trait CustomerOrderView: Send + Sync {
 fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>)
     -> Result<Subscription, Box<dyn std::error::Error>>
 {
-    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let topic = OrderCreated::TOPIC_CREATED;
     let request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic);
     Ok(bus.subscribe(request, move |delivery| {
         audit.append_order_created(delivery.payload())
@@ -57,7 +61,7 @@ fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>)
 fn subscribe_customer_view(bus: &EventBus, view: Arc<dyn CustomerOrderView>)
     -> Result<Subscription, Box<dyn std::error::Error>>
 {
-    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let topic = OrderCreated::TOPIC_CREATED;
     let request = SubscribeRequest::new(SubscriberId::new("customer-view")?, topic);
     Ok(bus.subscribe(request, move |delivery| {
         view.upsert_order(delivery.payload())
@@ -71,7 +75,7 @@ fn publish_order_created(
     customer_id: String,
     total_cents: u64,
 ) -> Result<PublishReceipt, Box<dyn std::error::Error>> {
-    let topic = Topic::<OrderCreated>::new("orders.created")?;
+    let topic = OrderCreated::TOPIC_CREATED;
     let event = OrderCreated { order_id, customer_id, total_cents };
     Ok(bus.publish(PublishRequest::new(topic, event)?)?)
 }

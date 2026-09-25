@@ -280,7 +280,7 @@ topic 的相等和哈希只使用名称与 payload 类型，不使用 codec 实�
 
 ```rust
 let local = Topic::<OrderCreated>::new("orders.created")?;
-let portable = Topic::with_codec(
+let portable = Topic::new_with_codec(
     "orders.created",
     JsonCodec::<OrderCreated>::new(),
 )?;
