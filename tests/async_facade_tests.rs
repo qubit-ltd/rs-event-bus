@@ -28,6 +28,7 @@ use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::PublishAttemptError;
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::DeliveryAdmissionConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
@@ -41,6 +42,7 @@ use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -51,12 +53,19 @@ use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::InboundMessage;
 use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::PayloadModes;
+use qubit_event_bus::spi::PublishGuarantee;
+use qubit_event_bus::spi::PublishVisibility;
+use qubit_event_bus::spi::ReplayCapability;
+use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
@@ -95,15 +104,15 @@ struct OrderingTestSpi {
 impl OrderingTestSpi {
     fn new(ordering: OrderingCapability) -> Self {
         let base = EventBusCapabilities::new(
-            qubit_event_bus::spi::PayloadModes::Native,
-            qubit_event_bus::spi::SettlementCapabilities::AcceptRetryReject,
+            PayloadModes::Native,
+            SettlementCapabilities::AcceptRetryReject,
             ordering,
-            qubit_event_bus::spi::DelayedDeliveryCapability::None,
-            qubit_event_bus::spi::DurabilityCapability::Ephemeral,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
             false,
-            qubit_event_bus::spi::ReplayCapability::None,
-            qubit_event_bus::spi::PublishGuarantee::Accepted,
-            qubit_event_bus::spi::PublishVisibility::Opaque,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::Opaque,
         );
         Self {
             inner: FakeAsyncEventBusSpi::with_capabilities(base),
@@ -118,25 +127,19 @@ impl AsyncEventBusSpi for OrderingTestSpi {
         self.capabilities
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<qubit_event_bus::model::PublishAcknowledgement, qubit_event_bus::error::SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.inner.publish(message)
     }
 
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, qubit_event_bus::error::SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         self.subscribe_calls.fetch_add(1, Ordering::AcqRel);
         self.inner.subscribe(request)
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, qubit_event_bus::error::SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }
 }

@@ -38,7 +38,7 @@ use super::PublishMetrics;
 use super::PublishMetricsSnapshot;
 use super::WaitOutcome;
 use super::async_subscription::is_current_bus_poll;
-use super::diagnostic_observer::ObserverEntry;
+use super::observer_entry::ObserverEntry;
 use crate::error::CapabilityError;
 use crate::error::LifecycleError;
 use crate::error::PublishError;

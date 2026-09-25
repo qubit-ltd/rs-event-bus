@@ -34,7 +34,7 @@ use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryFallback;
 
 use super::DiagnosticObserverHandle;
-use super::diagnostic_observer::ObserverEntry;
+use super::observer_entry::ObserverEntry;
 use crate::error::CapabilityError;
 use crate::error::ConfigurationError;
 use crate::error::DeliveryAttemptError;

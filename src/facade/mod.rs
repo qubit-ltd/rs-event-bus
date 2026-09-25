@@ -9,11 +9,11 @@
 
 mod async_event_bus;
 mod async_subscription;
-mod diagnostic_observer;
 mod diagnostic_observer_handle;
 mod event_bus;
 mod event_bus_facade_config;
 mod lifecycle;
+mod observer_entry;
 mod publish_metrics;
 mod publish_metrics_snapshot;
 mod shutdown_coordinator;
