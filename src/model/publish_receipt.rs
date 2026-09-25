@@ -8,8 +8,8 @@
 //! Receipt for one publication attempt.
 
 use super::AdmissionCheckError;
+use super::AdmissionOutcome;
 use super::AdmissionRequirement;
-use super::AdmissionStatus;
 use super::AdmissionSummary;
 use super::EventId;
 use super::ProviderId;
@@ -66,24 +66,30 @@ impl PublishReceipt {
         &self.acknowledgement
     }
 
+    /// Returns a stable classification of the provider's admission result.
+    ///
+    /// This is a convenience view of [`Self::acknowledgement`]. It does not
+    /// report handler completion or change the result of the publication.
+    ///
+    /// # Returns
+    /// The admission outcome reported by the provider or publisher interceptor.
+    pub fn admission_outcome(&self) -> AdmissionOutcome {
+        self.acknowledgement.admission_outcome()
+    }
+
     /// Counts reported destination admissions, independent of their order.
     ///
     /// Returns `Some` for per-destination results, including an empty list.
     /// Returns `None` when the provider hides destinations or interception
     /// dropped the publication before dispatch.
     pub fn admission_summary(&self) -> Option<AdmissionSummary> {
-        let PublishAcknowledgement::DestinationAdmissions(destinations) = &self.acknowledgement else {
-            return None;
-        };
-        let mut summary = AdmissionSummary::default();
-        for destination in destinations {
-            match destination.status() {
-                AdmissionStatus::Accepted => summary.accepted += 1,
-                AdmissionStatus::Filtered => summary.filtered += 1,
-                AdmissionStatus::Rejected(_) => summary.rejected += 1,
-            }
+        match self.admission_outcome() {
+            AdmissionOutcome::Accepted(summary)
+            | AdmissionOutcome::PartiallyAccepted(summary)
+            | AdmissionOutcome::NoneAccepted(summary) => Some(summary),
+            AdmissionOutcome::NoDestinations => Some(AdmissionSummary::default()),
+            AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
         }
-        Some(summary)
     }
 
     /// Checks whether reported destination admissions meet `requirement`.
@@ -97,22 +103,22 @@ impl PublishReceipt {
     /// [`AdmissionCheckError::RejectedDestinations`] if any reported
     /// destination rejected admission after at least one accepted.
     pub fn check_admission(&self, requirement: AdmissionRequirement) -> Result<(), AdmissionCheckError> {
-        match &self.acknowledgement {
-            PublishAcknowledgement::DroppedByInterceptor => return Err(AdmissionCheckError::Dropped),
-            PublishAcknowledgement::Accepted { .. } => return Err(AdmissionCheckError::VisibilityUnavailable),
-            PublishAcknowledgement::DestinationAdmissions(_) => {}
+        match self.admission_outcome() {
+            AdmissionOutcome::OpaqueAccepted => Err(AdmissionCheckError::VisibilityUnavailable),
+            AdmissionOutcome::Dropped => Err(AdmissionCheckError::Dropped),
+            AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
+                Err(AdmissionCheckError::NoAcceptedDestination)
+            }
+            AdmissionOutcome::Accepted(_) => Ok(()),
+            AdmissionOutcome::PartiallyAccepted(summary) => {
+                if requirement == AdmissionRequirement::AtLeastOneAcceptedAndNoRejected {
+                    Err(AdmissionCheckError::RejectedDestinations {
+                        count: summary.rejected,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
         }
-        let Some(summary) = self.admission_summary() else {
-            return Err(AdmissionCheckError::VisibilityUnavailable);
-        };
-        if summary.accepted == 0 {
-            return Err(AdmissionCheckError::NoAcceptedDestination);
-        }
-        if requirement == AdmissionRequirement::AtLeastOneAcceptedAndNoRejected && summary.rejected > 0 {
-            return Err(AdmissionCheckError::RejectedDestinations {
-                count: summary.rejected,
-            });
-        }
-        Ok(())
     }
 }

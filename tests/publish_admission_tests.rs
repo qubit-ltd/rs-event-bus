@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::AdmissionCheckError;
+use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AdmissionSummary;
@@ -222,6 +223,88 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             receipt.acknowledgement(),
             "{name}: original receipt changed"
         );
+    }
+}
+
+#[test]
+fn test_admission_outcome_classifies_every_provider_result() {
+    let cases = [
+        (
+            PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            },
+            AdmissionOutcome::OpaqueAccepted,
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(Vec::new()),
+            AdmissionOutcome::NoDestinations,
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Filtered)]),
+            AdmissionOutcome::NoneAccepted(AdmissionSummary {
+                accepted: 0,
+                filtered: 1,
+                rejected: 0,
+            }),
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(
+                1,
+                AdmissionStatus::Rejected("full".into()),
+            )]),
+            AdmissionOutcome::NoneAccepted(AdmissionSummary {
+                accepted: 0,
+                filtered: 0,
+                rejected: 1,
+            }),
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Accepted)]),
+            AdmissionOutcome::Accepted(AdmissionSummary {
+                accepted: 1,
+                filtered: 0,
+                rejected: 0,
+            }),
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(vec![
+                destination(1, AdmissionStatus::Accepted),
+                destination(2, AdmissionStatus::Filtered),
+            ]),
+            AdmissionOutcome::Accepted(AdmissionSummary {
+                accepted: 1,
+                filtered: 1,
+                rejected: 0,
+            }),
+        ),
+        (
+            PublishAcknowledgement::DestinationAdmissions(vec![
+                destination(1, AdmissionStatus::Accepted),
+                destination(2, AdmissionStatus::Rejected("full".into())),
+            ]),
+            AdmissionOutcome::PartiallyAccepted(AdmissionSummary {
+                accepted: 1,
+                filtered: 0,
+                rejected: 1,
+            }),
+        ),
+        (PublishAcknowledgement::DroppedByInterceptor, AdmissionOutcome::Dropped),
+    ];
+
+    for (acknowledgement, expected) in cases {
+        let receipt = receipt(acknowledgement.clone());
+        assert_eq!(expected, acknowledgement.admission_outcome());
+        assert_eq!(expected, receipt.admission_outcome());
+        let expected_summary = match expected {
+            AdmissionOutcome::Accepted(summary)
+            | AdmissionOutcome::PartiallyAccepted(summary)
+            | AdmissionOutcome::NoneAccepted(summary) => Some(summary),
+            AdmissionOutcome::NoDestinations => Some(AdmissionSummary::default()),
+            AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
+            _ => None,
+        };
+        assert_eq!(expected_summary, receipt.admission_summary());
     }
 }
 

@@ -9,6 +9,9 @@
 
 use std::collections::BTreeMap;
 
+use super::AdmissionOutcome;
+use super::AdmissionStatus;
+use super::AdmissionSummary;
 use super::DestinationAdmission;
 
 /// Non-sensitive metadata returned by a provider after accepting a message.
@@ -43,6 +46,37 @@ pub enum PublishAcknowledgement {
 }
 
 impl PublishAcknowledgement {
+    /// Classifies the admission information returned for this publication.
+    ///
+    /// Destination counts are preserved for reported outcomes. Opaque
+    /// acceptance, interceptor drops, and empty destination snapshots remain
+    /// distinct because they convey different information to the caller.
+    ///
+    /// # Returns
+    /// The provider's admission result without implying handler completion.
+    pub fn admission_outcome(&self) -> AdmissionOutcome {
+        match self {
+            Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,
+            Self::DroppedByInterceptor => AdmissionOutcome::Dropped,
+            Self::DestinationAdmissions(destinations) if destinations.is_empty() => AdmissionOutcome::NoDestinations,
+            Self::DestinationAdmissions(destinations) => {
+                let mut summary = AdmissionSummary::default();
+                for destination in destinations {
+                    match destination.status() {
+                        AdmissionStatus::Accepted => summary.accepted += 1,
+                        AdmissionStatus::Filtered => summary.filtered += 1,
+                        AdmissionStatus::Rejected(_) => summary.rejected += 1,
+                    }
+                }
+                match (summary.accepted, summary.rejected) {
+                    (0, _) => AdmissionOutcome::NoneAccepted(summary),
+                    (_, 0) => AdmissionOutcome::Accepted(summary),
+                    _ => AdmissionOutcome::PartiallyAccepted(summary),
+                }
+            }
+        }
+    }
+
     /// Returns whether the publication was intentionally dropped before
     /// dispatch.
     pub fn is_dropped(&self) -> bool {
