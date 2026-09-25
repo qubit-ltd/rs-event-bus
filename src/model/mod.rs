@@ -33,6 +33,7 @@ pub use acknowledgement::Acknowledgement;
 pub use acknowledgement::AcknowledgementError;
 pub use acknowledgement::AcknowledgementState;
 pub use admission_check::AdmissionCheckError;
+pub use admission_check::AdmissionOutcome;
 pub use admission_check::AdmissionRequirement;
 pub use admission_check::AdmissionSummary;
 pub use batch_publish_result::BatchPublishResult;
