@@ -5,23 +5,30 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Small loom models for lifecycle contracts that must survive racing callers.
+//! Loom lifecycle models and real local SPI lifecycle race contracts.
 //!
 //! These models validate the required state transitions independently of the
 //! production executor. They intentionally do not claim to instrument private
 //! facade internals or prove their implementation correct by themselves.
 
-#![cfg(loom)]
-
+#[cfg(loom)]
 use loom::model;
+#[cfg(loom)]
 use loom::sync::Arc;
+#[cfg(loom)]
 use loom::sync::Condvar;
+#[cfg(loom)]
 use loom::sync::Mutex;
+#[cfg(loom)]
 use loom::sync::atomic::AtomicBool;
+#[cfg(loom)]
 use loom::sync::atomic::AtomicUsize;
+#[cfg(loom)]
 use loom::sync::atomic::Ordering;
+#[cfg(loom)]
 use loom::thread;
 
+#[cfg(loom)]
 #[test]
 fn admission_permit_is_released_exactly_once_under_competing_cleanup() {
     model(|| {
@@ -47,6 +54,7 @@ fn admission_permit_is_released_exactly_once_under_competing_cleanup() {
     });
 }
 
+#[cfg(loom)]
 #[test]
 fn cancelling_an_ordering_lane_advances_the_next_waiter() {
     model(|| {
@@ -75,6 +83,7 @@ fn cancelling_an_ordering_lane_advances_the_next_waiter() {
     });
 }
 
+#[cfg(loom)]
 #[test]
 fn subscription_cancel_racing_receive_never_starts_after_cancel_wins() {
     model(|| {
@@ -108,6 +117,7 @@ fn subscription_cancel_racing_receive_never_starts_after_cancel_wins() {
     });
 }
 
+#[cfg(loom)]
 #[test]
 fn graceful_shutdown_and_publish_have_one_admission_linearization_point() {
     model(|| {
@@ -136,4 +146,142 @@ fn graceful_shutdown_and_publish_have_one_admission_linearization_point() {
         assert!(state.closed);
         assert!(state.admitted <= 1);
     });
+}
+
+#[cfg(not(loom))]
+mod local_spi_contract {
+    use std::any::TypeId;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::SystemTime;
+
+    use qubit_event_bus::EventBusConfig;
+    use qubit_event_bus::error::SpiError;
+    use qubit_event_bus::local::{LocalEventBusConfig, LocalEventBusProvider};
+    use qubit_event_bus::model::{
+        AdmissionStatus, EventId, Headers, ProviderOptions, PublishAcknowledgement, StartPosition,
+        SubscriberId, SubscriptionDurability,
+    };
+    use qubit_event_bus::spi::{
+        EventBusSpi, OutboundMessage, ShutdownMode, SpiSubscriptionRequest, TopicAddress,
+        TransportPayload,
+    };
+    use qubit_id::Id;
+    use qubit_spi::ServiceProvider;
+
+    fn create() -> Arc<dyn EventBusSpi> {
+        let config = EventBusConfig::default()
+            .with_provider_options(LocalEventBusConfig::default().provider_options());
+        LocalEventBusProvider.create_configured(&config).unwrap()
+    }
+
+    fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
+        SpiSubscriptionRequest::new(
+            Id::new(id),
+            TopicAddress::new(topic).unwrap(),
+            SubscriberId::new(format!("subscriber-{id}")).unwrap(),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<u32>(),
+        )
+    }
+
+    fn outbound(topic: &str, event_id: &str) -> OutboundMessage {
+        OutboundMessage::new(
+            TopicAddress::new(topic).unwrap(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(7_u32)),
+        )
+    }
+
+    fn assert_race_result(result: Result<PublishAcknowledgement, SpiError>, expected_id: Id) {
+        match result {
+            Ok(PublishAcknowledgement::DestinationAdmissions(admissions)) => {
+                assert!(
+                    admissions.len() <= 1,
+                    "one live subscription may appear at most once"
+                );
+                for admission in admissions {
+                    assert_eq!(
+                        expected_id,
+                        admission.subscription_id(),
+                        "unrelated destination appeared"
+                    );
+                    assert!(matches!(
+                        admission.status(),
+                        AdmissionStatus::Accepted | AdmissionStatus::Rejected(_)
+                    ));
+                }
+            }
+            Err(SpiError::Operation {
+                operation: "publish",
+                kind: "provider_closed",
+                ..
+            }) => {}
+            Err(error) => panic!("unexpected publish error during lifecycle race: {error}"),
+            Ok(_) => panic!("local provider must report destination admissions"),
+        }
+    }
+
+    #[test]
+    fn test_publish_cancel_shutdown_snapshot_contract() {
+        // Each iteration starts the publisher and lifecycle operation together;
+        // neither branch assumes when the provider captures the target snapshot.
+        for iteration in 0..32 {
+            let spi = create();
+            let expected_id = Id::new(1);
+            let mut receiver = spi.subscribe(request(1, "race.target")).unwrap();
+            let _unrelated = spi.subscribe(request(2, "race.unrelated")).unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let publish_barrier = barrier.clone();
+            let publisher = spi.clone();
+            let publish = thread::spawn(move || {
+                publish_barrier.wait();
+                publisher.publish(outbound("race.target", &format!("close-race-{iteration}")))
+            });
+            barrier.wait();
+            receiver.close().unwrap();
+            assert_race_result(publish.join().unwrap(), expected_id);
+            let after_close = spi.publish(outbound("race.target", "after-close")).unwrap();
+            assert!(
+                matches!(after_close, PublishAcknowledgement::DestinationAdmissions(items) if items.is_empty())
+            );
+
+            let shutdown_spi = create();
+            let _receiver = shutdown_spi.subscribe(request(1, "race.target")).unwrap();
+            let _unrelated = shutdown_spi
+                .subscribe(request(2, "race.unrelated"))
+                .unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let publish_barrier = barrier.clone();
+            let publisher = shutdown_spi.clone();
+            let publish = thread::spawn(move || {
+                publish_barrier.wait();
+                publisher.publish(outbound(
+                    "race.target",
+                    &format!("shutdown-race-{iteration}"),
+                ))
+            });
+            barrier.wait();
+            shutdown_spi.shutdown(ShutdownMode::Immediate).unwrap();
+            assert_race_result(publish.join().unwrap(), expected_id);
+            let error = shutdown_spi
+                .publish(outbound("race.target", "after-shutdown"))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                SpiError::Operation {
+                    operation: "publish",
+                    kind: "provider_closed",
+                    ..
+                }
+            ));
+        }
+    }
 }
