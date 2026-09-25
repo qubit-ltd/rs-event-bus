@@ -9,6 +9,7 @@
 
 mod support;
 
+use std::any::TypeId;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -43,6 +44,7 @@ use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::EventSubscriptionSpi;
 use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OrderingKey;
 use qubit_event_bus::spi::OutboundMessage;
@@ -261,13 +263,55 @@ fn local_provider_admits_only_matching_topic_subscriptions_and_reports_capacity_
 }
 
 #[test]
-fn topic_type_conflict_rejects_second_subscription() {
+fn test_topic_routing_ignores_unrelated_subscriptions() {
+    const TOPIC_COUNT: usize = 32;
+    const TARGET_TOPIC: usize = 17;
     let spi = create(&LocalEventBusConfig::default());
-    let first = spi.subscribe(request(101, "typed.topic")).unwrap();
+    let mut subscriptions: Vec<(usize, Id, Box<dyn EventSubscriptionSpi>)> = Vec::new();
+    for topic_index in 0..TOPIC_COUNT {
+        let topic = format!("routing.topic.{topic_index}");
+        for offset in (1..=2).rev() {
+            let id_number = (topic_index * 2 + offset) as u64;
+            let id = Id::new(id_number);
+            subscriptions.push((
+                topic_index,
+                id,
+                spi.subscribe(request(id_number, &topic)).unwrap(),
+            ));
+        }
+    }
+
+    let receipt = spi.publish(outbound(&format!("routing.topic.{TARGET_TOPIC}"), 42)).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt else {
+        panic!("local provider returns destination admissions");
+    };
+    assert_eq!(2, admissions.len());
+    assert_eq!(
+        vec![Id::new((TARGET_TOPIC * 2 + 1) as u64), Id::new((TARGET_TOPIC * 2 + 2) as u64)],
+        admissions.iter().map(|item| item.subscription_id()).collect::<Vec<_>>()
+    );
+    assert!(admissions.iter().all(|item| matches!(item.status(), AdmissionStatus::Accepted)));
+
+    for (topic_index, id, receiver) in &mut subscriptions {
+        let outcome = receiver.receive(Duration::ZERO).unwrap();
+        if *topic_index == TARGET_TOPIC {
+            assert!(matches!(outcome, ReceiveOutcome::Message(_)), "target subscriber {id} missed the message");
+        } else {
+            assert!(matches!(outcome, ReceiveOutcome::TimedOut), "unrelated subscriber {id} received a message");
+        }
+    }
+}
+
+#[test]
+fn test_topic_type_rebind_after_last_subscription_closes() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut first = spi
+        .subscribe(request_with_payload_type(101, "typed.topic", TypeId::of::<u32>()))
+        .unwrap();
     let conflict = match spi.subscribe(request_with_payload_type(
         102,
         "typed.topic",
-        std::any::TypeId::of::<String>(),
+        TypeId::of::<String>(),
     )) {
         Ok(_) => panic!("the same topic name cannot have conflicting native payload types"),
         Err(error) => error,
@@ -279,16 +323,37 @@ fn topic_type_conflict_rejects_second_subscription() {
             ..
         }
     ));
-    drop(first);
+    first.close().unwrap();
 
-    let replacement = spi
+    let mut replacement = spi
         .subscribe(request_with_payload_type(
             103,
             "typed.topic",
-            std::any::TypeId::of::<String>(),
+            TypeId::of::<String>(),
         ))
         .expect("a topic may use a new payload type after its last subscriber closes");
-    drop(replacement);
+    let message = OutboundMessage::new(
+        TopicAddress::new("typed.topic").unwrap(),
+        EventId::new("typed-rebound").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(String::from("replacement payload"))),
+    );
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(message).unwrap() else {
+        panic!("local provider returns destination admissions");
+    };
+    assert_eq!(1, admissions.len());
+    assert_eq!(Id::new(103), admissions[0].subscription_id());
+    assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(received) = replacement.receive(Duration::ZERO).unwrap() else {
+        panic!("replacement subscriber must receive the new payload type");
+    };
+    let TransportPayload::Native(payload) = received.payload() else {
+        panic!("replacement payload must remain native");
+    };
+    assert_eq!("replacement payload", payload.downcast_ref::<String>().unwrap());
 }
 
 #[test]
