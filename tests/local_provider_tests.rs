@@ -273,31 +273,42 @@ fn test_topic_routing_ignores_unrelated_subscriptions() {
         for offset in (1..=2).rev() {
             let id_number = (topic_index * 2 + offset) as u64;
             let id = Id::new(id_number);
-            subscriptions.push((
-                topic_index,
-                id,
-                spi.subscribe(request(id_number, &topic)).unwrap(),
-            ));
+            subscriptions.push((topic_index, id, spi.subscribe(request(id_number, &topic)).unwrap()));
         }
     }
 
-    let receipt = spi.publish(outbound(&format!("routing.topic.{TARGET_TOPIC}"), 42)).unwrap();
+    let receipt = spi
+        .publish(outbound(&format!("routing.topic.{TARGET_TOPIC}"), 42))
+        .unwrap();
     let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt else {
         panic!("local provider returns destination admissions");
     };
     assert_eq!(2, admissions.len());
     assert_eq!(
-        vec![Id::new((TARGET_TOPIC * 2 + 1) as u64), Id::new((TARGET_TOPIC * 2 + 2) as u64)],
+        vec![
+            Id::new((TARGET_TOPIC * 2 + 1) as u64),
+            Id::new((TARGET_TOPIC * 2 + 2) as u64)
+        ],
         admissions.iter().map(|item| item.subscription_id()).collect::<Vec<_>>()
     );
-    assert!(admissions.iter().all(|item| matches!(item.status(), AdmissionStatus::Accepted)));
+    assert!(
+        admissions
+            .iter()
+            .all(|item| matches!(item.status(), AdmissionStatus::Accepted))
+    );
 
     for (topic_index, id, receiver) in &mut subscriptions {
         let outcome = receiver.receive(Duration::ZERO).unwrap();
         if *topic_index == TARGET_TOPIC {
-            assert!(matches!(outcome, ReceiveOutcome::Message(_)), "target subscriber {id} missed the message");
+            assert!(
+                matches!(outcome, ReceiveOutcome::Message(_)),
+                "target subscriber {id} missed the message"
+            );
         } else {
-            assert!(matches!(outcome, ReceiveOutcome::TimedOut), "unrelated subscriber {id} received a message");
+            assert!(
+                matches!(outcome, ReceiveOutcome::TimedOut),
+                "unrelated subscriber {id} received a message"
+            );
         }
     }
 }
@@ -308,11 +319,7 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
     let mut first = spi
         .subscribe(request_with_payload_type(101, "typed.topic", TypeId::of::<u32>()))
         .unwrap();
-    let conflict = match spi.subscribe(request_with_payload_type(
-        102,
-        "typed.topic",
-        TypeId::of::<String>(),
-    )) {
+    let conflict = match spi.subscribe(request_with_payload_type(102, "typed.topic", TypeId::of::<String>())) {
         Ok(_) => panic!("the same topic name cannot have conflicting native payload types"),
         Err(error) => error,
     };
@@ -326,11 +333,7 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
     first.close().unwrap();
 
     let mut replacement = spi
-        .subscribe(request_with_payload_type(
-            103,
-            "typed.topic",
-            TypeId::of::<String>(),
-        ))
+        .subscribe(request_with_payload_type(103, "typed.topic", TypeId::of::<String>()))
         .expect("a topic may use a new payload type after its last subscriber closes");
     let message = OutboundMessage::new(
         TopicAddress::new("typed.topic").unwrap(),

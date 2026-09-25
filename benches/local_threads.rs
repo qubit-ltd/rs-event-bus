@@ -132,7 +132,8 @@ fn sample(subscription_count: usize) -> Sample {
     }
 }
 
-/// Runs a single sample in a child process so a hung sample cannot poison later ones.
+/// Runs a single sample in a child process so a hung sample cannot poison later
+/// ones.
 fn run_child_sample(subscription_count: usize) {
     let result = std::panic::catch_unwind(|| sample(subscription_count));
     match result {
@@ -236,9 +237,7 @@ fn main() {
         std::process::exit(2);
     }
 
-    println!(
-        "subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads"
-    );
+    println!("subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
     for subscription_count in COUNTS {
         if let Err(error) = run(subscription_count) {
             eprintln!("thread-profile benchmark failed: {error}");

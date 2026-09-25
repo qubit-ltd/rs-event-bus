@@ -161,11 +161,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         if removed {
             state.subscription_ids.remove(&self.queue.id);
         }
-        if state
-            .topics
-            .get(&topic)
-            .is_some_and(|bucket| bucket.queues.is_empty())
-        {
+        if state.topics.get(&topic).is_some_and(|bucket| bucket.queues.is_empty()) {
             state.topics.remove(&topic);
         }
         drop(state);
