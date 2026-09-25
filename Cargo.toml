@@ -38,13 +38,13 @@ qubit-metadata = { version = "0.6", default-features = false }
 qubit-retry = { version = "0.25", features = ["worker", "async"] }
 qubit-spi = "0.13"
 qubit-thread-pool = "0.10"
-thiserror = "2"
+thiserror = "^2.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 
 [dev-dependencies]
-loom = "0.7"
+loom = "^0.7"
 
 [[bench]]
 name = "local_scale"
