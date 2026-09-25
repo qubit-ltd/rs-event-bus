@@ -221,10 +221,7 @@ impl AsyncEventBus {
 异步 facade 不隐式 spawn。调用方负责驱动消费循环：
 
 ```rust
-let request = SubscribeRequest::new(
-    SubscriberId::new("audit")?,
-    orders.clone(),
-).with_options(options);
+let request = SubscribeRequest::new("audit", orders.clone())?.with_options(options);
 let mut subscription = bus.subscribe(request).await?;
 subscription
     .run(|delivery| async move {
@@ -386,10 +383,7 @@ impl<T> SubscribeRequest<T> {
 最简单的订阅只需要 subscriber ID、topic 和 handler：
 
 ```rust
-let request = SubscribeRequest::new(
-    SubscriberId::new("audit")?,
-    orders.clone(),
-);
+let request = SubscribeRequest::new("audit", orders.clone())?;
 let subscription = bus.subscribe(request, |delivery| {
     audit(delivery.payload())?;
     Ok(())

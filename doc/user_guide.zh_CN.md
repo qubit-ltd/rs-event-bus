@@ -36,7 +36,7 @@ use std::time::Duration;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::{AdmissionRequirement, PublishRequest, SubscribeRequest, Topic};
 use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::{EventBus, SubscriberId, WaitOutcome};
+use qubit_event_bus::{EventBus, WaitOutcome};
 
 struct OrderCreated {
     order_id: String,
@@ -51,13 +51,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let customer_view = Arc::new(Mutex::new(Vec::<(String, String, u64)>::new()));
 
     let audit_store = Arc::clone(&audit_log);
-    let audit_request = SubscribeRequest::new(SubscriberId::new("audit-log")?, topic.clone());
+    let audit_request = SubscribeRequest::new("audit-log", topic.clone())?;
     let audit = bus.subscribe(audit_request, move |delivery| {
         audit_store.lock().unwrap().push(delivery.payload().order_id.clone());
     })?;
 
     let view_store = Arc::clone(&customer_view);
-    let view_request = SubscribeRequest::new(SubscriberId::new("customer-view")?, topic.clone());
+    let view_request = SubscribeRequest::new("customer-view", topic.clone())?;
     let view = bus.subscribe(view_request, move |delivery| {
         let event = delivery.payload();
         view_store.lock().unwrap().push((

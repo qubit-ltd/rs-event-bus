@@ -8,6 +8,7 @@
 
 ### 破坏性变更
 
+- 将 `SubscribeRequest::new` 改为接收订阅者 ID 字符串和拥有所有权的 `Topic<T>`；ID 无效时返回 `Result`。
 - 将 `Topic::with_codec` 重命名为 `Topic::new_with_codec`，将 `Topic::with_shared_codec` 重命名为 `Topic::new_with_shared_codec`。
 
 ### 新增
