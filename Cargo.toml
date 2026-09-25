@@ -45,3 +45,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 
 [dev-dependencies]
 loom = "0.7"
+
+[[bench]]
+name = "local_scale"
+harness = false
