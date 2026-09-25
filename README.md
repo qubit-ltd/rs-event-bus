@@ -7,13 +7,11 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
 
-`qubit-event-bus` gives applications one typed event-bus API while keeping transport choice behind a small provider SPI. Use its built-in local provider for in-process dispatch, or implement/register a provider for another transport; the facade owns portable request handling, middleware, retry, settlement, diagnostics, and lifecycle behavior instead of tying applications to a channel or broker API.
+`qubit-event-bus` solves a common problem inside an order service: once an order is accepted, the order code must trigger several independent tasks, such as writing an audit trail and refreshing a customer-facing view. Directly calling both tasks couples order creation to their implementations and failure paths. This crate lets the order code publish one typed event while each task subscribes independently. Its built-in local provider handles work inside one process; a provider SPI lets applications integrate a different transport without changing the event-facing API.
 
-The local provider is useful when an application needs to fan an order event out to local consumers—for example, an audit subscriber and a cache updater—without introducing a broker. A publish receipt describes provider admission, not completed handler work, so the application can explicitly wait for tracked delivery work when it needs an observable result.
+## An order service example
 
-Local publish admission is per destination: an empty list reports no destinations, and a partial result can include both accepted and rejected subscribers. Use `receipt.admission_outcome()` to distinguish opaque acceptance, full or partial acceptance, no acceptance, no destinations, and interceptor drops; inspect `acknowledgement()` for per-destination details. This classification does not report handler completion. Inspect the receipt before retrying; resending the whole event can duplicate delivery to destinations that already accepted it. Synchronous graceful shutdown bounds the caller's wait; after `TimedOut`, the bus remains closed to new work while background cleanup continues.
-
-`PublishReceipt::check_admission` evaluates the provider's completed receipt without publishing again or changing it; it does not wait for handlers. A successful check after partial admission still means some destinations rejected the event, so do not blindly republish the whole event. `EventBus::publish_metrics()` and `AsyncEventBus::publish_metrics()` expose admission counters; snapshots load fields independently and do not indicate handler completion. A `PerKey` subscription requires a provider that declares either `PerKey` or `PerSubscription` ordering. Subscription priority has been removed because it did not affect delivery order. Keep the synchronous `Subscription` handle and call `cancel()` explicitly; dropping it alone leaves its worker subscribed.
+When order `order-1001` is created, the service publishes it to `orders.created`. Two subscribers record separate effects. A new local task can later subscribe to the same topic without changing the publishing code. The example waits until the local provider has no outstanding work on that topic, then checks both effects. This is a useful pattern for process-local side effects, not a guarantee that an order and its side effects are committed atomically.
 
 ## Installation
 
@@ -32,21 +30,40 @@ use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
 use qubit_event_bus::{EventBus, SubscriberId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an in-process bus and a typed topic shared by both subscribers.
     let bus = EventBus::local(LocalEventBusConfig::default())?;
     let orders = Topic::<String>::new("orders.created")?;
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&received);
+    let audit = Arc::new(Mutex::new(Vec::new()));
+    let view = Arc::new(Mutex::new(Vec::new()));
 
-    let subscriber = SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone());
-    let _subscription = bus.subscribe(subscriber, move |delivery| {
-        captured.lock().expect("received events should lock").push(delivery.payload().clone());
-        Ok::<(), qubit_event_bus::DeliveryError>(())
-    })?;
+    // Register independent consumers; the publisher does not call either one.
+    let audit_log = Arc::clone(&audit);
+    let audit_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("audit-log")?, orders.clone()),
+        move |delivery| {
+            audit_log.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
+    let customer_view = Arc::clone(&view);
+    let view_subscription = bus.subscribe(
+        SubscribeRequest::new(SubscriberId::new("customer-view")?, orders.clone()),
+        move |delivery| {
+            customer_view.lock().unwrap().push(delivery.payload().clone());
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        },
+    )?;
 
+    // Publish once. The receipt reports admission, not handler success.
     let receipt = bus.publish(PublishRequest::new(orders.clone(), "order-1001".to_owned())?)?;
     assert_eq!(receipt.provider_id().as_str(), "local");
+    // Wait for local work to settle, then verify both business effects.
     bus.wait_for_idle(&orders, None)?;
-    assert_eq!(received.lock().expect("received events should lock").as_slice(), &["order-1001"]);
+    assert_eq!(audit.lock().unwrap().as_slice(), &["order-1001"]);
+    assert_eq!(view.lock().unwrap().as_slice(), &["order-1001"]);
+    // Explicitly cancel subscriptions and close the bus to release resources.
+    audit_subscription.cancel()?;
+    view_subscription.cancel()?;
     bus.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful {
         timeout: std::time::Duration::from_secs(2),
     })?;
@@ -54,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`wait_for_idle` checks that the local provider has no queued or unsettled messages for this topic. It does not prove handler success; providers without this capability return `LifecycleError::IdleWaitUnsupported`.
+`publish` returns a receipt about provider admission, not handler success. `wait_for_idle` checks that the local provider has no queued or unsettled messages for this topic; the assertions check the business effects. Other providers may return `LifecycleError::IdleWaitUnsupported`. See the [user guide](doc/user_guide.md) for admission failures, retries, and cleanup.
 
 ## What it provides
 
@@ -66,11 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
-### Local provider scale and resources
-
-The synchronous local provider routes publishes through per-topic subscription buckets and uses per-key FIFO lanes for queued deliveries. Queue capacity is per subscription and includes queued plus received-but-unsettled events; `Retry` keeps its reservation. A delayed head blocks later events with the same ordering key, while unrelated ready keys can proceed. Each synchronous subscription also uses a blocking receive worker thread.
-
-On one 6-CPU Linux host, `cargo bench --bench local_scale -- publish` improved p95 by 70.8% and 67.2% for two 32-topic/16-subscriber cases; the 1-topic/128-subscriber case was 21.3% slower in p95 in the sample. The corrected depth-1024 receive sample reduced p95 from 42,654 ns to 590 ns (16 ready keys) and from 41,590 ns to 539 ns (1 ready key); run it with `cargo bench --bench local_scale -- receive`. These are local comparisons, not portable limits. `cargo bench --bench local_threads` measures thread high-water mark and subscription creation/cancellation plus immediate-shutdown time; observed peaks were 6/21/133 threads for 1/16/128 subscriptions, with teardown medians of 0.285/651.543/5359.302 ms. Host load and wide teardown ranges affect these observations. The provider is non-durable and in-process; there is no built-in async local provider. See the [local provider guidance](doc/user_guide.md#local-provider-resource-guidance) before sizing queues or subscription counts.
+The local provider bounds queued and unsettled events per subscription and uses one blocking receive worker thread per synchronous subscription. Plan queue and thread capacity before adding many consumers. See [resource guidance](doc/user_guide.md#local-provider-resource-guidance).
 
 ## Learn more
 
