@@ -11,11 +11,14 @@
 
 use std::any::TypeId;
 use std::any::type_name;
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use super::validated_text::is_nonblank_without_controls;
+use super::validated_text::is_valid_topic_name;
 use crate::codec::EventCodec;
 use crate::error::ConfigurationError;
 
@@ -74,25 +77,40 @@ fn valid_mime_token(value: &str) -> bool {
 /// assert_eq!(schema_id.as_str(), "order-v1");
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct SchemaId(Box<str>);
+pub struct SchemaId(Cow<'static, str>);
 
 impl SchemaId {
+    /// Creates a schema identifier from a static string without allocating.
+    ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, if the value is empty,
+    /// has surrounding Unicode whitespace, or contains a control character.
+    ///
+    /// ```compile_fail
+    /// use qubit_event_bus::model::SchemaId;
+    /// const INVALID_SCHEMA: SchemaId = SchemaId::new_static("schema-v1\n");
+    /// ```
+    pub const fn new_static(value: &'static str) -> Self {
+        assert!(is_nonblank_without_controls(value), "invalid schema ID");
+        Self(Cow::Borrowed(value))
+    }
+
     /// Creates a nonblank schema identifier.
     pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+        if !is_nonblank_without_controls(value) {
             return Err(ConfigurationError::InvalidField {
                 field: "schema_id",
                 message: "must be nonblank and contain no controls".into(),
             });
         }
-        Ok(Self(value.into()))
+        Ok(Self(Cow::Owned(value.into())))
     }
 
     /// Returns the original schema identifier.
     #[must_use]
     #[inline]
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_ref()
     }
 }
 
@@ -108,39 +126,54 @@ impl SchemaId {
 /// assert!(topic.payload_type_name().contains("String"));
 /// ```
 pub struct Topic<T: 'static> {
-    name: Box<str>,
-    payload_type_id: TypeId,
-    payload_type_name: &'static str,
+    name: Cow<'static, str>,
     codec: Option<Arc<dyn EventCodec<T>>>,
 }
 
 impl<T: 'static> Topic<T> {
+    /// Creates a native topic from a static name without allocating.
+    ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, when the name is
+    /// empty, longer than 255 UTF-8 bytes, has surrounding Unicode
+    /// whitespace, or contains a control character.
+    ///
+    /// ```compile_fail
+    /// use qubit_event_bus::model::Topic;
+    /// const INVALID_TOPIC: Topic<String> = Topic::new_static(" orders.created");
+    /// ```
+    pub const fn new_static(name: &'static str) -> Self {
+        assert!(is_valid_topic_name(name), "invalid topic name");
+        Self {
+            name: Cow::Borrowed(name),
+            codec: None,
+        }
+    }
+
     /// Creates a native-payload topic after validating its name.
     pub fn new(name: &str) -> Result<Self, ConfigurationError> {
-        if !(1..=255).contains(&name.len()) || name.trim() != name || name.chars().any(char::is_control) {
+        if !is_valid_topic_name(name) {
             return Err(ConfigurationError::InvalidField {
                 field: "topic",
                 message: "must be 1..=255 bytes without surrounding whitespace or controls".into(),
             });
         }
         Ok(Self {
-            name: name.into(),
-            payload_type_id: TypeId::of::<T>(),
-            payload_type_name: type_name::<T>(),
+            name: Cow::Owned(name.into()),
             codec: None,
         })
     }
 
     /// Creates a topic with a codec for encoded backends.
-    pub fn with_codec<C>(name: &str, codec: C) -> Result<Self, ConfigurationError>
+    pub fn new_with_codec<C>(name: &str, codec: C) -> Result<Self, ConfigurationError>
     where
         C: EventCodec<T>,
     {
-        Self::with_shared_codec(name, Arc::new(codec))
+        Self::new_with_shared_codec(name, Arc::new(codec))
     }
 
     /// Creates a topic using an already shared or registered codec.
-    pub fn with_shared_codec(name: &str, codec: Arc<dyn EventCodec<T>>) -> Result<Self, ConfigurationError> {
+    pub fn new_with_shared_codec(name: &str, codec: Arc<dyn EventCodec<T>>) -> Result<Self, ConfigurationError> {
         let mut topic = Self::new(name)?;
         topic.codec = Some(codec);
         Ok(topic)
@@ -157,14 +190,14 @@ impl<T: 'static> Topic<T> {
     #[must_use]
     #[inline]
     pub fn payload_type_id(&self) -> TypeId {
-        self.payload_type_id
+        TypeId::of::<T>()
     }
 
     /// Returns the Rust payload type name for diagnostics.
     #[must_use]
     #[inline]
     pub fn payload_type_name(&self) -> &'static str {
-        self.payload_type_name
+        type_name::<T>()
     }
 
     /// Returns the configured codec, or `None` for a native-only topic.
@@ -186,8 +219,6 @@ impl<T: 'static> Clone for Topic<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
-            payload_type_id: self.payload_type_id,
-            payload_type_name: self.payload_type_name,
             codec: self.codec.clone(),
         }
     }
@@ -195,14 +226,14 @@ impl<T: 'static> Clone for Topic<T> {
 
 impl<T: 'static> PartialEq for Topic<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.payload_type_id == other.payload_type_id
+        self.name == other.name && self.payload_type_id() == other.payload_type_id()
     }
 }
 impl<T: 'static> Eq for Topic<T> {}
 impl<T: 'static> Hash for Topic<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
-        self.payload_type_id.hash(state);
+        self.payload_type_id().hash(state);
     }
 }
 impl<T: 'static> fmt::Debug for Topic<T> {
@@ -210,7 +241,7 @@ impl<T: 'static> fmt::Debug for Topic<T> {
         formatter
             .debug_struct("Topic")
             .field("name", &self.name)
-            .field("payload_type_name", &self.payload_type_name)
+            .field("payload_type_name", &type_name::<T>())
             .finish()
     }
 }

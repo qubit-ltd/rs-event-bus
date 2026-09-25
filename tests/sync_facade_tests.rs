@@ -1010,7 +1010,7 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     let codec = PanickingCodec {
         content_type: ContentType::new("text/plain").expect("valid MIME type"),
     };
-    let encoded_topic = Topic::with_codec("sync.events", codec).expect("valid codec topic");
+    let encoded_topic = Topic::new_with_codec("sync.events", codec).expect("valid codec topic");
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(

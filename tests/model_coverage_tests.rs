@@ -530,8 +530,8 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
         content_type: ContentType::new("text/plain")?,
         schema_id: SchemaId::new("order-v1")?,
     });
-    let shared = Topic::<String>::with_shared_codec("orders.created", shared_codec.clone())?;
-    let owned = Topic::<String>::with_codec(
+    let shared = Topic::<String>::new_with_shared_codec("orders.created", shared_codec.clone())?;
+    let owned = Topic::<String>::new_with_codec(
         "orders.created",
         TextCodec {
             content_type: ContentType::new("text/plain")?,

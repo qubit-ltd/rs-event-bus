@@ -6,8 +6,12 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 
+use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::model::BatchPublishResult;
@@ -19,6 +23,42 @@ use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::Topic;
+
+const STATIC_SUBSCRIBER_ID: SubscriberId = SubscriberId::new_static("audit-static");
+const STATIC_PROVIDER_ID: ProviderId = ProviderId::new_static("local-static");
+const STATIC_SCHEMA_ID: SchemaId = SchemaId::new_static("schema-static-v1");
+
+fn identifier_hash<T: Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[test]
+fn static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(SubscriberId::new_static("audit-static"), STATIC_SUBSCRIBER_ID);
+    assert_eq!(ProviderId::new_static("local-static"), STATIC_PROVIDER_ID);
+    assert_eq!(SchemaId::new_static("schema-static-v1"), STATIC_SCHEMA_ID);
+    assert_eq!(STATIC_SUBSCRIBER_ID.as_str(), "audit-static");
+    let runtime_subscriber_id = SubscriberId::new("audit-static")?;
+    assert_eq!(STATIC_SUBSCRIBER_ID, runtime_subscriber_id);
+    assert_eq!(
+        identifier_hash(&STATIC_SUBSCRIBER_ID),
+        identifier_hash(&runtime_subscriber_id)
+    );
+    assert_eq!(STATIC_PROVIDER_ID.as_str(), "local-static");
+    let runtime_provider_id = ProviderId::new("local-static")?;
+    assert_eq!(STATIC_PROVIDER_ID, runtime_provider_id);
+    assert_eq!(
+        identifier_hash(&STATIC_PROVIDER_ID),
+        identifier_hash(&runtime_provider_id)
+    );
+    assert_eq!(STATIC_SCHEMA_ID.as_str(), "schema-static-v1");
+    let runtime_schema_id = SchemaId::new("schema-static-v1")?;
+    assert_eq!(STATIC_SCHEMA_ID, runtime_schema_id);
+    assert_eq!(identifier_hash(&STATIC_SCHEMA_ID), identifier_hash(&runtime_schema_id));
+    Ok(())
+}
 
 struct StringCodec {
     content_type: ContentType,
@@ -51,7 +91,7 @@ fn topic_codec_metadata_and_publish_options_are_accessible() {
         content_type: ContentType::new("text/plain").expect("valid MIME type"),
         schema_id: SchemaId::new("string-v1").expect("valid schema ID"),
     };
-    let topic = Topic::<String>::with_codec("strings", codec).expect("valid topic");
+    let topic = Topic::<String>::new_with_codec("strings", codec).expect("valid topic");
     assert_eq!(topic.name(), "strings");
     assert_eq!(topic.payload_type_id(), std::any::TypeId::of::<String>());
     assert_eq!(topic.payload_type_name(), std::any::type_name::<String>());

@@ -501,7 +501,7 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
 fn encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let bus = bus(spi.clone());
-    let topic = Topic::with_codec(
+    let topic = Topic::new_with_codec(
         "codec.failure",
         FailingStringCodec {
             content_type: ContentType::new("text/plain").unwrap(),
@@ -602,7 +602,7 @@ fn native_publisher_supports_many_domain_payload_types_without_clone_bounds() {
 fn encoded_and_hybrid_capabilities_choose_the_supported_representation() {
     let encoded_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let encoded_bus = bus(encoded_spi.clone());
-    let encoded_topic = Topic::with_codec(
+    let encoded_topic = Topic::new_with_codec(
         "representation.encoded",
         SuccessfulStringCodec {
             content_type: ContentType::new("text/plain").unwrap(),
@@ -618,7 +618,7 @@ fn encoded_and_hybrid_capabilities_choose_the_supported_representation() {
 
     let hybrid_spi = Arc::new(CoverageSpi::new(PayloadModes::NativeAndEncoded, false));
     let hybrid_bus = bus(hybrid_spi.clone());
-    let hybrid_topic = Topic::with_codec(
+    let hybrid_topic = Topic::new_with_codec(
         "representation.hybrid",
         SuccessfulStringCodec {
             content_type: ContentType::new("text/plain").unwrap(),
