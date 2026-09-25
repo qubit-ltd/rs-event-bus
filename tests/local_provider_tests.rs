@@ -20,6 +20,7 @@ use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::error::LifecycleError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
@@ -488,7 +489,7 @@ fn idle_wait_includes_delayed_queued_message() {
 
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
-        qubit_event_bus::WaitOutcome::TimedOut
+        WaitOutcome::TimedOut
     );
     subscription.cancel().unwrap();
     bus.shutdown(ShutdownMode::Immediate).unwrap();
@@ -507,14 +508,14 @@ fn idle_wait_includes_in_flight_message() {
 
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
-        qubit_event_bus::WaitOutcome::TimedOut
+        WaitOutcome::TimedOut
     );
     receiver
         .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::from_secs(1))).unwrap(),
-        qubit_event_bus::WaitOutcome::Idle
+        WaitOutcome::Idle
     );
 }
 
@@ -527,7 +528,7 @@ fn idle_wait_wakes_when_subscription_closes() {
     bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
-        qubit_event_bus::WaitOutcome::TimedOut
+        WaitOutcome::TimedOut
     );
     let (started_tx, started_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -541,7 +542,7 @@ fn idle_wait_wakes_when_subscription_closes() {
     receiver.close().unwrap();
     assert_eq!(
         result_rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
-        qubit_event_bus::WaitOutcome::Idle
+        WaitOutcome::Idle
     );
     waiter.join().unwrap();
 }

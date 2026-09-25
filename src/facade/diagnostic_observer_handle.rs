@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::diagnostic_observer::ObserverEntry;
+use super::observer_entry::ObserverEntry;
 
 /// A registration that remains active until this handle is dropped.
 pub struct DiagnosticObserverHandle {

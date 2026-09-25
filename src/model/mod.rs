@@ -8,7 +8,10 @@
 //! Validated identifiers and type-safe event bus values.
 
 mod acknowledgement;
-mod admission_check;
+mod admission_check_error;
+mod admission_outcome;
+mod admission_requirement;
+mod admission_summary;
 mod batch_publish_result;
 mod dead_letter_event;
 mod delivery;
@@ -32,10 +35,10 @@ mod topic;
 pub use acknowledgement::Acknowledgement;
 pub use acknowledgement::AcknowledgementError;
 pub use acknowledgement::AcknowledgementState;
-pub use admission_check::AdmissionCheckError;
-pub use admission_check::AdmissionOutcome;
-pub use admission_check::AdmissionRequirement;
-pub use admission_check::AdmissionSummary;
+pub use admission_check_error::AdmissionCheckError;
+pub use admission_outcome::AdmissionOutcome;
+pub use admission_requirement::AdmissionRequirement;
+pub use admission_summary::AdmissionSummary;
 pub use batch_publish_result::BatchPublishResult;
 pub use dead_letter_event::DeadLetterEvent;
 pub use delivery::Delivery;
