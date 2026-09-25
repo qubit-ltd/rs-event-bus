@@ -161,6 +161,8 @@ struct QueueLane {
     events: VecDeque<LocalEvent>,
     /// Generation of the current head, invalidating older cached entries.
     version: u64,
+    /// Generation currently represented by a live delayed heap entry.
+    delayed_version: Option<u64>,
 }
 
 /// Cloneable transport payload forms used by the local queue.
@@ -200,6 +202,10 @@ pub(super) struct LocalQueueState {
     delayed_lanes: BinaryHeap<Reverse<DelayedQueueHead>>,
     /// Stable tie breaker for delayed heads.
     next_delay_sequence: u64,
+    /// Number of delayed heap entries matching current lane heads.
+    delayed_live_count: usize,
+    /// Number of delayed heap entries known to be stale.
+    delayed_stale_count: usize,
     /// Received but not yet terminally settled delivery attempts.
     pub(super) in_flight: HashMap<Box<str>, LocalInFlight>,
     /// Whether receive calls should stop and return `Closed`.
@@ -245,6 +251,8 @@ impl LocalQueueState {
         self.ready_lanes.clear();
         self.delayed_lanes.clear();
         self.pending_count = 0;
+        self.delayed_live_count = 0;
+        self.delayed_stale_count = 0;
     }
 
     /// Pops one currently ready lane head, promoting expired delayed heads first.
@@ -286,25 +294,40 @@ impl LocalQueueState {
 
     /// Increments a lane generation and schedules its current ready or delayed head.
     fn schedule_lane_head(&mut self, key: QueueKey) {
-        let Some(lane) = self.lanes.get_mut(&key) else {
+        let Some((version, deadline, invalidated_delayed_head)) = (|| {
+            let lane = self.lanes.get_mut(&key)?;
+            let invalidated_delayed_head = lane.delayed_version.take().is_some();
+            lane.version = lane.version.wrapping_add(1);
+            Some((
+                lane.version,
+                lane.events.front().and_then(|head| head.not_before),
+                invalidated_delayed_head,
+            ))
+        })() else {
             return;
         };
-        lane.version = lane.version.wrapping_add(1);
-        let version = lane.version;
-        let Some(head) = lane.events.front() else {
-            return;
-        };
-        if head.not_before.is_none_or(|deadline| deadline <= Instant::now()) {
+
+        if invalidated_delayed_head {
+            self.delayed_live_count -= 1;
+            self.delayed_stale_count += 1;
+        }
+        if deadline.is_none_or(|deadline| deadline <= Instant::now()) {
             self.ready_lanes.push_back((key, version));
-        } else if let Some(deadline) = head.not_before {
+        } else if let Some(deadline) = deadline {
             self.next_delay_sequence = self.next_delay_sequence.wrapping_add(1);
             self.delayed_lanes.push(Reverse(DelayedQueueHead {
                 deadline,
                 sequence: self.next_delay_sequence,
-                key,
+                key: key.clone(),
                 version,
             }));
+            self.lanes
+                .get_mut(&key)
+                .expect("scheduled lane remains present")
+                .delayed_version = Some(version);
+            self.delayed_live_count += 1;
         }
+        self.compact_delayed_heap_if_needed();
     }
 
     /// Promotes all due, still-current delayed lane heads to the ready queue.
@@ -316,12 +339,19 @@ impl LocalQueueState {
             .is_some_and(|Reverse(head)| head.deadline <= now)
         {
             let Reverse(head) = self.delayed_lanes.pop().expect("peeked delayed head exists");
-            if self
-                .lanes
-                .get(&head.key)
-                .is_some_and(|lane| lane.version == head.version)
-            {
+            let is_live = self.lanes.get_mut(&head.key).is_some_and(|lane| {
+                if lane.version == head.version && lane.delayed_version == Some(head.version) {
+                    lane.delayed_version = None;
+                    true
+                } else {
+                    false
+                }
+            });
+            if is_live {
+                self.delayed_live_count -= 1;
                 self.ready_lanes.push_back((head.key, head.version));
+            } else {
+                self.delayed_stale_count -= 1;
             }
             self.discard_stale_delayed_heads();
         }
@@ -330,12 +360,41 @@ impl LocalQueueState {
     /// Removes delayed entries whose lane no longer has the recorded generation.
     fn discard_stale_delayed_heads(&mut self) {
         while self.delayed_lanes.peek().is_some_and(|Reverse(head)| {
-            self.lanes
-                .get(&head.key)
-                .is_none_or(|lane| lane.version != head.version)
+            self.lanes.get(&head.key).is_none_or(|lane| {
+                lane.version != head.version || lane.delayed_version != Some(head.version)
+            })
         }) {
             self.delayed_lanes.pop();
+            self.delayed_stale_count -= 1;
         }
+    }
+
+    /// Rebuilds the delayed heap when stale entries exceed live heads or fixed slack.
+    fn compact_delayed_heap_if_needed(&mut self) {
+        if self.delayed_stale_count <= self.delayed_live_count.max(8) {
+            return;
+        }
+        let mut delayed_lanes = BinaryHeap::new();
+        let mut live_count = 0;
+        for (key, lane) in &self.lanes {
+            let Some(version) = lane.delayed_version else {
+                continue;
+            };
+            let Some(deadline) = lane.events.front().and_then(|event| event.not_before) else {
+                continue;
+            };
+            self.next_delay_sequence = self.next_delay_sequence.wrapping_add(1);
+            delayed_lanes.push(Reverse(DelayedQueueHead {
+                deadline,
+                sequence: self.next_delay_sequence,
+                key: key.clone(),
+                version,
+            }));
+            live_count += 1;
+        }
+        self.delayed_lanes = delayed_lanes;
+        self.delayed_live_count = live_count;
+        self.delayed_stale_count = 0;
     }
 }
 
@@ -497,11 +556,13 @@ impl LocalSharedState {
 mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::time::Duration;
     use std::time::SystemTime;
 
     use qubit_id::Id;
 
     use super::LocalEvent;
+    use super::LocalQueueState;
     use super::LocalSettlementState;
     use crate::model::EventId;
     use crate::model::Headers;
@@ -509,6 +570,21 @@ mod tests {
     use crate::spi::OutboundMessage;
     use crate::spi::TopicAddress;
     use crate::spi::TransportPayload;
+
+    /// Creates a local queue event with the requested key and native delay.
+    fn create_event(id: &str, key: &str, delay: Option<Duration>) -> LocalEvent {
+        let topic = TopicAddress::new("orders.created").expect("valid topic");
+        let outbound = OutboundMessage::new(
+            topic.clone(),
+            EventId::new(id).expect("valid event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            Some(OrderingKey::new(key).expect("valid ordering key")),
+            delay,
+            TransportPayload::Native(Arc::new(42_u32)),
+        );
+        LocalEvent::transport(topic, &outbound).expect("delay deadline is representable")
+    }
 
     #[test]
     fn test_into_inbound_preserves_event_and_settlement_identity() {
@@ -542,5 +618,34 @@ mod tests {
                 .settlement()
                 .is_some_and(|token| token.belongs_to(subscription_id))
         );
+    }
+
+    #[test]
+    fn test_delayed_heap_retries_compact_stale_heads_behind_earlier_deadline() {
+        let mut state = LocalQueueState::default();
+        state.enqueue_back(create_event("retry", "key-a", None));
+        state.enqueue_back(create_event(
+            "successor",
+            "key-a",
+            Some(Duration::from_secs(2 * 60 * 60)),
+        ));
+        state.enqueue_back(create_event(
+            "blocker",
+            "key-b",
+            Some(Duration::from_secs(60 * 60)),
+        ));
+
+        let now = std::time::Instant::now();
+        for _ in 0..128 {
+            let retry = state.pop_ready(now).expect("retry head is ready");
+            assert_eq!("retry", retry.event_id());
+            state.enqueue_front(retry);
+            assert_eq!(3, state.pending_count());
+            assert_eq!(1, state.delayed_live_count);
+            assert!(
+                state.delayed_lanes.len() <= state.delayed_live_count + state.delayed_live_count.max(8),
+                "delayed heap metadata stays bounded by live lanes and fixed slack"
+            );
+        }
     }
 }
