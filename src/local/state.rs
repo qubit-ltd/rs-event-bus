@@ -554,6 +554,8 @@ impl LocalSharedState {
 
 #[cfg(test)]
 mod tests {
+    use std::any::TypeId;
+    use std::cmp::Ordering;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -561,11 +563,16 @@ mod tests {
 
     use qubit_id::Id;
 
+    use super::BusState;
+    use super::DelayedQueueHead;
     use super::LocalEvent;
+    use super::LocalQueue;
     use super::LocalQueueState;
     use super::LocalSettlementState;
+    use super::TopicSubscriptions;
     use crate::model::EventId;
     use crate::model::Headers;
+    use crate::model::SubscriberId;
     use crate::spi::OrderingKey;
     use crate::spi::OutboundMessage;
     use crate::spi::TopicAddress;
@@ -643,5 +650,58 @@ mod tests {
                 "delayed heap metadata stays bounded by live lanes and fixed slack"
             );
         }
+    }
+
+    #[test]
+    fn test_delayed_queue_head_orders_equal_deadlines_by_sequence() {
+        let deadline = std::time::Instant::now();
+        let first = DelayedQueueHead {
+            deadline,
+            sequence: 1,
+            key: None,
+            version: 0,
+        };
+        let equal = DelayedQueueHead {
+            deadline,
+            sequence: 1,
+            key: None,
+            version: 0,
+        };
+        let later = DelayedQueueHead {
+            deadline,
+            sequence: 2,
+            key: None,
+            version: 0,
+        };
+
+        assert!(first == equal);
+        assert_eq!(Some(Ordering::Equal), first.partial_cmp(&equal));
+        assert!(first < later);
+    }
+
+    #[test]
+    fn test_remove_stale_id_prunes_dead_topic_registration() {
+        let id = Id::new(177);
+        let topic = TopicAddress::new("stale.topic").expect("valid topic");
+        let queue = Arc::new(LocalQueue {
+            id,
+            topic: topic.clone(),
+            subscriber_id: SubscriberId::new("stale-subscriber").expect("valid subscriber ID"),
+            capacity: 1,
+            state: Mutex::new(LocalQueueState::default()),
+            ready: std::sync::Condvar::new(),
+        });
+        let mut bucket = TopicSubscriptions::default();
+        bucket.queues.insert(id, Arc::downgrade(&queue));
+        bucket.payload_type_id = Some(TypeId::of::<u32>());
+        let mut state = BusState::default();
+        state.topics.insert(topic.clone(), bucket);
+        state.subscription_ids.insert(id);
+        drop(queue);
+
+        state.remove_stale_id(id);
+
+        assert!(!state.subscription_ids.contains(&id));
+        assert!(!state.topics.contains_key(&topic));
     }
 }

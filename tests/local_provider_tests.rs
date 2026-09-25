@@ -360,6 +360,28 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
 }
 
 #[test]
+fn test_dropped_subscription_id_can_be_reused_across_topics() {
+    let spi = create(&LocalEventBusConfig::default());
+    let stale = spi.subscribe(request(176, "stale.before")).unwrap();
+    drop(stale);
+
+    let mut replacement = spi
+        .subscribe(request(176, "stale.after"))
+        .expect("a dropped subscription no longer reserves its provider-wide ID");
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(outbound("stale.after", 42)).unwrap()
+    else {
+        panic!("local provider returns destination admissions");
+    };
+
+    assert_eq!(1, admissions.len());
+    assert_eq!(Id::new(176), admissions[0].subscription_id());
+    assert!(matches!(
+        replacement.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+}
+
+#[test]
 fn topic_type_conflict_publish_is_atomic() {
     let spi = create(&LocalEventBusConfig::default());
     let mut first = spi.subscribe(request(111, "typed.publish")).unwrap();
