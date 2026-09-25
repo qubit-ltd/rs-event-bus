@@ -1195,7 +1195,7 @@ facade 的职责：
 
 ### SPI conformance suite
 
-核心 crate 提供供 provider 作者复用的测试工具，至少验证：
+仓库的 `tests/spi_conformance_tests.rs` 使用内部测试辅助检查内置 provider、模拟 channel provider 和 fake broker provider 的 SPI 行为。这些辅助代码位于 crate 的集成测试目录，不属于 `qubit-event-bus` 公共 API，也不会随发布包作为第三方可复用的 conformance harness 提供。provider 作者可以将下列项目作为自行编写测试的检查清单：
 
 - descriptor/provider 选择与创建；
 - capability 稳定性和真实性；
@@ -1282,19 +1282,19 @@ facade 的职责：
 
 现有测试中描述有效语义的部分应先迁移为 facade 合约测试，再替换实现。测试文件按 publish、subscription、retry、interceptor、dead-letter、ordering、lifecycle、diagnostic 和 local SPI 拆分，避免继续扩展单个数千行测试文件。
 
-## 验收标准
+## 0.12 实现与验证状态
 
-重构完成必须同时满足：
+本节记录仓库当前提供的验证范围，不代表每个 provider 都具备相同能力，也不表示所有 CI 套件已在每个开发检出中运行。
 
-1. 内置 local provider 通过同步 SPI conformance suite。
-2. 一个最小 fake async provider 通过异步 conformance suite，证明核心不依赖 Tokio。
-3. 至少实现一个 channel adapter 原型和一个 broker-shaped fake provider，验证两类后端都能适配最小 SPI。
-4. 当前 local 实现的 filter、interceptor、retry、ACK、dead-letter、ordering、delay、backpressure 和 observer 行为都有对应 facade 合约测试。
-5. provider 创建和 capability fallback 有集成测试，运行期错误不会切换 provider。
-6. public API 直接复用但不重新导出 `qubit-retry` 类型，并且不暴露本地 executor 或具体 broker 类型。
-7. `cargo test --all-features --all-targets`、Clippy、strict rustdoc、doctest、coverage 和 security audit 全部通过。
-8. loom 覆盖核心并发状态机，fuzz 覆盖至少 codec envelope 和 provider metadata 边界。
-9. README、用户指南和设计文档准确解释同步/异步差异、能力检查、ACK 和 publish receipt 语义。
+1. 集成测试覆盖内置 local provider 的同步 SPI 行为；运行 `cargo test --all-features` 可执行这些测试。
+2. 集成测试包含 runtime-neutral fake async SPI，并覆盖异步 receive 取消边界；它验证 facade/SPI 合同，不是生产 async provider。
+3. 测试辅助中有 channel-shaped SPI 和 broker-shaped fake，用于验证适配形状；crate 没有随包提供真实的 channel 或 broker adapter。
+4. 同步与异步 facade、local provider、pipeline、registry、settlement 和并发合同分别由 crate 内测试覆盖；各 provider 仍需验证自身声明的 capability。
+5. registry 的 provider 选择、创建期 capability 检查和 fallback 由集成测试覆盖；运行期错误不会触发 provider 切换。
+6. retry 类型由应用直接依赖 `qubit-retry`；event-bus 不重新导出 retry 类型，也不公开本地 executor 实现。
+7. 项目 CI 配置了测试、Clippy、严格 rustdoc、feature matrix、coverage 和可选高级验证套件。一次本地测试或打包结果不能替代远端 CI 对这些套件的完整结果。
+8. 仓库包含 loom 并发合同测试和 fuzz targets；它们不等同于对真实第三方 provider 的压力或互操作验证。
+9. README、用户指南和设计文档说明同步/异步边界、capability、settlement 与 publish receipt；文档修订应与实现及具体测试保持一致。
 
 ## 最终设计结论
 
