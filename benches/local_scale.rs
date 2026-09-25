@@ -158,13 +158,21 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
     let bus = create(depth.max(1));
     let mut receiver = bus.subscribe(request(1, "receive-topic")).unwrap();
     if depth > 0 {
+        let blocked_prefix = depth - ready_keys;
         assert_accepted(
-            bus.publish(outbound("receive-topic", 0, Some("delayed"), Some(DELAY)))
+            bus.publish(outbound("receive-topic", 0, Some("blocked"), Some(DELAY)))
                 .unwrap(),
             1,
         );
-        for id in 1..depth {
-            let key = format!("ready-{}", (id - 1) % ready_keys);
+        for id in 1..blocked_prefix {
+            assert_accepted(
+                bus.publish(outbound("receive-topic", id, Some("blocked"), None))
+                    .unwrap(),
+                1,
+            );
+        }
+        for id in blocked_prefix..depth {
+            let key = format!("ready-{}", id - blocked_prefix);
             assert_accepted(
                 bus.publish(outbound("receive-topic", id, Some(&key), None))
                     .unwrap(),
@@ -184,13 +192,23 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
             let ReceiveOutcome::Message(mut message) = outcome.unwrap() else {
                 panic!("expected a ready message at depth {depth}");
             };
+            let key = message
+                .ordering_key()
+                .expect("ready message has an ordering key")
+                .as_str()
+                .to_owned();
+            assert!(
+                key.strip_prefix("ready-")
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+                    .is_some_and(|index| index < ready_keys),
+                "received a blocked or unknown ordering key"
+            );
             let token = message
                 .take_settlement()
                 .expect("local message has a settlement token");
             receiver
                 .settle(&token, DeliveryDisposition::Accept)
                 .unwrap();
-            let key = format!("ready-{}", id % ready_keys);
             assert_accepted(
                 bus.publish(outbound("receive-topic", depth + id, Some(&key), None))
                     .unwrap(),
