@@ -19,6 +19,16 @@
 
 local provider 在同名 Topic 的活跃订阅期间绑定唯一的原生 Rust payload 类型。每个订阅的队列容量同时覆盖排队和未 settlement 的投递，Retry 会保留原有额度。同步 `EventBus::wait_for_idle` 查询 provider 队列及结算状态；`wait_for_received_deliveries` 只等待当前 facade 已接收的工作。异步 facade 只提供后一种保证。
 
+## Local provider 的路由与资源
+
+0.12 实现中的 `BusState` 按 Topic 索引活跃订阅。发布时只快照目标 Topic 的队列，并按订阅 ID 顺序处理；释放全局状态锁后才访问各队列锁。idle wait 也只查询对应 Topic，shutdown 则快照全部活跃队列。这种分桶方式减少了发布和 idle 检查对无关 Topic 的扫描，不改变 SPI 契约。
+
+每个订阅持有自己的有界队列。配置容量同时计入排队消息和已接收但尚未 settlement 的消息；重试复用原来的容量占用，不会额外增加配额。0.12 内部按 ordering key 维护 FIFO lane，轮转调度已就绪的队首，并用带版本号的最小堆排列延迟队首。同一 lane 的延迟队首会阻塞其后消息，其他已就绪 lane 仍可继续。过期的延迟堆条目数量超过活跃队首数与固定余量 8 中的较大值时会重建堆，从而限制过期调度元数据的增长，同时保留高效的延迟队首查询。这些索引增加了维护成本，换取避免在很长的阻塞队列前缀上反复扫描。
+
+接收 SPI 仍是阻塞式：每个同步订阅都会启动一个接收 worker 线程。在一台 6 CPU Linux 主机的样本中，1/16/128 个订阅对应的进程线程峰值为 6/21/133；创建耗时中位数为 0.226/1.592/7.551 ms，取消订阅并立即关闭的耗时中位数为 0.285/651.543/5359.302 ms。关闭耗时范围较大，测量时主机也有其他负载；这些数值仅描述一次观测，可运行 `cargo bench --bench local_threads` 重新测量。
+
+本次保留 Topic 分桶和索引队列，是基于本机对比结果做出的实现选择，并非服务等级保证。运行 `cargo bench --bench local_scale -- publish` 时，两个“32 个 Topic × 16 个订阅”场景的 p95 改善 70.8% 和 67.2%；“1 个 Topic × 1 个订阅”改善 4.6%；一次“1 个 Topic × 128 个订阅”样本则出现 21.3% 的 p95 退化。对于 depth-1024 队列中“长阻塞前缀 + 就绪后缀”的接收负载，`cargo bench --bench local_scale -- receive` 测得 16 个就绪 key 的中位 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns。这些是特定主机上的对比结果，不能直接推断其他机器或负载。local provider 只在进程内工作，不持久化消息；异步 facade 需要外部注册的 async provider，本 crate 没有内置 async local provider。
+
 ## 发布与订阅
 
 发布请求由 facade 校验并执行 publisher interceptors，再根据 provider capability、codec 和 payload mode 进行检查/转换，之后调用 SPI。`PublishReceipt` 说明 provider 对发布的确认以及实际使用的 provider ID，不代表 handler 已执行或完成。`DestinationAdmissions` 可能为空，也可能包含 accepted、filtered 和 rejected 目的地；部分拒绝仍是成功回执，重发整条事件可能让已接纳目的地重复收到消息。`publish_all` 按输入顺序独立提交请求并保留各项结果，不提供事务或回滚。
