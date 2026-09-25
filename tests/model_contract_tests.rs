@@ -5,6 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 
 use qubit_event_bus::SubscriberId;
@@ -14,6 +17,34 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::Topic;
 
 struct NonClonePayload(String);
+
+const STATIC_TOPIC: Topic<NonClonePayload> = Topic::new_static("events.static");
+
+fn topic_hash<T: 'static>(topic: &Topic<T>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    topic.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[test]
+fn static_topic_constants_preserve_typed_topic_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime_static_topic = Topic::<NonClonePayload>::new_static("events.static");
+    let runtime_topic = Topic::<NonClonePayload>::new("events.static")?;
+    assert_eq!(STATIC_TOPIC.name(), "events.static");
+    assert_eq!(runtime_static_topic, STATIC_TOPIC);
+    assert_eq!(
+        STATIC_TOPIC.payload_type_id(),
+        std::any::TypeId::of::<NonClonePayload>()
+    );
+    assert_eq!(
+        STATIC_TOPIC.payload_type_name(),
+        std::any::type_name::<NonClonePayload>()
+    );
+    assert_eq!(STATIC_TOPIC, runtime_topic);
+    assert_eq!(topic_hash(&STATIC_TOPIC), topic_hash(&runtime_topic));
+    assert_eq!(STATIC_TOPIC.clone(), runtime_topic);
+    Ok(())
+}
 
 #[test]
 fn generated_event_ids_are_uuid_v4_values() -> Result<(), Box<dyn std::error::Error>> {

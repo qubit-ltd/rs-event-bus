@@ -292,7 +292,7 @@ fn interceptor_panic_is_converted_with_pipeline_origin() {
 fn encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::with_codec(
+    let topic = Topic::new_with_codec(
         "orders.encoded",
         StringCodec {
             content_type: ContentType::new("text/plain").unwrap(),
@@ -333,7 +333,7 @@ fn native_payload_does_not_require_clone() {
 fn native_and_encoded_provider_prefers_native_payload() {
     let (spi, state) = bus(PayloadModes::NativeAndEncoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::with_codec(
+    let topic = Topic::new_with_codec(
         "orders.hybrid",
         StringCodec {
             content_type: ContentType::new("text/plain").unwrap(),

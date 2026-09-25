@@ -481,7 +481,7 @@ fn failed_timer_registration_surfaces_after_a_failed_settlement() {
 fn async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_failure() {
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let bus = AsyncEventBus::new(ProviderId::new("async-encoded-publisher").unwrap(), spi.clone());
-    let encoded_topic = Topic::with_codec(
+    let encoded_topic = Topic::new_with_codec(
         "async.encoded",
         StringCodec {
             content_type: ContentType::new("text/plain").unwrap(),
@@ -498,7 +498,7 @@ fn async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_failure(
 
     let failing_spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let failing_bus = AsyncEventBus::new(ProviderId::new("async-codec-failure").unwrap(), failing_spi.clone());
-    let failing_topic = Topic::with_codec(
+    let failing_topic = Topic::new_with_codec(
         "async.codec.failure",
         StringCodec {
             content_type: ContentType::new("text/plain").unwrap(),

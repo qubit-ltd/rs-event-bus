@@ -2113,7 +2113,7 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("fake").unwrap(), spi.clone());
-    let topic = Topic::with_codec(
+    let topic = Topic::new_with_codec(
         "async.encoded-subscription",
         Utf8Codec(ContentType::new("text/plain").unwrap()),
     )

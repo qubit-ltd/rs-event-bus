@@ -344,7 +344,7 @@ fn topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error::Err
         }
     }
     let native = Topic::<String>::new("orders.created")?;
-    let encoded = Topic::<String>::with_codec("orders.created", StringCodec(ContentType::new("text/plain")?))?;
+    let encoded = Topic::<String>::new_with_codec("orders.created", StringCodec(ContentType::new("text/plain")?))?;
     assert_eq!(native, encoded);
     assert!(native.codec().is_none());
     assert!(encoded.codec().is_some());
@@ -479,7 +479,7 @@ fn codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::Error>
     registry.register::<String>(Arc::new(TextCodec(ContentType::new("text/plain")?)));
     let codec = registry.get::<String>().unwrap();
     assert_eq!(codec.decode(&codec.encode(&"payload".to_owned())?)?, "payload");
-    let topic = Topic::<String>::with_shared_codec("orders.created", codec)?;
+    let topic = Topic::<String>::new_with_shared_codec("orders.created", codec)?;
     assert!(topic.codec().is_some());
     assert!(registry.get::<u32>().is_none());
     Ok(())
