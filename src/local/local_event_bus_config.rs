@@ -19,8 +19,8 @@ const QUEUE_CAPACITY_OPTION: &str = "local.queue_capacity";
 /// Transport-specific configuration for the built-in in-process provider.
 ///
 /// Queue capacity applies independently to each subscription and counts
-/// messages waiting to be received. Facade workers, retries, and middleware
-/// belong to facade configuration instead.
+/// queued messages plus received messages that have not been settled. Facade
+/// worker and handler-queue limits belong to facade configuration instead.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalEventBusConfig {
     queue_capacity: usize,

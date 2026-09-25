@@ -46,6 +46,9 @@ Provider capability 显式描述 payload 模式、settlement、ordering、延迟
 顺序是 provider 契约。请求 `OrderingPolicy::PerKey` 的订阅只有在 provider 声明 `OrderingCapability::PerKey` 或更强的 `PerSubscription` 时才会建立；facade 会在调用 provider 的 `subscribe` 之前检查。旧订阅 priority 已删除，因为 facade 和 provider 都没有定义它的调度语义。
 
 `PublishReceipt::check_admission` 仅按当前回执报告的准入结果检查“至少一个目的地已接纳”或“至少一个已接纳且没有拒绝”这两种要求；它不会产生新的发布副作用，也无法撤销或重试原发布。每个 facade 的 `PublishMetricsSnapshot` 统计公开 publish 调用次数、错误、拦截器丢弃、不可见目的地的接纳、零目的地回执，以及 provider 报告的已接纳/过滤/拒绝目的地数。各字段独立读取，因此并发快照不保证来自同一个瞬间；这些计数均不表示 handler 已完成。同步 `Subscription` 句柄丢弃时不会取消订阅，调用方必须显式 `cancel()` 或关闭总线。
+`PublishReceipt::admission_outcome` 统一分类不公开目的地的接纳、目的地接纳、部分接纳、无目的地接纳、空目的地快照和拦截器丢弃。它只描述已经返回的回执，不表示 handler 结果，也不是重试指令。需要逐个订阅者身份与拒绝原因时，读取 `acknowledgement()`。
+
+每个同步 local 订阅都会占用一个阻塞式接收 worker。一次 Linux 样本在 128 个订阅时观测到 133 个进程线程，取消订阅并立即关闭的中位数为 5.36 秒。这些仅是特定主机上的观察结果，不是容量保证。当产品部署要求同时维持至少 128 个订阅，并且要求接收线程少于 32 个或关闭 p95 低于 1 秒时，应另行设计 async local provider。该设计在修改 SPI 前必须覆盖可取消且不丢消息的 receive、幂等 settlement、防止丢失唤醒和关闭期限收敛。
 
 ## 结算和关闭
 
