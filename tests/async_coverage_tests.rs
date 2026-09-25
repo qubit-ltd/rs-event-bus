@@ -51,7 +51,6 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -407,15 +406,13 @@ fn async_string_delivery_runs_error_handler_and_terminates_failure() {
 
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::new(ProviderId::new("async-string-delivery").unwrap(), spi.clone());
-    let request = SubscribeRequest::new(
-        SubscriberId::new("string-worker").unwrap(),
-        Topic::<String>::new("async.string").unwrap(),
-    )
-    .with_options(
-        SubscribeOptions::builder()
-            .error_handler(|_, _| FailureDirective::Discard)
-            .build(),
-    );
+    let request = SubscribeRequest::new("string-worker", Topic::<String>::new("async.string").unwrap())
+        .expect("valid subscriber ID")
+        .with_options(
+            SubscribeOptions::builder()
+                .error_handler(|_, _| FailureDirective::Discard)
+                .build(),
+        );
     let mut subscription = block_on(bus.subscribe(request)).unwrap();
     spi.enqueue(InboundMessage::new(
         TopicAddress::new("async.string").unwrap(),
@@ -452,7 +449,7 @@ fn failed_timer_registration_surfaces_after_a_failed_settlement() {
         clock: StdMonotonicClock::new(),
     });
     let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), timer);
-    let request = SubscribeRequest::new(SubscriberId::new("timer-failure").unwrap(), topic());
+    let request = SubscribeRequest::new("timer-failure", topic()).expect("valid subscriber ID");
 
     let error = block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
@@ -678,10 +675,7 @@ fn explicit_subscription_close_returns_a_single_close_failure() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("single-close-failure").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("single-close-failure", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         let error = subscription.close().await.unwrap_err();
@@ -708,7 +702,7 @@ fn shutdown_aggregates_multiple_async_subscription_close_failures() {
     block_on(async {
         for name in ["close-failure-a", "close-failure-b"] {
             let mut subscription = bus
-                .subscribe(SubscribeRequest::new(SubscriberId::new(name).unwrap(), topic()))
+                .subscribe(SubscribeRequest::new(name, topic()).expect("valid subscriber ID"))
                 .await
                 .unwrap();
             runners.push(std::thread::spawn(move || {
@@ -748,10 +742,7 @@ fn publish_and_subscribe_are_rejected_after_async_shutdown() {
         let publish_error = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap_err();
         assert!(matches!(publish_error, PublishError::Closed));
         let subscribe_result = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("after-shutdown").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("after-shutdown", topic()).expect("valid subscriber ID"))
             .await;
         let subscribe_error = match subscribe_result {
             Ok(_) => panic!("subscribe after shutdown must be rejected"),
@@ -768,10 +759,7 @@ fn failed_receiver_close_can_be_retried_and_drop_releases_the_receiver() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("close-retry").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("close-retry", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         assert!(matches!(
@@ -796,7 +784,7 @@ fn dropping_unrun_subscription_releases_receiver_without_async_close() {
 
     block_on(async {
         let subscription = bus
-            .subscribe(SubscribeRequest::new(SubscriberId::new("drop-unrun").unwrap(), topic()))
+            .subscribe(SubscribeRequest::new("drop-unrun", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         drop(subscription);
@@ -811,11 +799,9 @@ fn dropping_unrun_subscription_releases_receiver_without_async_close() {
 fn shutdown_cancels_pending_receive_before_closing_receiver() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus = AsyncEventBus::new(ProviderId::new("close-failing").unwrap(), spi.clone());
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("cancel-receive").unwrap(),
-        topic(),
-    )))
-    .unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("cancel-receive", topic()).expect("valid subscriber ID")))
+            .unwrap();
     let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
     for _ in 0..100 {
         if spi.receives.load(Ordering::Acquire) != 0 {
@@ -849,17 +835,11 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
 
     let (mut active_subscription, mut idle_subscription) = block_on(async {
         let active = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("active-during-close").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("active-during-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         let idle = bus
-            .subscribe(SubscribeRequest::new(
-                SubscriberId::new("idle-during-close").unwrap(),
-                topic(),
-            ))
+            .subscribe(SubscribeRequest::new("idle-during-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         (active, idle)
@@ -942,11 +922,9 @@ fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
     let release_handler = Arc::new(AtomicBool::new(false));
     let handler_waker = Arc::new(Mutex::new(None::<Waker>));
 
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new(
-        SubscriberId::new("graceful-timeout").unwrap(),
-        topic(),
-    )))
-    .unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("graceful-timeout", topic()).expect("valid subscriber ID")))
+            .unwrap();
     spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "graceful-timeout-event",
@@ -1112,9 +1090,13 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
         .dead_letter(DeadLetterPolicy::topic("async.dead").unwrap())
         .build();
 
-    let mut subscription = block_on(bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("dead-letter-source").unwrap(), topic()).with_options(options),
-    ))
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("dead-letter-source", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
+    )
     .unwrap();
     spi.messages.lock().unwrap().push_back(InboundMessage::new(
         TopicAddress::new("async.coverage").unwrap(),
@@ -1160,9 +1142,10 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
     let mut string_subscription = block_on(
         string_bus.subscribe(
             SubscribeRequest::new(
-                SubscriberId::new("dead-letter-string-source").unwrap(),
+                "dead-letter-string-source",
                 Topic::<String>::new("async.coverage.string").unwrap(),
             )
+            .expect("valid subscriber ID")
             .with_options(string_options),
         ),
     )
@@ -1212,9 +1195,10 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
     let mut non_clone_subscription = block_on(
         non_clone_bus.subscribe(
             SubscribeRequest::new(
-                SubscriberId::new("dead-letter-non-clone-source").unwrap(),
+                "dead-letter-non-clone-source",
                 Topic::<NonCloneDeadLetterPayload>::new("async.coverage.non-clone").unwrap(),
             )
+            .expect("valid subscriber ID")
             .with_options(non_clone_options),
         ),
     )
@@ -1285,7 +1269,9 @@ fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
         block_on(async {
             let mut subscription = bus
                 .subscribe(
-                    SubscribeRequest::new(SubscriberId::new("async-filter").unwrap(), topic()).with_options(options),
+                    SubscribeRequest::new("async-filter", topic())
+                        .expect("valid subscriber ID")
+                        .with_options(options),
                 )
                 .await
                 .unwrap();
@@ -1343,9 +1329,13 @@ fn async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
         .error_handler(|_, _| -> FailureDirective { panic!("error handler panic") })
         .build();
 
-    let mut subscription = block_on(bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("async-error-handler-panic").unwrap(), topic()).with_options(options),
-    ))
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("async-error-handler-panic", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
+        ),
+    )
     .unwrap();
     spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
         subscription.id(),

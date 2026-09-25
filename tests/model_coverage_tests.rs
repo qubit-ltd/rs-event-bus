@@ -164,11 +164,7 @@ fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> 
         .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Abort)
         .retry_cancellation_token(cancellation.clone())
         .build();
-    let request = SubscribeRequest::new(
-        SubscriberId::new("string-worker")?,
-        Topic::<String>::new("orders.text")?,
-    )
-    .with_options(options);
+    let request = SubscribeRequest::new("string-worker", Topic::<String>::new("orders.text")?)?.with_options(options);
     let configured = request.options();
     assert!(configured.retry_rule().is_some());
     let configured_token = configured
@@ -323,7 +319,9 @@ fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> R
         .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("auditors")?)
         .build();
-    let request = SubscribeRequest::new(subscriber_id.clone(), topic.clone()).with_options(options);
+    let request = SubscribeRequest::new(subscriber_id.as_str(), topic.clone())
+        .expect("validated subscriber ID")
+        .with_options(options);
     assert_eq!(request.subscriber_id(), &subscriber_id);
     assert_eq!(request.topic(), &topic);
     assert_eq!(request.options().ack_mode(), AckMode::Manual);
@@ -410,7 +408,7 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
     let dead_letter_topic = Topic::<DeadLetterEvent<NonClonePayload>>::new("dead.events")?;
     let (sender, receiver) = mpsc::channel();
     let dead_letter_subscription = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("dead-letter-reader")?, dead_letter_topic),
+        SubscribeRequest::new("dead-letter-reader", dead_letter_topic)?,
         move |delivery| {
             let dead_letter = delivery.payload();
             let original = dead_letter.original_event_arc();

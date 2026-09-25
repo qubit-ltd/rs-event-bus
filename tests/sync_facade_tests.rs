@@ -48,7 +48,6 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
@@ -613,7 +612,9 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
         let result = bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("keyed").expect("valid subscriber"), topic()).with_options(options),
+            SubscribeRequest::new("keyed", topic())
+                .expect("valid subscriber")
+                .with_options(options),
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         );
         if accepted {
@@ -635,7 +636,7 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
     backend.set_ordering_capability(OrderingCapability::None);
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("unordered").expect("valid subscriber"), topic()),
+            SubscribeRequest::new("unordered", topic()).expect("valid subscriber"),
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         )
         .expect("default unordered subscription works without ordering capability");
@@ -781,7 +782,7 @@ fn graceful_shutdown_deadline_includes_subscription_close() {
     let (close_entered, release_close) = backend.gate_next_close();
     let _subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("close-deadline").expect("valid ID"), topic()),
+            SubscribeRequest::new("close-deadline", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("subscription starts");
@@ -824,7 +825,7 @@ fn immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
     let handler_gate_for_callback = handler_gate.clone();
     let _subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("upgrade-mode").expect("valid ID"), topic()),
+            SubscribeRequest::new("upgrade-mode", topic()).expect("valid ID"),
             move |_| {
                 started_tx.send(()).expect("handler observer remains alive");
                 handler_gate_for_callback.wait();
@@ -918,7 +919,7 @@ fn shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() {
     let (subscribe_tx, subscribe_rx) = mpsc::channel();
     let subscribe_thread = std::thread::spawn(move || {
         let result = subscribe_bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("gated-subscribe").expect("valid ID"), topic()),
+            SubscribeRequest::new("gated-subscribe", topic()).expect("valid ID"),
             |_| (),
         );
         subscribe_tx.send(result).expect("subscribe result receiver");
@@ -1013,10 +1014,7 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     let encoded_topic = Topic::new_with_codec("sync.events", codec).expect("valid codec topic");
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("codec-panic").expect("valid ID"),
-                encoded_topic.clone(),
-            ),
+            SubscribeRequest::new("codec-panic", encoded_topic.clone()).expect("valid ID"),
             |_: Delivery<String>| -> () { panic!("codec panic must prevent handler invocation") },
         )
         .expect("subscription starts");
@@ -1055,7 +1053,8 @@ fn panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     let (handler_entered_tx, handler_entered_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("retry-rule-panic").expect("valid ID"), topic())
+            SubscribeRequest::new("retry-rule-panic", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 handler_entered_tx
@@ -1130,7 +1129,9 @@ fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscr
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cancel-retry-lane").unwrap(), topic()).with_options(options),
+            SubscribeRequest::new("cancel-retry-lane", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
             move |delivery: Delivery<String>| {
                 attempts_by_cancelled_handler.fetch_add(1, Ordering::AcqRel);
                 if delivery.payload() == "first" {
@@ -1147,7 +1148,7 @@ fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscr
     let independent_attempts = attempts_by_independent_handler.clone();
     let independent_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("independent-subscriber").unwrap(), topic()),
+            SubscribeRequest::new("independent-subscriber", topic()).expect("valid subscriber ID"),
             move |delivery: Delivery<String>| {
                 independent_attempts.fetch_add(1, Ordering::AcqRel);
                 independent_tx.send(delivery.payload().clone()).unwrap();
@@ -1212,11 +1213,9 @@ fn synchronous_facade_rejects_async_subscriber_interceptors_before_provider_subs
     let options = SubscribeOptions::<String>::builder()
         .async_interceptor(|_, _| Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>)
         .build();
-    let request = SubscribeRequest::new(
-        SubscriberId::new("async-only-interceptor").expect("valid subscriber ID"),
-        topic(),
-    )
-    .with_options(options);
+    let request = SubscribeRequest::new("async-only-interceptor", topic())
+        .expect("valid subscriber ID")
+        .with_options(options);
 
     let error = match bus.subscribe(request, |_| ()) {
         Ok(_) => panic!("sync facade must reject async middleware"),
@@ -1237,10 +1236,7 @@ fn subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
     let (handled_tx, handled_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("sync-subscriber").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("sync-subscriber", topic()).expect("valid subscriber ID"),
             move |delivery: Delivery<String>| {
                 handled_tx
                     .send(delivery.payload().clone())
@@ -1273,10 +1269,7 @@ fn sync_settlement_failure_retries_same_token_without_rerunning_handler() {
     let handled_by_callback = handled.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("sync-settlement-retry").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("sync-settlement-retry", topic()).expect("valid subscriber ID"),
             move |_: Delivery<String>| {
                 handled_by_callback.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1313,10 +1306,7 @@ fn sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver() {
     let handled_by_callback = handled.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("sync-permanent-settlement-failure").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("sync-permanent-settlement-failure", topic()).expect("valid subscriber ID"),
             move |_: Delivery<String>| {
                 handled_by_callback.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1352,7 +1342,8 @@ fn per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
     let (key_a_second_tx, key_a_second_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("per-key-scheduler").expect("valid ID"), topic())
+            SubscribeRequest::new("per-key-scheduler", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |delivery: Delivery<String>| match delivery.payload().as_str() {
                 "a-first" => {
@@ -1421,7 +1412,8 @@ fn global_max_in_flight_includes_queued_deliveries_before_admission() {
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("global-in-flight").expect("valid ID"), topic())
+            SubscribeRequest::new("global-in-flight", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |delivery: Delivery<String>| {
                 match delivery.payload().as_str() {
@@ -1498,7 +1490,8 @@ fn saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("bounded-handoff").expect("valid ID"), topic())
+            SubscribeRequest::new("bounded-handoff", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 let index = calls_by_handler.fetch_add(1, Ordering::AcqRel);
@@ -1567,7 +1560,8 @@ fn zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() 
     let (second_started_tx, second_started_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("no-handler-queue").expect("valid ID"), topic())
+            SubscribeRequest::new("no-handler-queue", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
@@ -1633,7 +1627,8 @@ fn cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler() {
     let calls_by_handler = calls.clone();
     let subscription = Arc::new(
         bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("cancel-queued-handler").expect("valid ID"), topic())
+            SubscribeRequest::new("cancel-queued-handler", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
@@ -1699,11 +1694,9 @@ fn graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff() {
     let calls_by_handler = calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("graceful-admission-boundary").expect("valid ID"),
-                topic(),
-            )
-            .with_options(options),
+            SubscribeRequest::new("graceful-admission-boundary", topic())
+                .expect("valid ID")
+                .with_options(options),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     first_gate_by_handler.wait();
@@ -1786,7 +1779,8 @@ fn immediate_shutdown_requeues_queued_deliveries_without_starting_handlers() {
     let calls_by_handler = calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("immediate-scheduler").expect("valid ID"), topic())
+            SubscribeRequest::new("immediate-scheduler", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
@@ -1859,7 +1853,8 @@ fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     let nack_tx = handled_tx.clone();
     let acknowledged = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("manual-ack").expect("valid ID"), topic())
+            SubscribeRequest::new("manual-ack", topic())
+                .expect("valid ID")
                 .with_options(options.clone()),
             move |delivery: Delivery<String>| {
                 delivery.acknowledgement().ack().expect("first ACK succeeds");
@@ -1869,7 +1864,8 @@ fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
         .expect("ACK subscription starts");
     let unacknowledged = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("manual-pending").expect("valid ID"), topic())
+            SubscribeRequest::new("manual-pending", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 pending_tx.send("pending").expect("test receiver remains alive");
@@ -1882,7 +1878,8 @@ fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
         .build();
     let negatively_acknowledged = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("manual-nack").expect("valid ID"), topic())
+            SubscribeRequest::new("manual-nack", topic())
+                .expect("valid ID")
                 .with_options(nack_options),
             move |delivery: Delivery<String>| {
                 delivery.acknowledgement().nack().expect("first NACK succeeds");
@@ -1946,7 +1943,8 @@ fn subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("middleware-retry").expect("valid ID"), topic())
+            SubscribeRequest::new("middleware-retry", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |_| {
                 let attempt = handler_counter.fetch_add(1, Ordering::AcqRel);
@@ -2023,7 +2021,9 @@ fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both(
     let handler_calls = calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("global-chain").unwrap(), topic()).with_options(options),
+            SubscribeRequest::new("global-chain", topic())
+                .expect("valid subscriber ID")
+                .with_options(options),
             move |_| {
                 handler_calls.lock().unwrap().push("handler");
                 done_tx.send(()).unwrap();
@@ -2055,7 +2055,9 @@ fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both(
         .build();
     let filtered_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("global-filtered").unwrap(), topic()).with_options(filtered),
+            SubscribeRequest::new("global-filtered", topic())
+                .expect("valid subscriber ID")
+                .with_options(filtered),
             move |_| {
                 filtered_calls.lock().unwrap().push("filtered-handler");
             },
@@ -2098,7 +2100,7 @@ fn sync_facade_rejects_async_global_subscriber_middleware() {
     );
     let (bus, backend) = create_bus_with_config(config);
     let result = bus.subscribe(
-        SubscribeRequest::new(SubscriberId::new("bad-sync-global").unwrap(), topic()),
+        SubscribeRequest::new("bad-sync-global", topic()).expect("valid subscriber ID"),
         |_| {},
     );
     assert!(matches!(
@@ -2124,7 +2126,7 @@ fn concurrent_cancel_callers_both_wait_for_worker_close() {
     backend.set_close_delay(Duration::from_millis(200));
     let subscription = Arc::new(
         bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("concurrent-cancel").expect("valid ID"), topic()),
+            SubscribeRequest::new("concurrent-cancel", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("subscription starts"),
@@ -2168,11 +2170,8 @@ fn close_panic_still_notifies_concurrent_cancel_waiters() {
     let (bus, backend) = create_bus();
     backend.set_close_panics(true);
     let subscription = Arc::new(
-        bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("close-panic").expect("valid ID"), topic()),
-            |_| (),
-        )
-        .expect("subscription starts"),
+        bus.subscribe(SubscribeRequest::new("close-panic", topic()).expect("valid ID"), |_| ())
+            .expect("subscription starts"),
     );
     let barrier = Arc::new(Barrier::new(3));
     let (finished_tx, finished_rx) = mpsc::channel();
@@ -2211,7 +2210,7 @@ fn one_bus_worker_can_request_cancel_for_a_different_subscription_without_joinin
     let handlers_started_by_b = handlers_started.clone();
     let b_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cancel-target").expect("valid ID"), topic()),
+            SubscribeRequest::new("cancel-target", topic()).expect("valid ID"),
             move |_| {
                 b_started_tx.send(()).expect("test receiver remains alive");
                 handlers_started_by_b.wait();
@@ -2226,7 +2225,7 @@ fn one_bus_worker_can_request_cancel_for_a_different_subscription_without_joinin
     let handlers_started_by_a = handlers_started.clone();
     let a_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cancel-caller").expect("valid ID"), topic()),
+            SubscribeRequest::new("cancel-caller", topic()).expect("valid ID"),
             move |_| {
                 a_started_tx.send(()).expect("test receiver remains alive");
                 handlers_started_by_a.wait();
@@ -2277,7 +2276,7 @@ fn workers_canceling_each_other_do_not_form_a_join_cycle() {
     let barrier_for_a = barrier.clone();
     let a = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cycle-a").expect("valid ID"), topic()),
+            SubscribeRequest::new("cycle-a", topic()).expect("valid ID"),
             move |_| {
                 barrier_for_a.wait();
                 let result = b_for_a
@@ -2295,7 +2294,7 @@ fn workers_canceling_each_other_do_not_form_a_join_cycle() {
     let a_for_b = a_handle.clone();
     let b = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cycle-b").expect("valid ID"), topic()),
+            SubscribeRequest::new("cycle-b", topic()).expect("valid ID"),
             move |_| {
                 barrier.wait();
                 let result = a_for_b
@@ -2343,7 +2342,7 @@ fn handler_can_reenter_publish_without_a_facade_lock_deadlock() {
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("reentrant").expect("valid subscriber ID"), topic()),
+            SubscribeRequest::new("reentrant", topic()).expect("valid subscriber ID"),
             move |_| {
                 let result = nested_bus.publish(request("nested".into()));
                 done_tx.send(result.is_ok()).expect("test receiver remains alive");
@@ -2373,10 +2372,7 @@ fn blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
     let (immediate_shutdown_tx, immediate_shutdown_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("deadlock-guard").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("deadlock-guard", topic()).expect("valid subscriber ID"),
             move |_| {
                 idle_tx
                     .send(idle_bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1))))
@@ -2428,11 +2424,13 @@ fn immediate_shutdown_waits_for_active_delivery_and_settlement_before_provider_c
     let calls_by_handler = calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("immediate-drain").expect("valid ID"), topic()).with_options(
-                SubscribeOptions::builder()
-                    .ordering_policy(OrderingPolicy::PerKey)
-                    .build(),
-            ),
+            SubscribeRequest::new("immediate-drain", topic())
+                .expect("valid ID")
+                .with_options(
+                    SubscribeOptions::builder()
+                        .ordering_policy(OrderingPolicy::PerKey)
+                        .build(),
+                ),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     started_tx.send(()).expect("test receiver remains alive");
@@ -2501,7 +2499,7 @@ fn immediate_shutdown_returns_subscription_close_error_after_shutting_down_provi
     backend.set_close_fails(true);
     let _subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("immediate-close-error").expect("valid ID"), topic()),
+            SubscribeRequest::new("immediate-close-error", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("subscription starts");
@@ -2520,7 +2518,7 @@ fn shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_termina
     backend.set_close_fails(true);
     let _subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("natural-close-failure").expect("valid ID"), topic()),
+            SubscribeRequest::new("natural-close-failure", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("subscription starts");
@@ -2561,11 +2559,9 @@ fn natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_schedule
     let (second_done_tx, second_done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("natural-close-with-admitted-work").expect("valid ID"),
-                topic(),
-            )
-            .with_options(options),
+            SubscribeRequest::new("natural-close-with-admitted-work", topic())
+                .expect("valid ID")
+                .with_options(options),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     first_gate_by_handler.wait();
@@ -2617,7 +2613,7 @@ fn concurrent_cancel_and_shutdown_both_observe_subscription_close_failure() {
     backend.set_close_delay(Duration::from_millis(200));
     let subscription = Arc::new(
         bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("racing-close-failure").expect("valid ID"), topic()),
+            SubscribeRequest::new("racing-close-failure", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("subscription starts"),
@@ -2659,13 +2655,13 @@ fn shutdown_aggregates_close_failures_from_all_subscriptions() {
     backend.set_close_fails(true);
     let _first = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("first-close-failure").expect("valid ID"), topic()),
+            SubscribeRequest::new("first-close-failure", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("first subscription starts");
     let _second = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("second-close-failure").expect("valid ID"), topic()),
+            SubscribeRequest::new("second-close-failure", topic()).expect("valid ID"),
             |_| (),
         )
         .expect("second subscription starts");
@@ -2729,7 +2725,7 @@ fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<D
     let calls_by_handler = calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("receive-shutdown-race").expect("valid ID"), topic()),
+            SubscribeRequest::new("receive-shutdown-race", topic()).expect("valid ID"),
             move |_| {
                 if calls_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     handler_started_tx
@@ -2827,10 +2823,7 @@ fn shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdow
     let (bus, backend) = create_bus();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("shutdown-case").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("shutdown-case", topic()).expect("valid subscriber ID"),
             |_| Ok(()),
         )
         .expect("subscription starts");
@@ -2845,7 +2838,7 @@ fn shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdow
     assert!(matches!(bus.publish(request("late".into())), Err(PublishError::Closed)));
     assert!(matches!(
         bus.subscribe(
-            SubscribeRequest::new(SubscriberId::new("late-subscriber").expect("valid ID"), topic(),),
+            SubscribeRequest::new("late-subscriber", topic()).expect("valid ID"),
             |_| Ok(()),
         ),
         Err(SubscribeError::Closed)
@@ -2858,7 +2851,7 @@ fn drop_does_not_implicitly_cancel_subscription() {
     let (bus, backend) = create_bus();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("drop-case").expect("valid subscriber ID"), topic()),
+            SubscribeRequest::new("drop-case", topic()).expect("valid subscriber ID"),
             |_| Ok(()),
         )
         .expect("subscription starts");
@@ -2886,10 +2879,7 @@ fn diagnostic_observers_receive_terminal_delivery_failures_and_isolate_panics() 
     });
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("diagnostic-case").expect("valid subscriber ID"),
-                topic(),
-            ),
+            SubscribeRequest::new("diagnostic-case", topic()).expect("valid subscriber ID"),
             |_| {
                 Err(DeliveryError::Handler {
                     source: Box::new(std::io::Error::other("expected handler failure")),
@@ -2947,7 +2937,9 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("retry-case").expect("valid ID"), topic()).with_options(options),
+            SubscribeRequest::new("retry-case", topic())
+                .expect("valid ID")
+                .with_options(options),
             move |_| {
                 if attempts_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     Err(DeliveryError::Handler {
@@ -2994,7 +2986,9 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("abort-case").expect("valid ID"), topic()).with_options(options),
+            SubscribeRequest::new("abort-case", topic())
+                .expect("valid ID")
+                .with_options(options),
             move |_| {
                 entered_tx.send(()).expect("test receiver remains alive");
                 attempts_by_handler.fetch_add(1, Ordering::AcqRel);
@@ -3032,7 +3026,8 @@ fn dead_letter_publish_failure_requeues_instead_of_rejecting_original_message() 
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("dead-letter-case").expect("valid ID"), topic())
+            SubscribeRequest::new("dead-letter-case", topic())
+                .expect("valid ID")
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
@@ -3068,7 +3063,8 @@ fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("marked-dead-letter").expect("valid ID"), topic())
+            SubscribeRequest::new("marked-dead-letter", topic())
+                .expect("valid ID")
                 .with_options(options),
             move |delivery: Delivery<String>| {
                 observed_by_handler.store(delivery.context().is_dead_letter(), Ordering::SeqCst);
@@ -3107,7 +3103,8 @@ fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() 
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("unsupported-settlement").expect("valid ID"), topic())
+            SubscribeRequest::new("unsupported-settlement", topic())
+                .expect("valid ID")
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
@@ -3148,7 +3145,8 @@ fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("unsupported-reject").expect("valid ID"), topic())
+            SubscribeRequest::new("unsupported-reject", topic())
+                .expect("valid ID")
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
@@ -3187,7 +3185,7 @@ fn undecodable_message_respects_settlement_capability_and_reports_unavailable_re
     let (handler_tx, handler_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("decode-failure").expect("valid ID"), topic()),
+            SubscribeRequest::new("decode-failure", topic()).expect("valid ID"),
             move |_| {
                 let _ = handler_tx.send(());
             },
@@ -3212,7 +3210,7 @@ fn subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata() {
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("metadata-case").expect("valid ID"), topic()),
+            SubscribeRequest::new("metadata-case", topic()).expect("valid ID"),
             move |delivery: Delivery<String>| {
                 done_tx
                     .send((

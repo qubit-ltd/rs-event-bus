@@ -158,7 +158,7 @@ fn local_facade_delivers_owned_string_payload_without_a_clone_bound() {
     let (delivered_tx, delivered_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("string-subscriber").unwrap(), topic.clone()),
+            SubscribeRequest::new("string-subscriber", topic.clone()).expect("valid subscriber ID"),
             move |delivery| delivered_tx.send(delivery.payload().to_owned()).unwrap(),
         )
         .unwrap();
@@ -188,7 +188,7 @@ fn local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
     let handler_release_rx = Mutex::new(handler_release_rx);
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("blocked-subscriber").unwrap(), topic.clone()),
+            SubscribeRequest::new("blocked-subscriber", topic.clone()).expect("valid subscriber ID"),
             move |_| {
                 handler_entered_tx.send(()).unwrap();
                 handler_release_rx.lock().unwrap().recv().unwrap();
@@ -475,7 +475,7 @@ fn idle_wait_includes_delayed_queued_message() {
     let topic = Topic::<u32>::new("idle.delayed").unwrap();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("idle-delayed").unwrap(), topic.clone()),
+            SubscribeRequest::new("idle-delayed", topic.clone()).expect("valid subscriber ID"),
             |_| {},
         )
         .unwrap();
@@ -581,7 +581,9 @@ fn local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() {
         .build();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("ordered-local").unwrap(), topic.clone()).with_options(options),
+            SubscribeRequest::new("ordered-local", topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(options),
             move |delivery: Delivery<u32>| {
                 let current = active_by_handler.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
                 maximum_by_handler.fetch_max(current, std::sync::atomic::Ordering::AcqRel);
@@ -629,11 +631,13 @@ fn local_facade_allows_a_different_ordering_key_to_progress_while_one_handler_is
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("cross-key").unwrap(), topic.clone()).with_options(
-                SubscribeOptions::builder()
-                    .ordering_policy(OrderingPolicy::PerKey)
-                    .build(),
-            ),
+            SubscribeRequest::new("cross-key", topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(
+                    SubscribeOptions::builder()
+                        .ordering_policy(OrderingPolicy::PerKey)
+                        .build(),
+                ),
             move |delivery: Delivery<u32>| {
                 if *delivery.payload() == 1 {
                     started_tx.send(()).unwrap();
@@ -676,11 +680,13 @@ fn local_facade_delayed_message_does_not_block_immediate_message_on_another_key(
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("delay-cross-key").unwrap(), topic.clone()).with_options(
-                SubscribeOptions::builder()
-                    .ordering_policy(OrderingPolicy::PerKey)
-                    .build(),
-            ),
+            SubscribeRequest::new("delay-cross-key", topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(
+                    SubscribeOptions::builder()
+                        .ordering_policy(OrderingPolicy::PerKey)
+                        .build(),
+                ),
             move |delivery: Delivery<u32>| {
                 done_tx.send(*delivery.payload()).unwrap();
             },

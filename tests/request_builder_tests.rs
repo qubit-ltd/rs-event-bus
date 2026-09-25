@@ -59,7 +59,7 @@ fn simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn std::error
     assert_eq!(simple.topic(), &topic);
     assert_eq!(built.header("trace-id"), Some("t-1"));
 
-    let subscribe = SubscribeRequest::new(SubscriberId::new("audit")?, topic);
+    let subscribe = SubscribeRequest::new("audit", topic)?;
     assert_eq!(subscribe.options().ack_mode(), AckMode::Auto);
     assert_eq!(subscribe.options().durability(), SubscriptionDurability::Ephemeral);
     assert_eq!(subscribe.options().start_position(), &StartPosition::New);

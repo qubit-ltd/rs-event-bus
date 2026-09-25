@@ -131,11 +131,11 @@ impl IntoHandlerResult for Result<(), DeliveryError> {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use qubit_event_bus::local::LocalEventBusConfig;
 /// use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-/// use qubit_event_bus::{DeliveryError, EventBus, SubscriberId};
+/// use qubit_event_bus::{DeliveryError, EventBus};
 ///
 /// let bus = EventBus::local(LocalEventBusConfig::default())?;
 /// let topic = Topic::<String>::new("orders.created")?;
-/// let request = SubscribeRequest::new(SubscriberId::new("audit")?, topic.clone());
+/// let request = SubscribeRequest::new("audit", topic.clone())?;
 /// let subscription = bus.subscribe(request, |_| Ok::<(), DeliveryError>(()))?;
 /// let receipt = bus.publish(PublishRequest::new(topic.clone(), "order-1".to_owned())?)?;
 /// assert_eq!(receipt.provider_id().as_str(), "local");

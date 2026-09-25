@@ -187,9 +187,10 @@ fn scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() 
     bus.inner.scheduler.fail_spawn_at(1);
 
     let request = SubscribeRequest::new(
-        SubscriberId::new("scheduler-spawn-failure").expect("valid subscriber ID"),
+        "scheduler-spawn-failure",
         Topic::<String>::new("spawn.test").expect("valid topic"),
-    );
+    )
+    .expect("valid subscriber ID");
     let error = match bus.subscribe(request, |_| ()) {
         Ok(_) => panic!("scheduler worker spawn fails"),
         Err(error) => error,
@@ -201,9 +202,10 @@ fn scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() 
 
     bus.inner.scheduler.fail_spawn_at(usize::MAX);
     let retry_request = SubscribeRequest::new(
-        SubscriberId::new("scheduler-retry").expect("valid subscriber ID"),
+        "scheduler-retry",
         Topic::<String>::new("spawn.test").expect("valid topic"),
-    );
+    )
+    .expect("valid subscriber ID");
     let _subscription = bus
         .subscribe(retry_request, |_| ())
         .expect("scheduler can restart after partial spawn failure");

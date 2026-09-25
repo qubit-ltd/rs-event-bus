@@ -32,7 +32,6 @@ use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -264,10 +263,8 @@ fn async_identified_spi_delegates_facade_operations_and_keeps_provider_identity(
     assert_eq!("coverage-async", receipt.provider_id().as_str());
     assert_eq!(1, calls.publish.load(Ordering::SeqCst));
 
-    let request = SubscribeRequest::new(
-        SubscriberId::new("coverage-subscriber").unwrap(),
-        Topic::<u32>::new("coverage.topic").unwrap(),
-    );
+    let request = SubscribeRequest::new("coverage-subscriber", Topic::<u32>::new("coverage.topic").unwrap())
+        .expect("valid subscriber ID");
     let mut subscription = block_on(bus.subscribe(request)).expect("SPI creates receiver");
     assert_eq!(1, calls.subscribe.load(Ordering::SeqCst));
     block_on(subscription.close()).expect("receiver closes");

@@ -236,7 +236,11 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
                 return Err(SubscribeRequestBuildError::InvalidProviderOption(key.clone()));
             }
         }
-        Ok(SubscribeRequest::new(subscriber_id, topic).with_options(self.options))
+        Ok(SubscribeRequest::from_validated_parts(
+            subscriber_id,
+            topic,
+            self.options,
+        ))
     }
 }
 

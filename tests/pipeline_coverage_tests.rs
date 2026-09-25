@@ -31,7 +31,6 @@ use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::ShutdownMode;
@@ -69,7 +68,8 @@ fn retry_runs_interceptor_and_handler_again() {
             next(delivery)
         })
         .build();
-    let request = SubscribeRequest::new(SubscriberId::new("retry-pipeline").unwrap(), topic("pipeline.retry"))
+    let request = SubscribeRequest::new("retry-pipeline", topic("pipeline.retry"))
+        .expect("valid subscriber ID")
         .with_options(options);
     let handler_attempts = attempts.clone();
     let subscription = bus
@@ -100,7 +100,7 @@ fn exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic
     let (dead_letter_tx, dead_letter_rx) = mpsc::channel();
     let dead_letter_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("dead-letter-reader").unwrap(), dead_letter_topic),
+            SubscribeRequest::new("dead-letter-reader", dead_letter_topic).expect("valid subscriber ID"),
             move |delivery: Delivery<DeadLetterEvent<String>>| {
                 dead_letter_tx
                     .send((
@@ -128,7 +128,8 @@ fn exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic
     let source_topic = topic("pipeline.source");
     let source_subscription = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("dead-letter-source").unwrap(), source_topic.clone())
+            SubscribeRequest::new("dead-letter-source", source_topic.clone())
+                .expect("valid subscriber ID")
                 .with_options(options),
             |_: Delivery<String>| Err(handler_error("terminal failure")),
         )
@@ -179,11 +180,9 @@ fn interceptor_error_retries_and_scheduler_backpressure_preserves_pending_delive
     let handler_count = handler_calls.clone();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new(
-                SubscriberId::new("admission-and-interceptor").unwrap(),
-                topic("pipeline.admission"),
-            )
-            .with_options(options),
+            SubscribeRequest::new("admission-and-interceptor", topic("pipeline.admission"))
+                .expect("valid subscriber ID")
+                .with_options(options),
             move |_: Delivery<u32>| {
                 if handler_count.fetch_add(1, Ordering::AcqRel) == 0 {
                     started_tx.send(()).unwrap();

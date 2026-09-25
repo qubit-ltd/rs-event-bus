@@ -24,7 +24,6 @@ use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EventBusCapabilities;
@@ -97,13 +96,13 @@ fn test_close_errors_aggregate_failures_and_preserve_the_source_chain() {
     let topic = Topic::<String>::new("coverage.close").expect("valid topic");
     let first = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("first").expect("valid subscriber ID"), topic.clone()),
+            SubscribeRequest::new("first", topic.clone()).expect("valid subscriber ID"),
             |_| (),
         )
         .expect("first subscription starts");
     let second = bus
         .subscribe(
-            SubscribeRequest::new(SubscriberId::new("second").expect("valid subscriber ID"), topic),
+            SubscribeRequest::new("second", topic).expect("valid subscriber ID"),
             |_| (),
         )
         .expect("second subscription starts");
