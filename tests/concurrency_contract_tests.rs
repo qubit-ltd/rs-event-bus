@@ -182,6 +182,15 @@ mod local_spi_contract {
         LocalEventBusProvider.create_configured(&config).unwrap()
     }
 
+    fn create_with_total_limit(limit: usize) -> Arc<dyn EventBusSpi> {
+        let config = EventBusConfig::default().with_provider_options(
+            LocalEventBusConfig::new()
+                .max_total_outstanding(limit)
+                .provider_options(),
+        );
+        LocalEventBusProvider.create_configured(&config).unwrap()
+    }
+
     fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
         SpiSubscriptionRequest::new(
             Id::new(id),
@@ -280,5 +289,37 @@ mod local_spi_contract {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn test_concurrent_publishers_cannot_exceed_provider_wide_limit() {
+        let spi = create_with_total_limit(1);
+        let _first = spi.subscribe(request(11, "budget.first")).unwrap();
+        let _second = spi.subscribe(request(12, "budget.second")).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let first_barrier = barrier.clone();
+        let first_spi = spi.clone();
+        let first = thread::spawn(move || {
+            first_barrier.wait();
+            first_spi.publish(outbound("budget.first", "budget-first"))
+        });
+        let second_barrier = barrier.clone();
+        let second_spi = spi.clone();
+        let second = thread::spawn(move || {
+            second_barrier.wait();
+            second_spi.publish(outbound("budget.second", "budget-second"))
+        });
+        barrier.wait();
+
+        let results = [first.join().unwrap().unwrap(), second.join().unwrap().unwrap()];
+        let accepted = results
+            .iter()
+            .flat_map(|result| match result {
+                PublishAcknowledgement::DestinationAdmissions(admissions) => admissions,
+                _ => panic!("local provider reports per destination admissions"),
+            })
+            .filter(|admission| matches!(admission.status(), AdmissionStatus::Accepted))
+            .count();
+        assert_eq!(1, accepted);
     }
 }

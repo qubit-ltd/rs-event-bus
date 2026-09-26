@@ -270,10 +270,10 @@ impl LocalQueueState {
             if lane.version != version {
                 continue;
             }
-            if !lane
+            if lane
                 .events
                 .front()
-                .is_some_and(|event| event.not_before.is_none_or(|deadline| deadline <= now))
+                .is_none_or(|event| event.not_before.is_some_and(|deadline| deadline > now))
             {
                 continue;
             }
@@ -544,17 +544,20 @@ pub(super) struct LocalSharedState {
     pub(super) shutdown_gate: Mutex<()>,
     /// Pending message bound copied into each new queue.
     pub(super) capacity: usize,
+    /// Provider-wide bound shared by all destination queues.
+    pub(super) outstanding: super::outstanding_budget::OutstandingBudget,
 }
 
 impl LocalSharedState {
     /// Creates an empty provider state with a validated positive queue bound.
-    pub(super) fn new(capacity: usize) -> Arc<Self> {
+    pub(super) fn new(capacity: usize, max_total_outstanding: usize) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(BusState::default()),
             changed: Condvar::new(),
             async_changed: super::async_signal::AsyncSignal::default(),
             shutdown_gate: Mutex::new(()),
             capacity,
+            outstanding: super::outstanding_budget::OutstandingBudget::new(max_total_outstanding),
         })
     }
 }

@@ -52,11 +52,12 @@ impl LocalEventBusSpi {
     /// Creates an SPI instance from local transport configuration.
     ///
     /// # Errors
-    /// Returns the configuration validation error when queue capacity is zero.
+    /// Returns the configuration validation error when either delivery limit is
+    /// zero.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         config.validate()?;
         Ok(Self {
-            shared: LocalSharedState::new(config.get_queue_capacity()),
+            shared: LocalSharedState::new(config.get_queue_capacity(), config.get_max_total_outstanding()),
         })
     }
 }
@@ -146,6 +147,8 @@ impl EventBusSpi for LocalEventBusSpi {
                 AdmissionStatus::Rejected("subscription is closed".into())
             } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
                 AdmissionStatus::Rejected("subscription queue is full".into())
+            } else if !self.shared.outstanding.try_acquire() {
+                AdmissionStatus::Rejected("provider outstanding capacity is full".into())
             } else {
                 state.enqueue_back(event.clone());
                 queue.ready.notify_one();
@@ -289,8 +292,10 @@ impl EventBusSpi for LocalEventBusSpi {
         for queue in queues {
             let mut state = queue.lock();
             state.closed = true;
+            let released = state.pending_count() + state.in_flight.len();
             state.clear_pending();
             state.in_flight.clear();
+            self.shared.outstanding.release(released);
             queue.ready.notify_all();
             drop(state);
             queue.async_ready.notify_all();
