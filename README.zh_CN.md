@@ -17,7 +17,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.13"
+qubit-event-bus = "0.14"
 ```
 
 ## 快速开始
@@ -136,7 +136,7 @@ pub fn subscribe(bus: &EventBus, store: Arc<dyn CustomerViewStore>)
 
 ### 启动时装配共享总线
 
-为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会提交到同步 provider 目录。应用装配代码先选择 provider，再创建一条总线，将克隆句柄交给服务：
+为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会分别提交到同步和异步 provider 目录。应用装配代码先选择 provider，再创建一条总线，将克隆句柄交给服务：
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -159,7 +159,7 @@ let orders = OrderService::new(bus.clone());
 - 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
 - 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 
-本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都按订阅者限制排队和未结算消息；同步 provider 每个订阅者使用一个阻塞接收线程，`AsyncEventBus::local` 使用 waker 等待，不会为每个订阅者创建接收线程。两者均为进程内、非持久 provider。详情见[资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
+本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 provider 每个订阅者使用一个阻塞接收线程；订阅量较大时优先评估 `AsyncEventBus::local`，并在目标主机测量。异步订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
 
 ## 延伸阅读
 

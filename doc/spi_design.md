@@ -4,7 +4,7 @@
 
 ## Document status
 
-This is the formal SPI and facade design for `qubit-event-bus` 0.13, targeting Rust 1.94 or later. It describes behavior implemented by this version. A capability or extension described as provider-specific is not automatically guaranteed by every backend. The built-in sync and async local providers are in-process; this crate does not ship a broker adapter.
+This is the formal SPI and facade design for `qubit-event-bus` 0.14, targeting Rust 1.94 or later. It describes behavior implemented by this version. A capability or extension described as provider-specific is not automatically guaranteed by every backend. The built-in sync and async local providers are in-process; this crate does not ship a broker adapter.
 
 ## Goals and boundaries
 
@@ -92,7 +92,7 @@ Automatic acknowledgement settles a successful handler result according to confi
 
 Providers issue opaque `SettlementToken` values. Repeating the same token with the same disposition must be idempotent and return a consistent result. A conflicting disposition for one token must fail. Async settlement can be retried with the original token and disposition after future cancellation; providers must handle both in-progress and completed duplicate requests safely.
 
-Receiver close or drop must not implicitly acknowledge outstanding work. An adapter must make unsettled deliveries recoverable according to its advertised contract.
+Receiver close or drop must not implicitly acknowledge outstanding work. An adapter must make unsettled deliveries recoverable according to its advertised contract. The built-in local provider is explicitly `Ephemeral`: close/drop discards its queued and in-flight items, and this loss is not an ACK to a durable transport.
 
 ## Retry, errors, and dead letters
 
@@ -104,7 +104,7 @@ Dead-letter handling is at-least-once around uncertain asynchronous outcomes. A 
 
 ## Backpressure, ordering, and delay
 
-The local provider uses a bounded queue per subscription. Its capacity counts queued and unsettled messages, including messages already received by a consumer; `Retry` preserves the message's reservation. Queue capacity is not a global broker quota. The facade also applies a bus-wide limit to admitted delivery work; sync configuration sets in-flight and handler-queue bounds, while async configuration sets `max_in_flight` (default 4). Limits cover queued or running facade work through final settlement.
+The local provider uses a bounded queue per subscription (default 1,024) and a provider-wide outstanding-delivery limit (default 65,536 per provider instance). Both count queued and unsettled items, including messages already received by a consumer; `Retry` preserves the message's reservation. A full limit rejects that destination in `DestinationAdmissions` while other destinations may still be admitted. These limits count items, not payload bytes. The facade also applies a bus-wide limit to admitted delivery work; sync configuration sets in-flight and handler-queue bounds, while async configuration sets `max_in_flight` (default 4). Limits cover queued or running facade work through final settlement.
 
 Ordering is a facade/provider contract described by capability. The facade coordinates order where supported; providers must preserve the ordering guarantees they advertise. Delayed delivery is likewise capability-gated and may be provider-native or represented through transport metadata only when the adapter can honor the contract.
 
@@ -134,7 +134,7 @@ Provider configuration belongs to the adapter. The facade owns portable settings
 
 ## Built-in local provider
 
-`LocalEventBusProvider` is an in-process synchronous provider with bounded per-subscription queues. It is useful for tests and applications that need local dispatch. It does not provide persistence, cross-process routing, broker durability, or a distributed acknowledgement. Destination-level admissions can show accepted, filtered, and rejected local subscribers, including partial admission when a queue is full.
+`LocalEventBusProvider` and `AsyncLocalEventBusProvider` provide in-process synchronous and runtime-neutral asynchronous transport with bounded queues. Each subscription defaults to 1,024 outstanding items, and each provider instance defaults to 65,536 accepted destination deliveries across all subscriptions. Both limits include queued and in-flight messages; Retry retains a slot, while Accept/Reject and close/drop/shutdown release it. Full destinations are individually rejected, so a publish may be partially admitted. These limits count items, not payload bytes. The providers do not provide persistence, cross-process routing, broker durability, or a distributed acknowledgement. Their `Ephemeral` close/drop behavior discards queued and in-flight items without settling them; a same-ID async resubscription begins empty.
 
 ## Conformance and verification
 
@@ -165,13 +165,13 @@ The repository's `tests/spi_conformance_tests.rs` also uses private integration-
 
 Facade contract tests should cover empty, partial, and fully rejected admission results; handler success/failure and manual settlement; cancellation and shutdown races; async future cancellation; error-source preservation; and the declared capability boundary. Concurrency tests should use barriers or channels rather than timing-only sleeps when checking ordering and races. Rustdoc examples, bilingual README and guide links, and project CI scripts should be checked before release.
 
-## 0.13 Implementation and verification status
+## 0.14 Implementation and verification status
 
 This section describes the validation available in the repository. It does not imply that every provider has the same capabilities or that every CI suite has run in every checkout.
 
 1. Integration tests exercise the built-in sync and async local providers; `cargo test --all-features` runs these tests.
 2. The optional public conformance runner checks declared payload publish/receive, settlement idempotence, receiver close, and provider shutdown. Provider-specific receive cancellation remains a hook because it needs a provider-owned fixture.
-3. Test helpers include a channel-shaped SPI and a broker-shaped fake to check adapter shapes. The crate does not ship a real channel or broker adapter.
+3. Test helpers include a flume-backed bounded-channel SPI fixture and a broker-shaped fake to check adapter shapes. The flume fixture exercises only a synchronous in-process channel; it does not validate remote brokers, persistence, or async cancellation. Flume is a development-only dependency; the crate does not ship a production channel or broker adapter.
 4. Crate tests cover sync and async facades, the local provider, pipeline, registry, settlement, and concurrency contracts. Each provider still needs to verify its own declared capabilities.
 5. Integration tests cover registry provider selection, creation-time capability validation, and fallback. Runtime errors do not trigger provider switching.
 6. Applications depend directly on `qubit-retry` for retry types; event-bus does not re-export retry types or expose its local executor implementation.

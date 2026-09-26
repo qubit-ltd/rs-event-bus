@@ -254,6 +254,39 @@ fn sample_async(subscription_count: usize) -> Sample {
     }
 }
 
+/// Checks that dropping many async subscriptions leaves no stale publish
+/// targets.
+fn run_async_churn_probe() -> io::Result<()> {
+    let bus = block_on(AsyncEventBus::local(Default::default())).map_err(io::Error::other)?;
+    let topic = Topic::<u32>::new("thread-profile.async-churn").map_err(io::Error::other)?;
+    let started = Instant::now();
+    for index in 0..100 {
+        let request =
+            SubscribeRequest::new(&format!("async-churn-{index}"), topic.clone()).map_err(io::Error::other)?;
+        let subscription = block_on(bus.subscribe(request)).map_err(io::Error::other)?;
+        drop(subscription);
+    }
+    let threads = process_thread_count()?;
+    let receipt =
+        block_on(bus.publish(qubit_event_bus::model::PublishRequest::new(topic, 1).map_err(io::Error::other)?))
+            .map_err(io::Error::other)?;
+    let admissions = match receipt.acknowledgement() {
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) => admissions.len(),
+        _ => return Err(io::Error::other("local provider did not report destination admissions")),
+    };
+    if admissions != 0 {
+        return Err(io::Error::other("dropped async subscriptions remained publish targets"));
+    }
+    println!(
+        "async_churn,100,{},admissions={},threads={}",
+        started.elapsed().as_nanos(),
+        admissions,
+        optional_number(threads)
+    );
+    block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    Ok(())
+}
+
 struct ThreadWake(thread::Thread);
 impl Wake for ThreadWake {
     fn wake(self: Arc<Self>) {
@@ -399,5 +432,9 @@ fn main() {
             eprintln!("thread-profile benchmark failed: {error}");
             std::process::exit(1);
         }
+    }
+    if let Err(error) = run_async_churn_probe() {
+        eprintln!("async churn probe failed: {error}");
+        std::process::exit(1);
     }
 }

@@ -8,6 +8,7 @@
 
 ### 破坏性变更
 
+- 异步 local 订阅采用 ephemeral 语义：关闭或丢弃 receiver 会丢弃排队及未结算消息；以相同 ID 重订阅时队列为空。local provider 默认总未完成投递上限为 65,536，另有每订阅者 1,024 的上限。
 - 将 `SubscribeRequest::new` 改为接收订阅者 ID 字符串和拥有所有权的 `Topic<T>`；ID 无效时返回 `Result`。
 - 将 `Topic::with_codec` 重命名为 `Topic::new_with_codec`，将 `Topic::with_shared_codec` 重命名为 `Topic::new_with_shared_codec`。
 
@@ -16,7 +17,8 @@
 - 为 `Topic`、`SubscriberId`、`ProviderId` 和 `SchemaId` 增加 const `new_static` 构造函数；`EventId` 保持不变。
 - 订阅按 Topic codec 优先、facade codec registry 回退的顺序解析，并在整个订阅周期固定所选 codec。
 - 增加有界 `NotificationPublisher<T>`，支持非阻塞入队和串行发布；增加 opt-in 的 `conformance` SPI 报告 API。
-- 增加不绑定运行时的异步 local provider，并按订阅者身份保留可恢复邮箱。
+- 增加不绑定运行时的异步 local provider，每个订阅者只保留活动邮箱。
+- 增加 local provider 总未完成投递限额及基于 flume 的同步 SPI conformance 测试夹具。
 
 ## 0.12.0 - 2026-09-24
 

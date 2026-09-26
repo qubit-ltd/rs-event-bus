@@ -2,7 +2,7 @@
 
 [中文用户手册](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.13 on Rust 1.94 or later. It is for Rust application developers who need several local tasks to react to one business event. In an order service, calling the audit writer and customer-view updater directly from order creation makes that path depend on both implementations and their failure handling. With this bus, the order path publishes a typed event; each task owns its subscription. The included providers work within one process and do not persist events.
+This guide covers `qubit-event-bus` 0.14 on Rust 1.94 or later. It is for Rust application developers who need several local tasks to react to one business event. In an order service, calling the audit writer and customer-view updater directly from order creation makes that path depend on both implementations and their failure handling. With this bus, the order path publishes a typed event; each task owns its subscription. The included providers work within one process and do not persist events.
 
 ## Scenario and success criteria
 
@@ -24,7 +24,7 @@ Add the dependency to an application using Rust 1.94 or later:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.13"
+qubit-event-bus = "0.14"
 ```
 
 The following functions belong in the order service and its application wiring. During startup, register both consumers and retain the returned `Subscription` handles. Call the publisher only after the order database commit succeeds:
@@ -91,11 +91,11 @@ Create the local bus with `EventBus::local(LocalEventBusConfig::default())` in a
 For discovery, enable the optional feature and add `qubit-spi` as a direct dependency:
 
 ```toml
-qubit-event-bus = { version = "0.13", features = ["discovery"] }
+qubit-event-bus = { version = "0.14", features = ["discovery"] }
 qubit-spi = "0.13"
 ```
 
-The built-in `local` provider is available in the synchronous inventory. Put this excerpt in application startup wiring; `OrderService` is an application type:
+The built-in `local` provider is available in both sync and async inventories. Put this excerpt in application startup wiring; `OrderService` is an application type:
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -143,7 +143,7 @@ Errors are separated by operation, including `PublishError`, `SubscribeError`, `
 
 ## Local provider resource guidance
 
-Both local providers are in-process and non-durable. The synchronous provider uses one blocking receive thread per subscription, in addition to the facade's shared bounded handler scheduler. The async provider waits with wakers and does not create a receiver thread per subscription; the application must drive `AsyncSubscription::run` on its executor. Both use `LocalEventBusConfig::new().queue_capacity(n)` for a positive outstanding-message bound **per subscription** (default 1024), counting queued and received-but-unsettled messages. A retry keeps its reservation. The facade's scheduling limits are a separate layer; neither limit alone is a total memory budget. Async close/drop recovers unsettled messages only within the same process and provider instance. A publish receipt means provider admission, not handler completion. Size subscriber count and queue capacity for the application's workload. `cargo bench --bench local_threads` and `cargo bench --bench local_scale` provide measurements on your own host, not portable guarantees.
+Both local providers are in-process and ephemeral. The synchronous provider uses one blocking receive thread per subscription, in addition to the facade's shared bounded handler scheduler. The async provider waits with wakers and does not create a receiver thread per subscription; the application must drive `AsyncSubscription::run` on its executor. `LocalEventBusConfig::new().queue_capacity(n)` sets the positive per-subscription bound (default 1,024), and `max_total_outstanding(n)` sets the positive limit across one provider instance (default 65,536). Both count queued and received-but-unsettled delivery items; payload bytes are not counted. A retry keeps its reservation. When either limit is full, the publish receipt reports that destination as rejected while other destinations may still be accepted. A terminal Accept/Reject or queue close/shutdown releases the reservation. The facade's scheduling limits form another layer, so these item limits are not a total memory budget. Async provider close/drop discards pending and in-flight messages; a same-ID resubscription starts with an empty queue. Dropping the `AsyncSubscription::run` future while keeping the handle preserves facade-owned tasks for a later run. A publish receipt means provider admission, not handler completion. For high subscription counts, prefer measuring the async facade on the target host. `cargo bench --bench local_threads` and `cargo bench --bench local_scale` provide measurements, not portable guarantees.
 
 `publish_all` attempts each request independently and is not transactional. The local provider does not offer durable recovery or cross-process delivery. A provider must explicitly declare ordering and settlement capabilities before the facade can use them. For `OrderingPolicy::PerKey`, it must declare `PerKey` or `PerSubscription` ordering. If the business process requires a durable handoff or an atomic database-and-event commit, design that mechanism separately and use an appropriate provider.
 
