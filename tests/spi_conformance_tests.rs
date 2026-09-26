@@ -12,13 +12,20 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
+use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EncodedPayload;
@@ -206,13 +213,13 @@ fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() 
     let second = spi.publish(crate::support::fake_spi::outbound_message()).unwrap();
     assert!(matches!(
         first,
-        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)
-            if matches!(admissions[0].status(), qubit_event_bus::model::AdmissionStatus::Accepted)
+        PublishAcknowledgement::DestinationAdmissions(ref admissions)
+            if matches!(admissions[0].status(), AdmissionStatus::Accepted)
     ));
     assert!(matches!(
         second,
-        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)
-            if matches!(admissions[0].status(), qubit_event_bus::model::AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
+        PublishAcknowledgement::DestinationAdmissions(ref admissions)
+            if matches!(admissions[0].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
     ));
     assert!(matches!(
         receiver.receive(Duration::ZERO).unwrap(),
@@ -221,22 +228,21 @@ fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() 
     receiver.close().unwrap();
     assert!(matches!(
         spi.publish(crate::support::fake_spi::outbound_message()).unwrap(),
-        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
+        PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
     ));
     spi.shutdown(ShutdownMode::Immediate).unwrap();
 
     let spi = crate::support::flume_spi::create();
-    let bus = qubit_event_bus::EventBus::from_spi(qubit_event_bus::model::ProviderId::new("flume").unwrap(), spi);
-    let topic = qubit_event_bus::model::Topic::<u32>::new("test.topic").unwrap();
+    let bus = EventBus::from_spi(ProviderId::new("flume").unwrap(), spi);
+    let topic = Topic::<u32>::new("test.topic").unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let subscription = bus
         .subscribe(
-            qubit_event_bus::model::SubscribeRequest::new("typed", topic.clone()).unwrap(),
+            SubscribeRequest::new("typed", topic.clone()).unwrap(),
             move |delivery| sender.send(*delivery.payload()).unwrap(),
         )
         .unwrap();
-    bus.publish(qubit_event_bus::model::PublishRequest::new(topic, 42).unwrap())
-        .unwrap();
+    bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
     assert_eq!(42, receiver.recv_timeout(Duration::from_secs(1)).unwrap());
     subscription.cancel().unwrap();
     bus.shutdown(ShutdownMode::Immediate).unwrap();

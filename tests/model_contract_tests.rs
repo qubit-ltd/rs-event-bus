@@ -11,6 +11,7 @@ use std::hash::Hasher;
 use std::sync::Arc;
 
 use qubit_event_bus::SubscriberId;
+use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::PublishRequest;
@@ -54,7 +55,7 @@ fn subscribe_request_new_validates_string_id_and_takes_topic_by_value() -> Resul
     assert_eq!(request.topic(), &STATIC_TOPIC);
     assert!(matches!(
         SubscribeRequest::new("_audit", STATIC_TOPIC),
-        Err(qubit_event_bus::error::ConfigurationError::InvalidSubscriberId { value })
+        Err(ConfigurationError::InvalidSubscriberId { value })
             if value.as_ref() == "_audit"
     ));
     assert_eq!(STATIC_TOPIC.name(), "events.static");

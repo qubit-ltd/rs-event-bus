@@ -14,6 +14,7 @@ use qubit_event_bus::EventBusProviderError;
 use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::local::LocalEventBusProvider;
+use qubit_event_bus::registry::sync_provider_inventory::Entry;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_spi::ProviderDescriptor;
 use qubit_spi::ProviderId;
@@ -21,6 +22,7 @@ use qubit_spi::ProviderMetadata;
 use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 use qubit_spi::error::RegistryMutationError;
+use qubit_spi::submit_sync_provider;
 
 struct DuplicateProvider;
 
@@ -39,14 +41,14 @@ impl ServiceProvider<EventBusSpec> for DuplicateProvider {
     }
 }
 
-qubit_spi::submit_sync_provider! {
-    inventory_entry = qubit_event_bus::registry::sync_provider_inventory::Entry;
+submit_sync_provider! {
+    inventory_entry = Entry;
     spec = EventBusSpec;
     provider = DuplicateProvider;
 }
 
-qubit_spi::submit_sync_provider! {
-    inventory_entry = qubit_event_bus::registry::sync_provider_inventory::Entry;
+submit_sync_provider! {
+    inventory_entry = Entry;
     spec = EventBusSpec;
     provider = DuplicateProvider;
 }
