@@ -1,8 +1,8 @@
-# Qubit Event Bus 0.12 架构说明
+# Qubit Event Bus 0.13 架构说明
 
 [Architecture status (English)](design.md) · [正式 SPI 设计（中文）](spi_design.zh_CN.md) · [SPI design (English)](spi_design.md)
 
-本文说明 0.12 代码中实际落地的架构。扩展能力和未来后端只有在明确标注“后续扩展”时才表示尚未实现；正式 SPI 契约及迁移细节见[正式 SPI 设计](spi_design.zh_CN.md)。
+本文说明 0.13 代码中实际落地的架构。扩展能力和未来后端只有在明确标注“后续扩展”时才表示尚未实现；正式 SPI 契约及迁移细节见[正式 SPI 设计](spi_design.zh_CN.md)。
 
 ## 架构边界
 
@@ -15,21 +15,21 @@
        └─ LocalEventBusProvider（本 crate 内置的同步进程内实现）
 ```
 
-应用通过 `Topic<T>`、`PublishRequest<T>` 和 `SubscribeRequest<T>` 操作总线，不需要直接处理 transport payload。Provider SPI 只负责发布、创建接收端、接收消息、结算和关闭，不接管 handler 或应用中间件。扩展 provider 可以位于独立 crate，但本 crate 当前只提供 local 同步 provider；任何其他后端都不得被误认为已随包发布。
+应用通过 `Topic<T>`、`PublishRequest<T>` 和 `SubscribeRequest<T>` 操作总线，不需要直接处理 transport payload。Provider SPI 只负责发布、创建接收端、接收消息、结算和关闭，不接管 handler 或应用中间件。本 crate 提供同步和异步 local provider；任何其他后端都不得被误认为已随包发布。
 
 ## 启动装配与 provider 目录
 
 启用 `discovery` feature 后，应用在装配模块显式链接外部 provider crate（`use provider_crate as _;`），再调用 `EventBusRegistry::discover()` 收集已链接的同步提交。内置 `local` 已提交到同步目录。启动代码设置默认 `ProviderSelection`、调用 `seal()` 固定目录，再通过 `create(&EventBusConfig::default())` 创建一条总线。应用持有总线，并将 `bus.clone()` 交给业务服务；订阅句柄由应用保存，在停机时取消订阅并关闭总线。
 
-`AsyncEventBusRegistry::discover()` 使用独立的异步目录，其 provider 的 `create(...).await` 在创建阶段运行。同步提交不会自动出现在异步目录；本 crate 没有内置异步 local provider。未启用 `discovery` 时，两个 registry 仍可通过 `register()` 显式注册。发现只收集 provider 定义，能力校验与按策略回退发生在创建阶段；运行期故障不会触发切换。
+`AsyncEventBusRegistry::discover()` 使用独立的异步目录，其 provider 的 `create(...).await` 在创建阶段运行。同步 local 和异步 local 分别注册在独立 catalog，均使用 provider ID `local`。未启用 `discovery` 时，两个 registry 仍可通过 `with_local()` 或 `register()` 显式注册。发现只收集 provider 定义，能力校验与按策略回退发生在创建阶段；运行期故障不会触发切换。
 
 local provider 在同名 Topic 的活跃订阅期间绑定唯一的原生 Rust payload 类型。每个订阅的队列容量同时覆盖排队和未 settlement 的投递，Retry 会保留原有额度。同步 `EventBus::wait_for_idle` 查询 provider 队列及结算状态；`wait_for_received_deliveries` 只等待当前 facade 已接收的工作。异步 facade 只提供后一种保证。
 
 ## Local provider 的路由与资源
 
-0.12 实现中的 `BusState` 按 Topic 索引活跃订阅。发布时只快照目标 Topic 的队列，并按订阅 ID 顺序处理；释放全局状态锁后才访问各队列锁。idle wait 也只查询对应 Topic，shutdown 则快照全部活跃队列。这种分桶方式减少了发布和 idle 检查对无关 Topic 的扫描，不改变 SPI 契约。
+0.13 实现中的 `BusState` 按 Topic 索引活跃订阅。发布时只快照目标 Topic 的队列，并按订阅 ID 顺序处理；释放全局状态锁后才访问各队列锁。idle wait 也只查询对应 Topic，shutdown 则快照全部活跃队列。这种分桶方式减少了发布和 idle 检查对无关 Topic 的扫描，不改变 SPI 契约。
 
-每个订阅持有自己的有界队列。配置容量同时计入排队消息和已接收但尚未 settlement 的消息；重试复用原来的容量占用，不会额外增加配额。0.12 内部按 ordering key 维护 FIFO lane，轮转调度已就绪的队首，并用带版本号的最小堆排列延迟队首。同一 lane 的延迟队首会阻塞其后消息，其他已就绪 lane 仍可继续。过期的延迟堆条目数量超过活跃队首数与固定余量 8 中的较大值时会重建堆，从而限制过期调度元数据的增长，同时保留高效的延迟队首查询。这些索引增加了维护成本，换取避免在很长的阻塞队列前缀上反复扫描。
+每个订阅持有自己的有界队列。配置容量同时计入排队消息和已接收但尚未 settlement 的消息；重试复用原来的容量占用，不会额外增加配额。0.13 内部按 ordering key 维护 FIFO lane，轮转调度已就绪的队首，并用带版本号的最小堆排列延迟队首。同一 lane 的延迟队首会阻塞其后消息，其他已就绪 lane 仍可继续。过期的延迟堆条目数量超过活跃队首数与固定余量 8 中的较大值时会重建堆，从而限制过期调度元数据的增长，同时保留高效的延迟队首查询。这些索引增加了维护成本，换取避免在很长的阻塞队列前缀上反复扫描。
 
 接收 SPI 仍是阻塞式：每个同步订阅都会启动一个接收 worker 线程。在一台 6 CPU Linux 主机的样本中，1/16/128 个订阅对应的进程线程峰值为 6/21/133；创建耗时中位数为 0.226/1.592/7.551 ms，取消订阅并立即关闭的耗时中位数为 0.285/651.543/5359.302 ms。关闭耗时范围较大，测量时主机也有其他负载；这些数值仅描述一次观测，可运行 `cargo bench --bench local_threads` 重新测量。
 
@@ -54,7 +54,7 @@ Provider capability 显式描述 payload 模式、settlement、ordering、延迟
 `PublishReceipt::check_admission` 仅按当前回执报告的准入结果检查“至少一个目的地已接纳”或“至少一个已接纳且没有拒绝”这两种要求；它不会产生新的发布副作用，也无法撤销或重试原发布。每个 facade 的 `PublishMetricsSnapshot` 统计公开 publish 调用次数、错误、拦截器丢弃、不可见目的地的接纳、零目的地回执，以及 provider 报告的已接纳/过滤/拒绝目的地数。各字段独立读取，因此并发快照不保证来自同一个瞬间；这些计数均不表示 handler 已完成。同步 `Subscription` 句柄丢弃时不会取消订阅，调用方必须显式 `cancel()` 或关闭总线。
 `PublishReceipt::admission_outcome` 统一分类不公开目的地的接纳、目的地接纳、部分接纳、无目的地接纳、空目的地快照和拦截器丢弃。它只描述已经返回的回执，不表示 handler 结果，也不是重试指令。需要逐个订阅者身份与拒绝原因时，读取 `acknowledgement()`。
 
-每个同步 local 订阅都会占用一个阻塞式接收 worker。一次 Linux 样本在 128 个订阅时观测到 133 个进程线程，取消订阅并立即关闭的中位数为 5.36 秒。这些仅是特定主机上的观察结果，不是容量保证。当产品部署要求同时维持至少 128 个订阅，并且要求接收线程少于 32 个或关闭 p95 低于 1 秒时，应另行设计 async local provider。该设计在修改 SPI 前必须覆盖可取消且不丢消息的 receive、幂等 settlement、防止丢失唤醒和关闭期限收敛。
+每个同步 local 订阅都会占用一个阻塞式接收 worker；async local 使用 waker 和 timer future，不按订阅数增加接收线程。同步 provider 的一次 Linux 样本在 128 个订阅时观测到 133 个进程线程，取消订阅并立即关闭的中位数为 5.36 秒。相同主机对异步 provider 进行七次测量，128 个空闲订阅的进程线程为 1，关闭 p95 为 0.085 毫秒。它们仅是特定主机上的观察结果，不是容量保证。异步 provider 的 close/drop 会在同一进程、同一 provider 实例内恢复未结算消息；shutdown 按 Ephemeral 语义释放队列。
 
 ## 结算和关闭
 
@@ -70,4 +70,4 @@ Facade shutdown 先停止准入和接收，再按所选模式协调 delivery、h
 
 ## 非目标
 
-0.12 不内置 Tokio、crossbeam、flume、bus、RabbitMQ、Kafka 或 Redis provider，也不承诺持久投递、跨进程路由、事务批量发布或恰好一次。第三方 provider 可具备更强语义，但应通过 capability 和自身文档明确说明。`qubit-event-bus` 不重新导出 `qubit-retry`；高级 retry 配置由应用显式直接依赖 `qubit-retry`。
+0.13 不内置 Tokio、crossbeam、flume、bus、RabbitMQ、Kafka 或 Redis provider，也不承诺持久投递、跨进程路由、事务批量发布或恰好一次。第三方 provider 可具备更强语义，但应通过 capability 和自身文档明确说明。`qubit-event-bus` 不重新导出 `qubit-retry`；高级 retry 配置由应用显式直接依赖 `qubit-retry`。

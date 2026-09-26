@@ -14,6 +14,9 @@ All notable changes to `qubit-event-bus` are documented here.
 ### Added
 
 - Add const `new_static` constructors for `Topic`, `SubscriberId`, `ProviderId`, and `SchemaId`; `EventId` remains unchanged.
+- Resolve subscription codecs from the topic first and the facade codec registry second; retain the selected codec for the subscription lifetime.
+- Add bounded `NotificationPublisher<T>` for nonblocking queue admission and serial publication, plus an opt-in `conformance` SPI report API.
+- Add a runtime-neutral asynchronous local provider with recoverable per-subscriber mailboxes.
 
 ## 0.12.0 - 2026-09-24
 

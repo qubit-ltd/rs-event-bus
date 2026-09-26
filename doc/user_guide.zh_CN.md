@@ -2,7 +2,7 @@
 
 [English user guide](user_guide.md) · [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.12 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 provider 只处理单进程内的消息，不持久化事件；不能用它单独保证审计记录或客户视图必然更新。
+本文适用于 `qubit-event-bus` 0.13 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 local providers 只处理单进程内的消息，不持久化事件；不能用它单独保证审计记录或客户视图必然更新。
 
 ## 场景与验收目标
 
@@ -24,7 +24,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.12"
+qubit-event-bus = "0.13"
 ```
 
 下面的完整示例可放入依赖本库的应用的 `src/main.rs`，用集合模拟审计记录和客户视图。实际订单服务应先完成数据库事务，再执行示例中的发布步骤：
@@ -97,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 使用发现功能时，为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi`：
 
 ```toml
-qubit-event-bus = { version = "0.12", features = ["discovery"] }
+qubit-event-bus = { version = "0.13", features = ["discovery"] }
 qubit-spi = "0.13"
 ```
 
@@ -141,9 +141,13 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 - 需要 header、顺序键、延迟、拦截器或重试选项时，使用请求 builder。`x-qubit-event-bus-dead-letter` 是 facade 保留的 header。配置重试时还需直接依赖 `qubit-retry = "0.25"`；只有错误分类规则不会启动重试。
 - 默认自动确认会接纳成功的 handler 结果。使用 `AckMode::Manual` 时，handler 必须调用 `delivery.acknowledgement().ack()` 或 `.nack()`；直接返回且未作决定会成为投递失败。死信需要配置合适的 Topic；编码型 provider 还需要 `DeadLetterEvent<T>` 的 codec。
 - `EventBus::local(LocalEventBusConfig::default())` 是内置路径。`EventBusRegistry::with_local()` 注册同一个 provider，ID 为 `local`，别名为 `memory` 和 `in-process`。`RequiredCapabilities` 在创建时检查 provider 声明的能力；registry fallback 只发生在创建阶段，不会在运行时故障后自动切换。
-- `AsyncEventBus` 不绑定运行时，但本库没有内置 async local provider 或 broker 适配器。应用需要提供异步 SPI，并在自己的 executor 上驱动 `AsyncSubscription::run`；`run` 不会自行 spawn 任务。
+- `AsyncEventBus` 不绑定运行时。可用 `AsyncEventBus::local(LocalEventBusConfig::default()).await` 或 `AsyncEventBusRegistry::with_local()` 创建内置异步 local provider；应用仍需在自己的 executor 上驱动 `AsyncSubscription::run`。
 
-`AsyncEventBusRegistry::discover()` 读取独立的异步目录；同步 `local` 不会出现在其中。异步 provider 在创建时通过 `registry.create(&config).await` 创建。不启用 `discovery` 时，应用仍可用 `new()` 创建任一种 registry，并用 `register()` 显式注册。发现阶段只收集定义；选择、能力校验及按策略回退发生在创建阶段，运行中的发布、接收或关闭故障不会切换 provider。密码、token 和私钥不要放进可由 Debug 输出的 `ProviderOptions`；应使用 provider 自己的安全配置、凭据引用或解析器。
+编码型 payload 优先使用 `Topic<T>` 自带的 codec；Topic 未配置时才回退到 facade 的 `CodecRegistry`。创建订阅时会固定所选 codec。编码型 provider 在两处都没有 codec 时，会在调用 provider 的 `subscribe` 前返回错误。
+
+任务状态变更不能等待同步发布时，可使用 `NotificationPublisher<T>` 和正数有界容量（默认 256）。`try_publish` 因容量已满或 publisher 已关闭而无法入队时，会把原 payload 随 `Full` 或 `Closed` 返回。`close` 停止入队、排空已入队通知并等待 worker，不会关闭注入的 bus。observer 收到请求构造和 provider 接纳结果，不表示 handler 已处理；observer 在 publisher worker 上同步运行。
+
+`AsyncEventBusRegistry::discover()` 读取独立的异步目录；同步 `local` 不会出现在其中。`AsyncEventBusRegistry::with_local()` 会在该 catalog 注册 async local。异步 provider 在创建时通过 `registry.create(&config).await` 创建。不启用 `discovery` 时，应用仍可用 `new()` 创建任一种 registry，并用 `register()` 显式注册。发现阶段只收集定义；选择、能力校验及按策略回退发生在创建阶段，运行中的发布、接收或关闭故障不会切换 provider。密码、token 和私钥不要放进可由 Debug 输出的 `ProviderOptions`；应使用 provider 自己的安全配置、凭据引用或解析器。
 
 ## 错误与排障
 
@@ -159,7 +163,7 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 ## 本地 provider 资源指南
 
-内置 provider 同步、只在进程内工作且不持久化。每个同步订阅都有一个阻塞式接收 worker 线程。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成消息上限（默认 1024），排队和已接收但尚未结算的消息都占用额度；重试保留原额度。facade 调度上限属于另一层，任何一个上限都不能单独代表总内存预算。订阅数量和队列容量应按实际负载规划。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 在自己的机器测量，结果不是跨机器保证。
+两种内置 local provider 均仅在进程内工作且不持久化。同步 provider 每个订阅使用一个阻塞接收线程；异步 provider 使用 waker 等待，不为每个订阅创建接收线程。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成消息上限（默认 1024），排队和已接收但尚未结算的消息都占用额度；重试保留原额度。异步订阅 close/drop 后的未结算消息只在同一进程、同一 provider 实例中恢复。publish receipt 只表示 provider 接纳，不代表 handler 已完成。facade 调度上限属于另一层，任何一个上限都不能单独代表总内存预算。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 在自己的机器测量，结果不是跨机器保证。
 
 `publish_all` 对每个请求分别尝试，不提供事务语义。本地 provider 无法持久恢复或跨进程投递。provider 必须声明相应的顺序、结算能力，facade 才能使用；`OrderingPolicy::PerKey` 要求 `PerKey` 或 `PerSubscription` 顺序能力。如果业务要求持久移交或数据库与事件的原子提交，应另行设计该机制并选用合适的 provider。
 

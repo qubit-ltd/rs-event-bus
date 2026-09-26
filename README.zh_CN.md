@@ -17,7 +17,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.12"
+qubit-event-bus = "0.13"
 ```
 
 ## 快速开始
@@ -156,8 +156,10 @@ let orders = OrderService::new(bus.clone());
 - `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>` 将事件主题、发布和订阅保持为类型化 API。
 - 同步 facade 和不绑定运行时的异步 facade 使用对象安全的 provider SPI；`qubit-spi` registry 可在创建时选择 provider、检查能力并尝试 fallback。
 - 内置 local provider 为每个订阅者设置有界队列；facade 在 provider 能力允许时支持拦截器、重试、ACK/NACK、死信、顺序、诊断和关闭控制。
+- 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
+- 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 
-本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。同步 local provider 每个订阅者使用一个阻塞式接收 worker 线程；队列额度按订阅者计算，包含排队和已接收但尚未结算的消息。规划订阅数量和容量时，请阅读[资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
+本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都按订阅者限制排队和未结算消息；同步 provider 每个订阅者使用一个阻塞接收线程，`AsyncEventBus::local` 使用 waker 等待，不会为每个订阅者创建接收线程。两者均为进程内、非持久 provider。详情见[资源指南](doc/user_guide.zh_CN.md#本地-provider-资源指南)。
 
 ## 延伸阅读
 

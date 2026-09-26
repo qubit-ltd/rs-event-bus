@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-本文档记录 `qubit-event-bus` 0.12 的正式 SPI、provider registry、同步/异步 facade 和内置 local provider 设计。它最初是重构目标文档，现已按落地实现更新；当前实际行为以代码、rustdoc、测试和 [`design.zh_CN.md`](design.zh_CN.md) 为准。明确标为后续扩展的后端或能力尚未在本 crate 中提供。
+本文档记录 `qubit-event-bus` 0.13 的正式 SPI、provider registry、同步/异步 facade 和内置 local provider 设计。它最初是重构目标文档，现已按落地实现更新；当前实际行为以代码、rustdoc、测试和 [`design.zh_CN.md`](design.zh_CN.md) 为准。明确标为后续扩展的后端或能力尚未在本 crate 中提供。
 
 本次保留完整中文版。英文 [`design.md`](design.md) 仅作为权威状态入口，避免将旧架构描述误读为当前实现。
 
@@ -1155,7 +1155,7 @@ facade 的职责：
 | admission/backpressure | facade-wide sync in-flight 限额包括排队、handler/retry/middleware 与 settlement；local queue capacity 另行限制每 subscription 的 provider 队列 |
 | `create_started` | `EventBus::local` 或 registry create，返回即为可用状态 |
 
-0.11 的公开 `EventBus` trait、`EventBusFactory`、`LocalEventBus`、`LocalEventBusFactory` 和 transactional API 均不是 0.12 兼容层的一部分。使用 0.12 时应改用具体 `EventBus` / `AsyncEventBus` facade 和 typed request。异步 facade 需要一个 async provider；内置 local provider 当前仅实现同步 SPI。
+0.11 的公开 `EventBus` trait、`EventBusFactory`、`LocalEventBus`、`LocalEventBusFactory` 和 transactional API 均不是 0.12 兼容层的一部分。使用 0.13 时应改用具体 `EventBus` / `AsyncEventBus` facade 和 typed request；同步与异步 facade 均可使用对应 catalog 中的内置 local provider。
 
 ## 后端适配验证
 
@@ -1189,7 +1189,20 @@ facade 的职责：
 
 ### SPI conformance suite
 
-仓库的 `tests/spi_conformance_tests.rs` 使用内部测试辅助检查内置 provider、模拟 channel provider 和 fake broker provider 的 SPI 行为。这些辅助代码位于 crate 的集成测试目录，不属于 `qubit-event-bus` 公共 API，也不会随发布包作为第三方可复用的 conformance harness 提供。provider 作者可以将下列项目作为自行编写测试的检查清单：
+启用可选的 `conformance` feature 后，可以使用公共 `spi::conformance` runner。`run_sync` 和 `run_async` 会按声明的 payload mode 执行订阅、发布、接收、payload 表示检查；支持 settlement 时会对同一 token 重复 settle；最后关闭 receiver 并关闭 provider。`ConformanceReport` 会记录通过、失败和跳过的案例；settlement 被跳过表示 provider 明确声明不支持 settlement。provider 自有的取消或故障注入场景可以通过 `ConformanceHooks` 补充。
+
+```rust,ignore
+use std::sync::Arc;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::conformance::{run_sync, ConformanceHooks};
+
+fn verify(factory: impl Fn() -> Arc<dyn EventBusSpi>) {
+    let report = run_sync(factory, &ConformanceHooks::default());
+    report.assert_all_passed();
+}
+```
+
+仓库的 `tests/spi_conformance_tests.rs` 还使用内部测试辅助检查模拟 channel provider 和 fake broker provider。第三方 adapter 应在公共 runner 之外补充 provider 自有的检查：
 
 - descriptor/provider 选择与创建；
 - capability 稳定性和真实性；
@@ -1276,12 +1289,12 @@ facade 的职责：
 
 现有测试中描述有效语义的部分应先迁移为 facade 合约测试，再替换实现。测试文件按 publish、subscription、retry、interceptor、dead-letter、ordering、lifecycle、diagnostic 和 local SPI 拆分，避免继续扩展单个数千行测试文件。
 
-## 0.12 实现与验证状态
+## 0.13 实现与验证状态
 
 本节记录仓库当前提供的验证范围，不代表每个 provider 都具备相同能力，也不表示所有 CI 套件已在每个开发检出中运行。
 
-1. 集成测试覆盖内置 local provider 的同步 SPI 行为；运行 `cargo test --all-features` 可执行这些测试。
-2. 集成测试包含 runtime-neutral fake async SPI，并覆盖异步 receive 取消边界；它验证 facade/SPI 合同，不是生产 async provider。
+1. 集成测试覆盖内置同步和异步 local provider；运行 `cargo test --all-features` 可执行这些测试。
+2. 可选公共 conformance runner 检查声明的 payload 发布/接收、settlement 幂等性、receiver close 和 provider shutdown。provider 自有的 receive 取消检查通过 hook 补充，因为它需要 provider fixture。
 3. 测试辅助中有 channel-shaped SPI 和 broker-shaped fake，用于验证适配形状；crate 没有随包提供真实的 channel 或 broker adapter。
 4. 同步与异步 facade、local provider、pipeline、registry、settlement 和并发合同分别由 crate 内测试覆盖；各 provider 仍需验证自身声明的 capability。
 5. registry 的 provider 选择、创建期 capability 检查和 fallback 由集成测试覆盖；运行期错误不会触发 provider 切换。

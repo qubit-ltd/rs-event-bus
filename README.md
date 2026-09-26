@@ -17,7 +17,7 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.12"
+qubit-event-bus = "0.13"
 ```
 
 ## Quick start
@@ -107,10 +107,12 @@ let orders = OrderService::new(bus.clone());
 - Provider discovery and creation through `qubit-spi` registries, with creation-time capability checks and fallback.
 - A built-in bounded-queue, in-process provider (`LocalEventBusProvider`).
 - Facade-level interception, retry through the caller's direct `qubit-retry` dependency, ACK/NACK, dead-letter handling, ordering, diagnostics, and lifecycle controls where supported by provider capabilities.
+- Optional bounded `NotificationPublisher<T>` for nonblocking application notifications; provider admission receipts do not mean handlers have completed.
+- Optional `conformance` feature with a report API for provider-specific SPI contract checks.
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
-The local provider bounds queued and unsettled events per subscription and uses one blocking receive worker thread per synchronous subscription. Plan queue and thread capacity before adding many consumers. See [resource guidance](doc/user_guide.md#local-provider-resource-guidance).
+Both local providers bound queued and unsettled events per subscription. The synchronous provider uses one blocking receive worker per subscription; `AsyncEventBus::local` uses waker-based receives without a receiver thread per subscription. Both are in-process and ephemeral. See [resource guidance](doc/user_guide.md#local-provider-resource-guidance).
 
 ## Learn more
 

@@ -5,16 +5,23 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Measures synchronous subscription creation and receiver-thread teardown.
+//! Measures sync and async local subscription creation and teardown resources.
 
+use std::future::Future;
 use std::io;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
@@ -135,10 +142,99 @@ fn sample(subscription_count: usize) -> Sample {
     }
 }
 
+/// Measures async-local subscription creation and teardown on one executor.
+fn sample_async(subscription_count: usize) -> Sample {
+    let started = Instant::now();
+    let bus = match block_on(AsyncEventBus::local(Default::default())) {
+        Ok(bus) => bus,
+        Err(_) => {
+            return Sample {
+                status: "provider_failed",
+                creation_ns: started.elapsed().as_nanos(),
+                close_ns: 0,
+                baseline_threads: None,
+                peak_threads: None,
+            };
+        }
+    };
+    let baseline_threads = process_thread_count().ok().flatten();
+    let mut peak_threads = baseline_threads;
+    let topic = Topic::<u32>::new("thread-profile.async-empty").expect("benchmark topic is valid");
+    let mut subscriptions = Vec::with_capacity(subscription_count);
+    for index in 0..subscription_count {
+        let request = SubscribeRequest::new(&format!("async-thread-profile-{index}"), topic.clone())
+            .expect("subscriber ID is valid");
+        match block_on(bus.subscribe(request)) {
+            Ok(subscription) => subscriptions.push(subscription),
+            Err(_) => {
+                return Sample {
+                    status: "subscribe_failed",
+                    creation_ns: started.elapsed().as_nanos(),
+                    close_ns: 0,
+                    baseline_threads,
+                    peak_threads,
+                };
+            }
+        }
+        if update_peak(&mut peak_threads).is_err() {
+            return Sample {
+                status: "thread_sample_failed",
+                creation_ns: started.elapsed().as_nanos(),
+                close_ns: 0,
+                baseline_threads,
+                peak_threads,
+            };
+        }
+    }
+    let creation_ns = started.elapsed().as_nanos();
+    let close_started = Instant::now();
+    drop(subscriptions);
+    let status = if block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok() {
+        "success"
+    } else {
+        "shutdown_failed"
+    };
+    Sample {
+        status,
+        creation_ns,
+        close_ns: close_started.elapsed().as_nanos(),
+        baseline_threads,
+        peak_threads,
+    }
+}
+
+struct ThreadWake(thread::Thread);
+impl Wake for ThreadWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
+    }
+}
+
 /// Runs a single sample in a child process so a hung sample cannot poison later
 /// ones.
-fn run_child_sample(subscription_count: usize) {
-    let result = std::panic::catch_unwind(|| sample(subscription_count));
+fn run_child_sample(subscription_count: usize, asynchronous: bool) {
+    let result = std::panic::catch_unwind(|| {
+        if asynchronous {
+            sample_async(subscription_count)
+        } else {
+            sample(subscription_count)
+        }
+    });
     match result {
         Ok(sample) => println!(
             "{},{},{},{},{}",
@@ -174,11 +270,12 @@ fn wait_with_timeout(child: &mut Child) -> io::Result<Option<std::process::ExitS
 }
 
 /// Spawns one independently isolated measurement and returns its CSV fields.
-fn run_isolated_sample(subscription_count: usize) -> io::Result<(bool, String)> {
+fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Result<(bool, String)> {
     let executable = std::env::current_exe()?;
     let mut child = Command::new(executable)
         .arg("--sample")
         .arg(subscription_count.to_string())
+        .args(if asynchronous { vec!["--async"] } else { Vec::new() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -195,9 +292,9 @@ fn run_isolated_sample(subscription_count: usize) -> io::Result<(bool, String)> 
 }
 
 /// Runs two discarded warmups followed by seven recorded child samples.
-fn run(subscription_count: usize) -> io::Result<()> {
+fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
     for _ in 0..WARMUPS {
-        let (timed_out, fields) = run_isolated_sample(subscription_count)?;
+        let (timed_out, fields) = run_isolated_sample(subscription_count, asynchronous)?;
         if timed_out || fields.split(',').next() != Some("success") {
             return Err(io::Error::other(format!(
                 "warmup failed for {subscription_count} subscriptions"
@@ -206,7 +303,7 @@ fn run(subscription_count: usize) -> io::Result<()> {
     }
 
     for iteration in 1..=SAMPLES {
-        let (timed_out, fields) = run_isolated_sample(subscription_count)?;
+        let (timed_out, fields) = run_isolated_sample(subscription_count, asynchronous)?;
         let mut fields = fields.split(',');
         let status = fields.next().unwrap_or("child_failed");
         let creation_ns = fields.next().unwrap_or("");
@@ -215,7 +312,8 @@ fn run(subscription_count: usize) -> io::Result<()> {
         let peak_threads = fields.next().unwrap_or("");
         let outcome = if timed_out { "timeout" } else { status };
         println!(
-            "{subscription_count},{iteration},{outcome},{creation_ns},{close_ns},{baseline_threads},{peak_threads}"
+            "{},{subscription_count},{iteration},{outcome},{creation_ns},{close_ns},{baseline_threads},{peak_threads}",
+            if asynchronous { "async" } else { "sync" }
         );
     }
     Ok(())
@@ -227,12 +325,16 @@ fn main() {
         .skip(1)
         .filter(|argument| argument != "--bench")
         .collect::<Vec<_>>();
+    if args.as_slice() == ["--help"] {
+        println!("usage: local_threads [--sample <subscription-count> [--async]]");
+        return;
+    }
     if args.first().is_some_and(|argument| argument == "--sample") {
         let Some(count) = args.get(1).and_then(|value| value.parse::<usize>().ok()) else {
-            eprintln!("usage: local_threads --sample <subscription-count>");
+            eprintln!("usage: local_threads --sample <subscription-count> [--async]");
             std::process::exit(2);
         };
-        run_child_sample(count);
+        run_child_sample(count, args.iter().any(|argument| argument == "--async"));
         return;
     }
     if !args.is_empty() {
@@ -240,9 +342,9 @@ fn main() {
         std::process::exit(2);
     }
 
-    println!("subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
+    println!("mode,subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
     for subscription_count in COUNTS {
-        if let Err(error) = run(subscription_count) {
+        if let Err(error) = run(subscription_count, false).and_then(|()| run(subscription_count, true)) {
             eprintln!("thread-profile benchmark failed: {error}");
             std::process::exit(1);
         }
