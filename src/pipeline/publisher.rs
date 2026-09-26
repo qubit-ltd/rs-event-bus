@@ -16,6 +16,7 @@ use std::sync::Arc;
 use qubit_clock::Timer;
 
 use crate::codec::CodecRegistry;
+use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
 use crate::error::EventBusError;
 use crate::error::PublishError;
@@ -244,11 +245,7 @@ impl PublisherPipeline {
         let failure_context = PublishFailureContext::from_envelope(envelope);
         let topic = TopicAddress::new(failure_context.topic().name())
             .map_err(|error| failure(PipelineFailureOrigin::Capability, error))?;
-        let codec = failure_context
-            .topic()
-            .codec()
-            .cloned()
-            .or_else(|| self.codecs.get::<T>());
+        let codec = resolve_codec(failure_context.topic(), &self.codecs);
         let event_id = failure_context.event_id().clone();
         let timestamp = failure_context.timestamp();
         let headers = failure_context.headers().clone();

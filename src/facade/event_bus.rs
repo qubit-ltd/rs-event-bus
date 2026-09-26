@@ -35,6 +35,7 @@ use qubit_retry::RetryFallback;
 
 use super::DiagnosticObserverHandle;
 use super::observer_entry::ObserverEntry;
+use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
 use crate::error::ConfigurationError;
 use crate::error::DeliveryAttemptError;
@@ -425,6 +426,7 @@ impl EventBus {
             }));
         }
         let capabilities = self.inner.spi.capabilities();
+        let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
         if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
             && !capabilities.ordering().supports_per_key()
@@ -433,7 +435,7 @@ impl EventBus {
                 capability: "ordering.per_key",
             }));
         }
-        if capabilities.payload_modes() == PayloadModes::Encoded && topic.codec().is_none() {
+        if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
         let id = self.next_subscription_id()?;
@@ -476,6 +478,7 @@ impl EventBus {
         let handler = Arc::new(move |delivery: Delivery<T>| handler(delivery).into_handler_result());
         let thread_control = control.clone();
         let thread_topic = topic.clone();
+        let thread_codec = codec.clone();
         let thread_options = options.clone();
         let thread_subscriber_id = subscriber_id.clone();
         let thread_spi_subscription_slot = spi_subscription_slot.clone();
@@ -493,6 +496,7 @@ impl EventBus {
                     thread_control,
                     spi_subscription,
                     thread_topic,
+                    thread_codec,
                     thread_subscriber_id,
                     thread_options,
                     handler,
@@ -959,6 +963,7 @@ fn run_subscription_worker<T>(
     control: Arc<SubscriptionControl>,
     mut spi_subscription: Box<dyn crate::spi::EventSubscriptionSpi>,
     topic: Topic<T>,
+    codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
     subscriber_id: SubscriberId,
     options: crate::model::SubscribeOptions<T>,
     handler: Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
@@ -1021,6 +1026,7 @@ fn run_subscription_worker<T>(
                     let task_subscription_id = control.id;
                     let task_inner = inner.clone();
                     let task_topic = topic.clone();
+                    let task_codec = codec.clone();
                     let task_options = options.clone();
                     let task_handler = handler.clone();
                     let task_subscriber_id = subscriber_id.clone();
@@ -1048,6 +1054,7 @@ fn run_subscription_worker<T>(
                                     task_subscription_id,
                                     &task_subscriber_id,
                                     &task_topic,
+                                    task_codec.as_ref(),
                                     &task_options,
                                     &task_handler,
                                     message,
@@ -1326,6 +1333,7 @@ fn process_inbound<T>(
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
+    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     options: &crate::model::SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     message: InboundMessage,
@@ -1343,6 +1351,7 @@ fn process_inbound<T>(
             subscription_id,
             subscriber_id,
             topic,
+            codec,
             options,
             handler,
             address,
@@ -1393,6 +1402,7 @@ fn process_inbound_parts<T>(
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
+    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     options: &crate::model::SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     address: TopicAddress,
@@ -1406,7 +1416,7 @@ fn process_inbound_parts<T>(
 ) where
     T: Send + Sync + 'static,
 {
-    let payload = match decode_payload(topic, payload) {
+    let payload = match decode_payload(codec, payload) {
         Ok(payload) => payload,
         Err(error) => {
             settle_rejected(
@@ -1504,7 +1514,7 @@ fn process_inbound_parts<T>(
 /// Creates a typed event from a provider message using native downcast or topic
 /// codec.
 fn decode_payload<T: Send + Sync + 'static>(
-    topic: &Topic<T>,
+    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     payload: TransportPayload,
 ) -> Result<Arc<T>, DeliveryError> {
     match payload {
@@ -1512,9 +1522,7 @@ fn decode_payload<T: Send + Sync + 'static>(
             Arc::downcast::<T>(value).map_err(|_| decode_error("native payload type does not match subscribed topic"))
         }
         TransportPayload::Encoded(encoded) => {
-            let codec = topic
-                .codec()
-                .ok_or_else(|| decode_error("encoded payload has no topic codec"))?;
+            let codec = codec.ok_or_else(|| decode_error("encoded payload has no resolved codec"))?;
             codec.decode(encoded.bytes()).map(Arc::new).map_err(Into::into)
         }
     }

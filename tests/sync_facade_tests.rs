@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::CodecError;
@@ -120,6 +121,7 @@ struct TestBackend {
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
     settlement_capability: std::sync::atomic::AtomicUsize,
+    payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
     subscribe_calls: AtomicUsize,
     close_delay_ms: Arc<AtomicUsize>,
@@ -141,6 +143,7 @@ impl TestBackend {
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
             settlement_capability: std::sync::atomic::AtomicUsize::new(2),
+            payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
             subscribe_calls: AtomicUsize::new(0),
             close_delay_ms: Arc::new(AtomicUsize::new(0)),
@@ -170,6 +173,18 @@ impl TestBackend {
                 SettlementCapabilities::AcceptOnly => 1,
                 SettlementCapabilities::AcceptRetryReject => 2,
                 _ => 2,
+            },
+            Ordering::Release,
+        );
+    }
+
+    fn set_payload_mode(&self, mode: PayloadModes) {
+        self.payload_mode.store(
+            match mode {
+                PayloadModes::Native => 0,
+                PayloadModes::Encoded => 1,
+                PayloadModes::NativeAndEncoded => 2,
+                _ => 0,
             },
             Ordering::Release,
         );
@@ -356,7 +371,11 @@ impl TestBackend {
 impl EventBusSpi for TestBackend {
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
-            PayloadModes::Native,
+            match self.payload_mode.load(Ordering::Acquire) {
+                1 => PayloadModes::Encoded,
+                2 => PayloadModes::NativeAndEncoded,
+                _ => PayloadModes::Native,
+            },
             match self.settlement_capability.load(Ordering::Acquire) {
                 0 => SettlementCapabilities::None,
                 1 => SettlementCapabilities::AcceptOnly,
@@ -1036,6 +1055,146 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn subscription_resolves_encoded_payload_codec_from_facade_registry() {
+    let backend = Arc::new(TestBackend::new());
+    backend.set_payload_mode(PayloadModes::Encoded);
+    let mut codecs = CodecRegistry::new();
+    codecs.register::<String>(Arc::new(Utf8Codec(
+        ContentType::new("text/plain").expect("MIME type is valid"),
+    )));
+    let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
+    let bus = EventBus::with_config(
+        ProviderId::new("sync-test").expect("provider ID is valid"),
+        backend.clone(),
+        config,
+    );
+    let topic = Topic::<String>::new("sync.events").expect("topic is valid");
+    let (sender, receiver) = mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("registry-codec", topic.clone()).expect("subscriber is valid"),
+            move |delivery| sender.send(delivery.payload().clone()).expect("receiver remains open"),
+        )
+        .expect("facade codec registry supplies the encoded subscription codec");
+
+    backend.enqueue_encoded(EncodedPayload::new(
+        Arc::<[u8]>::from(&b"decoded through registry"[..]),
+        ContentType::new("text/plain").expect("MIME type is valid"),
+        None,
+    ));
+
+    assert_eq!(
+        "decoded through registry",
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("encoded payload is decoded")
+    );
+    subscription.cancel().expect("subscription cancels");
+    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+}
+
+#[test]
+fn encoded_subscription_without_a_resolved_codec_fails_before_spi_subscribe() {
+    let backend = Arc::new(TestBackend::new());
+    backend.set_payload_mode(PayloadModes::Encoded);
+    let bus = EventBus::from_spi(
+        ProviderId::new("sync-test").expect("provider ID is valid"),
+        backend.clone(),
+    );
+    let request = SubscribeRequest::new(
+        "missing-codec",
+        Topic::<String>::new("sync.missing-codec").expect("topic is valid"),
+    )
+    .expect("subscriber is valid");
+
+    let error = match bus.subscribe(request, |_: Delivery<String>| ()) {
+        Ok(_) => panic!("encoded provider must require a codec"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        SubscribeError::Capability(CapabilityError::CodecRequired)
+    ));
+    assert_eq!(0, backend.subscribe_calls.load(Ordering::Acquire));
+}
+
+#[test]
+fn subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
+    let backend = Arc::new(TestBackend::new());
+    backend.set_payload_mode(PayloadModes::Encoded);
+    let mut codecs = CodecRegistry::new();
+    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").unwrap())));
+    let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
+    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config);
+    let topic = Topic::<String>::new_with_codec(
+        "sync.topic-codec-priority",
+        Utf8Codec(ContentType::new("text/plain").unwrap()),
+    )
+    .unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("topic-codec-priority", topic.clone()).unwrap(),
+            move |delivery| sender.send(delivery.payload().clone()).unwrap(),
+        )
+        .unwrap();
+    backend.enqueue_encoded(EncodedPayload::new(
+        Arc::<[u8]>::from(&b"topic codec wins"[..]),
+        ContentType::new("text/plain").unwrap(),
+        None,
+    ));
+    assert_eq!(
+        "topic codec wins",
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+    );
+    subscription.cancel().unwrap();
+    bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+struct PrefixCodec(ContentType);
+
+impl EventCodec<String> for PrefixCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.0
+    }
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        Ok(Arc::from(value.as_bytes()))
+    }
+    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        String::from_utf8(bytes.to_vec())
+            .map(|value| format!("registry:{value}"))
+            .map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+    }
+}
+
+struct Utf8Codec(ContentType);
+
+impl EventCodec<String> for Utf8Codec {
+    fn content_type(&self) -> &ContentType {
+        &self.0
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        Ok(Arc::from(value.as_bytes()))
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })
+    }
 }
 
 #[test]

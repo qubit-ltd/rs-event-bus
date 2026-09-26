@@ -39,6 +39,7 @@ use super::PublishMetricsSnapshot;
 use super::WaitOutcome;
 use super::async_subscription::is_current_bus_poll;
 use super::observer_entry::ObserverEntry;
+use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
 use crate::error::LifecycleError;
 use crate::error::PublishError;
@@ -46,6 +47,7 @@ use crate::error::ShutdownError;
 use crate::error::SubscribeError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
+use crate::local::LocalEventBusConfig;
 use crate::model::BatchPublishResult;
 use crate::model::ProviderId;
 use crate::model::PublishReceipt;
@@ -56,6 +58,8 @@ use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PipelineFailure;
 use crate::pipeline::PublisherPipeline;
+use crate::registry::AsyncEventBusRegistry;
+use crate::registry::EventBusConfig;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::PayloadModes;
 use crate::spi::ShutdownMode;
@@ -431,6 +435,17 @@ impl Drop for AsyncDeliveryGuard {
 }
 
 impl AsyncEventBus {
+    /// Asynchronously creates a facade using the built-in local provider.
+    pub async fn local(config: LocalEventBusConfig) -> Result<Self, crate::error::ProviderError> {
+        let registry =
+            AsyncEventBusRegistry::with_local().map_err(|source| crate::error::ProviderError::Resolution {
+                source: Box::new(source),
+            })?;
+        registry
+            .create(&EventBusConfig::default().with_provider_options(config.provider_options()))
+            .await
+    }
+
     /// Creates a usable facade around an already-created asynchronous provider
     /// SPI.
     pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Self {
@@ -554,6 +569,7 @@ impl AsyncEventBus {
             ));
         }
         let capabilities = self.inner.spi.capabilities();
+        let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         crate::pipeline::SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
         if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
             && !capabilities.ordering().supports_per_key()
@@ -562,7 +578,7 @@ impl AsyncEventBus {
                 capability: "ordering.per_key",
             }));
         }
-        if capabilities.payload_modes() == PayloadModes::Encoded && topic.codec().is_none() {
+        if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
@@ -593,8 +609,15 @@ impl AsyncEventBus {
             Some(subscriber_id.as_str()),
         )
         .await?;
-        let (subscription, control) =
-            AsyncSubscription::new(self.inner.clone(), id, subscriber_id.clone(), topic, options, receiver);
+        let (subscription, control) = AsyncSubscription::new(
+            self.inner.clone(),
+            id,
+            subscriber_id.clone(),
+            topic,
+            codec,
+            options,
+            receiver,
+        );
         let admitted = {
             let state = self
                 .inner
@@ -988,8 +1011,12 @@ async fn wait_until(
         }
         if let Some(deadline) = deadline.as_mut() {
             match deadline.as_mut().poll(cx) {
-                std::task::Poll::Ready(Ok(())) => return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut)),
-                std::task::Poll::Ready(Err(error)) => return std::task::Poll::Ready(Err(LifecycleError::Timer(error))),
+                std::task::Poll::Ready(Ok(())) => {
+                    return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut));
+                }
+                std::task::Poll::Ready(Err(error)) => {
+                    return std::task::Poll::Ready(Err(LifecycleError::Timer(error)));
+                }
                 std::task::Poll::Pending => {}
             }
         }
@@ -1050,8 +1077,12 @@ async fn wait_until_deadline(
             return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
         }
         match deadline.as_mut().poll(cx) {
-            std::task::Poll::Ready(Ok(())) => return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut)),
-            std::task::Poll::Ready(Err(error)) => return std::task::Poll::Ready(Err(LifecycleError::Timer(error))),
+            std::task::Poll::Ready(Ok(())) => {
+                return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut));
+            }
+            std::task::Poll::Ready(Err(error)) => {
+                return std::task::Poll::Ready(Err(LifecycleError::Timer(error)));
+            }
             std::task::Poll::Pending => {}
         }
         registration.register(cx.waker());

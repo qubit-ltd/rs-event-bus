@@ -1,23 +1,31 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 #![cfg(feature = "discovery")]
 
 mod support;
 
 use std::sync::Arc;
 
-use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusProviderError;
 use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::RequiredCapabilities;
-use qubit_spi::error::{ProviderCreationError, ProviderFailure, ProviderFailureKind};
+use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_spi::AsyncServiceProvider;
 use qubit_spi::ProviderDescriptor;
 use qubit_spi::ProviderFuture;
 use qubit_spi::ProviderId;
 use qubit_spi::ProviderMetadata;
 use qubit_spi::ProviderSelection;
-
+use qubit_spi::error::ProviderCreationError;
+use qubit_spi::error::ProviderFailure;
+use qubit_spi::error::ProviderFailureKind;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::manual_async::block_on;
 

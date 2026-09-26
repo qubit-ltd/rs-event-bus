@@ -9,6 +9,8 @@
 
 mod codec_registry;
 mod event_codec;
+mod resolve_codec;
 
 pub use codec_registry::CodecRegistry;
 pub use event_codec::EventCodec;
+pub(crate) use resolve_codec::resolve_codec;

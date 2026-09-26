@@ -24,6 +24,7 @@ use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
 use qubit_event_bus::SubscribeError;
 use qubit_event_bus::WaitOutcome;
+use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::DeliveryAttemptError;
@@ -118,6 +119,10 @@ impl OrderingTestSpi {
             capabilities: base,
             subscribe_calls: AtomicUsize::new(0),
         }
+    }
+
+    fn enqueue(&self, message: InboundMessage) {
+        self.inner.enqueue(message);
     }
 }
 
@@ -2160,6 +2165,129 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
     });
 
     assert_eq!(spi.settlement_count(), 1);
+}
+
+#[test]
+fn async_subscription_resolves_encoded_payload_codec_from_facade_registry() {
+    struct Utf8Codec(ContentType);
+
+    impl EventCodec<String> for Utf8Codec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+            String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+        }
+    }
+
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Encoded,
+        SettlementCapabilities::AcceptOnly,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(OrderingTestSpi {
+        inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+        capabilities,
+        subscribe_calls: AtomicUsize::new(0),
+    });
+    let mut codecs = CodecRegistry::new();
+    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::new("text/plain").unwrap())));
+    let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
+    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
+    let topic = Topic::<String>::new("async.registry-codec").unwrap();
+    let received = Arc::new(std::sync::Mutex::new(None));
+
+    block_on(async {
+        let mut subscription = bus
+            .subscribe(SubscribeRequest::new("registry-codec", topic).expect("subscriber is valid"))
+            .await
+            .expect("facade codec registry supplies the encoded subscription codec");
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("async.registry-codec").unwrap(),
+            EventId::new("registry-codec-event").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(b"decoded through registry".as_slice()),
+                ContentType::new("text/plain").unwrap(),
+                None,
+            )),
+            Some(SettlementToken::new(subscription.id(), "registry-codec-token")),
+            Default::default(),
+        ));
+        let received_by_handler = received.clone();
+        let runner = std::thread::spawn(move || {
+            block_on(subscription.run(move |delivery| {
+                *received_by_handler.lock().unwrap() = Some(delivery.payload().clone());
+                async { Ok(()) }
+            }))
+        });
+        for _ in 0..100 {
+            if received.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(*received.lock().unwrap(), Some("decoded through registry".to_owned()));
+        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        runner.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Encoded,
+        SettlementCapabilities::AcceptOnly,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(OrderingTestSpi {
+        inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+        capabilities,
+        subscribe_calls: AtomicUsize::new(0),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone());
+    let request = SubscribeRequest::new(
+        "missing-async-codec",
+        Topic::<String>::new("async.missing-codec").unwrap(),
+    )
+    .unwrap();
+
+    block_on(async {
+        let error = match bus.subscribe(request).await {
+            Ok(_) => panic!("encoded provider must require a codec"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            SubscribeError::Capability(CapabilityError::CodecRequired)
+        ));
+    });
+    assert_eq!(0, spi.subscribe_calls.load(Ordering::Acquire));
 }
 
 #[test]

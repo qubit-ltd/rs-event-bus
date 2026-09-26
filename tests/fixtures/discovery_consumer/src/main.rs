@@ -1,5 +1,13 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 use discovery_provider_fixture as _;
-use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_spi::ProviderSelection;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
