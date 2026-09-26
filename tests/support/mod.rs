@@ -10,6 +10,8 @@
 #[allow(dead_code)]
 pub(crate) mod fake_spi;
 #[allow(dead_code)]
+pub(crate) mod flume_spi;
+#[allow(dead_code)]
 pub(crate) mod manual_async;
 #[allow(dead_code)]
 mod panic_hook;
