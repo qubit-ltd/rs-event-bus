@@ -14,8 +14,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Instant;
 
-use qubit_id::Id;
-
 use super::LocalEventBusConfig;
 use super::async_local_event_subscription::AsyncLocalEventSubscription;
 use super::async_signal::AsyncSignal;
@@ -54,8 +52,6 @@ struct MailboxKey {
 
 pub(super) struct AsyncMailbox {
     pub(super) queue: Arc<LocalQueue>,
-    pub(super) receiver_id: Mutex<Id>,
-    pub(super) active: Mutex<bool>,
 }
 
 #[derive(Default)]
@@ -68,6 +64,7 @@ struct AsyncBusState {
 
 pub(super) struct AsyncLocalShared {
     capacity: usize,
+    pub(super) outstanding: super::outstanding_budget::OutstandingBudget,
     state: Mutex<AsyncBusState>,
     pub(super) changed: AsyncSignal,
     pub(super) timer: Arc<dyn qubit_clock::Timer>,
@@ -92,6 +89,7 @@ impl AsyncLocalEventBusSpi {
         Self {
             shared: Arc::new(AsyncLocalShared {
                 capacity: config.get_queue_capacity(),
+                outstanding: super::outstanding_budget::OutstandingBudget::new(config.get_max_total_outstanding()),
                 state: Mutex::new(AsyncBusState::default()),
                 changed: AsyncSignal::default(),
                 timer,
@@ -156,6 +154,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     AdmissionStatus::Rejected("subscription is closed".into())
                 } else if queue.pending_count() + queue.in_flight.len() >= mailbox.queue.capacity {
                     AdmissionStatus::Rejected("subscription queue is full".into())
+                } else if !self.shared.outstanding.try_acquire() {
+                    AdmissionStatus::Rejected("provider outstanding capacity is full".into())
                 } else {
                     queue.enqueue_back(event.clone());
                     AdmissionStatus::Accepted
@@ -164,9 +164,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 if status == AdmissionStatus::Accepted {
                     mailbox.queue.async_ready.notify_all();
                 }
-                let receiver_id = *mailbox.receiver_id.lock().unwrap_or_else(PoisonError::into_inner);
                 admissions.push(DestinationAdmission::new(
-                    receiver_id,
+                    mailbox.queue.id,
                     mailbox.queue.subscriber_id.clone(),
                     status,
                 ));
@@ -213,42 +212,26 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "topic_type_conflict",
                 ));
             }
-            let mailbox = if let Some(mailbox) = bus.mailboxes.get(&key) {
-                if *mailbox.active.lock().unwrap_or_else(PoisonError::into_inner) {
-                    return Err(operation_error(
-                        "subscribe",
-                        Some(topic.as_str()),
-                        "duplicate_subscriber",
-                    ));
-                }
-                mailbox.clone()
-            } else {
-                let id = request.subscription_id();
-                let queue = Arc::new(LocalQueue {
-                    id,
-                    topic: topic.clone(),
-                    subscriber_id: request.subscriber_id().clone(),
-                    capacity: self.shared.capacity,
-                    state: Mutex::new(LocalQueueState::default()),
-                    ready: Default::default(),
-                    async_ready: Default::default(),
-                });
-                let mailbox = Arc::new(AsyncMailbox {
-                    queue,
-                    receiver_id: Mutex::new(id),
-                    active: Mutex::new(false),
-                });
-                bus.mailboxes.insert(key.clone(), mailbox.clone());
-                bus.payload_types.insert(topic.clone(), request.payload_type_id());
-                mailbox
-            };
-            *mailbox.receiver_id.lock().unwrap_or_else(PoisonError::into_inner) = request.subscription_id();
-            *mailbox.active.lock().unwrap_or_else(PoisonError::into_inner) = true;
-            {
-                let mut queue = mailbox.queue.lock();
-                queue.closed = false;
-                requeue_in_flight(&mut queue);
+            if bus.mailboxes.contains_key(&key) {
+                return Err(operation_error(
+                    "subscribe",
+                    Some(topic.as_str()),
+                    "duplicate_subscriber",
+                ));
             }
+            let id = request.subscription_id();
+            let queue = Arc::new(LocalQueue {
+                id,
+                topic: topic.clone(),
+                subscriber_id: request.subscriber_id().clone(),
+                capacity: self.shared.capacity,
+                state: Mutex::new(LocalQueueState::default()),
+                ready: Default::default(),
+                async_ready: Default::default(),
+            });
+            let mailbox = Arc::new(AsyncMailbox { queue });
+            bus.mailboxes.insert(key, mailbox.clone());
+            bus.payload_types.insert(topic, request.payload_type_id());
             drop(bus);
             Ok(Box::new(AsyncLocalEventSubscription::new(
                 Arc::clone(&self.shared),
@@ -329,15 +312,18 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 return Ok(previous);
             }
             bus.closed = true;
-            let mailboxes = bus.mailboxes.values().cloned().collect::<Vec<_>>();
+            let mailboxes = std::mem::take(&mut bus.mailboxes).into_values().collect::<Vec<_>>();
             for mailbox in &mailboxes {
                 let mut queue = mailbox.queue.lock();
                 queue.closed = true;
+                let released = queue.pending_count() + queue.in_flight.len();
                 queue.clear_pending();
                 queue.in_flight.clear();
+                self.shared.outstanding.release(released);
                 drop(queue);
                 mailbox.queue.async_ready.notify_all();
             }
+            bus.payload_types.clear();
             bus.outcome = Some(result);
             drop(bus);
             self.shared.changed.notify_all();
@@ -346,21 +332,36 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     }
 }
 
-pub(super) fn requeue_in_flight(queue: &mut LocalQueueState) {
-    let mut deliveries = queue
-        .in_flight
-        .drain()
-        .map(|(token, delivery)| {
-            let sequence = token
-                .rsplit(':')
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
-            (sequence, delivery.event)
-        })
-        .collect::<Vec<_>>();
-    deliveries.sort_by_key(|(sequence, _)| *sequence);
-    for (_, event) in deliveries.into_iter().rev() {
-        queue.enqueue_front(event);
+/// Closes and unregisters one ephemeral mailbox, discarding all unsettled work.
+///
+/// The bus lock linearizes close against subscribe and route lookup; the queue
+/// lock then prevents a publisher holding an earlier route snapshot from
+/// adding work after the mailbox has closed. Repeated calls are harmless.
+pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbox>) {
+    let key = MailboxKey {
+        topic: mailbox.queue.topic.clone(),
+        subscriber: mailbox.queue.subscriber_id.clone(),
+    };
+    let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let is_current_mailbox = bus
+        .mailboxes
+        .get(&key)
+        .is_some_and(|current| Arc::ptr_eq(current, mailbox));
+    {
+        let mut queue = mailbox.queue.lock();
+        queue.closed = true;
+        let released = queue.pending_count() + queue.in_flight.len();
+        queue.clear_pending();
+        queue.in_flight.clear();
+        shared.outstanding.release(released);
     }
+    if is_current_mailbox {
+        bus.mailboxes.remove(&key);
+        if !bus.mailboxes.keys().any(|candidate| candidate.topic == key.topic) {
+            bus.payload_types.remove(&key.topic);
+        }
+    }
+    drop(bus);
+    mailbox.queue.async_ready.notify_all();
+    shared.changed.notify_all();
 }
