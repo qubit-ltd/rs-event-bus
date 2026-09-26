@@ -312,7 +312,7 @@ impl EventBus {
     /// receives at a finite interval; handler callbacks run on the facade-wide
     /// bounded pool. Use a registry when provider selection or creation
     /// fallback is required.
-    pub fn new(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Self {
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Self {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 

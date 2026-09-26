@@ -433,7 +433,7 @@ impl Drop for AsyncDeliveryGuard {
 impl AsyncEventBus {
     /// Creates a usable facade around an already-created asynchronous provider
     /// SPI.
-    pub fn new(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Self {
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Self {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
