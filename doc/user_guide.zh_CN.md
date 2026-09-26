@@ -145,7 +145,7 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 编码型 payload 优先使用 `Topic<T>` 自带的 codec；Topic 未配置时才回退到 facade 的 `CodecRegistry`。创建订阅时会固定所选 codec。编码型 provider 在两处都没有 codec 时，会在调用 provider 的 `subscribe` 前返回错误。
 
-任务状态变更不能等待同步发布时，可使用 `NotificationPublisher<T>` 和正数有界容量（默认 256）。`try_publish` 因容量已满或 publisher 已关闭而无法入队时，会把原 payload 随 `Full` 或 `Closed` 返回。`close` 停止入队、排空已入队通知并等待 worker，不会关闭注入的 bus。observer 收到请求构造和 provider 接纳结果，不表示 handler 已处理；observer 在 publisher worker 上同步运行。
+任务状态变更不能等待同步发布时，可使用 `NotificationPublisher<T>` 和正数有界容量（默认 256）。`try_publish` 因容量已满或 publisher 已关闭而无法入队时，会把原 payload 随 `Full` 或 `Closed` 返回。`close` 停止入队、排空已入队通知并等待 worker，不会关闭注入的 bus。observer 收到请求构造和 provider 接纳结果，不表示 handler 已处理；observer 在 publisher worker 上同步运行。如果 observer 调用自己所属 publisher 的 `close()`，方法会立即返回 `io::Error`（kind 为 `Other`），不会关闭队列。请由 observer 外部的生命周期所有者关闭 publisher。
 
 `AsyncEventBusRegistry::discover()` 读取独立的异步目录；同步 `local` 不会出现在其中。`AsyncEventBusRegistry::with_local()` 会在该 catalog 注册 async local。异步 provider 在创建时通过 `registry.create(&config).await` 创建。不启用 `discovery` 时，应用仍可用 `new()` 创建任一种 registry，并用 `register()` 显式注册。发现阶段只收集定义；选择、能力校验及按策略回退发生在创建阶段，运行中的发布、接收或关闭故障不会切换 provider。密码、token 和私钥不要放进可由 Debug 输出的 `ProviderOptions`；应使用 provider 自己的安全配置、凭据引用或解析器。
 
@@ -163,7 +163,7 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 ## 本地 provider 资源指南
 
-两种内置 local provider 均仅在进程内工作且不持久化。同步 provider 每个订阅使用一个阻塞接收线程；异步 provider 使用 waker 等待，不为每个订阅创建接收线程。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成消息上限（默认 1024），排队和已接收但尚未结算的消息都占用额度；重试保留原额度。异步订阅 close/drop 后的未结算消息只在同一进程、同一 provider 实例中恢复。publish receipt 只表示 provider 接纳，不代表 handler 已完成。facade 调度上限属于另一层，任何一个上限都不能单独代表总内存预算。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 在自己的机器测量，结果不是跨机器保证。
+两种内置 local provider 均仅在进程内工作且不持久化。同步 provider 每个订阅使用一个阻塞接收线程，此外 facade 还使用共享的有界 handler 调度器；异步 provider 使用 waker 等待，不为每个订阅创建接收线程，但应用必须在自己的 executor 上驱动 `AsyncSubscription::run`。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成消息上限（默认 1024），排队和已接收但尚未结算的消息都占用额度；重试保留原额度。异步订阅 close/drop 后的未结算消息只在同一进程、同一 provider 实例中恢复。publish receipt 只表示 provider 接纳，不代表 handler 已完成。facade 调度上限属于另一层，任何一个上限都不能单独代表总内存预算。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 在自己的机器测量，结果不是跨机器保证。
 
 `publish_all` 对每个请求分别尝试，不提供事务语义。本地 provider 无法持久恢复或跨进程投递。provider 必须声明相应的顺序、结算能力，facade 才能使用；`OrderingPolicy::PerKey` 要求 `PerKey` 或 `PerSubscription` 顺序能力。如果业务要求持久移交或数据库与事件的原子提交，应另行设计该机制并选用合适的 provider。
 
