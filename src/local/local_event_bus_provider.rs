@@ -14,6 +14,8 @@ use qubit_spi::ProviderId as SpiProviderId;
 use qubit_spi::ProviderMetadata;
 use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
+#[cfg(feature = "discovery")]
+use qubit_spi::submit_sync_provider;
 
 use super::LocalEventBusConfig;
 use super::local_event_bus_spi::LocalEventBusSpi;
@@ -64,7 +66,7 @@ impl ServiceProvider<EventBusSpec> for LocalEventBusProvider {
 }
 
 #[cfg(feature = "discovery")]
-qubit_spi::submit_sync_provider! {
+submit_sync_provider! {
     inventory_entry = crate::registry::sync_provider_inventory::Entry;
     spec = crate::registry::EventBusSpec;
     provider = LocalEventBusProvider;

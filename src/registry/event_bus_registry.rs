@@ -15,6 +15,8 @@ use qubit_spi::ProviderId;
 use qubit_spi::ProviderRegistry;
 use qubit_spi::ProviderSelection;
 use qubit_spi::error::ProviderCreationError;
+#[cfg(feature = "discovery")]
+use qubit_spi::error::ProviderInventoryBuildError;
 use qubit_spi::error::ProviderResolutionError;
 use qubit_spi::error::RegistryMutationError;
 
@@ -70,7 +72,7 @@ impl EventBusRegistry {
     /// Propagates panics from submitted provider factories or descriptor
     /// callbacks. Event-bus SPIs are created later by [`Self::create`].
     #[cfg(feature = "discovery")]
-    pub fn discover() -> Result<Self, qubit_spi::error::ProviderInventoryBuildError> {
+    pub fn discover() -> Result<Self, ProviderInventoryBuildError> {
         let providers = super::sync_provider_inventory::build_registry_with(|provider| {
             Arc::new(EventBusProviderAdapter::new(provider))
         })?;

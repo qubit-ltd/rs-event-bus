@@ -11,6 +11,8 @@ use std::any::TypeId;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use qubit_id::Id;
+
 use super::super::EncodedPayload;
 use super::super::OutboundMessage;
 use super::super::PayloadModes;
@@ -99,7 +101,7 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
 
 pub(super) fn probe_request(subscription_id: u64) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
-        qubit_id::Id::new(subscription_id),
+        Id::new(subscription_id),
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
         SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
         None,
