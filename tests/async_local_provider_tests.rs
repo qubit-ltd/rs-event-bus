@@ -233,6 +233,39 @@ fn async_local_drop_requeues_an_unsettled_in_flight_delivery() {
 }
 
 #[test]
+fn async_local_settle_and_close_can_be_retried_after_unpolled_future_drop() {
+    let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let mut receiver = block_on(spi.subscribe(spi_request(35, "cancelled-ops", "async.local.cancelled-ops"))).unwrap();
+    block_on(
+        bus.publish(
+            PublishRequest::new(
+                Topic::<String>::new("async.local.cancelled-ops").unwrap(),
+                "settle after retry".to_owned(),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).unwrap() else {
+        panic!("message should be delivered");
+    };
+    let token = message
+        .take_settlement()
+        .expect("local delivery has a settlement token");
+
+    drop(receiver.settle(&token, DeliveryDisposition::Accept));
+    block_on(receiver.settle(&token, DeliveryDisposition::Accept)).unwrap();
+    drop(receiver.close());
+    block_on(receiver.close()).unwrap();
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Closed
+    ));
+    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
 fn async_local_shutdown_wakes_pending_receives_and_cancelled_shutdown_can_retry() {
     let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
     let mut receiver = block_on(spi.subscribe(spi_request(20, "shutdown-waiter", "async.local.cancel"))).unwrap();
