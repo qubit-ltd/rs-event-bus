@@ -15,15 +15,16 @@ use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
+use qubit_clock::TimeError;
 use qubit_id::Id;
 
-use super::async_local_event_bus_spi::AsyncLocalShared;
-use super::async_local_event_bus_spi::AsyncMailbox;
 use super::async_local_event_bus_spi::close_mailbox;
+use super::internal::AsyncLocalShared;
+use super::internal::AsyncMailbox;
 use super::local_event_bus_spi::invalid_token_error;
 use super::state::LocalSettlementState;
 
-type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), qubit_clock::TimeError>> + Send>>;
+type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), TimeError>> + Send>>;
 use crate::error::SpiError;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;

@@ -14,6 +14,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
 
+use super::internal::AsyncWaiter;
+
 #[derive(Default)]
 pub(super) struct AsyncSignal {
     next_id: AtomicU64,
@@ -27,10 +29,7 @@ impl AsyncSignal {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, waker.clone());
-        AsyncWaiter {
-            id,
-            waiters: Arc::clone(&self.waiters),
-        }
+        AsyncWaiter::new(id, Arc::clone(&self.waiters))
     }
 
     pub(super) fn notify_all(&self) {
@@ -52,20 +51,6 @@ impl AsyncSignal {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
-    }
-}
-
-pub(super) struct AsyncWaiter {
-    id: u64,
-    waiters: Arc<Mutex<HashMap<u64, Waker>>>,
-}
-
-impl Drop for AsyncWaiter {
-    fn drop(&mut self) {
-        self.waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.id);
     }
 }
 

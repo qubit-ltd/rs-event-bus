@@ -7,16 +7,19 @@
 // =============================================================================
 //! Runtime-neutral asynchronous in-process transport SPI.
 
-use std::any::TypeId;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Instant;
 
+use qubit_clock::StdTimer;
+use qubit_clock::Timer;
+
 use super::LocalEventBusConfig;
 use super::async_local_event_subscription::AsyncLocalEventSubscription;
-use super::async_signal::AsyncSignal;
+use super::internal::AsyncLocalShared;
+use super::internal::AsyncMailbox;
+use super::internal::MailboxKey;
 use super::local_event_bus_spi::operation_error;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
@@ -25,7 +28,6 @@ use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
-use crate::model::SubscriberId;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DurabilityCapability;
@@ -41,34 +43,7 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiFuture;
 use crate::spi::SpiSubscriptionRequest;
-use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct MailboxKey {
-    topic: TopicAddress,
-    subscriber: SubscriberId,
-}
-
-pub(super) struct AsyncMailbox {
-    pub(super) queue: Arc<LocalQueue>,
-}
-
-#[derive(Default)]
-struct AsyncBusState {
-    closed: bool,
-    outcome: Option<ShutdownOutcome>,
-    mailboxes: HashMap<MailboxKey, Arc<AsyncMailbox>>,
-    payload_types: HashMap<TopicAddress, TypeId>,
-}
-
-pub(super) struct AsyncLocalShared {
-    capacity: usize,
-    pub(super) outstanding: super::outstanding_budget::OutstandingBudget,
-    state: Mutex<AsyncBusState>,
-    pub(super) changed: AsyncSignal,
-    pub(super) timer: Arc<dyn qubit_clock::Timer>,
-}
 
 /// Asynchronous native-only local backend. Receive waits are driven by wakers;
 /// the provider creates no receiver thread per subscription.
@@ -80,20 +55,18 @@ impl AsyncLocalEventBusSpi {
     /// Creates an async local SPI from validated transport settings.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         config.validate()?;
-        Ok(Self::with_timer(config, Arc::new(qubit_clock::StdTimer::new())))
+        Ok(Self::with_timer(config, Arc::new(StdTimer::new())))
     }
 
     /// Creates an async local SPI with an injected timer for deterministic
     /// tests.
-    pub fn with_timer(config: &LocalEventBusConfig, timer: Arc<dyn qubit_clock::Timer>) -> Self {
+    pub fn with_timer(config: &LocalEventBusConfig, timer: Arc<dyn Timer>) -> Self {
         Self {
-            shared: Arc::new(AsyncLocalShared {
-                capacity: config.get_queue_capacity(),
-                outstanding: super::outstanding_budget::OutstandingBudget::new(config.get_max_total_outstanding()),
-                state: Mutex::new(AsyncBusState::default()),
-                changed: AsyncSignal::default(),
+            shared: Arc::new(AsyncLocalShared::new(
+                config.get_queue_capacity(),
+                config.get_max_total_outstanding(),
                 timer,
-            }),
+            )),
         }
     }
 }
@@ -224,7 +197,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 id,
                 topic: topic.clone(),
                 subscriber_id: request.subscriber_id().clone(),
-                capacity: self.shared.capacity,
+                capacity: self.shared.capacity(),
                 state: Mutex::new(LocalQueueState::default()),
                 ready: Default::default(),
                 async_ready: Default::default(),
