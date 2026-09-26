@@ -11,6 +11,7 @@ mod async_local_event_bus_provider;
 mod async_local_event_bus_spi;
 mod async_local_event_subscription;
 mod async_signal;
+mod internal;
 mod local_event_bus_config;
 mod local_event_bus_provider;
 mod local_event_bus_spi;
