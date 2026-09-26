@@ -17,6 +17,7 @@ use std::sync::mpsc::TrySendError as ChannelTrySendError;
 use std::sync::mpsc::sync_channel;
 use std::thread;
 
+use super::internal::WorkerState;
 use super::notification_config::DEFAULT_QUEUE_CAPACITY;
 use super::notification_outcome::NotificationOutcome;
 use super::notification_stats::NotificationStats;
@@ -25,10 +26,6 @@ use super::try_publish_error::TryPublishError;
 use crate::EventBus;
 use crate::model::PublishRequest;
 use crate::model::Topic;
-
-struct WorkerState {
-    finished: bool,
-}
 
 /// A bounded queue that calls a synchronous event bus from one worker thread.
 ///

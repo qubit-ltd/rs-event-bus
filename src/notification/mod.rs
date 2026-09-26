@@ -7,6 +7,7 @@
 // =============================================================================
 //! Bounded, nonblocking publication for best-effort notifications.
 
+mod internal;
 mod notification_config;
 mod notification_outcome;
 mod notification_publisher;
