@@ -27,8 +27,14 @@ use crate::model::AcknowledgementState;
 use crate::model::AsyncSubscriberInterceptor;
 use crate::model::Delivery;
 use crate::model::FailureDirective;
+use crate::model::StartPosition;
+use crate::model::SubscribeOptions;
 use crate::model::SubscriberInterceptor;
+use crate::model::SubscriptionDurability;
 use crate::spi::DeliveryDisposition;
+use crate::spi::DurabilityCapability;
+use crate::spi::EventBusCapabilities;
+use crate::spi::ReplayCapability;
 use crate::spi::SettlementCapabilities;
 use crate::spi::SpiFuture;
 
@@ -202,6 +208,39 @@ impl SubscriberPipeline {
             return Err(CapabilityError::Unsupported {
                 capability: "manual_ack",
             });
+        }
+        Ok(())
+    }
+
+    /// Checks request-level provider capabilities shared by both facades.
+    ///
+    /// Returns `CapabilityError::Unsupported` before provider subscription
+    /// when durable delivery, consumer groups, or historical replay are
+    /// requested but unavailable. `New`, ephemeral subscriptions require no
+    /// capability beyond the default.
+    pub(crate) fn validate_subscription_capabilities<T: 'static>(
+        options: &SubscribeOptions<T>,
+        capabilities: EventBusCapabilities,
+    ) -> Result<(), CapabilityError> {
+        if options.durability() == SubscriptionDurability::Durable
+            && capabilities.durability() != DurabilityCapability::Durable
+        {
+            return Err(CapabilityError::Unsupported {
+                capability: "durability",
+            });
+        }
+        if options.consumer_group().is_some() && !capabilities.consumer_groups() {
+            return Err(CapabilityError::Unsupported {
+                capability: "consumer_groups",
+            });
+        }
+        if !matches!(options.start_position(), StartPosition::New)
+            && !matches!(
+                capabilities.replay(),
+                ReplayCapability::Position | ReplayCapability::Timestamp
+            )
+        {
+            return Err(CapabilityError::Unsupported { capability: "replay" });
         }
         Ok(())
     }

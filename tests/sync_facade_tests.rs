@@ -35,6 +35,7 @@ use qubit_event_bus::facade::Subscription;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::model::AckMode;
 use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
@@ -47,9 +48,11 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberNext;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -123,6 +126,9 @@ struct TestBackend {
     settlement_capability: std::sync::atomic::AtomicUsize,
     payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
+    durability_capability: AtomicUsize,
+    consumer_groups: AtomicBool,
+    replay_capability: AtomicUsize,
     subscribe_calls: AtomicUsize,
     close_delay_ms: Arc<AtomicUsize>,
     close_panics: Arc<AtomicBool>,
@@ -145,6 +151,9 @@ impl TestBackend {
             settlement_capability: std::sync::atomic::AtomicUsize::new(2),
             payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
+            durability_capability: AtomicUsize::new(0),
+            consumer_groups: AtomicBool::new(false),
+            replay_capability: AtomicUsize::new(0),
             subscribe_calls: AtomicUsize::new(0),
             close_delay_ms: Arc::new(AtomicUsize::new(0)),
             close_panics: Arc::new(AtomicBool::new(false)),
@@ -199,6 +208,28 @@ impl TestBackend {
             _ => unreachable!("test only uses known ordering capabilities"),
         };
         self.ordering_capability.store(value, Ordering::Release);
+    }
+
+    fn set_subscription_capabilities(
+        &self,
+        durability: DurabilityCapability,
+        consumer_groups: bool,
+        replay: ReplayCapability,
+    ) {
+        self.durability_capability.store(
+            usize::from(durability == DurabilityCapability::Durable),
+            Ordering::Release,
+        );
+        self.consumer_groups.store(consumer_groups, Ordering::Release);
+        self.replay_capability.store(
+            match replay {
+                ReplayCapability::None => 0,
+                ReplayCapability::Position => 1,
+                ReplayCapability::Timestamp => 2,
+                _ => 0,
+            },
+            Ordering::Release,
+        );
     }
 
     fn set_close_delay(&self, delay: Duration) {
@@ -388,9 +419,17 @@ impl EventBusSpi for TestBackend {
                 _ => OrderingCapability::PerSubscription,
             },
             DelayedDeliveryCapability::None,
-            DurabilityCapability::Ephemeral,
-            false,
-            ReplayCapability::None,
+            if self.durability_capability.load(Ordering::Acquire) == 0 {
+                DurabilityCapability::Ephemeral
+            } else {
+                DurabilityCapability::Durable
+            },
+            self.consumer_groups.load(Ordering::Acquire),
+            match self.replay_capability.load(Ordering::Acquire) {
+                1 => ReplayCapability::Position,
+                2 => ReplayCapability::Timestamp,
+                _ => ReplayCapability::None,
+            },
             PublishGuarantee::Accepted,
             PublishVisibility::Opaque,
         )
@@ -659,6 +698,76 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         )
         .expect("default unordered subscription works without ordering capability");
+    assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 1);
+    subscription.cancel().expect("subscription cancels");
+}
+
+#[test]
+fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
+    let options = [
+        (
+            SubscribeOptions::<String>::builder()
+                .durability(SubscriptionDurability::Durable)
+                .build(),
+            "durability",
+        ),
+        (
+            SubscribeOptions::<String>::builder()
+                .consumer_group(ConsumerGroup::new("workers").expect("valid consumer group"))
+                .build(),
+            "consumer_groups",
+        ),
+        (
+            SubscribeOptions::<String>::builder()
+                .start_position(StartPosition::Earliest)
+                .build(),
+            "replay",
+        ),
+        (
+            SubscribeOptions::<String>::builder()
+                .start_position(StartPosition::At("offset-1".into()))
+                .build(),
+            "replay",
+        ),
+    ];
+
+    for (options, capability) in options {
+        let (bus, backend) = create_bus();
+        let result = bus.subscribe(
+            SubscribeRequest::new("capability-check", topic())
+                .expect("valid subscriber")
+                .with_options(options),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        );
+        match result {
+            Err(SubscribeError::Capability(CapabilityError::Unsupported { capability: actual })) => {
+                assert_eq!(actual, capability);
+            }
+            Ok(subscription) => {
+                subscription.cancel().expect("unexpected subscription is cleaned up");
+                panic!("unsupported {capability} request reached the subscriber");
+            }
+            Err(error) => panic!("expected capability error, got {error}"),
+        }
+        assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 0);
+    }
+
+    let (bus, backend) = create_bus();
+    backend.set_subscription_capabilities(DurabilityCapability::Durable, true, ReplayCapability::Position);
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("capability-supported", topic())
+                .expect("valid subscriber")
+                .with_options(
+                    SubscribeOptions::<String>::builder()
+                        .durability(SubscriptionDurability::Durable)
+                        .consumer_group(ConsumerGroup::new("workers").expect("valid consumer group"))
+                        .start_position(StartPosition::At("offset-1".into()))
+                        .build(),
+                ),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("provider capabilities allow requested options");
     assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 1);
     subscription.cancel().expect("subscription cancels");
 }

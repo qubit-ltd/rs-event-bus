@@ -35,6 +35,7 @@ use qubit_event_bus::facade::DeliveryAdmissionConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::AckMode;
 use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
@@ -47,9 +48,11 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberNext;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -114,9 +117,13 @@ impl OrderingTestSpi {
             PublishGuarantee::Accepted,
             PublishVisibility::Opaque,
         );
+        Self::with_capabilities(base)
+    }
+
+    fn with_capabilities(capabilities: EventBusCapabilities) -> Self {
         Self {
-            inner: FakeAsyncEventBusSpi::with_capabilities(base),
-            capabilities: base,
+            inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+            capabilities,
             subscribe_calls: AtomicUsize::new(0),
         }
     }
@@ -188,6 +195,89 @@ fn async_per_key_capability_is_checked_before_spi_subscribe() {
     let mut subscription =
         block_on(bus.subscribe(SubscribeRequest::new("unordered", topic()).expect("valid subscriber")))
             .expect("default unordered subscription works without ordering capability");
+    assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
+    block_on(subscription.close()).expect("subscription closes");
+}
+
+#[test]
+fn async_subscription_capabilities_are_checked_before_spi_subscribe() {
+    let requests = [
+        (
+            SubscribeOptions::<u32>::builder()
+                .durability(SubscriptionDurability::Durable)
+                .build(),
+            "durability",
+        ),
+        (
+            SubscribeOptions::<u32>::builder()
+                .consumer_group(ConsumerGroup::new("workers").expect("valid consumer group"))
+                .build(),
+            "consumer_groups",
+        ),
+        (
+            SubscribeOptions::<u32>::builder()
+                .start_position(StartPosition::Earliest)
+                .build(),
+            "replay",
+        ),
+        (
+            SubscribeOptions::<u32>::builder()
+                .start_position(StartPosition::At("offset-1".into()))
+                .build(),
+            "replay",
+        ),
+    ];
+
+    for (options, capability) in requests {
+        let spi = Arc::new(OrderingTestSpi::new(OrderingCapability::None));
+        let bus = AsyncEventBus::from_spi(ProviderId::new("capability-test").expect("valid provider"), spi.clone());
+        let result = block_on(
+            bus.subscribe(
+                SubscribeRequest::new("capability-check", topic())
+                    .expect("valid subscriber")
+                    .with_options(options),
+            ),
+        );
+        match result {
+            Err(SubscribeError::Capability(CapabilityError::Unsupported { capability: actual })) => {
+                assert_eq!(actual, capability);
+            }
+            Ok(mut subscription) => {
+                block_on(subscription.close()).expect("unexpected subscription is cleaned up");
+                panic!("unsupported {capability} request reached the subscriber");
+            }
+            Err(error) => panic!("expected capability error, got {error}"),
+        }
+        assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 0);
+    }
+
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::AcceptRetryReject,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Durable,
+        true,
+        ReplayCapability::Position,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(OrderingTestSpi::with_capabilities(capabilities));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("capability-test").expect("valid provider"), spi.clone());
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("capability-supported", topic())
+                .expect("valid subscriber")
+                .with_options(
+                    SubscribeOptions::<u32>::builder()
+                        .durability(SubscriptionDurability::Durable)
+                        .consumer_group(ConsumerGroup::new("workers").expect("valid consumer group"))
+                        .start_position(StartPosition::At("offset-1".into()))
+                        .build(),
+                ),
+        ),
+    )
+    .expect("provider capabilities allow requested options");
     assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
     block_on(subscription.close()).expect("subscription closes");
 }
