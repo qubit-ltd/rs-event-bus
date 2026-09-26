@@ -10,6 +10,8 @@
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::Weak;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -167,6 +169,56 @@ fn notification_publisher_contains_observer_panics_and_continues() {
 
     assert_eq!(vec!["first", "second"], *spi.published.lock().unwrap());
     assert_eq!(2, publisher.stats().observer_panicked());
+}
+
+#[test]
+fn notification_observer_cannot_close_its_own_worker() {
+    let spi = Arc::new(GatedSpi::new());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let publisher_ref = Arc::new(OnceLock::<Weak<NotificationPublisher<String>>>::new());
+    let callback_publisher_ref = Arc::clone(&publisher_ref);
+    let (close_sender, close_receiver) = mpsc::channel();
+    let publisher = Arc::new(
+        NotificationPublisher::new(
+            bus,
+            Topic::<String>::new_static("notification.events"),
+            std::num::NonZeroUsize::new(2).unwrap(),
+            move |_| {
+                let publisher = callback_publisher_ref
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .expect("publisher remains alive during its observer");
+                let result = publisher.close().map_err(|error| (error.kind(), error.to_string()));
+                close_sender.send(result).expect("test receives close result");
+            },
+        )
+        .unwrap(),
+    );
+    assert!(publisher_ref.set(Arc::downgrade(&publisher)).is_ok());
+
+    publisher.try_publish("first".into()).unwrap();
+    assert_eq!(
+        "first",
+        spi.entered
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker begins first publish")
+    );
+    publisher.try_publish("second".into()).unwrap();
+    spi.release();
+
+    for _ in 0..2 {
+        let (kind, message) = close_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("observer close returns without blocking its worker")
+            .expect_err("worker-thread close must be rejected");
+        assert_eq!(std::io::ErrorKind::Other, kind);
+        assert_eq!("notification publisher cannot close from its worker thread", message);
+    }
+
+    publisher.close().expect("external close drains queued notifications");
+    assert_eq!(vec!["first", "second"], *spi.published.lock().unwrap());
 }
 
 struct GatedSpi {

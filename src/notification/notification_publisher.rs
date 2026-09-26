@@ -168,8 +168,24 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     ///
     /// Multiple callers may close concurrently; each waits for the same worker
     /// completion and only one caller joins its thread handle. Returns an I/O
-    /// error if the worker thread panicked outside contained observer panics.
+    /// error if called from the worker thread or if the worker panicked outside
+    /// contained observer panics.
+    ///
+    /// # Errors
+    /// Returns an error when called from the worker thread or when the worker
+    /// panicked outside contained observer panics.
     pub fn close(&self) -> io::Result<()> {
+        let called_from_worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|worker| worker.thread().id() == thread::current().id());
+        if called_from_worker {
+            return Err(io::Error::other(
+                "notification publisher cannot close from its worker thread",
+            ));
+        }
         self.sender
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
