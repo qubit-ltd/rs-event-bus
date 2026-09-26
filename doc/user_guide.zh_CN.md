@@ -92,6 +92,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `EventBus::local` 创建内置本地总线；两个 handler 分别写入演示用集合。`check_admission` 要求至少一个目的地接纳且没有拒绝，过滤掉的目的地不计作拒绝；`wait_for_idle` 等待此 Topic 的本地投递结算，然后示例检查集合内容，最后取消订阅并关闭总线。真实应用应在启动时注册并持有订阅，把集合替换为自己的存储实现，并从总线 worker 之外执行取消和关闭。回执与空闲状态都不能单独证明业务写入成功；生产环境还应记录 handler 的失败并安排重试或补偿。
 
+### 发现 provider 并装配共享总线
+
+使用发现功能时，为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi`：
+
+```toml
+qubit-event-bus = { version = "0.12", features = ["discovery"] }
+qubit-spi = "0.13"
+```
+
+内置 `local` 会出现在同步目录。以下是应用启动装配片段；`OrderService` 由应用定义：
+
+```rust
+use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_spi::ProviderSelection;
+
+let registry = EventBusRegistry::discover()?;
+registry.set_default_selection(ProviderSelection::named("local")?)?;
+registry.seal();
+let bus = registry.create(&EventBusConfig::default())?;
+let orders = OrderService::new(bus.clone());
+```
+
+inventory 在链接期收集最终可执行程序中的 provider 提交。外部 provider 需要成为应用依赖，并在装配模块用 `use provider_crate as _;` 显式链接。`discover()` 遇到重复 selector 会返回带提交来源的错误。若不确定已链接的 provider，可先查看 `provider_ids()`；空目录无法解析创建候选。应用应持有共享总线及订阅句柄，停机时取消订阅并关闭总线。
+
 ## 有订阅者未接纳事件时
 
 `publish` 成功返回的只是 provider 的接纳报告，里面仍可能有被拒绝的目的地。使用 local provider 时，先看 `receipt.admission_outcome()`；需要知道具体订阅者的结果，再看 `receipt.acknowledgement()`。结果可能是全部接纳、部分接纳、全部未接纳、没有目的地、被拦截器丢弃，或 provider 不公开目的地的接纳。`receipt.check_admission(requirement)` 仅检查已有回执，不会再次发布，也不会等待消费者。
@@ -118,6 +142,8 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 - 默认自动确认会接纳成功的 handler 结果。使用 `AckMode::Manual` 时，handler 必须调用 `delivery.acknowledgement().ack()` 或 `.nack()`；直接返回且未作决定会成为投递失败。死信需要配置合适的 Topic；编码型 provider 还需要 `DeadLetterEvent<T>` 的 codec。
 - `EventBus::local(LocalEventBusConfig::default())` 是内置路径。`EventBusRegistry::with_local()` 注册同一个 provider，ID 为 `local`，别名为 `memory` 和 `in-process`。`RequiredCapabilities` 在创建时检查 provider 声明的能力；registry fallback 只发生在创建阶段，不会在运行时故障后自动切换。
 - `AsyncEventBus` 不绑定运行时，但本库没有内置 async local provider 或 broker 适配器。应用需要提供异步 SPI，并在自己的 executor 上驱动 `AsyncSubscription::run`；`run` 不会自行 spawn 任务。
+
+`AsyncEventBusRegistry::discover()` 读取独立的异步目录；同步 `local` 不会出现在其中。异步 provider 在创建时通过 `registry.create(&config).await` 创建。不启用 `discovery` 时，应用仍可用 `new()` 创建任一种 registry，并用 `register()` 显式注册。发现阶段只收集定义；选择、能力校验及按策略回退发生在创建阶段，运行中的发布、接收或关闭故障不会切换 provider。密码、token 和私钥不要放进可由 Debug 输出的 `ProviderOptions`；应使用 provider 自己的安全配置、凭据引用或解析器。
 
 ## 错误与排障
 

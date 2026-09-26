@@ -86,6 +86,30 @@ fn publish_order_created(
 
 Create the local bus with `EventBus::local(LocalEventBusConfig::default())` in application startup. The audit and view handlers receive the same event but own separate storage operations. Keep their `Subscription` handles for the lifetime of the service, then call `cancel()` and shut down the bus from outside its worker threads. A publish receipt describes provider admission; it does not confirm either storage write. `wait_for_idle` can establish local topic idleness when needed, but idleness alone does not prove business success.
 
+### Discover and assemble a shared bus
+
+For discovery, enable the optional feature and add `qubit-spi` as a direct dependency:
+
+```toml
+qubit-event-bus = { version = "0.12", features = ["discovery"] }
+qubit-spi = "0.13"
+```
+
+The built-in `local` provider is available in the synchronous inventory. Put this excerpt in application startup wiring; `OrderService` is an application type:
+
+```rust
+use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_spi::ProviderSelection;
+
+let registry = EventBusRegistry::discover()?;
+registry.set_default_selection(ProviderSelection::named("local")?)?;
+registry.seal();
+let bus = registry.create(&EventBusConfig::default())?;
+let orders = OrderService::new(bus.clone());
+```
+
+Inventory gathers submissions from crates linked into the final executable. For an external provider, add its crate as an application dependency and write `use provider_crate as _;` in the wiring module to keep it linked. `discover()` can report duplicate provider selectors with the submission source. An empty catalog has no creation candidate; inspect `provider_ids()` before selecting one if the linked set is uncertain. Once selected, retain the shared bus and subscription handles in application state. Cancel subscriptions and shut down the bus as part of application shutdown.
+
 ## When publication is only partly accepted
 
 A successful `publish` call returns the provider's admission report, which can still contain rejected destinations. For the local provider, inspect `receipt.admission_outcome()` and then `receipt.acknowledgement()` when individual subscriber results matter. Possible outcomes include accepted, partly accepted, none accepted, no destinations, an interceptor drop, or opaque acceptance from a provider that does not reveal destinations. `receipt.check_admission(requirement)` checks this existing receipt; it does not publish again or wait for consumers.
@@ -98,6 +122,8 @@ If the audit subscriber accepted an event but the customer-view subscriber's bou
 - Automatic acknowledgement accepts a successful handler result. With `AckMode::Manual`, the handler must explicitly call `delivery.acknowledgement().ack()` or `.nack()`; returning without a decision is a delivery failure. Dead-letter delivery requires an appropriate topic and, with an encoded provider, a codec for `DeadLetterEvent<T>`.
 - `EventBus::local(LocalEventBusConfig::default())` is the built-in path. `EventBusRegistry::with_local()` registers the same provider as `local`, with `memory` and `in-process` aliases. `RequiredCapabilities` checks a provider's declared features at creation; registry fallback happens during creation, not after a runtime failure.
 - `AsyncEventBus` is runtime-neutral, but this crate supplies no async local provider or broker adapter. An application must provide an async SPI implementation and drive `AsyncSubscription::run` on its own executor; `run` does not spawn a task.
+
+`AsyncEventBusRegistry::discover()` reads a separate asynchronous inventory; synchronous `local` does not appear there. Async provider creation uses `registry.create(&config).await`. Without `discovery`, applications can still build either registry with `new()` and explicitly `register()` their providers. Discovery gathers definitions; selection, capability checks, and policy-controlled fallback happen during creation. Runtime publish, receive, or shutdown failures do not switch providers. Keep passwords, tokens, and private keys out of the Debug-visible `ProviderOptions`; use a provider-owned secure configuration or credential reference/resolver.
 
 ## Errors and diagnostics
 
