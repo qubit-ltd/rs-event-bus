@@ -6,6 +6,8 @@ All notable changes to `qubit-event-bus` are documented here.
 
 ## Unreleased
 
+## 0.14.0 - 2026-09-27
+
 ### Breaking changes
 
 - Async local subscriptions are ephemeral: closing or dropping the receiver discards queued and in-flight messages; resubscribing with the same ID starts empty. The default local provider-wide outstanding-delivery limit is 65,536, in addition to the per-subscription limit of 1,024.
