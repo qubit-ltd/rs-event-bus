@@ -25,6 +25,7 @@ use super::EventBusSpec;
 use super::async_event_bus_provider_adapter::AsyncEventBusProviderAdapter;
 use crate::error::ProviderError;
 use crate::facade::AsyncEventBus;
+use crate::local::AsyncLocalEventBusProvider;
 use crate::model::ProviderId as FacadeProviderId;
 use crate::spi::AsyncEventBusSpi;
 
@@ -53,6 +54,13 @@ impl AsyncEventBusRegistry {
         Self {
             providers: AsyncProviderRegistry::default(),
         }
+    }
+
+    /// Creates a registry with the built-in asynchronous local provider.
+    pub fn with_local() -> Result<Self, RegistryMutationError> {
+        let registry = Self::new();
+        registry.register(AsyncLocalEventBusProvider)?;
+        Ok(registry)
     }
 
     /// Builds a registry from linked asynchronous provider submissions.
