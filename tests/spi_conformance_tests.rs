@@ -187,6 +187,61 @@ fn sync_local_passes_public_spi_conformance_publish_cases() {
     report.assert_all_passed();
 }
 
+#[cfg(feature = "conformance")]
+#[test]
+fn flume_fixture_passes_public_spi_conformance_without_settlement() {
+    let report = run_sync(crate::support::flume_spi::create, &ConformanceHooks::default());
+    report.assert_all_passed();
+    assert!(report.cases().iter().any(
+        |case| matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "provider-settlement-idempotence")
+    ));
+}
+
+#[test]
+fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
+    let spi = crate::support::flume_spi::create();
+    let request = crate::support::fake_spi::subscription_request();
+    let mut receiver = spi.subscribe(request).unwrap();
+    let first = spi.publish(crate::support::fake_spi::outbound_message()).unwrap();
+    let second = spi.publish(crate::support::fake_spi::outbound_message()).unwrap();
+    assert!(matches!(
+        first,
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)
+            if matches!(admissions[0].status(), qubit_event_bus::model::AdmissionStatus::Accepted)
+    ));
+    assert!(matches!(
+        second,
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)
+            if matches!(admissions[0].status(), qubit_event_bus::model::AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
+    ));
+    assert!(matches!(
+        receiver.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+    receiver.close().unwrap();
+    assert!(matches!(
+        spi.publish(crate::support::fake_spi::outbound_message()).unwrap(),
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
+    ));
+    spi.shutdown(ShutdownMode::Immediate).unwrap();
+
+    let spi = crate::support::flume_spi::create();
+    let bus = qubit_event_bus::EventBus::from_spi(qubit_event_bus::model::ProviderId::new("flume").unwrap(), spi);
+    let topic = qubit_event_bus::model::Topic::<u32>::new("test.topic").unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            qubit_event_bus::model::SubscribeRequest::new("typed", topic.clone()).unwrap(),
+            move |delivery| sender.send(*delivery.payload()).unwrap(),
+        )
+        .unwrap();
+    bus.publish(qubit_event_bus::model::PublishRequest::new(topic, 42).unwrap())
+        .unwrap();
+    assert_eq!(42, receiver.recv_timeout(Duration::from_secs(1)).unwrap());
+    subscription.cancel().unwrap();
+    bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
 fn run_sync_conformance(
     bus: &dyn EventBusSpi,
     subscribe: impl Fn(SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>,

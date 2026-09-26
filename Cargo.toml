@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -49,6 +49,7 @@ thiserror = "^2.0"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 
 [dev-dependencies]
+flume = { version = "=0.12.0", default-features = false }
 loom = "^0.7"
 
 [[bench]]
