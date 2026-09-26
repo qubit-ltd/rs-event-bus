@@ -134,6 +134,8 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         if disposition == DeliveryDisposition::Retry {
             state.enqueue_front(event.event);
             self.queue.ready.notify_one();
+        } else {
+            self.shared.outstanding.release(1);
         }
         token_state.disposition = Some(disposition);
         drop(token_state);
@@ -150,8 +152,10 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             let mut state = self.queue.lock();
             if !state.closed {
                 state.closed = true;
+                let released = state.pending_count() + state.in_flight.len();
                 state.clear_pending();
                 state.in_flight.clear();
+                self.shared.outstanding.release(released);
                 self.queue.ready.notify_all();
             }
         }

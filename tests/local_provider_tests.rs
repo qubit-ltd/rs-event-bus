@@ -993,6 +993,125 @@ fn local_config_rejects_zero_capacity_and_provider_options() {
 }
 
 #[test]
+fn local_config_total_outstanding_round_trips_and_rejects_invalid_values() {
+    let default_config = LocalEventBusConfig::default();
+    assert_eq!(65_536, default_config.get_max_total_outstanding());
+
+    let configured = LocalEventBusConfig::new().max_total_outstanding(2);
+    assert_eq!(2, configured.get_max_total_outstanding());
+    assert_eq!(
+        Some("2"),
+        configured
+            .provider_options()
+            .get("local.max_total_outstanding")
+            .map(String::as_str)
+    );
+    let valid = EventBusConfig::default().with_provider_options(configured.provider_options());
+    assert!(provider().create_configured(&valid).is_ok());
+
+    assert!(LocalEventBusConfig::new().max_total_outstanding(0).validate().is_err());
+    for value in ["0", "not-a-number"] {
+        let invalid = EventBusConfig::default()
+            .with_provider_options([("local.max_total_outstanding".to_owned(), value.to_owned())].into());
+        assert!(
+            provider().create_configured(&invalid).is_err(),
+            "accepted invalid total capacity {value}"
+        );
+    }
+}
+
+#[test]
+fn provider_total_capacity_counts_in_flight_until_terminal_settlement() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
+    let mut first = spi.subscribe(request(701, "capacity.first")).unwrap();
+    let mut second = spi.subscribe(request(702, "capacity.second")).unwrap();
+
+    let PublishAcknowledgement::DestinationAdmissions(first_admission) =
+        spi.publish(outbound("capacity.first", 1)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(matches!(first_admission[0].status(), AdmissionStatus::Accepted));
+
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.second", 2)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(
+        matches!(rejected[0].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider outstanding capacity is full")
+    );
+
+    let ReceiveOutcome::Message(mut message) = first.receive(Duration::ZERO).unwrap() else {
+        panic!("accepted message is available for settlement");
+    };
+    let token = message.take_settlement().unwrap();
+    first.settle(&token, DeliveryDisposition::Retry).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.second", 3)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(matches!(rejected[0].status(), AdmissionStatus::Rejected(_)));
+
+    let ReceiveOutcome::Message(mut retried) = first.receive(Duration::ZERO).unwrap() else {
+        panic!("retried message remains available");
+    };
+    first
+        .settle(&retried.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.second", 4)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
+
+    let ReceiveOutcome::Message(mut second_message) = second.receive(Duration::ZERO).unwrap() else {
+        panic!("accepted message is available for rejection");
+    };
+    second
+        .settle(&second_message.take_settlement().unwrap(), DeliveryDisposition::Reject)
+        .unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.first", 5)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
+    first.close().unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.second", 6)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
+}
+
+#[test]
+fn provider_total_capacity_preserves_partial_destination_admissions() {
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
+    let _first = spi.subscribe(request(711, "capacity.partial")).unwrap();
+    let _second = spi.subscribe(request(712, "capacity.partial")).unwrap();
+
+    let PublishAcknowledgement::DestinationAdmissions(admissions) =
+        spi.publish(outbound("capacity.partial", 7)).unwrap()
+    else {
+        panic!("local provider reports per destination admission");
+    };
+    assert_eq!(2, admissions.len());
+    assert_eq!(
+        1,
+        admissions
+            .iter()
+            .filter(|admission| matches!(admission.status(), AdmissionStatus::Accepted))
+            .count()
+    );
+    assert_eq!(
+        1,
+        admissions
+            .iter()
+            .filter(|admission| matches!(admission.status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider outstanding capacity is full"))
+            .count()
+    );
+}
+
+#[test]
 fn settlement_rejects_token_from_another_subscription() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(31, "events")).unwrap();
