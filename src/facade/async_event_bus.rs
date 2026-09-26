@@ -553,7 +553,9 @@ impl AsyncEventBus {
     /// Creates an asynchronous provider subscription without spawning a task.
     /// Until [`AsyncSubscription::run`] starts, the facade retains ownership
     /// of its provider receiver so [`Self::shutdown`] can close it even if the
-    /// returned subscription is never run.
+    /// returned subscription is never run. Unsupported acknowledgement,
+    /// ordering, durability, consumer-group, replay, and codec requirements
+    /// return a capability error before provider subscription.
     pub async fn subscribe<T: Send + Sync + 'static>(
         &self,
         request: SubscribeRequest<T>,
@@ -581,6 +583,7 @@ impl AsyncEventBus {
         if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
+        crate::pipeline::SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = Id::new(raw_id);
         let spi_request = SpiSubscriptionRequest::new(

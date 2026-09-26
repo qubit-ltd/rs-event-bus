@@ -406,8 +406,9 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns `Closed` after shutdown begins, `Capability` for unsupported
-    /// manual acknowledgement or per-key ordering, `Configuration` for
-    /// runtime-model mismatches, or the provider subscription error.
+    /// acknowledgement, ordering, durability, consumer-group, replay, or codec
+    /// requirements, `Configuration` for runtime-model mismatches, or the
+    /// provider subscription error.
     pub fn subscribe<T, H, R>(&self, request: SubscribeRequest<T>, handler: H) -> Result<Subscription, SubscribeError>
     where
         T: Send + Sync + 'static,
@@ -438,6 +439,7 @@ impl EventBus {
         if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
+        SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
         let id = self.next_subscription_id()?;
         let address = TopicAddress::new(topic.name())?;
         let spi_request = SpiSubscriptionRequest::new(
