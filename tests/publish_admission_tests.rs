@@ -95,7 +95,7 @@ fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([acknowledgement])),
     });
-    let bus = EventBus::new(ProviderId::new("admission-test").expect("valid provider ID"), provider);
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider);
     let topic = Topic::<String>::new("orders.created").expect("valid topic");
     let request = PublishRequest::new(topic, "order-1".to_owned()).expect("request builds");
     let receipt = bus

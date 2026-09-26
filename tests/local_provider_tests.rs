@@ -499,7 +499,7 @@ fn idle_wait_includes_delayed_queued_message() {
 fn idle_wait_includes_in_flight_message() {
     let spi = create(&LocalEventBusConfig::default());
     let mut receiver = spi.subscribe(request(131, "idle.inflight")).unwrap();
-    let bus = EventBus::new(ProviderId::new("local").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
     let topic = Topic::<u32>::new("idle.inflight").unwrap();
     bus.publish(PublishRequest::new(topic.clone(), 7).unwrap()).unwrap();
     let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
@@ -523,7 +523,7 @@ fn idle_wait_includes_in_flight_message() {
 fn idle_wait_wakes_when_subscription_closes() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut receiver = spi.subscribe(request(132, "idle.close")).unwrap();
-    let bus = EventBus::new(ProviderId::new("local").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
     let topic = Topic::<u32>::new("idle.close").unwrap();
     bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
     assert_eq!(
@@ -550,7 +550,7 @@ fn idle_wait_wakes_when_subscription_closes() {
 #[test]
 fn idle_wait_is_unsupported_for_generic_provider() {
     let spi = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::new(ProviderId::new("fake").unwrap(), spi);
+    let bus = EventBus::from_spi(ProviderId::new("fake").unwrap(), spi);
     let topic = Topic::<u32>::new("idle.unsupported").unwrap();
 
     assert!(matches!(
