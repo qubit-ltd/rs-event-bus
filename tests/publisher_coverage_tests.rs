@@ -229,7 +229,7 @@ impl EventBusSpi for CoverageSpi {
 }
 
 fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
-    EventBus::new(ProviderId::new("publisher-coverage").unwrap(), spi)
+    EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi)
 }
 
 #[test]
@@ -803,7 +803,7 @@ fn typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
 
 #[test]
 fn async_spi_future_panic_becomes_source_preserving_publish_error() {
-    let bus = AsyncEventBus::new(
+    let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-coverage").unwrap(),
         Arc::new(PanickingAsyncPublishSpi),
     );
@@ -827,7 +827,7 @@ fn async_spi_future_panic_becomes_source_preserving_publish_error() {
 
 #[test]
 fn async_spi_future_construction_panic_becomes_source_preserving_publish_error() {
-    let bus = AsyncEventBus::new(
+    let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-construction-panic").unwrap(),
         Arc::new(PanickingAsyncPublishConstructionSpi),
     );
@@ -854,7 +854,7 @@ fn async_spi_future_construction_panic_becomes_source_preserving_publish_error()
 
 #[test]
 fn async_publisher_accepts_distinct_native_payload_types_without_clone_bounds() {
-    let bus = AsyncEventBus::new(
+    let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-generic-publisher-coverage").unwrap(),
         Arc::new(AcceptingAsyncPublishSpi),
     );

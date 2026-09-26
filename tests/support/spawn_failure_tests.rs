@@ -126,7 +126,7 @@ impl EventSubscriptionSpi for CloseCounter {
 
 #[test]
 fn failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
-    let bus = EventBus::new(
+    let bus = EventBus::from_spi(
         ProviderId::new("spawn-test").expect("valid provider ID"),
         Arc::new(EmptySpi),
     );

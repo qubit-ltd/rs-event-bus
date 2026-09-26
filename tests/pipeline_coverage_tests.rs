@@ -52,7 +52,7 @@ fn handler_error(message: &'static str) -> DeliveryError {
 #[test]
 fn retry_runs_interceptor_and_handler_again() {
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::new(ProviderId::new("pipeline-retry").unwrap(), backend.clone());
+    let bus = EventBus::from_spi(ProviderId::new("pipeline-retry").unwrap(), backend.clone());
     let attempts = Arc::new(AtomicUsize::new(0));
     let intercepted = Arc::new(AtomicUsize::new(0));
     let (completed_tx, completed_rx) = mpsc::channel();

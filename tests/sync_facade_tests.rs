@@ -541,7 +541,7 @@ fn test_spi_error(operation: &'static str) -> SpiError {
 
 fn create_bus() -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
-    let bus = EventBus::new(
+    let bus = EventBus::from_spi(
         ProviderId::new("sync-test").expect("valid provider ID"),
         backend.clone(),
     );

@@ -89,7 +89,7 @@ impl EventSubscriptionSpi for CloseFailureSubscription {
 
 #[test]
 fn test_close_errors_aggregate_failures_and_preserve_the_source_chain() {
-    let bus = EventBus::new(
+    let bus = EventBus::from_spi(
         ProviderId::new("close-failure").expect("valid provider ID"),
         Arc::new(CloseFailureProvider),
     );

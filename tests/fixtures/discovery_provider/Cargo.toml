@@ -1,0 +1,8 @@
+[package]
+name = "discovery-provider-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+qubit-event-bus = { path = "../../..", features = ["discovery"] }
+qubit-spi = { version = "0.13", features = ["inventory"] }
