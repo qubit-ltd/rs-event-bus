@@ -19,7 +19,7 @@ use qubit_id::Id;
 
 use super::async_local_event_bus_spi::AsyncLocalShared;
 use super::async_local_event_bus_spi::AsyncMailbox;
-use super::async_local_event_bus_spi::requeue_in_flight;
+use super::async_local_event_bus_spi::close_mailbox;
 use super::local_event_bus_spi::invalid_token_error;
 use super::state::LocalSettlementState;
 
@@ -176,6 +176,8 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 .expect("validated in-flight delivery");
             if disposition == DeliveryDisposition::Retry {
                 state.enqueue_front(delivery.event);
+            } else {
+                self.shared.outstanding.release(1);
             }
             token_state.disposition = Some(disposition);
             drop(token_state);
@@ -187,21 +189,11 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
     }
 
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
-        let queue = Arc::clone(&self.mailbox.queue);
         let shared = Arc::clone(&self.shared);
         let mailbox = Arc::clone(&self.mailbox);
         Box::pin(async move {
-            {
-                let mut state = queue.lock();
-                if !state.closed {
-                    state.closed = true;
-                    requeue_in_flight(&mut state);
-                }
-            }
-            *mailbox.active.lock().unwrap_or_else(PoisonError::into_inner) = false;
+            close_mailbox(&shared, &mailbox);
             self.closed = true;
-            queue.async_ready.notify_all();
-            shared.changed.notify_all();
             Ok(())
         })
     }
@@ -210,13 +202,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
 impl Drop for AsyncLocalEventSubscription {
     fn drop(&mut self) {
         if !self.closed {
-            let mut state = self.mailbox.queue.lock();
-            state.closed = true;
-            requeue_in_flight(&mut state);
-            drop(state);
-            *self.mailbox.active.lock().unwrap_or_else(PoisonError::into_inner) = false;
-            self.mailbox.queue.async_ready.notify_all();
-            self.shared.changed.notify_all();
+            close_mailbox(&self.shared, &self.mailbox);
         }
     }
 }

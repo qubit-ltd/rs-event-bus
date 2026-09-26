@@ -11,6 +11,7 @@ mod support;
 
 use std::any::TypeId;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -67,6 +68,126 @@ fn async_local_reports_capacity_rejection_per_destination() {
 }
 
 #[test]
+fn async_local_total_capacity_counts_in_flight_until_terminal_settlement() {
+    let config = LocalEventBusConfig::new().max_total_outstanding(1);
+    let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&config).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let first_topic = Topic::<String>::new("async.local.total-first").unwrap();
+    let second_topic = Topic::<String>::new("async.local.total-second").unwrap();
+    let mut first = block_on(spi.subscribe(spi_request(700, "first", "async.local.total-first"))).unwrap();
+    let mut second = block_on(spi.subscribe(spi_request(701, "second", "async.local.total-second"))).unwrap();
+
+    let accepted = block_on(bus.publish(PublishRequest::new(first_topic.clone(), "one".to_owned()).unwrap())).unwrap();
+    assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    let rejected = block_on(bus.publish(PublishRequest::new(second_topic.clone(), "two".to_owned()).unwrap())).unwrap();
+    assert!(matches!(
+        rejected.admission_outcome(),
+        AdmissionOutcome::NoneAccepted(_)
+    ));
+
+    let ReceiveOutcome::Message(mut message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("accepted message is available for settlement");
+    };
+    let token = message.take_settlement().unwrap();
+    block_on(first.settle(&token, DeliveryDisposition::Retry)).unwrap();
+    let rejected =
+        block_on(bus.publish(PublishRequest::new(second_topic.clone(), "three".to_owned()).unwrap())).unwrap();
+    assert!(matches!(
+        rejected.admission_outcome(),
+        AdmissionOutcome::NoneAccepted(_)
+    ));
+
+    let ReceiveOutcome::Message(mut retried) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("retried message remains available");
+    };
+    block_on(first.settle(&retried.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    let accepted =
+        block_on(bus.publish(PublishRequest::new(second_topic.clone(), "four".to_owned()).unwrap())).unwrap();
+    assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
+
+    let ReceiveOutcome::Message(mut second_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("accepted message is available for rejection");
+    };
+    block_on(second.settle(&second_message.take_settlement().unwrap(), DeliveryDisposition::Reject)).unwrap();
+    let accepted =
+        block_on(bus.publish(PublishRequest::new(first_topic.clone(), "after-reject".to_owned()).unwrap())).unwrap();
+    assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
+
+    block_on(first.close()).unwrap();
+    let accepted = block_on(bus.publish(PublishRequest::new(second_topic, "after-close".to_owned()).unwrap())).unwrap();
+    assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    block_on(second.close()).unwrap();
+    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_drop_racing_publish_releases_capacity_after_close() {
+    let config = LocalEventBusConfig::new().max_total_outstanding(1);
+    let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&config).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let first_topic = Topic::<String>::new("async.local.drop-publish-first").unwrap();
+    let second_topic = Topic::<String>::new("async.local.drop-publish-second").unwrap();
+    let first = block_on(spi.subscribe(spi_request(702, "first", "async.local.drop-publish-first"))).unwrap();
+    let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second"))).unwrap();
+    block_on(bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).unwrap())).unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let worker_barrier = Arc::clone(&barrier);
+    let worker_bus = bus.clone();
+    let worker_topic = second_topic.clone();
+    let worker = std::thread::spawn(move || {
+        worker_barrier.wait();
+        drop(first);
+        block_on(worker_bus.publish(PublishRequest::new(worker_topic, "racing".to_owned()).unwrap())).unwrap()
+    });
+    barrier.wait();
+    let raced = worker.join().unwrap();
+    if matches!(raced.admission_outcome(), AdmissionOutcome::Accepted(_)) {
+        let ReceiveOutcome::Message(mut message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+            panic!("racing accepted message remains available");
+        };
+        block_on(second.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    }
+    let after_close =
+        block_on(bus.publish(PublishRequest::new(second_topic, "after-close".to_owned()).unwrap())).unwrap();
+    assert!(matches!(after_close.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_settlement_racing_shutdown_never_leaks_budget() {
+    let config = LocalEventBusConfig::new().max_total_outstanding(1);
+    let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&config).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<String>::new("async.local.settle-shutdown-race").unwrap();
+    let mut receiver = block_on(spi.subscribe(spi_request(704, "race", "async.local.settle-shutdown-race"))).unwrap();
+    block_on(bus.publish(PublishRequest::new(topic, "racing".to_owned()).unwrap())).unwrap();
+    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).unwrap() else {
+        panic!("accepted message is available for settlement");
+    };
+    let token = message.take_settlement().unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let settle_barrier = Arc::clone(&barrier);
+    let settle = std::thread::spawn(move || {
+        settle_barrier.wait();
+        block_on(receiver.settle(&token, DeliveryDisposition::Accept))
+    });
+    let shutdown_barrier = Arc::clone(&barrier);
+    let shutdown_spi = Arc::clone(&spi);
+    let shutdown = std::thread::spawn(move || {
+        shutdown_barrier.wait();
+        block_on(shutdown_spi.shutdown(ShutdownMode::Immediate))
+    });
+    barrier.wait();
+
+    let _ = settle.join().unwrap();
+    assert_eq!(
+        qubit_event_bus::spi::ShutdownOutcome::Complete,
+        shutdown.join().unwrap().unwrap()
+    );
+}
+
+#[test]
 fn async_local_is_registered_in_the_async_provider_catalog() {
     let registry = qubit_event_bus::AsyncEventBusRegistry::with_local().unwrap();
     assert_eq!(
@@ -111,14 +232,15 @@ fn async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
 }
 
 #[test]
-fn async_local_drop_preserves_pending_messages_for_the_same_subscriber() {
+fn async_local_drop_discards_pending_messages_for_the_same_subscriber() {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
     let topic = Topic::<String>::new("async.local.recovery").unwrap();
     let first = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap();
     block_on(bus.publish(PublishRequest::new(topic.clone(), "retained".to_owned()).unwrap())).unwrap();
     drop(first);
 
-    let mut resumed = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic).unwrap())).unwrap();
+    drop(block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap());
+    let mut resumed = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap();
     let (sender, receiver) = mpsc::channel();
     let runner = std::thread::spawn(move || {
         block_on(resumed.run(move |delivery| {
@@ -126,7 +248,8 @@ fn async_local_drop_preserves_pending_messages_for_the_same_subscriber() {
             async { Ok(()) }
         }))
     });
-    assert_eq!("retained", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+    block_on(bus.publish(PublishRequest::new(topic, "fresh".to_owned()).unwrap())).unwrap();
+    assert_eq!("fresh", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     runner.join().unwrap().unwrap();
 }
@@ -201,7 +324,50 @@ fn async_local_receiver_close_wakes_pending_receive() {
 }
 
 #[test]
-fn async_local_drop_requeues_an_unsettled_in_flight_delivery() {
+fn async_local_close_removes_the_destination_and_topic_type_binding() {
+    let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let mut receiver = block_on(spi.subscribe(spi_request(40, "close-removes", "async.local.close-removes"))).unwrap();
+    block_on(receiver.close()).unwrap();
+
+    let no_destination =
+        block_on(bus.publish(PublishRequest::new(Topic::<u32>::new("async.local.close-removes").unwrap(), 1).unwrap()))
+            .unwrap();
+    assert!(matches!(
+        no_destination.acknowledgement(),
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
+    ));
+
+    let new_type = spi_request_with_type(41, "new-type", "async.local.close-removes", TypeId::of::<String>());
+    let mut replacement = block_on(spi.subscribe(new_type)).unwrap();
+    assert!(matches!(
+        block_on(replacement.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    block_on(replacement.close()).unwrap();
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_drop_does_not_leave_stale_destinations() {
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
+    let topic = Topic::<u32>::new("async.local.stale-destinations").unwrap();
+    for index in 0..100 {
+        let subscriber = format!("consumer-{index}");
+        let subscription = block_on(bus.subscribe(SubscribeRequest::new(&subscriber, topic.clone()).unwrap())).unwrap();
+        drop(subscription);
+    }
+
+    let receipt = block_on(bus.publish(PublishRequest::new(topic, 1).unwrap())).unwrap();
+    assert!(matches!(
+        receipt.acknowledgement(),
+        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
+    ));
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_drop_discards_an_unsettled_in_flight_delivery() {
     let spi = Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
     let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
     let mut first = block_on(spi.subscribe(spi_request(10, "in-flight-recovery", "async.local.requeue"))).unwrap();
@@ -222,14 +388,11 @@ fn async_local_drop_requeues_an_unsettled_in_flight_delivery() {
     drop(first);
 
     let mut second = block_on(spi.subscribe(spi_request(11, "in-flight-recovery", "async.local.requeue"))).unwrap();
-    let ReceiveOutcome::Message(mut redelivery) = block_on(second.receive(Duration::ZERO)).unwrap() else {
-        panic!("unsettled message should be requeued");
-    };
-    let token = redelivery.take_settlement().unwrap();
-    block_on(second.settle(&token, DeliveryDisposition::Accept)).unwrap();
-    block_on(second.settle(&token, DeliveryDisposition::Accept)).unwrap();
-    let conflict = block_on(second.settle(&token, DeliveryDisposition::Reject)).unwrap_err();
-    assert_eq!("invalid_settlement_token", conflict.kind());
+    assert!(matches!(
+        block_on(second.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    block_on(second.close()).unwrap();
 }
 
 #[test]
@@ -324,7 +487,13 @@ fn async_local_graceful_shutdown_observes_finite_timeout() {
     ));
 }
 
+/// Builds a local SPI request for a native `String` payload.
 fn spi_request(id: u64, subscriber: &str, topic: &str) -> SpiSubscriptionRequest {
+    spi_request_with_type(id, subscriber, topic, TypeId::of::<String>())
+}
+
+/// Builds a local SPI request with an explicit native payload type identity.
+fn spi_request_with_type(id: u64, subscriber: &str, topic: &str, payload_type_id: TypeId) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         qubit_id::Id::new(id),
         TopicAddress::new(topic).unwrap(),
@@ -333,7 +502,7 @@ fn spi_request(id: u64, subscriber: &str, topic: &str) -> SpiSubscriptionRequest
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::default(),
-        TypeId::of::<String>(),
+        payload_type_id,
     )
 }
 

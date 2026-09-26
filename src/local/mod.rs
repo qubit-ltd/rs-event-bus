@@ -15,6 +15,7 @@ mod local_event_bus_config;
 mod local_event_bus_provider;
 mod local_event_bus_spi;
 mod local_event_subscription;
+mod outstanding_budget;
 mod state;
 
 pub use async_local_event_bus_provider::AsyncLocalEventBusProvider;
