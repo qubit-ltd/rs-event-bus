@@ -15,7 +15,9 @@ use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusProviderError;
 use qubit_event_bus::EventBusSpec;
+use qubit_event_bus::ProviderError;
 use qubit_event_bus::RequiredCapabilities;
+use qubit_event_bus::registry::async_provider_inventory::Entry;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_spi::AsyncServiceProvider;
 use qubit_spi::ProviderDescriptor;
@@ -26,6 +28,7 @@ use qubit_spi::ProviderSelection;
 use qubit_spi::error::ProviderCreationError;
 use qubit_spi::error::ProviderFailure;
 use qubit_spi::error::ProviderFailureKind;
+use qubit_spi::submit_async_provider;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::manual_async::block_on;
 
@@ -46,8 +49,8 @@ impl AsyncServiceProvider<EventBusSpec> for DiscoveredAsyncProvider {
     }
 }
 
-qubit_spi::submit_async_provider! {
-    inventory_entry = qubit_event_bus::registry::async_provider_inventory::Entry;
+submit_async_provider! {
+    inventory_entry = Entry;
     spec = EventBusSpec;
     provider = DiscoveredAsyncProvider;
 }
@@ -72,7 +75,7 @@ fn discovered_async_provider_rejects_missing_capability() {
         .with_selection(ProviderSelection::named("test-async-discovered").unwrap())
         .with_required_capabilities(RequiredCapabilities::new().durable());
     let result = block_on(registry.create(&config));
-    let Err(qubit_event_bus::ProviderError::Creation { source }) = result else {
+    let Err(ProviderError::Creation { source }) = result else {
         panic!("missing capability must fail during provider creation");
     };
     let creation_error = source

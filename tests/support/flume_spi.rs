@@ -17,7 +17,9 @@ use qubit_event_bus::SpiError;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
+use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
@@ -35,14 +37,15 @@ use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
 
 const QUEUE_CAPACITY: usize = 1;
 
 struct Route {
-    topic: qubit_event_bus::spi::TopicAddress,
-    subscriber: qubit_event_bus::model::SubscriberId,
+    topic: TopicAddress,
+    subscriber: SubscriberId,
     sender: flume::Sender<InboundMessage>,
 }
 
@@ -50,7 +53,7 @@ struct Route {
 struct State {
     closed: bool,
     routes: HashMap<Id, Route>,
-    payload_types: HashMap<qubit_event_bus::spi::TopicAddress, TypeId>,
+    payload_types: HashMap<TopicAddress, TypeId>,
 }
 
 #[derive(Clone, Default)]
@@ -181,11 +184,7 @@ impl EventSubscriptionSpi for FlumeSubscription {
         }
     }
 
-    fn settle(
-        &mut self,
-        _token: &SettlementToken,
-        _disposition: qubit_event_bus::spi::DeliveryDisposition,
-    ) -> Result<(), SpiError> {
+    fn settle(&mut self, _token: &SettlementToken, _disposition: DeliveryDisposition) -> Result<(), SpiError> {
         Err(operation_error("settle", "settlement_unsupported"))
     }
 
