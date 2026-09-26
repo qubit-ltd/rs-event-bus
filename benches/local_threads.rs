@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
@@ -33,6 +34,8 @@ const WARMUPS: usize = 2;
 const SAMPLES: usize = 7;
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+type ReceiveRunner<'a> = Pin<Box<dyn Future<Output = Result<(), qubit_event_bus::error::ReceiveError>> + 'a>>;
 
 /// One child-process sample result, with an empty thread count off Linux.
 struct Sample {
@@ -187,13 +190,61 @@ fn sample_async(subscription_count: usize) -> Sample {
         }
     }
     let creation_ns = started.elapsed().as_nanos();
+    let mut runners: Vec<ReceiveRunner<'_>> = subscriptions
+        .iter_mut()
+        .map(|subscription| Box::pin(subscription.run(|_| async { Ok(()) })) as _)
+        .collect();
+    let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut pending = 0;
+    for runner in &mut runners {
+        if runner.as_mut().poll(&mut context).is_pending() {
+            pending += 1;
+        }
+    }
+    if pending != subscription_count {
+        return Sample {
+            status: "receiver_not_pending",
+            creation_ns,
+            close_ns: 0,
+            baseline_threads,
+            peak_threads,
+        };
+    }
     let close_started = Instant::now();
-    drop(subscriptions);
-    let status = if block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok() {
-        "success"
-    } else {
-        "shutdown_failed"
-    };
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    let mut shutdown_done = false;
+    let mut status = "success";
+    let mut completed = vec![false; runners.len()];
+    while completed.iter().any(|ready| !ready) || !shutdown_done {
+        let mut pending = 0;
+        for (index, runner) in runners.iter_mut().enumerate() {
+            if completed[index] {
+                continue;
+            }
+            match runner.as_mut().poll(&mut context) {
+                Poll::Ready(Ok(())) => completed[index] = true,
+                Poll::Ready(Err(_)) => {
+                    completed[index] = true;
+                    status = "receiver_failed";
+                }
+                Poll::Pending => pending += 1,
+            }
+        }
+        if !shutdown_done {
+            match shutdown.as_mut().poll(&mut context) {
+                Poll::Ready(Ok(_)) => shutdown_done = true,
+                Poll::Ready(Err(_)) => {
+                    shutdown_done = true;
+                    status = "shutdown_failed";
+                }
+                Poll::Pending => pending += 1,
+            }
+        }
+        if pending != 0 {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+    }
     Sample {
         status,
         creation_ns,
