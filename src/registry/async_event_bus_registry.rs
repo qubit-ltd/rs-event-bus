@@ -55,6 +55,29 @@ impl AsyncEventBusRegistry {
         }
     }
 
+    /// Builds a registry from linked asynchronous provider submissions.
+    ///
+    /// Each submitted provider uses the same adapter as
+    /// [`Self::register_shared`]. Provider SPIs are created later by
+    /// [`Self::create`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error containing the submission source when a provider
+    /// cannot be registered, including duplicate selectors.
+    ///
+    /// # Panics
+    ///
+    /// Propagates panics from submitted provider factories or descriptor
+    /// callbacks.
+    #[cfg(feature = "discovery")]
+    pub fn discover() -> Result<Self, qubit_spi::error::ProviderInventoryBuildError> {
+        let providers = super::async_provider_inventory::build_registry_with(|provider| {
+            Arc::new(AsyncEventBusProviderAdapter::new(provider))
+        })?;
+        Ok(Self { providers })
+    }
+
     /// Registers an owned asynchronous provider.
     pub fn register<P>(&self, provider: P) -> Result<(), RegistryMutationError>
     where

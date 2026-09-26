@@ -55,6 +55,28 @@ impl EventBusRegistry {
         }
     }
 
+    /// Builds a registry from linked synchronous provider submissions.
+    ///
+    /// Each submitted provider uses the same adapter as
+    /// [`Self::register_shared`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error containing the submission source when a provider cannot
+    /// be registered, including duplicate selectors.
+    ///
+    /// # Panics
+    ///
+    /// Propagates panics from submitted provider factories or descriptor
+    /// callbacks. Event-bus SPIs are created later by [`Self::create`].
+    #[cfg(feature = "discovery")]
+    pub fn discover() -> Result<Self, qubit_spi::error::ProviderInventoryBuildError> {
+        let providers = super::sync_provider_inventory::build_registry_with(|provider| {
+            Arc::new(EventBusProviderAdapter::new(provider))
+        })?;
+        Ok(Self { providers })
+    }
+
     /// Creates a registry preloaded with the built-in local provider.
     ///
     /// # Errors

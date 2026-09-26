@@ -63,6 +63,13 @@ impl ServiceProvider<EventBusSpec> for LocalEventBusProvider {
     }
 }
 
+#[cfg(feature = "discovery")]
+qubit_spi::submit_sync_provider! {
+    inventory_entry = crate::registry::sync_provider_inventory::Entry;
+    spec = crate::registry::EventBusSpec;
+    provider = LocalEventBusProvider;
+}
+
 #[cfg(test)]
 mod tests {
     use qubit_spi::ProviderMetadata;

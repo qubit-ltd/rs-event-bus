@@ -28,6 +28,10 @@ include = [
 name = "qubit_event_bus"
 doctest = true
 
+[features]
+default = []
+discovery = ["qubit-spi/inventory"]
+
 [dependencies]
 qubit-argument = { version = "0.4" }
 qubit-clock = "0.13"
