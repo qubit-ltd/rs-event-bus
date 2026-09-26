@@ -7,6 +7,9 @@
 // =============================================================================
 //! Object-safe backend service provider interfaces and transport contracts.
 
+#[cfg(feature = "conformance")]
+pub mod conformance;
+
 mod async_event_bus_spi;
 mod async_event_subscription_spi;
 mod delayed_delivery_capability;

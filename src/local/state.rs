@@ -177,7 +177,9 @@ impl SharedPayload {
     pub(super) fn from_transport(payload: &TransportPayload) -> Self {
         match payload {
             TransportPayload::Native(value) => Self::Native(value.clone()),
-            TransportPayload::Encoded(_) => unreachable!("encoded payloads are rejected by local SPI"),
+            TransportPayload::Encoded(_) => {
+                unreachable!("encoded payloads are rejected by local SPI")
+            }
         }
     }
 
@@ -418,6 +420,8 @@ pub(super) struct LocalQueue {
     pub(super) state: Mutex<LocalQueueState>,
     /// Wakes synchronous receives after publish, close, or shutdown.
     pub(super) ready: Condvar,
+    /// Wakes asynchronous receives after provider state changes.
+    pub(super) async_ready: super::async_signal::AsyncSignal,
 }
 
 impl LocalQueue {
@@ -534,6 +538,8 @@ pub(super) struct LocalSharedState {
     pub(super) state: Mutex<BusState>,
     /// Signals provider-level queue or settlement progress.
     pub(super) changed: Condvar,
+    /// Wakes asynchronous provider progress waiters.
+    pub(super) async_changed: super::async_signal::AsyncSignal,
     /// Serializes concurrent shutdown callers through the final outcome.
     pub(super) shutdown_gate: Mutex<()>,
     /// Pending message bound copied into each new queue.
@@ -546,6 +552,7 @@ impl LocalSharedState {
         Arc::new(Self {
             state: Mutex::new(BusState::default()),
             changed: Condvar::new(),
+            async_changed: super::async_signal::AsyncSignal::default(),
             shutdown_gate: Mutex::new(()),
             capacity,
         })
@@ -690,6 +697,7 @@ mod tests {
             capacity: 1,
             state: Mutex::new(LocalQueueState::default()),
             ready: std::sync::Condvar::new(),
+            async_ready: crate::local::async_signal::AsyncSignal::default(),
         });
         let mut bucket = TopicSubscriptions::default();
         bucket.queues.insert(id, Arc::downgrade(&queue));

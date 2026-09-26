@@ -34,10 +34,72 @@ use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::ConformanceCase;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::ConformanceHooks;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::run_sync;
 use qubit_spi::ServiceProvider;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
+
+#[cfg(feature = "conformance")]
+#[test]
+fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
+    let hooks = ConformanceHooks {
+        settlement: Some(Arc::new(|| Err("repeated settlement changed result".into()))),
+        receive_cancellation: None,
+    };
+    let report = run_sync(
+        || {
+            Arc::new(FakeEventBusSpi::with_capabilities(
+                crate::support::fake_spi::full_capabilities(),
+            ))
+        },
+        &hooks,
+    );
+    assert!(!report.all_passed());
+    assert!(
+        matches!(report.cases().first(), Some(ConformanceCase::Passed { case_id }) if case_id == "capability-payload-mode")
+    );
+    assert!(
+        report
+            .cases()
+            .iter()
+            .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "declared-native-publish"))
+    );
+    assert!(report.cases().iter().any(
+        |case| matches!(case, ConformanceCase::Failed { case_id, .. } if case_id == "provider-settlement-idempotence")
+    ));
+    assert!(
+        report
+            .cases()
+            .iter()
+            .any(|case| matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "receive-cancellation"))
+    );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn public_conformance_runner_probes_encoded_only_providers() {
+    let report = run_sync(
+        || {
+            Arc::new(FakeEventBusSpi::with_capabilities(
+                crate::support::provider_shapes::encoded_settlement_capabilities(),
+            ))
+        },
+        &ConformanceHooks::default(),
+    );
+    assert!(report.all_passed());
+    assert!(
+        report
+            .cases()
+            .iter()
+            .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "declared-encoded-publish"))
+    );
+}
 
 #[test]
 fn sync_conformance_accepts_provider_supplied_trait_object_factory_and_gates_cases() {
@@ -105,6 +167,24 @@ fn local_sync_provider_passes_supported_spi_conformance_cases() {
     assert!(local_cases.contains(&"native-publish-receive"));
     assert!(local_cases.contains(&"settlement"));
     assert!(local_cases.contains(&"skip-gap-provider-does-not-support-gap-injection"));
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn sync_local_passes_public_spi_conformance_publish_cases() {
+    use qubit_event_bus::spi::conformance::ConformanceHooks;
+    use qubit_event_bus::spi::conformance::run_sync;
+
+    let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
+    let report = run_sync(
+        || {
+            LocalEventBusProvider
+                .create_configured(&config)
+                .expect("local provider config is valid")
+        },
+        &ConformanceHooks::default(),
+    );
+    report.assert_all_passed();
 }
 
 fn run_sync_conformance(

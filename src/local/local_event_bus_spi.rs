@@ -152,7 +152,11 @@ impl EventBusSpi for LocalEventBusSpi {
                 admitted_any = true;
                 AdmissionStatus::Accepted
             };
+            let wake_async = status == AdmissionStatus::Accepted;
             drop(state);
+            if wake_async {
+                queue.async_ready.notify_all();
+            }
             admissions.push(DestinationAdmission::new(queue.id, queue.subscriber_id.clone(), status));
         }
         if admitted_any {
@@ -170,6 +174,7 @@ impl EventBusSpi for LocalEventBusSpi {
             capacity: self.shared.capacity,
             state: Mutex::new(LocalQueueState::default()),
             ready: Default::default(),
+            async_ready: Default::default(),
         });
         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.closed {
@@ -288,6 +293,7 @@ impl EventBusSpi for LocalEventBusSpi {
             state.in_flight.clear();
             queue.ready.notify_all();
             drop(state);
+            queue.async_ready.notify_all();
         }
         self.shared
             .state
@@ -349,4 +355,5 @@ pub(super) fn signal_changed(shared: &LocalSharedState) {
     state.change_version = state.change_version.wrapping_add(1);
     drop(state);
     shared.changed.notify_all();
+    shared.async_changed.notify_all();
 }
