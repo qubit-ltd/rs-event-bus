@@ -145,6 +145,7 @@ struct AsyncSession<T: 'static> {
     id: Id,
     subscriber_id: SubscriberId,
     topic: Topic<T>,
+    codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
     options: SubscribeOptions<T>,
     receiver: Option<Box<dyn AsyncEventSubscriptionSpi>>,
     signals: Arc<SessionSignals>,
@@ -409,11 +410,15 @@ const SETTLEMENT_RETRY_BASE_DELAY: Duration = Duration::from_millis(10);
 const SETTLEMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
+    // Keep session construction explicit: each argument maps to owned runtime
+    // state.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         inner: Arc<AsyncEventBusInner>,
         id: Id,
         subscriber_id: SubscriberId,
         topic: Topic<T>,
+        codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
         options: SubscribeOptions<T>,
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
         signals: Arc<SessionSignals>,
@@ -423,6 +428,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             id,
             subscriber_id,
             topic,
+            codec,
             options,
             receiver: Some(receiver),
             signals,
@@ -744,6 +750,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             id: self.id,
             subscriber_id: self.subscriber_id.clone(),
             topic: self.topic.clone(),
+            codec: self.codec.clone(),
             options: self.options.clone(),
             receiver: None,
             signals: self.signals.clone(),
@@ -772,7 +779,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     fn prepare_message(&mut self, message: InboundMessage) {
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
-        let payload = match decode_payload(&self.topic, transport_payload) {
+        let payload = match decode_payload(self.codec.as_ref(), transport_payload) {
             Ok(payload) => payload,
             Err(error) => {
                 self.pending = Some(PendingDelivery {
@@ -1219,6 +1226,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         id: Id,
         subscriber_id: SubscriberId,
         topic: Topic<T>,
+        codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
         options: SubscribeOptions<T>,
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
     ) -> (Self, Arc<AsyncSubscriptionControl<T>>) {
@@ -1228,6 +1236,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
             id,
             subscriber_id.clone(),
             topic,
+            codec,
             options,
             receiver,
             signals.clone(),
@@ -1316,7 +1325,7 @@ where
 }
 
 fn decode_payload<T: Send + Sync + 'static>(
-    topic: &Topic<T>,
+    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     payload: TransportPayload,
 ) -> Result<Arc<T>, DeliveryError> {
     match payload {
@@ -1328,10 +1337,9 @@ fn decode_payload<T: Send + Sync + 'static>(
             }
             .into()
         }),
-        TransportPayload::Encoded(encoded) => topic
-            .codec()
+        TransportPayload::Encoded(encoded) => codec
             .ok_or_else(|| crate::error::CodecError::Decode {
-                source: Box::new(std::io::Error::other("encoded payload has no topic codec")),
+                source: Box::new(std::io::Error::other("encoded payload has no resolved codec")),
             })?
             .decode(encoded.bytes())
             .map(Arc::new)

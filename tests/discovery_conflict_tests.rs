@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 #![cfg(feature = "discovery")]
 
 use std::sync::Arc;
@@ -51,18 +58,10 @@ fn duplicate_discovered_id_reports_source() {
         Err(error) => error,
     };
     assert!(error.source_location().line() > 0);
-    assert!(
-        error
-            .source_location()
-            .file()
-            .ends_with("discovery_conflict_tests.rs")
-    );
+    assert!(error.source_location().file().ends_with("discovery_conflict_tests.rs"));
     assert!(matches!(
         error.registration_error(),
         RegistryMutationError::DuplicateSelector { .. }
     ));
-    assert_eq!(
-        error.registration_error().selector(),
-        Some("test-duplicate-discovered")
-    );
+    assert_eq!(error.registration_error().selector(), Some("test-duplicate-discovered"));
 }

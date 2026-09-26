@@ -1187,7 +1187,8 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
     string_runner.join().unwrap().unwrap();
 
     let non_clone_spi = Arc::new(DeadLetterCaptureSpi::default());
-    let non_clone_bus = AsyncEventBus::from_spi(ProviderId::new("dead-letter-non-clone").unwrap(), non_clone_spi.clone());
+    let non_clone_bus =
+        AsyncEventBus::from_spi(ProviderId::new("dead-letter-non-clone").unwrap(), non_clone_spi.clone());
     let non_clone_options = SubscribeOptions::<NonCloneDeadLetterPayload>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("async.dead.non-clone").unwrap())
