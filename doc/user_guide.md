@@ -2,7 +2,7 @@
 
 [中文用户手册](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.12 on Rust 1.94 or later. It is for Rust application developers who need several local tasks to react to one business event. In an order service, calling the audit writer and customer-view updater directly from order creation makes that path depend on both implementations and their failure handling. With this bus, the order path publishes a typed event; each task owns its subscription. The included provider works within one process and does not persist events.
+This guide covers `qubit-event-bus` 0.13 on Rust 1.94 or later. It is for Rust application developers who need several local tasks to react to one business event. In an order service, calling the audit writer and customer-view updater directly from order creation makes that path depend on both implementations and their failure handling. With this bus, the order path publishes a typed event; each task owns its subscription. The included providers work within one process and do not persist events.
 
 ## Scenario and success criteria
 
@@ -24,7 +24,7 @@ Add the dependency to an application using Rust 1.94 or later:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.12"
+qubit-event-bus = "0.13"
 ```
 
 The following functions belong in the order service and its application wiring. During startup, register both consumers and retain the returned `Subscription` handles. Call the publisher only after the order database commit succeeds:
@@ -91,7 +91,7 @@ Create the local bus with `EventBus::local(LocalEventBusConfig::default())` in a
 For discovery, enable the optional feature and add `qubit-spi` as a direct dependency:
 
 ```toml
-qubit-event-bus = { version = "0.12", features = ["discovery"] }
+qubit-event-bus = { version = "0.13", features = ["discovery"] }
 qubit-spi = "0.13"
 ```
 
@@ -121,9 +121,13 @@ If the audit subscriber accepted an event but the customer-view subscriber's bou
 - Use the request builders for headers, an ordering key, delay, interceptors, and retry options. The facade reserves the `x-qubit-event-bus-dead-letter` header. Retry policy types come from a direct `qubit-retry = "0.25"` dependency; a classification rule alone does not enable retries.
 - Automatic acknowledgement accepts a successful handler result. With `AckMode::Manual`, the handler must explicitly call `delivery.acknowledgement().ack()` or `.nack()`; returning without a decision is a delivery failure. Dead-letter delivery requires an appropriate topic and, with an encoded provider, a codec for `DeadLetterEvent<T>`.
 - `EventBus::local(LocalEventBusConfig::default())` is the built-in path. `EventBusRegistry::with_local()` registers the same provider as `local`, with `memory` and `in-process` aliases. `RequiredCapabilities` checks a provider's declared features at creation; registry fallback happens during creation, not after a runtime failure.
-- `AsyncEventBus` is runtime-neutral, but this crate supplies no async local provider or broker adapter. An application must provide an async SPI implementation and drive `AsyncSubscription::run` on its own executor; `run` does not spawn a task.
+- `AsyncEventBus` is runtime-neutral. `AsyncEventBus::local(LocalEventBusConfig::default()).await` and `AsyncEventBusRegistry::with_local()` create the built-in async local provider; the application still drives `AsyncSubscription::run` on its own executor.
 
-`AsyncEventBusRegistry::discover()` reads a separate asynchronous inventory; synchronous `local` does not appear there. Async provider creation uses `registry.create(&config).await`. Without `discovery`, applications can still build either registry with `new()` and explicitly `register()` their providers. Discovery gathers definitions; selection, capability checks, and policy-controlled fallback happen during creation. Runtime publish, receive, or shutdown failures do not switch providers. Keep passwords, tokens, and private keys out of the Debug-visible `ProviderOptions`; use a provider-owned secure configuration or credential reference/resolver.
+For encoded payloads, the codec attached to `Topic<T>` takes precedence over the facade's `CodecRegistry`. If the topic has no codec, the registry entry for `T` is used. A subscription snapshots the selected codec when it is created. An encoded-only provider without either codec is rejected before its `subscribe` method runs.
+
+When a state transition cannot wait for synchronous publication, use `NotificationPublisher<T>` with a positive bounded capacity (default 256). `try_publish` returns the original payload with `Full` or `Closed` when it cannot enqueue. `close` stops admission, drains queued notifications, and waits for the worker; it does not shut down the injected bus. Observer outcomes describe request construction and provider admission, not handler completion, and observers run synchronously on the publisher worker.
+
+`AsyncEventBusRegistry::discover()` reads a separate asynchronous inventory; synchronous `local` does not appear there. `AsyncEventBusRegistry::with_local()` registers the async local provider in that catalog. Async provider creation uses `registry.create(&config).await`. Without `discovery`, applications can still build either registry with `new()` and explicitly `register()` their providers. Discovery gathers definitions; selection, capability checks, and policy-controlled fallback happen during creation. Runtime publish, receive, or shutdown failures do not switch providers. Keep passwords, tokens, and private keys out of the Debug-visible `ProviderOptions`; use a provider-owned secure configuration or credential reference/resolver.
 
 ## Errors and diagnostics
 
@@ -139,7 +143,7 @@ Errors are separated by operation, including `PublishError`, `SubscribeError`, `
 
 ## Local provider resource guidance
 
-The included provider is synchronous, in-process, and non-durable. Each synchronous subscription has a blocking receive worker thread. `LocalEventBusConfig::new().queue_capacity(n)` sets a positive outstanding-message bound **per subscription** (default 1024), counting queued and received-but-unsettled messages. A retry keeps its reservation. The facade's scheduling limits are a separate layer; neither limit alone is a total memory budget. Size both subscriber count and queue capacity for the application's workload. `cargo bench --bench local_threads` and `cargo bench --bench local_scale` provide measurements on your own host, not portable guarantees.
+Both local providers are in-process and non-durable. The synchronous provider uses one blocking receive thread per subscription. The async provider waits with wakers and does not create a receiver thread per subscription. Both use `LocalEventBusConfig::new().queue_capacity(n)` for a positive outstanding-message bound **per subscription** (default 1024), counting queued and received-but-unsettled messages. A retry keeps its reservation. The facade's scheduling limits are a separate layer; neither limit alone is a total memory budget. Async close/drop recovers unsettled messages only within the same process and provider instance. A publish receipt means provider admission, not handler completion. Size subscriber count and queue capacity for the application's workload. `cargo bench --bench local_threads` and `cargo bench --bench local_scale` provide measurements on your own host, not portable guarantees.
 
 `publish_all` attempts each request independently and is not transactional. The local provider does not offer durable recovery or cross-process delivery. A provider must explicitly declare ordering and settlement capabilities before the facade can use them. For `OrderingPolicy::PerKey`, it must declare `PerKey` or `PerSubscription` ordering. If the business process requires a durable handoff or an atomic database-and-event commit, design that mechanism separately and use an appropriate provider.
 

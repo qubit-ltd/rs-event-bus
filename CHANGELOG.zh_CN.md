@@ -14,6 +14,9 @@
 ### 新增
 
 - 为 `Topic`、`SubscriberId`、`ProviderId` 和 `SchemaId` 增加 const `new_static` 构造函数；`EventId` 保持不变。
+- 订阅按 Topic codec 优先、facade codec registry 回退的顺序解析，并在整个订阅周期固定所选 codec。
+- 增加有界 `NotificationPublisher<T>`，支持非阻塞入队和串行发布；增加 opt-in 的 `conformance` SPI 报告 API。
+- 增加不绑定运行时的异步 local provider，并按订阅者身份保留可恢复邮箱。
 
 ## 0.12.0 - 2026-09-24
 

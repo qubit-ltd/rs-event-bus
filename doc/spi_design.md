@@ -4,7 +4,7 @@
 
 ## Document status
 
-This is the formal SPI and facade design for `qubit-event-bus` 0.12, targeting Rust 1.94 or later. It describes behavior implemented by this version. A capability or extension described as provider-specific is not automatically guaranteed by every backend. The built-in provider is synchronous and in-process; this crate does not ship a broker adapter.
+This is the formal SPI and facade design for `qubit-event-bus` 0.13, targeting Rust 1.94 or later. It describes behavior implemented by this version. A capability or extension described as provider-specific is not automatically guaranteed by every backend. The built-in sync and async local providers are in-process; this crate does not ship a broker adapter.
 
 ## Goals and boundaries
 
@@ -138,7 +138,20 @@ Provider configuration belongs to the adapter. The facade owns portable settings
 
 ## Conformance and verification
 
-The repository's `tests/spi_conformance_tests.rs` uses private integration-test helpers to exercise the built-in provider, a channel-shaped SPI, and a broker-shaped fake. These helpers are not part of the crate's public API and are not shipped as a reusable provider-author conformance harness. Adapter authors can use the following list when building their own tests:
+Enable the optional `conformance` feature to use the public `spi::conformance` runners. `run_sync` and `run_async` probe the declared payload modes by subscribing, publishing, receiving, checking payload representation, settling the same token twice when settlement is supported, closing the receiver, and shutting down the provider. A `ConformanceReport` records passed, failed, and skipped cases; skipped settlement means the provider declares that settlement is unavailable. Provider-specific cancellation or injected-failure scenarios can be added through `ConformanceHooks`.
+
+```rust,ignore
+use std::sync::Arc;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::conformance::{run_sync, ConformanceHooks};
+
+fn verify(factory: impl Fn() -> Arc<dyn EventBusSpi>) {
+    let report = run_sync(factory, &ConformanceHooks::default());
+    report.assert_all_passed();
+}
+```
+
+The repository's `tests/spi_conformance_tests.rs` also uses private integration-test helpers to exercise a channel-shaped SPI and a broker-shaped fake. Adapter authors should supplement the public runner with provider-specific checks for:
 
 1. Advertised payload, settlement, ordering, replay, delay, durability, and publish-visibility capabilities match observed behavior.
 2. Publish acknowledgement describes provider admission and does not claim handler completion.
@@ -152,12 +165,12 @@ The repository's `tests/spi_conformance_tests.rs` uses private integration-test 
 
 Facade contract tests should cover empty, partial, and fully rejected admission results; handler success/failure and manual settlement; cancellation and shutdown races; async future cancellation; error-source preservation; and the declared capability boundary. Concurrency tests should use barriers or channels rather than timing-only sleeps when checking ordering and races. Rustdoc examples, bilingual README and guide links, and project CI scripts should be checked before release.
 
-## 0.12 Implementation and verification status
+## 0.13 Implementation and verification status
 
 This section describes the validation available in the repository. It does not imply that every provider has the same capabilities or that every CI suite has run in every checkout.
 
-1. Integration tests exercise the built-in local provider's synchronous SPI behavior; `cargo test --all-features` runs these tests.
-2. Integration tests include a runtime-neutral fake async SPI and cover async receive cancellation boundaries. This verifies the facade/SPI contract; it is not a production async provider.
+1. Integration tests exercise the built-in sync and async local providers; `cargo test --all-features` runs these tests.
+2. The optional public conformance runner checks declared payload publish/receive, settlement idempotence, receiver close, and provider shutdown. Provider-specific receive cancellation remains a hook because it needs a provider-owned fixture.
 3. Test helpers include a channel-shaped SPI and a broker-shaped fake to check adapter shapes. The crate does not ship a real channel or broker adapter.
 4. Crate tests cover sync and async facades, the local provider, pipeline, registry, settlement, and concurrency contracts. Each provider still needs to verify its own declared capabilities.
 5. Integration tests cover registry provider selection, creation-time capability validation, and fallback. Runtime errors do not trigger provider switching.
