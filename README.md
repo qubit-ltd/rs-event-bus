@@ -17,7 +17,7 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.13"
+qubit-event-bus = "0.14"
 ```
 
 ## Quick start
@@ -85,7 +85,7 @@ At startup, call both subscription functions and keep their `Subscription` handl
 
 ### Assemble one shared bus at startup
 
-Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is submitted to the synchronous catalog. In the application's startup wiring, select it before creating one bus and pass cloned handles to services:
+Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is submitted to the synchronous catalog, with a separate entry for the async catalog. In the application's startup wiring, select it before creating one bus and pass cloned handles to services:
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -112,7 +112,7 @@ let orders = OrderService::new(bus.clone());
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
-Both local providers bound queued and unsettled events per subscription. The synchronous provider uses one blocking receive worker per subscription; `AsyncEventBus::local` uses waker-based receives without a receiver thread per subscription. Both are in-process and ephemeral. See [resource guidance](doc/user_guide.md#local-provider-resource-guidance).
+Both local providers bound queued and unsettled events per subscription (default 1,024) and across one provider instance (default 65,536). A full limit rejects that destination in the publish receipt; a retry keeps its reservation until accept, reject, close, or shutdown. These limits count delivery items, not payload bytes. The synchronous provider uses one blocking receive worker per subscription; choose `AsyncEventBus::local` for high subscription counts and measure on the target host. Async provider subscriptions are ephemeral: close or drop discards pending and in-flight deliveries, and resubscribing with the same subscriber ID starts empty. Dropping an `AsyncSubscription::run` future while retaining its handle still permits a later `run` to resume facade-owned tasks. See [resource guidance](doc/user_guide.md#local-provider-resource-guidance).
 
 ## Learn more
 

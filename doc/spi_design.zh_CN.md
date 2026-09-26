@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-本文档记录 `qubit-event-bus` 0.13 的正式 SPI、provider registry、同步/异步 facade 和内置 local provider 设计。它最初是重构目标文档，现已按落地实现更新；当前实际行为以代码、rustdoc、测试和 [`design.zh_CN.md`](design.zh_CN.md) 为准。明确标为后续扩展的后端或能力尚未在本 crate 中提供。
+本文档记录 `qubit-event-bus` 0.14 的正式 SPI、provider registry、同步/异步 facade 和内置 local provider 设计。它最初是重构目标文档，现已按落地实现更新；当前实际行为以代码、rustdoc、测试和 [`design.zh_CN.md`](design.zh_CN.md) 为准。明确标为后续扩展的后端或能力尚未在本 crate 中提供。
 
 本次保留完整中文版。英文 [`design.md`](design.md) 仅作为权威状态入口，避免将旧架构描述误读为当前实现。
 
@@ -883,7 +883,7 @@ admission permit 使用 RAII 释放：delivery 进入终态、被取消或处理
 
 达到限制时不得无限增长。local SPI 可以在 publish receipt 中报告具体 subscription rejection；无法观察远端消费者的 broker 只能报告本次 publish 的 provider acknowledgement。
 
-实现状态：同步 facade 通过 `EventBusFacadeConfig::with_sync_delivery_scheduler` 配置 bus 级 `max_in_flight` 和 handler queue capacity；in-flight 限额覆盖排队、handler/retry/middleware 执行及最终 settlement，不同 ordering key 可并行、相同 key 保序。同步 scheduler 默认最多 4 个 in-flight delivery、最多排队 32 个 handler；队列容量设为 0 时仅允许交给空闲 worker 的直接移交。每个 subscription coordinator 至多暂存一个已经从 SPI 接收、尚未准入 scheduler 的消息，饱和或关闭时会按 Retry 能力归还，不会静默丢弃。异步 facade 由调用方驱动、不 spawn task，并通过 `DeliveryAdmissionConfig::max_in_flight` 使用 bus-wide 有界准入（默认 4）；permit 覆盖收到的消息、lane wait、middleware、handler/retry 到最终 settlement。单个 subscription 可同时持有多个 owned delivery future，不同 ordering key 并行、同 key 保序；每个 subscription 最多暂存一条未准入消息。取消 `run` future 会暂停并保留任务及 permit；重新 `run` 续跑旧任务，shutdown 可接管暂停 session。Immediate 会丢弃未开始的 lane waiter并依赖 SPI receiver close/drop 恢复未结算 token，已开始 handler 则继续等待并 settlement。`LocalEventBusConfig::queue_capacity` 限制每个 local subscription 的排队及未 settlement 消息数；已经 receive 的消息仍占用容量，Retry 会保留额度。诊断通过同步 observer 直接回调，没有独立诊断队列；observer 会被隔离 panic，但阻塞的 observer 仍可能延迟触发它的线程。`EventBusFacadeConfig` 同时承载 codec registry 及按 payload type 注册的 global sync/async subscriber middleware。
+实现状态：同步 facade 通过 `EventBusFacadeConfig::with_sync_delivery_scheduler` 配置 bus 级 `max_in_flight` 和 handler queue capacity；in-flight 限额覆盖排队、handler/retry/middleware 执行及最终 settlement，不同 ordering key 可并行、相同 key 保序。同步 scheduler 默认最多 4 个 in-flight delivery、最多排队 32 个 handler；队列容量设为 0 时仅允许交给空闲 worker 的直接移交。每个 subscription coordinator 至多暂存一个已经从 SPI 接收、尚未准入 scheduler 的消息，饱和或关闭时会按 Retry 能力归还，不会静默丢弃。异步 facade 由调用方驱动、不 spawn task，并通过 `DeliveryAdmissionConfig::max_in_flight` 使用 bus-wide 有界准入（默认 4）；permit 覆盖收到的消息、lane wait、middleware、handler/retry 到最终 settlement。单个 subscription 可同时持有多个 owned delivery future，不同 ordering key 并行、同 key 保序；每个 subscription 最多暂存一条未准入消息。取消 `run` future 会暂停并保留任务及 permit；重新 `run` 续跑旧任务，shutdown 可接管暂停 session。Immediate 会丢弃未开始的 lane waiter并依赖 SPI receiver close/drop 清理未结算 token；本地 provider 的 Ephemeral 队列会丢弃未结算消息，不表示 ACK，已开始 handler 则继续等待并 settlement。`LocalEventBusConfig::queue_capacity` 限制每个 local subscription 的排队及未 settlement 消息数（默认 1024），`max_total_outstanding` 限制单个 local provider 实例接纳的总投递条数（默认 65,536）；已经 receive 的消息仍占用额度，Retry 会保留额度，超额目标按 destination 拒绝。诊断通过同步 observer 直接回调，没有独立诊断队列；observer 会被隔离 panic，但阻塞的 observer 仍可能延迟触发它的线程。`EventBusFacadeConfig` 同时承载 codec registry 及按 payload type 注册的 global sync/async subscriber middleware。
 
 ## 错误模型
 
@@ -1122,7 +1122,7 @@ provider selection、capability requirement、provider options 和 facade codec 
 
 ## 内置 local provider
 
-内置 provider ID 为 `local`，aliases 为 `memory` 和 `in-process`。它实现同步 `EventBusSpi`；后续异步 local SPI 必须使用真正的异步接收原语，不能简单在 async future 中阻塞同步 receiver。
+内置 provider ID 为 `local`，aliases 为 `memory` 和 `in-process`。同步 provider 实现 `EventBusSpi`，异步 provider 实现 runtime-neutral 的 `AsyncEventBusSpi`，按 waker 与 timer 等待，不为每个订阅创建接收线程。两者都提供原生 payload、逐目标准入、进程内 settlement 和每订阅 FIFO/延迟队列。
 
 local SPI 的职责：
 
@@ -1148,20 +1148,20 @@ facade 的职责：
 | 当前配置 | 新归属 |
 | --- | --- |
 | worker 数和 handler queue | `EventBusFacadeConfig::with_sync_delivery_scheduler` 设置 bus 级 `max_in_flight` 与 handler queue capacity；异步消费由调用方驱动，不创建 worker |
-| local subscription queue | `LocalEventBusConfig::queue_capacity`，默认每个 subscription 1024 |
+| local subscription queue | `LocalEventBusConfig::queue_capacity`，默认每个 subscription 1024；`max_total_outstanding` 默认每 provider 实例 65,536 条投递 |
 | publish/subscribe policy | 放在每个 `PublishRequest` / `SubscribeRequest` 的 options 中；builder 支持链式配置 |
 | publisher/subscriber interceptor | request 级 typed interceptor；`EventBusFacadeConfig` 还支持按 payload type 注册全局 sync/async subscriber middleware |
 | dead-letter policy | 通过 `SubscribeOptionsBuilder::dead_letter` 设置，并按 provider settlement capabilities 验证 |
-| admission/backpressure | facade-wide sync in-flight 限额包括排队、handler/retry/middleware 与 settlement；local queue capacity 另行限制每 subscription 的 provider 队列 |
+| admission/backpressure | facade-wide sync in-flight 限额包括排队、handler/retry/middleware 与 settlement；local queue 和 total outstanding 限额分别限制每订阅及每 provider 实例接纳的未完成投递条数 |
 | `create_started` | `EventBus::local` 或 registry create，返回即为可用状态 |
 
-0.11 的公开 `EventBus` trait、`EventBusFactory`、`LocalEventBus`、`LocalEventBusFactory` 和 transactional API 均不是 0.12 兼容层的一部分。使用 0.13 时应改用具体 `EventBus` / `AsyncEventBus` facade 和 typed request；同步与异步 facade 均可使用对应 catalog 中的内置 local provider。
+0.11 的公开 `EventBus` trait、`EventBusFactory`、`LocalEventBus`、`LocalEventBusFactory` 和 transactional API 均不是 0.12 兼容层的一部分。使用 0.14 时应改用具体 `EventBus` / `AsyncEventBus` facade 和 typed request；同步与异步 facade 均可使用对应 catalog 中的内置 local provider。Local provider 的 queue close/drop 按 `Ephemeral` 语义丢弃 pending 和 in-flight 投递，不隐式 settlement，也不代表向 durable broker ACK；以相同 subscriber ID 重订阅会得到空队列。
 
 ## 后端适配验证
 
 | 后端 | SPI | payload | settlement | 能力和限制 |
 | --- | --- | --- | --- | --- |
-| 内置 local | 同步 | Native | 完整模拟 | 进程内、非持久，可报告 destination admission |
+| 内置 local | 同步 / 异步 | Native | 完整模拟 | 进程内、非持久；每订阅默认 1024 条、每 provider 实例总额默认 65,536 条，可报告 destination admission |
 | crossbeam-channel | 同步 | Native | 无 | receiver 模型；关闭和超时需适配 |
 | flume | 同步和异步 | Native | 无 | 可分别实现两类 SPI |
 | bus | 同步 | Native | 无 | 广播；慢消费者语义需报告 gap |
@@ -1289,13 +1289,13 @@ fn verify(factory: impl Fn() -> Arc<dyn EventBusSpi>) {
 
 现有测试中描述有效语义的部分应先迁移为 facade 合约测试，再替换实现。测试文件按 publish、subscription、retry、interceptor、dead-letter、ordering、lifecycle、diagnostic 和 local SPI 拆分，避免继续扩展单个数千行测试文件。
 
-## 0.13 实现与验证状态
+## 0.14 实现与验证状态
 
 本节记录仓库当前提供的验证范围，不代表每个 provider 都具备相同能力，也不表示所有 CI 套件已在每个开发检出中运行。
 
 1. 集成测试覆盖内置同步和异步 local provider；运行 `cargo test --all-features` 可执行这些测试。
 2. 可选公共 conformance runner 检查声明的 payload 发布/接收、settlement 幂等性、receiver close 和 provider shutdown。provider 自有的 receive 取消检查通过 hook 补充，因为它需要 provider fixture。
-3. 测试辅助中有 channel-shaped SPI 和 broker-shaped fake，用于验证适配形状；crate 没有随包提供真实的 channel 或 broker adapter。
+3. 测试辅助中有 flume bounded-channel SPI fixture 和 broker-shaped fake，用于验证适配形状。flume 夹具只验证同步进程内通道，不验证远程 broker、持久化或异步取消语义；flume 仅是开发依赖，crate 没有随包提供生产 channel 或 broker adapter。
 4. 同步与异步 facade、local provider、pipeline、registry、settlement 和并发合同分别由 crate 内测试覆盖；各 provider 仍需验证自身声明的 capability。
 5. registry 的 provider 选择、创建期 capability 检查和 fallback 由集成测试覆盖；运行期错误不会触发 provider 切换。
 6. retry 类型由应用直接依赖 `qubit-retry`；event-bus 不重新导出 retry 类型，也不公开本地 executor 实现。

@@ -8,6 +8,7 @@ All notable changes to `qubit-event-bus` are documented here.
 
 ### Breaking changes
 
+- Async local subscriptions are ephemeral: closing or dropping the receiver discards queued and in-flight messages; resubscribing with the same ID starts empty. The default local provider-wide outstanding-delivery limit is 65,536, in addition to the per-subscription limit of 1,024.
 - Change `SubscribeRequest::new` to accept a subscriber ID string and an owned `Topic<T>`, returning `Result` when the ID is invalid.
 - Rename `Topic::with_codec` to `Topic::new_with_codec` and `Topic::with_shared_codec` to `Topic::new_with_shared_codec`.
 
@@ -16,7 +17,8 @@ All notable changes to `qubit-event-bus` are documented here.
 - Add const `new_static` constructors for `Topic`, `SubscriberId`, `ProviderId`, and `SchemaId`; `EventId` remains unchanged.
 - Resolve subscription codecs from the topic first and the facade codec registry second; retain the selected codec for the subscription lifetime.
 - Add bounded `NotificationPublisher<T>` for nonblocking queue admission and serial publication, plus an opt-in `conformance` SPI report API.
-- Add a runtime-neutral asynchronous local provider with recoverable per-subscriber mailboxes.
+- Add a runtime-neutral asynchronous local provider with one active mailbox per subscriber.
+- Add a provider-wide local outstanding-delivery limit and a flume-based synchronous SPI conformance fixture.
 
 ## 0.12.0 - 2026-09-24
 

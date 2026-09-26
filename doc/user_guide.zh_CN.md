@@ -2,7 +2,7 @@
 
 [English user guide](user_guide.md) · [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.13 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 local providers 只处理单进程内的消息，不持久化事件；不能用它单独保证审计记录或客户视图必然更新。
+本文适用于 `qubit-event-bus` 0.14 和 Rust 1.94 及以上版本，面向需要让多个进程内任务响应同一业务事件的 Rust 开发者。订单服务创建订单后，若直接调用审计写入和客户视图更新，订单流程就得了解两套实现及其失败处理。本库让订单流程发布带类型的事件，由各任务自行订阅。内置 local providers 只处理单进程内的消息，不持久化事件；不能用它单独保证审计记录或客户视图必然更新。
 
 ## 场景与验收目标
 
@@ -24,7 +24,7 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.13"
+qubit-event-bus = "0.14"
 ```
 
 下面的完整示例可放入依赖本库的应用的 `src/main.rs`，用集合模拟审计记录和客户视图。实际订单服务应先完成数据库事务，再执行示例中的发布步骤：
@@ -97,11 +97,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 使用发现功能时，为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi`：
 
 ```toml
-qubit-event-bus = { version = "0.13", features = ["discovery"] }
+qubit-event-bus = { version = "0.14", features = ["discovery"] }
 qubit-spi = "0.13"
 ```
 
-内置 `local` 会出现在同步目录。以下是应用启动装配片段；`OrderService` 由应用定义：
+内置 `local` 会分别出现在同步和异步目录。以下是应用启动装配片段；`OrderService` 由应用定义：
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -163,7 +163,7 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 ## 本地 provider 资源指南
 
-两种内置 local provider 均仅在进程内工作且不持久化。同步 provider 每个订阅使用一个阻塞接收线程，此外 facade 还使用共享的有界 handler 调度器；异步 provider 使用 waker 等待，不为每个订阅创建接收线程，但应用必须在自己的 executor 上驱动 `AsyncSubscription::run`。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成消息上限（默认 1024），排队和已接收但尚未结算的消息都占用额度；重试保留原额度。异步订阅 close/drop 后的未结算消息只在同一进程、同一 provider 实例中恢复。publish receipt 只表示 provider 接纳，不代表 handler 已完成。facade 调度上限属于另一层，任何一个上限都不能单独代表总内存预算。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 在自己的机器测量，结果不是跨机器保证。
+两种内置 local provider 均仅在进程内工作且采用 ephemeral 语义。同步 provider 每个订阅使用一个阻塞接收线程，此外 facade 还使用共享的有界 handler 调度器；异步 provider 使用 waker 等待，不为每个订阅创建接收线程，但应用必须在自己的 executor 上驱动 `AsyncSubscription::run`。`LocalEventBusConfig::new().queue_capacity(n)` 为**每个订阅者**设置正数的未完成投递上限（默认 1024），`max_total_outstanding(n)` 设置单个 provider 实例的总量上限（默认 65,536）。两者都统计排队及已接收但尚未结算的投递条数，不统计 payload 字节；重试保留额度。任一限额满时，publish receipt 会拒绝对应目标，同时允许其他目标接纳。Accept/Reject 终结结算或队列 close/shutdown 会释放额度。facade 调度上限属于另一层，这些条数上限不等于总内存预算。异步 provider 的 close/drop 会丢弃排队和未结算消息，同 ID 重订阅得到空队列；若只取消 `AsyncSubscription::run` future 并保留句柄，之后仍可恢复 facade 自身的任务。publish receipt 只表示 provider 接纳，不代表 handler 已完成。订阅量较大时，建议在目标主机测量异步 facade。可用 `cargo bench --bench local_threads` 与 `cargo bench --bench local_scale` 测量，结果不是跨机器保证。
 
 `publish_all` 对每个请求分别尝试，不提供事务语义。本地 provider 无法持久恢复或跨进程投递。provider 必须声明相应的顺序、结算能力，facade 才能使用；`OrderingPolicy::PerKey` 要求 `PerKey` 或 `PerSubscription` 顺序能力。如果业务要求持久移交或数据库与事件的原子提交，应另行设计该机制并选用合适的 provider。
 
