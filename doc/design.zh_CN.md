@@ -33,7 +33,7 @@ local provider 在同名 Topic 的活跃订阅期间绑定唯一的原生 Rust p
 
 接收 SPI 仍是阻塞式：每个同步订阅都会启动一个接收 worker 线程。在一台 6 CPU Linux 主机的样本中，1/16/128 个订阅对应的进程线程峰值为 6/21/133；创建耗时中位数为 0.226/1.592/7.551 ms，取消订阅并立即关闭的耗时中位数为 0.285/651.543/5359.302 ms。关闭耗时范围较大，测量时主机也有其他负载；这些数值仅描述一次观测，可运行 `cargo bench --bench local_threads` 重新测量。
 
-本次保留 Topic 分桶和索引队列，是基于本机对比结果做出的实现选择，并非服务等级保证。运行 `cargo bench --bench local_scale -- publish` 时，两个“32 个 Topic × 16 个订阅”场景的 p95 改善 70.8% 和 67.2%；“1 个 Topic × 1 个订阅”改善 4.6%；一次“1 个 Topic × 128 个订阅”样本则出现 21.3% 的 p95 退化。对于 depth-1024 队列中“长阻塞前缀 + 就绪后缀”的接收负载，`cargo bench --bench local_scale -- receive` 测得 16 个就绪 key 的中位 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns。这些是特定主机上的对比结果，不能直接推断其他机器或负载。local provider 只在进程内工作，不持久化消息；异步 facade 需要外部注册的 async provider，本 crate 没有内置 async local provider。
+本次保留 Topic 分桶和索引队列，是基于本机对比结果做出的实现选择，并非服务等级保证。运行 `cargo bench --bench local_scale -- publish` 时，两个“32 个 Topic × 16 个订阅”场景的 p95 改善 70.8% 和 67.2%；“1 个 Topic × 1 个订阅”改善 4.6%；一次“1 个 Topic × 128 个订阅”样本则出现 21.3% 的 p95 退化。对于 depth-1024 队列中“长阻塞前缀 + 就绪后缀”的接收负载，`cargo bench --bench local_scale -- receive` 测得 16 个就绪 key 的中位 p95 从 42,654 ns 降至 590 ns，1 个就绪 key 从 41,590 ns 降至 539 ns。这些是特定主机上的对比结果，不能直接推断其他机器或负载。local provider 只在进程内工作，不持久化消息；本 crate 同时内置 sync 和 async local provider。同步 provider 每个订阅使用一个阻塞接收线程，异步 provider 使用 waker 等待且不为每个订阅创建接收线程。
 
 ## 发布与订阅
 
