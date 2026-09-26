@@ -173,7 +173,7 @@ pub struct AsyncEventBus {
 }
 ```
 
-`AsyncEventBus::new(provider_id, spi)` 默认注入 `qubit-clock` 的标准单调时钟 timer；`AsyncEventBus::with_timer(provider_id, spi, timer)` 允许应用注入共享 timer，以便与 Tokio 或手动时钟统一时间域。idle wait、graceful shutdown deadline 和异步 retry delay 都使用该 timer。等待 Future 被取消时会丢弃未完成的 timer future 并注销等待；event-bus 不创建后台 timer 线程，也不隐式启动 executor task。
+`AsyncEventBus::from_spi(provider_id, spi)` 默认注入 `qubit-clock` 的标准单调时钟 timer；`AsyncEventBus::with_timer(provider_id, spi, timer)` 允许应用注入共享 timer，以便与 Tokio 或手动时钟统一时间域。idle wait、graceful shutdown deadline 和异步 retry delay 都使用该 timer。等待 Future 被取消时会丢弃未完成的 timer future 并注销等待；event-bus 不创建后台 timer 线程，也不隐式启动 executor task。
 
 发布和建立订阅是异步操作：
 
@@ -1105,7 +1105,7 @@ pub struct EventBusConfig {
 ```
 
 `EventBusFacadeConfig` 是 facade 构建期配置，目前仅包含并实际接入 publisher 使用的
-共享 `CodecRegistry`。`EventBus::new` 和 `AsyncEventBus::new` 使用空 codec registry；
+共享 `CodecRegistry`。`EventBus::from_spi` 和 `AsyncEventBus::from_spi` 使用空 codec registry；
 相应的 `with_config` 构造器以及 registry 的 `EventBusConfig::with_facade_config` 可安装
 预先构造的 codec registry。该配置在 facade 创建时冻结。
 

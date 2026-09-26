@@ -83,6 +83,23 @@ fn publish_order_created(
 
 At startup, call both subscription functions and keep their `Subscription` handles in application state; cancel them during shutdown. After a successful order commit, call `publish_order_created`. Its receipt reports provider admission, not successful audit or view writes. The `AuditLog` and `CustomerOrderView` traits are application interfaces; connect them to your actual stores. See the [user guide](doc/user_guide.md) for admission failures and delivery policy.
 
+### Assemble one shared bus at startup
+
+Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is submitted to the synchronous catalog. In the application's startup wiring, select it before creating one bus and pass cloned handles to services:
+
+```rust
+use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_spi::ProviderSelection;
+
+let registry = EventBusRegistry::discover()?;
+registry.set_default_selection(ProviderSelection::named("local")?)?;
+registry.seal();
+let bus = registry.create(&EventBusConfig::default())?;
+let orders = OrderService::new(bus.clone());
+```
+
+`OrderService` stands for an application type; this is a startup wiring excerpt. To discover a provider from a separate crate, depend on it and add `use provider_crate as _;` in the application wiring module so it is linked into the executable. Keep the bus and subscription handles in application state, then cancel subscriptions and shut down the bus during shutdown. See the [user guide](doc/user_guide.md) for discovery and provider configuration boundaries.
+
 ## What it provides
 
 - Typed `Topic<T>`, `PublishRequest<T>`, `SubscribeRequest<T>`, envelopes, deliveries, and publication receipts.

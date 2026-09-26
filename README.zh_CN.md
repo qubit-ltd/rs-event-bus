@@ -134,6 +134,23 @@ pub fn subscribe(bus: &EventBus, store: Arc<dyn CustomerViewStore>)
 
 应用启动时用 `EventBus::local(LocalEventBusConfig::default())` 创建总线，调用两个订阅模块的 `subscribe`，并持有返回的 `Subscription`；关闭时显式取消订阅并关闭总线。订单请求调用 `create_order`。返回的 `PublishReceipt` 只报告 provider 的接纳情况，不代表两处存储写入成功；进程在事务提交后、发布前退出时也不会自动补发。接纳结果、投递策略和关闭流程见[用户手册](doc/user_guide.zh_CN.md)。
 
+### 启动时装配共享总线
+
+为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会提交到同步 provider 目录。应用装配代码先选择 provider，再创建一条总线，将克隆句柄交给服务：
+
+```rust
+use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_spi::ProviderSelection;
+
+let registry = EventBusRegistry::discover()?;
+registry.set_default_selection(ProviderSelection::named("local")?)?;
+registry.seal();
+let bus = registry.create(&EventBusConfig::default())?;
+let orders = OrderService::new(bus.clone());
+```
+
+`OrderService` 是应用中的示意类型，上面仅展示启动装配片段。若 provider 位于独立 crate，应用需依赖该 crate，并在装配模块写入 `use provider_crate as _;`，让它链接进可执行程序。应用应持有总线和订阅句柄；关闭时先取消订阅，再关闭总线。发现机制和配置边界见[用户手册](doc/user_guide.zh_CN.md)。
+
 ## 能力与边界
 
 - `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>` 将事件主题、发布和订阅保持为类型化 API。
