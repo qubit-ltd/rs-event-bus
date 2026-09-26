@@ -254,7 +254,7 @@ match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejec
 }
 ```
 
-订阅者按规则跳过（`Filtered`，例如过滤器判定这条订单不属于自己）不算拒绝：只要另有订阅者接纳，两种条件都通过。但跳过也不算接纳。如果所有订阅者都跳过了这条事件，`accepted` 为 0，结果是 `NoneAccepted`，两种条件都返回 `NoAcceptedDestination`。队列已满属于拒绝（`Rejected`），与跳过不要混淆。
+回执中的 `Filtered` 表示传递实现在接纳阶段就判定这条消息不属于该订阅者。它不算拒绝：只要另有订阅者接纳，两种条件都通过。但它也不算接纳：如果所有目标都是 `Filtered`，`accepted` 为 0，结果是 `NoneAccepted`，两种条件都返回 `NoAcceptedDestination`。队列已满属于拒绝（`Rejected`），与跳过不要混淆。注意，只有能在接纳阶段评估过滤条件的传递实现才会报告 `Filtered`；内置 local 不会。在 local 上，订阅选项里的 `filter` 是总线取到消息后才执行的：被过滤掉的订单在回执里仍显示为 `Accepted`，只是它的处理函数不会被调用。
 
 有些传递实现只报告“消息已收下”，不列出具体订阅者，对应表中的 `OpaqueAccepted`。这时库无法核对上面两个条件，`check_admission` 返回 `VisibilityUnavailable`。内置 local 会逐个报告订阅者，不会出现这种情况。
 
@@ -350,7 +350,7 @@ let subscription = bus.subscribe(request, handler)?;
 
 | 目标 | 入口 | 注意事项 |
 | --- | --- | --- |
-| 过滤事件 | `filter` | 在处理函数运行前，查看事件内容并决定是否跳过；跳过不等于拒绝。 |
+| 过滤事件 | `filter` | 总线取到消息后、处理函数运行前，查看事件内容并决定是否跳过。在 local 上，被跳过的消息在发布回执里仍是 `Accepted`；跳过不等于拒绝。 |
 | 由处理函数决定何时确认 | `ack_mode(AckMode::Manual)` | 写入业务数据后调用 `delivery.acknowledgement().ack()`；处理失败可调用 `nack()`。未作决定就返回会被视为失败。示例见[由处理函数决定何时确认](#由处理函数决定何时确认)。 |
 | 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.25"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
 | 失败后选择动作 | `error_handler` | 可要求重试、重新放回队列、转入失败消息主题或放弃；重新入队需要所用实现支持。 |
@@ -441,7 +441,7 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
-`error_handler` 返回 `DeadLetter` 时，这条消息不再重试，直接转发到死信主题；即使同时配置了 `retry_policy` 也是如此。死信主题只是另一个普通主题，必须有人订阅并处理，否则死信也只是被放进一个无人读取的队列。如果使用需要编码的外部传递实现，还要为 `DeadLetterEvent<OrderCreated>` 配置编码器。死信转发本身也可能失败，应用应监控诊断信息。
+`error_handler` 返回 `DeadLetter` 时，这条消息不再重试，直接转发到死信主题；即使同时配置了 `retry_policy` 也是如此。死信主题只是另一个普通主题，必须先有人订阅并处理；没有订阅者时，转发出去的死信同样没有接收方，事件仍然丢失。如果使用需要编码的外部传递实现，还要为 `DeadLetterEvent<OrderCreated>` 配置编码器。死信转发本身也可能失败，应用应监控诊断信息。
 
 ## 需要拦截或过滤消息时
 
@@ -669,5 +669,4 @@ subscription.run(move |delivery| {
 
 ## 延伸阅读
 
-- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus) · [English user guide（待同步）](user_guide.md)
-- [架构设计](design.zh_CN.md) · [SPI 设计](spi_design.zh_CN.md) · [更新日志](../CHANGELOG.zh_CN.md)
+- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
