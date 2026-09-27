@@ -1064,7 +1064,7 @@ LocalQueueState
 
 | 参数 | 默认 | 作用 |
 | --- | --- | --- |
-| `queue_capacity` | 1024 | 每个订阅队列可排队的消息数（不含 in-flight） |
+| `queue_capacity` | 1024 | 每个订阅的 `pending + in_flight` 最大投递数 |
 | `max_total_outstanding` | 65 536 | provider 级 `OutstandingBudget`：全部订阅的排队 + in-flight 总数 |
 
 发布时逐目的地判断：队列满或预算耗尽 → 该目的地拒绝（`AdmissionSummary` 中计为
@@ -1095,10 +1095,10 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 
 - 等待用 `Waker` 而非条件变量：`receive` future 在无消息时登记 waker，publish/settle
   后唤醒；延迟消息到期用注入的 `Timer` 建立 sleep future。
-- 路由以 **mailbox** 组织：`AsyncBusState { mailboxes: HashMap<MailboxKey { topic, subscriber }, Arc<AsyncMailbox>>, payload_types: HashMap<TopicAddress, TypeId>, closed, outcome }`。
-  同一 `(topic, subscriber_id)` 存在活跃 mailbox 时再次订阅 → `duplicate_subscriber` 错误。
-  同步版按 `subscription_id` 索引，因此允许同一 `SubscriberId` 在同一 topic 上有多个并存订阅
-  ——这是**两者行为上的已知差异**，使用方不应依赖同一 subscriber 多次订阅同一 topic。
+- 路由以 **mailbox** 组织：`AsyncBusState { mailboxes: HashMap<MailboxKey { subscription_id }, Arc<AsyncMailbox>>, payload_types: HashMap<TopicAddress, TypeId>, closed, outcome }`。
+  同一 provider 内重复 `subscription_id` 会返回 `duplicate_subscription` 错误。相同
+  `(topic, subscriber_id)` 的不同订阅实例各有独立 mailbox，也会各自收到广播消息；
+  `SubscriberId` 是逻辑身份，`subscription_id` 是运行期实例身份，与同步 local 语义一致。
 - 容量与预算共享同一套 `LocalQueue`/`OutstandingBudget` 实现，`AsyncLocalShared`
   额外持有 `AsyncSignal changed` 与 `Arc<dyn Timer>`。
 - `close_mailbox` 同为 Ephemeral 语义。
@@ -1145,6 +1145,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T)，原样归还 payload
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
+    pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
 }
 
 pub enum NotificationOutcome {
@@ -1168,6 +1169,9 @@ pub enum NotificationOutcome {
   `published`、`publish_errors`、`request_errors`、`observer_panicked`、`worker_panicked`。
 - **`close()`**：关闭发送端、等待 worker 排空并 join；从 worker 线程（即 observer 内）
   调用会返回错误而不是自我 join 死锁（与 §8.6 同一思想）；worker 曾 panic 时返回错误。
+  `close_with_timeout(timeout)` 在期限内等待相同的排空和退出流程；超时返回
+  `io::ErrorKind::TimedOut`，已接纳消息仍由 worker 继续处理，新入队已关闭。之后可再次
+  调用任一 close 方法等待结果。它不能强制中断正在执行的同步 provider 调用。
 - **`Drop`** 只关闭发送端，不等待 worker；worker 会在排空剩余队列后自然退出。
 - 它不拥有 `EventBus` 的生命周期：bus 停机后 worker 收到 `PublishError::Closed`
   并通过 observer 报告，调用方仍需自行 `close()`。
@@ -1195,7 +1199,7 @@ pub enum NotificationOutcome {
 - `SpiError::retryable()` 是 provider 向 facade 传达"值得重试"的唯一通道，
   发布/投递重试都参考它。
 - `SpiError::Operation::kind` 是 `&'static str` 分类（如 `closed`、`invalid_argument`、
-  `spi_panic`、`worker_panicked`、`duplicate_subscriber`、`topic_type_conflict`），
+  `spi_panic`、`worker_panicked`、`duplicate_subscription`、`topic_type_conflict`），
   用于日志与测试断言。facade 各层的 `Closed` 变体来自 facade 自身的生命周期门禁；
   provider 在停机后返回的关闭类 `SpiError` 按 `Spi` 变体原样传出，不做二次映射。
 - 所有枚举标注 `#[non_exhaustive]`，为未来新增变体保留空间。
@@ -1299,7 +1303,6 @@ settlement 幂等/冲突、`shutdown`。它是 provider 作者的最低验收门
 - **顺序范围**：只保证同一订阅、同一 key 的 handler 串行；跨订阅、跨 topic 无序。
 - **同步重试会占用 handler 线程**：`Retry` 的退避 sleep 在池线程上进行，
   长退避会降低有效并发；需要长退避时应使用 `Requeue` 让 provider 重投，或改用异步 facade。
-- **异步 local 的 `duplicate_subscriber`** 与同步 local 行为不一致（§10.4）。
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
