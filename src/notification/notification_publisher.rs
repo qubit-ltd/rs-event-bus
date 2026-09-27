@@ -16,6 +16,8 @@ use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::TrySendError as ChannelTrySendError;
 use std::sync::mpsc::sync_channel;
 use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use super::internal::WorkerState;
 use super::notification_config::DEFAULT_QUEUE_CAPACITY;
@@ -108,6 +110,11 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 if result.is_err() {
                     NotificationStats::increment(&worker_stats.worker_panicked);
                 }
+                drop(receiver);
+                drop(topic);
+                drop(bus);
+                drop(observer);
+                drop(worker_stats);
                 let (lock, changed) = &*worker_state;
                 lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finished = true;
                 changed.notify_all();
@@ -172,6 +179,53 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Returns an error when called from the worker thread or when the worker
     /// panicked outside contained observer panics.
     pub fn close(&self) -> io::Result<()> {
+        self.close_inner(None)
+    }
+
+    /// Stops admission and waits up to `timeout` for accepted notifications to
+    /// drain and the worker thread to exit.
+    ///
+    /// On timeout, the worker continues processing the accepted queue and a
+    /// later close call can wait for completion. New calls to `try_publish`
+    /// return `Closed` after this method begins. A synchronous provider call
+    /// cannot be forcibly interrupted.
+    ///
+    /// # Errors
+    /// Returns `TimedOut` when the worker has not exited before the deadline,
+    /// `Other` when called from the worker thread or when the worker panics.
+    pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()> {
+        self.close_inner(Some(timeout))
+    }
+
+    /// Closes admission and waits for worker completion under the requested
+    /// deadline.
+    fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.reject_worker_thread()?;
+        let started = Instant::now();
+        self.sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let (lock, changed) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.finished {
+            state = match timeout {
+                None => changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(limit) => {
+                    let remaining = remaining_timeout(limit, started)?;
+                    changed
+                        .wait_timeout(state, remaining)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+            };
+        }
+        drop(state);
+        self.finish_join(timeout, started)
+    }
+
+    /// Rejects a blocking close request made by the worker it would join.
+    fn reject_worker_thread(&self) -> io::Result<()> {
         let called_from_worker = self
             .worker
             .lock()
@@ -183,16 +237,26 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 "notification publisher cannot close from its worker thread",
             ));
         }
-        self.sender
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let (lock, changed) = &*self.state;
-        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !state.finished {
-            state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(())
+    }
+
+    /// Joins the worker only after the operating system reports it exited.
+    fn finish_join(&self, timeout: Option<Duration>, started: Instant) -> io::Result<()> {
+        loop {
+            let worker_finished = self
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished);
+            if worker_finished {
+                break;
+            }
+            match timeout {
+                None => thread::sleep(Duration::from_millis(1)),
+                Some(limit) => thread::sleep(remaining_timeout(limit, started)?.min(Duration::from_millis(1))),
+            }
         }
-        drop(state);
         if let Some(worker) = self
             .worker
             .lock()
@@ -208,6 +272,13 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         }
         Ok(())
     }
+}
+
+/// Returns the remaining close time, or a timeout error after the deadline.
+fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> {
+    limit
+        .checked_sub(started.elapsed())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "notification publisher close timed out"))
 }
 
 impl<T: Send + Sync + 'static> Drop for NotificationPublisher<T> {
