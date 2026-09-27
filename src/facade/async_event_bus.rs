@@ -508,7 +508,12 @@ impl AsyncEventBus {
                 spi,
                 capabilities,
                 provider_id: provider_id.clone(),
-                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone(), capabilities),
+                publisher: PublisherPipeline::new(
+                    provider_id,
+                    config.codec_registry().clone(),
+                    capabilities,
+                    config.max_encoded_payload_bytes(),
+                ),
                 facade_config: config,
                 state: Mutex::new(BusState::Running),
                 next_subscription_id: AtomicU64::new(1),

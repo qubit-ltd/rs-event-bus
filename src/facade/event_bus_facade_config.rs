@@ -12,6 +12,7 @@
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::codec::CodecRegistry;
@@ -34,6 +35,7 @@ type ErasedMiddlewareList = Arc<dyn Any + Send + Sync>;
 pub struct SyncDeliverySchedulerConfig {
     max_in_flight: usize,
     handler_queue_capacity: usize,
+    max_subscription_workers: NonZeroUsize,
 }
 
 /// Bounds asynchronous deliveries admitted by one facade across all
@@ -81,7 +83,23 @@ impl SyncDeliverySchedulerConfig {
         Ok(Self {
             max_in_flight,
             handler_queue_capacity,
+            max_subscription_workers: NonZeroUsize::new(256).expect("positive default worker limit"),
         })
+    }
+
+    /// Sets the maximum number of active or starting subscription receive
+    /// threads.
+    #[must_use]
+    pub const fn with_max_subscription_workers(mut self, limit: NonZeroUsize) -> Self {
+        self.max_subscription_workers = limit;
+        self
+    }
+
+    /// Returns the maximum number of active or starting subscription receive
+    /// threads.
+    #[must_use]
+    pub const fn max_subscription_workers(self) -> NonZeroUsize {
+        self.max_subscription_workers
     }
 
     /// Returns the maximum number of admitted deliveries, including queued
@@ -105,6 +123,7 @@ impl Default for SyncDeliverySchedulerConfig {
         Self {
             max_in_flight: 4,
             handler_queue_capacity: 32,
+            max_subscription_workers: NonZeroUsize::new(256).expect("positive default worker limit"),
         }
     }
 }
@@ -128,6 +147,8 @@ pub struct EventBusFacadeConfig {
     /// Shared synchronous handler worker and queue limits.
     sync_delivery_scheduler: SyncDeliverySchedulerConfig,
     delivery_admission: DeliveryAdmissionConfig,
+    /// Optional encoded payload limit applied before provider publication.
+    max_encoded_payload_bytes: Option<NonZeroUsize>,
 }
 
 impl Default for EventBusFacadeConfig {
@@ -139,6 +160,7 @@ impl Default for EventBusFacadeConfig {
             global_publisher_interceptors: Vec::new(),
             sync_delivery_scheduler: SyncDeliverySchedulerConfig::default(),
             delivery_admission: DeliveryAdmissionConfig::default(),
+            max_encoded_payload_bytes: None,
         }
     }
 }
@@ -174,6 +196,19 @@ impl EventBusFacadeConfig {
     #[must_use]
     pub fn delivery_admission(&self) -> DeliveryAdmissionConfig {
         self.delivery_admission
+    }
+
+    /// Sets the maximum encoded payload size; `None` disables the limit.
+    #[must_use]
+    pub fn with_max_encoded_payload_bytes(mut self, limit: Option<NonZeroUsize>) -> Self {
+        self.max_encoded_payload_bytes = limit;
+        self
+    }
+
+    /// Returns the optional maximum encoded payload size.
+    #[must_use]
+    pub const fn max_encoded_payload_bytes(&self) -> Option<NonZeroUsize> {
+        self.max_encoded_payload_bytes
     }
 
     /// Installs an application-prepared shared codec registry.

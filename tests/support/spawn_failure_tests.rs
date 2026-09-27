@@ -182,8 +182,11 @@ impl EventBusSpi for SpawnFailureSpi {
 #[test]
 fn scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() {
     let close_calls = Arc::new(AtomicUsize::new(0));
-    let config = EventBusFacadeConfig::new()
-        .with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(2, 1).expect("valid scheduler config"));
+    let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(
+        SyncDeliverySchedulerConfig::new(2, 1)
+            .expect("valid scheduler config")
+            .with_max_subscription_workers(std::num::NonZeroUsize::new(1).unwrap()),
+    );
     let bus = EventBus::with_config(
         ProviderId::new("spawn-test").expect("valid provider ID"),
         Arc::new(SpawnFailureSpi {

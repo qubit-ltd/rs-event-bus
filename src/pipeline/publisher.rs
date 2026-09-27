@@ -10,6 +10,7 @@
 //! Sync and runtime-neutral async publication processing.
 
 use std::any::Any;
+use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
@@ -50,15 +51,22 @@ pub(crate) struct PublisherPipeline {
     provider_id: ProviderId,
     codecs: Arc<CodecRegistry>,
     capabilities: EventBusCapabilities,
+    max_encoded_payload_bytes: Option<NonZeroUsize>,
 }
 
 impl PublisherPipeline {
     /// Creates a sync publisher pipeline for one provider instance.
-    pub(crate) fn new(provider_id: ProviderId, codecs: Arc<CodecRegistry>, capabilities: EventBusCapabilities) -> Self {
+    pub(crate) fn new(
+        provider_id: ProviderId,
+        codecs: Arc<CodecRegistry>,
+        capabilities: EventBusCapabilities,
+        max_encoded_payload_bytes: Option<NonZeroUsize>,
+    ) -> Self {
         Self {
             provider_id,
             codecs,
             capabilities,
+            max_encoded_payload_bytes,
         }
     }
 
@@ -267,6 +275,17 @@ impl PublisherPipeline {
                 let bytes = codec
                     .encode(failure_context.payload())
                     .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                if let Some(limit) = self.max_encoded_payload_bytes
+                    && bytes.len() > limit.get()
+                {
+                    return Err(failure(
+                        PipelineFailureOrigin::Codec,
+                        crate::error::CodecError::PayloadTooLarge {
+                            actual: bytes.len(),
+                            limit: limit.get(),
+                        },
+                    ));
+                }
                 TransportPayload::Encoded(EncodedPayload::new(
                     bytes,
                     codec.content_type().clone(),

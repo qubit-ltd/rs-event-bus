@@ -17,6 +17,7 @@ use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
@@ -168,7 +169,39 @@ pub(super) struct EventBusInner {
     shutdown_gate: Mutex<ShutdownState>,
     shutdown_coordinator: ShutdownCoordinator,
     scheduler: Arc<SyncDeliveryScheduler>,
+    subscription_worker_budget: Arc<SubscriptionWorkerBudget>,
     publish_metrics: PublishMetrics,
+}
+
+struct SubscriptionWorkerBudget {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+struct SubscriptionWorkerPermit(Arc<SubscriptionWorkerBudget>);
+
+impl SubscriptionWorkerBudget {
+    fn try_reserve(self: &Arc<Self>) -> Option<SubscriptionWorkerPermit> {
+        let mut active = self.active.load(Ordering::Acquire);
+        loop {
+            if active >= self.limit {
+                return None;
+            }
+            match self
+                .active
+                .compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Some(SubscriptionWorkerPermit(self.clone())),
+                Err(observed) => active = observed,
+            }
+        }
+    }
+}
+
+impl Drop for SubscriptionWorkerPermit {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 struct ShutdownState {
@@ -340,12 +373,21 @@ impl EventBus {
                 spi.capabilities()
             })?;
         let scheduler = SyncDeliveryScheduler::new(config.sync_delivery_scheduler());
+        let subscription_worker_budget = Arc::new(SubscriptionWorkerBudget {
+            active: AtomicUsize::new(0),
+            limit: config.sync_delivery_scheduler().max_subscription_workers().get(),
+        });
         Ok(Self {
             inner: Arc::new(EventBusInner {
                 spi,
                 capabilities,
                 provider_id: provider_id.clone(),
-                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone(), capabilities),
+                publisher: PublisherPipeline::new(
+                    provider_id,
+                    config.codec_registry().clone(),
+                    capabilities,
+                    config.max_encoded_payload_bytes(),
+                ),
                 facade_config: config,
                 lifecycle: Mutex::new(LifecycleState::Running),
                 operations: OperationGate::default(),
@@ -358,6 +400,7 @@ impl EventBus {
                 shutdown_gate: Mutex::new(ShutdownState { outcome: None }),
                 shutdown_coordinator: ShutdownCoordinator::new(),
                 scheduler,
+                subscription_worker_budget,
                 publish_metrics: PublishMetrics::default(),
             }),
         })
@@ -434,6 +477,14 @@ impl EventBus {
         R: IntoHandlerResult + 'static,
     {
         let _operation = self.inner.operations.enter().ok_or(SubscribeError::Closed)?;
+        let worker_permit =
+            self.inner
+                .subscription_worker_budget
+                .try_reserve()
+                .ok_or(SubscribeError::ResourceLimit {
+                    resource: "subscription_workers",
+                    limit: self.inner.subscription_worker_budget.limit,
+                })?;
         let bus_identity = Arc::as_ptr(&self.inner) as usize;
         let _call_context = BusContextGuard::enter(bus_identity);
         let (subscriber_id, topic, options) = request.into_parts();
@@ -510,6 +561,7 @@ impl EventBus {
         let worker = thread::Builder::new()
             .name(format!("event-bus-subscription-{}", id.value()))
             .spawn(move || {
+                let _worker_permit = worker_permit;
                 let spi_subscription = thread_spi_subscription_slot
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
