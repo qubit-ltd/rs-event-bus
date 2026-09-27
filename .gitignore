@@ -85,3 +85,8 @@ external/
 
 # Local git worktrees
 .worktrees/
+
+# Local libFuzzer corpus and crash artifacts.
+# Force-add only reviewed, reproducible regression seeds.
+/fuzz/corpus/
+/fuzz/artifacts/
