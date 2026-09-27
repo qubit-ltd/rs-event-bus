@@ -222,6 +222,11 @@ impl SubscriberPipeline {
         options: &SubscribeOptions<T>,
         capabilities: EventBusCapabilities,
     ) -> Result<(), CapabilityError> {
+        if !capabilities.subscription_modes().supports(options.durability()) {
+            return Err(CapabilityError::Unsupported {
+                capability: "subscription_durability",
+            });
+        }
         if options.durability() == SubscriptionDurability::Durable
             && capabilities.durability() != DurabilityCapability::Durable
         {

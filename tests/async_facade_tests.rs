@@ -226,7 +226,7 @@ fn async_subscription_capabilities_are_checked_before_spi_subscribe() {
             SubscribeOptions::<u32>::builder()
                 .durability(SubscriptionDurability::Durable)
                 .build(),
-            "durability",
+            "subscription_durability",
         ),
         (
             SubscribeOptions::<u32>::builder()

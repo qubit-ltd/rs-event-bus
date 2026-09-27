@@ -26,6 +26,7 @@ use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_id::Id;
 
@@ -90,12 +91,40 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
     assert_eq!(capabilities.ordering(), OrderingCapability::PerKey);
     assert_eq!(capabilities.delayed_delivery(), DelayedDeliveryCapability::Native);
     assert_eq!(capabilities.durability(), DurabilityCapability::Durable);
+    assert_eq!(capabilities.subscription_modes(), SubscriptionModes::DURABLE);
     assert!(capabilities.consumer_groups());
     assert_eq!(capabilities.replay(), ReplayCapability::Timestamp);
     assert_eq!(capabilities.publish_guarantee(), PublishGuarantee::DurablyStored);
     assert_eq!(
         capabilities.publish_visibility(),
         PublishVisibility::DestinationAdmissions
+    );
+}
+
+#[test]
+fn subscription_modes_can_declare_both_modes_independently_of_durability() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::AcceptRetryReject,
+        OrderingCapability::PerKey,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    )
+    .with_subscription_modes(SubscriptionModes::BOTH);
+
+    assert!(
+        capabilities
+            .subscription_modes()
+            .supports(SubscriptionDurability::Ephemeral)
+    );
+    assert!(
+        capabilities
+            .subscription_modes()
+            .supports(SubscriptionDurability::Durable)
     );
 }
 
