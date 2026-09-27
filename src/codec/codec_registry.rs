@@ -15,23 +15,50 @@ use std::sync::Arc;
 use super::EventCodec;
 
 /// Stores at most one codec per Rust payload type.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::codec::CodecRegistry;
+///
+/// let registry = CodecRegistry::new();
+/// assert!(registry.get::<String>().is_none());
+/// ```
 #[derive(Default)]
 pub struct CodecRegistry {
+    /// Type-indexed codec objects retained by the registry.
     codecs: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl CodecRegistry {
-    /// Creates an empty registry.
+    /// Creates an empty registry with no registered payload codecs.
+    ///
+    /// # Returns
+    /// An empty registry that can be populated with [`Self::register`].
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Registers a codec, replacing any previous codec for `T`.
+    ///
+    /// # Type Parameters
+    /// * `T` — payload type encoded and decoded by `codec`.
+    ///
+    /// # Parameters
+    /// * `codec` — shared codec implementation to retain for `T`.
+    ///
+    /// The codec is shared with future lookups through [`Self::get`].
     pub fn register<T: Send + Sync + 'static>(&mut self, codec: Arc<dyn EventCodec<T>>) {
         self.codecs.insert(TypeId::of::<T>(), Box::new(codec));
     }
 
     /// Returns the codec for `T`, or `None` if it was not registered.
+    ///
+    /// # Type Parameters
+    /// * `T` — payload type whose codec is requested.
+    ///
+    /// # Returns
+    /// A cloned shared codec handle, or `None` when no codec is registered.
     #[must_use]
     #[inline]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<dyn EventCodec<T>>> {
