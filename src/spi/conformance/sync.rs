@@ -42,7 +42,7 @@ where
     for (index, (case_id, payload)) in payloads.into_iter().enumerate() {
         let spi = if index == 0 { capability_spi.clone() } else { factory() };
         let capabilities = spi.capabilities();
-        let mut subscription = match spi.subscribe(probe_request(1)) {
+        let mut subscription = match spi.subscribe(probe_request(1, capabilities.durability())) {
             Ok(subscription) => {
                 report.push(ConformanceCase::Passed {
                     case_id: "subscribe".into(),
