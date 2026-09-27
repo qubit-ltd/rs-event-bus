@@ -15,6 +15,7 @@ use super::PublishGuarantee;
 use super::PublishVisibility;
 use super::ReplayCapability;
 use super::SettlementCapabilities;
+use super::SubscriptionModes;
 
 /// Immutable capabilities declared by one backend instance.
 #[non_exhaustive]
@@ -25,6 +26,7 @@ pub struct EventBusCapabilities {
     ordering: OrderingCapability,
     delayed_delivery: DelayedDeliveryCapability,
     durability: DurabilityCapability,
+    subscription_modes: SubscriptionModes,
     consumer_groups: bool,
     replay: ReplayCapability,
     publish_guarantee: PublishGuarantee,
@@ -45,17 +47,33 @@ impl EventBusCapabilities {
         publish_guarantee: PublishGuarantee,
         publish_visibility: PublishVisibility,
     ) -> Self {
+        let subscription_modes = match durability {
+            DurabilityCapability::Ephemeral => SubscriptionModes::EPHEMERAL,
+            DurabilityCapability::Durable => SubscriptionModes::DURABLE,
+        };
         Self {
             payload_modes,
             settlement,
             ordering,
             delayed_delivery,
             durability,
+            subscription_modes,
             consumer_groups,
             replay,
             publish_guarantee,
             publish_visibility,
         }
+    }
+
+    /// Overrides the accepted subscription modes.
+    ///
+    /// The default inferred by [`Self::new`] accepts the mode matching the
+    /// provider's durability capability. Use this method when the provider
+    /// accepts a different set, including both modes.
+    #[must_use]
+    pub const fn with_subscription_modes(mut self, modes: SubscriptionModes) -> Self {
+        self.subscription_modes = modes;
+        self
     }
 
     /// Returns the supported payload representations.
@@ -77,6 +95,10 @@ impl EventBusCapabilities {
     /// Returns the durability capability.
     pub const fn durability(self) -> DurabilityCapability {
         self.durability
+    }
+    /// Returns the subscription modes accepted by this provider.
+    pub const fn subscription_modes(self) -> SubscriptionModes {
+        self.subscription_modes
     }
     /// Returns whether consumer groups are supported.
     pub const fn consumer_groups(self) -> bool {

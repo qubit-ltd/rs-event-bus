@@ -36,6 +36,7 @@ mod shutdown_mode;
 mod shutdown_outcome;
 mod spi_future;
 mod spi_subscription_request;
+mod subscription_modes;
 mod topic_address;
 mod transport_payload;
 
@@ -64,5 +65,6 @@ pub use shutdown_mode::ShutdownMode;
 pub use shutdown_outcome::ShutdownOutcome;
 pub use spi_future::SpiFuture;
 pub use spi_subscription_request::SpiSubscriptionRequest;
+pub use subscription_modes::SubscriptionModes;
 pub use topic_address::TopicAddress;
 pub use transport_payload::TransportPayload;
