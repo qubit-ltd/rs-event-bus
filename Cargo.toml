@@ -47,7 +47,6 @@ thiserror = "^2.0"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 
 [dev-dependencies]
-flume = { version = "=0.12.0", default-features = false }
 loom = "^0.7"
 
 [[bench]]
