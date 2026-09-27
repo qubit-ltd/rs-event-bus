@@ -44,7 +44,7 @@ use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
 
-const COUNTS: [usize; 3] = [1, 16, 128];
+const COUNTS: [usize; 3] = [16, 64, 256];
 const WARMUPS: usize = 2;
 const SAMPLES: usize = 7;
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);

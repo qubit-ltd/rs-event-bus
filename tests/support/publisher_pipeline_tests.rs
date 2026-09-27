@@ -159,6 +159,7 @@ fn make_pipeline(_bus: &Arc<FakeBus>) -> PublisherPipeline {
         ProviderId::new("fake").unwrap(),
         Arc::default(),
         EventBusSpi::capabilities(_bus.as_ref()),
+        None,
     )
 }
 

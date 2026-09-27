@@ -108,6 +108,68 @@ fn sync_facade_capability_panic_is_a_terminal_spi_error() {
 }
 
 #[test]
+fn sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
+    let (bus, backend) = create_bus();
+    let request = SubscribeRequest::new("durable-request", topic())
+        .expect("valid request")
+        .with_options(
+            SubscribeOptions::builder()
+                .durability(SubscriptionDurability::Durable)
+                .build(),
+        );
+
+    let result = bus.subscribe(request, |_: Delivery<String>| Ok::<(), DeliveryError>(()));
+
+    assert!(matches!(
+        result,
+        Err(SubscribeError::Capability(CapabilityError::Unsupported {
+            capability: "subscription_durability"
+        }))
+    ));
+    assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn sync_subscription_worker_limit_is_released_after_cancel() {
+    let backend = Arc::new(TestBackend::new());
+    let scheduler = SyncDeliverySchedulerConfig::new(1, 8)
+        .expect("valid handler scheduler")
+        .with_max_subscription_workers(std::num::NonZeroUsize::new(1).unwrap());
+    let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(scheduler);
+    let bus = EventBus::with_config(ProviderId::new("subscription-budget").unwrap(), backend.clone(), config)
+        .expect("valid provider capabilities");
+
+    let first = bus
+        .subscribe(
+            SubscribeRequest::new("first-budgeted", topic()).unwrap(),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("first subscription fits the budget");
+    let rejected = bus.subscribe(
+        SubscribeRequest::new("second-budgeted", topic()).unwrap(),
+        |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+    );
+    assert!(matches!(
+        rejected,
+        Err(SubscribeError::ResourceLimit {
+            resource: "subscription_workers",
+            limit: 1
+        })
+    ));
+    assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 1);
+
+    first.cancel().expect("first subscription is cancelled and joined");
+    let third = bus
+        .subscribe(
+            SubscribeRequest::new("third-budgeted", topic()).unwrap(),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("cancellation releases the subscription budget");
+    third.cancel().expect("third subscription is cancelled");
+    bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
 fn sync_spi_call_panics_are_returned_as_structured_errors() {
     let (bus, backend) = create_bus();
     backend.subscribe_panics.store(true, Ordering::Release);
@@ -842,7 +904,7 @@ fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
             SubscribeOptions::<String>::builder()
                 .durability(SubscriptionDurability::Durable)
                 .build(),
-            "durability",
+            "subscription_durability",
         ),
         (
             SubscribeOptions::<String>::builder()

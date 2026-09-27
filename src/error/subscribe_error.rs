@@ -21,6 +21,14 @@ pub enum SubscribeError {
     /// Required backend behavior is unavailable.
     #[error(transparent)]
     Capability(#[from] CapabilityError),
+    /// The configured subscription worker budget is exhausted.
+    #[error("event bus resource limit reached for {resource} (limit {limit})")]
+    ResourceLimit {
+        /// Stable resource name.
+        resource: &'static str,
+        /// Configured maximum number of resources.
+        limit: usize,
+    },
     /// The selected provider failed to subscribe.
     #[error(transparent)]
     Spi(#[from] SpiError),

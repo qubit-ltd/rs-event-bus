@@ -11,6 +11,7 @@
 mod support;
 
 use std::any::TypeId;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -24,6 +25,7 @@ use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::EventBus;
+use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DestinationAdmission;
@@ -399,6 +401,44 @@ struct PanickingAsyncPublishSpi;
 struct PanickingAsyncPublishConstructionSpi;
 
 struct AcceptingAsyncPublishSpi;
+struct EncodedAsyncPublishSpi(AtomicUsize);
+
+impl AsyncEventBusSpi for EncodedAsyncPublishSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        EventBusCapabilities::new(
+            PayloadModes::Encoded,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::Opaque,
+        )
+    }
+
+    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async {
+            Ok(PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            })
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        _request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async { unreachable!("publisher test SPI is not used for subscriptions") })
+    }
+
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        Box::pin(async { Ok(ShutdownOutcome::Complete) })
+    }
+}
 
 impl AsyncEventBusSpi for AcceptingAsyncPublishSpi {
     fn capabilities(&self) -> EventBusCapabilities {
@@ -516,6 +556,55 @@ fn encoded_publish_retains_codec_failure_and_skips_provider_call() {
     assert!(std::error::Error::source(&error).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
     bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
+    let config =
+        EventBusFacadeConfig::new().with_max_encoded_payload_bytes(Some(NonZeroUsize::new(4).expect("positive limit")));
+    let topic = || {
+        Topic::new_with_codec(
+            "codec.limit",
+            SuccessfulStringCodec {
+                content_type: ContentType::new("text/plain").unwrap(),
+            },
+        )
+        .unwrap()
+    };
+    let sync_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
+    let sync_bus = EventBus::with_config(
+        ProviderId::new("encoded-limit-sync").unwrap(),
+        sync_spi.clone(),
+        config.clone(),
+    )
+    .unwrap();
+    sync_bus
+        .publish(PublishRequest::new(topic(), "four".to_owned()).unwrap())
+        .expect("payload equal to the limit is accepted");
+    let error = sync_bus
+        .publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap())
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PublishError::Codec(CodecError::PayloadTooLarge { actual: 9, limit: 4 })
+    ));
+    assert_eq!(sync_spi.publish_calls.load(Ordering::Acquire), 1);
+    sync_bus.shutdown(ShutdownMode::Immediate).unwrap();
+
+    let async_spi = Arc::new(EncodedAsyncPublishSpi(AtomicUsize::new(0)));
+    let async_bus = AsyncEventBus::with_config(
+        ProviderId::new("encoded-limit-async").unwrap(),
+        async_spi.clone(),
+        config,
+    )
+    .unwrap();
+    let error = block_on(async_bus.publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap())).unwrap_err();
+    assert!(matches!(
+        error,
+        PublishError::Codec(CodecError::PayloadTooLarge { actual: 9, limit: 4 })
+    ));
+    assert_eq!(async_spi.0.load(Ordering::Acquire), 0);
+    block_on(async_bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
 #[test]
