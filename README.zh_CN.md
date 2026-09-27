@@ -136,7 +136,7 @@ pub fn subscribe(bus: &EventBus, store: Arc<dyn CustomerViewStore>)
 
 ### 启动时装配共享总线
 
-为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会分别提交到同步和异步 provider 目录。应用装配代码先选择 provider，再创建一条总线，将克隆句柄交给服务：
+为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会自动登记到同步目录。`AsyncEventBusRegistry::discover()` 不包含异步 local provider；使用异步总线时，需要通过 `AsyncEventBusRegistry::with_local()` 显式登记。下面的启动装配代码选择同步 provider，再创建总线并把克隆句柄交给服务：
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -164,7 +164,7 @@ let orders = OrderService::new(bus.clone());
 ## 延伸阅读
 
 - [中文用户手册](doc/user_guide.zh_CN.md) · [English user guide](doc/user_guide.md)
-- [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [SPI design (English)](doc/spi_design.md)
+- [架构设计（中文）](doc/design.zh_CN.md) · [Architecture status (English)](doc/design.md) · [SPI 设计](doc/design.zh_CN.md#4-provider-spi)
 - [API 文档](https://docs.rs/qubit-event-bus)
 - [English README](README.md)
 

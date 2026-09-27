@@ -85,7 +85,7 @@ At startup, call both subscription functions and keep their `Subscription` handl
 
 ### Assemble one shared bus at startup
 
-Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is submitted to the synchronous catalog, with a separate entry for the async catalog. In the application's startup wiring, select it before creating one bus and pass cloned handles to services:
+Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is automatically submitted to the synchronous catalog. `AsyncEventBusRegistry::discover()` does not include the async local provider; register it explicitly with `AsyncEventBusRegistry::with_local()`. In the application's startup wiring, select the sync provider before creating one bus and pass cloned handles to services:
 
 ```rust
 use qubit_event_bus::{EventBusConfig, EventBusRegistry};
@@ -117,7 +117,7 @@ Both local providers bound queued and unsettled events per subscription (default
 ## Learn more
 
 - [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
-- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design (English)](doc/spi_design.md)
+- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design](doc/design.md#4-provider-spi)
 - [API reference](https://docs.rs/qubit-event-bus)
 - [中文 README](README.zh_CN.md)
 
