@@ -43,7 +43,8 @@ use qubit_event_bus::spi::TransportPayload;
 #[test]
 fn notification_publisher_bounds_queue_and_drains_in_order_on_close() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let (outcome_sender, outcome_receiver) = mpsc::channel();
     let publisher = NotificationPublisher::new(
         bus,
@@ -81,7 +82,8 @@ fn notification_publisher_bounds_queue_and_drains_in_order_on_close() {
 #[test]
 fn notification_publisher_close_is_idempotent_and_does_not_close_bus() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
@@ -103,7 +105,8 @@ fn notification_publisher_close_is_idempotent_and_does_not_close_bus() {
 #[test]
 fn notification_publisher_close_with_timeout_can_be_retried_after_provider_unblocks() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.close-timeout"),
@@ -141,7 +144,8 @@ fn notification_publisher_close_with_timeout_can_be_retried_after_provider_unblo
 #[test]
 fn notification_publisher_zero_timeout_is_nonblocking_and_finished_close_succeeds() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.close-zero-timeout"),
@@ -173,7 +177,8 @@ fn notification_publisher_zero_timeout_is_nonblocking_and_finished_close_succeed
 #[test]
 fn notification_publisher_concurrent_timed_close_callers_can_timeout_and_retry() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = Arc::new(
         NotificationPublisher::new(
             bus,
@@ -219,7 +224,8 @@ fn notification_publisher_concurrent_timed_close_callers_can_timeout_and_retry()
 fn notification_stats_snapshot_exposes_all_counters() {
     assert_eq!(256, NotificationPublisher::<String>::default_capacity().get());
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
@@ -243,7 +249,8 @@ fn notification_stats_snapshot_exposes_all_counters() {
 #[test]
 fn notification_publisher_concurrent_close_callers_share_worker_completion() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi);
+    let bus =
+        EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi).expect("valid provider capabilities");
     let publisher = Arc::new(
         NotificationPublisher::new(
             bus,
@@ -268,7 +275,8 @@ fn notification_publisher_concurrent_close_callers_share_worker_completion() {
 #[test]
 fn notification_publisher_contains_observer_panics_and_continues() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
@@ -289,7 +297,8 @@ fn notification_publisher_contains_observer_panics_and_continues() {
 #[test]
 fn notification_observer_cannot_close_its_own_worker() {
     let spi = Arc::new(GatedSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let publisher_ref = Arc::new(OnceLock::<Weak<NotificationPublisher<String>>>::new());
     let callback_publisher_ref = Arc::clone(&publisher_ref);
     let (close_sender, close_receiver) = mpsc::channel();

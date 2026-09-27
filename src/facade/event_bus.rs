@@ -153,6 +153,7 @@ pub struct EventBus {
 
 pub(super) struct EventBusInner {
     spi: Arc<dyn EventBusSpi>,
+    capabilities: crate::spi::EventBusCapabilities,
     provider_id: ProviderId,
     publisher: PublisherPipeline,
     facade_config: EventBusFacadeConfig,
@@ -313,7 +314,11 @@ impl EventBus {
     /// receives at a finite interval; handler callbacks run on the facade-wide
     /// bounded pool. Use a registry when provider selection or creation
     /// fallback is required.
-    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Self {
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure. A Rust panic from that
+    /// call is reported as a terminal `provider_panicked` SPI error.
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Result<Self, crate::error::SpiError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
@@ -321,13 +326,26 @@ impl EventBus {
     ///
     /// The codec registry is frozen into the publisher pipeline at
     /// construction; later changes require constructing a new facade.
-    pub fn with_config(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>, config: EventBusFacadeConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure, including a terminal
+    /// `provider_panicked` error when the SPI unwinds.
+    pub fn with_config(
+        provider_id: ProviderId,
+        spi: Arc<dyn EventBusSpi>,
+        config: EventBusFacadeConfig,
+    ) -> Result<Self, crate::error::SpiError> {
+        let capabilities =
+            crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
+                spi.capabilities()
+            })?;
         let scheduler = SyncDeliveryScheduler::new(config.sync_delivery_scheduler());
-        Self {
+        Ok(Self {
             inner: Arc::new(EventBusInner {
                 spi,
+                capabilities,
                 provider_id: provider_id.clone(),
-                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone()),
+                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone(), capabilities),
                 facade_config: config,
                 lifecycle: Mutex::new(LifecycleState::Running),
                 operations: OperationGate::default(),
@@ -342,7 +360,7 @@ impl EventBus {
                 scheduler,
                 publish_metrics: PublishMetrics::default(),
             }),
-        }
+        })
     }
 
     /// Publishes one typed request through publisher interceptors, retry, and
@@ -426,7 +444,7 @@ impl EventBus {
                 message: "synchronous EventBus requires synchronous subscriber middleware".into(),
             }));
         }
-        let capabilities = self.inner.spi.capabilities();
+        let capabilities = self.inner.capabilities;
         let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
         if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
@@ -452,7 +470,12 @@ impl EventBus {
             options.provider_options().clone(),
             topic.payload_type_id(),
         );
-        let spi_subscription = self.inner.spi.subscribe(spi_request)?;
+        let spi_subscription = crate::spi::panic_boundary::catch_spi_call(
+            self.inner.provider_id.as_str(),
+            "subscribe",
+            Some(subscriber_id.as_str()),
+            || self.inner.spi.subscribe(spi_request),
+        )??;
         let spi_subscription_slot = Arc::new(Mutex::new(Some(spi_subscription)));
         if let Err(error) = self.inner.scheduler.start() {
             let spi_subscription = spi_subscription_slot
@@ -554,11 +577,14 @@ impl EventBus {
             });
         }
         let address = TopicAddress::new(topic.name()).expect("typed topic names are valid SPI addresses");
-        self.inner
-            .spi
-            .wait_for_topic_idle(&address, timeout)?
-            .map(|idle| if idle { WaitOutcome::Idle } else { WaitOutcome::TimedOut })
-            .ok_or(LifecycleError::IdleWaitUnsupported)
+        crate::spi::panic_boundary::catch_spi_call(
+            self.inner.provider_id.as_str(),
+            "wait_for_topic_idle",
+            Some(address.as_str()),
+            || self.inner.spi.wait_for_topic_idle(&address, timeout),
+        )??
+        .map(|idle| if idle { WaitOutcome::Idle } else { WaitOutcome::TimedOut })
+        .ok_or(LifecycleError::IdleWaitUnsupported)
     }
 
     /// Waits until this facade has completed work already received for `topic`.
@@ -849,7 +875,9 @@ impl EventBusInner {
         if let Some(outcome) = state.outcome {
             return Ok(outcome);
         }
-        let outcome = self.spi.shutdown(mode)?;
+        let outcome = crate::spi::panic_boundary::catch_spi_call(self.provider_id.as_str(), "shutdown", None, || {
+            self.spi.shutdown(mode)
+        })??;
         state.outcome = Some(outcome);
         Ok(outcome)
     }
@@ -928,17 +956,12 @@ fn close_spi_subscription(
     subscriber_id: &SubscriberId,
     spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
 ) -> Result<(), SpiError> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| spi_subscription.close())) {
-        Ok(result) => result,
-        Err(payload) => Err(SpiError::Operation {
-            provider_id: inner.provider_id.as_str().into(),
-            operation: "close_subscription",
-            resource: Some(subscriber_id.as_str().into()),
-            kind: "provider_panicked",
-            retryable: None,
-            source: Box::new(std::io::Error::other(panic_message(payload.as_ref()))),
-        }),
-    }
+    crate::spi::panic_boundary::catch_spi_call(
+        inner.provider_id.as_str(),
+        "close",
+        Some(subscriber_id.as_str()),
+        || spi_subscription.close(),
+    )?
 }
 
 /// Converts a publisher pipeline failure into its operation-level error type.
@@ -1079,11 +1102,20 @@ fn run_subscription_worker<T>(
             }
 
             if pending.is_none() && !receive_closed {
-                match spi_subscription.receive(if receive_closed {
-                    Duration::ZERO
-                } else {
-                    receive_poll_interval()
-                }) {
+                match crate::spi::panic_boundary::catch_spi_call(
+                    inner.provider_id.as_str(),
+                    "receive",
+                    Some(subscriber_id.as_str()),
+                    || {
+                        spi_subscription.receive(if receive_closed {
+                            Duration::ZERO
+                        } else {
+                            receive_poll_interval()
+                        })
+                    },
+                )
+                .and_then(std::convert::identity)
+                {
                     Ok(ReceiveOutcome::TimedOut) => {}
                     Ok(ReceiveOutcome::Closed) => receive_closed = true,
                     Ok(ReceiveOutcome::Gap(gap)) => inner.emit(Diagnostic::ReceiveGap {
@@ -1179,18 +1211,36 @@ fn apply_owner_settlement(
         );
         return true;
     }
-    match spi_subscription.settle(token, disposition) {
+    let result = crate::spi::panic_boundary::catch_spi_call(
+        inner.provider_id.as_str(),
+        "settle",
+        Some(subscriber_id.as_str()),
+        || spi_subscription.settle(token, disposition),
+    )
+    .and_then(std::convert::identity);
+    match result {
         Ok(()) => true,
         Err(error) => {
             inner.emit(Diagnostic::SettlementFailed {
-                event_id,
+                event_id: event_id.clone(),
                 topic: topic.into(),
                 subscription_id,
                 subscriber_id: subscriber_id.clone(),
                 disposition,
                 error: error.to_string().into(),
             });
-            false
+            if error.kind() == "provider_panicked" {
+                inner.emit(Diagnostic::SettlementUnavailable {
+                    event_id,
+                    topic: topic.into(),
+                    subscription_id,
+                    subscriber_id: subscriber_id.clone(),
+                    requested: disposition,
+                });
+                true
+            } else {
+                false
+            }
         }
     }
 }
@@ -1252,7 +1302,7 @@ fn requeue_unstarted_message_via_owner(
     message: InboundMessage,
 ) {
     let (address, event_id, _, _, _, _, token, _) = message.into_parts();
-    let capability = inner.spi.capabilities().settlement();
+    let capability = inner.capabilities.settlement();
     if let Some(token) = token {
         if !token.belongs_to(subscription_id) {
             inner.emit_internal(
@@ -1292,7 +1342,7 @@ fn requeue_unstarted_message(
     message: InboundMessage,
 ) {
     let (address, event_id, _, _, _, _, token, _) = message.into_parts();
-    let capability = inner.spi.capabilities().settlement();
+    let capability = inner.capabilities.settlement();
     if let Some(token) = token {
         if !token.belongs_to(subscription_id) {
             inner.emit_internal(
@@ -1370,7 +1420,7 @@ fn process_inbound<T>(
         inner.emit_internal("delivery_worker", panic_message(payload.as_ref()).into());
         if let Some(token) = settlement.take() {
             if token.belongs_to(subscription_id)
-                && inner.spi.capabilities().settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+                && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
             {
                 settler.settle(
                     Some(token),
@@ -1730,7 +1780,7 @@ fn finish_failed_delivery<T>(
     T: Send + Sync + 'static,
 {
     let action = SubscriberPipeline::failure_action(directive);
-    let capabilities = inner.spi.capabilities().settlement();
+    let capabilities = inner.capabilities.settlement();
     let mut requested_disposition = match action {
         DeliveryFailureAction::Requeue => DeliveryDisposition::Retry,
         DeliveryFailureAction::RetryLocally | DeliveryFailureAction::DeadLetter | DeliveryFailureAction::Discard => {
@@ -1808,10 +1858,8 @@ fn finish_failed_delivery<T>(
     }
     if action == DeliveryFailureAction::RetryLocally && disposition.is_none() {
         requested_disposition = DeliveryDisposition::Reject;
-        disposition = SubscriberPipeline::failure_disposition(
-            DeliveryFailureAction::Discard,
-            inner.spi.capabilities().settlement(),
-        );
+        disposition =
+            SubscriberPipeline::failure_disposition(DeliveryFailureAction::Discard, inner.capabilities.settlement());
     }
     if let Some(disposition) = disposition {
         settle_token(
@@ -1893,7 +1941,7 @@ fn settle_rejected(
 ) {
     if let Some(token) = token {
         if token.belongs_to(subscription_id) {
-            if inner.spi.capabilities().settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
+            if inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
                 settler.settle(
                     Some(token),
                     DeliveryDisposition::Reject,
@@ -1952,17 +2000,3 @@ fn panic_message(payload: &(dyn Any + Send)) -> &'static str {
 #[cfg(test)]
 #[path = "../../tests/support/spawn_failure_tests.rs"]
 mod spawn_failure_tests;
-
-/// Converts one panicking provider operation into a source-preserving SPI
-/// error.
-#[allow(dead_code)]
-fn provider_panic(provider_id: &ProviderId, operation: &'static str) -> SpiError {
-    SpiError::Operation {
-        provider_id: provider_id.as_str().into(),
-        operation,
-        resource: None,
-        kind: "spi_panicked",
-        retryable: None,
-        source: Box::new(std::io::Error::other("provider SPI panicked")),
-    }
-}

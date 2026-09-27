@@ -301,7 +301,8 @@ fn create_bus_with_close_mode(
         ProviderId::new(PROVIDER_ID).expect("static provider ID is valid"),
         Arc::new(spi.clone()),
         config,
-    );
+    )
+    .expect("valid provider capabilities");
     (bus, spi, close_rx)
 }
 

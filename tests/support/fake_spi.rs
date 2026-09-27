@@ -429,6 +429,12 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
 #[derive(Clone)]
 pub(crate) struct FakeAsyncEventBusSpi {
     capabilities: EventBusCapabilities,
+    capabilities_panics: Arc<AtomicBool>,
+    capabilities_calls: Arc<AtomicUsize>,
+    subscribe_panics: Arc<AtomicBool>,
+    shutdown_panics: Arc<AtomicBool>,
+    close_panics: Arc<AtomicBool>,
+    settle_panics: Arc<AtomicBool>,
     queues: Arc<Mutex<Vec<(Id, AsyncQueue)>>>,
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
@@ -450,6 +456,12 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn with_capabilities(capabilities: EventBusCapabilities) -> Self {
         Self {
             capabilities,
+            capabilities_panics: Arc::new(AtomicBool::new(false)),
+            capabilities_calls: Arc::new(AtomicUsize::new(0)),
+            subscribe_panics: Arc::new(AtomicBool::new(false)),
+            shutdown_panics: Arc::new(AtomicBool::new(false)),
+            close_panics: Arc::new(AtomicBool::new(false)),
+            settle_panics: Arc::new(AtomicBool::new(false)),
             queues: Arc::default(),
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
@@ -462,6 +474,26 @@ impl FakeAsyncEventBusSpi {
             shutdown_wakers: Arc::default(),
             receiver_drop_recoveries: Arc::default(),
         }
+    }
+
+    pub(crate) fn panic_on_capabilities(&self) {
+        self.capabilities_panics.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn capabilities_calls(&self) -> usize {
+        self.capabilities_calls.load(Ordering::Acquire)
+    }
+    pub(crate) fn panic_on_subscribe_call(&self) {
+        self.subscribe_panics.store(true, Ordering::Release);
+    }
+    pub(crate) fn panic_on_shutdown_call(&self) {
+        self.shutdown_panics.store(true, Ordering::Release);
+    }
+    pub(crate) fn panic_on_close_call(&self) {
+        self.close_panics.store(true, Ordering::Release);
+    }
+    pub(crate) fn panic_on_settle_call(&self) {
+        self.settle_panics.store(true, Ordering::Release);
     }
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
@@ -574,6 +606,11 @@ impl FakeAsyncEventBusSpi {
 
 impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
     fn capabilities(&self) -> EventBusCapabilities {
+        self.capabilities_calls.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            !self.capabilities_panics.load(Ordering::Acquire),
+            "capabilities panic requested by test"
+        );
         self.capabilities
     }
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
@@ -604,6 +641,9 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         request: SpiSubscriptionRequest,
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         self.calls.lock().unwrap().push("subscribe");
+        if self.subscribe_panics.swap(false, Ordering::AcqRel) {
+            panic!("fake async subscribe call panic");
+        }
         let paused = self.subscribe_paused.clone();
         let wakers = self.subscribe_wakers.clone();
         Box::pin(async move {
@@ -631,11 +671,16 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 close_paused: self.close_paused.clone(),
                 close_wakers: self.close_wakers.clone(),
                 receiver_drop_recoveries: self.receiver_drop_recoveries.clone(),
+                close_panics: self.close_panics.clone(),
+                settle_panics: self.settle_panics.clone(),
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
     fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.calls.lock().unwrap().push("shutdown");
+        if self.shutdown_panics.swap(false, Ordering::AcqRel) {
+            panic!("fake async shutdown call panic");
+        }
         let mut n = self.shutdown_transitions.lock().unwrap();
         if *n == 0 {
             *n = 1;
@@ -668,6 +713,8 @@ struct FakeAsyncEventSubscriptionSpi {
     close_paused: Arc<AtomicBool>,
     close_wakers: Arc<Mutex<Vec<Waker>>>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
+    close_panics: Arc<AtomicBool>,
+    settle_panics: Arc<AtomicBool>,
 }
 
 impl Drop for FakeAsyncEventSubscriptionSpi {
@@ -720,6 +767,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
         disposition: DeliveryDisposition,
     ) -> SpiFuture<'a, Result<(), SpiError>> {
         self.calls.lock().unwrap().push("settle");
+        if self.settle_panics.swap(false, Ordering::AcqRel) {
+            panic!("fake async settle call panic");
+        }
         if std::mem::take(&mut self.queue.lock().unwrap().pause_next_settle) {
             return Box::pin(async {
                 std::future::pending::<()>().await;
@@ -752,6 +802,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
     }
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.calls.lock().unwrap().push("close");
+        if self.close_panics.swap(false, Ordering::AcqRel) {
+            panic!("fake async close call panic");
+        }
         let queue = self.queue.clone();
         let paused = self.close_paused.clone();
         let wakers = self.close_wakers.clone();

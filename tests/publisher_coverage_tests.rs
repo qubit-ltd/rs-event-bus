@@ -229,7 +229,7 @@ impl EventBusSpi for CoverageSpi {
 }
 
 fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
-    EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi)
+    EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi).expect("valid provider capabilities")
 }
 
 #[test]
@@ -262,7 +262,8 @@ fn publisher_metrics_track_shared_attempts_and_batch_items() {
         ProviderId::new("publisher-metrics-dropped").unwrap(),
         Arc::new(CoverageSpi::new(PayloadModes::Native, false)),
         EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
-    );
+    )
+    .expect("valid provider capabilities");
     dropped_bus
         .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 4_u32).unwrap())
         .unwrap();
@@ -532,7 +533,7 @@ fn sync_spi_publish_panic_becomes_source_preserving_publish_error() {
             provider_id,
             operation: "publish",
             resource: Some(resource),
-            kind: "spi_panic",
+            kind: "provider_panicked",
             ..
         } if provider_id.as_ref() == "publisher-coverage" && resource.as_ref() == "sync.panic"
     ));
@@ -806,7 +807,8 @@ fn async_spi_future_panic_becomes_source_preserving_publish_error() {
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-coverage").unwrap(),
         Arc::new(PanickingAsyncPublishSpi),
-    );
+    )
+    .expect("valid provider capabilities");
     let request = PublishRequest::new(Topic::new("async.panic").unwrap(), 11_u32).unwrap();
 
     let error = block_on(bus.publish(request)).unwrap_err();
@@ -817,7 +819,7 @@ fn async_spi_future_panic_becomes_source_preserving_publish_error() {
         &source,
         SpiError::Operation {
             operation: "publish",
-            kind: "spi_panic",
+            kind: "provider_panicked",
             ..
         }
     ));
@@ -830,7 +832,8 @@ fn async_spi_future_construction_panic_becomes_source_preserving_publish_error()
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-construction-panic").unwrap(),
         Arc::new(PanickingAsyncPublishConstructionSpi),
-    );
+    )
+    .expect("valid provider capabilities");
     let request = PublishRequest::new(Topic::new("async.construction.panic").unwrap(), 11_u32).unwrap();
 
     let error = block_on(bus.publish(request)).unwrap_err();
@@ -843,7 +846,7 @@ fn async_spi_future_construction_panic_becomes_source_preserving_publish_error()
             provider_id,
             operation: "publish",
             resource: Some(resource),
-            kind: "spi_panic",
+            kind: "provider_panicked",
             ..
         } if provider_id.as_ref() == "async-publisher-construction-panic"
             && resource.as_ref() == "async.construction.panic"
@@ -857,7 +860,8 @@ fn async_publisher_accepts_distinct_native_payload_types_without_clone_bounds() 
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-generic-publisher-coverage").unwrap(),
         Arc::new(AcceptingAsyncPublishSpi),
-    );
+    )
+    .expect("valid provider capabilities");
 
     macro_rules! publish {
         ($name:literal, $request:expr) => {

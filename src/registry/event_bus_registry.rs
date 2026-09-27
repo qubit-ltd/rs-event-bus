@@ -145,7 +145,7 @@ impl EventBusRegistry {
         }
         let resolver = self.providers.resolve().map_err(provider_resolution_error)?;
         let spi = resolver.create_configured(config).map_err(provider_creation_error)?;
-        Ok(facade(spi, config))
+        facade(spi, config)
     }
 
     /// Creates a facade using a validated explicit provider selection.
@@ -159,7 +159,7 @@ impl EventBusRegistry {
             .resolve_selected(selection)
             .map_err(provider_resolution_error)?;
         let spi = resolver.create_configured(config).map_err(provider_creation_error)?;
-        Ok(facade(spi, config))
+        facade(spi, config)
     }
 }
 
@@ -169,11 +169,13 @@ impl Default for EventBusRegistry {
     }
 }
 
-fn facade(spi: Arc<dyn crate::spi::EventBusSpi>, config: &EventBusConfig) -> EventBus {
+fn facade(spi: Arc<dyn crate::spi::EventBusSpi>, config: &EventBusConfig) -> Result<EventBus, ProviderError> {
     let provider_id: FacadeProviderId = spi
         .provider_id()
         .expect("registered provider adapters attach a canonical provider ID");
-    EventBus::with_config(provider_id, spi, config.facade_config().clone())
+    EventBus::with_config(provider_id, spi, config.facade_config().clone()).map_err(|error| ProviderError::Creation {
+        source: Box::new(error),
+    })
 }
 
 fn provider_resolution_error(error: ProviderResolutionError) -> ProviderError {

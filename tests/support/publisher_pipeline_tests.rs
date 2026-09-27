@@ -155,7 +155,11 @@ fn bus(payload_modes: PayloadModes, fail_count: usize) -> (Arc<FakeBus>, Arc<Mut
 }
 
 fn make_pipeline(_bus: &Arc<FakeBus>) -> PublisherPipeline {
-    PublisherPipeline::new(ProviderId::new("fake").unwrap(), Arc::default())
+    PublisherPipeline::new(
+        ProviderId::new("fake").unwrap(),
+        Arc::default(),
+        EventBusSpi::capabilities(_bus.as_ref()),
+    )
 }
 
 fn request(options: PublishOptions<String>) -> PublishRequest<String> {

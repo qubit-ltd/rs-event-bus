@@ -52,7 +52,8 @@ fn handler_error(message: &'static str) -> DeliveryError {
 #[test]
 fn retry_runs_interceptor_and_handler_again() {
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("pipeline-retry").unwrap(), backend.clone());
+    let bus = EventBus::from_spi(ProviderId::new("pipeline-retry").unwrap(), backend.clone())
+        .expect("valid provider capabilities");
     let attempts = Arc::new(AtomicUsize::new(0));
     let intercepted = Arc::new(AtomicUsize::new(0));
     let (completed_tx, completed_rx) = mpsc::channel();
@@ -155,7 +156,8 @@ fn interceptor_error_retries_and_scheduler_backpressure_preserves_pending_delive
     let facade_config =
         EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::with_config(ProviderId::new("pipeline-admission").unwrap(), backend, facade_config);
+    let bus = EventBus::with_config(ProviderId::new("pipeline-admission").unwrap(), backend, facade_config)
+        .expect("valid provider capabilities");
     let interceptor_calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = Arc::new(AtomicUsize::new(0));
 

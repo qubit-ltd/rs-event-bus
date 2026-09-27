@@ -24,6 +24,7 @@ mod inbound_message;
 mod ordering_capability;
 mod ordering_key;
 mod outbound_message;
+pub(crate) mod panic_boundary;
 mod payload_modes;
 mod publish_guarantee;
 mod publish_visibility;
