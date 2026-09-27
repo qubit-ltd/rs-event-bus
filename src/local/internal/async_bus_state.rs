@@ -12,6 +12,8 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use qubit_id::Id;
+
 use super::MailboxKey;
 use super::async_mailbox::AsyncMailbox;
 use crate::spi::ShutdownOutcome;
@@ -21,8 +23,8 @@ use crate::spi::TopicAddress;
 pub(in crate::local) struct AsyncBusState {
     pub(in crate::local) closed: bool,
     pub(in crate::local) outcome: Option<ShutdownOutcome>,
-    pub(in crate::local) mailboxes: HashMap<MailboxKey, std::sync::Arc<AsyncMailbox>>,
-    topic_members: HashMap<TopicAddress, BTreeSet<qubit_id::Id>>,
+    pub(in crate::local) mailboxes: HashMap<MailboxKey, Arc<AsyncMailbox>>,
+    topic_members: HashMap<TopicAddress, BTreeSet<Id>>,
     pub(in crate::local) payload_types: HashMap<TopicAddress, TypeId>,
 }
 

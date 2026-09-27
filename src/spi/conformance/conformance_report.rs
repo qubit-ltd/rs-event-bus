@@ -99,7 +99,10 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
     )
 }
 
-pub(super) fn probe_request(subscription_id: u64, durability: crate::spi::DurabilityCapability) -> SpiSubscriptionRequest {
+pub(super) fn probe_request(
+    subscription_id: u64,
+    durability: crate::spi::DurabilityCapability,
+) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(subscription_id),
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
