@@ -196,7 +196,7 @@ fn sync_local_passes_public_spi_conformance_publish_cases() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn flume_fixture_passes_public_spi_conformance_without_settlement() {
+fn bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
     let report = run_sync(crate::support::flume_spi::create, &ConformanceHooks::default());
     report.assert_all_passed();
     assert!(report.cases().iter().any(
@@ -205,7 +205,7 @@ fn flume_fixture_passes_public_spi_conformance_without_settlement() {
 }
 
 #[test]
-fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
+fn bounded_channel_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
     let spi = crate::support::flume_spi::create();
     let request = crate::support::fake_spi::subscription_request();
     let mut receiver = spi.subscribe(request).unwrap();
@@ -233,7 +233,8 @@ fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() 
     spi.shutdown(ShutdownMode::Immediate).unwrap();
 
     let spi = crate::support::flume_spi::create();
-    let bus = EventBus::from_spi(ProviderId::new("flume").unwrap(), spi).expect("valid provider capabilities");
+    let bus =
+        EventBus::from_spi(ProviderId::new("bounded-channel").unwrap(), spi).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("test.topic").unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let subscription = bus

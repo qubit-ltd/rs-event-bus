@@ -11,6 +11,11 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::TrySendError;
+use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 
 use qubit_event_bus::SpiError;
@@ -46,7 +51,7 @@ const QUEUE_CAPACITY: usize = 1;
 struct Route {
     topic: TopicAddress,
     subscriber: SubscriberId,
-    sender: flume::Sender<InboundMessage>,
+    sender: SyncSender<InboundMessage>,
 }
 
 #[derive(Default)]
@@ -114,8 +119,8 @@ impl EventBusSpi for FlumeSpi {
             );
             let status = match route.sender.try_send(inbound) {
                 Ok(()) => AdmissionStatus::Accepted,
-                Err(flume::TrySendError::Full(_)) => AdmissionStatus::Rejected("subscription queue is full".into()),
-                Err(flume::TrySendError::Disconnected(_)) => AdmissionStatus::Rejected("subscription is closed".into()),
+                Err(TrySendError::Full(_)) => AdmissionStatus::Rejected("subscription queue is full".into()),
+                Err(TrySendError::Disconnected(_)) => AdmissionStatus::Rejected("subscription is closed".into()),
             };
             admissions.push(DestinationAdmission::new(*id, route.subscriber.clone(), status));
         }
@@ -123,7 +128,7 @@ impl EventBusSpi for FlumeSpi {
     }
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
-        let (sender, receiver) = flume::bounded(QUEUE_CAPACITY);
+        let (sender, receiver) = sync_channel(QUEUE_CAPACITY);
         let id = request.subscription_id();
         let mut state = self.state.lock().unwrap();
         if state.closed {
@@ -170,7 +175,7 @@ impl EventBusSpi for FlumeSpi {
 
 struct FlumeSubscription {
     id: Id,
-    receiver: flume::Receiver<InboundMessage>,
+    receiver: Receiver<InboundMessage>,
     state: Arc<Mutex<State>>,
     closed: bool,
 }
@@ -179,8 +184,8 @@ impl EventSubscriptionSpi for FlumeSubscription {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
         match self.receiver.recv_timeout(timeout) {
             Ok(message) => Ok(ReceiveOutcome::Message(message)),
-            Err(flume::RecvTimeoutError::Timeout) => Ok(ReceiveOutcome::TimedOut),
-            Err(flume::RecvTimeoutError::Disconnected) => Ok(ReceiveOutcome::Closed),
+            Err(RecvTimeoutError::Timeout) => Ok(ReceiveOutcome::TimedOut),
+            Err(RecvTimeoutError::Disconnected) => Ok(ReceiveOutcome::Closed),
         }
     }
 
@@ -211,7 +216,7 @@ impl Drop for FlumeSubscription {
 
 fn operation_error(operation: &'static str, kind: &'static str) -> SpiError {
     SpiError::Operation {
-        provider_id: "flume-fixture".into(),
+        provider_id: "bounded-channel-fixture".into(),
         operation,
         resource: None,
         kind,
