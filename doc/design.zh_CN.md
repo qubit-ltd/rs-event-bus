@@ -630,8 +630,9 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **全局**发布拦截器，只能读写 headers（`PublishMetadata`），返回 `false` 丢弃消息 |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | 按 payload 类型注册的**全局同步**中间件 |
 | `async_subscriber_interceptors` | 同上，异步版本 | 全局异步中间件（仅 `AsyncEventBus` 使用） |
-| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32 }` | 同步 handler 池大小与队列深度 |
+| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | 同步接手上限、handler 队列与接收线程预算 |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | 异步 facade 全局 in-flight 上限 |
+| `max_encoded_payload_bytes` | `Option<NonZeroUsize>` | 可选的编码输出上限，在调用 provider 前检查；`None` 表示不限制 |
 
 facade 创建时只读取一次 provider capabilities，并在后续校验中使用不可变快照。
 直接构造时若 `capabilities()` panic，构造函数返回 `SpiError`，分类为终态
@@ -654,6 +655,9 @@ facade 创建时只读取一次 provider capabilities，并在后续校验中使
 `TransportPayload::Native`。消费侧对 `Encoded` 载荷用同一解析规则解码；
 解码失败 → `DeliveryError::Codec`，直接 `Reject`（若 provider 支持）并发
 `Diagnostic::DeliveryFailed { attempts: 0 }`。
+设置 `max_encoded_payload_bytes` 后，publisher 在完成编码后、重试和调用 provider
+前检查字节向量长度。它会拒绝超限编码输出，但不会限制 codec 执行时的内存分配。原生
+payload 无 facade 字节上限，因为无法可靠递归计算 Rust 对象保留的内存。
 
 ### 7.3 发布管线（`PublisherPipeline`）
 
@@ -1151,8 +1155,10 @@ cargo bench --bench local_scale
 cargo bench --bench local_threads
 ```
 
-设计层面的结论：同步 facade 的线程数 = 订阅数 + `max_in_flight` + 停机时 1；
-异步 facade 不创建线程；local provider 自身不创建线程。
+同步 facade 为每个订阅创建一个阻塞接收线程，并在调用 provider 前执行
+`max_subscription_workers` 预算检查（默认 256）。handler 池大小由 `max_in_flight`
+决定；停机时还可能临时启动协调线程。异步 facade 不会为每个订阅创建线程；local
+provider 自身不创建线程。
 
 ---
 
