@@ -647,8 +647,9 @@ or `Registry::create`. It is frozen when the facade is created:
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **Global** publish interceptors. They may only read and write headers (`PublishMetadata`). Returning `false` drops the message |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | **Global synchronous** middleware registered per payload type |
 | `async_subscriber_interceptors` | Same shape, async | Global async middleware (used only by `AsyncEventBus`) |
-| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32 }` | Synchronous handler-pool size and queue depth |
+| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | Synchronous admission, handler queue, and receiver-thread budget |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | Global in-flight limit of the async facade |
+| `max_encoded_payload_bytes` | `Option<NonZeroUsize>` | Optional limit on encoded codec output before provider publish; `None` is unlimited |
 
 The facade reads provider capabilities once during construction and keeps that
 immutable snapshot for later validation. If `capabilities()` panics during direct
@@ -672,6 +673,11 @@ Only a `PayloadModes::Encoded` provider **requires** a codec (missing codec →
 `TransportPayload::Native`. The subscribe side decodes an `Encoded` payload with
 the same rule. A decode failure becomes `DeliveryError::Codec`, is `Reject`ed when
 the provider supports it, and emits `Diagnostic::DeliveryFailed { attempts: 0 }`.
+When `max_encoded_payload_bytes` is set, the publisher checks the completed byte
+vector after encoding and before retry or provider calls. This rejects oversized
+encoded output; it does not bound memory allocated while a codec runs. Native
+payloads have no facade byte limit because recursively measuring retained Rust
+objects is not reliable.
 
 ### 7.3 Publish pipeline (`PublisherPipeline`)
 
@@ -1216,9 +1222,11 @@ cargo bench --bench local_scale
 cargo bench --bench local_threads
 ```
 
-By design, the synchronous facade's thread count is the subscription count plus
-`max_in_flight` plus one during shutdown. The asynchronous facade creates no threads.
-The `local` provider itself creates no threads.
+The synchronous facade starts one blocking receiver thread per subscription and
+enforces `max_subscription_workers` (default 256) before calling the provider.
+The handler pool is sized by `max_in_flight`; shutdown may also briefly start a
+coordinator thread. The async facade creates no thread per subscription. The
+`local` provider itself creates no threads.
 
 ---
 
