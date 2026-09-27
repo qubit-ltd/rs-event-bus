@@ -1,8 +1,8 @@
 # Qubit Event Bus 设计文档（0.14）
 
-> 本文档以 `qubit-event-bus` 0.14.0 的实际源码为准，整合并取代此前分散在
-> `design.zh_CN.md`（架构说明）与 `spi_design.zh_CN.md`（SPI 设计）中的内容。
+> 本文档以 `qubit-event-bus` 0.14.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
+> 英文版：[design.md](design.md)。
 >
 > 阅读对象：需要理解 crate 内部结构的维护者、需要实现 provider 的后端作者，
 > 以及需要判断"某个保证到底由谁负责"的集成方。日常使用请先读
@@ -27,7 +27,8 @@
 13. [诊断与指标](#13-诊断与指标)
 14. [并发不变量汇总](#14-并发不变量汇总)
 15. [测试与验证策略](#15-测试与验证策略)
-16. [非目标与已知边界](#16-非目标与已知边界)
+16. [公开 API 稳定性](#16-公开-api-稳定性)
+17. [非目标与已知边界](#17-非目标与已知边界)
 
 ---
 
@@ -557,6 +558,15 @@ pub struct AsyncEventBusSpec;               // 异步，Output = Arc<dyn AsyncEv
 `RequiredCapabilities::missing_from(&caps)` 返回缺失项列表；
 `EventBusProviderAdapter` 在 provider 构造完后立即检查，缺失则该候选失败并进入下一个候选。
 **这是唯一一处 registry 会因能力做回退的地方**；facade 建好后再也不会因能力切换 provider。
+
+`ProviderOptions`（`BTreeMap<String, String>`）是命名空间化、可 `Debug` 的非敏感配置。
+订阅 builder 在 `build()` 时拒绝不合规的键值：键必须包含 `.` 且不能以 `.` 开头或结尾，
+键和值都不能含控制字符，否则返回 `SubscribeRequestBuildError::InvalidProviderOption`。
+约定用前缀区分归属，例如 `local.queue_capacity`。核心 crate 不解释别人的命名空间，
+也不提供通用认证模型；密码、token 和私钥不得写入这些字段，provider 应通过外部凭据引用
+或自己的安全配置取得凭据。provider 只解释自己的命名空间，其下的未知键必须报错：
+内置 `local` 在 `LocalEventBusConfig::from_provider_options` 中对未知键返回
+`ConfigurationError::InvalidField`。
 
 ### 6.3 `EventBusProviderAdapter` 与 `IdentifiedEventBusSpi`
 
@@ -1248,6 +1258,10 @@ pub enum NotificationOutcome {
 8. 用户回调 panic 不会导致线程/任务退出或 bus 状态损坏。
 9. 死信最多一级；死信头无法被外部设置或篡改。
 10. 取消/停机不丢消息：未开始的 handler 任务以 `Retry` 归还 provider（能力允许时）。
+11. 持有 facade 内部锁时不调用用户代码。诊断观察者先在 `observers` 锁内做成快照，
+    `emit` 在释放锁之后才调用回调；handler、中间件和错误处理器运行在调度线程或
+    异步投递任务上，不持有订阅目录、ordering lane 或 tracker 的锁。这样用户回调
+    再进入 bus API 时不会在同一把锁上自死锁，配合 §8.6 / §9.8 的 `WouldDeadlock` 检测。
 
 `tests/concurrency_contract_tests.rs` 在 `loom` 下对第 4、5、7、10 条相关的原语建模检查。
 
@@ -1291,12 +1305,54 @@ pub enum NotificationOutcome {
 作者补充只有自己能验证的幂等/取消检查），返回 `ConformanceReport`
 （`Vec<ConformanceCase::{Passed, Failed, Skipped}>`）。
 当前用例覆盖：能力/载荷模式一致性、`subscribe`、`publish`、`receive-payload`、
-settlement 幂等/冲突、`shutdown`。它是 provider 作者的最低验收门，也是本 crate
+settlement 幂等/冲突、`shutdown`。不支持某项能力的 provider 应让对应用例记为 `Skipped`，
+而不是在测试调用后再返回含糊错误。它是 provider 作者的最低验收门，也是本 crate
 对 SPI 契约的可执行说明。
+
+公共 runner 不覆盖、需要 provider 作者自己补充的检查：
+
+- descriptor、provider 选择与创建；
+- capability 声明稳定且与真实行为一致；
+- native / encoded 载荷契约；
+- `publish` 之后能 `receive`；
+- `receive` 超时；
+- `close` 之后 `receive` 返回 `Closed`；
+- gap 映射为 `ReceiveOutcome::Gap`；
+- settlement token 的 subscription 归属；
+- 重复 settlement 幂等、冲突 disposition 不造成额外投递；
+- `shutdown` 幂等；
+- 异步 `receive` 被取消后消息不丢；
+- 错误携带 provider 上下文，且 `source` 可追溯；
+- `Debug` 输出不泄漏敏感的 provider options。
+
+### 15.4 文档验证
+
+公共 trait 和主要类型带可运行的 rustdoc 示例。README 与用户手册在介绍 retry
+高级配置时列出 `qubit-retry` 依赖并使用 `qubit_retry::*` 路径；基础示例不引入
+用不到的 retry import。文档把 provider 接纳、facade admission 和 handler 完成
+分成三件事（P6）。
 
 ---
 
-## 16. 非目标与已知边界
+## 16. 公开 API 稳定性
+
+以下类型构成需要谨慎演进的稳定边界：
+
+- `EventBus` / `AsyncEventBus`；
+- `Topic<T>` / `EventEnvelope<T>` / 两类 request 及其 builder / `Delivery<T>`；
+- `EventBusSpi` / `AsyncEventBusSpi` 与两类 subscription SPI；
+- 传输消息和 settlement 契约；
+- capability 类型；
+- provider spec 与 registry；
+- 各操作的错误类型及其访问器。
+
+公开错误 enum、capability enum 和 `Diagnostic` 使用 `#[non_exhaustive]`。
+SPI 输入结构使用私有字段、构造函数和访问器，避免新增字段成为破坏性修改。
+后端特有扩展走命名空间化的 `ProviderOptions` 或独立扩展 trait，不向最小 SPI 持续加方法。
+
+---
+
+## 17. 非目标与已知边界
 
 - **没有 exactly-once**：facade 只能在 provider 声明的 settlement 能力内工作；
   `AcceptOnly` provider 下失败消息可能被重投也可能丢失，取决于 provider。
@@ -1307,8 +1363,7 @@ settlement 幂等/冲突、`shutdown`。它是 provider 作者的最低验收门
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
 - **`provider_attempt` 目前恒为 `None`**：`InboundMessage` 尚无 provider 重投计数来源。
-- **英文设计文档暂未提供**。
 
 ---
 
-*本文档随 `qubit-event-bus` 0.14.x 维护；修改 facade/SPI 行为时应同步更新对应章节。*
+*本文档随 `qubit-event-bus` 0.14.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*

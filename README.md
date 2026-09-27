@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
 
-`qubit-event-bus` solves a common problem inside an order service: once an order is accepted, the order code must trigger several independent tasks, such as writing an audit trail and refreshing a customer-facing view. Directly calling both tasks couples order creation to their implementations and failure paths. This crate lets the order code publish one typed event while each task subscribes independently. Its built-in local provider handles work inside one process; a provider SPI lets applications integrate a different transport without changing the event-facing API.
+`qubit-event-bus` solves a common problem inside an order service: once an order is accepted, the order code must trigger several independent tasks, such as writing an audit trail and refreshing a customer-facing view. Directly calling both tasks couples order creation to their implementations and failure paths. This crate lets the order code publish one typed event while each task subscribes independently. Its built-in local provider handles work inside one process, where events may be lost and the application must arrange any needed recovery; a provider SPI lets applications integrate a different transport without changing the event-facing API. The crate does not make the handoff from the order transaction to publication reliable.
 
 ## An order service example
 
@@ -117,9 +117,8 @@ Both local providers bound queued and unsettled events per subscription (default
 ## Learn more
 
 - [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
-- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design (English)](doc/spi_design.md) · [正式 SPI 设计（中文）](doc/spi_design.zh_CN.md)
+- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design (English)](doc/spi_design.md)
 - [API reference](https://docs.rs/qubit-event-bus)
-- [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh_CN.md)
 - [中文 README](README.zh_CN.md)
 
 ## Testing
