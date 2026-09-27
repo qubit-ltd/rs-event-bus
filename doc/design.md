@@ -73,6 +73,9 @@ a publish or subscribe request against those capabilities (for example, a delay 
 delayed delivery is unsupported) and returns `CapabilityError` instead of pretending
 to support the request. The facade also does not shrink every backend's API down to
 whatever the weakest backend can do.
+Capabilities are immutable for one SPI instance and are read once when the
+facade is constructed; a panic at that boundary is returned as a terminal SPI
+error instead of escaping construction.
 
 **(P4) Fallback happens only at creation time. The running bus never switches provider.**
 `EventBusRegistry` accepts a `ProviderSelection` candidate and fallback chain, and
@@ -639,6 +642,11 @@ or `Registry::create`. It is frozen when the facade is created:
 | `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32 }` | Synchronous handler-pool size and queue depth |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | Global in-flight limit of the async facade |
 
+The facade reads provider capabilities once during construction and keeps that
+immutable snapshot for later validation. If `capabilities()` panics during direct
+construction, the constructor returns a terminal `SpiError` classified as
+`provider_panicked`.
+
 Global interceptors and middleware are **added to** request-level ones. On publish,
 typed request interceptors run first and global metadata interceptors run after them.
 On subscribe, global middleware wraps the request middleware: global, then typed, then the handler.
@@ -1126,7 +1134,7 @@ broadcast into every subscription queue. Publish does not clone the payload.
 
 | Parameter | Default | Role |
 | --- | --- | --- |
-| `queue_capacity` | 1024 | Messages that may be queued on one subscription (not counting in-flight) |
+| `queue_capacity` | 1024 | Maximum `pending + in_flight` messages for one subscription |
 | `max_total_outstanding` | 65,536 | Provider-wide `OutstandingBudget`: queued plus in-flight across every subscription |
 
 Publish decides per destination. A full queue or an exhausted budget rejects that
@@ -1162,17 +1170,19 @@ The structure matches the synchronous provider. The waiting primitive and the in
 - Waiting uses a `Waker` instead of a condition variable. A `receive` future registers
   a waker when the queue is empty, and publish or settle wakes it. A delayed message
   becoming due is a sleep future on the injected `Timer`.
-- Routing is a **mailbox**:
-  `AsyncBusState { mailboxes: HashMap<MailboxKey { topic, subscriber }, Arc<AsyncMailbox>>, payload_types: HashMap<TopicAddress, TypeId>, closed, outcome }`.
-  Subscribing again while a mailbox for the same `(topic, subscriber_id)` is live
-  returns `duplicate_subscriber`. The synchronous provider indexes by `subscription_id`,
-  so the same `SubscriberId` may have several concurrent subscriptions on one topic.
-  **This difference is known.** Callers should not depend on subscribing the same
-  subscriber to the same topic more than once.
+- Routing uses a primary `HashMap<MailboxKey { subscription_id }, Arc<AsyncMailbox>>`
+  and a secondary `HashMap<TopicAddress, BTreeSet<subscription_id>>`. Publish snapshots
+  only the target topic's mailboxes, ordered by subscription ID. Both indexes are
+  updated under the bus-state lock; close removes only the matching mailbox instance,
+  so reusing an ID cannot let an old handle remove a newer mailbox.
+- Different subscription instances may share a `(topic, subscriber_id)` and each
+  receives its own broadcast copy, matching synchronous local behavior.
 - Capacity and budget share `LocalQueue` and `OutstandingBudget`. `AsyncLocalShared`
   also holds `AsyncSignal changed` and `Arc<dyn Timer>`.
 - `close_mailbox` is Ephemeral as well.
-- `AsyncLocalEventBusSpi::with_timer(config, timer)` lets tests inject a manual timer.
+- `AsyncLocalEventBusSpi::with_timer(config, timer)` lets tests inject a manual timer;
+  it validates both queue and provider-wide capacities and returns a configuration
+  error for invalid zero limits.
   `AsyncLocalEventBusProvider`, when created through the registry, uses `qubit_clock::StdTimer`.
   That provider is **not** submitted to the async inventory catalog (§6.4).
 
@@ -1270,7 +1280,7 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 - `SpiError::retryable()` is the only channel a provider uses to tell the facade
   "this is worth retrying". Publish and delivery retry both consult it.
 - `SpiError::Operation::kind` is a `&'static str` classification (for example
-  `closed`, `invalid_argument`, `spi_panic`, `worker_panicked`, `duplicate_subscriber`,
+  `closed`, `invalid_argument`, `provider_panicked`, `worker_panicked`,
   `topic_type_conflict`) used in logs and test assertions. Each facade layer's `Closed`
   variant comes from that layer's own lifecycle gate. A closed-style `SpiError`
   returned by a provider after shutdown is passed through as the `Spi` variant and is not remapped.
@@ -1423,7 +1433,6 @@ is not a breaking change. Backend-specific extensions go through namespaced
 - **No exactly-once.** The facade can only work within the settlement capability the provider declared. Under `AcceptOnly`, a failed message may be redelivered or lost, depending on the provider.
 - **Ordering scope.** Handlers for one subscription and one key are serialized. Across subscriptions and topics there is no order.
 - **Synchronous retry occupies a handler thread.** `Retry` backoff sleeps on a pool thread, so a long backoff reduces effective concurrency. A long backoff should use `Requeue` and let the provider redeliver, or use the async facade.
-- **Async `local` `duplicate_subscriber` differs from synchronous `local`** (§10.4).
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
 - **`provider_attempt` is always `None` today.** `InboundMessage` has no source for a provider redelivery count.

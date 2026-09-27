@@ -67,6 +67,8 @@ provider 通过 `EventBusCapabilities` 如实报告自己能做什么。facade �
 时**校验请求是否超出能力（如要求延迟投递但 provider 不支持），超出即报
 `CapabilityError`，不会假装支持。同时 facade 也不会因为某个后端做不到就把
 所有后端的 API 削成最小集合。
+每个 SPI 实例的能力声明在其生命周期内保持不变，facade 只在构造时读取一次；
+此处发生 panic 会转换为终态 SPI 错误，不会越过构造 API。
 
 **(P4) 回退只发生在创建期，运行期永不切换 provider。**
 `EventBusRegistry` 支持 `ProviderSelection` 的候选/回退链，但只在 `create*`
@@ -624,6 +626,10 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32 }` | 同步 handler 池大小与队列深度 |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | 异步 facade 全局 in-flight 上限 |
 
+facade 创建时只读取一次 provider capabilities，并在后续校验中使用不可变快照。
+直接构造时若 `capabilities()` panic，构造函数返回 `SpiError`，分类为终态
+`provider_panicked`。
+
 全局拦截器/中间件与请求级拦截器/中间件**叠加**而非替代：发布侧先跑请求级
 （typed），后跑全局（metadata）；消费侧全局中间件包在请求级中间件**外层**
 （先进入全局，再进入 typed，最后 handler）。
@@ -662,7 +668,8 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
    `AsyncRetry`（异步，带 `Timer`）包裹 `spi.publish`。重试判定综合
    `SpiError::retryable()` 与用户 `RetryRule<PublishAttemptError>`；
    `RetryFallback::Abort`；耗尽 → `PublishError::Retry(Box<RetryError<...>>)`。
-   未配置策略则单次尝试。provider panic 被捕获为 `SpiError::Operation`（`kind = "spi_panic"`）。
+   未配置策略则单次尝试。provider panic 被捕获为不可重试的 `SpiError::Operation`
+   （`kind = "provider_panicked"`）。
 8. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishError)`；
    任何一个 panic → 最终错误替换为 `PublishError::ErrorHandlerPanicked`，
    其余处理器仍继续执行。
@@ -1105,14 +1112,16 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 
 - 等待用 `Waker` 而非条件变量：`receive` future 在无消息时登记 waker，publish/settle
   后唤醒；延迟消息到期用注入的 `Timer` 建立 sleep future。
-- 路由以 **mailbox** 组织：`AsyncBusState { mailboxes: HashMap<MailboxKey { subscription_id }, Arc<AsyncMailbox>>, payload_types: HashMap<TopicAddress, TypeId>, closed, outcome }`。
-  同一 provider 内重复 `subscription_id` 会返回 `duplicate_subscription` 错误。相同
-  `(topic, subscriber_id)` 的不同订阅实例各有独立 mailbox，也会各自收到广播消息；
-  `SubscriberId` 是逻辑身份，`subscription_id` 是运行期实例身份，与同步 local 语义一致。
+- 路由使用按 `subscription_id` 保存 mailbox 的主索引，以及按 topic 保存有序订阅 ID 集合的辅助索引。
+  发布只读取目标 topic 的订阅，并按 `subscription_id` 升序分配 provider 总预算；
+  关闭时在同一 bus-state 锁内同步维护两个索引，并校验 mailbox 实例身份，避免旧 handle
+  删除复用 ID 后的新 mailbox。相同 `(topic, subscriber_id)` 的不同订阅实例各有独立
+  mailbox，也会各自收到广播消息，与同步 local 语义一致。
 - 容量与预算共享同一套 `LocalQueue`/`OutstandingBudget` 实现，`AsyncLocalShared`
   额外持有 `AsyncSignal changed` 与 `Arc<dyn Timer>`。
 - `close_mailbox` 同为 Ephemeral 语义。
-- `AsyncLocalEventBusSpi::with_timer(config, timer)` 允许测试注入手动 timer；
+- `AsyncLocalEventBusSpi::with_timer(config, timer)` 允许测试注入手动 timer；构造时会同时
+  校验 queue 与 provider 总容量，零值返回配置错误；
   `AsyncLocalEventBusProvider` 通过 registry 创建时使用 `qubit_clock::StdTimer`。
   该 provider 目前**未**提交到异步 inventory 目录（§6.4）。
 
@@ -1209,7 +1218,7 @@ pub enum NotificationOutcome {
 - `SpiError::retryable()` 是 provider 向 facade 传达"值得重试"的唯一通道，
   发布/投递重试都参考它。
 - `SpiError::Operation::kind` 是 `&'static str` 分类（如 `closed`、`invalid_argument`、
-  `spi_panic`、`worker_panicked`、`duplicate_subscription`、`topic_type_conflict`），
+  `provider_panicked`、`worker_panicked`、`duplicate_subscription`、`topic_type_conflict`），
   用于日志与测试断言。facade 各层的 `Closed` 变体来自 facade 自身的生命周期门禁；
   provider 在停机后返回的关闭类 `SpiError` 按 `Spi` 变体原样传出，不做二次映射。
 - 所有枚举标注 `#[non_exhaustive]`，为未来新增变体保留空间。
