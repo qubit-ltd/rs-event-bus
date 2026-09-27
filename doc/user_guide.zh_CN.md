@@ -601,7 +601,7 @@ qubit_spi::submit_sync_provider! {
 }
 ```
 
-异步实现使用独立的异步目录和 `submit_async_provider!`；可参考[内置异步实现源码](../src/local/async_local_event_bus_provider.rs)。接入生产系统前，应重点验证：等待超时或关闭时的结果是否正确；重复确认是否安全；异步操作被取消后消息是否仍可重新处理；关闭后是否仍保留未确认消息；重复关闭是否安全。详细接口契约见 [SPI 设计](spi_design.zh_CN.md) 和 [SPI API](https://docs.rs/qubit-event-bus/latest/qubit_event_bus/spi/)。
+异步实现使用独立的异步目录和 `submit_async_provider!`；可参考[内置异步实现源码](../src/local/async_local_event_bus_provider.rs)。接入生产系统前，应重点验证：等待超时或关闭时的结果是否正确；重复确认是否安全；异步操作被取消后消息是否仍可重新处理；关闭后是否仍保留未确认消息；重复关闭是否安全。详细接口契约见 [架构设计](design.zh_CN.md) 和 [SPI API](https://docs.rs/qubit-event-bus/latest/qubit_event_bus/spi/)。
 
 ### 跨进程实现需要编码时
 
@@ -628,7 +628,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行；调用 `close().await` 或丢弃句柄则结束订阅。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
+应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行；调用 `close().await` 或丢弃句柄则结束订阅。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
 ## 非阻塞通知入口
 

@@ -603,7 +603,7 @@ qubit_spi::submit_sync_provider! {
 }
 ```
 
-An async implementation uses the separate async catalog and `submit_async_provider!`. The [built-in async implementation](../src/local/async_local_event_bus_provider.rs) is a reference. Before production, verify the result of a wait timeout or a close; that a repeated acknowledgement is safe; that a message can be processed again after an async operation is cancelled; that unacknowledged messages are still retained after close; and that closing twice is safe. The interface contract is in the [SPI design](spi_design.zh_CN.md) and the [SPI API](https://docs.rs/qubit-event-bus/latest/qubit_event_bus/spi/).
+An async implementation uses the separate async catalog and `submit_async_provider!`. The [built-in async implementation](../src/local/async_local_event_bus_provider.rs) is a reference. Before production, verify the result of a wait timeout or a close; that a repeated acknowledgement is safe; that a message can be processed again after an async operation is cancelled; that unacknowledged messages are still retained after close; and that closing twice is safe. The interface contract is in the [architecture design](design.md) and the [SPI API](https://docs.rs/qubit-event-bus/latest/qubit_event_bus/spi/).
 
 ### Encode events for a cross-process implementation
 
@@ -630,7 +630,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await`, or dropping the handle, ends the subscription. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
+At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await`, or dropping the handle, ends the subscription. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
 
 ## Non-blocking notification entry
 
