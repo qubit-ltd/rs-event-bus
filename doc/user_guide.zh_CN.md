@@ -487,7 +487,9 @@ let config = EventBusConfig::default()
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-`SyncDeliverySchedulerConfig::new` 的第一个值必须大于零；第二个值可以为 0，表示只能把消息立即交给空闲工作线程。使用注册表创建 local 时，要把 `local.provider_options()` 传给 `EventBusConfig`；它包含 `local.queue_capacity` 和 `local.max_total_outstanding` 两个配置键。未知的键、非数字值或零值会在创建时被拒绝。直接调用 `EventBus::local` 只能设置 local 的积压容量；要修改处理并发、编码器或拦截器，就通过 `EventBusRegistry::with_local()` 创建。
+`SyncDeliverySchedulerConfig::new` 的第一个值必须大于零；第二个值可以为 0，表示只能把消息立即交给空闲工作线程。同步 facade 默认最多创建 256 个活跃订阅接收线程。可以用 `SyncDeliverySchedulerConfig::with_max_subscription_workers(NonZeroUsize::new(64).unwrap())` 调整上限；超过上限时会在调用 provider 创建订阅前失败。此设置限制线程数，不会降低每个阻塞接收线程的开销；订阅量更大时可评估异步总线。使用注册表创建 local 时，要把 `local.provider_options()` 传给 `EventBusConfig`；它包含 `local.queue_capacity` 和 `local.max_total_outstanding` 两个配置键。未知的键、非数字值或零值会在创建时被拒绝。直接调用 `EventBus::local` 只能设置 local 的积压容量；要修改处理并发、编码器或拦截器，就通过 `EventBusRegistry::with_local()` 创建。
+
+对编码传输，可用 `EventBusFacadeConfig::with_max_encoded_payload_bytes(Some(limit))` 在调用 provider 前拒绝超出限制的 codec 输出；默认不限制。检查发生在完整字节向量编码后，不限制编码过程中的内存分配。facade 无法可靠计算原生 Rust payload 的递归占用，因此本地队列仍只按投递条数限流，不承诺字节上限。
 
 异步总线也使用 `LocalEventBusConfig`。例如把同时处理的消息数设为 8：
 

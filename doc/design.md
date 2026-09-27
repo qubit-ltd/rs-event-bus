@@ -501,6 +501,7 @@ pub struct EventBusCapabilities {
     ordering: OrderingCapability,                // None | PerSubscription | PerKey | PerPartition
     delayed_delivery: DelayedDeliveryCapability, // None | Native
     durability: DurabilityCapability,            // Ephemeral | Durable
+    subscription_modes: SubscriptionModes,      // Ephemeral | Durable | Both requests accepted
     consumer_groups: bool,
     replay: ReplayCapability,                    // None | Position | Timestamp
     publish_guarantee: PublishGuarantee,         // FireAndForget | Accepted | Confirmed | DurablyStored
@@ -517,6 +518,7 @@ How the facade uses these capabilities (P3):
 | `AckMode::Manual` | Subscribe | `SubscribeError::Capability` unless settlement is `AcceptRetryReject` (a manual nack needs the provider to `Retry` or `Reject`) |
 | `OrderingPolicy::PerKey` | Subscribe | `SubscribeError::Capability` when `ordering.supports_per_key()` is false (`PerKey` or `PerSubscription`) |
 | `SubscriptionDurability::Durable` | Subscribe | Rejected when durability is `DurabilityCapability::Ephemeral` |
+| Any subscription durability | Subscribe | Rejected with `subscription_durability` when the provider does not accept that request mode |
 | `consumer_group` | Subscribe | Rejected when `consumer_groups == false` |
 | `StartPosition::Earliest` | Subscribe | Rejected when replay is `ReplayCapability::None` |
 | `PayloadModes::Encoded` | Publish / subscribe | `CapabilityError::CodecRequired` when no codec is available (an encode or decode failure is a `CodecError`) |
@@ -525,6 +527,9 @@ How the facade uses these capabilities (P3):
 
 `RequiredCapabilities` (§6.2) reuses the same enums so a caller can demand
 "at least these capabilities" at **creation** time and learn about a mismatch before the bus is used.
+`DurabilityCapability` describes the provider's retention guarantee; `SubscriptionModes` separately lists
+which requested modes it accepts. Older custom providers should update `EventBusCapabilities` construction
+to declare their accepted modes. The facade rejects an unsupported mode before calling `subscribe`.
 
 ---
 

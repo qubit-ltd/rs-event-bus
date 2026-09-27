@@ -491,6 +491,7 @@ pub struct EventBusCapabilities {
     ordering: OrderingCapability,                // None | PerSubscription | PerKey | PerPartition
     delayed_delivery: DelayedDeliveryCapability, // None | Native
     durability: DurabilityCapability,            // Ephemeral | Durable
+    subscription_modes: SubscriptionModes,      // 接受 Ephemeral、Durable 或两种请求
     consumer_groups: bool,
     replay: ReplayCapability,                    // None | Position | Timestamp
     publish_guarantee: PublishGuarantee,         // FireAndForget | Accepted | Confirmed | DurablyStored
@@ -507,6 +508,7 @@ facade 如何使用这些能力（对应 P3）：
 | `AckMode::Manual` | 订阅 | settlement 不是 `AcceptRetryReject` 时 `SubscribeError::Capability`（手动 nack 需要 provider 能 `Retry`/`Reject`） |
 | `OrderingPolicy::PerKey` | 订阅 | `ordering.supports_per_key()`（`PerKey` 或 `PerSubscription`）为假时 `SubscribeError::Capability` |
 | `SubscriptionDurability::Durable` | 订阅 | `DurabilityCapability::Ephemeral` 时拒绝 |
+| 任意订阅持久模式 | 订阅 | provider 不接受该请求模式时以 `subscription_durability` 拒绝 |
 | `consumer_group` | 订阅 | `consumer_groups == false` 时拒绝 |
 | `StartPosition::Earliest` | 订阅 | `ReplayCapability::None` 时拒绝 |
 | `PayloadModes::Encoded` | 发布 / 订阅 | 无 codec 时 `CapabilityError::CodecRequired`（编解码本身失败才是 `CodecError`） |
@@ -514,7 +516,10 @@ facade 如何使用这些能力（对应 P3）：
 | `Diagnostic::SettlementUnavailable` | 投递失败 | 无法 settle 时发诊断而非静默 |
 
 `RequiredCapabilities`（§6.2）复用同一套枚举，让调用方在**创建期**就要求
-"至少这些能力"，把能力不匹配尽早暴露。
+"至少这些能力”，把能力不匹配尽早暴露。
+`DurabilityCapability` 描述 provider 的保留保证；`SubscriptionModes` 独立声明它接受哪些订阅请求模式。
+旧的自定义 provider 需要更新 `EventBusCapabilities` 构造调用并声明支持的模式。facade 会在调用
+`subscribe` 前拒绝不支持的模式。
 
 ---
 

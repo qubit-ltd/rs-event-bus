@@ -78,7 +78,23 @@ pub fn create_order(
         customer_id: order.customer_id,
         total_cents: order.total_cents,
     };
-    Ok(bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?)
+    let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
+    match receipt.admission_outcome() {
+        qubit_event_bus::model::AdmissionOutcome::Accepted(_) => Ok(receipt),
+        qubit_event_bus::model::AdmissionOutcome::OpaqueAccepted => {
+            // provider 只报告 broker 接收，不提供逐个订阅者的接纳情况。
+            Ok(receipt)
+        }
+        qubit_event_bus::model::AdmissionOutcome::PartiallyAccepted(summary) => {
+            // 部分订阅者已接纳；应单独修复被拒绝的目标，避免重复处理已接纳事件。
+            Err(std::io::Error::other(format!("{} 个订阅者拒绝了事件", summary.rejected)).into())
+        }
+        qubit_event_bus::model::AdmissionOutcome::NoDestinations
+        | qubit_event_bus::model::AdmissionOutcome::NoneAccepted(_) => {
+            Err(std::io::Error::other("没有订阅者接纳事件").into())
+        }
+        other => Err(std::io::Error::other(format!("需要应用策略处理接纳结果：{other:?}")).into()),
+    }
 }
 ```
 
@@ -159,7 +175,7 @@ let orders = OrderService::new(bus.clone());
 - 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
 - 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 
-本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 provider 每个订阅者使用一个阻塞接收线程，另有共享 handler 池；异步 provider 不会为每个订阅者创建接收线程，但应用必须驱动 `AsyncSubscription::run`。订阅量较大时，在目标主机运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 实测，不把样本结果当作固定容量阈值。异步订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[资源指南](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
+本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 facade 默认最多创建 256 个活跃订阅接收线程，可用 `SyncDeliverySchedulerConfig::with_max_subscription_workers` 调整；异步 provider 不会为每个订阅者创建接收线程，但应用必须驱动 `AsyncSubscription::run`。订阅量较大时，在目标主机运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 实测，不把样本结果当作固定容量阈值。`EventBusFacadeConfig::with_max_encoded_payload_bytes` 可在调用 provider 前限制编码输出；原生 payload 不做字节限额。异步订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[资源指南](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
 
 ## 延伸阅读
 
