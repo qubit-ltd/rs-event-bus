@@ -634,7 +634,7 @@ subscription.run(move |delivery| {
 
 如果产生消息的代码不能停下来等待同步发布，可使用 `NotificationPublisher<T>`：它先把消息放进一个有容量上限的队列，再由一个后台线程逐条发布。默认最多排队 256 条。`try_publish(payload)` 只说明**成功入队**，并非已经发布；队列满时返回 `TryPublishError::Full(payload)`，关闭后返回 `Closed(payload)`，原数据会还给调用方。观察回调收到 `Published(receipt)`、`PublishFailed(error)` 或 `RequestFailed(error)`；这里的 `Published` 仍不表示处理函数完成。`stats()` 可查看计数。
 
-`close()` 停止接收新通知，处理完已入队消息并等待后台线程退出，但不会关闭它使用的事件总线。观察回调运行在该后台线程上，应尽快返回；不要从回调内部调用同一个通知发布器的 `close()`。只丢弃句柄不会等待队列处理完，停机时应显式关闭通知发布器，再关闭总线。
+`close()` 停止接收新通知，处理完已入队消息并等待后台线程退出。停机需要限定等待时间时，可调用 `close_with_timeout(Duration::from_secs(30))`。期限到达会返回 `io::ErrorKind::TimedOut`；worker 会继续运行，可能继续发布已经接纳的通知。此后 `try_publish` 返回 `Closed`，之后可以再次调用 `close()` 或 `close_with_timeout()` 等待 worker 结束。超时不能中断正在执行的同步 provider 调用。两种关闭方法都不会关闭通知发布器使用的事件总线。观察回调运行在后台线程上，应尽快返回；不要从回调内部调用同一个通知发布器的任一关闭方法。只丢弃句柄不会等待队列处理完，停机时应显式关闭通知发布器，再关闭总线。
 
 ## 生命周期、等待与停机
 
