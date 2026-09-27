@@ -53,6 +53,16 @@ pub struct AsyncLocalEventBusSpi {
 
 impl AsyncLocalEventBusSpi {
     /// Creates an async local SPI from validated transport settings.
+    ///
+    /// # Parameters
+    /// * `config` - Queue and provider-wide outstanding-delivery limits.
+    ///
+    /// # Returns
+    /// An async local SPI that uses the standard timer.
+    ///
+    /// # Errors
+    /// Returns the configuration validation error when either delivery limit
+    /// is zero.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         Self::with_timer(config, Arc::new(StdTimer::new()))
     }

@@ -659,7 +659,7 @@ Sync `wait_for_idle(&topic, timeout)` waits until the transport reports that the
 | `IdleWaitUnsupported` | The transport cannot report whether the whole topic is idle. Record completion in business code. Work the bus has already taken is not all of the work. |
 | Graceful shutdown times out | Check for a handler or a transport read or write that never returns, and for unfinished messages. Ask for the shutdown result again later. |
 
-`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication and reception. It does not count successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
+`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. It does not count message reception or successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
 
 ## Boundaries and a practice checklist
 
