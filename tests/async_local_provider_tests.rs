@@ -18,6 +18,7 @@ use std::time::Duration;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
@@ -84,7 +85,8 @@ fn async_local_reports_capacity_rejection_per_destination() {
 fn async_local_total_capacity_counts_in_flight_until_terminal_settlement() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let first_topic = Topic::<String>::new("async.local.total-first").unwrap();
     let second_topic = Topic::<String>::new("async.local.total-second").unwrap();
     let mut first = block_on(spi.subscribe(spi_request(700, "first", "async.local.total-first"))).unwrap();
@@ -137,7 +139,8 @@ fn async_local_total_capacity_counts_in_flight_until_terminal_settlement() {
 fn async_local_drop_racing_publish_releases_capacity_after_close() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let first_topic = Topic::<String>::new("async.local.drop-publish-first").unwrap();
     let second_topic = Topic::<String>::new("async.local.drop-publish-second").unwrap();
     let first = block_on(spi.subscribe(spi_request(702, "first", "async.local.drop-publish-first"))).unwrap();
@@ -171,7 +174,8 @@ fn async_local_drop_racing_publish_releases_capacity_after_close() {
 fn async_local_settlement_racing_shutdown_never_leaks_budget() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<String>::new("async.local.settle-shutdown-race").unwrap();
     let mut receiver = block_on(spi.subscribe(spi_request(704, "race", "async.local.settle-shutdown-race"))).unwrap();
     block_on(bus.publish(PublishRequest::new(topic, "racing".to_owned()).unwrap())).unwrap();
@@ -244,9 +248,89 @@ fn async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
 }
 
 #[test]
+fn async_local_with_timer_rejects_zero_limits() {
+    for config in [
+        LocalEventBusConfig::new().queue_capacity(0),
+        LocalEventBusConfig::new().max_total_outstanding(0),
+    ] {
+        match AsyncLocalEventBusSpi::with_timer(&config, Arc::new(qubit_clock::StdTimer::new())) {
+            Err(ConfigurationError::InvalidField { .. }) => {}
+            Err(error) => panic!("expected invalid configuration, got {error}"),
+            Ok(_) => panic!("zero capacities must be rejected at construction"),
+        }
+    }
+}
+
+#[test]
+fn async_local_topic_index_preserves_fanout_and_removes_closed_routes() {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi).expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.topic-index").unwrap();
+    let cold = Topic::<String>::new("async.local.cold-index").unwrap();
+    let mut first = block_on(bus.subscribe(SubscribeRequest::new("same", topic.clone()).unwrap())).unwrap();
+    let second = block_on(bus.subscribe(SubscribeRequest::new("same", topic.clone()).unwrap())).unwrap();
+    let _cold = block_on(bus.subscribe(SubscribeRequest::new("cold", cold).unwrap())).unwrap();
+
+    let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), "one".to_owned()).unwrap())).unwrap();
+    let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert_eq!(2, admissions.len());
+
+    block_on(first.close()).unwrap();
+    let receipt = block_on(bus.publish(PublishRequest::new(topic, "two".to_owned()).unwrap())).unwrap();
+    let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert_eq!(1, admissions.len());
+    drop(second);
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_budget_admission_follows_subscription_id() {
+    let config = LocalEventBusConfig::new().max_total_outstanding(1);
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let mut later = block_on(spi.subscribe(spi_request(22, "later", "async.local.ordered-budget"))).unwrap();
+    let mut earlier = block_on(spi.subscribe(spi_request(11, "earlier", "async.local.ordered-budget"))).unwrap();
+    let topic = Topic::<String>::new("async.local.ordered-budget").unwrap();
+
+    for payload in ["first", "second"] {
+        let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), payload.to_owned()).unwrap())).unwrap();
+        let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) =
+            receipt.acknowledgement()
+        else {
+            panic!("local provider reports per-subscription admissions");
+        };
+        assert_eq!(11, admissions[0].subscription_id().value());
+        assert!(matches!(
+            admissions[0].status(),
+            qubit_event_bus::model::AdmissionStatus::Accepted
+        ));
+        assert_eq!(22, admissions[1].subscription_id().value());
+        assert!(matches!(
+            admissions[1].status(),
+            qubit_event_bus::model::AdmissionStatus::Rejected(_)
+        ));
+        let ReceiveOutcome::Message(mut message) = block_on(earlier.receive(Duration::ZERO)).unwrap() else {
+            panic!("lower subscription ID is selected first");
+        };
+        block_on(earlier.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    }
+    block_on(earlier.close()).unwrap();
+    block_on(later.close()).unwrap();
+    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
 fn async_local_broadcasts_to_same_subscriber_instances_and_closes_them_independently() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<String>::new("async.local.same-subscriber").unwrap();
     let mut first = block_on(spi.subscribe(spi_request(50, "same-subscriber", "async.local.same-subscriber"))).unwrap();
     let mut second =
@@ -304,7 +388,8 @@ fn async_local_broadcasts_to_same_subscriber_instances_and_closes_them_independe
 #[test]
 fn async_local_repeated_close_of_old_subscription_preserves_reused_id() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<String>::new("async.local.reused-id").unwrap();
     let mut old = block_on(spi.subscribe(spi_request(70, "reused", "async.local.reused-id"))).unwrap();
     block_on(old.close()).unwrap();
@@ -326,7 +411,8 @@ fn async_local_repeated_close_of_old_subscription_preserves_reused_id() {
 fn async_local_same_subscriber_instances_report_independent_queue_capacity() {
     let config = LocalEventBusConfig::new().queue_capacity(1);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<String>::new("async.local.same-subscriber-capacity").unwrap();
     let mut first = block_on(spi.subscribe(spi_request(71, "same", "async.local.same-subscriber-capacity"))).unwrap();
     let mut second = block_on(spi.subscribe(spi_request(72, "same", "async.local.same-subscriber-capacity"))).unwrap();
@@ -422,7 +508,8 @@ fn async_local_subscription_count_does_not_create_receiver_threads() {
 #[test]
 fn async_local_receive_cancellation_keeps_the_message_available() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut receiver = block_on(spi.subscribe(spi_request(1, "cancel-safe", "async.local.cancel"))).unwrap();
     assert!(matches!(
         block_on(receiver.receive(Duration::ZERO)).unwrap(),
@@ -464,7 +551,8 @@ fn async_local_receiver_close_wakes_pending_receive() {
 #[test]
 fn async_local_close_removes_the_destination_and_topic_type_binding() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut receiver = block_on(spi.subscribe(spi_request(40, "close-removes", "async.local.close-removes"))).unwrap();
     block_on(receiver.close()).unwrap();
 
@@ -507,7 +595,8 @@ fn async_local_drop_does_not_leave_stale_destinations() {
 #[test]
 fn async_local_drop_discards_an_unsettled_in_flight_delivery() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut first = block_on(spi.subscribe(spi_request(10, "in-flight-recovery", "async.local.requeue"))).unwrap();
     block_on(
         bus.publish(
@@ -536,7 +625,8 @@ fn async_local_drop_discards_an_unsettled_in_flight_delivery() {
 #[test]
 fn async_local_settle_and_close_can_be_retried_after_unpolled_future_drop() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut receiver = block_on(spi.subscribe(spi_request(35, "cancelled-ops", "async.local.cancelled-ops"))).unwrap();
     block_on(
         bus.publish(
@@ -580,7 +670,8 @@ fn async_local_shutdown_wakes_pending_receives_and_cancelled_shutdown_can_retry(
     drop(receive);
 
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let _receiver = block_on(spi.subscribe(spi_request(21, "graceful-waiter", "async.local.cancel"))).unwrap();
     block_on(
         bus.publish(
@@ -604,7 +695,8 @@ fn async_local_shutdown_wakes_pending_receives_and_cancelled_shutdown_can_retry(
 #[test]
 fn async_local_graceful_shutdown_observes_finite_timeout() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let _receiver = block_on(spi.subscribe(spi_request(34, "finite-shutdown", "async.local.finite"))).unwrap();
     block_on(
         bus.publish(

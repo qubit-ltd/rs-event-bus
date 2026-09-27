@@ -54,20 +54,27 @@ pub struct AsyncLocalEventBusSpi {
 impl AsyncLocalEventBusSpi {
     /// Creates an async local SPI from validated transport settings.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
-        config.validate()?;
-        Ok(Self::with_timer(config, Arc::new(StdTimer::new())))
+        Self::with_timer(config, Arc::new(StdTimer::new()))
     }
 
     /// Creates an async local SPI with an injected timer for deterministic
     /// tests.
-    pub fn with_timer(config: &LocalEventBusConfig, timer: Arc<dyn Timer>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns `ConfigurationError::InvalidField` when either configured
+    /// capacity is zero.
+    pub fn with_timer(
+        config: &LocalEventBusConfig,
+        timer: Arc<dyn Timer>,
+    ) -> Result<Self, crate::error::ConfigurationError> {
+        config.validate()?;
+        Ok(Self {
             shared: Arc::new(AsyncLocalShared::new(
                 config.get_queue_capacity(),
                 config.get_max_total_outstanding(),
                 timer,
             )),
-        }
+        })
     }
 }
 
@@ -114,11 +121,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 {
                     return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
                 }
-                bus.mailboxes
-                    .iter()
-                    .filter(|(_, mailbox)| mailbox.queue.topic == topic)
-                    .map(|(_, mailbox)| mailbox.clone())
-                    .collect::<Vec<_>>()
+                bus.mailboxes_for_topic(&topic)
             };
             let mut admissions = Vec::with_capacity(mailboxes.len());
             for mailbox in mailboxes {
@@ -184,13 +187,6 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "topic_type_conflict",
                 ));
             }
-            if bus.mailboxes.contains_key(&key) {
-                return Err(operation_error(
-                    "subscribe",
-                    Some(topic.as_str()),
-                    "duplicate_subscription",
-                ));
-            }
             let id = request.subscription_id();
             let queue = Arc::new(LocalQueue {
                 id,
@@ -202,7 +198,13 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 async_ready: Default::default(),
             });
             let mailbox = Arc::new(AsyncMailbox { queue });
-            bus.mailboxes.insert(key, mailbox.clone());
+            if !bus.insert_mailbox(key, mailbox.clone()) {
+                return Err(operation_error(
+                    "subscribe",
+                    Some(topic.as_str()),
+                    "duplicate_subscription",
+                ));
+            }
             bus.payload_types.insert(topic, request.payload_type_id());
             drop(bus);
             Ok(Box::new(AsyncLocalEventSubscription::new(
@@ -284,7 +286,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 return Ok(previous);
             }
             bus.closed = true;
-            let mailboxes = std::mem::take(&mut bus.mailboxes).into_values().collect::<Vec<_>>();
+            let mailboxes = bus.drain_mailboxes();
             for mailbox in &mailboxes {
                 let mut queue = mailbox.queue.lock();
                 queue.closed = true;
@@ -315,10 +317,6 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
     };
     let topic = mailbox.queue.topic.clone();
     let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-    let is_current_mailbox = bus
-        .mailboxes
-        .get(&key)
-        .is_some_and(|current| Arc::ptr_eq(current, mailbox));
     {
         let mut queue = mailbox.queue.lock();
         queue.closed = true;
@@ -327,11 +325,8 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
         queue.in_flight.clear();
         shared.outstanding.release(released);
     }
-    if is_current_mailbox {
-        bus.mailboxes.remove(&key);
-        if !bus.mailboxes.values().any(|candidate| candidate.queue.topic == topic) {
-            bus.payload_types.remove(&topic);
-        }
+    if bus.remove_mailbox_if_same(key, mailbox) && !bus.has_topic(&topic) {
+        bus.payload_types.remove(&topic);
     }
     drop(bus);
     mailbox.queue.async_ready.notify_all();

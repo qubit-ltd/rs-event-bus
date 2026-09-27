@@ -7,6 +7,7 @@
 // =============================================================================
 //! Measures sync and async local subscription creation and teardown resources.
 
+use std::any::TypeId;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -24,10 +25,24 @@ use std::time::Instant;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::local::AsyncLocalEventBusSpi;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TopicAddress;
+use qubit_event_bus::spi::TransportPayload;
+use qubit_id::Id;
 
 const COUNTS: [usize; 3] = [1, 16, 128];
 const WARMUPS: usize = 2;
@@ -272,7 +287,9 @@ fn run_async_churn_probe() -> io::Result<()> {
             .map_err(io::Error::other)?;
     let admissions = match receipt.acknowledgement() {
         qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) => admissions.len(),
-        _ => return Err(io::Error::other("local provider did not report destination admissions")),
+        _ => {
+            return Err(io::Error::other("local provider did not report destination admissions"));
+        }
     };
     if admissions != 0 {
         return Err(io::Error::other("dropped async subscriptions remained publish targets"));
@@ -284,6 +301,81 @@ fn run_async_churn_probe() -> io::Result<()> {
         optional_number(threads)
     );
     block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Measures hot-topic publish cost while unrelated topic subscriptions grow.
+fn run_async_routing_probe() -> io::Result<()> {
+    for cold_topics in [0_usize, 127, 1023] {
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUPS + SAMPLES {
+            let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).map_err(io::Error::other)?;
+            let hot = TopicAddress::new("bench.hot").map_err(io::Error::other)?;
+            let mut hot_receiver = block_on(spi.subscribe(SpiSubscriptionRequest::new(
+                Id::new(1),
+                hot.clone(),
+                SubscriberId::new("hot").map_err(io::Error::other)?,
+                None,
+                SubscriptionDurability::Ephemeral,
+                StartPosition::New,
+                ProviderOptions::default(),
+                TypeId::of::<String>(),
+            )))
+            .map_err(io::Error::other)?;
+            let mut cold_receivers = Vec::with_capacity(cold_topics);
+            for index in 0..cold_topics {
+                let request = SpiSubscriptionRequest::new(
+                    Id::new(index as u64 + 2),
+                    TopicAddress::new(&format!("bench.cold.{index}")).map_err(io::Error::other)?,
+                    SubscriberId::new(format!("cold-{index}")).map_err(io::Error::other)?,
+                    None,
+                    SubscriptionDurability::Ephemeral,
+                    StartPosition::New,
+                    ProviderOptions::default(),
+                    TypeId::of::<String>(),
+                );
+                cold_receivers.push(block_on(spi.subscribe(request)).map_err(io::Error::other)?);
+            }
+            let messages = (0..128)
+                .map(
+                    |index| -> Result<OutboundMessage, qubit_event_bus::error::ConfigurationError> {
+                        Ok(OutboundMessage::new(
+                            hot.clone(),
+                            EventId::new(format!("bench-event-{index}"))?,
+                            std::time::SystemTime::now(),
+                            Headers::new(),
+                            None,
+                            None,
+                            TransportPayload::Native(Arc::new(String::from("payload"))),
+                        ))
+                    },
+                )
+                .collect::<Result<Vec<_>, qubit_event_bus::error::ConfigurationError>>()
+                .map_err(io::Error::other)?;
+            let started = Instant::now();
+            for message in messages {
+                block_on(spi.publish(message)).map_err(io::Error::other)?;
+                let outcome = block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
+                let qubit_event_bus::spi::ReceiveOutcome::Message(mut inbound) = outcome else {
+                    return Err(io::Error::other("hot topic message was not received"));
+                };
+                let token = inbound
+                    .take_settlement()
+                    .ok_or_else(|| io::Error::other("missing settlement token"))?;
+                block_on(hot_receiver.settle(&token, DeliveryDisposition::Accept)).map_err(io::Error::other)?;
+            }
+            let elapsed = started.elapsed().as_nanos() / 128;
+            samples.push(elapsed);
+            block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+            drop(cold_receivers);
+        }
+        let mut measured = samples.split_off(WARMUPS);
+        measured.sort_unstable();
+        println!(
+            "async_local_route,cold_topics={cold_topics},median_ns_per_publish={}",
+            measured[measured.len() / 2]
+        );
+    }
     Ok(())
 }
 
@@ -410,7 +502,7 @@ fn main() {
         .filter(|argument| argument != "--bench")
         .collect::<Vec<_>>();
     if args.as_slice() == ["--help"] {
-        println!("usage: local_threads [--sample <subscription-count> [--async]]");
+        println!("usage: local_threads [--sample <subscription-count> [--async] | --routing]");
         return;
     }
     if args.first().is_some_and(|argument| argument == "--sample") {
@@ -419,6 +511,13 @@ fn main() {
             std::process::exit(2);
         };
         run_child_sample(count, args.iter().any(|argument| argument == "--async"));
+        return;
+    }
+    if args.as_slice() == ["--routing"] {
+        if let Err(error) = run_async_routing_probe() {
+            eprintln!("async routing probe failed: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     if !args.is_empty() {
@@ -435,6 +534,10 @@ fn main() {
     }
     if let Err(error) = run_async_churn_probe() {
         eprintln!("async churn probe failed: {error}");
+        std::process::exit(1);
+    }
+    if let Err(error) = run_async_routing_probe() {
+        eprintln!("async routing probe failed: {error}");
         std::process::exit(1);
     }
 }
