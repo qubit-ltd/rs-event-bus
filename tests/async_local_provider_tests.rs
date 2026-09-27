@@ -15,6 +15,7 @@ use std::sync::Barrier;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_clock::StdTimer;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
@@ -253,7 +254,7 @@ fn async_local_with_timer_rejects_zero_limits() {
         LocalEventBusConfig::new().queue_capacity(0),
         LocalEventBusConfig::new().max_total_outstanding(0),
     ] {
-        match AsyncLocalEventBusSpi::with_timer(&config, Arc::new(qubit_clock::StdTimer::new())) {
+        match AsyncLocalEventBusSpi::with_timer(&config, Arc::new(StdTimer::new())) {
             Err(ConfigurationError::InvalidField { .. }) => {}
             Err(error) => panic!("expected invalid configuration, got {error}"),
             Ok(_) => panic!("zero capacities must be rejected at construction"),
@@ -272,16 +273,14 @@ fn async_local_topic_index_preserves_fanout_and_removes_closed_routes() {
     let _cold = block_on(bus.subscribe(SubscribeRequest::new("cold", cold).unwrap())).unwrap();
 
     let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), "one".to_owned()).unwrap())).unwrap();
-    let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement()
-    else {
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
         panic!("local provider reports per-subscription admissions");
     };
     assert_eq!(2, admissions.len());
 
     block_on(first.close()).unwrap();
     let receipt = block_on(bus.publish(PublishRequest::new(topic, "two".to_owned()).unwrap())).unwrap();
-    let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement()
-    else {
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
         panic!("local provider reports per-subscription admissions");
     };
     assert_eq!(1, admissions.len());
@@ -301,21 +300,13 @@ fn async_local_budget_admission_follows_subscription_id() {
 
     for payload in ["first", "second"] {
         let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), payload.to_owned()).unwrap())).unwrap();
-        let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) =
-            receipt.acknowledgement()
-        else {
+        let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
             panic!("local provider reports per-subscription admissions");
         };
         assert_eq!(11, admissions[0].subscription_id().value());
-        assert!(matches!(
-            admissions[0].status(),
-            qubit_event_bus::model::AdmissionStatus::Accepted
-        ));
+        assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
         assert_eq!(22, admissions[1].subscription_id().value());
-        assert!(matches!(
-            admissions[1].status(),
-            qubit_event_bus::model::AdmissionStatus::Rejected(_)
-        ));
+        assert!(matches!(admissions[1].status(), AdmissionStatus::Rejected(_)));
         let ReceiveOutcome::Message(mut message) = block_on(earlier.receive(Duration::ZERO)).unwrap() else {
             panic!("lower subscription ID is selected first");
         };
