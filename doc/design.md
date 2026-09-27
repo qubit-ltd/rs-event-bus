@@ -44,8 +44,9 @@ leaves "how a message is transported" to a pluggable provider. It serves three k
   receives a typed `Delivery<T>`, and does not care whether the transport is an
   in-process queue or a message broker.
 - **Backend authors** implement "send one byte or object message, receive one message,
-  settle one message". They do not reimplement retry, dead-letter, middleware,
-  per-key ordering, backpressure, or shutdown.
+  settle one message" and the provider-specific shutdown operation. They do not
+  reimplement retry, dead-letter, middleware, per-key ordering, backpressure, or
+  facade lifecycle coordination.
 - **Integrators** need a clear answer to which guarantee (ordering, delay, durability,
   receipt semantics) the facade provides and which the provider provides, and what
   happens when the provider does not support a request.
@@ -64,8 +65,10 @@ Generics are erased at the facade boundary, so a provider can live in
 **(P2) Semantics belong to the facade; transport belongs to the provider.**
 Retry, error handlers, dead-letter, interceptors and middleware, ACK mode,
 per-key ordering, in-flight backpressure, lifecycle tracking, and diagnostics
-are implemented once in the facade. A provider delivers, receives, and settles.
-Every backend then shares the same processing behavior, and each backend stays small.
+are implemented once in the facade. Providers implement transport-specific
+publish, receive, settlement, and shutdown. Backends share facade policies where
+their declared capabilities allow them; provider-specific guarantees remain the
+provider's responsibility.
 
 **(P3) Capabilities are declared honestly. There is no lowest-common-denominator API and no silent downgrade.**
 A provider reports what it can do through `EventBusCapabilities`. The facade checks

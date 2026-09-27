@@ -98,10 +98,6 @@ use crate::model::PublishAcknowledgement;
 /// assert_eq!(spi.capabilities().payload_modes(), PayloadModes::Native);
 /// ```
 pub trait EventBusSpi: Send + Sync + 'static {
-    /// Returns this provider instance's immutable capability declaration.
-    ///
-    /// Implementations must keep the returned value stable for the lifetime
-    /// of the SPI instance; a facade snapshots it during construction.
     /// Returns an optional facade provider identity attached by a registry.
     ///
     /// Provider implementations should leave the default unchanged. Registry
@@ -113,6 +109,9 @@ pub trait EventBusSpi: Send + Sync + 'static {
     }
 
     /// Returns the immutable capabilities of this backend instance.
+    ///
+    /// Implementations must keep the returned value stable for the lifetime
+    /// of the SPI instance; a facade snapshots it during construction.
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one type-erased transport message.
