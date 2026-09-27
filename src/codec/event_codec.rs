@@ -15,15 +15,57 @@ use crate::model::SchemaId;
 
 /// Encodes and decodes payloads of type `T` without choosing a wire format
 /// globally.
+///
+/// # Type Parameters
+/// * `T` — application payload type handled by the codec.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::codec::EventCodec;
+///
+/// fn round_trip<T: Send + Sync + 'static>(codec: &dyn EventCodec<T>, value: &T) {
+///     let bytes = codec.encode(value).expect("encoding succeeds");
+///     let _decoded = codec.decode(&bytes).expect("decoding succeeds");
+/// }
+/// ```
 pub trait EventCodec<T>: Send + Sync + 'static {
-    /// Returns the encoded MIME content type.
+    /// Returns the MIME content type assigned to encoded payloads.
+    ///
+    /// # Returns
+    /// The stable content type that accompanies bytes produced by
+    /// [`Self::encode`].
     #[must_use]
     fn content_type(&self) -> &ContentType;
-    /// Returns a schema identifier, or `None` when the format has no schema.
+    /// Returns the schema identifier associated with encoded payloads.
+    ///
+    /// # Returns
+    /// `Some` when the codec uses a schema, or `None` when its format is
+    /// self-describing or has no schema identifier.
     #[must_use]
     fn schema_id(&self) -> Option<&SchemaId>;
-    /// Encodes `value`; codec failures retain their source in [`CodecError`].
+    /// Encodes one application value into shared immutable bytes.
+    ///
+    /// # Parameters
+    /// * `value` — payload to encode without taking ownership.
+    ///
+    /// # Returns
+    /// Encoded bytes suitable for transport.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] when the value cannot be represented by this
+    /// codec; the underlying codec failure remains available as the source.
     fn encode(&self, value: &T) -> Result<Arc<[u8]>, CodecError>;
-    /// Decodes `bytes`; codec failures retain their source in [`CodecError`].
+    /// Decodes bytes produced by this codec into an application value.
+    ///
+    /// # Parameters
+    /// * `bytes` — encoded payload to decode without taking ownership.
+    ///
+    /// # Returns
+    /// The decoded payload value.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] when the bytes are invalid or cannot be
+    /// interpreted by this codec; the underlying failure remains the source.
     fn decode(&self, bytes: &[u8]) -> Result<T, CodecError>;
 }
