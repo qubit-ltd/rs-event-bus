@@ -148,7 +148,7 @@ impl AsyncEventBusRegistry {
             .create_configured(config)
             .await
             .map_err(provider_creation_error)?;
-        Ok(facade(spi, config))
+        facade(spi, config)
     }
 
     /// Asynchronously creates a facade using an explicit provider selection.
@@ -165,7 +165,7 @@ impl AsyncEventBusRegistry {
             .create_configured(config)
             .await
             .map_err(provider_creation_error)?;
-        Ok(facade(spi, config))
+        facade(spi, config)
     }
 }
 
@@ -175,11 +175,15 @@ impl Default for AsyncEventBusRegistry {
     }
 }
 
-fn facade(spi: Arc<dyn AsyncEventBusSpi>, config: &EventBusConfig) -> AsyncEventBus {
+fn facade(spi: Arc<dyn AsyncEventBusSpi>, config: &EventBusConfig) -> Result<AsyncEventBus, ProviderError> {
     let provider_id: FacadeProviderId = spi
         .provider_id()
         .expect("registered provider adapters attach a canonical provider ID");
-    AsyncEventBus::with_config(provider_id, spi, config.facade_config().clone())
+    AsyncEventBus::with_config(provider_id, spi, config.facade_config().clone()).map_err(|error| {
+        ProviderError::Creation {
+            source: Box::new(error),
+        }
+    })
 }
 
 fn provider_resolution_error(error: ProviderResolutionError) -> ProviderError {

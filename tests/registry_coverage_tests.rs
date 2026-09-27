@@ -12,6 +12,7 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -73,6 +74,7 @@ struct TestProvider {
 struct Counters {
     creates: AtomicUsize,
     capabilities: AtomicUsize,
+    panic_capabilities: AtomicBool,
     publish: AtomicUsize,
     subscribe: AtomicUsize,
     close: AtomicUsize,
@@ -107,6 +109,10 @@ struct TestSpi {
 impl AsyncEventBusSpi for TestSpi {
     fn capabilities(&self) -> EventBusCapabilities {
         self.calls.capabilities.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            !self.calls.panic_capabilities.load(Ordering::Acquire),
+            "provider capabilities panic requested by test"
+        );
         self.capabilities
     }
 
@@ -270,9 +276,28 @@ fn async_identified_spi_delegates_facade_operations_and_keeps_provider_identity(
     block_on(subscription.close()).expect("receiver closes");
     block_on(bus.shutdown(ShutdownMode::Immediate)).expect("SPI shuts down");
 
-    assert!(calls.capabilities.load(Ordering::SeqCst) >= 2);
+    assert_eq!(1, calls.capabilities.load(Ordering::SeqCst));
     assert_eq!(1, calls.shutdown.load(Ordering::SeqCst));
     assert_eq!(1, calls.close.load(Ordering::SeqCst));
+}
+
+#[test]
+fn async_registry_classifies_capability_panic_as_creation_failure() {
+    let registry = AsyncEventBusRegistry::new();
+    let calls = Arc::new(Counters::default());
+    calls.panic_capabilities.store(true, Ordering::Release);
+    registry
+        .register(TestProvider {
+            id: "capability-panic",
+            aliases: &[],
+            calls: calls.clone(),
+            capabilities: capabilities(),
+        })
+        .expect("provider registration succeeds");
+
+    let result = block_on(registry.create(&EventBusConfig::default()));
+    assert!(matches!(result, Err(ProviderError::Creation { .. })));
+    assert_eq!(1, calls.capabilities.load(Ordering::SeqCst));
 }
 
 #[test]

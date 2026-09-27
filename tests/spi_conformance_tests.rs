@@ -233,7 +233,7 @@ fn flume_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() 
     spi.shutdown(ShutdownMode::Immediate).unwrap();
 
     let spi = crate::support::flume_spi::create();
-    let bus = EventBus::from_spi(ProviderId::new("flume").unwrap(), spi);
+    let bus = EventBus::from_spi(ProviderId::new("flume").unwrap(), spi).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("test.topic").unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let subscription = bus

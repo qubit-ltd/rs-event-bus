@@ -37,6 +37,7 @@ use crate::pipeline::global_publisher_interceptor::GlobalPublisherInterceptor;
 use crate::pipeline::retry;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::EncodedPayload;
+use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
 use crate::spi::OrderingKey;
 use crate::spi::OutboundMessage;
@@ -48,12 +49,17 @@ use crate::spi::TransportPayload;
 pub(crate) struct PublisherPipeline {
     provider_id: ProviderId,
     codecs: Arc<CodecRegistry>,
+    capabilities: EventBusCapabilities,
 }
 
 impl PublisherPipeline {
     /// Creates a sync publisher pipeline for one provider instance.
-    pub(crate) fn new(provider_id: ProviderId, codecs: Arc<CodecRegistry>) -> Self {
-        Self { provider_id, codecs }
+    pub(crate) fn new(provider_id: ProviderId, codecs: Arc<CodecRegistry>, capabilities: EventBusCapabilities) -> Self {
+        Self {
+            provider_id,
+            codecs,
+            capabilities,
+        }
     }
 
     /// Publishes one typed event through the ordered sync pipeline.
@@ -113,7 +119,7 @@ impl PublisherPipeline {
                 crate::model::DEAD_LETTER_HEADER_VALUE.into(),
             );
         }
-        let capabilities = spi.capabilities();
+        let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let outbound = self.prepare_outbound(capabilities.payload_modes(), envelope)?;
         let result = retry::publish_sync(
@@ -199,7 +205,7 @@ impl PublisherPipeline {
                 crate::model::DEAD_LETTER_HEADER_VALUE.into(),
             );
         }
-        let capabilities = spi.capabilities();
+        let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes())?;
         let result = retry::publish_async(

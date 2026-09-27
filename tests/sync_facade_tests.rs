@@ -89,6 +89,93 @@ use qubit_retry::RetryPolicy;
 
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
 
+#[test]
+fn sync_facade_capability_panic_is_a_terminal_spi_error() {
+    let backend = Arc::new(TestBackend::new());
+    backend.capabilities_panics.store(true, Ordering::Release);
+    let result = EventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), backend.clone());
+    match result {
+        Err(SpiError::Operation {
+            operation: "capabilities",
+            kind: "provider_panicked",
+            retryable: Some(false),
+            ..
+        }) => {}
+        Err(error) => panic!("unexpected SPI error: {error}"),
+        Ok(_) => panic!("capabilities panic must fail facade construction"),
+    }
+    assert_eq!(1, backend.capabilities_calls.load(Ordering::Acquire));
+}
+
+#[test]
+fn sync_spi_call_panics_are_returned_as_structured_errors() {
+    let (bus, backend) = create_bus();
+    backend.subscribe_panics.store(true, Ordering::Release);
+    let result = bus.subscribe(
+        SubscribeRequest::new("panic-subscribe", topic()).expect("valid request"),
+        |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+    );
+    assert!(matches!(
+        result,
+        Err(SubscribeError::Spi(SpiError::Operation {
+            operation: "subscribe",
+            kind: "provider_panicked",
+            retryable: Some(false),
+            ..
+        }))
+    ));
+    backend.idle_panics.store(true, Ordering::Release);
+    assert!(matches!(
+        bus.wait_for_idle(&topic(), None),
+        Err(LifecycleError::Spi(SpiError::Operation {
+            operation: "wait_for_topic_idle",
+            kind: "provider_panicked",
+            retryable: Some(false),
+            ..
+        }))
+    ));
+    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+}
+
+#[test]
+fn sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever() {
+    let (bus, backend) = create_bus();
+    backend.receive_panics.store(true, Ordering::Release);
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("panic-receive", topic()).expect("valid request"),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("subscription starts");
+    subscription
+        .cancel()
+        .expect("receive panic is contained and the worker closes");
+    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+
+    let (bus, backend) = create_bus();
+    backend.settle_panics.store(true, Ordering::Release);
+    let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::SettlementUnavailable { .. }) {
+            diagnostic_tx.send(()).expect("test receiver remains alive");
+        }
+    });
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("panic-settle", topic()).expect("valid request"),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("subscription starts");
+    backend.enqueue_marked(Id::new(1));
+    diagnostic_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("settlement panic is diagnosed and made terminal");
+    subscription
+        .cancel()
+        .expect("settlement panic does not prevent cancellation");
+    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+}
+
 struct ReceiveGate {
     entered: mpsc::Sender<()>,
     release: mpsc::Receiver<()>,
@@ -120,6 +207,10 @@ struct TestBackendState {
 
 struct TestBackend {
     state: Arc<Mutex<TestBackendState>>,
+    capabilities_panics: AtomicBool,
+    capabilities_calls: AtomicUsize,
+    subscribe_panics: AtomicBool,
+    idle_panics: AtomicBool,
     shutdown: AtomicBool,
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
@@ -133,6 +224,8 @@ struct TestBackend {
     close_delay_ms: Arc<AtomicUsize>,
     close_panics: Arc<AtomicBool>,
     close_fails: Arc<AtomicBool>,
+    receive_panics: Arc<AtomicBool>,
+    settle_panics: Arc<AtomicBool>,
     receive_gate: Arc<Mutex<Option<ReceiveGate>>>,
     publish_gate: Arc<Mutex<Option<SpiCallGate>>>,
     subscribe_gate: Arc<Mutex<Option<SpiCallGate>>>,
@@ -145,6 +238,10 @@ impl TestBackend {
     fn new() -> Self {
         Self {
             state: Arc::default(),
+            capabilities_panics: AtomicBool::new(false),
+            capabilities_calls: AtomicUsize::new(0),
+            subscribe_panics: AtomicBool::new(false),
+            idle_panics: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
@@ -158,6 +255,8 @@ impl TestBackend {
             close_delay_ms: Arc::new(AtomicUsize::new(0)),
             close_panics: Arc::new(AtomicBool::new(false)),
             close_fails: Arc::new(AtomicBool::new(false)),
+            receive_panics: Arc::new(AtomicBool::new(false)),
+            settle_panics: Arc::new(AtomicBool::new(false)),
             receive_gate: Arc::new(Mutex::new(None)),
             publish_gate: Arc::default(),
             subscribe_gate: Arc::default(),
@@ -401,6 +500,11 @@ impl TestBackend {
 
 impl EventBusSpi for TestBackend {
     fn capabilities(&self) -> EventBusCapabilities {
+        self.capabilities_calls.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            !self.capabilities_panics.load(Ordering::Acquire),
+            "capabilities panic requested by test"
+        );
         EventBusCapabilities::new(
             match self.payload_mode.load(Ordering::Acquire) {
                 1 => PayloadModes::Encoded,
@@ -476,6 +580,10 @@ impl EventBusSpi for TestBackend {
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.subscribe_calls.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            !self.subscribe_panics.load(Ordering::Acquire),
+            "synthetic provider subscribe panic"
+        );
         Self::wait_at_gate(&self.subscribe_gate, "subscribe");
         let queue = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
         self.state
@@ -493,7 +601,17 @@ impl EventBusSpi for TestBackend {
             receive_gate: self.receive_gate.clone(),
             received_messages: self.received_messages.clone(),
             close_gate: self.close_gate.clone(),
+            receive_panics: self.receive_panics.clone(),
+            settle_panics: self.settle_panics.clone(),
         }))
+    }
+
+    fn wait_for_topic_idle(&self, _: &TopicAddress, _: Option<Duration>) -> Result<Option<bool>, SpiError> {
+        assert!(
+            !self.idle_panics.load(Ordering::Acquire),
+            "synthetic provider idle-wait panic"
+        );
+        Ok(Some(true))
     }
 
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -524,10 +642,16 @@ struct TestSubscription {
     receive_gate: Arc<Mutex<Option<ReceiveGate>>>,
     received_messages: Arc<AtomicUsize>,
     close_gate: Arc<Mutex<Option<SpiCallGate>>>,
+    receive_panics: Arc<AtomicBool>,
+    settle_panics: Arc<AtomicBool>,
 }
 
 impl EventSubscriptionSpi for TestSubscription {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        assert!(
+            !self.receive_panics.load(Ordering::Acquire),
+            "synthetic provider receive panic"
+        );
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().expect("queue lock");
         while state.messages.is_empty() && !state.closed && !timeout.is_zero() {
@@ -554,6 +678,10 @@ impl EventSubscriptionSpi for TestSubscription {
     }
 
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+        assert!(
+            !self.settle_panics.load(Ordering::Acquire),
+            "synthetic provider settle panic"
+        );
         if !token.belongs_to(self.id) {
             return Err(test_spi_error("settle"));
         }
@@ -598,11 +726,17 @@ fn test_spi_error(operation: &'static str) -> SpiError {
 }
 
 fn create_bus() -> (EventBus, Arc<TestBackend>) {
+    create_bus_configured(|_| {})
+}
+
+fn create_bus_configured(configure: impl FnOnce(&TestBackend)) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
+    configure(&backend);
     let bus = EventBus::from_spi(
         ProviderId::new("sync-test").expect("valid provider ID"),
         backend.clone(),
-    );
+    )
+    .expect("valid provider capabilities");
     (bus, backend)
 }
 
@@ -615,7 +749,8 @@ fn create_bus_with_scheduler(max_in_flight: usize, handler_queue_capacity: usize
         ProviderId::new("sync-test").expect("valid provider ID"),
         backend.clone(),
         config,
-    );
+    )
+    .expect("valid provider capabilities");
     (bus, backend)
 }
 
@@ -664,8 +799,7 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
         (OrderingCapability::PerKey, true),
         (OrderingCapability::PerSubscription, true),
     ] {
-        let (bus, backend) = create_bus();
-        backend.set_ordering_capability(capability);
+        let (bus, backend) = create_bus_configured(|backend| backend.set_ordering_capability(capability));
         let options = SubscribeOptions::<String>::builder()
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
@@ -690,8 +824,7 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
         }
     }
 
-    let (bus, backend) = create_bus();
-    backend.set_ordering_capability(OrderingCapability::None);
+    let (bus, backend) = create_bus_configured(|backend| backend.set_ordering_capability(OrderingCapability::None));
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("unordered", topic()).expect("valid subscriber"),
@@ -752,8 +885,9 @@ fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
         assert_eq!(backend.subscribe_calls.load(Ordering::Acquire), 0);
     }
 
-    let (bus, backend) = create_bus();
-    backend.set_subscription_capabilities(DurabilityCapability::Durable, true, ReplayCapability::Position);
+    let (bus, backend) = create_bus_configured(|backend| {
+        backend.set_subscription_capabilities(DurabilityCapability::Durable, true, ReplayCapability::Position);
+    });
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("capability-supported", topic())
@@ -1179,7 +1313,8 @@ fn subscription_resolves_encoded_payload_codec_from_facade_registry() {
         ProviderId::new("sync-test").expect("provider ID is valid"),
         backend.clone(),
         config,
-    );
+    )
+    .expect("valid provider capabilities");
     let topic = Topic::<String>::new("sync.events").expect("topic is valid");
     let (sender, receiver) = mpsc::channel();
     let subscription = bus
@@ -1212,7 +1347,8 @@ fn encoded_subscription_without_a_resolved_codec_fails_before_spi_subscribe() {
     let bus = EventBus::from_spi(
         ProviderId::new("sync-test").expect("provider ID is valid"),
         backend.clone(),
-    );
+    )
+    .expect("valid provider capabilities");
     let request = SubscribeRequest::new(
         "missing-codec",
         Topic::<String>::new("sync.missing-codec").expect("topic is valid"),
@@ -1237,7 +1373,8 @@ fn subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     let mut codecs = CodecRegistry::new();
     codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").unwrap())));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config);
+    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config)
+        .expect("valid provider capabilities");
     let topic = Topic::<String>::new_with_codec(
         "sync.topic-codec-priority",
         Utf8Codec(ContentType::new("text/plain").unwrap()),
@@ -2275,7 +2412,8 @@ fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both(
             result
         },
     );
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend, config);
+    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend, config)
+        .expect("valid provider capabilities");
     let typed_calls = calls.clone();
     let options = SubscribeOptions::<String>::builder()
         .interceptor(move |delivery, next| {
@@ -2384,7 +2522,8 @@ fn sync_facade_rejects_async_global_subscriber_middleware() {
 
 fn create_bus_with_config(config: EventBusFacadeConfig) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config);
+    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config)
+        .expect("valid provider capabilities");
     (bus, backend)
 }
 
@@ -2975,8 +3114,7 @@ fn assert_lifecycle_close_failures(error: &LifecycleError, expected: &[&str]) {
 }
 
 fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<DeliveryDisposition>, usize, bool) {
-    let (bus, backend) = create_bus();
-    backend.set_settlement_capability(capability);
+    let (bus, backend) = create_bus_configured(|backend| backend.set_settlement_capability(capability));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementUnavailable { requested, .. } = diagnostic {
@@ -3358,8 +3496,8 @@ fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
 
 #[test]
 fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() {
-    let (bus, backend) = create_bus();
-    backend.set_settlement_capability(SettlementCapabilities::AcceptOnly);
+    let (bus, backend) =
+        create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::SettlementUnavailable { .. }) {
@@ -3394,8 +3532,8 @@ fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() 
 
 #[test]
 fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
-    let (bus, backend) = create_bus();
-    backend.set_settlement_capability(SettlementCapabilities::None);
+    let (bus, backend) =
+        create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::None));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(
@@ -3436,8 +3574,8 @@ fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
 
 #[test]
 fn undecodable_message_respects_settlement_capability_and_reports_unavailable_reject() {
-    let (bus, backend) = create_bus();
-    backend.set_settlement_capability(SettlementCapabilities::AcceptOnly);
+    let (bus, backend) =
+        create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(

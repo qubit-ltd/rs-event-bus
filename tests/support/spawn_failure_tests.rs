@@ -45,12 +45,18 @@ struct EmptySpi;
 #[test]
 fn provider_panic_error_has_stable_operation_context() {
     let provider_id = ProviderId::new("panic-test").expect("valid provider ID");
-    let error = super::provider_panic(&provider_id, "publish");
+    let error = crate::spi::panic_boundary::provider_panic(
+        provider_id.as_str(),
+        "publish",
+        None,
+        Box::new("provider SPI panicked"),
+    );
     assert!(matches!(
         &error,
         SpiError::Operation {
             operation: "publish",
-            kind: "spi_panicked",
+            kind: "provider_panicked",
+            retryable: Some(false),
             ..
         }
     ));
@@ -129,7 +135,8 @@ fn failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
     let bus = EventBus::from_spi(
         ProviderId::new("spawn-test").expect("valid provider ID"),
         Arc::new(EmptySpi),
-    );
+    )
+    .expect("valid provider capabilities");
     let close_calls = Arc::new(AtomicUsize::new(0));
     let receiver: Box<dyn EventSubscriptionSpi> = Box::new(CloseCounter {
         calls: close_calls.clone(),
@@ -183,7 +190,8 @@ fn scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() 
             close_calls: close_calls.clone(),
         }),
         config,
-    );
+    )
+    .expect("valid provider capabilities");
     bus.inner.scheduler.fail_spawn_at(1);
 
     let request = SubscribeRequest::new(

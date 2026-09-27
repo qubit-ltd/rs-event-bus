@@ -115,13 +115,16 @@ async fn spi_publish(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    let future = match std::panic::catch_unwind(AssertUnwindSafe(|| spi.publish(message))) {
-        Ok(future) => future,
-        Err(payload) => return Err(publish_panic_error(provider_id, resource, payload)),
-    };
+    let future =
+        crate::spi::panic_boundary::catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))?;
     match CatchUnwindFuture::new(future).await {
         Ok(result) => result,
-        Err(payload) => Err(publish_panic_error(provider_id, resource, payload)),
+        Err(payload) => Err(crate::spi::panic_boundary::provider_panic(
+            provider_id,
+            "publish",
+            Some(&resource),
+            payload,
+        )),
     }
 }
 
@@ -131,21 +134,8 @@ fn spi_publish_sync(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    match std::panic::catch_unwind(AssertUnwindSafe(|| spi.publish(message))) {
-        Ok(result) => result,
-        Err(payload) => Err(publish_panic_error(provider_id, resource, payload)),
-    }
-}
-
-fn publish_panic_error(provider_id: &str, resource: String, payload: Box<dyn std::any::Any + Send>) -> SpiError {
-    SpiError::Operation {
-        provider_id: provider_id.into(),
-        operation: "publish",
-        resource: Some(resource.into()),
-        kind: "spi_panic",
-        retryable: None,
-        source: Box::new(std::io::Error::other(panic_message(payload.as_ref()))),
-    }
+    crate::spi::panic_boundary::catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))
+        .and_then(std::convert::identity)
 }
 
 fn retry_config(
@@ -200,12 +190,4 @@ impl<F: Future> Future for CatchUnwindFuture<F> {
             Err(payload) => Poll::Ready(Err(payload)),
         }
     }
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&'static str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("non-string panic payload")
 }

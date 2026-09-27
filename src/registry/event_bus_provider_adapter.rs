@@ -21,6 +21,7 @@ use super::EventBusSpec;
 use super::identified_event_bus_spi::IdentifiedEventBusSpi;
 use crate::model::ProviderId;
 use crate::spi::EventBusSpi;
+use crate::spi::panic_boundary::catch_spi_call;
 
 /// Wraps a provider to snapshot metadata, validate capabilities and attach
 /// identity.
@@ -59,13 +60,16 @@ impl ServiceProvider<EventBusSpec> for EventBusProviderAdapter {
         config: &EventBusConfig,
     ) -> Result<Arc<dyn EventBusSpi>, ProviderFailure<EventBusProviderError>> {
         let spi = self.provider.create_configured(config)?;
-        let missing = config.required_capabilities().missing_from(spi.capabilities());
+        let capabilities = catch_spi_call(self.provider_id.as_str(), "capabilities", None, || spi.capabilities())
+            .map_err(|error| ProviderFailure::initialization_failed(EventBusProviderError::provider(error)))?;
+        let missing = config.required_capabilities().missing_from(capabilities);
         if !missing.is_empty() {
             return Err(ProviderFailure::unsupported(
                 EventBusProviderError::UnsupportedCapabilities { missing },
             ));
         }
-        let identified: Arc<dyn EventBusSpi> = Arc::new(IdentifiedEventBusSpi::new(self.provider_id.clone(), spi));
+        let identified: Arc<dyn EventBusSpi> =
+            Arc::new(IdentifiedEventBusSpi::new(self.provider_id.clone(), spi, capabilities));
         Ok(identified)
     }
 }

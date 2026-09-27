@@ -22,6 +22,7 @@ use super::EventBusSpec;
 use super::identified_async_event_bus_spi::IdentifiedAsyncEventBusSpi;
 use crate::model::ProviderId;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::panic_boundary::catch_spi_call;
 
 /// Validates async provider capabilities and attaches snapshotted identity.
 pub(crate) struct AsyncEventBusProviderAdapter {
@@ -60,14 +61,20 @@ impl AsyncServiceProvider<EventBusSpec> for AsyncEventBusProviderAdapter {
     ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
         Box::pin(async move {
             let spi = self.provider.create_configured(config).await?;
-            let missing = config.required_capabilities().missing_from(spi.capabilities());
+            let capabilities =
+                catch_spi_call(self.provider_id.as_str(), "capabilities", None, || spi.capabilities())
+                    .map_err(|error| ProviderFailure::initialization_failed(EventBusProviderError::provider(error)))?;
+            let missing = config.required_capabilities().missing_from(capabilities);
             if !missing.is_empty() {
                 return Err(ProviderFailure::unsupported(
                     EventBusProviderError::UnsupportedCapabilities { missing },
                 ));
             }
-            let identified: Arc<dyn AsyncEventBusSpi> =
-                Arc::new(IdentifiedAsyncEventBusSpi::new(self.provider_id.clone(), spi));
+            let identified: Arc<dyn AsyncEventBusSpi> = Arc::new(IdentifiedAsyncEventBusSpi::new(
+                self.provider_id.clone(),
+                spi,
+                capabilities,
+            ));
             Ok(identified)
         })
     }

@@ -521,24 +521,35 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             (*state == BusState::Running).then(|| self.inner.tracker.close_started())
         };
-        if let Some(receiver) = self.receiver.as_mut() {
-            let close = receiver.close();
-            if let Err(error) = catch_spi_future(
-                close,
-                &self.inner.provider_id,
-                "close_subscription",
-                Some(self.subscriber_id.as_str()),
-            )
-            .await
-            {
-                let receiver = self.receiver.take().expect("receiver remains owned after failed close");
-                self.receiver = Some(receiver);
-                let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
-                return Err(failure);
+        let close_result = {
+            if let Some(receiver) = self.receiver.as_mut() {
+                let close = crate::spi::panic_boundary::catch_spi_call(
+                    self.inner.provider_id.as_str(),
+                    "close",
+                    Some(self.subscriber_id.as_str()),
+                    || receiver.close(),
+                );
+                match close {
+                    Ok(future) => {
+                        catch_spi_future(
+                            future,
+                            &self.inner.provider_id,
+                            "close",
+                            Some(self.subscriber_id.as_str()),
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                }
             } else {
-                self.receiver.take();
+                Ok(())
             }
+        };
+        if let Err(error) = close_result {
+            let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
+            return Err(failure);
         }
+        self.receiver.take();
         self.inner
             .controls
             .lock()
@@ -686,8 +697,16 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let provider_id = self.inner.provider_id.clone();
             let resource = self.subscriber_id.as_str().to_owned();
             let receiver = self.receiver.as_mut().ok_or(ReceiveError::Closed)?;
-            let receive = receiver.receive(Duration::MAX);
-            let mut receive = Box::pin(catch_spi_future(receive, &provider_id, "receive", Some(&resource)));
+            let receive =
+                crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
+                    receiver.receive(Duration::MAX)
+                });
+            let mut receive = Box::pin(async move {
+                match receive {
+                    Ok(future) => catch_spi_future(future, &provider_id, "receive", Some(&resource)).await,
+                    Err(error) => Err(error),
+                }
+            });
             let registration = SignalRegistration::new(&self.signals.signal);
             let event = std::future::poll_fn(|cx| {
                 if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
@@ -991,7 +1010,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.pending.take();
             return;
         }
-        let capability = self.inner.spi.capabilities().settlement();
+        let capability = self.inner.capabilities.settlement();
         let supported = match disposition {
             DeliveryDisposition::Accept => capability != crate::spi::SettlementCapabilities::None,
             DeliveryDisposition::Retry | DeliveryDisposition::Reject => {
@@ -1011,14 +1030,23 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             return;
         }
         let result = if let Some(receiver) = self.receiver.as_mut() {
-            let future = receiver.settle(token, disposition);
-            catch_spi_future(
-                future,
-                &self.inner.provider_id,
+            match crate::spi::panic_boundary::catch_spi_call(
+                self.inner.provider_id.as_str(),
                 "settle",
                 Some(self.subscriber_id.as_str()),
-            )
-            .await
+                || receiver.settle(token, disposition),
+            ) {
+                Ok(future) => {
+                    catch_spi_future(
+                        future,
+                        &self.inner.provider_id,
+                        "settle",
+                        Some(self.subscriber_id.as_str()),
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            }
         } else {
             Ok(())
         };
@@ -1028,6 +1056,26 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 self.pending.take();
             }
             Err(error) => {
+                if error.kind() == "provider_panicked" {
+                    self.inner.emit(&Diagnostic::SettlementUnavailable {
+                        event_id: event_id.clone(),
+                        topic: topic.clone(),
+                        subscription_id: self.id,
+                        subscriber_id: self.subscriber_id.clone(),
+                        requested: disposition,
+                    });
+                    self.inner.emit(&Diagnostic::SettlementFailed {
+                        event_id: event_id.clone(),
+                        topic: topic.clone(),
+                        subscription_id: self.id,
+                        subscriber_id: self.subscriber_id.clone(),
+                        disposition,
+                        error: error.to_string().into(),
+                    });
+                    self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
+                    self.pending.take();
+                    return;
+                }
                 if let Some(pending) = self.pending.as_mut() {
                     pending.settlement_failures = pending.settlement_failures.saturating_add(1);
                 }

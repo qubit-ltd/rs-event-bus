@@ -99,6 +99,7 @@ pub struct AsyncEventBus {
 pub(super) struct AsyncEventBusInner {
     pub(super) spi: Arc<dyn AsyncEventBusSpi>,
     pub(super) provider_id: ProviderId,
+    pub(super) capabilities: crate::spi::EventBusCapabilities,
     pub(super) publisher: PublisherPipeline,
     pub(super) facade_config: EventBusFacadeConfig,
     pub(super) state: Mutex<BusState>,
@@ -448,7 +449,11 @@ impl AsyncEventBus {
 
     /// Creates a usable facade around an already-created asynchronous provider
     /// SPI.
-    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Self {
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure. A Rust panic from that
+    /// call is reported as a terminal `provider_panicked` SPI error.
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Result<Self, crate::error::SpiError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
@@ -456,29 +461,54 @@ impl AsyncEventBus {
     ///
     /// The codec registry is frozen into the publisher pipeline at
     /// construction; later changes require constructing a new facade.
-    pub fn with_config(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>, config: EventBusFacadeConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure, including a terminal
+    /// `provider_panicked` error when the SPI unwinds.
+    pub fn with_config(
+        provider_id: ProviderId,
+        spi: Arc<dyn AsyncEventBusSpi>,
+        config: EventBusFacadeConfig,
+    ) -> Result<Self, crate::error::SpiError> {
         Self::with_config_and_timer(provider_id, spi, config, StdMonotonicClock::new().new_timer())
     }
 
     /// Creates a facade using the supplied runtime-neutral timer for deadlines
     /// and asynchronous retry delays.
-    pub fn with_timer(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>, timer: Arc<dyn Timer>) -> Self {
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure, including a terminal
+    /// `provider_panicked` error when the SPI unwinds.
+    pub fn with_timer(
+        provider_id: ProviderId,
+        spi: Arc<dyn AsyncEventBusSpi>,
+        timer: Arc<dyn Timer>,
+    ) -> Result<Self, crate::error::SpiError> {
         Self::with_config_and_timer(provider_id, spi, EventBusFacadeConfig::default(), timer)
     }
 
     /// Creates a facade with custom codec registrations and timer.
+    ///
+    /// # Errors
+    /// Returns the provider's capability call failure, including a terminal
+    /// `provider_panicked` error when the SPI unwinds.
     pub fn with_config_and_timer(
         provider_id: ProviderId,
         spi: Arc<dyn AsyncEventBusSpi>,
         config: EventBusFacadeConfig,
         timer: Arc<dyn Timer>,
-    ) -> Self {
+    ) -> Result<Self, crate::error::SpiError> {
+        let capabilities =
+            crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
+                spi.capabilities()
+            })?;
         let admission_limit = config.delivery_admission().max_in_flight();
-        Self {
+        Ok(Self {
             inner: Arc::new(AsyncEventBusInner {
                 spi,
+                capabilities,
                 provider_id: provider_id.clone(),
-                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone()),
+                publisher: PublisherPipeline::new(provider_id, config.codec_registry().clone(), capabilities),
                 facade_config: config,
                 state: Mutex::new(BusState::Running),
                 next_subscription_id: AtomicU64::new(1),
@@ -495,7 +525,7 @@ impl AsyncEventBus {
                 timer,
                 publish_metrics: PublishMetrics::default(),
             }),
-        }
+        })
     }
 
     /// Publishes one typed request through interceptors, retry, and provider
@@ -570,7 +600,7 @@ impl AsyncEventBus {
                 },
             ));
         }
-        let capabilities = self.inner.spi.capabilities();
+        let capabilities = self.inner.capabilities;
         let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         crate::pipeline::SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
         if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
@@ -596,15 +626,12 @@ impl AsyncEventBus {
             options.provider_options().clone(),
             topic.payload_type_id(),
         );
-        let subscribe =
-            std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.spi.subscribe(spi_request))).map_err(|panic| {
-                provider_panic(
-                    &self.inner.provider_id,
-                    "subscribe",
-                    Some(subscriber_id.as_str()),
-                    panic,
-                )
-            })?;
+        let subscribe = crate::spi::panic_boundary::catch_spi_call(
+            self.inner.provider_id.as_str(),
+            "subscribe",
+            Some(subscriber_id.as_str()),
+            || self.inner.spi.subscribe(spi_request),
+        )?;
         let receiver = catch_spi_future(
             subscribe,
             &self.inner.provider_id,
@@ -773,8 +800,12 @@ impl AsyncEventBus {
                         timeout: timeout.expect("a deadline exists for graceful shutdown"),
                     });
                 }
-                let shutdown = std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.spi.shutdown(mode)))
-                    .map_err(|panic| provider_panic(&self.inner.provider_id, "shutdown", None, panic))?;
+                let shutdown = crate::spi::panic_boundary::catch_spi_call(
+                    self.inner.provider_id.as_str(),
+                    "shutdown",
+                    None,
+                    || self.inner.spi.shutdown(mode),
+                )?;
                 let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
                 let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
                     return Err(ShutdownError::TimedOut {
@@ -857,7 +888,12 @@ where
     .await
     {
         Ok(result) => result,
-        Err(panic) => Err(provider_panic(provider, operation, resource, panic)),
+        Err(panic) => Err(crate::spi::panic_boundary::provider_panic(
+            provider.as_str(),
+            operation,
+            resource,
+            panic,
+        )),
     }
 }
 
@@ -873,27 +909,6 @@ impl<F: Future> Future for CatchSpiFuture<F> {
             Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
             Err(panic) => std::task::Poll::Ready(Err(panic)),
         }
-    }
-}
-
-pub(super) fn provider_panic(
-    provider: &ProviderId,
-    operation: &'static str,
-    resource: Option<&str>,
-    panic: Box<dyn std::any::Any + Send>,
-) -> crate::error::SpiError {
-    let message = panic
-        .downcast_ref::<&'static str>()
-        .copied()
-        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("provider panicked");
-    crate::error::SpiError::Operation {
-        provider_id: provider.as_str().into(),
-        operation,
-        resource: resource.map(Into::into),
-        kind: "provider_panicked",
-        retryable: None,
-        source: Box::new(std::io::Error::other(message)),
     }
 }
 

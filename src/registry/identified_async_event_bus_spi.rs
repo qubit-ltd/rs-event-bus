@@ -27,12 +27,21 @@ pub(crate) struct IdentifiedAsyncEventBusSpi {
     provider_id: ProviderId,
     /// Provider-owned implementation receiving all transport operations.
     inner: Arc<dyn AsyncEventBusSpi>,
+    capabilities: EventBusCapabilities,
 }
 
 impl IdentifiedAsyncEventBusSpi {
     /// Binds one validated provider identity to its asynchronous SPI output.
-    pub(crate) fn new(provider_id: ProviderId, inner: Arc<dyn AsyncEventBusSpi>) -> Self {
-        Self { provider_id, inner }
+    pub(crate) fn new(
+        provider_id: ProviderId,
+        inner: Arc<dyn AsyncEventBusSpi>,
+        capabilities: EventBusCapabilities,
+    ) -> Self {
+        Self {
+            provider_id,
+            inner,
+            capabilities,
+        }
     }
 }
 
@@ -42,7 +51,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     }
 
     fn capabilities(&self) -> EventBusCapabilities {
-        self.inner.capabilities()
+        self.capabilities
     }
 
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
