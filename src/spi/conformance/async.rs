@@ -45,7 +45,7 @@ where
             factory().await
         };
         let capabilities = spi.capabilities();
-        let mut subscription = match spi.subscribe(probe_request(1)).await {
+        let mut subscription = match spi.subscribe(probe_request(1, capabilities.durability())).await {
             Ok(subscription) => {
                 report.push(ConformanceCase::Passed {
                     case_id: "subscribe".into(),

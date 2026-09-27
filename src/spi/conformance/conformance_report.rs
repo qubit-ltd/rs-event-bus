@@ -99,13 +99,16 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
     )
 }
 
-pub(super) fn probe_request(subscription_id: u64) -> SpiSubscriptionRequest {
+pub(super) fn probe_request(subscription_id: u64, durability: crate::spi::DurabilityCapability) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(subscription_id),
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
         SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
         None,
-        SubscriptionDurability::Ephemeral,
+        match durability {
+            crate::spi::DurabilityCapability::Durable => SubscriptionDurability::Durable,
+            crate::spi::DurabilityCapability::Ephemeral => SubscriptionDurability::Ephemeral,
+        },
         StartPosition::New,
         ProviderOptions::default(),
         TypeId::of::<u8>(),
