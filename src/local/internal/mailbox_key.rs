@@ -7,11 +7,9 @@
 // =============================================================================
 //! Identity of one subscriber mailbox.
 
-use crate::model::SubscriberId;
-use crate::spi::TopicAddress;
+use qubit_id::Id;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::local) struct MailboxKey {
-    pub(in crate::local) topic: TopicAddress,
-    pub(in crate::local) subscriber: SubscriberId,
+    pub(in crate::local) subscription_id: Id,
 }

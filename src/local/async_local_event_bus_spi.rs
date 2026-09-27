@@ -116,7 +116,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 }
                 bus.mailboxes
                     .iter()
-                    .filter(|(key, _)| key.topic == topic)
+                    .filter(|(_, mailbox)| mailbox.queue.topic == topic)
                     .map(|(_, mailbox)| mailbox.clone())
                     .collect::<Vec<_>>()
             };
@@ -167,8 +167,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 ));
             }
             let key = MailboxKey {
-                topic: topic.clone(),
-                subscriber: request.subscriber_id().clone(),
+                subscription_id: request.subscription_id(),
             };
             let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             if bus.closed {
@@ -189,7 +188,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 return Err(operation_error(
                     "subscribe",
                     Some(topic.as_str()),
-                    "duplicate_subscriber",
+                    "duplicate_subscription",
                 ));
             }
             let id = request.subscription_id();
@@ -312,9 +311,9 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
 /// adding work after the mailbox has closed. Repeated calls are harmless.
 pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbox>) {
     let key = MailboxKey {
-        topic: mailbox.queue.topic.clone(),
-        subscriber: mailbox.queue.subscriber_id.clone(),
+        subscription_id: mailbox.queue.id,
     };
+    let topic = mailbox.queue.topic.clone();
     let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
     let is_current_mailbox = bus
         .mailboxes
@@ -330,8 +329,8 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
     }
     if is_current_mailbox {
         bus.mailboxes.remove(&key);
-        if !bus.mailboxes.keys().any(|candidate| candidate.topic == key.topic) {
-            bus.payload_types.remove(&key.topic);
+        if !bus.mailboxes.values().any(|candidate| candidate.queue.topic == topic) {
+            bus.payload_types.remove(&topic);
         }
     }
     drop(bus);
