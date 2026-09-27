@@ -21,6 +21,7 @@ use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
@@ -37,6 +38,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
+use qubit_event_bus::spi::TransportPayload;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::ConformanceHooks;
 #[cfg(feature = "conformance")]
@@ -222,7 +224,9 @@ fn async_local_registry_rejects_invalid_local_configuration() {
 fn async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
     let active = block_on(spi.subscribe(spi_request(31, "duplicate", "async.local.conflict"))).unwrap();
-    assert!(block_on(spi.subscribe(spi_request(32, "duplicate", "async.local.conflict"))).is_err());
+    let same_subscriber = block_on(spi.subscribe(spi_request(32, "duplicate", "async.local.conflict")))
+        .expect("distinct subscription instances may share a logical subscriber ID");
+    assert!(block_on(spi.subscribe(spi_request(31, "elsewhere", "async.local.other-topic"))).is_err());
     let type_conflict = SpiSubscriptionRequest::new(
         Id::new(33),
         TopicAddress::new("async.local.conflict").unwrap(),
@@ -235,7 +239,134 @@ fn async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
     );
     assert!(block_on(spi.subscribe(type_conflict)).is_err());
     drop(active);
+    drop(same_subscriber);
     block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_broadcasts_to_same_subscriber_instances_and_closes_them_independently() {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<String>::new("async.local.same-subscriber").unwrap();
+    let mut first = block_on(spi.subscribe(spi_request(50, "same-subscriber", "async.local.same-subscriber"))).unwrap();
+    let mut second =
+        block_on(spi.subscribe(spi_request(51, "same-subscriber", "async.local.same-subscriber"))).unwrap();
+
+    let first_receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), "first".to_owned()).unwrap())).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(first_admissions) = first_receipt.acknowledgement() else {
+        panic!("local provider reports each subscription admission");
+    };
+    assert_eq!(2, first_admissions.len());
+    assert_ne!(
+        first_admissions[0].subscription_id(),
+        first_admissions[1].subscription_id()
+    );
+    for admission in first_admissions {
+        assert!(matches!(admission.status(), AdmissionStatus::Accepted));
+    }
+    let ReceiveOutcome::Message(first_message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("first subscription receives the broadcast event");
+    };
+    let ReceiveOutcome::Message(second_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("second subscription receives the broadcast event");
+    };
+    let TransportPayload::Native(first_payload) = first_message.payload() else {
+        panic!("local provider returns native payloads");
+    };
+    assert_eq!("first", first_payload.downcast_ref::<String>().unwrap());
+    let TransportPayload::Native(second_payload) = second_message.payload() else {
+        panic!("local provider returns native payloads");
+    };
+    assert_eq!("first", second_payload.downcast_ref::<String>().unwrap());
+    block_on(first.close()).unwrap();
+
+    let remaining = block_on(bus.publish(PublishRequest::new(topic, "remaining".to_owned()).unwrap())).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(remaining_admissions) = remaining.acknowledgement() else {
+        panic!("local provider reports each remaining subscription admission");
+    };
+    assert_eq!(1, remaining_admissions.len());
+    assert_eq!(Id::new(51), remaining_admissions[0].subscription_id());
+    assert!(matches!(
+        block_on(first.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Closed
+    ));
+    let ReceiveOutcome::Message(remaining_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("remaining subscription receives the next event");
+    };
+    let TransportPayload::Native(payload) = remaining_message.payload() else {
+        panic!("local provider returns native payloads");
+    };
+    assert_eq!("remaining", payload.downcast_ref::<String>().unwrap());
+    block_on(second.close()).unwrap();
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_repeated_close_of_old_subscription_preserves_reused_id() {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<String>::new("async.local.reused-id").unwrap();
+    let mut old = block_on(spi.subscribe(spi_request(70, "reused", "async.local.reused-id"))).unwrap();
+    block_on(old.close()).unwrap();
+
+    let mut replacement = block_on(spi.subscribe(spi_request(70, "replacement", "async.local.reused-id"))).unwrap();
+    block_on(old.close()).unwrap();
+    let receipt = block_on(bus.publish(PublishRequest::new(topic, "still-registered".to_owned()).unwrap())).unwrap();
+    assert!(matches!(receipt.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    assert!(matches!(
+        block_on(replacement.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+
+    block_on(replacement.close()).unwrap();
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn async_local_same_subscriber_instances_report_independent_queue_capacity() {
+    let config = LocalEventBusConfig::new().queue_capacity(1);
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone());
+    let topic = Topic::<String>::new("async.local.same-subscriber-capacity").unwrap();
+    let mut first = block_on(spi.subscribe(spi_request(71, "same", "async.local.same-subscriber-capacity"))).unwrap();
+    let mut second = block_on(spi.subscribe(spi_request(72, "same", "async.local.same-subscriber-capacity"))).unwrap();
+
+    block_on(bus.publish(PublishRequest::new(topic.clone(), "occupy".to_owned()).unwrap())).unwrap();
+    let ReceiveOutcome::Message(mut first_occupy) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("first mailbox receives the first event");
+    };
+    block_on(first.settle(&first_occupy.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+
+    let second_receipt = block_on(bus.publish(PublishRequest::new(topic, "independent".to_owned()).unwrap())).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = second_receipt.acknowledgement() else {
+        panic!("local provider reports each subscription admission");
+    };
+    let first_admission = admissions
+        .iter()
+        .find(|item| item.subscription_id() == Id::new(71))
+        .unwrap();
+    let second_admission = admissions
+        .iter()
+        .find(|item| item.subscription_id() == Id::new(72))
+        .unwrap();
+    assert!(matches!(first_admission.status(), AdmissionStatus::Accepted));
+    assert!(matches!(second_admission.status(), AdmissionStatus::Rejected(_)));
+
+    let ReceiveOutcome::Message(mut first_independent) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("first mailbox accepted its second event");
+    };
+    block_on(first.settle(
+        &first_independent.take_settlement().unwrap(),
+        DeliveryDisposition::Accept,
+    ))
+    .unwrap();
+    let ReceiveOutcome::Message(mut second_occupy) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("second mailbox retained its original event");
+    };
+    block_on(second.settle(&second_occupy.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    block_on(first.close()).unwrap();
+    block_on(second.close()).unwrap();
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
 #[test]
