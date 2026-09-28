@@ -9,7 +9,6 @@
 
 //! Caller-driven asynchronous subscription runner.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -18,7 +17,6 @@ use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
@@ -33,6 +31,11 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryFallback;
 use qubit_retry::RetryPolicy;
 
+use self::internal::DeliveryTaskContext;
+use self::internal::OwnedDeliveryTask;
+use self::internal::PendingDelivery;
+use self::internal::SessionSignals;
+use self::internal::discard_unstarted_tasks;
 use super::async_admission::AsyncAdmissionFuture;
 use super::async_admission::AsyncAdmissionPermit;
 use super::async_event_bus::AsyncEventBusInner;
@@ -49,19 +52,15 @@ use crate::error::SubscriptionCloseErrors;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::Delivery;
-use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
 use crate::model::FailureDirective;
-use crate::model::ProviderMessageMetadata;
 use crate::model::PublishReceipt;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
 use crate::model::Topic;
-use crate::pipeline::AsyncOrderingGuard;
 use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::Diagnostic;
-use crate::pipeline::OrderingLaneKey;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_retry_config;
 use crate::pipeline::is_retry_rule_failure;
@@ -70,60 +69,16 @@ use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
 use crate::spi::ReceiveOutcome;
-use crate::spi::SettlementToken;
 use crate::spi::ShutdownMode;
 use crate::spi::SpiFuture;
 
-thread_local! {
-    static ACTIVE_BUS_POLLS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-}
+mod internal;
+
+pub(super) use internal::is_current_bus_poll;
 
 type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
 type SharedAsyncHandler<T> = Arc<AsyncHandler<T>>;
 type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
-
-struct BusContextFuture<F: Future> {
-    bus_key: usize,
-    future: Pin<Box<F>>,
-}
-
-impl<F: Future> BusContextFuture<F> {
-    /// Wraps a future so every poll runs with the owning bus marked
-    /// thread-locally.
-    fn new(bus_key: usize, future: F) -> Self {
-        Self {
-            bus_key,
-            future: Box::pin(future),
-        }
-    }
-}
-
-impl<F: Future> Future for BusContextFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        let this = self.get_mut();
-        ACTIVE_BUS_POLLS.with(|active| active.borrow_mut().push(this.bus_key));
-        let _scope = BusPollScope;
-        this.future.as_mut().poll(context)
-    }
-}
-
-/// Removes the poll-scoped bus marker when polling returns or unwinds.
-struct BusPollScope;
-
-impl Drop for BusPollScope {
-    fn drop(&mut self) {
-        ACTIVE_BUS_POLLS.with(|active| {
-            active.borrow_mut().pop();
-        });
-    }
-}
-
-/// Reports whether the current future poll belongs to the given bus.
-pub(super) fn is_current_bus_poll(bus_key: usize) -> bool {
-    ACTIVE_BUS_POLLS.with(|active| active.borrow().contains(&bus_key))
-}
 
 /// Runtime state for one typed subscription, including the receiver and all
 /// delivery futures that have been accepted by the facade.
@@ -142,42 +97,8 @@ struct AsyncSession<T: 'static> {
     tasks: Vec<OwnedDeliveryTask<T>>,
     completed: VecDeque<PendingDelivery<T>>,
     defer_settlement: bool,
-    started: Option<Arc<AtomicBool>>,
     handler: Option<SharedAsyncHandler<T>>,
     admission_waiter: Option<AsyncAdmissionFuture>,
-}
-
-struct PendingDelivery<T: 'static> {
-    /// Tracks the message from receive through settlement or explicit
-    /// abandonment.
-    _tracking: super::async_event_bus::AsyncDeliveryGuard,
-    event_id: crate::model::EventId,
-    event: Option<Arc<EventEnvelope<T>>>,
-    token: Option<SettlementToken>,
-    metadata: ProviderMessageMetadata,
-    decode_error: Option<DeliveryError>,
-    settlement_intent: Option<DeliveryDisposition>,
-    settlement_failures: u32,
-    failure_diagnostic: Option<(u32, Box<str>)>,
-    admission: Option<AsyncAdmissionPermit>,
-    lane: Option<AsyncOrderingGuard<()>>,
-}
-
-struct OwnedDeliveryTask<T: 'static> {
-    future: Pin<Box<dyn Future<Output = PendingDelivery<T>> + Send>>,
-    started: Arc<AtomicBool>,
-}
-
-/// Drops queued handlers that have not started, counting ephemeral deliveries.
-fn discard_unstarted_tasks<T: 'static>(tasks: &mut Vec<OwnedDeliveryTask<T>>, abandoned: &AtomicU64, ephemeral: bool) {
-    let unstarted = tasks
-        .iter()
-        .filter(|task| !task.started.load(Ordering::Acquire))
-        .count() as u64;
-    tasks.retain(|task| task.started.load(Ordering::Acquire));
-    if ephemeral && unstarted > 0 {
-        abandoned.fetch_add(unstarted, Ordering::AcqRel);
-    }
 }
 
 enum AsyncRunnerEvent<T: 'static> {
@@ -190,77 +111,6 @@ enum AdmissionWaitEvent<T: 'static> {
     Permit(AsyncAdmissionPermit),
     Delivery(Box<PendingDelivery<T>>),
     ImmediateStop,
-}
-
-struct SessionSignals {
-    stopped: std::sync::atomic::AtomicBool,
-    stop_mode: Mutex<Option<ShutdownMode>>,
-    terminal_error: Mutex<Option<ReceiveError>>,
-    start_gate: Mutex<()>,
-    signal: AsyncSignal,
-}
-
-impl SessionSignals {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            stopped: false.into(),
-            stop_mode: Mutex::new(None),
-            terminal_error: Mutex::new(None),
-            start_gate: Mutex::new(()),
-            signal: AsyncSignal::default(),
-        })
-    }
-
-    fn stop(&self, mode: ShutdownMode) {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut stop_mode = self.stop_mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !matches!(*stop_mode, Some(ShutdownMode::Immediate)) || mode == ShutdownMode::Immediate {
-            *stop_mode = Some(mode);
-        }
-        drop(stop_mode);
-        self.stopped.store(true, Ordering::Release);
-        self.signal.notify();
-    }
-
-    fn fail_dead_letter_forward(&self, event_id: crate::model::EventId, message: Box<str>) {
-        *self
-            .terminal_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(ReceiveError::DeadLetterForwardFailed { event_id, message });
-        self.stop(ShutdownMode::Immediate);
-    }
-
-    fn take_terminal_error(&self) -> Option<ReceiveError> {
-        self.terminal_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    }
-
-    /// Linearizes the start of user middleware/handler work against Immediate
-    /// stop.
-    fn mark_started(&self, started: &AtomicBool) -> bool {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.stopped.load(Ordering::Acquire) && !self.stopping_gracefully() {
-            return false;
-        }
-        started.store(true, Ordering::Release);
-        true
-    }
-
-    fn stopping_gracefully(&self) -> bool {
-        matches!(
-            *self.stop_mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            Some(ShutdownMode::Graceful { .. })
-        )
-    }
 }
 
 struct SessionSlot<T: 'static> {
@@ -476,7 +326,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             tasks: Vec::new(),
             completed: VecDeque::new(),
             defer_settlement: false,
-            started: None,
             handler: None,
             admission_waiter: None,
         }
@@ -614,12 +463,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         .admission_waiter
                         .take()
                         .unwrap_or_else(|| self.inner.admission.acquire());
-                    let registration = SignalRegistration::new(&self.signals.signal);
+                    let registration = SignalRegistration::new(self.signals.signal());
                     let tasks = &mut self.tasks;
                     let abandoned = &self.inner.abandoned_deliveries;
                     let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
                     let event = std::future::poll_fn(|cx| {
-                        if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
+                        if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                             discard_unstarted_tasks(tasks, abandoned, ephemeral);
                             if tasks.is_empty() {
                                 return Poll::Ready(AdmissionWaitEvent::ImmediateStop);
@@ -631,11 +480,11 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                                 return Poll::Ready(AdmissionWaitEvent::Delivery(Box::new(delivery)));
                             }
                         }
-                        if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
+                        if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                             return Poll::Ready(AdmissionWaitEvent::ImmediateStop);
                         }
                         registration.register(cx.waker());
-                        if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
+                        if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                             return Poll::Ready(AdmissionWaitEvent::ImmediateStop);
                         }
                         match Pin::new(&mut admission).poll(cx) {
@@ -667,7 +516,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     .as_ref()
                     .is_some_and(|pending| pending.settlement_intent.is_none())
                 {
-                    if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
+                    if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                         self.abandon_pending();
                         continue;
                     }
@@ -687,7 +536,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 // shutdown alive forever. Keep retrying while running; once
                 // stopped, release the receiver so its close contract can
                 // decide the fate of provider-owned in-flight state.
-                if self.signals.stopped.load(Ordering::Acquire) {
+                if self.signals.is_stopped() {
                     self.abandon_pending();
                     continue;
                 }
@@ -714,7 +563,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             if self.receiver_closed {
                 self.signals.stop(ShutdownMode::Immediate);
             }
-            if self.signals.stopped.load(Ordering::Acquire) {
+            if self.signals.is_stopped() {
                 if !self.signals.stopping_gracefully() {
                     self.discard_unstarted_tasks();
                 }
@@ -754,12 +603,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     Err(error) => Err(error),
                 }
             });
-            let registration = SignalRegistration::new(&self.signals.signal);
+            let registration = SignalRegistration::new(self.signals.signal());
             let tasks = &mut self.tasks;
             let abandoned = &self.inner.abandoned_deliveries;
             let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
             let event = std::future::poll_fn(|cx| {
-                if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
+                if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                     discard_unstarted_tasks(tasks, abandoned, ephemeral);
                     if tasks.is_empty() {
                         return Poll::Ready(AsyncRunnerEvent::Stopped);
@@ -771,11 +620,11 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         return Poll::Ready(AsyncRunnerEvent::Delivery(delivery));
                     }
                 }
-                if self.signals.stopped.load(Ordering::Acquire) {
+                if self.signals.is_stopped() {
                     return Poll::Ready(AsyncRunnerEvent::Stopped);
                 }
                 registration.register(cx.waker());
-                if self.signals.stopped.load(Ordering::Acquire) {
+                if self.signals.is_stopped() {
                     return Poll::Ready(AsyncRunnerEvent::Stopped);
                 }
                 match receive.as_mut().poll(cx) {
@@ -837,26 +686,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let Some(pending) = self.pending.take() else {
             return;
         };
-        let mut task = Self {
+        let started = Arc::new(AtomicBool::new(false));
+        let mut task = DeliveryTaskContext {
             inner: self.inner.clone(),
             id: self.id,
             subscriber_id: self.subscriber_id.clone(),
             topic: self.topic.clone(),
-            codec: self.codec.clone(),
             options: self.options.clone(),
-            receiver: None,
-            receiver_closed: true,
             signals: self.signals.clone(),
             pending: Some(pending),
-            waiting_admission: None,
-            tasks: Vec::new(),
-            completed: VecDeque::new(),
-            defer_settlement: true,
-            started: Some(Arc::new(AtomicBool::new(false))),
-            handler: None,
-            admission_waiter: None,
+            started: Some(started.clone()),
         };
-        let started = task.started.as_ref().expect("owned task has a start marker").clone();
         self.tasks.push(OwnedDeliveryTask {
             started,
             future: Box::pin(async move {
@@ -911,186 +751,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             admission: None,
             lane: None,
         });
-    }
-
-    async fn process_pending(&mut self, handler: SharedAsyncHandler<T>) {
-        let Some(pending) = self.pending.as_ref() else {
-            return;
-        };
-        if let Some(disposition) = pending.settlement_intent {
-            let event = pending.event.clone();
-            self.settle_pending(disposition, event.as_deref()).await;
-            return;
-        }
-        if let Some(error) = pending.decode_error.as_ref() {
-            let panicked = matches!(error, DeliveryError::Codec(crate::error::CodecError::Panicked { .. }));
-            if panicked {
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "codec_decode".into(),
-                    message: error.to_string().into(),
-                });
-            }
-            self.record_failure_diagnostic(0, error.to_string().into());
-            if panicked {
-                self.settle_pending(DeliveryDisposition::Retry, None).await;
-            } else {
-                self.settle_pending(DeliveryDisposition::Reject, None).await;
-            }
-            return;
-        }
-        let Some(event) = pending.event.as_ref().cloned() else {
-            return;
-        };
-        if let Some(filter) = self.options.filter() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(&event))) {
-                Ok(false) => {
-                    self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await;
-                    return;
-                }
-                Ok(true) => {}
-                Err(_) => {
-                    let can_settle = self.pending.as_ref().is_some_and(|pending| pending.token.is_some());
-                    let metadata = self.pending.as_ref().expect("pending delivery exists").metadata.clone();
-                    let delivery = Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
-                    let error = DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("subscriber filter panicked")),
-                    };
-                    let directive = notify_failure(
-                        &self.options,
-                        &event,
-                        &error,
-                        self.options.retry_policy().is_some(),
-                        &self.inner,
-                    );
-                    self.finish_failure(delivery, error, 1, directive).await;
-                    return;
-                }
-            }
-        }
-        let pending = self.pending.as_ref().expect("pending delivery exists");
-        let context = self.context(pending.token.is_some(), pending.metadata.clone(), &event);
-        let delivery = Delivery::new(event.clone(), context);
-        let _lane = if self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
-            let key = OrderingLaneKey::new(self.topic.name(), event.ordering_key(), self.id);
-            Some(self.inner.ordering_lanes.enqueue(key, ()).await)
-        } else {
-            None
-        };
-        if let Some(lane) = _lane
-            && let Some(pending) = self.pending.as_mut()
-        {
-            pending.lane = lane;
-        }
-        if let Some(started) = &self.started
-            && !self.signals.mark_started(started)
-        {
-            return;
-        }
-        let bus_key = Arc::as_ptr(&self.inner) as usize;
-        let global_interceptors = self.inner.facade_config.async_subscriber_interceptors::<T>();
-        let attempts = run_with_retry(
-            self.options.clone(),
-            delivery.clone(),
-            handler,
-            &self.inner,
-            global_interceptors,
-        );
-        match BusContextFuture::new(bus_key, attempts).await {
-            Ok(_) => self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await,
-            Err((error, attempts, directive)) => self.finish_failure(delivery, *error, attempts, directive).await,
-        }
-    }
-
-    fn context(
-        &self,
-        can_settle: bool,
-        metadata: ProviderMessageMetadata,
-        event: &EventEnvelope<T>,
-    ) -> DeliveryContext {
-        let context = DeliveryContext::new(self.inner.provider_id.clone(), self.id, self.subscriber_id.clone())
-            .with_provider_metadata(metadata)
-            .with_settlement(can_settle);
-        if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
-            context.as_dead_letter()
-        } else {
-            context
-        }
-    }
-
-    async fn finish_failure(
-        &mut self,
-        delivery: Delivery<T>,
-        error: DeliveryError,
-        attempts: u32,
-        directive: FailureDirective,
-    ) {
-        self.record_failure_diagnostic(attempts, error.to_string().into());
-        if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
-            if let Some(policy) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) =
-                    crate::pipeline::dead_letter_envelope(&delivery, &error, policy.topic_name())
-                {
-                    match publish_dead_letter_async(
-                        &self.inner,
-                        &envelope,
-                        self.options.retry_policy(),
-                        self.options.retry_cancellation_token(),
-                        policy.admission_policy(),
-                    )
-                    .await
-                    {
-                        Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
-                                self.inner.emit(&Diagnostic::InternalFailure {
-                                    origin: "dead_letter_partial".into(),
-                                    message: "dead-letter publication was partially accepted; it was not republished"
-                                        .into(),
-                                });
-                            }
-                        }
-                        Err(message) => {
-                            self.inner.emit(&Diagnostic::InternalFailure {
-                                origin: "dead_letter_publish".into(),
-                                message: message.clone().into(),
-                            });
-                            self.signals
-                                .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
-                            return;
-                        }
-                    }
-                } else {
-                    let message = "dead-letter envelope could not be constructed";
-                    self.inner.emit(&Diagnostic::InternalFailure {
-                        origin: "dead_letter_build".into(),
-                        message: message.into(),
-                    });
-                    self.signals
-                        .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
-                    return;
-                }
-            } else {
-                let message = "dead-letter directive has no configured policy";
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "dead_letter_policy".into(),
-                    message: message.into(),
-                });
-                self.signals
-                    .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
-                return;
-            }
-        }
-        let disposition = match directive {
-            FailureDirective::Requeue => Some(DeliveryDisposition::Retry),
-            FailureDirective::DeadLetter | FailureDirective::Discard | FailureDirective::Retry => {
-                Some(DeliveryDisposition::Reject)
-            }
-        };
-        if let Some(disposition) = disposition {
-            self.settle_pending(disposition, Some(delivery.event())).await;
-        }
     }
 
     async fn settle_pending(&mut self, disposition: DeliveryDisposition, event: Option<&EventEnvelope<T>>) {
@@ -1200,12 +860,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     error: error.to_string().into(),
                 });
             }
-        }
-    }
-
-    fn record_failure_diagnostic(&mut self, attempts: u32, error: Box<str>) {
-        if let Some(pending) = self.pending.as_mut() {
-            pending.failure_diagnostic = Some((attempts, error));
         }
     }
 
@@ -1519,13 +1173,13 @@ where
     F: Future,
 {
     let mut future = Box::pin(future);
-    let registration = SignalRegistration::new(&control.signal);
+    let registration = SignalRegistration::new(control.signal());
     std::future::poll_fn(|cx| {
-        if control.stopped.load(Ordering::Acquire) {
+        if control.is_stopped() {
             return std::task::Poll::Ready(None);
         }
         registration.register(cx.waker());
-        if control.stopped.load(Ordering::Acquire) {
+        if control.is_stopped() {
             return std::task::Poll::Ready(None);
         }
         match future.as_mut().poll(cx) {
