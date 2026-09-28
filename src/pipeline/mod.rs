@@ -18,6 +18,7 @@ mod global_publisher_interceptor;
 mod ordering_lane;
 mod publisher;
 mod retry;
+mod retry_terminal;
 mod subscriber;
 
 pub(crate) use admission::AdmissionPermit;
@@ -43,6 +44,8 @@ pub(crate) use ordering_lane::OrderingLaneKey;
 #[cfg(test)]
 pub(crate) use ordering_lane::OrderingLanes;
 pub(crate) use publisher::PublisherPipeline;
+pub(crate) use retry_terminal::is_retry_rule_failure;
+pub(crate) use retry_terminal::terminal_directive;
 pub(crate) use subscriber::DeliveryFailureAction;
 pub(crate) use subscriber::DeliveryOutcome;
 pub(crate) use subscriber::SubscriberPipeline;

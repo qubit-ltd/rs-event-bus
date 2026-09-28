@@ -27,11 +27,9 @@ use std::time::Instant;
 use qubit_id::Id;
 use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
-use qubit_retry::RetryCallbackKind;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
-use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryFallback;
 use qubit_retry::RetryPolicy;
 
@@ -92,6 +90,8 @@ use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
 use crate::pipeline::dead_letter_retry_config;
 use crate::pipeline::emit_diagnostic;
+use crate::pipeline::is_retry_rule_failure;
+use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::registry::EventBusConfig;
 use crate::registry::EventBusRegistry;
 use crate::spi::DeliveryDisposition;
@@ -1559,9 +1559,49 @@ fn process_inbound_parts<T>(
 ) where
     T: Send + Sync + 'static,
 {
-    let payload = match decode_payload(codec, payload) {
+    let payload = match crate::codec::decode_payload(codec, payload).map_err(Into::into) {
         Ok(payload) => payload,
         Err(error) => {
+            if matches!(
+                error,
+                DeliveryError::Codec(crate::error::CodecError::Panicked {
+                    operation: "decode",
+                    ..
+                })
+            ) {
+                inner.emit_internal("codec_decode", error.to_string());
+                if let Some(token) = settlement.take() {
+                    if token.belongs_to(subscription_id)
+                        && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+                    {
+                        settler.settle(
+                            Some(token),
+                            DeliveryDisposition::Retry,
+                            event_id.clone(),
+                            address.as_str(),
+                            subscription_id,
+                            subscriber_id,
+                        );
+                    } else if token.belongs_to(subscription_id) {
+                        inner.emit(Diagnostic::SettlementUnavailable {
+                            event_id: event_id.clone(),
+                            topic: address.as_str().into(),
+                            subscription_id,
+                            subscriber_id: subscriber_id.clone(),
+                            requested: DeliveryDisposition::Retry,
+                        });
+                    }
+                }
+                inner.emit(Diagnostic::DeliveryFailed {
+                    event_id,
+                    topic: address.as_str().into(),
+                    subscription_id,
+                    subscriber_id: subscriber_id.clone(),
+                    attempts: 0,
+                    error: error.to_string().into(),
+                });
+                return;
+            }
             settle_rejected(
                 inner,
                 settler,
@@ -1656,30 +1696,6 @@ fn process_inbound_parts<T>(
 
 /// Creates a typed event from a provider message using native downcast or topic
 /// codec.
-fn decode_payload<T: Send + Sync + 'static>(
-    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
-    payload: TransportPayload,
-) -> Result<Arc<T>, DeliveryError> {
-    match payload {
-        TransportPayload::Native(value) => {
-            Arc::downcast::<T>(value).map_err(|_| decode_error("native payload type does not match subscribed topic"))
-        }
-        TransportPayload::Encoded(encoded) => {
-            let codec = codec.ok_or_else(|| decode_error("encoded payload has no resolved codec"))?;
-            codec.decode(encoded.bytes()).map(Arc::new).map_err(Into::into)
-        }
-    }
-}
-
-/// Creates a source-preserving codec error for invalid transport payload
-/// representation.
-fn decode_error(message: &'static str) -> DeliveryError {
-    crate::error::CodecError::Decode {
-        source: Box::new(std::io::Error::other(message)),
-    }
-    .into()
-}
-
 /// Applies configured retry to middleware and one handler attempt.
 fn run_delivery_with_retry<T>(
     inner: &EventBusInner,
@@ -1772,23 +1788,14 @@ where
         Ok(_) => Ok(()),
         Err(error) => {
             let count = attempts.load(Ordering::Acquire);
-            let retry_rule_panicked = matches!(
-                error.reason(),
-                RetryErrorReason::CallbackFailed { callback }
-                    if callback.callback() == RetryCallbackKind::Rule
-            );
             let directive = terminal_directive
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .unwrap_or(FailureDirective::Discard);
-            let directive = if retry_rule_panicked {
+            if is_retry_rule_failure(error.reason()) {
                 inner.emit_internal("retry_rule", error.to_string());
-                FailureDirective::Requeue
-            } else if directive == FailureDirective::Retry {
-                FailureDirective::Discard
-            } else {
-                directive
-            };
+            }
+            let directive = choose_terminal_directive(error.reason(), directive);
             Err((SubscriberPipeline::retry_error(error), count, directive))
         }
     }
