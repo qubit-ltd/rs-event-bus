@@ -1384,7 +1384,7 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     let panic_was_observed = Arc::new(AtomicBool::new(false));
     let observed = panic_was_observed.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "delivery_worker") {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "codec_decode") {
             observed.store(true, Ordering::Release);
         }
     });
@@ -1416,6 +1416,42 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn panicking_codec_encode_fails_before_the_provider_publish_call() {
+    struct PanicEncodeCodec(ContentType);
+    impl EventCodec<String> for PanicEncodeCodec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+        fn encode(&self, _: &String) -> Result<Arc<[u8]>, CodecError> {
+            panic!("synthetic encode panic")
+        }
+        fn decode(&self, _: &[u8]) -> Result<String, CodecError> {
+            unreachable!("this test only exercises encoding")
+        }
+    }
+    let (bus, backend) = create_bus_configured(|backend| backend.set_payload_mode(PayloadModes::Encoded));
+    let topic = Topic::new_with_codec(
+        "sync.panic-encode",
+        PanicEncodeCodec(ContentType::new("text/plain").expect("valid content type")),
+    )
+    .expect("valid codec topic");
+    let error = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("valid publish request"))
+        .expect_err("codec panic is returned as an error");
+    assert!(matches!(
+        error,
+        PublishError::Codec(CodecError::Panicked {
+            operation: "encode",
+            ..
+        })
+    ));
+    assert_eq!(backend.publish_calls(), 0, "provider is not called after codec panic");
 }
 
 #[test]

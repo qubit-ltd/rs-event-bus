@@ -13,6 +13,9 @@ use crate::model::ContentType;
 use crate::model::SchemaId;
 
 /// Encoded event bytes together with their codec metadata.
+///
+/// Cloning this value shares the byte allocation and clones only the metadata.
+#[derive(Clone)]
 pub struct EncodedPayload {
     bytes: Arc<[u8]>,
     content_type: ContentType,

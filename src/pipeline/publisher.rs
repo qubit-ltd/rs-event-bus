@@ -272,8 +272,7 @@ impl PublisherPipeline {
             PayloadModes::Encoded => {
                 let codec =
                     codec.ok_or_else(|| failure(PipelineFailureOrigin::Capability, CapabilityError::CodecRequired))?;
-                let bytes = codec
-                    .encode(failure_context.payload())
+                let bytes = crate::codec::call_codec("encode", || codec.encode(failure_context.payload()))
                     .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
                 if let Some(limit) = self.max_encoded_payload_bytes
                     && bytes.len() > limit.get()
@@ -286,11 +285,11 @@ impl PublisherPipeline {
                         },
                     ));
                 }
-                TransportPayload::Encoded(EncodedPayload::new(
-                    bytes,
-                    codec.content_type().clone(),
-                    codec.schema_id().cloned(),
-                ))
+                let content_type = crate::codec::call_codec("content_type", || Ok(codec.content_type().clone()))
+                    .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                let schema_id = crate::codec::call_codec("schema_id", || Ok(codec.schema_id().cloned()))
+                    .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                TransportPayload::Encoded(EncodedPayload::new(bytes, content_type, schema_id))
             }
         };
         Ok(PreparedOutbound {
@@ -347,11 +346,7 @@ impl<T: 'static> PreparedOutbound<T> {
     fn build(&self) -> OutboundMessage {
         let payload = match &self.payload {
             TransportPayload::Native(value) => TransportPayload::Native(value.clone()),
-            TransportPayload::Encoded(value) => TransportPayload::Encoded(EncodedPayload::new(
-                value.bytes().into(),
-                value.content_type().clone(),
-                value.schema_id().cloned(),
-            )),
+            TransportPayload::Encoded(value) => TransportPayload::Encoded(value.clone()),
         };
         OutboundMessage::new(
             self.topic.clone(),
