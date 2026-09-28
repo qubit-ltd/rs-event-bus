@@ -98,6 +98,7 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 pub struct PublishRequestBuilder<T: 'static> {
     /// Topic selected for the event.
     topic: Option<Topic<T>>,
@@ -122,6 +123,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// A builder with no topic or payload and default publish options.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             topic: None,
