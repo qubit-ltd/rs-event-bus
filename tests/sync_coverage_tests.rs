@@ -42,6 +42,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
+use qubit_event_bus::spi::SubscriptionModes;
 
 #[test]
 fn facade_config_keeps_the_caller_supplied_codec_registry() {
@@ -146,7 +147,7 @@ impl EventBusSpi for CoverageSpi {
             OrderingCapability::PerKey,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
-            qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,

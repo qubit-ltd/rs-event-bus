@@ -23,6 +23,8 @@ use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::facade::DeliveryAdmissionConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::local::AsyncLocalEventBusSpi;
+use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -140,16 +142,11 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
 
 #[test]
 fn test_admission_wakes_successor_after_coalesced_permit_releases() {
-    let provider =
-        Arc::new(qubit_event_bus::local::AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
+    let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
     let config =
         EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(2).expect("admission limit"));
-    let bus = AsyncEventBus::with_config(
-        qubit_event_bus::model::ProviderId::new("local").expect("provider ID"),
-        provider,
-        config,
-    )
-    .expect("facade");
+    let bus =
+        AsyncEventBus::with_config(ProviderId::new("local").expect("provider ID"), provider, config).expect("facade");
     let topic_a = Topic::<usize>::new("regression.admission.a").expect("topic A");
     let topic_b = Topic::<usize>::new("regression.admission.b").expect("topic B");
     let topic_c = Topic::<usize>::new("regression.admission.c").expect("topic C");

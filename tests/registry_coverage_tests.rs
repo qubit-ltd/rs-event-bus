@@ -53,6 +53,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_spi::AsyncServiceProvider;
 use qubit_spi::FallbackPolicy;
@@ -168,7 +169,7 @@ fn capabilities() -> EventBusCapabilities {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::FireAndForget,
@@ -371,7 +372,7 @@ fn async_registry_falls_back_for_unsupported_candidates_and_reports_exhaustion()
                 OrderingCapability::None,
                 DelayedDeliveryCapability::None,
                 DurabilityCapability::Durable,
-                qubit_event_bus::spi::SubscriptionModes::DURABLE,
+                SubscriptionModes::DURABLE,
                 false,
                 ReplayCapability::None,
                 PublishGuarantee::Accepted,
