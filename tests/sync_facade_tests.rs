@@ -3599,7 +3599,7 @@ fn dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admission() {
                 .expect("valid retry policy"),
         )
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid dead-letter topic"))
         .build();
     let subscription = bus
         .subscribe(
@@ -3658,7 +3658,7 @@ fn partial_dead_letter_admission_is_not_republished() {
                 .expect("valid retry policy"),
         )
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid dead-letter topic"))
         .build();
     let subscription = bus
         .subscribe(
@@ -3709,7 +3709,7 @@ fn dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
                 .expect("valid retry policy"),
         )
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid dead-letter topic"))
         .build();
     let _subscription = bus
         .subscribe(
@@ -3752,7 +3752,7 @@ fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
     let (handler_tx, handler_rx) = mpsc::channel();
     let options = SubscribeOptions::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid dead-letter topic"))
         .build();
     let subscription = bus
         .subscribe(

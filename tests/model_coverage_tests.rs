@@ -30,6 +30,7 @@ use qubit_event_bus::model::BatchPublishResult;
 use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DEAD_LETTER_HEADER;
+use qubit_event_bus::model::DeadLetterAdmissionPolicy;
 use qubit_event_bus::model::DeadLetterEvent;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
@@ -98,7 +99,7 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
         .error_handler(|_, _| FailureDirective::Discard)
         .interceptor(|delivery, next| next(delivery))
         .async_interceptor(|delivery, next| next(delivery))
-        .dead_letter(DeadLetterPolicy::topic("dead.events")?)
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead.events")?)
         .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("workers")?)
         .durability(SubscriptionDurability::Durable)
@@ -191,7 +192,7 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
         .error_handler(|_, _| FailureDirective::Requeue)
         .interceptor(|delivery, next| next(delivery))
         .async_interceptor(|delivery, next| next(delivery))
-        .dead_letter(DeadLetterPolicy::topic("dead.events")?)
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead.events")?)
         .ordering_policy(OrderingPolicy::PerKey)
         .consumer_group(ConsumerGroup::new("workers")?)
         .durability(SubscriptionDurability::Durable)
@@ -384,10 +385,16 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
             })
         ));
     }
-    assert!(DeadLetterPolicy::topic("dead.events")?.topic_name() == "dead.events");
+    assert!(DeadLetterPolicy::with_topic_name("dead.events")?.topic_name() == "dead.events");
+    let topic = Topic::<String>::new("dead.events")?;
+    assert_eq!(DeadLetterPolicy::with_topic(&topic).topic_name(), "dead.events");
+    assert_eq!(
+        DeadLetterPolicy::with_topic(&topic).admission_policy(),
+        DeadLetterAdmissionPolicy::TransportAccepted
+    );
     for invalid in ["", " dead.events", "dead.events ", "dead\nevents"] {
         assert!(matches!(
-            DeadLetterPolicy::topic(invalid),
+            DeadLetterPolicy::with_topic_name(invalid),
             Err(ConfigurationError::InvalidField {
                 field: "dead_letter",
                 ..
@@ -426,7 +433,7 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
             .subscriber_id(SubscriberId::new("failing-worker")?)
             .topic(source_topic.clone())
             .error_handler(|_, _| FailureDirective::DeadLetter)
-            .dead_letter(DeadLetterPolicy::topic("dead.events")?)
+            .dead_letter(DeadLetterPolicy::with_topic_name("dead.events")?)
             .build()?,
         |_| -> Result<(), DeliveryError> {
             Err(DeliveryError::Handler {

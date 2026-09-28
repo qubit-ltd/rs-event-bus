@@ -339,8 +339,8 @@ pub enum PublishAcknowledgement {
 
 死信 topic 的 payload 类型固定为 `DeadLetterEvent<T>`，包含
 `original_event: Arc<EventEnvelope<T>>`、`subscriber_id`、`reason`
-（最终 `DeliveryError` 的 `Display`）。死信 topic 由 `DeadLetterPolicy::topic(name)` 指定并默认要求 transport acceptance；
-`known_destination(name)` 要求可观察到目的地接纳，opaque provider 会拒绝该策略。facade 按
+（最终 `DeliveryError` 的 `Display`）。死信 topic 由 `DeadLetterPolicy::with_topic_name(name)` 指定并默认要求 transport acceptance；
+`with_known_destination(topic_name)` 要求可观察到目的地接纳，opaque provider 会拒绝该策略。facade 按
 `Topic::<DeadLetterEvent<T>>::new(name)` 构造；encoded provider 必须为该类型单独注册 codec。
 同一原始 event 和 subscriber 会得到稳定的死信 event ID，便于去重，但不保证 exactly-once。
 

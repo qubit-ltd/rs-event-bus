@@ -124,7 +124,7 @@ fn exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic
     let options = SubscribeOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("pipeline.dead").unwrap())
+        .dead_letter(DeadLetterPolicy::with_topic_name("pipeline.dead").unwrap())
         .build();
     let source_topic = topic("pipeline.source");
     let source_subscription = bus

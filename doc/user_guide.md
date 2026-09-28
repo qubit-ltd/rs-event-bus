@@ -356,7 +356,7 @@ Also keep these limits in mind:
 | Let the handler decide when to acknowledge | `ack_mode(AckMode::Manual)` | After the business write, call `delivery.acknowledgement().ack()`. On failure, call `nack()`. Returning without a decision counts as failure. See [Let the handler decide when to acknowledge](#let-the-handler-decide-when-to-acknowledge). |
 | Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and the delay. A classification rule alone does not enable retries. These types require a direct `qubit-retry = "0.25"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
 | Choose an action after failure | `error_handler` | The handler can ask for a retry, a requeue, a move to a failure topic, or a discard. Requeue requires support from the transport. |
-| Keep an event that fails for good | `dead_letter(DeadLetterPolicy::topic(name)?)` | Forward the failed message to another topic (the dead-letter topic). Someone still has to subscribe and handle it. See [Keep an event that fails for good](#keep-an-event-that-fails-for-good). |
+| Keep an event that fails for good | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | Forward the failed message to another topic (the dead-letter topic). Someone still has to subscribe and handle it. See [Keep an event that fails for good](#keep-an-event-that-fails-for-good). |
 | Handle one customer's messages in order | `ordering_policy(OrderingPolicy::PerKey)` | The publisher must set an ordering key, and the transport must support the capability. See [Keep events for one object in order](#keep-events-for-one-object-in-order). |
 | Share work across instances, or read older messages | `consumer_group`, `durability`, `start_position` | Only a transport that supports these capabilities can use them. local does not support durable subscriptions or historical reads. |
 | Transport-specific parameters | `provider_option` | The implementation defines the meaning. Do not put a password here. |
@@ -419,16 +419,18 @@ use qubit_event_bus::model::{
     DeadLetterEvent, DeadLetterPolicy, FailureDirective, SubscribeOptions, SubscribeRequest, Topic,
 };
 
-// Failing subscriber: move a failed delivery to the dead-letter topic.
+// The dead-letter topic carries DeadLetterEvent<OrderCreated>, not OrderCreated.
+let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
+
+// Failing subscriber: move a failed delivery to the topic above.
 let options = SubscribeOptions::<OrderCreated>::builder()
     .error_handler(|_event, _error| FailureDirective::DeadLetter)
-    .dead_letter(DeadLetterPolicy::topic("orders.created.dead")?)
+    .dead_letter(DeadLetterPolicy::with_topic(&dead_letter_topic))
     .build();
 let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
 let view_subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
 
-// Reader: subscribe to the dead-letter topic and record the reason for a person or a background task.
-let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
+// Reader: subscribe to the same topic and record the reason for a person or a background task.
 let dead_letter_subscription = bus.subscribe(
     SubscribeRequest::new("dead-letter-reader", dead_letter_topic)?,
     |delivery| {
@@ -443,7 +445,7 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
-When `error_handler` returns `DeadLetter`, the facade forwards the failure to the dead-letter topic, even if `retry_policy` is also set. If forwarding fails, the async runner stops with `ReceiveError::DeadLetterForwardFailed`; the sync facade cancels that subscription. The source token remains unsettled and diagnostics report the failure. Recovery depends on provider durability and close semantics: a durable provider can redeliver the unsettled message after the subscription is resumed or recreated, while an ephemeral provider may discard it when closed. Do not assume the facade will rerun the handler while forwarding remains broken. The dead-letter event ID is stable for the same original event and subscriber, which helps consumers deduplicate, but does not promise exactly-once delivery. The dead-letter topic is ordinary: someone must subscribe to it, and an empty topic can still lose the record. Encoded transports also need a codec for `DeadLetterEvent<OrderCreated>`. `NoDestinations`, `NoneAccepted`, `Dropped`, and publish errors do not count as forwarding. Known partial acceptance completes the source delivery with a diagnostic because republishing the whole record may duplicate it. An opaque provider such as Redis meets the default policy only when its publish guarantee is at least `Accepted`. Use `DeadLetterPolicy::known_destination(name)` when a reported consumer admission is required; subscription creation rejects that policy for opaque providers. Watch diagnostics for forwarding failures.
+When `error_handler` returns `DeadLetter`, the facade forwards the failure to the dead-letter topic, even if `retry_policy` is also set. If forwarding fails, the async runner stops with `ReceiveError::DeadLetterForwardFailed`; the sync facade cancels that subscription. The source token remains unsettled and diagnostics report the failure. Recovery depends on provider durability and close semantics: a durable provider can redeliver the unsettled message after the subscription is resumed or recreated, while an ephemeral provider may discard it when closed. Do not assume the facade will rerun the handler while forwarding remains broken. The dead-letter event ID is stable for the same original event and subscriber, which helps consumers deduplicate, but does not promise exactly-once delivery. The dead-letter topic is ordinary: someone must subscribe to it, and an empty topic can still lose the record. Encoded transports also need a codec for `DeadLetterEvent<OrderCreated>`. `NoDestinations`, `NoneAccepted`, `Dropped`, and publish errors do not count as forwarding. Known partial acceptance completes the source delivery with a diagnostic because republishing the whole record may duplicate it. An opaque provider such as Redis meets the default policy only when its publish guarantee is at least `Accepted`. Use `DeadLetterPolicy::with_known_destination(topic_name)` when a reported consumer admission is required; subscription creation rejects that policy for opaque providers. Watch diagnostics for forwarding failures.
 
 ## Filter or intercept a message
 
