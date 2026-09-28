@@ -352,7 +352,7 @@ Also keep these limits in mind:
 
 | Goal | Entry point | Notes |
 | --- | --- | --- |
-| Filter events | `filter` | After the bus has taken the message and before the handler runs, inspect the event and decide whether to skip it. On local, a skipped message is still `Accepted` on the publish receipt. A skip is not a rejection. |
+| Filter events | `filter` | After the bus has taken the message and before the handler runs, inspect the event and decide whether to skip it. On local, a skipped message is still `Accepted` on the publish receipt. A skip is not a rejection. See [Filter or intercept a message](#filter-or-intercept-a-message). |
 | Let the handler decide when to acknowledge | `ack_mode(AckMode::Manual)` | After the business write, call `delivery.acknowledgement().ack()`. On failure, call `nack()`. Returning without a decision counts as failure. See [Let the handler decide when to acknowledge](#let-the-handler-decide-when-to-acknowledge). |
 | Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and the delay. A classification rule alone does not enable retries. These types require a direct `qubit-retry = "0.25"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
 | Choose an action after failure | `error_handler` | The handler can ask for a retry, a requeue, a move to a failure topic, or a discard. Requeue requires support from the transport. |
@@ -449,9 +449,117 @@ When `error_handler` returns `DeadLetter`, the facade forwards the failure to th
 
 A **filter** runs on the receiving side: before the handler, it decides whether this message should be given to the handler. An **interceptor** is application code on the publish or handling path. It is the place to add correlation data, write a log, or stop the rest of the path. A normal integration does not need an interceptor first.
 
-A publish interceptor on the request affects only that publication. `EventBusFacadeConfig::publisher_interceptor` affects every message sent through that bus object. The facade interceptor may change headers. `Ok(false)` stops the publication, and the report shows `Dropped`. A publish error handler only observes the final error. It does not turn the error into success.
+On a subscriber, the bus runs `filter` first. A filter that returns `true` continues. One that returns `false` settles the delivery as accepted and skips every interceptor and the handler. After a passing filter, a bus-wide subscriber interceptor runs, then the interceptor on that subscription, then the handler. Each interceptor receives `next` and must call it to reach the rest of the chain. A sync subscription registers that callback with `interceptor`. An async subscription uses `async_interceptor`. Putting the async callback on a sync bus, or the sync callback on an async bus, fails when the subscription is created.
 
-A subscriber applies `filter` first, then interceptors, then the handler. A sync subscription uses `SubscribeOptions::builder().interceptor(...)`. An async subscription uses `async_interceptor(...)`. The same kinds of interceptor can be set for the whole bus object on `EventBusFacadeConfig`. An interceptor receives a `next` callback and must call it; otherwise the handler does not run. A sync bus cannot be given an async subscriber interceptor, and an async bus cannot be given a sync one. The mismatch is a configuration error when the subscription is created.
+### Skip events the handler should not see
+
+The customer-view subscriber can ignore an order whose total is zero:
+
+```rust
+use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .filter(|event| event.payload().total_cents > 0)
+    .build();
+let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
+let subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
+```
+
+A zero-total order never reaches `upsert_order`. On the built-in local provider the publish receipt for that destination is still `Accepted`. A panic inside `filter` is reported as a handler failure.
+
+### Run code around the handler
+
+The audit subscriber logs the order id and then calls the handler through `next`:
+
+```rust
+use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .interceptor(|delivery, next| {
+        eprintln!("audit received {}", delivery.payload().order_id);
+        next(delivery)
+    })
+    .build();
+let request = SubscribeRequest::new("audit-log", OrderCreated::TOPIC)?.with_options(options);
+let subscription = bus.subscribe(request, move |delivery| store.append_order_created(delivery.payload()))?;
+```
+
+`next(delivery)` is the rest of the chain. The log line appears, then the store write. Returning without calling `next` skips the handler. The value returned from the interceptor is the delivery result.
+
+The same synchronous callback can wrap every `OrderCreated` subscription on one bus. It runs outside the per-subscription interceptor, and only after that subscription's filter returns `true`. Install it while building the bus settings, then pass those settings through `EventBusConfig`. `EventBus::local` does not accept this configuration:
+
+```rust
+use qubit_event_bus::model::{Delivery, SubscriberNext};
+use qubit_event_bus::EventBusFacadeConfig;
+
+let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
+    |delivery: Delivery<OrderCreated>, next: SubscriberNext<OrderCreated>| next(delivery),
+);
+```
+
+An async subscription awaits its own `next`. The callback's return type is `SpiFuture`:
+
+```rust
+use qubit_event_bus::model::{AsyncSubscriberNext, Delivery, SubscribeOptions};
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::DeliveryError;
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .async_interceptor(|delivery: Delivery<OrderCreated>, next: AsyncSubscriberNext<OrderCreated>| {
+        Box::pin(async move { next(delivery).await }) as SpiFuture<'static, Result<(), DeliveryError>>
+    })
+    .build();
+```
+
+Attach `options` with `SubscribeRequest::with_options` before `subscribe(...).await`. The bus-wide async equivalent is `EventBusFacadeConfig::async_subscriber_interceptor`.
+
+### Change or stop one publication
+
+A publisher interceptor on the request sees the envelope for that publication only. Return `Ok(None)` to stop, or `Ok(Some(envelope))` to continue with the envelope you return:
+
+```rust
+use qubit_event_bus::model::PublishRequest;
+
+let request = PublishRequest::builder()
+    .topic(OrderCreated::TOPIC)
+    .payload(event)
+    .interceptor(|mut envelope| {
+        if envelope.payload().total_cents == 0 {
+            return Ok(None);
+        }
+        envelope.set_header("request-id", "req-42")?;
+        Ok(Some(envelope))
+    })
+    .build()?;
+let receipt = bus.publish(request)?;
+```
+
+`Ok(None)` finishes before the provider is called. `receipt.admission_outcome()` is `Dropped`, and a bus-wide publisher interceptor does not run for that call. `Ok(Some(envelope))` continues with the headers on the returned envelope. `Err` fails the publication.
+
+### Change or stop every publication
+
+`EventBusFacadeConfig::publisher_interceptor` runs for every message sent through that bus object, after a request interceptor that returned an envelope. It may edit headers. It cannot change the payload or the event id. `Ok(false)` stops publication; `Ok(true)` continues:
+
+```rust
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishMetadata;
+use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
+
+let local = LocalEventBusConfig::default();
+let bus_settings = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
+    if metadata.header("suppress") == Some("true") {
+        return Ok(false);
+    }
+    metadata.set_header("service", "orders")?;
+    Ok(true)
+});
+let config = EventBusConfig::default()
+    .with_provider_options(local.provider_options())
+    .with_facade_config(bus_settings);
+let bus = EventBusRegistry::with_local()?.create(&config)?;
+```
+
+`Ok(false)` leaves the admission outcome as `Dropped` and does not call the provider. A publish error handler only observes a terminal publish failure. It does not turn that failure into success, and a dropped publication does not invoke it.
 
 ## Configure the built-in local event bus
 
@@ -615,7 +723,89 @@ An async implementation uses the separate async catalog and `submit_async_provid
 
 The built-in local provider passes Rust objects directly and needs no conversion. A message that crosses a process boundary usually has to be turned into bytes and restored on receipt. The component that does this is a **codec**. `Topic::new_with_codec` / `new_with_shared_codec` attaches a codec to one event type. A codec can also be placed in a `CodecRegistry` and given to the bus with `EventBusFacadeConfig::with_codec_registry`. A codec on the topic wins. The bus registry is consulted only when the topic has none. The codec is chosen when the subscription is created, and creation fails when both are missing. The application also has to agree on the data format and on version compatibility. This crate does not include a general JSON codec.
 
-Codec callbacks run behind a panic boundary. A returned encode error or an encode/metadata panic fails publication before the provider is called; a decode panic becomes `CodecError::Panicked` and requests provider retry when settlement supports it. A regular decode error is rejected as an invalid message. The [codec round-trip example](../examples/codec_round_trip.rs) shows a minimal executable implementation.
+Codec callbacks run behind a panic boundary. A returned encode error or an encode/metadata panic fails publication before the provider is called; a decode panic becomes `CodecError::Panicked` and requests provider retry when settlement supports it. A regular decode error is rejected as an invalid message. The [codec round-trip example](../examples/codec_round_trip.rs) shows a minimal executable implementation for `String`. The fragments below attach a codec to the order event. The byte layout is the application's own convention: three lines, `order_id`, `customer_id`, and `total_cents`, and none of those fields contains a newline. This crate does not supply that layout.
+
+```rust
+use std::sync::Arc;
+
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::model::{ContentType, SchemaId};
+use qubit_event_bus::CodecError;
+
+struct OrderCreatedCodec(ContentType);
+
+impl EventCodec<OrderCreated> for OrderCreatedCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.0
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
+        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
+        Ok(Arc::from(text.into_bytes()))
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<OrderCreated, CodecError> {
+        let text = std::str::from_utf8(bytes).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        let mut lines = text.lines();
+        let order_id = lines.next().unwrap_or("").to_owned();
+        let customer_id = lines.next().unwrap_or("").to_owned();
+        let total_cents = lines
+            .next()
+            .unwrap_or("")
+            .parse::<u64>()
+            .map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
+            return Err(CodecError::Decode {
+                source: Box::new(std::io::Error::other("expected order_id, customer_id, and total_cents")),
+            });
+        }
+        Ok(OrderCreated {
+            order_id,
+            customer_id,
+            total_cents,
+        })
+    }
+}
+```
+
+`encode` returns shared bytes and a content type. `decode` rebuilds `OrderCreated` or returns `CodecError::Decode`. Attach this codec to the topic both sides use. The constant `OrderCreated::TOPIC` has no codec; an encoded provider will not use it for bytes:
+
+```rust
+use qubit_event_bus::model::{ContentType, PublishRequest, SubscribeRequest, Topic};
+
+let topic = Topic::new_with_codec(
+    "orders.created",
+    OrderCreatedCodec(ContentType::new("text/plain")?),
+)?;
+let subscription = bus.subscribe(
+    SubscribeRequest::new("audit-log", topic.clone())?,
+    move |delivery| store.append_order_created(delivery.payload()),
+)?;
+let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
+```
+
+On publish, the provider receives the bytes from `encode`. On delivery, `decode` restores the value passed to the handler. The built-in local provider still passes the Rust value and does not call this codec.
+
+To share one codec across topics of the same payload type, register it on the bus. A topic codec still wins. The registry is used only when the topic has none. An encoded subscription with neither codec fails at creation with `SubscribeError::Capability(CapabilityError::CodecRequired)`, before the provider creates the subscription:
+
+```rust
+use std::sync::Arc;
+
+use qubit_event_bus::codec::CodecRegistry;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
+
+let mut codecs = CodecRegistry::new();
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
+let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
+let config = EventBusConfig::default().with_facade_config(bus_settings);
+```
+
+Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new_with_shared_codec` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold.
 
 ## Asynchronous bus and subscriptions
 
