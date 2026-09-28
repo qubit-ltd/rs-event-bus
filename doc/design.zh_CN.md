@@ -203,7 +203,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 - 运行期真正使用的 qubit 依赖：`qubit-spi`（目录/发现）、`qubit-retry`
   （`worker` + `async` feature）、`qubit-clock`（`Timer`/`TimeError`）、
   `qubit-id`（`Uuid` 生成 `EventId`）。错误类型依赖 `thiserror`。
-- dev 依赖 `flume`（用于 `tests/support/flume_spi.rs` 这个第二个真实传输实现）
+- dev 依赖 `loom`（并发模型）；有界通道传输使用标准库实现
   与 `loom`（并发模型检查）。
 
 ---
@@ -280,7 +280,7 @@ pub struct EventEnvelope<T> {
 
 同一份 `SubscribeRequest<T>` 既能给 `EventBus` 也能给 `AsyncEventBus`，
 区别只在于：同步 facade 拒绝带 `async_interceptors` 的请求（`SubscribeError::Configuration`），
-异步 facade 则同时接受两种中间件。
+异步 facade 会拒绝同步 `interceptors`；其 handler 链只接受异步 `async_interceptors`。
 
 ### 3.4 `Delivery<T>`、`DeliveryContext` 与 `Acknowledgement`
 
@@ -373,13 +373,13 @@ pub trait EventBusSpi: Send + Sync + 'static {
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         Ok(None)   // 默认：不支持；Some(true) = 已空闲，Some(false) = 超时
     }
-    #[doc(hidden)] fn provider_id(&self) -> Option<&ProviderId> { None }
+    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
 }
 
 pub trait EventSubscriptionSpi: Send + 'static {
     fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError>;
-    fn settle(&mut self, token: SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
     fn close(&mut self) -> Result<(), SpiError>;
 }
 ```
@@ -399,14 +399,13 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
     fn subscribe<'a>(&'a self, request: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>>;
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
-    fn wait_for_topic_idle<'a>(&'a self, topic: &'a TopicAddress, timeout: Option<Duration>) -> SpiFuture<'a, Result<Option<bool>, SpiError>>;
-    #[doc(hidden)] fn provider_id(&self) -> Option<&ProviderId> { None }
+    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
 }
 
 pub trait AsyncEventSubscriptionSpi: Send + 'static {
     fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> SpiFuture<'_, Result<ReceiveOutcome, SpiError>>;
-    fn settle(&mut self, token: SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
     fn close(&mut self) -> SpiFuture<'_, Result<(), SpiError>>;
 }
 ```
@@ -530,13 +529,13 @@ facade 会在调用 `subscribe` 前拒绝不支持的模式。
 ### 6.1 `EventBusSpec`：接入 `qubit-spi`
 
 ```rust
-pub struct EventBusSpec;                    // 同步
+pub struct EventBusSpec;                    // 同步与异步 provider 共用
 impl ServiceSpec for EventBusSpec {
     type Config = EventBusConfig;
     type Output = Arc<dyn EventBusSpi>;
     type Error = EventBusProviderError;
 }
-pub struct AsyncEventBusSpec;               // 异步，Output = Arc<dyn AsyncEventBusSpi>
+// EventBusSpec 的 AsyncServiceSpec 选择 Arc<dyn AsyncEventBusSpi>。
 ```
 
 `EventBusProvider` / `AsyncEventBusProvider` 是 `qubit-spi` 定义 trait
@@ -742,7 +741,7 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
    ┌─────────────────────────────────────────────────────────────┤
    │ Retry      → 交给 qubit-retry 决定是否再试（有策略时）；无策略等同 Discard
    │ Requeue    → 结束本地尝试，settle Retry（需 AcceptRetryReject，否则不 settle）
-   │ DeadLetter → 结束本地尝试，发布死信后 settle Reject；死信失败则按 Requeue
+   │ DeadLetter → 结束本地尝试，发布死信后 settle Reject；转发失败会停止订阅并保留未结算的源 token
    │ Discard    → 结束本地尝试，settle Reject（需 AcceptRetryReject，否则不 settle）
    └─────────────────────────────────────────────────────────────
 ```
@@ -1308,7 +1307,7 @@ pub enum NotificationOutcome {
 | `tests/local_provider_tests.rs`、`tests/async_local_provider_tests.rs` | 直接针对 SPI 层的 local 行为 |
 | `tests/publish_admission_tests.rs`、`tests/request_builder_tests.rs`、`tests/notification_publisher_tests.rs` | 接纳回执、builder 校验、通知发布器 |
 | `tests/support/fake_spi.rs` | 可编程假 provider：注入错误、panic、能力矩阵、settlement 失败 |
-| `tests/support/flume_spi.rs` | 基于 `flume` 的第二个真实传输实现，验证 SPI 不为 local 定制 |
+| `tests/support/flume_spi.rs` | 基于标准库有界通道的第二个真实传输实现，验证 SPI 不为 local 定制 |
 | `tests/support/manual_async.rs` | 手动 executor / 手动 timer，让异步测试确定性推进 |
 | `tests/support/provider_shapes.rs` | 各能力组合的 provider 形态 |
 | `tests/support/{scheduler_race,spawn_failure,panic_hook}.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
@@ -1329,7 +1328,7 @@ pub enum NotificationOutcome {
 
 `qubit_event_bus::spi::conformance::{run_sync, run_async}` 接受一个 provider 工厂
 （`Fn() -> Arc<dyn EventBusSpi>` / 异步返回 future；每个用例新建实例避免相互污染）
-与 `ConformanceHooks`（可选的 `settlement`、`receive_cancellation` 钩子，让 provider
+与 `ConformanceHooks`（可选的 settlement、receive/settlement/close/shutdown cancellation 和 durable recovery 钩子，让 provider
 作者补充只有自己能验证的幂等/取消检查），返回 `ConformanceReport`
 （`Vec<ConformanceCase::{Passed, Failed, Skipped}>`）。
 当前用例覆盖：能力/载荷模式一致性、`subscribe`、`publish`、`receive-payload`、

@@ -221,7 +221,7 @@ facade. `local` does not know about any layer above the registry.
 - Qubit crates actually used at runtime: `qubit-spi` (catalog and discovery),
   `qubit-retry` (`worker` and `async` features), `qubit-clock` (`Timer` / `TimeError`),
   and `qubit-id` (UUID `EventId`s). Error types use `thiserror`.
-- Dev-dependencies: `flume` (the second real transport in `tests/support/flume_spi.rs`)
+- Dev-dependencies: `loom` (concurrency models); the bounded channel transport uses the standard library
   and `loom` (concurrency model checking).
 
 ---
@@ -298,7 +298,8 @@ A request object, rather than a long argument list, exists so that:
 
 The same `SubscribeRequest<T>` can be given to `EventBus` or `AsyncEventBus`.
 The synchronous facade rejects a request that carries `async_interceptors`
-(`SubscribeError::Configuration`). The asynchronous facade accepts both kinds of middleware.
+(`SubscribeError::Configuration`). The asynchronous facade rejects requests that carry synchronous
+`interceptors`; its handler chain accepts `async_interceptors` only.
 
 ### 3.4 `Delivery<T>`, `DeliveryContext`, and `Acknowledgement`
 
@@ -393,13 +394,13 @@ pub trait EventBusSpi: Send + Sync + 'static {
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         Ok(None)   // default: unsupported; Some(true) = idle, Some(false) = timed out
     }
-    #[doc(hidden)] fn provider_id(&self) -> Option<&ProviderId> { None }
+    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
 }
 
 pub trait EventSubscriptionSpi: Send + 'static {
     fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError>;
-    fn settle(&mut self, token: SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
     fn close(&mut self) -> Result<(), SpiError>;
 }
 ```
@@ -419,14 +420,13 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
     fn subscribe<'a>(&'a self, request: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>>;
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
-    fn wait_for_topic_idle<'a>(&'a self, topic: &'a TopicAddress, timeout: Option<Duration>) -> SpiFuture<'a, Result<Option<bool>, SpiError>>;
-    #[doc(hidden)] fn provider_id(&self) -> Option<&ProviderId> { None }
+    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
 }
 
 pub trait AsyncEventSubscriptionSpi: Send + 'static {
     fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> SpiFuture<'_, Result<ReceiveOutcome, SpiError>>;
-    fn settle(&mut self, token: SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
     fn close(&mut self) -> SpiFuture<'_, Result<(), SpiError>>;
 }
 ```
@@ -549,13 +549,13 @@ the retention guarantee. The facade rejects an unsupported mode before calling `
 ### 6.1 `EventBusSpec` and `qubit-spi`
 
 ```rust
-pub struct EventBusSpec;                    // synchronous
+pub struct EventBusSpec;                    // shared by synchronous and asynchronous providers
 impl ServiceSpec for EventBusSpec {
     type Config = EventBusConfig;
     type Output = Arc<dyn EventBusSpi>;
     type Error = EventBusProviderError;
 }
-pub struct AsyncEventBusSpec;               // asynchronous; Output = Arc<dyn AsyncEventBusSpi>
+// AsyncServiceSpec for EventBusSpec selects Arc<dyn AsyncEventBusSpi>.
 ```
 
 `EventBusProvider` and `AsyncEventBusProvider` are aliases of `qubit-spi` traits
@@ -773,7 +773,7 @@ attempt ──failure──▶ error-handler chain (SubscribeErrorHandler<T>) �
    ┌────────────────────────────────────────────────────────────────────┤
    │ Retry      → let qubit-retry decide another attempt (when a policy exists); otherwise same as Discard
    │ Requeue    → stop local attempts, settle Retry (needs AcceptRetryReject; otherwise do not settle)
-   │ DeadLetter → stop local attempts, publish the dead-letter, then settle Reject; a dead-letter failure follows Requeue
+   │ DeadLetter → stop local attempts, publish the dead-letter, then settle Reject; a forwarding failure stops the subscription and leaves the source token unsettled
    │ Discard    → stop local attempts, settle Reject (needs AcceptRetryReject; otherwise do not settle)
    └────────────────────────────────────────────────────────────────────
 ```
@@ -1381,7 +1381,7 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 | `tests/local_provider_tests.rs`, `tests/async_local_provider_tests.rs` | `local` behavior exercised at the SPI layer |
 | `tests/publish_admission_tests.rs`, `tests/request_builder_tests.rs`, `tests/notification_publisher_tests.rs` | Admission receipts, builder validation, the notification publisher |
 | `tests/support/fake_spi.rs` | A programmable fake provider: injected errors, panics, capability matrices, settlement failures |
-| `tests/support/flume_spi.rs` | A second real transport on `flume`, so the SPI is not tailored to `local` |
+| `tests/support/flume_spi.rs` | A second bounded channel transport implemented with the standard library, so the SPI is not tailored to `local` |
 | `tests/support/manual_async.rs` | A manual executor and manual timer so async tests advance deterministically |
 | `tests/support/provider_shapes.rs` | Provider shapes for combinations of capabilities |
 | `tests/support/{scheduler_race,spawn_failure,panic_hook}.rs` | Scheduler races, thread-spawn failure, panic-hook isolation |
@@ -1404,7 +1404,7 @@ a strict documentation build with
 `qubit_event_bus::spi::conformance::{run_sync, run_async}` takes a provider factory
 (`Fn() -> Arc<dyn EventBusSpi>`, or an async factory that returns a future; each case
 builds a fresh instance so cases do not contaminate each other) and `ConformanceHooks`
-(optional `settlement` and `receive_cancellation` hooks; strict runs turn missing required
+(optional settlement, receive/settlement/close/shutdown cancellation, and durable-recovery hooks; strict runs turn missing required
 hooks into failures while typed skips remain for unsupported capabilities. Async hooks are
 awaited by the runner and do not block its executor. It returns a `ConformanceReport`
 (`Vec<ConformanceCase::{Passed, Failed, Skipped}>`). Current cases cover capability and

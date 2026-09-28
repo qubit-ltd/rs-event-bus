@@ -441,7 +441,7 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
-`error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发未被接纳，源 delivery 会保持未结算并通过 provider settlement 路径重试；后续可能再次运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::known_destination(name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
+`error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发失败，异步 runner 会以 `ReceiveError::DeadLetterForwardFailed` 停止；同步 facade 会取消该订阅。源 token 保持未结算，诊断中会报告该失败。恢复方式取决于 provider 的 durability 和 close 语义：durable provider 可在恢复或重建订阅后重新投递未结算消息；ephemeral provider 关闭时可能丢弃消息。不要假设转发持续失败期间 facade 会重新运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::known_destination(name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
 
 ## 需要拦截或过滤消息时
 
@@ -608,6 +608,8 @@ qubit_spi::submit_sync_provider! {
 ### 跨进程实现需要编码时
 
 内置 local 直接传递 Rust 对象，不需要转换。消息要跨进程传递时，通常需要先把对象转换成字节，接收时再还原；负责这件事的组件叫**编码器**（codec）。可以用 `Topic::new_with_codec` / `new_with_shared_codec` 为某类事件指定编码器，也可以把编码器放进 `CodecRegistry`，再通过 `EventBusFacadeConfig::with_codec_registry` 配给总线。主题自带编码器优先；没有才查总线的注册表。创建订阅时会选定编码器，两处都没有时会报错。应用还要约定数据格式与版本兼容方式；本库不内置通用 JSON 编码器。
+
+Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；`decode` panic 会转换为 `CodecError::Panicked`，若 settlement 能力支持则请求 provider 重试。普通 decode 错误会作为无效消息拒绝。可运行的最小实现见[codec 往返示例](../examples/codec_round_trip.rs)。
 
 ## 异步总线与订阅
 

@@ -26,10 +26,12 @@ pub(crate) fn was_accepted(
 ) -> bool {
     match (receipt.admission_outcome(), policy) {
         (AdmissionOutcome::Accepted(_), _) | (AdmissionOutcome::PartiallyAccepted(_), _) => true,
-        (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::TransportAccepted) => matches!(
-            capabilities.publish_guarantee(),
-            PublishGuarantee::Accepted | PublishGuarantee::Confirmed | PublishGuarantee::DurablyStored
-        ),
+        (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::TransportAccepted) => {
+            matches!(
+                capabilities.publish_guarantee(),
+                PublishGuarantee::Accepted | PublishGuarantee::Confirmed | PublishGuarantee::DurablyStored
+            )
+        }
         (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::KnownDestination)
         | (AdmissionOutcome::NoneAccepted(_), _)
         | (AdmissionOutcome::NoDestinations, _)
