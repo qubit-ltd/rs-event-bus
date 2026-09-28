@@ -1229,11 +1229,16 @@ partition order and does not itself serialize a key.
 `benches/local_scale.rs` (repeatable hot-path measurements that do not depend on a
 benchmark harness) and `benches/local_threads.rs` (thread and resource cost of
 creating and tearing down synchronous and asynchronous subscriptions) give an order
-of magnitude. Numbers move with the machine. Run them directly:
+of magnitude. `benches/encoded_publish.rs` checks synchronous encoded-payload
+allocation reuse across publish retries, while `benches/facade_delivery.rs` measures
+caller-driven asynchronous publication through the local SPI. Numbers move with the
+machine. Run them directly:
 
 ```bash
 cargo bench --bench local_scale
 cargo bench --bench local_threads
+cargo bench --bench encoded_publish
+cargo bench --bench facade_delivery
 ```
 
 The synchronous facade starts one blocking receiver thread per subscription and

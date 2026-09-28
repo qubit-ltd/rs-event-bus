@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "encoded_publish"
 harness = false
+
+[[bench]]
+name = "facade_delivery"
+harness = false

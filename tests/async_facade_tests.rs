@@ -74,6 +74,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
@@ -130,7 +131,7 @@ impl OrderingTestSpi {
             ordering,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
-            qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -279,7 +280,7 @@ fn async_subscription_capabilities_are_checked_before_spi_subscribe() {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Durable,
-        qubit_event_bus::spi::SubscriptionModes::DURABLE,
+        SubscriptionModes::DURABLE,
         true,
         ReplayCapability::Position,
         PublishGuarantee::Accepted,
@@ -2530,11 +2531,44 @@ fn async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(handled.load(Ordering::Acquire), 1);
+    spi.enqueue(InboundMessage::new(
+        TopicAddress::new("async.panic-codec").unwrap(),
+        EventId::new("invalid-codec-event").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Encoded(EncodedPayload::new(
+            Arc::from([0xff_u8]),
+            ContentType::new("text/plain").unwrap(),
+            None,
+        )),
+        Some(SettlementToken::new(subscription_id, "invalid-codec-token")),
+        Default::default(),
+    ));
+    for _ in 0..100 {
+        if spi.settlement_dispositions().len() == 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        spi.settlement_dispositions(),
+        [
+            DeliveryDisposition::Retry,
+            DeliveryDisposition::Accept,
+            DeliveryDisposition::Reject
+        ],
+        "ordinary decode errors reject while codec panics retry",
+    );
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     runner.join().unwrap().unwrap();
     assert_eq!(
         spi.settlement_dispositions(),
-        [DeliveryDisposition::Retry, DeliveryDisposition::Accept]
+        [
+            DeliveryDisposition::Retry,
+            DeliveryDisposition::Accept,
+            DeliveryDisposition::Reject
+        ]
     );
 }
 
@@ -2568,7 +2602,7 @@ fn async_subscription_resolves_encoded_payload_codec_from_facade_registry() {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
@@ -2633,7 +2667,7 @@ fn async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
@@ -2928,6 +2962,13 @@ fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(settlement_failed.load(Ordering::Acquire));
+        assert_eq!(
+            bus.wait_for_received_deliveries(&topic(), Some(std::time::Duration::ZERO))
+                .await
+                .unwrap(),
+            WaitOutcome::TimedOut,
+            "the received-delivery guard remains held while settlement is retried",
+        );
         for _ in 0..100 {
             if spi.settlement_count() == 1 {
                 break;
@@ -2943,6 +2984,13 @@ fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
         assert_eq!(spi.operation_log().iter().filter(|op| **op == "settle").count(), 2);
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
+        assert_eq!(
+            bus.wait_for_received_deliveries(&topic(), Some(std::time::Duration::ZERO))
+                .await
+                .unwrap(),
+            WaitOutcome::Idle,
+            "successful settlement releases the received-delivery guard",
+        );
     });
 }
 

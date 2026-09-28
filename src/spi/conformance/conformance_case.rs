@@ -7,8 +7,8 @@
 // =============================================================================
 //! One outcome from a conformance check.
 
-#[derive(Clone, Debug, Eq, PartialEq)]
 /// Result of one named conformance check.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConformanceCase {
     /// The check completed successfully.
     Passed {

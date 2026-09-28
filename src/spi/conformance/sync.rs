@@ -23,6 +23,7 @@ use super::conformance_report::push_hook;
 use super::conformance_report::settlement_case;
 use crate::spi::EventBusSpi;
 use crate::spi::ReceiveOutcome;
+use crate::spi::SettlementCapabilities;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
@@ -108,6 +109,29 @@ where
                         subscription.settle(token, crate::spi::DeliveryDisposition::Accept)?;
                         subscription.settle(token, crate::spi::DeliveryDisposition::Accept)
                     }));
+                    report.push(match token.as_ref() {
+                        Some(token) if capabilities.settlement() != SettlementCapabilities::None => {
+                            match subscription.settle(token, crate::spi::DeliveryDisposition::Reject) {
+                                Err(error) if error.kind() == "invalid_settlement_token" => ConformanceCase::Passed {
+                                    case_id: "settlement-conflicting-disposition".into(),
+                                },
+                                Err(error) => ConformanceCase::Failed {
+                                    case_id: "settlement-conflicting-disposition".into(),
+                                    detail: format!("conflicting settlement returned the wrong error: {error}"),
+                                },
+                                Ok(()) => ConformanceCase::Failed {
+                                    case_id: "settlement-conflicting-disposition".into(),
+                                    detail: "provider accepted a conflicting terminal disposition".into(),
+                                },
+                            }
+                        }
+                        _ => ConformanceCase::Skipped {
+                            case_id: "settlement-conflicting-disposition".into(),
+                            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                                capability: "settlement",
+                            },
+                        },
+                    });
                 }
                 Ok(_) => report.push(ConformanceCase::Failed {
                     case_id: "receive-payload".into(),
@@ -135,6 +159,15 @@ where
                 detail: format!("sync receiver close failed: {error}"),
             },
         });
+        report.push(match subscription.close() {
+            Ok(()) => ConformanceCase::Passed {
+                case_id: "close-idempotence".into(),
+            },
+            Err(error) => ConformanceCase::Failed {
+                case_id: "close-idempotence".into(),
+                detail: format!("repeated sync receiver close failed: {error}"),
+            },
+        });
         report.push(match spi.shutdown(ShutdownMode::Immediate) {
             Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
                 case_id: "shutdown".into(),
@@ -146,6 +179,19 @@ where
             Err(error) => ConformanceCase::Failed {
                 case_id: "shutdown".into(),
                 detail: format!("sync shutdown failed: {error}"),
+            },
+        });
+        report.push(match spi.shutdown(ShutdownMode::Immediate) {
+            Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
+                case_id: "shutdown-idempotence".into(),
+            },
+            Ok(outcome) => ConformanceCase::Failed {
+                case_id: "shutdown-idempotence".into(),
+                detail: format!("repeated immediate shutdown returned {outcome:?}"),
+            },
+            Err(error) => ConformanceCase::Failed {
+                case_id: "shutdown-idempotence".into(),
+                detail: format!("repeated sync shutdown failed: {error}"),
             },
         });
     }
