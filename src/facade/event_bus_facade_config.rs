@@ -5,18 +5,17 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
 //! Facade-level configuration consumed when a sync or async facade is built.
 
-use std::any::Any;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use super::DeliveryAdmissionConfig;
+use super::SyncDeliverySchedulerConfig;
+use super::internal::ErasedMiddlewareList;
 use crate::codec::CodecRegistry;
-use crate::error::ConfigurationError;
 use crate::error::DeliveryError;
 use crate::error::PublishError;
 use crate::model::AsyncSubscriberInterceptor;
@@ -28,112 +27,21 @@ use crate::model::SubscriberNext;
 use crate::pipeline::GlobalPublisherInterceptor;
 use crate::spi::SpiFuture;
 
-type ErasedMiddlewareList = Arc<dyn Any + Send + Sync>;
-
-/// Bounds synchronous handler scheduling for one event-bus facade.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SyncDeliverySchedulerConfig {
-    max_in_flight: usize,
-    handler_queue_capacity: usize,
-    max_subscription_workers: NonZeroUsize,
-}
-
-/// Bounds asynchronous deliveries admitted by one facade across all
-/// subscriptions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DeliveryAdmissionConfig {
-    max_in_flight: usize,
-}
-
-impl DeliveryAdmissionConfig {
-    /// Creates a positive facade-wide in-flight delivery limit.
-    pub fn new(max_in_flight: usize) -> Result<Self, ConfigurationError> {
-        if max_in_flight == 0 {
-            return Err(ConfigurationError::InvalidField {
-                field: "max_in_flight",
-                message: "must be greater than zero".into(),
-            });
-        }
-        Ok(Self { max_in_flight })
-    }
-
-    /// Returns the maximum number of admitted asynchronous deliveries.
-    #[must_use]
-    pub fn max_in_flight(&self) -> usize {
-        self.max_in_flight
-    }
-}
-
-impl Default for DeliveryAdmissionConfig {
-    fn default() -> Self {
-        Self { max_in_flight: 4 }
-    }
-}
-
-impl SyncDeliverySchedulerConfig {
-    /// Creates scheduler limits; `max_in_flight` must be greater than zero.
-    /// A zero queue capacity permits direct handoff only to an idle worker.
-    pub fn new(max_in_flight: usize, handler_queue_capacity: usize) -> Result<Self, ConfigurationError> {
-        if max_in_flight == 0 {
-            return Err(ConfigurationError::InvalidField {
-                field: "max_in_flight",
-                message: "must be greater than zero".into(),
-            });
-        }
-        Ok(Self {
-            max_in_flight,
-            handler_queue_capacity,
-            max_subscription_workers: NonZeroUsize::new(256).expect("positive default worker limit"),
-        })
-    }
-
-    /// Sets the maximum number of active or starting subscription receive
-    /// threads.
-    #[must_use]
-    pub const fn with_max_subscription_workers(mut self, limit: NonZeroUsize) -> Self {
-        self.max_subscription_workers = limit;
-        self
-    }
-
-    /// Returns the maximum number of active or starting subscription receive
-    /// threads.
-    #[must_use]
-    pub const fn max_subscription_workers(self) -> NonZeroUsize {
-        self.max_subscription_workers
-    }
-
-    /// Returns the maximum number of admitted deliveries, including queued
-    /// work.
-    #[must_use]
-    pub fn max_in_flight(&self) -> usize {
-        self.max_in_flight
-    }
-
-    /// Returns the maximum number of admitted tasks waiting for a handler
-    /// worker. Zero allows only immediate handoff to an idle eligible
-    /// worker.
-    #[must_use]
-    pub fn handler_queue_capacity(&self) -> usize {
-        self.handler_queue_capacity
-    }
-}
-
-impl Default for SyncDeliverySchedulerConfig {
-    fn default() -> Self {
-        Self {
-            max_in_flight: 4,
-            handler_queue_capacity: 32,
-            max_subscription_workers: NonZeroUsize::new(256).expect("positive default worker limit"),
-        }
-    }
-}
-
 /// Shared codecs, subscriber middleware, and synchronous scheduler limits
 /// installed in a newly-created facade.
 ///
 /// Middleware is registered per payload type. A facade rejects middleware
 /// configured for the other execution model when a matching subscription is
 /// created, rather than silently skipping or adapting it.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::EventBusFacadeConfig;
+///
+/// let config = EventBusFacadeConfig::new();
+/// assert_eq!(config.max_encoded_payload_bytes(), None);
+/// ```
 #[derive(Clone)]
 pub struct EventBusFacadeConfig {
     /// Immutable codec table shared with the publisher pipeline.
@@ -146,12 +54,14 @@ pub struct EventBusFacadeConfig {
     global_publisher_interceptors: Vec<GlobalPublisherInterceptor>,
     /// Shared synchronous handler worker and queue limits.
     sync_delivery_scheduler: SyncDeliverySchedulerConfig,
+    /// Shared facade-wide limit for asynchronous deliveries.
     delivery_admission: DeliveryAdmissionConfig,
     /// Optional encoded payload limit applied before provider publication.
     max_encoded_payload_bytes: Option<NonZeroUsize>,
 }
 
 impl Default for EventBusFacadeConfig {
+    /// Creates an empty configuration with the standard facade limits.
     fn default() -> Self {
         Self {
             codecs: Arc::new(CodecRegistry::new()),
@@ -167,12 +77,22 @@ impl Default for EventBusFacadeConfig {
 
 impl EventBusFacadeConfig {
     /// Creates facade configuration with an empty codec registry.
+    ///
+    /// # Returns
+    /// A configuration with no middleware, default delivery limits, and no
+    /// encoded-payload size limit.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Replaces the synchronous scheduler limits for newly-created facades.
+    ///
+    /// # Parameters
+    /// - `config`: scheduler capacity and worker limits to install.
+    ///
+    /// # Returns
+    /// This configuration with the supplied synchronous scheduler policy.
     #[must_use]
     pub fn with_sync_delivery_scheduler(mut self, config: SyncDeliverySchedulerConfig) -> Self {
         self.sync_delivery_scheduler = config;
@@ -180,12 +100,22 @@ impl EventBusFacadeConfig {
     }
 
     /// Returns synchronous scheduler limits.
+    ///
+    /// # Returns
+    /// A copy of the scheduler policy used by newly-created facades.
     #[must_use]
+    #[inline]
     pub fn sync_delivery_scheduler(&self) -> SyncDeliverySchedulerConfig {
         self.sync_delivery_scheduler
     }
 
     /// Replaces facade-wide asynchronous delivery admission limits.
+    ///
+    /// # Parameters
+    /// - `config`: the maximum number of admitted asynchronous deliveries.
+    ///
+    /// # Returns
+    /// This configuration with the supplied admission policy.
     #[must_use]
     pub fn with_delivery_admission(mut self, config: DeliveryAdmissionConfig) -> Self {
         self.delivery_admission = config;
@@ -193,6 +123,9 @@ impl EventBusFacadeConfig {
     }
 
     /// Returns facade-wide asynchronous delivery admission limits.
+    ///
+    /// # Returns
+    /// A copy of the shared asynchronous admission policy.
     #[must_use]
     #[inline]
     pub fn delivery_admission(&self) -> DeliveryAdmissionConfig {
@@ -200,6 +133,13 @@ impl EventBusFacadeConfig {
     }
 
     /// Sets the maximum encoded payload size; `None` disables the limit.
+    ///
+    /// # Parameters
+    /// - `limit`: the maximum number of bytes accepted from an encoder, or
+    ///   `None` to disable the byte limit.
+    ///
+    /// # Returns
+    /// This configuration with the requested encoded-payload limit.
     #[must_use]
     pub fn with_max_encoded_payload_bytes(mut self, limit: Option<NonZeroUsize>) -> Self {
         self.max_encoded_payload_bytes = limit;
@@ -207,6 +147,10 @@ impl EventBusFacadeConfig {
     }
 
     /// Returns the optional maximum encoded payload size.
+    ///
+    /// # Returns
+    /// The configured nonzero byte limit, or `None` when encoded output is
+    /// unbounded by this facade.
     #[must_use]
     #[inline]
     pub const fn max_encoded_payload_bytes(&self) -> Option<NonZeroUsize> {
@@ -214,6 +158,12 @@ impl EventBusFacadeConfig {
     }
 
     /// Installs an application-prepared shared codec registry.
+    ///
+    /// # Parameters
+    /// - `codecs`: codec registry shared with the publisher pipeline.
+    ///
+    /// # Returns
+    /// This configuration using the supplied shared registry.
     #[must_use]
     pub fn with_codec_registry(mut self, codecs: Arc<CodecRegistry>) -> Self {
         self.codecs = codecs;
@@ -221,6 +171,9 @@ impl EventBusFacadeConfig {
     }
 
     /// Returns the codec table that the publisher pipeline will consult.
+    ///
+    /// # Returns
+    /// A reference to the shared codec registry handle.
     #[must_use]
     #[inline]
     pub fn codec_registry(&self) -> &Arc<CodecRegistry> {
@@ -231,6 +184,15 @@ impl EventBusFacadeConfig {
     /// interceptors. It may edit validated portable headers or stop
     /// publication by returning `Ok(false)`; it cannot alter the payload or
     /// event identity.
+    ///
+    /// # Type Parameters
+    /// - `F`: a thread-safe, owned callback that edits publication metadata.
+    ///
+    /// # Parameters
+    /// - `interceptor`: callback appended after request-specific interceptors.
+    ///
+    /// # Returns
+    /// This configuration with the interceptor appended to its ordered list.
     #[must_use]
     pub fn publisher_interceptor<F>(mut self, interceptor: F) -> Self
     where
@@ -241,6 +203,12 @@ impl EventBusFacadeConfig {
         self
     }
 
+    /// Returns facade-wide publisher interceptors in registration order.
+    ///
+    /// # Returns
+    /// The immutable interceptor slice applied after request-scoped hooks.
+    #[must_use]
+    #[inline]
     pub(crate) fn global_publisher_interceptors(&self) -> &[GlobalPublisherInterceptor] {
         &self.global_publisher_interceptors
     }
@@ -252,6 +220,16 @@ impl EventBusFacadeConfig {
     /// It runs only after the subscription filter accepts a delivery. A sync
     /// [`crate::facade::EventBus`] rejects configuration containing async
     /// middleware for the same payload type.
+    ///
+    /// # Type Parameters
+    /// - `T`: the payload type accepted by this middleware.
+    /// - `F`: the thread-safe middleware callback type.
+    ///
+    /// # Parameters
+    /// - `middleware`: callback wrapping the handler and earlier middleware.
+    ///
+    /// # Returns
+    /// This configuration with the middleware appended for `T`.
     #[must_use]
     pub fn subscriber_interceptor<T, F>(mut self, middleware: F) -> Self
     where
@@ -276,6 +254,16 @@ impl EventBusFacadeConfig {
     /// The middleware wraps request-specific typed middleware and the handler,
     /// and runs only after filtering accepts a delivery. An async facade
     /// rejects sync middleware configured for the same payload type.
+    ///
+    /// # Type Parameters
+    /// - `T`: the payload type accepted by this middleware.
+    /// - `F`: the thread-safe callback returning a runtime-neutral future.
+    ///
+    /// # Parameters
+    /// - `middleware`: callback wrapping the handler and earlier middleware.
+    ///
+    /// # Returns
+    /// This configuration with the middleware appended for `T`.
     #[must_use]
     pub fn async_subscriber_interceptor<T, F>(mut self, middleware: F) -> Self
     where
@@ -298,6 +286,13 @@ impl EventBusFacadeConfig {
         self
     }
 
+    /// Clones the registered synchronous middleware chain for payload type `T`.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type whose middleware chain is requested.
+    ///
+    /// # Returns
+    /// The registered callbacks in append order, or an empty vector.
     pub(crate) fn subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<SubscriberInterceptor<T>>> {
         self.sync_subscriber_interceptors
             .get(&TypeId::of::<T>())
@@ -306,6 +301,14 @@ impl EventBusFacadeConfig {
             .unwrap_or_default()
     }
 
+    /// Clones the registered asynchronous middleware chain for payload type
+    /// `T`.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type whose middleware chain is requested.
+    ///
+    /// # Returns
+    /// The registered callbacks in append order, or an empty vector.
     pub(crate) fn async_subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
         self.async_subscriber_interceptors
             .get(&TypeId::of::<T>())
@@ -314,10 +317,25 @@ impl EventBusFacadeConfig {
             .unwrap_or_default()
     }
 
+    /// Checks whether any synchronous middleware was registered for `T`.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type to query.
+    ///
+    /// # Returns
+    /// `true` when this configuration contains a synchronous middleware chain.
     pub(crate) fn has_sync_subscriber_interceptors<T: 'static>(&self) -> bool {
         self.sync_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }
 
+    /// Checks whether any asynchronous middleware was registered for `T`.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type to query.
+    ///
+    /// # Returns
+    /// `true` when this configuration contains an asynchronous middleware
+    /// chain.
     pub(crate) fn has_async_subscriber_interceptors<T: 'static>(&self) -> bool {
         self.async_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }

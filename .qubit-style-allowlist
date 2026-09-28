@@ -21,7 +21,6 @@ multiple-public-types | src/facade/tracker.rs | The tracker state and delivery g
 multiple-public-types | src/local/state.rs | Local events, queues, settlement records, and shared state form one in-process provider state graph with joint locking invariants.
 multiple-public-types | src/model/acknowledgement.rs | Acknowledgement handle, state, and state-transition errors form one public settlement control contract.
 multiple-public-types | src/model/delivery.rs | Delivery and its context are one handler-facing value and ownership contract.
-multiple-public-types | src/model/destination_admission.rs | Admission status and destination report are inseparable parts of one publish acknowledgement value.
 multiple-public-types | src/model/publish_options.rs | Publish options and their builder define one construction and validation contract.
 multiple-public-types | src/model/publish_request_builder.rs | The builder and its validation/generation error describe one request-construction contract.
 multiple-public-types | src/model/subscribe_options.rs | Subscription policy enums, options, and builder form one cohesive subscription configuration vocabulary.
