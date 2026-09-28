@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.14.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.15.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## The problem it solves
 
@@ -26,7 +26,7 @@ Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.14"
+qubit-event-bus = "0.15"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -443,7 +443,7 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
-When `error_handler` returns `DeadLetter`, the message is not retried. It is forwarded to the dead-letter topic, even if `retry_policy` is also set. The dead-letter topic is an ordinary topic. Someone must subscribe to it first. With no subscriber, the forwarded dead letter also has no receiver, and the event is still lost. A transport that encodes payloads also needs a codec for `DeadLetterEvent<OrderCreated>`. Forwarding itself can fail, so the application should watch diagnostics.
+When `error_handler` returns `DeadLetter`, the facade forwards the failure to the dead-letter topic, even if `retry_policy` is also set. If forwarding is rejected, the source delivery remains unsettled and is retried through the provider settlement path; a later attempt may therefore run the handler again. The dead-letter event ID is stable for the same original event and subscriber, which helps consumers deduplicate, but does not promise exactly-once delivery. The dead-letter topic is ordinary: someone must subscribe to it, and an empty topic can still lose the record. Encoded transports also need a codec for `DeadLetterEvent<OrderCreated>`. `NoDestinations`, `NoneAccepted`, `Dropped`, and publish errors do not count as forwarding. Known partial acceptance completes the source delivery with a diagnostic because republishing the whole record may duplicate it. An opaque provider such as Redis meets the default policy only when its publish guarantee is at least `Accepted`. Use `DeadLetterPolicy::known_destination(name)` when a reported consumer admission is required; subscription creation rejects that policy for opaque providers. Watch diagnostics for forwarding failures.
 
 ## Filter or intercept a message
 
@@ -530,7 +530,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.14", features = ["discovery"] }
+qubit-event-bus = { version = "0.15", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -644,7 +644,7 @@ When the code that produces a message cannot stop to wait for a synchronous publ
 
 Startup order is: create the bus, register every handler, then start accepting business requests. During shutdown, stop new business requests first, then close message sources such as the notification publisher, and then deal with subscriptions and the bus. Cancel a sync subscription with `cancel()`, and an async subscription with `close().await`. If already-received messages should be finished when possible, the order of cancelling subscriptions and shutting down the bus depends on the transport and has to be verified on that transport. Cancelling a subscription does not mean the business write succeeded.
 
-`ShutdownMode::Graceful { timeout }` stops accepting new work and tries to finish work already received. A timeout only means the wait ended. A sync bus may still be cleaning up in the background, and a later `shutdown` call observes the result. `Immediate` cannot forcibly stop business code that is already running. Do not call `shutdown`, `wait_for_idle`, or `wait_for_received_deliveries` from a handler on this same bus when the call would wait for the bus to finish its own work. Those calls return `WouldDeadlock`. Start shutdown from the outermost shutdown path of the program.
+`ShutdownMode::Graceful { timeout }` stops accepting new work and tries to finish work already received. A caller deadline returns `ShutdownError::TimedOut`; it does not mean the bus is closed. A sync bus may still be cleaning up in the background, and a later `shutdown` call observes the final `ShutdownReport`. `Immediate` cannot forcibly stop business code that is already running. Do not call `shutdown`, `wait_for_idle`, or `wait_for_received_deliveries` from a handler on this same bus when the call would wait for the bus to finish its own work. Those calls return `WouldDeadlock`. Start shutdown from the outermost shutdown path of the program.
 
 Sync `wait_for_idle(&topic, timeout)` waits until the transport reports that the topic has nothing queued or unfinished. A transport that cannot answer returns `IdleWaitUnsupported`. `wait_for_received_deliveries` waits only for messages the bus has already taken. Idle from either call does not replace a check of the database and of failure records.
 

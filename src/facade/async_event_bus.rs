@@ -10,7 +10,6 @@
 //! Runtime-neutral asynchronous event-bus facade.
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -20,9 +19,7 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 use std::time::Duration;
 
 use qubit_clock::MonotonicClock;
@@ -36,7 +33,9 @@ use super::DiagnosticObserverHandle;
 use super::EventBusFacadeConfig;
 use super::PublishMetrics;
 use super::PublishMetricsSnapshot;
+use super::ShutdownReport;
 use super::WaitOutcome;
+use super::async_admission::AsyncAdmission;
 use super::async_subscription::is_current_bus_poll;
 use super::observer_entry::ObserverEntry;
 use crate::codec::resolve_codec;
@@ -104,8 +103,11 @@ pub(super) struct AsyncEventBusInner {
     pub(super) facade_config: EventBusFacadeConfig,
     pub(super) state: Mutex<BusState>,
     shutdown_active: AtomicBool,
+    shutdown_immediate: AtomicBool,
     shutdown_signal: AsyncSignal,
-    shutdown_outcome: Mutex<Option<ShutdownOutcome>>,
+    shutdown_mode_signal: AsyncSignal,
+    shutdown_report: Mutex<Option<ShutdownReport>>,
+    pub(super) abandoned_deliveries: AtomicU64,
     pub(super) next_subscription_id: AtomicU64,
     pub(super) controls: Mutex<HashMap<Id, Arc<dyn AsyncShutdownDriver>>>,
     close_errors: Mutex<Vec<Arc<SubscriptionCloseFailure>>>,
@@ -116,126 +118,6 @@ pub(super) struct AsyncEventBusInner {
     pub(super) admission: Arc<AsyncAdmission>,
     pub(super) timer: Arc<dyn Timer>,
     publish_metrics: PublishMetrics,
-}
-
-/// Bus-wide asynchronous delivery admission. Waiters are woken whenever a
-/// delivery releases its permit; cancellation removes the waiter by RAII.
-pub(super) struct AsyncAdmission {
-    limit: usize,
-    state: Mutex<AsyncAdmissionState>,
-    next_waiter: AtomicU64,
-}
-
-#[derive(Default)]
-struct AsyncAdmissionState {
-    in_flight: usize,
-    waiters: VecDeque<(u64, Waker)>,
-}
-
-impl AsyncAdmission {
-    fn new(limit: usize) -> Arc<Self> {
-        Arc::new(Self {
-            limit,
-            state: Mutex::new(AsyncAdmissionState::default()),
-            next_waiter: AtomicU64::new(1),
-        })
-    }
-
-    /// Returns a future that waits for the next bus-wide delivery slot.
-    pub(super) fn acquire(self: &Arc<Self>) -> AsyncAdmissionFuture {
-        AsyncAdmissionFuture {
-            admission: self.clone(),
-            waiter_id: self.next_waiter.fetch_add(1, Ordering::Relaxed),
-            queued: false,
-        }
-    }
-}
-
-/// Cancellation-safe future for acquiring an async delivery slot.
-pub(super) struct AsyncAdmissionFuture {
-    admission: Arc<AsyncAdmission>,
-    waiter_id: u64,
-    queued: bool,
-}
-
-impl Future for AsyncAdmissionFuture {
-    type Output = AsyncAdmissionPermit;
-
-    fn poll(mut self: std::pin::Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().get_mut();
-        let mut state = this
-            .admission
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !this.queued {
-            state.waiters.push_back((this.waiter_id, context.waker().clone()));
-            this.queued = true;
-        } else if let Some((_, waker)) = state.waiters.iter_mut().find(|(id, _)| *id == this.waiter_id)
-            && !waker.will_wake(context.waker())
-        {
-            *waker = context.waker().clone();
-        }
-        let is_head = state.waiters.front().is_some_and(|(id, _)| *id == this.waiter_id);
-        if is_head && state.in_flight < this.admission.limit {
-            state.waiters.pop_front();
-            state.in_flight += 1;
-            this.queued = false;
-            return Poll::Ready(AsyncAdmissionPermit {
-                admission: this.admission.clone(),
-            });
-        }
-        Poll::Pending
-    }
-}
-
-impl Drop for AsyncAdmissionFuture {
-    fn drop(&mut self) {
-        if self.queued {
-            let waker = {
-                let mut state = self
-                    .admission
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let was_head = state.waiters.front().is_some_and(|(id, _)| *id == self.waiter_id);
-                state.waiters.retain(|(id, _)| *id != self.waiter_id);
-                (was_head && state.in_flight < self.admission.limit)
-                    .then(|| state.waiters.front().map(|(_, waker)| waker.clone()))
-                    .flatten()
-            };
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        }
-    }
-}
-
-/// RAII permit covering one received delivery through terminal settlement.
-pub(super) struct AsyncAdmissionPermit {
-    admission: Arc<AsyncAdmission>,
-}
-
-impl Drop for AsyncAdmissionPermit {
-    fn drop(&mut self) {
-        let wakers = {
-            let mut state = self
-                .admission
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.in_flight = state.in_flight.saturating_sub(1);
-            state
-                .waiters
-                .front()
-                .map(|(_, waker)| waker.clone())
-                .into_iter()
-                .collect::<Vec<_>>()
-        };
-        for waker in wakers {
-            waker.wake();
-        }
-    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -521,8 +403,11 @@ impl AsyncEventBus {
                 close_errors: Mutex::new(Vec::new()),
                 close_error_snapshot: Mutex::new(None),
                 shutdown_active: AtomicBool::new(false),
+                shutdown_immediate: AtomicBool::new(false),
                 shutdown_signal: AsyncSignal::default(),
-                shutdown_outcome: Mutex::new(None),
+                shutdown_mode_signal: AsyncSignal::default(),
+                shutdown_report: Mutex::new(None),
+                abandoned_deliveries: AtomicU64::new(0),
                 observers: Mutex::new(Vec::new()),
                 tracker: Arc::new(AsyncTracker::default()),
                 ordering_lanes: AsyncOrderingLanes::new(),
@@ -619,6 +504,14 @@ impl AsyncEventBus {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
         crate::pipeline::SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
+        if options.dead_letter().is_some_and(|policy| {
+            policy.admission_policy() == crate::model::DeadLetterAdmissionPolicy::KnownDestination
+                && capabilities.publish_visibility() == crate::spi::PublishVisibility::Opaque
+        }) {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "dead_letter.known_destination_admission",
+            }));
+        }
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = Id::new(raw_id);
         let spi_request = SpiSubscriptionRequest::new(
@@ -688,6 +581,12 @@ impl AsyncEventBus {
         topic: &crate::model::Topic<T>,
         timeout: Option<Duration>,
     ) -> Result<WaitOutcome, LifecycleError> {
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        if is_current_bus_poll(bus_key) {
+            return Err(LifecycleError::WouldDeadlock {
+                operation: "wait_for_received_deliveries",
+            });
+        }
         wait_until(&self.inner.tracker.signal, self.inner.timer.as_ref(), timeout, || {
             self.inner.tracker.is_idle(topic.name())
         })
@@ -723,21 +622,41 @@ impl AsyncEventBus {
     /// Immediate shutdown requests active runners to stop receiving but waits
     /// for an already-running handler, its settlement, and receiver close
     /// before shutting down the provider. Receivers for subscriptions that
-    /// have not started are closed directly by shutdown. It cannot forcibly
-    /// cancel user code and may therefore wait indefinitely. Graceful shutdown
-    /// applies one deadline to receiver close, runner and publish completion,
-    /// and provider shutdown. A timeout leaves the bus closing so the caller
-    /// may retry cleanup, including with [`ShutdownMode::Immediate`].
+    /// have not started are closed directly by shutdown. Unstarted ephemeral
+    /// deliveries may be abandoned and are counted in the returned report.
+    /// It cannot forcibly cancel user code and may therefore wait indefinitely.
+    /// Graceful shutdown applies this caller's deadline to receiver close,
+    /// runner and publish completion, and provider shutdown. A timeout leaves
+    /// the bus closing so the caller may retry cleanup, including with
+    /// [`ShutdownMode::Immediate`].
     ///
     /// Directly awaiting shutdown from a handler or middleware Future running
     /// on this bus returns [`LifecycleError::WouldDeadlock`]. This detection is
     /// scoped to each poll of the caller-driven runner Future; tasks the
     /// application independently spawns are outside that scope and must not
     /// await a shutdown that includes their originating handler.
-    pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, ShutdownError> {
+    ///
+    /// # Returns
+    /// The cached provider outcome and facade-known abandoned-delivery count.
+    pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {
             return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
+        }
+        if mode == ShutdownMode::Immediate {
+            self.inner.shutdown_immediate.store(true, Ordering::Release);
+            self.inner.shutdown_mode_signal.notify();
+            let controls: Vec<_> = self
+                .inner
+                .controls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+            for control in controls {
+                control.stop(ShutdownMode::Immediate);
+            }
         }
         let timeout = match mode {
             ShutdownMode::Graceful { timeout } => Some(timeout),
@@ -759,10 +678,10 @@ impl AsyncEventBus {
                 }
                 return Ok(self
                     .inner
-                    .shutdown_outcome
+                    .shutdown_report
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .unwrap_or(ShutdownOutcome::Complete));
+                    .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
             if deadline.is_none() {
                 deadline = timeout
@@ -781,16 +700,19 @@ impl AsyncEventBus {
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = BusState::Closing;
-                for control in self
+                let requested_mode = self.requested_shutdown_mode(mode);
+                let controls: Vec<_> = self
                     .inner
                     .controls
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .values()
-                {
-                    control.stop(mode);
+                    .cloned()
+                    .collect();
+                for control in controls {
+                    control.stop(requested_mode);
                 }
-                let close = self.close_unstarted_subscriptions(mode);
+                let close = self.close_unstarted_subscriptions(requested_mode);
                 if await_until_deadline(close, deadline.as_mut()).await?.is_none() {
                     return Err(ShutdownError::TimedOut {
                         timeout: timeout.expect("a deadline exists for graceful shutdown"),
@@ -805,24 +727,51 @@ impl AsyncEventBus {
                         timeout: timeout.expect("a deadline exists for graceful shutdown"),
                     });
                 }
-                let shutdown = crate::spi::panic_boundary::catch_spi_call(
-                    self.inner.provider_id.as_str(),
-                    "shutdown",
-                    None,
-                    || self.inner.spi.shutdown(mode),
-                )?;
-                let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
-                let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
-                    return Err(ShutdownError::TimedOut {
-                        timeout: timeout.expect("a deadline exists for graceful shutdown"),
-                    });
+                let outcome = loop {
+                    let requested_mode = self.requested_shutdown_mode(mode);
+                    let shutdown = crate::spi::panic_boundary::catch_spi_call(
+                        self.inner.provider_id.as_str(),
+                        "shutdown",
+                        None,
+                        || self.inner.spi.shutdown(requested_mode),
+                    )?;
+                    let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
+                    if requested_mode == ShutdownMode::Immediate {
+                        let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
+                            return Err(ShutdownError::TimedOut {
+                                timeout: timeout.expect("a deadline exists for graceful shutdown"),
+                            });
+                        };
+                        break outcome?;
+                    }
+                    match await_shutdown_or_immediate(
+                        shutdown,
+                        deadline.as_mut(),
+                        &self.inner.shutdown_mode_signal,
+                        &self.inner.shutdown_immediate,
+                    )
+                    .await?
+                    {
+                        ShutdownWait::Complete(result) => break result?,
+                        ShutdownWait::TimedOut => {
+                            return Err(ShutdownError::TimedOut {
+                                timeout: timeout.expect("a deadline exists for graceful shutdown"),
+                            });
+                        }
+                        ShutdownWait::ImmediateRequested => continue,
+                    }
                 };
-                let outcome = outcome?;
+                let report = ShutdownReport::new(
+                    outcome,
+                    self.inner.abandoned_deliveries.load(Ordering::Acquire),
+                    self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral
+                        || outcome == ShutdownOutcome::TimedOut,
+                );
                 *self
                     .inner
-                    .shutdown_outcome
+                    .shutdown_report
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(outcome);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
                 *self
                     .inner
                     .state
@@ -831,7 +780,7 @@ impl AsyncEventBus {
                 if let Some(errors) = self.inner.close_errors_snapshot() {
                     return Err(ShutdownError::SubscriptionClose(errors));
                 }
-                return Ok(outcome);
+                return Ok(report);
             }
             let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
                 !self.inner.shutdown_active.load(Ordering::Acquire)
@@ -842,6 +791,15 @@ impl AsyncEventBus {
                     timeout: timeout.expect("a deadline exists for graceful shutdown"),
                 });
             }
+        }
+    }
+
+    /// Returns the strongest shutdown mode requested by any caller so far.
+    fn requested_shutdown_mode(&self, requested: ShutdownMode) -> ShutdownMode {
+        if requested == ShutdownMode::Immediate || self.inner.shutdown_immediate.load(Ordering::Acquire) {
+            ShutdownMode::Immediate
+        } else {
+            requested
         }
     }
 
@@ -1048,6 +1006,46 @@ async fn wait_until(
             return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
         }
         std::task::Poll::Pending
+    })
+    .await
+}
+
+enum ShutdownWait<T> {
+    Complete(T),
+    TimedOut,
+    ImmediateRequested,
+}
+
+/// Awaits provider shutdown until completion, the caller deadline, or a mode
+/// escalation.
+async fn await_shutdown_or_immediate<F: Future>(
+    future: F,
+    deadline: Option<&mut TimerFuture>,
+    signal: &AsyncSignal,
+    immediate: &AtomicBool,
+) -> Result<ShutdownWait<F::Output>, LifecycleError> {
+    let mut future = Box::pin(future);
+    let mut deadline = deadline;
+    let registration = SignalRegistration::new(signal);
+    std::future::poll_fn(|cx| {
+        if immediate.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(ShutdownWait::ImmediateRequested));
+        }
+        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+            return Poll::Ready(Ok(ShutdownWait::Complete(output)));
+        }
+        if let Some(deadline) = deadline.as_deref_mut() {
+            match deadline.as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => return Poll::Ready(Ok(ShutdownWait::TimedOut)),
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(LifecycleError::Timer(error))),
+                Poll::Pending => {}
+            }
+        }
+        registration.register(cx.waker());
+        if immediate.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(ShutdownWait::ImmediateRequested));
+        }
+        Poll::Pending
     })
     .await
 }

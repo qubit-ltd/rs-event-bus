@@ -42,7 +42,6 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 #[cfg(feature = "conformance")]
-use qubit_event_bus::spi::conformance::ConformanceHooks;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_async;
 use qubit_id::Id;
@@ -741,11 +740,12 @@ fn process_thread_count() -> Option<usize> {
 #[cfg(feature = "conformance")]
 #[test]
 fn async_local_passes_public_spi_conformance_publish_cases() {
+    use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
     let report = block_on(run_async(
         || async {
             Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap()) as Arc<dyn AsyncEventBusSpi>
         },
-        &ConformanceHooks::default(),
+        &AsyncConformanceHooks::default(),
     ));
     assert!(report.all_passed());
     report.assert_all_passed();

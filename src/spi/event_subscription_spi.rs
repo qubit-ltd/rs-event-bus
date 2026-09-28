@@ -40,5 +40,9 @@ pub trait EventSubscriptionSpi: Send + 'static {
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
 
     /// Closes this receiver and releases its resources.
+    ///
+    /// Durable subscriptions must preserve accepted unsettled deliveries for
+    /// recovery after close. Ephemeral subscriptions may discard buffered
+    /// deliveries; facade shutdown reports disclose known loss and uncertainty.
     fn close(&mut self) -> Result<(), SpiError>;
 }

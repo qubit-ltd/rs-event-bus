@@ -7,8 +7,8 @@
 // =============================================================================
 //! One outcome from a conformance check.
 
-/// Result of one named conformance check.
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Result of one named conformance check.
 pub enum ConformanceCase {
     /// The check completed successfully.
     Passed {
@@ -27,6 +27,6 @@ pub enum ConformanceCase {
         /// Stable identifier for this check.
         case_id: String,
         /// Why the check could not be performed.
-        reason: String,
+        reason: super::conformance_skip_reason::ConformanceSkipReason,
     },
 }

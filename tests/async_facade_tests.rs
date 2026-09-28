@@ -356,7 +356,7 @@ fn async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() 
         assert!(mixed_batch.items()[1].is_ok());
 
         let outcome = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
-        assert_eq!(outcome, ShutdownOutcome::Complete);
+        assert_eq!(outcome.outcome, ShutdownOutcome::Complete);
     });
 
     assert_eq!(spi.shutdown_transition_count(), 1);
@@ -1104,7 +1104,7 @@ fn shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     shutdown_thread.join().unwrap();
 
     assert!(matches!(subscribe_result, Err(SubscribeError::Closed)));
-    assert_eq!(shutdown_result.unwrap(), ShutdownOutcome::Complete);
+    assert_eq!(shutdown_result.unwrap().outcome, ShutdownOutcome::Complete);
     assert!(
         !shutdown_was_early,
         "provider shutdown must wait for in-flight subscribe cleanup"
@@ -1139,7 +1139,7 @@ fn cancelling_pending_subscribe_releases_admission_for_shutdown() {
         Poll::Ready(result) => result.unwrap(),
         Poll::Pending => panic!("cancelled subscribe must release its admission guard"),
     };
-    assert_eq!(outcome, ShutdownOutcome::Complete);
+    assert_eq!(outcome.outcome, ShutdownOutcome::Complete);
     assert_eq!(spi.shutdown_transition_count(), 1);
     assert!(
         !spi.operation_log().contains(&"close"),
@@ -1989,7 +1989,9 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
             .expect("valid provider capabilities");
         let mut builder = SubscribeOptions::<u32>::builder().error_handler(move |_, _| directive);
         if directive == FailureDirective::DeadLetter {
-            builder = builder.dead_letter(DeadLetterPolicy::topic("test.dead").unwrap());
+            builder = builder
+                .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
+                .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap());
         }
         block_on(async {
             let mut subscription = bus
@@ -2039,12 +2041,65 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
         success_operations.contains(&"publish"),
         "dead-letter success publishes the record"
     );
-    let (requeued_after_failure, failure_operations) = run_case(FailureDirective::DeadLetter, true);
-    assert_eq!(requeued_after_failure, [DeliveryDisposition::Retry]);
+    let (retried_dead_letter, failure_operations) = run_case(FailureDirective::DeadLetter, true);
+    assert!(!retried_dead_letter.is_empty());
+    assert!(
+        retried_dead_letter
+            .iter()
+            .all(|disposition| *disposition == DeliveryDisposition::Reject)
+    );
     assert!(
         failure_operations.contains(&"publish"),
-        "dead-letter failure is attempted before requeue"
+        "dead-letter forwarding retries within the configured budget"
     );
+    assert_eq!(
+        failure_operations
+            .iter()
+            .filter(|operation| **operation == "publish")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    block_on(async {
+        let options = SubscribeOptions::<u32>::builder()
+            .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
+            .error_handler(|_, _| FailureDirective::DeadLetter)
+            .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap())
+            .build();
+        let mut subscription = bus
+            .subscribe(
+                SubscribeRequest::new("dead-letter-exhaustion", topic())
+                    .expect("valid subscriber ID")
+                    .with_options(options),
+            )
+            .await
+            .unwrap();
+        spi.fail_next_publish();
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "unsettled-source-token",
+        ))));
+        let error = subscription
+            .run(|_| async {
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            })
+            .await
+            .expect_err("exhausted forwarding reports a terminal receive error");
+        assert!(matches!(error, ReceiveError::DeadLetterForwardFailed { .. }));
+        assert!(
+            spi.settlement_dispositions().is_empty(),
+            "the source token remains unsettled"
+        );
+        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+    });
 }
 
 #[test]
@@ -2742,7 +2797,7 @@ fn cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() 
     spi.release_shutdown();
     assert_eq!(
         ShutdownOutcome::Complete,
-        block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap()
+        block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap().outcome
     );
     assert_eq!(
         1,
@@ -2978,8 +3033,8 @@ fn concurrent_async_shutdown_calls_close_the_provider_once() {
     let first = std::thread::spawn(move || block_on(first.shutdown(ShutdownMode::Immediate)));
     let second = std::thread::spawn(move || block_on(second.shutdown(ShutdownMode::Immediate)));
 
-    assert_eq!(first.join().unwrap().unwrap(), ShutdownOutcome::Complete);
-    assert_eq!(second.join().unwrap().unwrap(), ShutdownOutcome::Complete);
+    assert_eq!(first.join().unwrap().unwrap().outcome, ShutdownOutcome::Complete);
+    assert_eq!(second.join().unwrap().unwrap().outcome, ShutdownOutcome::Complete);
     assert_eq!(
         spi.operation_log()
             .iter()

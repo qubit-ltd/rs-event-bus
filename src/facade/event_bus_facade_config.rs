@@ -194,6 +194,7 @@ impl EventBusFacadeConfig {
 
     /// Returns facade-wide asynchronous delivery admission limits.
     #[must_use]
+    #[inline]
     pub fn delivery_admission(&self) -> DeliveryAdmissionConfig {
         self.delivery_admission
     }
@@ -207,6 +208,7 @@ impl EventBusFacadeConfig {
 
     /// Returns the optional maximum encoded payload size.
     #[must_use]
+    #[inline]
     pub const fn max_encoded_payload_bytes(&self) -> Option<NonZeroUsize> {
         self.max_encoded_payload_bytes
     }
@@ -220,6 +222,7 @@ impl EventBusFacadeConfig {
 
     /// Returns the codec table that the publisher pipeline will consult.
     #[must_use]
+    #[inline]
     pub fn codec_registry(&self) -> &Arc<CodecRegistry> {
         &self.codecs
     }

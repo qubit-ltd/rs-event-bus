@@ -17,10 +17,15 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.14"
+qubit-event-bus = "0.15"
 ```
 
 ## Quick start
+
+The complete, runnable sync and runtime-neutral async applications live in
+[`examples/local_minimal.rs`](examples/local_minimal.rs) and
+[`examples/async_local_minimal.rs`](examples/async_local_minimal.rs). They show
+subscription ownership, publication, and explicit shutdown.
 
 ```rust
 use std::sync::Arc;

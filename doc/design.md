@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.14)
+# Qubit Event Bus Design (0.15)
 
-> This document describes `qubit-event-bus` 0.14.0 as implemented.
+> This document describes `qubit-event-bus` 0.15.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -94,8 +94,10 @@ It does not spawn tasks and does not depend on tokio or async-std. The caller dr
 the model, pipeline, registry, and error types.
 
 **(P6) A publish receipt, an application acknowledgement, and transport settlement are three different things.**
-`PublishReceipt` means the provider accepted the message. What that acceptance
-promises is `PublishGuarantee`. It does not mean any subscriber finished handling it.
+`PublishReceipt` records the result of a successful provider call; it may describe
+acceptance, partial admission, no destinations, drop, or opaque acknowledgement.
+`PublishGuarantee` describes what provider acceptance promises. No receipt means a
+subscriber finished handling the message.
 `Acknowledgement` is the handler's business decision (`AckMode::Auto` or `Manual`).
 `SettlementToken` plus `DeliveryDisposition` is the transport-level confirmation
 between the facade and the provider. Keeping them apart avoids reading
@@ -210,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.14.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.15.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -351,9 +353,10 @@ pub enum PublishAcknowledgement {
   `Result<(), AdmissionCheckError>` (`VisibilityUnavailable`, `Dropped`,
   `NoAcceptedDestination`, `RejectedDestinations { .. }`).
 
-This is P6. `publish` returning `Ok(receipt)` means the provider accepted the message.
-Whether anyone was actually queued is `admission_outcome()`, and only a provider with
-`PublishVisibility::DestinationAdmissions` can supply that detail.
+A successful `publish` call means the provider call completed and returned a receipt; it
+does not by itself mean acceptance. `admission_outcome()` may report accepted, partial,
+no destinations, no accepted destinations, dropped, or opaque admission. Only a provider
+with `PublishVisibility::DestinationAdmissions` can report destination-level detail.
 `publish_all` returns `BatchPublishResult`, preserving each request's
 `Result<PublishReceipt, PublishError>` in input order. One failure does not stop the later requests.
 
@@ -361,8 +364,11 @@ Whether anyone was actually queued is `admission_outcome()`, and only a provider
 
 The payload type of a dead-letter topic is `DeadLetterEvent<T>`: `original_event: Arc<EventEnvelope<T>>`,
 `subscriber_id`, and `reason` (the `Display` of the final `DeliveryError`).
-`DeadLetterPolicy::Topic(name)` names the topic. The facade builds
-`Topic::<DeadLetterEvent<T>>::new(name)` and reuses the original topic's codec when one exists.
+`DeadLetterPolicy::topic(name)` names the topic and defaults to transport acceptance;
+`known_destination(name)` requires visible admission and is rejected for opaque providers.
+The facade builds `Topic::<DeadLetterEvent<T>>::new(name)` and requires a codec registered
+for that payload type on encoded providers. Dead-letter event IDs are stable for the original
+event and subscriber to aid deduplication, but do not provide exactly-once delivery.
 
 ---
 
@@ -483,12 +489,15 @@ pub struct SettlementToken {
 
 `shutdown(ShutdownMode)`:
 
-- `ShutdownMode::Graceful { timeout }` waits for accepted messages to finish being delivered. On timeout it returns `ShutdownOutcome::TimedOut`. `timeout` covers the **whole** facade shutdown, including receiver close, handler drain, and the provider shutdown.
+- `ShutdownMode::Graceful { timeout }` sets a caller deadline for the facade shutdown. A caller timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
 - `ShutdownMode::Immediate` closes every subscription immediately and drops or retains unprocessed messages according to the provider.
 - The call is idempotent. After shutdown, `publish` and `subscribe` return `SpiError::Operation` whose `kind` is closed.
 
-The facade calls provider `shutdown` **once**, after it has drained handlers.
-The synchronous side uses `ShutdownCoordinator`. The asynchronous side uses a leader CAS.
+The facade permits at most one provider shutdown call in flight. A failed or
+cancelled attempt can be retried by a later caller. The facade-level API returns
+`ShutdownReport`; the SPI method still returns `ShutdownOutcome`. The
+synchronous side uses `ShutdownCoordinator`. The asynchronous side uses a
+leader CAS and lets `Immediate` upgrade an in-flight `Graceful` request.
 
 ---
 
@@ -955,16 +964,19 @@ shutdown(mode: ShutdownMode)
   ├─ scheduler.stop_admission(immediate); every subscription request_cancel()
   ├─ spawn `event-bus-shutdown` to run perform_shutdown:
   │     wait for OperationGate to reach zero → wait for or clear scheduler tasks → join every coordinator
-  │     → scheduler.join() → spi.shutdown(mode) (once) → lifecycle Closed
-  └─ caller outside bus context → wait until the Graceful.timeout deadline and return ShutdownOutcome
+  │     → scheduler.join() → spi.shutdown(mode) (at most one in flight) → lifecycle Closed
+  └─ caller outside bus context → wait until its deadline and return ShutdownReport
      caller inside bus context → return ShutdownError::Lifecycle(WouldDeadlock) immediately
                                  (shutdown continues in the background)
 ```
 
 - A generation lets concurrent `shutdown()` calls all wait for the **same** shutdown.
   An arriving `Immediate` upgrades a `Graceful` generation. Tasks still queued are returned as `Retry`.
-- A `Graceful` timeout returns `ShutdownOutcome::TimedOut` or `ShutdownError::TimedOut`,
-  depending on which step timed out. The bus stays `Closing` and the background thread finishes the rest.
+- A caller deadline returns `ShutdownError::TimedOut`; it does not claim the bus is
+  closed. The sync coordinator continues cleanup in the background. An SPI
+  `ShutdownOutcome::TimedOut` reports provider completion after its own grace period.
+- The report includes facade-known abandoned ephemeral deliveries and whether
+  provider-owned work may also have been abandoned without an exact count.
 - The background shutdown thread runs inside `catch_unwind`. If it panics, the facade
   emits `Diagnostic::InternalFailure` and advances the state to `Closed`, so the caller is not left waiting forever.
 - `EventBus` is a `Clone` of an `Arc` handle and has **no `Drop` shutdown**. Coordinator
@@ -1341,10 +1353,10 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 4. Handlers for the same subscription and the same `ordering_key` do not run concurrently (synchronous: `active_keys`; asynchronous: `AsyncOrderingLanes`).
 5. The number of handlers running at once is at most `max_in_flight` (synchronous pool size, or asynchronous admission capacity).
 6. Each subscription has at most one message that has been taken from the provider and has not yet entered a handler (synchronous `pending`; asynchronous pending plus a single permit).
-7. After `Closing`, `publish` and `subscribe` return `Closed`. `shutdown` is idempotent and provider `shutdown` is called once.
+7. After `Closing`, `publish` and `subscribe` return `Closed`. Shutdown is idempotent and at most one provider shutdown call is in flight; a failed or cancelled call may be retried.
 8. A panic in user code does not exit a thread or task and does not corrupt bus state.
 9. Dead-letter is at most one level deep. The dead-letter header cannot be set or altered from outside the pipeline.
-10. Cancel and shutdown do not drop a message: a handler task that has not started is returned to the provider as `Retry` when the capability allows it.
+10. Cancel and shutdown return unstarted durable work as `Retry` when supported. Ephemeral providers may discard unstarted work; the facade reports known abandonment and flags provider-owned abandonment that cannot be counted.
 11. User code is not called while a facade-internal lock is held. Diagnostic observers
     are snapshotted under the `observers` lock, and `emit` calls them after releasing it.
     Handlers, middleware, and error handlers run on scheduler threads or async delivery
@@ -1392,14 +1404,14 @@ a strict documentation build with
 `qubit_event_bus::spi::conformance::{run_sync, run_async}` takes a provider factory
 (`Fn() -> Arc<dyn EventBusSpi>`, or an async factory that returns a future; each case
 builds a fresh instance so cases do not contaminate each other) and `ConformanceHooks`
-(optional `settlement` and `receive_cancellation` hooks, so an author can add idempotence
-or cancellation checks only they can verify). It returns a `ConformanceReport`
+(optional `settlement` and `receive_cancellation` hooks; strict runs turn missing required
+hooks into failures while typed skips remain for unsupported capabilities. Async hooks are
+awaited by the runner and do not block its executor. It returns a `ConformanceReport`
 (`Vec<ConformanceCase::{Passed, Failed, Skipped}>`). Current cases cover capability and
 payload-mode consistency, `subscribe`, `publish`, `receive-payload`, settlement
 idempotence and conflicts, and `shutdown`. A provider that does not support a case
 should record it as `Skipped`, not return a vague error after the test has already
-called the operation. The runner is the minimum acceptance gate for provider authors
-and the executable statement of this crate's SPI contract.
+called the operation. Structural runs are smoke checks; strict runs are the fixture-backed provider acceptance gate.
 
 Checks the public runner does not cover, which a provider author supplies:
 
@@ -1457,4 +1469,4 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.14.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.15.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*

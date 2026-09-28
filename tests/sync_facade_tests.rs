@@ -34,11 +34,13 @@ use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::Subscription;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::model::AckMode;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::Headers;
@@ -265,6 +267,7 @@ struct TestBackendState {
     fail_next_settle: bool,
     fail_settle_always: bool,
     published_topics: Vec<Box<str>>,
+    attempted_event_ids: Vec<EventId>,
 }
 
 struct TestBackend {
@@ -276,6 +279,7 @@ struct TestBackend {
     shutdown: AtomicBool,
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
+    partial_publish_call: AtomicUsize,
     settlement_capability: std::sync::atomic::AtomicUsize,
     payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
@@ -308,6 +312,7 @@ impl TestBackend {
             shutdown: AtomicBool::new(false),
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
+            partial_publish_call: AtomicUsize::new(0),
             settlement_capability: std::sync::atomic::AtomicUsize::new(2),
             payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
@@ -336,6 +341,10 @@ impl TestBackend {
 
     fn fail_publish_call(&self, call: usize) {
         self.fail_publish_call.store(call, Ordering::Release);
+    }
+
+    fn partial_publish_call(&self, call: usize) {
+        self.partial_publish_call.store(call, Ordering::Release);
     }
 
     fn set_settlement_capability(&self, capability: SettlementCapabilities) {
@@ -525,6 +534,10 @@ impl TestBackend {
         self.state.lock().expect("test state lock").published_topics.clone()
     }
 
+    fn attempted_event_ids(&self) -> Vec<EventId> {
+        self.state.lock().expect("test state lock").attempted_event_ids.clone()
+    }
+
     fn enqueue_marked(&self, subscription_id: Id) {
         let queues = self.state.lock().expect("test state lock").queues.clone();
         let (_, queue) = queues
@@ -622,6 +635,11 @@ impl EventBusSpi for TestBackend {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let call = self.publish_calls.fetch_add(1, Ordering::AcqRel) + 1;
         Self::wait_at_gate(&self.publish_gate, "publish");
+        self.state
+            .lock()
+            .expect("test state lock")
+            .attempted_event_ids
+            .push(message.id().clone());
         if self.fail_publish_call.load(Ordering::Acquire) == call {
             return Err(test_spi_error("publish"));
         }
@@ -652,10 +670,25 @@ impl EventBusSpi for TestBackend {
             lock.lock().expect("queue lock").messages.push_back(inbound);
             ready.notify_one();
         }
-        Ok(PublishAcknowledgement::Accepted {
-            provider_message_id: None,
-            metadata: Default::default(),
-        })
+        if self.partial_publish_call.load(Ordering::Acquire) == call {
+            Ok(PublishAcknowledgement::DestinationAdmissions(vec![
+                DestinationAdmission::new(
+                    Id::new(1),
+                    qubit_event_bus::model::SubscriberId::new("accepted").expect("valid ID"),
+                    AdmissionStatus::Accepted,
+                ),
+                DestinationAdmission::new(
+                    Id::new(2),
+                    qubit_event_bus::model::SubscriberId::new("rejected").expect("valid ID"),
+                    AdmissionStatus::Rejected("capacity".into()),
+                ),
+            ]))
+        } else {
+            Ok(PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            })
+        }
     }
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
@@ -2959,7 +2992,8 @@ fn immediate_shutdown_waits_for_active_delivery_and_settlement_before_provider_c
         shutdown_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("shutdown completes")
-            .expect("shutdown succeeds"),
+            .expect("shutdown succeeds")
+            .outcome,
         ShutdownOutcome::Complete
     );
     shutdown_worker.join().expect("shutdown thread exits");
@@ -3198,7 +3232,7 @@ fn assert_lifecycle_close_failures(error: &LifecycleError, expected: &[&str]) {
     );
 }
 
-fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<DeliveryDisposition>, usize, bool) {
+fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<DeliveryDisposition>, usize, bool, u64) {
     let (bus, backend) = create_bus_configured(|backend| backend.set_settlement_capability(capability));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
@@ -3263,24 +3297,38 @@ fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<D
         "shutdown requests cancellation before returning"
     );
     release_receive_tx.send(()).expect("release gated receive");
-    shutdown_done_rx
+    let report = shutdown_done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("shutdown completes")
         .expect("shutdown succeeds");
     shutdown_thread.join().expect("shutdown thread exits");
+    let repeated_report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("repeated shutdown returns its cached report");
+    assert_eq!(repeated_report.outcome, report.outcome);
+    assert_eq!(
+        repeated_report.known_abandoned_deliveries,
+        report.known_abandoned_deliveries
+    );
+    assert_eq!(
+        repeated_report.provider_may_have_abandoned_deliveries,
+        report.provider_may_have_abandoned_deliveries
+    );
     assert_eq!(calls.load(Ordering::Acquire), 1);
     assert!(queued_handler_rx.try_recv().is_err());
     (
         backend.settlement_dispositions(),
         backend.close_calls(),
         diagnostic_rx.try_recv().is_ok(),
+        report.known_abandoned_deliveries,
     )
 }
 
 #[test]
 fn immediate_shutdown_requeues_message_received_at_cancellation_boundary() {
-    let (dispositions, close_calls, unavailable_diagnostic) =
+    let (dispositions, close_calls, unavailable_diagnostic, abandoned) =
         immediate_shutdown_receive_race(SettlementCapabilities::AcceptRetryReject);
+    assert_eq!(abandoned, 0);
     assert_eq!(dispositions.len(), 2);
     assert_eq!(
         dispositions
@@ -3302,8 +3350,9 @@ fn immediate_shutdown_requeues_message_received_at_cancellation_boundary() {
 
 #[test]
 fn immediate_shutdown_reports_unsettleable_message_received_at_cancellation_boundary() {
-    let (dispositions, close_calls, unavailable_diagnostic) =
+    let (dispositions, close_calls, unavailable_diagnostic, abandoned) =
         immediate_shutdown_receive_race(SettlementCapabilities::None);
+    assert_eq!(abandoned, 1);
     assert!(dispositions.is_empty());
     assert_eq!(close_calls, 1);
     assert!(unavailable_diagnostic);
@@ -3323,7 +3372,7 @@ fn shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdow
             timeout: Duration::from_secs(2),
         })
         .expect("graceful shutdown");
-    assert_eq!(outcome, ShutdownOutcome::Complete);
+    assert_eq!(outcome.outcome, ShutdownOutcome::Complete);
     assert_eq!(backend.shutdown_calls(), 1);
     assert_eq!(backend.close_calls(), 1);
     assert!(matches!(bus.publish(request("late".into())), Err(PublishError::Closed)));
@@ -3495,23 +3544,22 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
         .expect("discard reaches terminal state");
     assert_eq!(attempts.load(Ordering::Acquire), 1);
     assert_eq!(callbacks.load(Ordering::Acquire), 1);
-    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
+    assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
-fn dead_letter_publish_failure_requeues_instead_of_rejecting_original_message() {
+fn dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admission() {
     let (bus, backend) = create_bus();
     backend.fail_publish_call(2);
-    let (settled_tx, settled_rx) = mpsc::channel();
-    let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "dead_letter_publish")
-        {
-            settled_tx.send(()).expect("test receiver remains alive");
-        }
-    });
     let options = SubscribeOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .build()
+                .expect("valid retry policy"),
+        )
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
         .build();
@@ -3530,16 +3578,132 @@ fn dead_letter_publish_failure_requeues_instead_of_rejecting_original_message() 
 
     bus.publish(request("dead-letter-me".into()))
         .expect("original publish succeeds");
-    settled_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("dead-letter failure diagnostic");
     bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("failed dead-letter attempt completes");
-    assert_eq!(backend.publish_calls(), 2);
-    assert_eq!(backend.published_topics(), ["sync.events".into()]);
-    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
+        .expect("dead-letter retry completes");
+    let publish_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while backend.settlement_dispositions().is_empty() && std::time::Instant::now() < publish_deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(backend.publish_calls(), 3);
+    assert_eq!(
+        backend.published_topics(),
+        ["sync.events".into(), "dead-letters".into()]
+    );
+    let attempted_ids = backend.attempted_event_ids();
+    assert_eq!(attempted_ids.len(), 3);
+    assert_eq!(
+        attempted_ids[1], attempted_ids[2],
+        "forward retries reuse the same event identity"
+    );
+    assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn partial_dead_letter_admission_is_not_republished() {
+    let (bus, backend) = create_bus();
+    backend.partial_publish_call(2);
+    let observed_partial = Arc::new(AtomicBool::new(false));
+    let observed_partial_by_callback = observed_partial.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "dead_letter_partial")
+        {
+            observed_partial_by_callback.store(true, Ordering::Release);
+        }
+    });
+    let options = SubscribeOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(3)
+                .build()
+                .expect("valid retry policy"),
+        )
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("partial-dead-letter", topic())
+                .expect("valid ID")
+                .with_options(options),
+            |_| {
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+
+    bus.publish(request("partial-dead-letter-me".into()))
+        .expect("original publish succeeds");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while (!observed_partial.load(Ordering::Acquire)
+        || backend.publish_calls() < 2
+        || backend.settlement_dispositions().is_empty())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    assert!(observed_partial.load(Ordering::Acquire));
+    assert_eq!(
+        backend.publish_calls(),
+        2,
+        "partial admission does not retry the full DLQ event"
+    );
+    let ids = backend.attempted_event_ids();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
+    subscription.cancel().expect("cancel");
+    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
+    let (bus, backend) = create_bus();
+    backend.fail_publish_call(2);
+    let options = SubscribeOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(1)
+                .build()
+                .expect("valid retry policy"),
+        )
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .dead_letter(DeadLetterPolicy::topic("dead-letters").expect("valid dead-letter topic"))
+        .build();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("dead-letter-exhaustion", topic())
+                .expect("valid ID")
+                .with_options(options),
+            |_| {
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+    bus.publish(request("dead-letter-me".into()))
+        .expect("original publish succeeds");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while backend.publish_calls() < 2 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        backend.publish_calls(),
+        2,
+        "one DLQ attempt exhausts the configured budget"
+    );
+    assert!(
+        backend.settlement_dispositions().is_empty(),
+        "no Accept, Reject, or Retry is sent for the source"
+    );
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("shutdown closes the stopped subscription");
+    assert_eq!(report.known_abandoned_deliveries, 1);
 }
 
 #[test]

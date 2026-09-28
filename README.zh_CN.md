@@ -17,10 +17,14 @@
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.14"
+qubit-event-bus = "0.15"
 ```
 
 ## 快速开始
+
+可运行的同步与不绑定异步运行时示例位于
+[`examples/local_minimal.rs`](examples/local_minimal.rs) 和
+[`examples/async_local_minimal.rs`](examples/async_local_minimal.rs)，展示订阅句柄持有、发布和显式关闭。
 
 订单、审计和客户视图属于应用的不同模块，共用一个事件类型。下面展示各模块与总线相接的部分；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 由应用连接实际存储。
 

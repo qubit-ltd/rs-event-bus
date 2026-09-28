@@ -924,7 +924,7 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
     if let Some(waker) = handler_waker.lock().unwrap().take() {
         waker.wake();
     }
-    assert_eq!(block_on(shutdown).unwrap(), ShutdownOutcome::Complete);
+    assert_eq!(block_on(shutdown).unwrap().outcome, ShutdownOutcome::Complete);
     runner.join().unwrap().unwrap();
 }
 
@@ -999,7 +999,7 @@ fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
         waker.wake();
     }
     assert_eq!(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(),
+        block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap().outcome,
         ShutdownOutcome::Complete
     );
     runner.join().unwrap().unwrap();

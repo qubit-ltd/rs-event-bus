@@ -66,6 +66,22 @@ impl ConformanceReport {
     pub(super) fn push(&mut self, case: ConformanceCase) {
         self.cases.push(case);
     }
+
+    pub(super) fn apply_profile(&mut self, profile: super::conformance_profile::ConformanceProfile) {
+        if profile == super::conformance_profile::ConformanceProfile::Strict {
+            for case in &mut self.cases {
+                let ConformanceCase::Skipped { case_id, reason } = case else {
+                    continue;
+                };
+                if let super::conformance_skip_reason::ConformanceSkipReason::MissingFixture { .. } = reason {
+                    *case = ConformanceCase::Failed {
+                        case_id: case_id.clone(),
+                        detail: format!("strict profile requires this check: {reason}"),
+                    };
+                }
+            }
+        }
+    }
 }
 
 pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, TransportPayload)> {
@@ -136,7 +152,9 @@ pub(super) fn settlement_case(
     match (settlement, token) {
         (SettlementCapabilities::None, None) => ConformanceCase::Skipped {
             case_id: "settlement-idempotence".into(),
-            reason: "provider does not support settlement".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "settlement",
+            },
         },
         (SettlementCapabilities::None, Some(_)) => ConformanceCase::Failed {
             case_id: "settlement-idempotence".into(),
@@ -187,7 +205,9 @@ pub(super) fn push_hook(
         },
         None => ConformanceCase::Skipped {
             case_id: case_id.into(),
-            reason: "provider-specific fixture was not supplied".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                detail: "provider-specific hook was not supplied".into(),
+            },
         },
     });
 }

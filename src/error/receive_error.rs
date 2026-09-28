@@ -11,6 +11,7 @@ use qubit_clock::TimeError;
 
 use crate::error::CodecError;
 use crate::error::SpiError;
+use crate::model::EventId;
 
 /// A subscription could not receive or decode its next delivery.
 #[derive(Debug, thiserror::Error)]
@@ -28,4 +29,13 @@ pub enum ReceiveError {
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,
+    /// Dead-letter publication exhausted its configured retry budget; the
+    /// original provider token was left unsettled for recovery.
+    #[error("dead-letter forwarding failed for event {event_id:?}: {message}")]
+    DeadLetterForwardFailed {
+        /// Source event whose dead-letter envelope could not be admitted.
+        event_id: EventId,
+        /// Last forwarding or admission failure.
+        message: Box<str>,
+    },
 }

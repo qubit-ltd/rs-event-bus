@@ -7,6 +7,7 @@
 // =============================================================================
 //! Type-safe synchronous and asynchronous event bus facades.
 
+mod async_admission;
 mod async_event_bus;
 mod async_subscription;
 mod diagnostic_observer_handle;
@@ -18,6 +19,7 @@ mod publish_metrics;
 mod publish_metrics_snapshot;
 mod shutdown_coordinator;
 mod shutdown_coordinator_state;
+mod shutdown_report;
 mod subscription;
 mod sync_delivery_scheduler;
 mod tracker;
@@ -37,6 +39,7 @@ pub(crate) use lifecycle::is_current_bus_context;
 pub(crate) use lifecycle::receive_poll_interval;
 pub(crate) use publish_metrics::PublishMetrics;
 pub use publish_metrics_snapshot::PublishMetricsSnapshot;
+pub use shutdown_report::ShutdownReport;
 pub use subscription::Subscription;
 pub(crate) use subscription::SubscriptionControl;
 pub(crate) use tracker::DeliveryTrackerGuard;

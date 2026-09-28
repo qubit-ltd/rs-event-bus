@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::conformance_hooks::ConformanceHooks;
+use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
 use super::conformance_report::payload_matches;
@@ -30,6 +31,15 @@ use crate::spi::ShutdownOutcome;
 /// The factory is called once for each case so one check cannot contaminate
 /// the next by shutting down shared provider state.
 pub fn run_sync<F>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
+where
+    F: Fn() -> Arc<dyn EventBusSpi>,
+{
+    run_sync_with_profile(factory, hooks, ConformanceProfile::Structural)
+}
+
+/// Runs synchronous checks with explicit treatment of missing provider
+/// fixtures.
+pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: ConformanceProfile) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
@@ -56,7 +66,9 @@ where
                 });
                 report.push(ConformanceCase::Skipped {
                     case_id: "publish-receive".into(),
-                    reason: "subscription could not be created".into(),
+                    reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                        detail: "subscription could not be created".into(),
+                    },
                 });
                 report.push(match spi.shutdown(ShutdownMode::Immediate) {
                     Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
@@ -109,7 +121,9 @@ where
         } else {
             report.push(ConformanceCase::Skipped {
                 case_id: "receive-payload".into(),
-                reason: "publish failed".into(),
+                reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                    detail: "publish failed".into(),
+                },
             });
         }
         report.push(match subscription.close() {
@@ -141,5 +155,11 @@ where
         hooks.settlement.as_ref(),
     );
     push_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref());
+    push_hook(
+        &mut report,
+        "durable-unsettled-recovery",
+        hooks.durable_recovery.as_ref(),
+    );
+    report.apply_profile(profile);
     report
 }

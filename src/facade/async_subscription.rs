@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
@@ -25,13 +26,15 @@ use std::time::Duration;
 use qubit_id::Id;
 use qubit_retry::AsyncRetry;
 use qubit_retry::AttemptFailure;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryFallback;
+use qubit_retry::RetryPolicy;
 
-use super::async_event_bus::AsyncAdmissionFuture;
-use super::async_event_bus::AsyncAdmissionPermit;
+use super::async_admission::AsyncAdmissionFuture;
+use super::async_admission::AsyncAdmissionPermit;
 use super::async_event_bus::AsyncEventBusInner;
 use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
@@ -43,19 +46,24 @@ use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseErrors;
+use crate::model::DeadLetterAdmissionPolicy;
+use crate::model::DeadLetterEvent;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
 use crate::model::FailureDirective;
 use crate::model::ProviderMessageMetadata;
+use crate::model::PublishReceipt;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
 use crate::model::Topic;
 use crate::pipeline::AsyncOrderingGuard;
+use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::OrderingLaneKey;
 use crate::pipeline::SubscriberPipeline;
+use crate::pipeline::dead_letter_retry_config;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
@@ -116,30 +124,8 @@ pub(super) fn is_current_bus_poll(bus_key: usize) -> bool {
     ACTIVE_BUS_POLLS.with(|active| active.borrow().contains(&bus_key))
 }
 
-/// A typed subscription whose receive loop is driven by the caller's executor.
-///
-/// Dropping this value cannot await provider cleanup. An unstarted receiver
-/// remains registered with its bus and is closed by bus shutdown; call
-/// [`Self::close`] for deterministic cleanup before shutdown. Once a runner
-/// takes ownership, it closes the receiver when it completes or bus shutdown
-/// requests it to stop. If the bus itself is dropped before shutdown completes,
-/// cleanup depends on the provider SPI's receiver-drop contract.
-///
-/// # Examples
-///
-/// ```
-/// use qubit_event_bus::{AsyncSubscription, DeliveryError};
-///
-/// async fn run(subscription: &mut AsyncSubscription<String>) -> Result<(), Box<dyn std::error::Error>> {
-///     subscription.run(|delivery| async move {
-///         consume(delivery.payload()).await?;
-///         Ok::<(), DeliveryError>(())
-///     }).await?;
-///     Ok(())
-/// }
-///
-/// async fn consume(_value: &str) -> Result<(), DeliveryError> { Ok(()) }
-/// ```
+/// Runtime state for one typed subscription, including the receiver and all
+/// delivery futures that have been accepted by the facade.
 struct AsyncSession<T: 'static> {
     inner: Arc<AsyncEventBusInner>,
     id: Id,
@@ -148,6 +134,7 @@ struct AsyncSession<T: 'static> {
     codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
     options: SubscribeOptions<T>,
     receiver: Option<Box<dyn AsyncEventSubscriptionSpi>>,
+    receiver_closed: bool,
     signals: Arc<SessionSignals>,
     pending: Option<PendingDelivery<T>>,
     waiting_admission: Option<PendingDelivery<T>>,
@@ -177,6 +164,18 @@ struct OwnedDeliveryTask<T: 'static> {
     started: Arc<AtomicBool>,
 }
 
+/// Drops queued handlers that have not started, counting ephemeral deliveries.
+fn discard_unstarted_tasks<T: 'static>(tasks: &mut Vec<OwnedDeliveryTask<T>>, abandoned: &AtomicU64, ephemeral: bool) {
+    let unstarted = tasks
+        .iter()
+        .filter(|task| !task.started.load(Ordering::Acquire))
+        .count() as u64;
+    tasks.retain(|task| task.started.load(Ordering::Acquire));
+    if ephemeral && unstarted > 0 {
+        abandoned.fetch_add(unstarted, Ordering::AcqRel);
+    }
+}
+
 enum AsyncRunnerEvent<T: 'static> {
     Delivery(PendingDelivery<T>),
     Receive(Result<ReceiveOutcome, crate::error::SpiError>),
@@ -192,6 +191,7 @@ enum AdmissionWaitEvent<T: 'static> {
 struct SessionSignals {
     stopped: std::sync::atomic::AtomicBool,
     stop_mode: Mutex<Option<ShutdownMode>>,
+    terminal_error: Mutex<Option<ReceiveError>>,
     start_gate: Mutex<()>,
     signal: AsyncSignal,
 }
@@ -201,6 +201,7 @@ impl SessionSignals {
         Arc::new(Self {
             stopped: false.into(),
             stop_mode: Mutex::new(None),
+            terminal_error: Mutex::new(None),
             start_gate: Mutex::new(()),
             signal: AsyncSignal::default(),
         })
@@ -218,6 +219,22 @@ impl SessionSignals {
         drop(stop_mode);
         self.stopped.store(true, Ordering::Release);
         self.signal.notify();
+    }
+
+    fn fail_dead_letter_forward(&self, event_id: crate::model::EventId, message: Box<str>) {
+        *self
+            .terminal_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ReceiveError::DeadLetterForwardFailed { event_id, message });
+        self.stop(ShutdownMode::Immediate);
+    }
+
+    fn take_terminal_error(&self) -> Option<ReceiveError> {
+        self.terminal_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Linearizes the start of user middleware/handler work against Immediate
@@ -394,12 +411,29 @@ impl<T: 'static> Drop for SessionLease<'_, T> {
     }
 }
 
-/// Public handle for a caller-driven async subscription session.
+/// A typed subscription whose receive loop is driven by the caller's executor.
 ///
-/// Dropping this handle immediately releases its paused session and provider
-/// receiver. The provider must recover every unsettled delivery when the
-/// receiver is dropped; use [`Self::close`] when deterministic asynchronous
-/// cleanup and close errors are required.
+/// Dropping this handle cannot await provider cleanup. An unstarted receiver
+/// is released locally; call [`Self::close`] for deterministic asynchronous
+/// cleanup and close errors. An ephemeral provider may discard unsettled work
+/// on receiver drop. A durable provider must follow its durable recovery
+/// contract and must not silently acknowledge unsettled deliveries.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::{AsyncSubscription, DeliveryError};
+///
+/// async fn run(subscription: &mut AsyncSubscription<String>) -> Result<(), Box<dyn std::error::Error>> {
+///     subscription.run(|delivery| async move {
+///         consume(delivery.payload()).await?;
+///         Ok::<(), DeliveryError>(())
+///     }).await?;
+///     Ok(())
+/// }
+///
+/// async fn consume(_value: &str) -> Result<(), DeliveryError> { Ok(()) }
+/// ```
 pub struct AsyncSubscription<T: 'static> {
     id: Id,
     subscriber_id: SubscriberId,
@@ -431,6 +465,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             codec,
             options,
             receiver: Some(receiver),
+            receiver_closed: false,
             signals,
             pending: None,
             waiting_admission: None,
@@ -486,7 +521,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != BusState::Running
+            == BusState::Closed
         {
             return Ok(());
         }
@@ -576,16 +611,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         .take()
                         .unwrap_or_else(|| self.inner.admission.acquire());
                     let registration = SignalRegistration::new(&self.signals.signal);
+                    let tasks = &mut self.tasks;
+                    let abandoned = &self.inner.abandoned_deliveries;
+                    let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
                     let event = std::future::poll_fn(|cx| {
                         if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
-                            self.tasks.retain(|task| task.started.load(Ordering::Acquire));
-                            if self.tasks.is_empty() {
+                            discard_unstarted_tasks(tasks, abandoned, ephemeral);
+                            if tasks.is_empty() {
                                 return Poll::Ready(AdmissionWaitEvent::ImmediateStop);
                             }
                         }
-                        for index in 0..self.tasks.len() {
-                            if let Poll::Ready(delivery) = self.tasks[index].future.as_mut().poll(cx) {
-                                drop(self.tasks.swap_remove(index));
+                        for index in 0..tasks.len() {
+                            if let Poll::Ready(delivery) = tasks[index].future.as_mut().poll(cx) {
+                                drop(tasks.swap_remove(index));
                                 return Poll::Ready(AdmissionWaitEvent::Delivery(Box::new(delivery)));
                             }
                         }
@@ -615,7 +653,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                             continue;
                         }
                         AdmissionWaitEvent::ImmediateStop => {
-                            self.pending.take();
+                            self.abandon_pending();
                             continue;
                         }
                     }
@@ -626,7 +664,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     .is_some_and(|pending| pending.settlement_intent.is_none())
                 {
                     if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
-                        self.pending.take();
+                        self.abandon_pending();
                         continue;
                     }
                     self.start_pending_task(handler.clone());
@@ -647,8 +685,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 // stopped, release the receiver so its close contract can
                 // decide the fate of provider-owned in-flight state.
                 if self.signals.stopped.load(Ordering::Acquire) {
-                    self.pending.take();
-                    return Ok(());
+                    self.abandon_pending();
+                    continue;
                 }
                 if let Some(pending) = self
                     .pending
@@ -670,16 +708,22 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 self.pending = Some(completed);
                 continue;
             }
+            if self.receiver_closed {
+                self.signals.stop(ShutdownMode::Immediate);
+            }
             if self.signals.stopped.load(Ordering::Acquire) {
                 if !self.signals.stopping_gracefully() {
-                    self.tasks.retain(|task| task.started.load(Ordering::Acquire));
+                    self.discard_unstarted_tasks();
                 }
                 if let Some(completed) = self.completed.pop_front() {
                     self.pending = Some(completed);
                     continue;
                 }
                 if self.tasks.is_empty() {
-                    return Ok(());
+                    return match self.signals.take_terminal_error() {
+                        Some(error) => Err(error),
+                        None => Ok(()),
+                    };
                 }
                 let completed = std::future::poll_fn(|cx| {
                     for index in 0..self.tasks.len() {
@@ -708,16 +752,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 }
             });
             let registration = SignalRegistration::new(&self.signals.signal);
+            let tasks = &mut self.tasks;
+            let abandoned = &self.inner.abandoned_deliveries;
+            let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
             let event = std::future::poll_fn(|cx| {
                 if self.signals.stopped.load(Ordering::Acquire) && !self.signals.stopping_gracefully() {
-                    self.tasks.retain(|task| task.started.load(Ordering::Acquire));
-                    if self.tasks.is_empty() {
+                    discard_unstarted_tasks(tasks, abandoned, ephemeral);
+                    if tasks.is_empty() {
                         return Poll::Ready(AsyncRunnerEvent::Stopped);
                     }
                 }
-                for index in 0..self.tasks.len() {
-                    if let Poll::Ready(delivery) = self.tasks[index].future.as_mut().poll(cx) {
-                        drop(self.tasks.swap_remove(index));
+                for index in 0..tasks.len() {
+                    if let Poll::Ready(delivery) = tasks[index].future.as_mut().poll(cx) {
+                        drop(tasks.swap_remove(index));
                         return Poll::Ready(AsyncRunnerEvent::Delivery(delivery));
                     }
                 }
@@ -755,9 +802,32 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     gap,
                 }),
                 ReceiveOutcome::TimedOut => {}
-                ReceiveOutcome::Closed => return Ok(()),
+                ReceiveOutcome::Closed => {
+                    self.receiver_closed = true;
+                    self.signals.stop(ShutdownMode::Immediate);
+                }
             }
         }
+    }
+
+    /// Records one facade-owned delivery abandoned by an ephemeral provider.
+    fn record_abandoned_delivery(&self) {
+        if self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+            self.inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Drops the current unstarted or unsettled delivery during Immediate stop.
+    fn abandon_pending(&mut self) {
+        if self.pending.take().is_some() {
+            self.record_abandoned_delivery();
+        }
+    }
+
+    /// Drops queued handler futures that Immediate stop forbids from starting.
+    fn discard_unstarted_tasks(&mut self) {
+        let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
+        discard_unstarted_tasks(&mut self.tasks, &self.inner.abandoned_deliveries, ephemeral);
     }
 
     fn start_pending_task(&mut self, handler: SharedAsyncHandler<T>) {
@@ -772,6 +842,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             codec: self.codec.clone(),
             options: self.options.clone(),
             receiver: None,
+            receiver_closed: true,
             signals: self.signals.clone(),
             pending: Some(pending),
             waiting_admission: None,
@@ -939,34 +1010,59 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ) {
         self.record_failure_diagnostic(attempts, error.to_string().into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
-            if let Some(crate::model::DeadLetterPolicy::Topic(topic)) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) = crate::pipeline::dead_letter_envelope(&delivery, &error, topic) {
-                    let request = crate::model::PublishRequest::from_envelope(envelope);
-                    if self
-                        .inner
-                        .publisher
-                        .publish_async(
-                            self.inner.spi.as_ref(),
-                            request,
-                            &[],
-                            &self.inner.observer_snapshot(),
-                            self.inner.timer.clone(),
-                        )
-                        .await
-                        .is_err()
+            if let Some(policy) = self.options.dead_letter() {
+                if let Ok(Some(envelope)) =
+                    crate::pipeline::dead_letter_envelope(&delivery, &error, policy.topic_name())
+                {
+                    match publish_dead_letter_async(
+                        &self.inner,
+                        &envelope,
+                        self.options.retry_policy(),
+                        self.options.retry_cancellation_token(),
+                        policy.admission_policy(),
+                    )
+                    .await
                     {
-                        self.settle_pending(DeliveryDisposition::Retry, Some(delivery.event()))
-                            .await;
-                        return;
+                        Ok(receipt) => {
+                            if matches!(
+                                receipt.admission_outcome(),
+                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
+                            ) {
+                                self.inner.emit(&Diagnostic::InternalFailure {
+                                    origin: "dead_letter_partial".into(),
+                                    message: "dead-letter publication was partially accepted; it was not republished"
+                                        .into(),
+                                });
+                            }
+                        }
+                        Err(message) => {
+                            self.inner.emit(&Diagnostic::InternalFailure {
+                                origin: "dead_letter_publish".into(),
+                                message: message.clone().into(),
+                            });
+                            self.signals
+                                .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
+                            return;
+                        }
                     }
                 } else {
-                    self.settle_pending(DeliveryDisposition::Retry, Some(delivery.event()))
-                        .await;
+                    let message = "dead-letter envelope could not be constructed";
+                    self.inner.emit(&Diagnostic::InternalFailure {
+                        origin: "dead_letter_build".into(),
+                        message: message.into(),
+                    });
+                    self.signals
+                        .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
                     return;
                 }
             } else {
-                self.settle_pending(DeliveryDisposition::Retry, Some(delivery.event()))
-                    .await;
+                let message = "dead-letter directive has no configured policy";
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "dead_letter_policy".into(),
+                    message: message.into(),
+                });
+                self.signals
+                    .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
                 return;
             }
         }
@@ -1116,6 +1212,53 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     }
 }
 
+async fn publish_dead_letter_async<T: Send + Sync + 'static>(
+    inner: &Arc<AsyncEventBusInner>,
+    envelope: &EventEnvelope<DeadLetterEvent<T>>,
+    retry_policy: Option<&RetryPolicy>,
+    cancellation: Option<&RetryCancellationToken>,
+    admission_policy: DeadLetterAdmissionPolicy,
+) -> Result<PublishReceipt, String> {
+    async fn attempt<T: Send + Sync + 'static>(
+        inner: &Arc<AsyncEventBusInner>,
+        envelope: EventEnvelope<DeadLetterEvent<T>>,
+        admission_policy: DeadLetterAdmissionPolicy,
+    ) -> Result<PublishReceipt, DeadLetterForwardError> {
+        let receipt = inner
+            .publisher
+            .publish_async(
+                inner.spi.as_ref(),
+                crate::model::PublishRequest::from_envelope(envelope),
+                &[],
+                &inner.observer_snapshot(),
+                inner.timer.clone(),
+            )
+            .await
+            .map_err(|failure| DeadLetterForwardError::Pipeline(failure.to_string().into()))?;
+        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+            Ok(receipt)
+        } else {
+            Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
+        }
+    }
+
+    let Some(policy) = retry_policy else {
+        return attempt(inner, envelope.clone(), admission_policy)
+            .await
+            .map_err(|error| error.to_string());
+    };
+    let config = dead_letter_retry_config(policy).map_err(|error| error.to_string())?;
+    let mut retry = AsyncRetry::new(&config).timer(inner.timer.clone());
+    if let Some(cancellation) = cancellation {
+        retry = retry.cancellation_token(cancellation.clone());
+    }
+    retry
+        .run(|| attempt(inner, envelope.clone(), admission_policy))
+        .await
+        .map(|success| success.value().clone())
+        .map_err(|error| error.to_string())
+}
+
 async fn run_with_retry<T: Send + Sync + 'static>(
     options: SubscribeOptions<T>,
     delivery: Delivery<T>,
@@ -1247,25 +1390,20 @@ fn notify_failure<T: Send + Sync + 'static>(
             FailureDirective::Discard
         };
     }
-    let mut retry = false;
-    let mut terminal = None;
+    let mut directives = Vec::with_capacity(options.error_handlers().len());
     for callback in options.error_handlers() {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(event, error))) {
-            Ok(FailureDirective::Retry) => retry = true,
-            Ok(action) => {
-                terminal.get_or_insert(action);
+            Ok(directive) => directives.push(Ok(directive)),
+            Err(_) => {
+                inner.emit(&Diagnostic::InternalFailure {
+                    origin: "subscriber_error_handler".into(),
+                    message: "subscriber error handler panicked".into(),
+                });
+                directives.push(Err(()));
             }
-            Err(_) => inner.emit(&Diagnostic::InternalFailure {
-                origin: "subscriber_error_handler".into(),
-                message: "subscriber error handler panicked".into(),
-            }),
         }
     }
-    terminal.unwrap_or(if retry && retry_enabled {
-        FailureDirective::Retry
-    } else {
-        FailureDirective::Discard
-    })
+    crate::pipeline::choose_failure_directive(retry_enabled, directives)
 }
 
 impl<T: Send + Sync + 'static> AsyncSubscription<T> {
@@ -1301,11 +1439,14 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     }
 
     /// Returns this subscription's bus-local object ID.
+    #[must_use = "the subscription ID is useful for diagnostics and settlement context"]
+    #[inline]
     pub fn id(&self) -> Id {
         self.id
     }
 
     /// Returns the caller-supplied logical subscriber identity.
+    #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
@@ -1333,6 +1474,11 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
 
     /// Stops this session and closes its provider receiver.
     pub async fn close(&mut self) -> Result<(), crate::error::LifecycleError> {
+        if self.control.bus.upgrade().is_none_or(|inner| {
+            *inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != BusState::Running
+        }) {
+            return Ok(());
+        }
         self.control.signals.stop(ShutdownMode::Immediate);
         let mut lease = self.control.lease().await.ok_or(crate::error::LifecycleError::Closed)?;
         lease
