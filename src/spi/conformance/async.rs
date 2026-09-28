@@ -192,6 +192,19 @@ where
     push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
     push_async_hook(
         &mut report,
+        "settlement-cancellation",
+        hooks.settlement_cancellation.as_ref(),
+    )
+    .await;
+    push_async_hook(&mut report, "close-cancellation", hooks.close_cancellation.as_ref()).await;
+    push_async_hook(
+        &mut report,
+        "shutdown-cancellation",
+        hooks.shutdown_cancellation.as_ref(),
+    )
+    .await;
+    push_async_hook(
+        &mut report,
         "durable-unsettled-recovery",
         hooks.durable_recovery.as_ref(),
     )

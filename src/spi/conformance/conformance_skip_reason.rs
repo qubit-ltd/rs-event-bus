@@ -28,7 +28,9 @@ pub enum ConformanceSkipReason {
 impl std::fmt::Display for ConformanceSkipReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedCapability { capability } => write!(formatter, "unsupported capability: {capability}"),
+            Self::UnsupportedCapability { capability } => {
+                write!(formatter, "unsupported capability: {capability}")
+            }
             Self::MissingFixture { detail } => write!(formatter, "missing fixture: {detail}"),
         }
     }
