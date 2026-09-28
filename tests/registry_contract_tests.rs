@@ -53,6 +53,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_spi::AsyncServiceProvider;
 use qubit_spi::FallbackPolicy;
@@ -149,7 +150,7 @@ fn capabilities(durability: DurabilityCapability) -> EventBusCapabilities {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         durability,
-        qubit_event_bus::spi::SubscriptionModes::BOTH,
+        SubscriptionModes::BOTH,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
@@ -174,7 +175,7 @@ fn registry_per_key_capability_accepts_per_subscription_and_rejects_per_partitio
                     ordering,
                     DelayedDeliveryCapability::None,
                     DurabilityCapability::Ephemeral,
-                    qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+                    SubscriptionModes::EPHEMERAL,
                     false,
                     ReplayCapability::None,
                     PublishGuarantee::Accepted,
@@ -421,7 +422,7 @@ fn registry_installs_configured_codec_registry_into_the_facade() {
                 OrderingCapability::None,
                 DelayedDeliveryCapability::None,
                 DurabilityCapability::Ephemeral,
-                qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+                SubscriptionModes::EPHEMERAL,
                 false,
                 ReplayCapability::None,
                 PublishGuarantee::Accepted,
@@ -599,7 +600,7 @@ fn async_registry_installs_configured_codec_registry_into_the_facade() {
                 OrderingCapability::None,
                 DelayedDeliveryCapability::None,
                 DurabilityCapability::Ephemeral,
-                qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+                SubscriptionModes::EPHEMERAL,
                 false,
                 ReplayCapability::None,
                 PublishGuarantee::Accepted,

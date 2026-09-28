@@ -42,6 +42,7 @@ use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 struct ChannelEndpoint {
@@ -77,7 +78,7 @@ impl EventBusSpi for ChannelShapedEventBusSpi {
             OrderingCapability::None,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
-            qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -194,7 +195,7 @@ pub(crate) fn encoded_settlement_capabilities() -> EventBusCapabilities {
         OrderingCapability::PerSubscription,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,

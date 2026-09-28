@@ -53,6 +53,7 @@ use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
@@ -78,6 +79,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
@@ -385,7 +387,7 @@ impl TestBackend {
     fn set_subscription_capabilities(
         &self,
         durability: DurabilityCapability,
-        subscription_modes: qubit_event_bus::spi::SubscriptionModes,
+        subscription_modes: SubscriptionModes,
         consumer_groups: bool,
         replay: ReplayCapability,
     ) {
@@ -394,9 +396,9 @@ impl TestBackend {
             Ordering::Release,
         );
         self.subscription_modes.store(
-            if subscription_modes == qubit_event_bus::spi::SubscriptionModes::BOTH {
+            if subscription_modes == SubscriptionModes::BOTH {
                 2
-            } else if subscription_modes == qubit_event_bus::spi::SubscriptionModes::DURABLE {
+            } else if subscription_modes == SubscriptionModes::DURABLE {
                 1
             } else {
                 0
@@ -617,9 +619,9 @@ impl EventBusSpi for TestBackend {
                 DurabilityCapability::Durable
             },
             match self.subscription_modes.load(Ordering::Acquire) {
-                1 => qubit_event_bus::spi::SubscriptionModes::DURABLE,
-                2 => qubit_event_bus::spi::SubscriptionModes::BOTH,
-                _ => qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+                1 => SubscriptionModes::DURABLE,
+                2 => SubscriptionModes::BOTH,
+                _ => SubscriptionModes::EPHEMERAL,
             },
             self.consumer_groups.load(Ordering::Acquire),
             match self.replay_capability.load(Ordering::Acquire) {
@@ -674,12 +676,12 @@ impl EventBusSpi for TestBackend {
             Ok(PublishAcknowledgement::DestinationAdmissions(vec![
                 DestinationAdmission::new(
                     Id::new(1),
-                    qubit_event_bus::model::SubscriberId::new("accepted").expect("valid ID"),
+                    SubscriberId::new("accepted").expect("valid ID"),
                     AdmissionStatus::Accepted,
                 ),
                 DestinationAdmission::new(
                     Id::new(2),
-                    qubit_event_bus::model::SubscriberId::new("rejected").expect("valid ID"),
+                    SubscriberId::new("rejected").expect("valid ID"),
                     AdmissionStatus::Rejected("capacity".into()),
                 ),
             ]))
@@ -1001,7 +1003,7 @@ fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
     let (bus, backend) = create_bus_configured(|backend| {
         backend.set_subscription_capabilities(
             DurabilityCapability::Durable,
-            qubit_event_bus::spi::SubscriptionModes::DURABLE,
+            SubscriptionModes::DURABLE,
             true,
             ReplayCapability::Position,
         );

@@ -41,6 +41,8 @@ pub(crate) fn was_accepted(
 
 #[cfg(test)]
 mod tests {
+    use qubit_id::Id;
+
     use super::was_accepted;
     use crate::model::AdmissionOutcome;
     use crate::model::AdmissionSummary;
@@ -106,12 +108,12 @@ mod tests {
     fn test_dead_letter_acceptance_accepts_partial_and_guaranteed_opaque() {
         let partial = PublishAcknowledgement::DestinationAdmissions(vec![
             crate::model::DestinationAdmission::new(
-                qubit_id::Id::new(1),
+                Id::new(1),
                 crate::model::SubscriberId::new("accepted").unwrap(),
                 crate::model::AdmissionStatus::Accepted,
             ),
             crate::model::DestinationAdmission::new(
-                qubit_id::Id::new(2),
+                Id::new(2),
                 crate::model::SubscriberId::new("rejected").unwrap(),
                 crate::model::AdmissionStatus::Rejected("full".into()),
             ),

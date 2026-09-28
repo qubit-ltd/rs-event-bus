@@ -17,6 +17,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
 
+use qubit_event_bus::spi::SubscriptionModes;
+
 type SyncQueue = Arc<(Mutex<QueueState>, Condvar)>;
 type AsyncQueue = Arc<Mutex<QueueState>>;
 use std::time::Duration;
@@ -87,7 +89,7 @@ pub(crate) fn full_capabilities() -> EventBusCapabilities {
         OrderingCapability::PerSubscription,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
@@ -102,7 +104,7 @@ pub(crate) fn native_no_settlement_capabilities() -> EventBusCapabilities {
         OrderingCapability::None,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
-        qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::EPHEMERAL,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,

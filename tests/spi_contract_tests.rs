@@ -94,7 +94,7 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
         OrderingCapability::PerKey,
         DelayedDeliveryCapability::Native,
         DurabilityCapability::Durable,
-        qubit_event_bus::spi::SubscriptionModes::DURABLE,
+        SubscriptionModes::DURABLE,
         true,
         ReplayCapability::Timestamp,
         PublishGuarantee::DurablyStored,

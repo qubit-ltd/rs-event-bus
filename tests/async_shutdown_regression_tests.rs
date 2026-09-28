@@ -37,6 +37,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome as SpiShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 
 struct WakeCounter(AtomicUsize);
 
@@ -65,7 +66,7 @@ impl ShutdownGateSpi {
                 OrderingCapability::None,
                 DelayedDeliveryCapability::None,
                 DurabilityCapability::Ephemeral,
-                qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
+                SubscriptionModes::EPHEMERAL,
                 false,
                 ReplayCapability::None,
                 PublishGuarantee::Accepted,

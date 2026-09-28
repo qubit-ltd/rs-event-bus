@@ -27,6 +27,7 @@ use std::time::Instant;
 use qubit_id::Id;
 use qubit_retry::AttemptFailure;
 use qubit_retry::Retry;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
@@ -2076,7 +2077,7 @@ fn publish_dead_letter_sync<T: Send + Sync + 'static>(
     inner: &EventBusInner,
     envelope: &EventEnvelope<DeadLetterEvent<T>>,
     retry_policy: Option<&RetryPolicy>,
-    cancellation: Option<&qubit_retry::RetryCancellationToken>,
+    cancellation: Option<&RetryCancellationToken>,
     admission_policy: DeadLetterAdmissionPolicy,
 ) -> Result<PublishReceipt, String> {
     let mut publish_once = || {
