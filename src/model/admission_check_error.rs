@@ -8,7 +8,17 @@
 //! Errors raised when a receipt fails a requested admission condition.
 
 /// Why a receipt does not meet an admission requirement.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::AdmissionCheckError;
+///
+/// let error = AdmissionCheckError::NoAcceptedDestination;
+/// assert_eq!(error.to_string(), "no destination accepted the publication");
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[must_use]
 pub enum AdmissionCheckError {
     /// The provider accepted the message without reporting individual
     /// destinations.

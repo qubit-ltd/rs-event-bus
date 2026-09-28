@@ -15,6 +15,25 @@ use crate::error::CodecError;
 use crate::spi::TransportPayload;
 
 /// Decodes a native or codec-backed provider payload into a shared value.
+///
+/// Native payloads are downcast to the subscribed type. Encoded payloads use
+/// the resolved topic codec, and codec panics are converted at the callback
+/// boundary. The provider payload is consumed in either case.
+///
+/// # Type Parameters
+/// - `T`: the subscribed application payload type.
+///
+/// # Parameters
+/// - `codec`: the codec resolved for the topic, if encoded payloads are
+///   supported.
+/// - `payload`: the provider payload to decode or downcast.
+///
+/// # Returns
+/// A shared owner of the decoded application value.
+///
+/// # Errors
+/// Returns [`CodecError`] when the native value has the wrong type, encoded
+/// bytes have no codec, decoding fails, or the codec callback panics.
 pub(crate) fn decode_payload<T: Send + Sync + 'static>(
     codec: Option<&Arc<dyn EventCodec<T>>>,
     payload: TransportPayload,
@@ -30,6 +49,13 @@ pub(crate) fn decode_payload<T: Send + Sync + 'static>(
     }
 }
 
+/// Creates a decode error for a facade-detected payload mismatch.
+///
+/// # Parameters
+/// - `message`: static explanation of the mismatch.
+///
+/// # Returns
+/// A [`CodecError::Decode`] carrying an I/O source with the supplied message.
 fn decode_error(message: &'static str) -> CodecError {
     CodecError::Decode {
         source: Box::new(std::io::Error::other(message)),

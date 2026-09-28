@@ -8,6 +8,15 @@
 //! Requested behavior unsupported by the selected backend.
 
 /// An operation requires a capability the selected backend does not provide.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::CapabilityError;
+///
+/// let error = CapabilityError::Unsupported { capability: "ordering" };
+/// assert!(matches!(error, CapabilityError::Unsupported { capability: "ordering" }));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CapabilityError {

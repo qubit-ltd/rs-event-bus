@@ -19,6 +19,15 @@ use crate::error::SettlementError;
 use crate::error::SubscribeError;
 
 /// A typed error from any event bus operation.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::{ConfigurationError, EventBusError};
+///
+/// let error = EventBusError::Configuration(ConfigurationError::MissingField { field: "topic" });
+/// assert!(matches!(error, EventBusError::Configuration(_)));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum EventBusError {

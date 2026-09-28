@@ -14,18 +14,39 @@ use crate::error::SpiError;
 use crate::model::EventId;
 
 /// A subscription could not receive or decode its next delivery.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::ReceiveError;
+///
+/// let error = ReceiveError::Closed;
+/// assert!(matches!(error, ReceiveError::Closed));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReceiveError {
     /// The backend could not receive an event.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Failure returned by the provider receive operation.
+        #[from]
+        SpiError,
+    ),
     /// An inbound payload could not be decoded.
     #[error(transparent)]
-    Codec(#[from] CodecError),
+    Codec(
+        /// Failure while decoding the received payload.
+        #[from]
+        CodecError,
+    ),
     /// The injected timer failed while backing off a provider settlement retry.
     #[error("event bus timer failed while retrying settlement: {0}")]
-    Timer(#[from] TimeError),
+    Timer(
+        /// Failure from the injected clock or timer.
+        #[from]
+        TimeError,
+    ),
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,

@@ -17,27 +17,70 @@ use crate::error::ConfigurationError;
 /// intentionally unavailable so a global interceptor cannot replace or
 /// retarget a typed event. Header keys use ASCII letters, digits, `-`, `_`,
 /// and `.`, and the reserved dead-letter marker cannot be changed.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::PublishMetadata;
+///
+/// let mut metadata = PublishMetadata::default();
+/// metadata.set_header("trace-id", "t-1").unwrap();
+/// assert_eq!(metadata.header("trace-id"), Some("t-1"));
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct PublishMetadata {
+    /// Portable headers kept in deterministic key order.
     headers: BTreeMap<String, String>,
 }
 
 impl PublishMetadata {
+    /// Creates editable metadata from the envelope's existing headers.
+    ///
+    /// # Parameters
+    /// - `headers`: existing header map to expose to a global interceptor.
+    ///
+    /// # Returns
+    /// Metadata initialized with the supplied headers.
     pub(crate) fn from_headers(headers: BTreeMap<String, String>) -> Self {
         Self { headers }
     }
 
     /// Returns a header value, if present.
+    ///
+    /// # Parameters
+    /// - `key`: header name to look up.
+    ///
+    /// # Returns
+    /// The header value when present, otherwise `None`.
+    #[must_use]
+    #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
     }
 
     /// Returns all headers in deterministic key order.
+    ///
+    /// # Returns
+    /// A borrowed map ordered by header key.
+    #[must_use]
+    #[inline]
     pub fn headers(&self) -> &BTreeMap<String, String> {
         &self.headers
     }
 
     /// Inserts or replaces a validated portable header.
+    ///
+    /// # Parameters
+    /// - `key`: header name to insert or replace.
+    /// - `value`: text value to associate with the header.
+    ///
+    /// # Returns
+    /// `Ok(())` when the header is accepted.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] if the key is empty,
+    /// contains unsupported characters, names the reserved dead-letter header,
+    /// or the value contains a control character.
     pub fn set_header(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<(), ConfigurationError> {
         let key = key.into();
         let value = value.into();
@@ -58,6 +101,13 @@ impl PublishMetadata {
     }
 
     /// Removes a header and returns its previous value.
+    ///
+    /// # Parameters
+    /// - `key`: header name to remove.
+    ///
+    /// # Returns
+    /// The removed value, or `None` if the key was absent or reserved.
+    #[must_use]
     pub fn remove_header(&mut self, key: &str) -> Option<String> {
         if key.eq_ignore_ascii_case(super::DEAD_LETTER_HEADER) {
             return None;
@@ -65,6 +115,10 @@ impl PublishMetadata {
         self.headers.remove(key)
     }
 
+    /// Consumes the metadata and returns its validated headers.
+    ///
+    /// # Returns
+    /// The owned deterministic header map.
     pub(crate) fn into_headers(self) -> BTreeMap<String, String> {
         self.headers
     }
