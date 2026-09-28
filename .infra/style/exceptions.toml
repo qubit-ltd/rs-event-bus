@@ -81,11 +81,6 @@ path = "src/model/subscribe_request_builder.rs"
 reason = "The builder and its build error describe the same request-construction contract."
 
 [[exceptions]]
-rule = "public-type-layout"
-path = "src/model/topic.rs"
-reason = "Typed topic identity and its ordering key are a single public routing vocabulary."
-
-[[exceptions]]
 rule = "type-file-name"
 path = "src/spi/event_bus_capabilities.rs"
 reason = "The aggregate provider capability struct is grouped with the capability enums it composes."

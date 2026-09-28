@@ -26,7 +26,6 @@ multiple-public-types | src/model/publish_options.rs | Publish options and their
 multiple-public-types | src/model/publish_request_builder.rs | The builder and its validation/generation error describe one request-construction contract.
 multiple-public-types | src/model/subscribe_options.rs | Subscription policy enums, options, and builder form one cohesive subscription configuration vocabulary.
 multiple-public-types | src/model/subscribe_request_builder.rs | The builder and its validation error describe one subscription request-construction contract.
-multiple-public-types | src/model/topic.rs | Topic identity and its content-type/schema metadata are one typed routing contract.
 multiple-public-types | src/pipeline/admission.rs | The bus-wide admission tracker and its RAII permit share one counter invariant.
 multiple-public-types | src/pipeline/diagnostic.rs | Diagnostic values and internal failure origin/context are emitted and interpreted together by the portable pipeline.
 multiple-public-types | src/pipeline/ordering_lane.rs | Sync and async lane states, turns, and guards jointly implement one per-key ordering protocol.

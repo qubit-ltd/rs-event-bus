@@ -5,9 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
-//! Typed topic identity and portable codec metadata.
+//! Typed topic identity.
 
 use std::any::TypeId;
 use std::any::type_name;
@@ -17,104 +15,17 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
-use super::validated_text::is_nonblank_without_controls;
+use super::schema_id::SchemaId;
 use super::validated_text::is_valid_topic_name;
 use crate::codec::EventCodec;
 use crate::error::ConfigurationError;
 
-/// A validated MIME content type used by a codec.
-///
-/// # Examples
-///
-/// ```
-/// use qubit_event_bus::model::ContentType;
-///
-/// let content_type = ContentType::new("application/json").unwrap();
-/// assert_eq!(content_type.as_str(), "application/json");
-/// ```
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ContentType(Box<str>);
-
-impl ContentType {
-    /// Creates a nonblank content type without surrounding whitespace.
-    pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        let valid = value
-            .split_once('/')
-            .is_some_and(|(kind, subtype)| valid_mime_token(kind) && valid_mime_token(subtype));
-        if !valid {
-            return Err(ConfigurationError::InvalidField {
-                field: "content_type",
-                message: "expected a MIME type".into(),
-            });
-        }
-        Ok(Self(value.into()))
-    }
-
-    /// Returns the content type string.
-    #[must_use]
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Checks the ASCII token syntax accepted for each MIME type component.
-fn valid_mime_token(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'+' | b'.'))
-}
-
-/// A validated schema identifier supplied by an application codec.
-///
-/// # Examples
-///
-/// ```
-/// use qubit_event_bus::model::SchemaId;
-///
-/// let schema_id = SchemaId::new("order-v1").unwrap();
-/// assert_eq!(schema_id.as_str(), "order-v1");
-/// ```
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct SchemaId(Cow<'static, str>);
-
-impl SchemaId {
-    /// Creates a schema identifier from a static string without allocating.
-    ///
-    /// # Panics
-    /// Panics during constant evaluation, or at runtime, if the value is empty,
-    /// has surrounding Unicode whitespace, or contains a control character.
-    ///
-    /// ```compile_fail
-    /// use qubit_event_bus::model::SchemaId;
-    /// const INVALID_SCHEMA: SchemaId = SchemaId::new_static("schema-v1\n");
-    /// ```
-    pub const fn new_static(value: &'static str) -> Self {
-        assert!(is_nonblank_without_controls(value), "invalid schema ID");
-        Self(Cow::Borrowed(value))
-    }
-
-    /// Creates a nonblank schema identifier.
-    pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if !is_nonblank_without_controls(value) {
-            return Err(ConfigurationError::InvalidField {
-                field: "schema_id",
-                message: "must be nonblank and contain no controls".into(),
-            });
-        }
-        Ok(Self(Cow::Owned(value.into())))
-    }
-
-    /// Returns the original schema identifier.
-    #[must_use]
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
 /// A topic bound to one Rust payload type.
+///
+/// # Type Parameters
+/// - `T`: the payload type published to and received from this topic. It must
+///   be `'static` because providers may retain payloads beyond the caller's
+///   stack frame.
 ///
 /// # Examples
 ///
@@ -126,7 +37,9 @@ impl SchemaId {
 /// assert!(topic.payload_type_name().contains("String"));
 /// ```
 pub struct Topic<T: 'static> {
+    /// The validated routing name, borrowed when static and owned otherwise.
     name: Cow<'static, str>,
+    /// The optional codec used to serialize payloads for encoded providers.
     codec: Option<Arc<dyn EventCodec<T>>>,
 }
 
@@ -137,6 +50,12 @@ impl<T: 'static> Topic<T> {
     /// Panics during constant evaluation, or at runtime, when the name is
     /// empty, longer than 255 UTF-8 bytes, has surrounding Unicode
     /// whitespace, or contains a control character.
+    ///
+    /// # Parameters
+    /// - `name`: the static topic name to validate and borrow.
+    ///
+    /// # Returns
+    /// A topic that borrows `name` and uses native payloads without a codec.
     ///
     /// ```compile_fail
     /// use qubit_event_bus::model::Topic;
@@ -151,6 +70,17 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Creates a native-payload topic after validating its name.
+    ///
+    /// # Parameters
+    /// - `name`: the topic name to validate and copy.
+    ///
+    /// # Returns
+    /// A topic that owns `name` and uses native payloads without a codec.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
+    /// is empty, longer than 255 UTF-8 bytes, has surrounding Unicode
+    /// whitespace, or contains a control character.
     pub fn new(name: &str) -> Result<Self, ConfigurationError> {
         if !is_valid_topic_name(name) {
             return Err(ConfigurationError::InvalidField {
@@ -165,6 +95,21 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Creates a topic with a codec for encoded backends.
+    ///
+    /// # Type Parameters
+    /// - `C`: the codec implementation associated with payload type `T`.
+    ///
+    /// # Parameters
+    /// - `name`: the topic name to validate and copy.
+    /// - `codec`: the codec used by providers that require encoded payloads.
+    ///
+    /// # Returns
+    /// A topic that owns its name and shares the codec through an `Arc`.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
+    /// is empty, longer than 255 UTF-8 bytes, has surrounding Unicode
+    /// whitespace, or contains a control character.
     pub fn new_with_codec<C>(name: &str, codec: C) -> Result<Self, ConfigurationError>
     where
         C: EventCodec<T>,
@@ -173,6 +118,18 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Creates a topic using an already shared or registered codec.
+    ///
+    /// # Parameters
+    /// - `name`: the topic name to validate and copy.
+    /// - `codec`: the shared codec used by encoded providers.
+    ///
+    /// # Returns
+    /// A topic that owns its name and retains the supplied shared codec.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
+    /// is empty, longer than 255 UTF-8 bytes, has surrounding Unicode
+    /// whitespace, or contains a control character.
     pub fn new_with_shared_codec(name: &str, codec: Arc<dyn EventCodec<T>>) -> Result<Self, ConfigurationError> {
         let mut topic = Self::new(name)?;
         topic.codec = Some(codec);
@@ -180,6 +137,9 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the validated topic name.
+    ///
+    /// # Returns
+    /// The name borrowed for the lifetime of this topic.
     #[must_use]
     #[inline]
     pub fn name(&self) -> &str {
@@ -187,6 +147,9 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the Rust payload type identity.
+    ///
+    /// # Returns
+    /// The process-local [`TypeId`] of `T`.
     #[must_use]
     #[inline]
     pub fn payload_type_id(&self) -> TypeId {
@@ -194,6 +157,10 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the Rust payload type name for diagnostics.
+    ///
+    /// # Returns
+    /// The compiler-provided type name of `T`, suitable for diagnostics and
+    /// not guaranteed to be stable across compiler versions.
     #[must_use]
     #[inline]
     pub fn payload_type_name(&self) -> &'static str {
@@ -201,6 +168,9 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the configured codec, or `None` for a native-only topic.
+    ///
+    /// # Returns
+    /// A shared codec reference when one was configured, otherwise `None`.
     #[must_use]
     #[inline]
     pub fn codec(&self) -> Option<&Arc<dyn EventCodec<T>>> {
@@ -208,6 +178,9 @@ impl<T: 'static> Topic<T> {
     }
 
     /// Returns the codec schema ID, or `None` when none was supplied.
+    ///
+    /// # Returns
+    /// The schema identifier borrowed from the configured codec, or `None`.
     #[must_use]
     #[inline]
     pub fn schema_id(&self) -> Option<&SchemaId> {
@@ -216,6 +189,7 @@ impl<T: 'static> Topic<T> {
 }
 
 impl<T: 'static> Clone for Topic<T> {
+    /// Clones the topic name and shared codec handle.
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -225,18 +199,22 @@ impl<T: 'static> Clone for Topic<T> {
 }
 
 impl<T: 'static> PartialEq for Topic<T> {
+    /// Compares the routing name and payload type, ignoring codec identity.
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.payload_type_id() == other.payload_type_id()
     }
 }
 impl<T: 'static> Eq for Topic<T> {}
 impl<T: 'static> Hash for Topic<T> {
+    /// Hashes the same name and payload type identity used by equality.
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.payload_type_id().hash(state);
     }
 }
 impl<T: 'static> fmt::Debug for Topic<T> {
+    /// Formats the routing name and payload type name without exposing codec
+    /// internals.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Topic")
