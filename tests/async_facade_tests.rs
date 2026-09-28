@@ -1600,7 +1600,7 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
     headers.insert("x-qubit-event-bus-dead-letter".into(), "v1".into());
     let options = SubscribeOptions::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap())
+        .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
         .build();
 
     block_on(async {
@@ -2064,7 +2064,7 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
         if directive == FailureDirective::DeadLetter {
             builder = builder
                 .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-                .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap());
+                .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap());
         }
         block_on(async {
             let mut subscription = bus
@@ -2143,7 +2143,7 @@ fn async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
         let options = SubscribeOptions::<u32>::builder()
             .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
             .error_handler(|_, _| FailureDirective::DeadLetter)
-            .dead_letter(DeadLetterPolicy::topic("test.dead").unwrap())
+            .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
             .build();
         let mut subscription = bus
             .subscribe(

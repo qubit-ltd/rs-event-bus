@@ -8,7 +8,9 @@
 //! Destination and acceptance requirement for dead-letter publication.
 
 use super::DeadLetterAdmissionPolicy;
+use super::Topic;
 use crate::error::ConfigurationError;
+use crate::util::validated_text::is_nonblank_without_controls;
 
 /// Policy used when forwarding a failed delivery to a dead-letter topic.
 ///
@@ -27,19 +29,23 @@ use crate::error::ConfigurationError;
 /// ```
 /// use qubit_event_bus::model::DeadLetterAdmissionPolicy;
 /// use qubit_event_bus::model::DeadLetterPolicy;
+/// use qubit_event_bus::model::Topic;
 ///
-/// let policy = DeadLetterPolicy::known_destination("orders.dlq").unwrap();
+/// let policy = DeadLetterPolicy::with_known_destination("orders.dlq").unwrap();
 /// assert_eq!(policy.topic_name(), "orders.dlq");
 /// assert_eq!(policy.admission_policy(), DeadLetterAdmissionPolicy::KnownDestination);
 ///
-/// assert!(DeadLetterPolicy::topic(" orders.dlq").is_err());
+/// let topic = Topic::<String>::new("orders.dlq").unwrap();
+/// assert_eq!(DeadLetterPolicy::with_topic(&topic).topic_name(), "orders.dlq");
+///
+/// assert!(DeadLetterPolicy::with_topic_name(" orders.dlq").is_err());
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeadLetterPolicy {
     /// Validated dead-letter topic name: nonblank, without surrounding
     /// whitespace or control characters. Stored as an owned string whose
     /// contents never change after construction.
-    topic: Box<str>,
+    topic_name: Box<str>,
     /// Evidence the dead-letter publication must produce before the source
     /// delivery counts as forwarded rather than lost.
     admission: DeadLetterAdmissionPolicy,
@@ -51,7 +57,7 @@ impl DeadLetterPolicy {
     /// This is the lenient default: the source delivery is settled as
     /// forwarded as soon as the provider reports the dead-letter publication
     /// as accepted, even when no concrete destination is known. Use
-    /// [`Self::known_destination`] when a stronger guarantee is required.
+    /// [`Self::with_known_destination`] when a stronger guarantee is required.
     ///
     /// # Parameters
     /// - `name`: the dead-letter topic name; copied into the policy.
@@ -63,8 +69,34 @@ impl DeadLetterPolicy {
     /// # Errors
     /// Returns [`ConfigurationError::InvalidField`] when `name` is blank,
     /// has surrounding whitespace, or contains a control character.
-    pub fn topic(name: &str) -> Result<Self, ConfigurationError> {
+    pub fn with_topic_name(name: &str) -> Result<Self, ConfigurationError> {
         Self::with_admission(name, DeadLetterAdmissionPolicy::TransportAccepted)
+    }
+
+    /// Creates a policy from an already validated topic.
+    ///
+    /// The destination is copied from `topic`. Admission matches
+    /// [`Self::with_topic_name`]: the source delivery is settled as forwarded
+    /// as soon as the provider reports the dead-letter publication as
+    /// accepted. A [`Topic`] name is already validated, so this constructor
+    /// does not fail.
+    ///
+    /// # Type Parameters
+    /// - `T`: the payload type bound to `topic`. Only the name is stored, so
+    ///   `T` need not be the dead-letter payload type.
+    ///
+    /// # Parameters
+    /// - `topic`: the destination whose name is copied into the policy.
+    ///
+    /// # Returns
+    /// A policy targeting `topic`'s name with
+    /// [`DeadLetterAdmissionPolicy::TransportAccepted`].
+    #[must_use]
+    pub fn with_topic<T: 'static>(topic: &Topic<T>) -> Self {
+        Self {
+            topic_name: topic.name().into(),
+            admission: DeadLetterAdmissionPolicy::TransportAccepted,
+        }
     }
 
     /// Creates a policy that requires a known destination to accept the event.
@@ -74,47 +106,48 @@ impl DeadLetterPolicy {
     /// transport acknowledgement alone is not sufficient.
     ///
     /// # Parameters
-    /// - `name`: the dead-letter topic name; copied into the policy.
+    /// - `topic_name`: the dead-letter topic name; copied into the policy.
     ///
     /// # Returns
-    /// A policy targeting `name` with
+    /// A policy targeting `topic_name` with
     /// [`DeadLetterAdmissionPolicy::KnownDestination`].
     ///
     /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] when `name` is blank,
-    /// has surrounding whitespace, or contains a control character.
-    pub fn known_destination(name: &str) -> Result<Self, ConfigurationError> {
-        Self::with_admission(name, DeadLetterAdmissionPolicy::KnownDestination)
+    /// Returns [`ConfigurationError::InvalidField`] when `topic_name` is
+    /// blank, has surrounding whitespace, or contains a control character.
+    pub fn with_known_destination(topic_name: &str) -> Result<Self, ConfigurationError> {
+        Self::with_admission(topic_name, DeadLetterAdmissionPolicy::KnownDestination)
     }
 
     /// Creates a policy with an explicit topic and admission requirement.
     ///
-    /// [`Self::topic`] and [`Self::known_destination`] forward to this
-    /// constructor; call it directly when the admission requirement is chosen
-    /// at runtime. Validation happens once here, so later accessors never
-    /// fail.
+    /// [`Self::with_topic_name`] and [`Self::with_known_destination`] forward
+    /// to this constructor; call it directly when the admission requirement is
+    /// chosen at runtime. Validation happens once here, so later accessors
+    /// never fail. [`Self::with_topic`] copies an already validated [`Topic`]
+    /// name and does not call this constructor.
     ///
     /// # Parameters
-    /// - `name`: the dead-letter topic name; copied into the policy.
+    /// - `topic_name`: the dead-letter topic name; copied into the policy.
     /// - `admission`: the evidence required before the source delivery is
     ///   settled as forwarded.
     ///
     /// # Returns
-    /// A policy targeting `name` with the given `admission` requirement.
+    /// A policy targeting `topic_name` with the given `admission` requirement.
     ///
     /// # Errors
     /// Returns [`ConfigurationError::InvalidField`] with field `dead_letter`
-    /// when `name` is blank, has surrounding whitespace, or contains a
+    /// when `topic_name` is blank, has surrounding whitespace, or contains a
     /// control character.
-    pub fn with_admission(name: &str, admission: DeadLetterAdmissionPolicy) -> Result<Self, ConfigurationError> {
-        if name.is_empty() || name.trim() != name || name.chars().any(char::is_control) {
+    pub fn with_admission(topic_name: &str, admission: DeadLetterAdmissionPolicy) -> Result<Self, ConfigurationError> {
+        if !is_nonblank_without_controls(topic_name) {
             return Err(ConfigurationError::InvalidField {
                 field: "dead_letter",
                 message: "topic must be nonblank and contain no controls".into(),
             });
         }
         Ok(Self {
-            topic: name.into(),
+            topic_name: topic_name.into(),
             admission,
         })
     }
@@ -127,7 +160,7 @@ impl DeadLetterPolicy {
     /// characters, so it can be handed to a provider without re-validation.
     #[must_use]
     pub fn topic_name(&self) -> &str {
-        &self.topic
+        &self.topic_name
     }
 
     /// Returns the evidence required before the source is settled as forwarded.

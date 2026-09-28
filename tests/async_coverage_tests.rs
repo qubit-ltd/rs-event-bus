@@ -1112,7 +1112,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
         .expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("async.dead").unwrap())
+        .dead_letter(DeadLetterPolicy::with_topic_name("async.dead").unwrap())
         .build();
 
     let mut subscription = block_on(
@@ -1163,7 +1163,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
         .expect("valid provider capabilities");
     let string_options = SubscribeOptions::<String>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("async.dead.string").unwrap())
+        .dead_letter(DeadLetterPolicy::with_topic_name("async.dead.string").unwrap())
         .build();
     let mut string_subscription = block_on(
         string_bus.subscribe(
@@ -1218,7 +1218,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
             .expect("valid provider capabilities");
     let non_clone_options = SubscribeOptions::<NonCloneDeadLetterPayload>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(DeadLetterPolicy::topic("async.dead.non-clone").unwrap())
+        .dead_letter(DeadLetterPolicy::with_topic_name("async.dead.non-clone").unwrap())
         .build();
     let mut non_clone_subscription = block_on(
         non_clone_bus.subscribe(

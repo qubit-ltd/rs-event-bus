@@ -365,8 +365,8 @@ with `PublishVisibility::DestinationAdmissions` can report destination-level det
 
 The payload type of a dead-letter topic is `DeadLetterEvent<T>`: `original_event: Arc<EventEnvelope<T>>`,
 `subscriber_id`, and `reason` (the `Display` of the final `DeliveryError`).
-`DeadLetterPolicy::topic(name)` names the topic and defaults to transport acceptance;
-`known_destination(name)` requires visible admission and is rejected for opaque providers.
+`DeadLetterPolicy::with_topic_name(name)` names the topic and defaults to transport acceptance;
+`with_known_destination(topic_name)` requires visible admission and is rejected for opaque providers.
 The facade builds `Topic::<DeadLetterEvent<T>>::new(name)` and requires a codec registered
 for that payload type on encoded providers. Dead-letter event IDs are stable for the original
 event and subscriber to aid deduplication, but do not provide exactly-once delivery.

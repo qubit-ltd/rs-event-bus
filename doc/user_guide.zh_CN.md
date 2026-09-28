@@ -354,7 +354,7 @@ let subscription = bus.subscribe(request, handler)?;
 | 由处理函数决定何时确认 | `ack_mode(AckMode::Manual)` | 写入业务数据后调用 `delivery.acknowledgement().ack()`；处理失败可调用 `nack()`。未作决定就返回会被视为失败。示例见[由处理函数决定何时确认](#由处理函数决定何时确认)。 |
 | 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.25"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
 | 失败后选择动作 | `error_handler` | 可要求重试、重新放回队列、转入失败消息主题或放弃；重新入队需要所用实现支持。 |
-| 保存最终处理失败的事件 | `dead_letter(DeadLetterPolicy::topic(name)?)` | 把失败消息转发到另一个主题（死信主题），还需有人订阅并处理它。示例见[保存最终处理失败的事件](#保存最终处理失败的事件)。 |
+| 保存最终处理失败的事件 | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | 把失败消息转发到另一个主题（死信主题），还需有人订阅并处理它。示例见[保存最终处理失败的事件](#保存最终处理失败的事件)。 |
 | 同一客户的消息按顺序处理 | `ordering_policy(OrderingPolicy::PerKey)` | 发布方须为事件设置顺序键，所用实现还须支持此能力；见[保证同一对象的处理顺序](#保证同一对象的处理顺序)。 |
 | 多个实例分工或读取旧消息 | `consumer_group`、`durability`、`start_position` | 只有支持这些能力的传递实现可使用；local 不支持持久订阅和历史读取。 |
 | 底层实现专有参数 | `provider_option` | 具体含义由该实现说明；不要放密码。 |
@@ -417,16 +417,18 @@ use qubit_event_bus::model::{
     DeadLetterEvent, DeadLetterPolicy, FailureDirective, SubscribeOptions, SubscribeRequest, Topic,
 };
 
-// 失败方：处理失败时转入死信主题
+// 死信主题的载荷类型是 DeadLetterEvent<OrderCreated>，不是 OrderCreated。
+let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
+
+// 失败方：处理失败时转入上面的死信主题。
 let options = SubscribeOptions::<OrderCreated>::builder()
     .error_handler(|_event, _error| FailureDirective::DeadLetter)
-    .dead_letter(DeadLetterPolicy::topic("orders.created.dead")?)
+    .dead_letter(DeadLetterPolicy::with_topic(&dead_letter_topic))
     .build();
 let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
 let view_subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
 
-// 读取方：订阅死信主题，记录失败原因供人工或后台任务补处理
-let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
+// 读取方：订阅同一个死信主题，记录失败原因供人工或后台任务补处理。
 let dead_letter_subscription = bus.subscribe(
     SubscribeRequest::new("dead-letter-reader", dead_letter_topic)?,
     |delivery| {
@@ -441,7 +443,7 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
-`error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发失败，异步 runner 会以 `ReceiveError::DeadLetterForwardFailed` 停止；同步 facade 会取消该订阅。源 token 保持未结算，诊断中会报告该失败。恢复方式取决于 provider 的 durability 和 close 语义：durable provider 可在恢复或重建订阅后重新投递未结算消息；ephemeral provider 关闭时可能丢弃消息。不要假设转发持续失败期间 facade 会重新运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::known_destination(name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
+`error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发失败，异步 runner 会以 `ReceiveError::DeadLetterForwardFailed` 停止；同步 facade 会取消该订阅。源 token 保持未结算，诊断中会报告该失败。恢复方式取决于 provider 的 durability 和 close 语义：durable provider 可在恢复或重建订阅后重新投递未结算消息；ephemeral provider 关闭时可能丢弃消息。不要假设转发持续失败期间 facade 会重新运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::with_known_destination(topic_name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
 
 ## 需要拦截或过滤消息时
 
