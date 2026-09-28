@@ -13,9 +13,22 @@ use crate::error::ConfigurationError;
 
 /// A caller-supplied logical subscriber name, independent of subscription
 /// objects.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::SubscriberId;
+///
+/// let subscriber = SubscriberId::new_static("orders.audit");
+/// assert_eq!(subscriber.as_str(), "orders.audit");
+/// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
-pub struct SubscriberId(Cow<'static, str>);
+pub struct SubscriberId(
+    /// The validated, case-sensitive name, borrowed when static and owned
+    /// otherwise.
+    Cow<'static, str>,
+);
 
 impl SubscriberId {
     /// Creates a subscriber identifier from a static string without allocating.
@@ -23,6 +36,12 @@ impl SubscriberId {
     /// # Panics
     /// Panics during constant evaluation, or at runtime, if the value does not
     /// follow the portable subscriber-name syntax.
+    ///
+    /// # Parameters
+    /// - `value`: a static subscriber name that satisfies the portable syntax.
+    ///
+    /// # Returns
+    /// An identifier that borrows `value` without allocating.
     ///
     /// ```compile_fail
     /// use qubit_event_bus::SubscriberId;
@@ -39,6 +58,16 @@ impl SubscriberId {
     /// or digit, and then contains only ASCII letters, digits, `.`, `_`, `-`,
     /// or `:`. Invalid input returns
     /// [`ConfigurationError::InvalidSubscriberId`].
+    ///
+    /// # Parameters
+    /// - `value`: a subscriber name to validate and copy into the identifier.
+    ///
+    /// # Returns
+    /// The owned identifier when the name is valid.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidSubscriberId`] when the name does
+    /// not follow the portable subscriber-name syntax.
     pub fn new(value: impl AsRef<str>) -> Result<Self, ConfigurationError> {
         let value = value.as_ref();
         if !Self::is_valid(value) {
@@ -49,6 +78,12 @@ impl SubscriberId {
 
     /// Checks the portable subscriber-name syntax using const-compatible byte
     /// operations.
+    ///
+    /// # Parameters
+    /// - `value`: the name to validate.
+    ///
+    /// # Returns
+    /// `true` when `value` follows the portable subscriber-name syntax.
     const fn is_valid(value: &str) -> bool {
         let bytes = value.as_bytes();
         if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
@@ -66,6 +101,9 @@ impl SubscriberId {
     }
 
     /// Returns the original, case-sensitive subscriber name.
+    ///
+    /// # Returns
+    /// The validated name, borrowed from this identifier.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_ref()

@@ -15,18 +15,30 @@ use super::notification_stats_snapshot::NotificationStatsSnapshot;
 /// Atomic counters shared by the publisher handle and its worker.
 #[derive(Default)]
 pub(super) struct NotificationStats {
+    /// Number of notifications accepted into the queue.
     pub(super) enqueued: AtomicU64,
+    /// Number of notifications rejected because the queue was full.
     pub(super) queue_full: AtomicU64,
+    /// Number of notifications rejected because the queue was closed.
     pub(super) queue_closed: AtomicU64,
+    /// Number of notifications published by the worker.
     pub(super) published: AtomicU64,
+    /// Number of provider publication failures.
     pub(super) publish_errors: AtomicU64,
+    /// Number of invalid notification requests.
     pub(super) request_errors: AtomicU64,
+    /// Number of observer callbacks that panicked.
     pub(super) observer_panicked: AtomicU64,
+    /// Number of worker failures caused by a panic.
     pub(super) worker_panicked: AtomicU64,
 }
 
 impl NotificationStats {
     /// Loads all counters into one best-effort snapshot.
+    ///
+    /// # Returns
+    /// A snapshot containing relaxed atomic loads of the current counters. The
+    /// values are not guaranteed to represent one globally consistent instant.
     pub(super) fn snapshot(&self) -> NotificationStatsSnapshot {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         NotificationStatsSnapshot {
@@ -42,6 +54,9 @@ impl NotificationStats {
     }
 
     /// Increments one counter without overflowing it.
+    ///
+    /// # Parameters
+    /// - `counter`: the counter to increment using a saturating update.
     pub(super) fn increment(counter: &AtomicU64) {
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
