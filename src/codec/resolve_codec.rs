@@ -17,6 +17,19 @@ use crate::model::Topic;
 ///
 /// The returned codec is owned so a subscription can retain the selected
 /// codec for its entire lifetime. `None` means neither source has a codec.
+///
+/// # Type Parameters
+/// - `T`: the topic payload type whose codec is selected.
+///
+/// # Parameters
+/// - `topic`: the typed topic, whose explicitly configured codec takes
+///   precedence.
+/// - `registry`: the fallback registry consulted only when the topic has no
+///   codec.
+///
+/// # Returns
+/// A shared codec handle from the topic or registry, or `None` if neither has
+/// a codec for `T`.
 pub(crate) fn resolve_codec<T: Send + Sync + 'static>(
     topic: &Topic<T>,
     registry: &CodecRegistry,

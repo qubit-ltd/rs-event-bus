@@ -44,5 +44,9 @@ pub enum ProviderError {
     },
     /// A provider failed to create or validate its SPI.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Classified SPI failure from provider creation.
+        #[from]
+        SpiError,
+    ),
 }

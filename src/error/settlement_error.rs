@@ -10,6 +10,14 @@
 use crate::error::SpiError;
 
 /// A delivery could not be acknowledged or rejected.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::SettlementError;
+///
+/// assert!(matches!(SettlementError::AlreadySettled, SettlementError::AlreadySettled));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SettlementError {
@@ -18,5 +26,9 @@ pub enum SettlementError {
     AlreadySettled,
     /// The backend rejected the settlement.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Failure returned by the provider settlement operation.
+        #[from]
+        SpiError,
+    ),
 }

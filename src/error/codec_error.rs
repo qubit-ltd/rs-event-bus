@@ -10,6 +10,15 @@
 use std::error::Error;
 
 /// A registered codec failed to convert an event payload.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::CodecError;
+///
+/// let error = CodecError::PayloadTooLarge { actual: 128, limit: 64 };
+/// assert!(matches!(error, CodecError::PayloadTooLarge { actual: 128, limit: 64 }));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CodecError {

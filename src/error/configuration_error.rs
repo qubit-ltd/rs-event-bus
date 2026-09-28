@@ -8,6 +8,15 @@
 //! Invalid event bus configuration and identifiers.
 
 /// A caller-provided configuration value failed validation.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::ConfigurationError;
+///
+/// let error = ConfigurationError::invalid_subscriber_id("_audit");
+/// assert!(matches!(error, ConfigurationError::InvalidSubscriberId { .. }));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigurationError {
@@ -41,12 +50,24 @@ pub enum ConfigurationError {
 
 impl ConfigurationError {
     /// Reports a subscriber ID that failed portable-syntax validation.
+    ///
+    /// # Parameters
+    /// - `value`: the rejected subscriber ID to retain for diagnostics.
+    ///
+    /// # Returns
+    /// An error containing an owned copy of the invalid value.
     #[must_use]
     pub fn invalid_subscriber_id(value: &str) -> Self {
         Self::InvalidSubscriberId { value: value.into() }
     }
 
     /// Reports an event ID that failed validation.
+    ///
+    /// # Parameters
+    /// - `value`: the rejected event ID to retain for diagnostics.
+    ///
+    /// # Returns
+    /// An error containing an owned copy of the invalid value.
     #[must_use]
     pub fn invalid_event_id(value: &str) -> Self {
         Self::InvalidEventId { value: value.into() }

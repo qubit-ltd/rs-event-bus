@@ -13,6 +13,23 @@ use std::panic::AssertUnwindSafe;
 use crate::error::CodecError;
 
 /// Runs a codec callback and converts a panic into a structured error.
+///
+/// This keeps user codec panics inside the facade's error boundary while
+/// preserving ordinary codec errors unchanged.
+///
+/// # Type Parameters
+/// - `R`: the successful result produced by the callback.
+///
+/// # Parameters
+/// - `operation`: the static operation name recorded when the callback panics.
+/// - `call`: the user codec operation to execute.
+///
+/// # Returns
+/// The callback result, or a [`CodecError::Panicked`] error when it unwinds.
+///
+/// # Errors
+/// Returns the callback's [`CodecError`] unchanged, or a structured panic
+/// error containing the operation and a readable panic message.
 pub(crate) fn call_codec<R>(
     operation: &'static str,
     call: impl FnOnce() -> Result<R, CodecError>,
@@ -26,6 +43,16 @@ pub(crate) fn call_codec<R>(
     }
 }
 
+/// Extracts a readable message from a panic payload.
+///
+/// String payloads are copied; other payload types use a fixed fallback so
+/// arbitrary panic objects are never formatted or exposed.
+///
+/// # Parameters
+/// - `payload`: the payload returned by `catch_unwind`.
+///
+/// # Returns
+/// An owned panic message, or a fallback description for non-string payloads.
 fn panic_message(payload: &(dyn Any + Send)) -> Box<str> {
     if let Some(message) = payload.downcast_ref::<String>() {
         message.as_str().into()

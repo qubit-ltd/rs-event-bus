@@ -29,13 +29,24 @@ use super::SubscriberId;
 /// }
 /// ```
 pub struct DeadLetterEvent<T: 'static> {
+    /// Original event retained by shared ownership without a `Clone` bound.
     original_event: Arc<EventEnvelope<T>>,
+    /// Subscriber whose terminal processing policy forwarded the event.
     subscriber_id: SubscriberId,
+    /// Display text for the final processing failure.
     reason: Box<str>,
 }
 
 impl<T: 'static> DeadLetterEvent<T> {
     /// Creates a dead-letter view over an existing event.
+    ///
+    /// # Parameters
+    /// - `original_event`: source envelope retained by the dead-letter payload.
+    /// - `subscriber_id`: logical subscriber that reached its terminal policy.
+    /// - `reason`: display text describing the terminal failure.
+    ///
+    /// # Returns
+    /// A dead-letter payload sharing the original event allocation.
     pub(crate) fn new(original_event: Arc<EventEnvelope<T>>, subscriber_id: SubscriberId, reason: Box<str>) -> Self {
         Self {
             original_event,
@@ -45,6 +56,9 @@ impl<T: 'static> DeadLetterEvent<T> {
     }
 
     /// Returns the immutable original event envelope.
+    ///
+    /// # Returns
+    /// The original event borrowed from this dead-letter payload.
     #[must_use = "the logical subscriber identifies which consumer failed"]
     #[inline]
     pub fn original_event(&self) -> &EventEnvelope<T> {
@@ -53,12 +67,18 @@ impl<T: 'static> DeadLetterEvent<T> {
 
     /// Returns another shared reference to the original event without cloning
     /// its payload.
+    ///
+    /// # Returns
+    /// A cloned shared owner of the original event.
     #[must_use]
     pub fn original_event_arc(&self) -> Arc<EventEnvelope<T>> {
         Arc::clone(&self.original_event)
     }
 
     /// Returns the logical subscriber that reached its terminal failure policy.
+    ///
+    /// # Returns
+    /// The subscriber identifier retained in this payload.
     #[must_use = "the subscriber ID identifies the consumer that failed"]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
@@ -69,6 +89,9 @@ impl<T: 'static> DeadLetterEvent<T> {
     ///
     /// Treat this text as untrusted diagnostic content when rendering it in
     /// logs or other externally visible sinks.
+    ///
+    /// # Returns
+    /// The retained failure description.
     #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason

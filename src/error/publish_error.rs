@@ -33,20 +33,39 @@ use crate::error::SpiError;
 pub enum PublishError {
     /// Publication metadata was changed to an invalid value by an interceptor.
     #[error(transparent)]
-    Configuration(#[from] ConfigurationError),
+    Configuration(
+        /// Validation failure for the publication metadata.
+        #[from]
+        ConfigurationError,
+    ),
     /// Required backend behavior is unavailable.
     #[error(transparent)]
-    Capability(#[from] CapabilityError),
+    Capability(
+        /// Required provider capability that is unavailable.
+        #[from]
+        CapabilityError,
+    ),
     /// Payload encoding failed.
     #[error(transparent)]
-    Codec(#[from] CodecError),
+    Codec(
+        /// Payload encoding failure.
+        #[from]
+        CodecError,
+    ),
     /// The selected provider failed to publish.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Failure returned by the selected provider.
+        #[from]
+        SpiError,
+    ),
     /// All configured provider publish attempts reached a terminal retry
     /// outcome.
     #[error(transparent)]
-    Retry(Box<RetryError<PublishAttemptError>>),
+    Retry(
+        /// Report containing each attempted failure and the terminal outcome.
+        Box<RetryError<PublishAttemptError>>,
+    ),
     /// A publisher interceptor panicked; `scope` identifies which chain ran.
     #[error("{scope} publisher interceptor panicked: {message}")]
     InterceptorPanicked {

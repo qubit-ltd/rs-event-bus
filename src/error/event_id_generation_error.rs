@@ -16,6 +16,13 @@ pub struct EventIdGenerationError(#[source] IdGenerationError);
 
 impl EventIdGenerationError {
     /// Wraps the underlying ID generator error while preserving it as a source.
+    ///
+    /// # Parameters
+    /// - `source`: the UUID generator failure to retain.
+    ///
+    /// # Returns
+    /// An event-ID generation error that exposes `source` through its error
+    /// chain.
     pub(crate) fn new(source: IdGenerationError) -> Self {
         Self(source)
     }

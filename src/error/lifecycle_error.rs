@@ -15,6 +15,15 @@ use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 
 /// A lifecycle operation could not complete.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::LifecycleError;
+///
+/// let error = LifecycleError::Closed;
+/// assert!(matches!(error, LifecycleError::Closed));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LifecycleError {

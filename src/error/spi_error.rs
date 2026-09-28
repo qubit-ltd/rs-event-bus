@@ -10,6 +10,22 @@
 use std::error::Error;
 
 /// An error returned across the provider SPI boundary.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::SpiError;
+///
+/// let error = SpiError::Operation {
+///     provider_id: "memory".into(),
+///     operation: "publish",
+///     resource: None,
+///     kind: "unavailable",
+///     retryable: Some(true),
+///     source: Box::new(std::io::Error::other("offline")),
+/// };
+/// assert_eq!(error.provider_id(), "memory");
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SpiError {
@@ -51,7 +67,11 @@ pub enum SpiError {
 
 impl SpiError {
     /// Returns the provider ID retained by this SPI failure.
+    ///
+    /// # Returns
+    /// The provider identifier associated with the failure.
     #[must_use]
+    #[inline]
     pub fn provider_id(&self) -> &str {
         match self {
             Self::Operation { provider_id, .. } | Self::InvalidSettlementToken { provider_id, .. } => provider_id,
@@ -59,7 +79,11 @@ impl SpiError {
     }
 
     /// Returns the operation that failed.
+    ///
+    /// # Returns
+    /// The static operation name.
     #[must_use]
+    #[inline]
     pub fn operation(&self) -> &'static str {
         match self {
             Self::Operation { operation, .. } | Self::InvalidSettlementToken { operation, .. } => operation,
@@ -67,7 +91,11 @@ impl SpiError {
     }
 
     /// Returns `Some` topic or subscription context when known, or `None`.
+    ///
+    /// # Returns
+    /// The associated resource name, if the operation had one.
     #[must_use]
+    #[inline]
     pub fn resource(&self) -> Option<&str> {
         match self {
             Self::Operation { resource, .. } | Self::InvalidSettlementToken { resource, .. } => resource.as_deref(),
@@ -75,7 +103,11 @@ impl SpiError {
     }
 
     /// Returns the stable error classification.
+    ///
+    /// # Returns
+    /// The stable classification string.
     #[must_use]
+    #[inline]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Operation { kind, .. } => kind,
@@ -85,7 +117,11 @@ impl SpiError {
 
     /// Returns `Some(true)` for known retryable errors, `Some(false)` for
     /// known terminal errors, or `None` when the provider cannot classify it.
+    ///
+    /// # Returns
+    /// The provider's retry classification when available.
     #[must_use]
+    #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {
             Self::Operation { retryable, .. } | Self::InvalidSettlementToken { retryable, .. } => *retryable,

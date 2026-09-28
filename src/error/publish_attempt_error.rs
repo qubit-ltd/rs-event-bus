@@ -10,6 +10,16 @@
 use std::error::Error;
 
 /// A failure supplied to `qubit-retry` for one publish attempt.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::PublishAttemptError;
+///
+/// let failure = PublishAttemptError::new("unavailable", Some(true), std::io::Error::other("offline"));
+/// assert_eq!(failure.kind(), "unavailable");
+/// assert_eq!(failure.retryable(), Some(true));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PublishAttemptError {
@@ -28,6 +38,15 @@ pub enum PublishAttemptError {
 
 impl PublishAttemptError {
     /// Wraps a single attempt failure while preserving its source.
+    ///
+    /// # Parameters
+    /// - `kind`: stable failure classification.
+    /// - `retryable`: optional override of the default retry decision.
+    /// - `source`: underlying failure to retain in the error chain.
+    ///
+    /// # Returns
+    /// A classified publish-attempt error.
+    #[must_use]
     pub fn new(kind: &'static str, retryable: Option<bool>, source: impl Error + Send + Sync + 'static) -> Self {
         Self::Failure {
             kind,
@@ -36,6 +55,11 @@ impl PublishAttemptError {
         }
     }
     /// Returns the stable failure classification.
+    ///
+    /// # Returns
+    /// The static classification associated with this failure.
+    #[must_use]
+    #[inline]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Failure { kind, .. } => kind,
@@ -43,6 +67,11 @@ impl PublishAttemptError {
     }
     /// Returns an explicit retry override, or `None` for default
     /// classification.
+    ///
+    /// # Returns
+    /// The configured override, or `None` to use the default classification.
+    #[must_use]
+    #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {
             Self::Failure { retryable, .. } => *retryable,

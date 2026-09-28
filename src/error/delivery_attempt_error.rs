@@ -10,6 +10,16 @@
 use std::error::Error;
 
 /// A failure supplied to `qubit-retry` for one delivery attempt.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::DeliveryAttemptError;
+///
+/// let failure = DeliveryAttemptError::new("handler", None, std::io::Error::other("unavailable"));
+/// assert_eq!(failure.kind(), "handler");
+/// assert_eq!(failure.retryable(), None);
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DeliveryAttemptError {
@@ -28,6 +38,15 @@ pub enum DeliveryAttemptError {
 
 impl DeliveryAttemptError {
     /// Wraps a single attempt failure while preserving its source.
+    ///
+    /// # Parameters
+    /// - `kind`: stable classification used by retry policy.
+    /// - `retryable`: optional application override of retry classification.
+    /// - `source`: original handler or delivery error to retain.
+    ///
+    /// # Returns
+    /// A classified attempt error that exposes `source` through its error
+    /// chain.
     pub fn new(kind: &'static str, retryable: Option<bool>, source: impl Error + Send + Sync + 'static) -> Self {
         Self::Failure {
             kind,
@@ -36,6 +55,11 @@ impl DeliveryAttemptError {
         }
     }
     /// Returns the stable failure classification.
+    ///
+    /// # Returns
+    /// The static kind supplied when the failure was created.
+    #[must_use]
+    #[inline]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Failure { kind, .. } => kind,
@@ -43,6 +67,11 @@ impl DeliveryAttemptError {
     }
     /// Returns an explicit retry override, or `None` for default
     /// classification.
+    ///
+    /// # Returns
+    /// The optional application retry override attached to this failure.
+    #[must_use]
+    #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {
             Self::Failure { retryable, .. } => *retryable,

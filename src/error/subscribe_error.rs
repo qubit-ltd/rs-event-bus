@@ -12,15 +12,31 @@ use crate::error::ConfigurationError;
 use crate::error::SpiError;
 
 /// A subscription could not be created.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::SubscribeError;
+///
+/// assert!(matches!(SubscribeError::Closed, SubscribeError::Closed));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SubscribeError {
     /// Subscriber configuration is invalid.
     #[error(transparent)]
-    Configuration(#[from] ConfigurationError),
+    Configuration(
+        /// Validation failure for the subscription configuration.
+        #[from]
+        ConfigurationError,
+    ),
     /// Required backend behavior is unavailable.
     #[error(transparent)]
-    Capability(#[from] CapabilityError),
+    Capability(
+        /// Required provider capability that is unavailable.
+        #[from]
+        CapabilityError,
+    ),
     /// The configured subscription worker budget is exhausted.
     #[error("event bus resource limit reached for {resource} (limit {limit})")]
     ResourceLimit {
@@ -31,7 +47,11 @@ pub enum SubscribeError {
     },
     /// The selected provider failed to subscribe.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Failure returned by the selected provider.
+        #[from]
+        SpiError,
+    ),
     /// The event bus has already closed.
     #[error("cannot subscribe after event bus shutdown")]
     Closed,

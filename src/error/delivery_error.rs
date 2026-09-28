@@ -16,6 +16,17 @@ use crate::error::DeliveryAttemptError;
 use crate::error::SpiError;
 
 /// An event delivery could not complete successfully.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::DeliveryError;
+///
+/// let error = DeliveryError::Handler {
+///     source: Box::new(std::io::Error::other("storage unavailable")),
+/// };
+/// assert!(matches!(error, DeliveryError::Handler { .. }));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DeliveryError {
