@@ -596,9 +596,13 @@ impl ServiceProvider<EventBusSpec> for MyProvider {
 若要支持自动发现，在实现 crate 中启用 `discovery`，并提交到同步目录：
 
 ```rust
-qubit_spi::submit_sync_provider! {
-    inventory_entry = qubit_event_bus::registry::sync_provider_inventory::Entry;
-    spec = qubit_event_bus::EventBusSpec;
+use qubit_event_bus::EventBusSpec;
+use qubit_event_bus::registry::sync_provider_inventory::Entry;
+use qubit_spi::submit_sync_provider;
+
+submit_sync_provider! {
+    inventory_entry = Entry;
+    spec = EventBusSpec;
     provider = MyProvider;
 }
 ```

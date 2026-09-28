@@ -30,7 +30,9 @@ subscription ownership, publication, and explicit shutdown.
 ```rust
 use std::sync::Arc;
 
-use qubit_event_bus::model::{PublishReceipt, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::model::{
+    AdmissionOutcome, PublishReceipt, PublishRequest, SubscribeRequest, Topic,
+};
 use qubit_event_bus::{DeliveryError, EventBus, Subscription};
 
 // Published after the order transaction commits.
@@ -84,17 +86,17 @@ fn publish_order_created(
     let event = OrderCreated { order_id, customer_id, total_cents };
     let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
     match receipt.admission_outcome() {
-        qubit_event_bus::model::AdmissionOutcome::Accepted(_) => Ok(receipt),
-        qubit_event_bus::model::AdmissionOutcome::OpaqueAccepted => {
+        AdmissionOutcome::Accepted(_) => Ok(receipt),
+        AdmissionOutcome::OpaqueAccepted => {
             // The provider reports broker acceptance, not individual subscribers.
             Ok(receipt)
         }
-        qubit_event_bus::model::AdmissionOutcome::PartiallyAccepted(summary) => {
+        AdmissionOutcome::PartiallyAccepted(summary) => {
             // Some subscribers already admitted it; repair rejected destinations individually.
             Err(std::io::Error::other(format!("{} subscribers rejected the event", summary.rejected)).into())
         }
-        qubit_event_bus::model::AdmissionOutcome::NoDestinations
-        | qubit_event_bus::model::AdmissionOutcome::NoneAccepted(_) => {
+        AdmissionOutcome::NoDestinations
+        | AdmissionOutcome::NoneAccepted(_) => {
             Err(std::io::Error::other("no subscriber admitted the event").into())
         }
         other => Err(std::io::Error::other(format!("admission needs an application policy: {other:?}")).into()),

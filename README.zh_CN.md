@@ -49,7 +49,7 @@ impl OrderCreated {
 
 ```rust
 // src/orders/service.rs
-use qubit_event_bus::model::{PublishReceipt, PublishRequest};
+use qubit_event_bus::model::{AdmissionOutcome, PublishReceipt, PublishRequest};
 use qubit_event_bus::EventBus;
 
 use super::events::OrderCreated;
@@ -84,17 +84,17 @@ pub fn create_order(
     };
     let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
     match receipt.admission_outcome() {
-        qubit_event_bus::model::AdmissionOutcome::Accepted(_) => Ok(receipt),
-        qubit_event_bus::model::AdmissionOutcome::OpaqueAccepted => {
+        AdmissionOutcome::Accepted(_) => Ok(receipt),
+        AdmissionOutcome::OpaqueAccepted => {
             // provider 只报告 broker 接收，不提供逐个订阅者的接纳情况。
             Ok(receipt)
         }
-        qubit_event_bus::model::AdmissionOutcome::PartiallyAccepted(summary) => {
+        AdmissionOutcome::PartiallyAccepted(summary) => {
             // 部分订阅者已接纳；应单独修复被拒绝的目标，避免重复处理已接纳事件。
             Err(std::io::Error::other(format!("{} 个订阅者拒绝了事件", summary.rejected)).into())
         }
-        qubit_event_bus::model::AdmissionOutcome::NoDestinations
-        | qubit_event_bus::model::AdmissionOutcome::NoneAccepted(_) => {
+        AdmissionOutcome::NoDestinations
+        | AdmissionOutcome::NoneAccepted(_) => {
             Err(std::io::Error::other("没有订阅者接纳事件").into())
         }
         other => Err(std::io::Error::other(format!("需要应用策略处理接纳结果：{other:?}")).into()),
