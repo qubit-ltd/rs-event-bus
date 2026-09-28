@@ -26,6 +26,7 @@ use super::Topic;
 use crate::error::EventIdGenerationError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
+use crate::util::validated_text::is_nonblank_without_controls;
 
 /// Invalid publication request metadata or policy.
 #[derive(Debug, thiserror::Error)]
@@ -272,7 +273,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         if self
             .ordering_key
             .as_ref()
-            .is_some_and(|key| key.is_empty() || key.trim() != key || key.chars().any(char::is_control))
+            .is_some_and(|key| !is_nonblank_without_controls(key))
         {
             return Err(PublishRequestBuildError::InvalidOrderingKey);
         }

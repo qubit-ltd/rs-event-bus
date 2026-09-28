@@ -23,6 +23,7 @@ use crate::error::ConfigurationError;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
 use crate::spi::SpiFuture;
+use crate::util::validated_text::is_nonblank_without_controls;
 
 /// The next action requested by a subscriber delivery error handler.
 ///
@@ -92,7 +93,7 @@ pub struct ConsumerGroup(Box<str>);
 impl ConsumerGroup {
     /// Creates a nonblank group name without surrounding whitespace.
     pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+        if !is_nonblank_without_controls(value) {
             return Err(ConfigurationError::InvalidField {
                 field: "consumer_group",
                 message: "must be nonblank and contain no controls".into(),

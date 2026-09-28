@@ -8,6 +8,7 @@
 //! Validated type-erased topic address.
 
 use crate::error::ConfigurationError;
+use crate::util::validated_text::is_valid_topic_name;
 
 /// Topic identity carried across a type-erased transport boundary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -19,7 +20,7 @@ impl TopicAddress {
     /// Returns [`ConfigurationError::InvalidField`] for an empty or oversized
     /// name, surrounding whitespace, or control characters.
     pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if !(1..=255).contains(&value.len()) || value.trim() != value || value.chars().any(char::is_control) {
+        if !is_valid_topic_name(value) {
             return Err(ConfigurationError::InvalidField {
                 field: "topic",
                 message: "must be 1..=255 bytes without surrounding whitespace or controls".into(),

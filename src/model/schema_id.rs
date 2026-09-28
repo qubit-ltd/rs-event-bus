@@ -9,8 +9,8 @@
 
 use std::borrow::Cow;
 
-use super::validated_text::is_nonblank_without_controls;
 use crate::error::ConfigurationError;
+use crate::util::validated_text::is_nonblank_without_controls;
 
 /// A validated schema identifier supplied by an application codec.
 ///

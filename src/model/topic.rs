@@ -16,9 +16,9 @@ use std::hash::Hasher;
 use std::sync::Arc;
 
 use super::schema_id::SchemaId;
-use super::validated_text::is_valid_topic_name;
 use crate::codec::EventCodec;
 use crate::error::ConfigurationError;
+use crate::util::validated_text::is_valid_topic_name;
 
 /// A topic bound to one Rust payload type.
 ///
