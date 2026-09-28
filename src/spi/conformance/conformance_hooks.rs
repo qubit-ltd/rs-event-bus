@@ -19,4 +19,10 @@ pub struct ConformanceHooks {
     /// Checks that closing with an unsettled durable delivery leaves it
     /// available after reconnecting the same logical subscription.
     pub durable_recovery: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    /// Checks cancellation after a settlement operation has taken effect.
+    pub settlement_cancellation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    /// Checks cancellation safety while closing a provider subscription.
+    pub close_cancellation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    /// Checks cancellation safety while shutting down the provider.
+    pub shutdown_cancellation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
 }

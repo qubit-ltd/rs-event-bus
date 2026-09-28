@@ -59,6 +59,8 @@ fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
         settlement: Some(Arc::new(|| Err("repeated settlement changed result".into()))),
         receive_cancellation: None,
         durable_recovery: None,
+        close_cancellation: Some(Arc::new(|| Err("close cancellation lost progress".into()))),
+        ..ConformanceHooks::default()
     };
     let report = run_sync(
         || {
@@ -69,6 +71,9 @@ fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
         &hooks,
     );
     assert!(!report.all_passed());
+    assert!(report.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Failed { case_id, .. } if case_id == "close-cancellation"
+    )));
     assert!(
         matches!(report.cases().first(), Some(ConformanceCase::Passed { case_id }) if case_id == "capability-payload-mode")
     );
@@ -244,6 +249,9 @@ fn strict_conformance_reports_a_provider_durable_recovery_check() {
         settlement: Some(Arc::new(|| Ok(()))),
         receive_cancellation: Some(Arc::new(|| Ok(()))),
         durable_recovery: Some(Arc::new(|| Ok(()))),
+        settlement_cancellation: Some(Arc::new(|| Ok(()))),
+        close_cancellation: Some(Arc::new(|| Ok(()))),
+        shutdown_cancellation: Some(Arc::new(|| Ok(()))),
     };
     let report = run_sync_with_profile(|| Arc::new(FakeEventBusSpi::new()), &hooks, ConformanceProfile::Strict);
     assert!(report.all_passed(), "{report:?}");
@@ -267,6 +275,9 @@ fn strict_async_conformance_awaits_a_provider_durable_recovery_check() {
         settlement: Some(check.clone()),
         receive_cancellation: Some(check.clone()),
         durable_recovery: Some(check),
+        settlement_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
+        close_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
+        shutdown_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
     };
     let report = crate::support::manual_async::block_on(run_async_with_profile(
         || async { Arc::new(FakeAsyncEventBusSpi::new()) as Arc<dyn AsyncEventBusSpi> },

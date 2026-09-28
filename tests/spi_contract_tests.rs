@@ -7,6 +7,7 @@
 // =============================================================================
 mod support;
 
+use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscriberId;
@@ -15,6 +16,7 @@ use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryGap;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::OrderingCapability;
@@ -37,6 +39,18 @@ fn assert_async_object_safe(_: Option<&dyn AsyncEventBusSpi>) {}
 fn test_spi_traits_are_object_safe() {
     assert_sync_object_safe(None);
     assert_async_object_safe(None);
+}
+
+#[test]
+fn cloning_encoded_payload_shares_its_byte_allocation() {
+    let original = EncodedPayload::new(
+        std::sync::Arc::from(b"shared payload".as_slice()),
+        ContentType::new("application/octet-stream").expect("valid content type"),
+        None,
+    );
+    let clone = original.clone();
+    assert_eq!(original.bytes(), clone.bytes());
+    assert_eq!(original.bytes().as_ptr(), clone.bytes().as_ptr());
 }
 
 #[test]
