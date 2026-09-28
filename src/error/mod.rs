@@ -24,6 +24,7 @@ mod shutdown_error;
 mod spi_error;
 mod subscribe_error;
 mod subscription_close_errors;
+mod subscription_close_failure;
 
 pub use capability_error::CapabilityError;
 pub use codec_error::CodecError;
@@ -42,4 +43,4 @@ pub use shutdown_error::ShutdownError;
 pub use spi_error::SpiError;
 pub use subscribe_error::SubscribeError;
 pub use subscription_close_errors::SubscriptionCloseErrors;
-pub use subscription_close_errors::SubscriptionCloseFailure;
+pub use subscription_close_failure::SubscriptionCloseFailure;

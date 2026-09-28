@@ -5,84 +5,72 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
 //! Aggregated failures from closing facade-managed subscriptions.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::error::SpiError;
-use crate::model::SubscriberId;
-
-/// One subscription close failure with its logical subscriber identity.
-#[derive(Debug)]
-pub struct SubscriptionCloseFailure {
-    subscriber_id: SubscriberId,
-    error: SpiError,
-}
-
-impl SubscriptionCloseFailure {
-    /// Creates one ledger entry for a failed subscription close.
-    pub(crate) fn new(subscriber_id: SubscriberId, error: SpiError) -> Self {
-        Self { subscriber_id, error }
-    }
-
-    /// Returns the logical subscriber whose provider subscription failed to
-    /// close.
-    pub fn subscriber_id(&self) -> &SubscriberId {
-        &self.subscriber_id
-    }
-
-    /// Returns the source-preserving provider error.
-    pub fn error(&self) -> &SpiError {
-        &self.error
-    }
-}
-
-impl fmt::Display for SubscriptionCloseFailure {
-    /// Formats the failed subscriber and its provider error.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "subscription {}: {}",
-            self.subscriber_id.as_str(),
-            self.error
-        )
-    }
-}
-
-impl Error for SubscriptionCloseFailure {
-    /// Exposes the original provider close error as the source.
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.error)
-    }
-}
+use super::SubscriptionCloseFailure;
 
 /// A stable, shareable collection of subscription close failures.
+///
+/// The collection is produced by facade shutdown and preserves each provider
+/// error as an inspectable [`SubscriptionCloseFailure`]. Its iterator borrows
+/// the snapshot, so examining failures does not clone error sources.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::SubscriptionCloseErrors;
+///
+/// fn failed_close_count(errors: &SubscriptionCloseErrors) -> usize {
+///     errors.iter().count()
+/// }
+/// ```
 #[derive(Debug)]
 pub struct SubscriptionCloseErrors {
+    /// Shared close-failure records captured by the bus lifecycle ledger.
     failures: Vec<Arc<SubscriptionCloseFailure>>,
 }
 
 impl SubscriptionCloseErrors {
     /// Returns the number of failed subscription closes.
+    ///
+    /// # Returns
+    /// The number of records in this immutable snapshot.
+    #[must_use]
+    #[inline]
     pub fn len(&self) -> usize {
         self.failures.len()
     }
 
     /// Returns whether no subscription close failed.
+    ///
+    /// # Returns
+    /// `true` when the snapshot contains no close failures.
+    #[must_use]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.failures.is_empty()
     }
 
     /// Iterates over every failed subscription and its original provider error.
+    ///
+    /// # Returns
+    /// A borrowing iterator in the order failures were recorded.
+    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
         self.failures.iter().map(Arc::as_ref)
     }
 
     /// Builds an immutable close-error snapshot from the bus lifecycle ledger.
+    ///
+    /// # Parameters
+    /// - `failures`: shared failure records retained by the lifecycle ledger.
+    ///
+    /// # Returns
+    /// An immutable collection over the supplied records.
     pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
         Self { failures }
     }

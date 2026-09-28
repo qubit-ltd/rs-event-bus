@@ -5,8 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
 //! Synchronous type-safe event-bus facade over an object-safe provider SPI.
 
 use std::any::Any;
@@ -35,6 +33,11 @@ use qubit_retry::RetryFallback;
 use qubit_retry::RetryPolicy;
 
 use super::DiagnosticObserverHandle;
+use super::IntoHandlerResult;
+use super::internal::BusContextGuard;
+use super::internal::LifecycleState;
+use super::internal::is_current_bus_context;
+use super::lifecycle::receive_poll_interval;
 use super::observer_entry::ObserverEntry;
 use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
@@ -50,10 +53,8 @@ use crate::error::SpiError;
 use crate::error::SubscribeError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
-use crate::facade::BusContextGuard;
 use crate::facade::DeliveryTrackerGuard;
 use crate::facade::EventBusFacadeConfig;
-use crate::facade::LifecycleState;
 use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
 use crate::facade::PublishMetricsSnapshot;
@@ -61,8 +62,6 @@ use crate::facade::ShutdownReport;
 use crate::facade::Subscription;
 use crate::facade::SubscriptionControl;
 use crate::facade::WaitOutcome;
-use crate::facade::is_current_bus_context;
-use crate::facade::receive_poll_interval;
 use crate::facade::shutdown_coordinator::ShutdownCoordinator;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::local::LocalEventBusConfig;
@@ -107,30 +106,6 @@ use crate::spi::SpiSubscriptionRequest;
 use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
 
-/// Converts a synchronous subscriber handler's return value into a delivery
-/// result.
-pub trait IntoHandlerResult {
-    /// Turns an accepted return value into success or a source-preserving
-    /// handler error.
-    fn into_handler_result(self) -> Result<(), DeliveryError>;
-}
-
-impl IntoHandlerResult for () {
-    /// Treats a handler returning unit as successful completion.
-    fn into_handler_result(self) -> Result<(), DeliveryError> {
-        Ok(())
-    }
-}
-
-impl IntoHandlerResult for Result<(), DeliveryError> {
-    /// Preserves a handler error as the source of a delivery failure.
-    fn into_handler_result(self) -> Result<(), DeliveryError> {
-        self.map_err(|source| DeliveryError::Handler {
-            source: Box::new(source),
-        })
-    }
-}
-
 /// A cloneable synchronous facade with one provider coordinator per
 /// subscription and a shared bounded handler pool.
 ///
@@ -156,6 +131,7 @@ impl IntoHandlerResult for Result<(), DeliveryError> {
 /// ```
 #[derive(Clone)]
 pub struct EventBus {
+    /// Shared provider, subscription, scheduler, and lifecycle state.
     pub(super) inner: Arc<EventBusInner>,
 }
 

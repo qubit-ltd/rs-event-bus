@@ -5,8 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
 //! Complete publication request construction and validation.
 
 use std::sync::Arc;
@@ -22,37 +20,20 @@ use super::EventId;
 use super::Headers;
 use super::PublishOptions;
 use super::PublishRequest;
+use super::PublishRequestBuildError;
 use super::Topic;
 use crate::error::EventIdGenerationError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
 use crate::util::validated_text::is_nonblank_without_controls;
 
-/// Invalid publication request metadata or policy.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum PublishRequestBuildError {
-    /// Random ID generation failed before an event ID was explicitly supplied.
-    #[error("failed to generate publish event ID")]
-    EventIdGeneration(#[source] EventIdGenerationError),
-    /// A required request field was omitted.
-    #[error("missing required publish request field: {0}")]
-    MissingField(&'static str),
-    /// A header key or value is invalid.
-    #[error("invalid publish header {0:?}")]
-    InvalidHeader(String),
-    /// The ordering key is empty or contains controls.
-    #[error("invalid publish ordering key")]
-    InvalidOrderingKey,
-    /// Retry classification or cancellation requires a retry policy.
-    #[error("retry rule or cancellation token requires a retry policy")]
-    InvalidRetryConfiguration,
-}
-
 /// Builds one publication request. Scalars use their last value, headers merge
 /// by key, and handlers or interceptors append in call order. `options`
 /// replaces policy at its call position; later policy calls then override or
 /// append.
+///
+/// # Type Parameters
+/// - `T`: payload type stored in the request.
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,18 +99,29 @@ pub enum PublishRequestBuildError {
 /// # }
 /// ```
 pub struct PublishRequestBuilder<T: 'static> {
+    /// Topic selected for the event.
     topic: Option<Topic<T>>,
+    /// Payload to place in the event envelope.
     payload: Option<T>,
+    /// Explicit event identifier, when the caller supplied one.
     event_id: Option<EventId>,
+    /// Header values merged by key while building the envelope.
     headers: Headers,
+    /// Optional provider ordering key.
     ordering_key: Option<String>,
+    /// Explicit envelope timestamp.
     timestamp: Option<SystemTime>,
+    /// Requested provider delivery delay.
     delay: Option<Duration>,
+    /// Retry, callback, and interceptor policy for this publish request.
     options: PublishOptions<T>,
 }
 
 impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// Starts an empty builder requiring topic and payload.
+    ///
+    /// # Returns
+    /// A builder with no topic or payload and default publish options.
     pub fn new() -> Self {
         Self {
             topic: None,
@@ -143,27 +135,68 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         }
     }
     /// Replaces the typed topic.
+    ///
+    /// # Parameters
+    /// - `value`: topic used by the request.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
         self
     }
     /// Replaces the payload without requiring `T: Clone`.
+    ///
+    /// # Parameters
+    /// - `value`: payload to publish.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn payload(mut self, value: T) -> Self {
         self.payload = Some(value);
         self
     }
     /// Replaces the event ID.
+    ///
+    /// # Parameters
+    /// - `value`: event identifier to place in the envelope.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn event_id(mut self, value: EventId) -> Self {
         self.event_id = Some(value);
         self
     }
     /// Adds or replaces a header by key. Validation occurs in `build`; reserved
     /// facade-owned headers are rejected there.
+    ///
+    /// # Parameters
+    /// - `key`: header name.
+    /// - `value`: header value.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
     }
     /// Merges headers in iteration order, replacing earlier values by key.
+    ///
+    /// # Type Parameters
+    /// - `I`: iterable collection of header pairs.
+    /// - `K`: type convertible to a header key string.
+    /// - `V`: type convertible to a header value string.
+    ///
+    /// # Parameters
+    /// - `values`: header pairs to merge into the request.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn headers<I, K, V>(mut self, values: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -175,26 +208,64 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self
     }
     /// Replaces the ordering key. Validation occurs in `build`.
+    ///
+    /// # Parameters
+    /// - `value`: key used to request ordered delivery.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn ordering_key(mut self, value: impl Into<String>) -> Self {
         self.ordering_key = Some(value.into());
         self
     }
     /// Replaces the envelope creation timestamp.
+    ///
+    /// # Parameters
+    /// - `value`: timestamp to store in the event envelope.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn timestamp(mut self, value: SystemTime) -> Self {
         self.timestamp = Some(value);
         self
     }
     /// Replaces the requested delivery delay.
+    ///
+    /// # Parameters
+    /// - `value`: delay before the provider should make the event available.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn delay(mut self, value: Duration) -> Self {
         self.delay = Some(value);
         self
     }
     /// Replaces the retry policy directly from `qubit-retry`.
+    ///
+    /// # Parameters
+    /// - `value`: policy used to classify and schedule retry attempts.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
         self
     }
     /// Replaces the typed retry rule directly from `qubit-retry`.
+    ///
+    /// # Type Parameters
+    /// - `R`: retry rule implementation for publish-attempt errors.
+    ///
+    /// # Parameters
+    /// - `value`: retry rule to use for this request.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn retry_rule<R>(mut self, value: R) -> Self
     where
         R: RetryRule<PublishAttemptError>,
@@ -203,6 +274,13 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self
     }
     /// Replaces the shared retry cancellation token.
+    ///
+    /// # Parameters
+    /// - `value`: token used to cancel retry waiting.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
         self
@@ -214,6 +292,16 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// called for request, capability, codec, or interceptor preflight errors.
     /// It returns no action and cannot change the outcome. Panics are isolated
     /// and do not prevent later handlers from running.
+    ///
+    /// # Type Parameters
+    /// - `F`: thread-safe handler callable type.
+    ///
+    /// # Parameters
+    /// - `handler`: callback invoked for terminal provider failures.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&super::PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
@@ -222,6 +310,16 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self
     }
     /// Appends a typed publisher interceptor in registration order.
+    ///
+    /// # Type Parameters
+    /// - `F`: thread-safe event transformation callable type.
+    ///
+    /// # Parameters
+    /// - `value`: interceptor appended to the typed publish chain.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
         F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
@@ -230,6 +328,13 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         self
     }
     /// Replaces all policy state; later policy calls override or append.
+    ///
+    /// # Parameters
+    /// - `value`: complete publish policy to apply.
+    ///
+    /// # Returns
+    /// The updated builder.
+    #[must_use]
     pub fn options(mut self, value: PublishOptions<T>) -> Self {
         self.options = value;
         self
@@ -247,12 +352,28 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// when no explicit ID was supplied and UUID generation failed; its source
     /// retains the underlying generator error. `Duration` is nonnegative, so
     /// zero delay is accepted.
+    ///
+    /// # Returns
+    /// The validated publication request.
     pub fn build(self) -> Result<PublishRequest<T>, PublishRequestBuildError> {
         self.build_with_event_id_generator(EventId::generate)
     }
 
     /// Completes request validation while invoking the supplied ID source only
     /// when the caller did not provide an event ID.
+    ///
+    /// # Type Parameters
+    /// - `F`: one-shot event ID generator callable type.
+    ///
+    /// # Parameters
+    /// - `generate`: source called only when the request has no explicit ID.
+    ///
+    /// # Returns
+    /// The validated request or the corresponding build failure.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::build`], or wraps a
+    /// failure returned by `generate`.
     fn build_with_event_id_generator<F>(self, generate: F) -> Result<PublishRequest<T>, PublishRequestBuildError>
     where
         F: FnOnce() -> Result<EventId, EventIdGenerationError>,

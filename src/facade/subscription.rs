@@ -18,11 +18,11 @@ use std::thread::JoinHandle;
 
 use qubit_id::Id;
 
+use super::internal::is_current_bus_context;
 use crate::error::LifecycleError;
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
-use crate::facade::is_current_bus_context;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::model::SubscriberId;
 
