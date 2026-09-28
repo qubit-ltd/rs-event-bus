@@ -18,6 +18,7 @@ pub mod notification;
 pub mod pipeline;
 pub mod registry;
 pub mod spi;
+mod util;
 
 pub use error::CapabilityError;
 pub use error::CodecError;

@@ -12,6 +12,7 @@ use qubit_id::UuidV4Generator;
 
 use crate::error::ConfigurationError;
 use crate::error::EventIdGenerationError;
+use crate::util::validated_text::is_nonblank_without_controls;
 
 /// A validated event identifier carried across providers.
 ///
@@ -54,7 +55,7 @@ impl EventId {
     /// [`ConfigurationError::InvalidEventId`].
     pub fn new(value: impl AsRef<str>) -> Result<Self, ConfigurationError> {
         let value = value.as_ref();
-        if !(1..=128).contains(&value.len()) || value.trim() != value || value.chars().any(char::is_control) {
+        if !(1..=128).contains(&value.len()) || !is_nonblank_without_controls(value) {
             return Err(ConfigurationError::invalid_event_id(value));
         }
         Ok(Self(value.into()))

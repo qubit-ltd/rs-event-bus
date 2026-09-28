@@ -35,7 +35,6 @@ mod subscribe_request;
 mod subscribe_request_builder;
 mod subscriber_id;
 mod topic;
-mod validated_text;
 
 pub use acknowledgement::Acknowledgement;
 pub use acknowledgement::AcknowledgementError;
