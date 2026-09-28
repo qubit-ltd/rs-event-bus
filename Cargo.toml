@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -18,6 +18,7 @@ include = [
     "/README.md",
     "/README.zh_CN.md",
     "/doc/**/*.md",
+    "/examples/**",
     "/src/**",
     "/tests/**",
     "/benches/**",

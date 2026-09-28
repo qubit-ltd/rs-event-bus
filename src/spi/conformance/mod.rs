@@ -22,15 +22,24 @@
 //! }
 //! ```
 
+mod async_conformance_hooks;
 #[path = "async.rs"]
 mod async_runner;
 mod conformance_case;
 mod conformance_hooks;
+mod conformance_profile;
 mod conformance_report;
+mod conformance_skip_reason;
 mod sync;
 
+pub use async_conformance_hooks::AsyncConformanceCheck;
+pub use async_conformance_hooks::AsyncConformanceHooks;
 pub use async_runner::run_async;
+pub use async_runner::run_async_with_profile;
 pub use conformance_case::ConformanceCase;
 pub use conformance_hooks::ConformanceHooks;
+pub use conformance_profile::ConformanceProfile;
 pub use conformance_report::ConformanceReport;
+pub use conformance_skip_reason::ConformanceSkipReason;
 pub use sync::run_sync;
+pub use sync::run_sync_with_profile;

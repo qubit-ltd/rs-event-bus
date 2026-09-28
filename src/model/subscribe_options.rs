@@ -16,6 +16,7 @@ use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
+use super::DeadLetterPolicy;
 use super::Delivery;
 use super::EventEnvelope;
 use crate::error::ConfigurationError;
@@ -107,26 +108,6 @@ impl ConsumerGroup {
 
 /// Namespaced, non-sensitive provider configuration values.
 pub type ProviderOptions = BTreeMap<String, String>;
-
-/// Where a terminal delivery failure should be published.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum DeadLetterPolicy {
-    /// Publish a standard dead-letter record to this topic name.
-    Topic(Box<str>),
-}
-impl DeadLetterPolicy {
-    /// Validates a dead-letter topic name.
-    pub fn topic(name: &str) -> Result<Self, ConfigurationError> {
-        if name.is_empty() || name.trim() != name || name.chars().any(char::is_control) {
-            return Err(ConfigurationError::InvalidField {
-                field: "dead_letter",
-                message: "topic must be nonblank and contain no controls".into(),
-            });
-        }
-        Ok(Self::Topic(name.into()))
-    }
-}
 
 /// A subscriber filter evaluated by the facade before handler invocation.
 pub type EventFilter<T> = dyn Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'static;

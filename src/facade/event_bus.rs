@@ -33,6 +33,7 @@ use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryFallback;
+use qubit_retry::RetryPolicy;
 
 use super::DiagnosticObserverHandle;
 use super::observer_entry::ObserverEntry;
@@ -57,6 +58,7 @@ use crate::facade::LifecycleState;
 use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
 use crate::facade::PublishMetricsSnapshot;
+use crate::facade::ShutdownReport;
 use crate::facade::Subscription;
 use crate::facade::SubscriptionControl;
 use crate::facade::WaitOutcome;
@@ -66,6 +68,8 @@ use crate::facade::shutdown_coordinator::ShutdownCoordinator;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::local::LocalEventBusConfig;
 use crate::model::BatchPublishResult;
+use crate::model::DeadLetterAdmissionPolicy;
+use crate::model::DeadLetterEvent;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
@@ -77,6 +81,7 @@ use crate::model::PublishRequest;
 use crate::model::SubscribeRequest;
 use crate::model::SubscriberId;
 use crate::model::Topic;
+use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::DeliveryFailureAction;
 use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::Diagnostic;
@@ -85,6 +90,7 @@ use crate::pipeline::OrderingLaneKey;
 use crate::pipeline::PublisherPipeline;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
+use crate::pipeline::dead_letter_retry_config;
 use crate::pipeline::emit_diagnostic;
 use crate::registry::EventBusConfig;
 use crate::registry::EventBusRegistry;
@@ -171,6 +177,7 @@ pub(super) struct EventBusInner {
     scheduler: Arc<SyncDeliveryScheduler>,
     subscription_worker_budget: Arc<SubscriptionWorkerBudget>,
     publish_metrics: PublishMetrics,
+    abandoned_deliveries: AtomicU64,
 }
 
 struct SubscriptionWorkerBudget {
@@ -205,7 +212,7 @@ impl Drop for SubscriptionWorkerPermit {
 }
 
 struct ShutdownState {
-    outcome: Option<ShutdownOutcome>,
+    report: Option<ShutdownReport>,
 }
 
 /// Linearizes new public publish/subscribe calls against provider shutdown.
@@ -397,11 +404,12 @@ impl EventBus {
                 close_error_snapshot: Mutex::new(None),
                 next_subscription_id: AtomicU64::new(1),
                 observers: Mutex::new(Vec::new()),
-                shutdown_gate: Mutex::new(ShutdownState { outcome: None }),
+                shutdown_gate: Mutex::new(ShutdownState { report: None }),
                 shutdown_coordinator: ShutdownCoordinator::new(),
                 scheduler,
                 subscription_worker_budget,
                 publish_metrics: PublishMetrics::default(),
+                abandoned_deliveries: AtomicU64::new(0),
             }),
         })
     }
@@ -509,6 +517,14 @@ impl EventBus {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
         SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
+        if options.dead_letter().is_some_and(|policy| {
+            policy.admission_policy() == crate::model::DeadLetterAdmissionPolicy::KnownDestination
+                && capabilities.publish_visibility() == crate::spi::PublishVisibility::Opaque
+        }) {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "dead_letter.known_destination_admission",
+            }));
+        }
         let id = self.next_subscription_id()?;
         let address = TopicAddress::new(topic.name())?;
         let spi_request = SpiSubscriptionRequest::new(
@@ -692,9 +708,11 @@ impl EventBus {
     /// `Retry`, allows active handlers and settlements to finish, and then
     /// closes subscriptions. Graceful shutdown applies its timeout to the
     /// caller's wait for the entire close sequence. If the deadline expires,
-    /// this method returns `TimedOut` while one background coordinator keeps
-    /// closing the bus; new operations remain rejected. Call shutdown again to
-    /// wait for the result, or use `Immediate` to strengthen an active attempt.
+    /// this method returns `ShutdownError::TimedOut` while one background
+    /// coordinator keeps closing the bus; new operations remain rejected. Call
+    /// shutdown again to wait for the result, or use `Immediate` to strengthen
+    /// an active attempt. Success returns a `ShutdownReport`; its provider
+    /// outcome does not imply business handler success.
     /// The coordinator cannot forcibly stop a blocked synchronous SPI call or
     /// user handler, so it can remain alive until that code returns.
     /// Calling either mode from a synchronous callback or worker owned by this
@@ -706,7 +724,10 @@ impl EventBus {
     /// `TimedOut` when the full graceful close has not completed by its
     /// deadline, a coordinator thread could not start, and provider/close
     /// failures without suppressing their source errors.
-    pub fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, ShutdownError> {
+    ///
+    /// # Returns
+    /// The cached provider outcome and facade-known abandoned-delivery count.
+    pub fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let identity = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_context(identity) {
             return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
@@ -727,8 +748,8 @@ impl EventBus {
                     .shutdown_gate
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .outcome
-                    .unwrap_or(ShutdownOutcome::Complete));
+                    .report
+                    .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
             *state = LifecycleState::Closing;
         }
@@ -761,11 +782,18 @@ impl EventBus {
             let Some(result) = result else {
                 continue;
             };
-            let outcome = result.map_err(clone_spi_error)?;
+            result.map_err(clone_spi_error)?;
             if let Some(errors) = self.inner.close_errors_snapshot() {
                 return Err(ShutdownError::SubscriptionClose(errors));
             }
-            return Ok(outcome);
+            let report = self
+                .inner
+                .shutdown_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .report
+                .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false));
+            return Ok(report);
         }
     }
 
@@ -924,13 +952,18 @@ impl EventBusInner {
             .shutdown_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(outcome) = state.outcome {
-            return Ok(outcome);
+        if let Some(report) = state.report {
+            return Ok(report.outcome);
         }
         let outcome = crate::spi::panic_boundary::catch_spi_call(self.provider_id.as_str(), "shutdown", None, || {
             self.spi.shutdown(mode)
         })??;
-        state.outcome = Some(outcome);
+        state.report = Some(ShutdownReport::new(
+            outcome,
+            self.abandoned_deliveries.load(Ordering::Acquire),
+            self.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral
+                || outcome == ShutdownOutcome::TimedOut,
+        ));
         Ok(outcome)
     }
 }
@@ -1233,7 +1266,7 @@ fn run_subscription_worker<T>(
             .shutdown_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .outcome
+            .report
             .is_some()
     {
         *lifecycle = LifecycleState::Closed;
@@ -1375,6 +1408,9 @@ fn requeue_unstarted_message_via_owner(
             return;
         }
     }
+    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+    }
     inner.emit(Diagnostic::SettlementUnavailable {
         event_id,
         topic: address.as_str().into(),
@@ -1417,6 +1453,9 @@ fn requeue_unstarted_message(
             });
             return;
         }
+    }
+    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     inner.emit(Diagnostic::SettlementUnavailable {
         event_id,
@@ -1561,7 +1600,7 @@ fn process_inbound_parts<T>(
                 let error = DeliveryError::Handler {
                     source: Box::new(std::io::Error::other("subscriber filter panicked")),
                 };
-                let directive = notify_error_handlers(inner, options, &event, &error);
+                let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 finish_failed_delivery(
                     inner,
                     settler,
@@ -1657,7 +1696,7 @@ where
         return match run_delivery_attempt(options, delivery, handler, 1, global_interceptors) {
             DeliveryOutcome::Success => Ok(()),
             DeliveryOutcome::Failure(error) => {
-                let directive = notify_error_handlers(inner, options, &event, &error);
+                let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 let directive = if directive == FailureDirective::Retry {
                     FailureDirective::Discard
                 } else {
@@ -1718,7 +1757,7 @@ where
         ) {
             DeliveryOutcome::Success => Ok(()),
             DeliveryOutcome::Failure(error) => {
-                let directive = notify_error_handlers(inner, options, &event, &error);
+                let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 *terminal_directive
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(directive);
@@ -1762,6 +1801,7 @@ fn notify_error_handlers<T>(
     options: &crate::model::SubscribeOptions<T>,
     event: &EventEnvelope<T>,
     error: &DeliveryError,
+    retry_enabled: bool,
 ) -> FailureDirective {
     if options.error_handlers().is_empty() {
         return if options.retry_policy().is_some() {
@@ -1770,25 +1810,17 @@ fn notify_error_handlers<T>(
             FailureDirective::Discard
         };
     }
-    let mut requested_retry = false;
-    let mut abort_directive = None;
+    let mut directives = Vec::with_capacity(options.error_handlers().len());
     for handler in options.error_handlers() {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(event, error))) {
-            Ok(FailureDirective::Retry) => requested_retry = true,
-            Ok(directive) => {
-                abort_directive.get_or_insert(directive);
-            }
+            Ok(directive) => directives.push(Ok(directive)),
             Err(payload) => {
                 inner.emit_internal("subscriber_error_handler", panic_message(payload.as_ref()).into());
-                abort_directive.get_or_insert(FailureDirective::Discard);
+                directives.push(Err(()));
             }
         }
     }
-    abort_directive.unwrap_or(if requested_retry {
-        FailureDirective::Retry
-    } else {
-        FailureDirective::Discard
-    })
+    crate::pipeline::choose_failure_directive(retry_enabled, directives)
 }
 
 /// Invokes one handler attempt through global and typed synchronous middleware.
@@ -1845,9 +1877,9 @@ fn finish_failed_delivery<T>(
         SubscriberPipeline::failure_disposition(action, capabilities)
     };
     let is_dead_letter = event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
+    let mut dead_letter_forward_failed = false;
     if action == DeliveryFailureAction::DeadLetter && !is_dead_letter {
         if let Some(policy) = options.dead_letter() {
-            let crate::model::DeadLetterPolicy::Topic(dead_letter_topic) = policy;
             let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone());
             let context =
                 if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
@@ -1856,43 +1888,46 @@ fn finish_failed_delivery<T>(
                     context
                 };
             let delivery = Delivery::new(event.clone(), context);
-            match dead_letter_envelope(&delivery, &error, dead_letter_topic) {
+            match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
                 Ok(Some(envelope)) => {
-                    let request = PublishRequest::from_envelope(envelope);
-                    match publish_internal(inner, request) {
-                        Ok(_) => {
+                    match publish_dead_letter_sync(
+                        inner,
+                        &envelope,
+                        options.retry_policy(),
+                        options.retry_cancellation_token(),
+                        policy.admission_policy(),
+                    ) {
+                        Ok(receipt) => {
+                            if matches!(
+                                receipt.admission_outcome(),
+                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
+                            ) {
+                                inner.emit_internal(
+                                    "dead_letter_partial",
+                                    "dead-letter publication was partially accepted; retrying the whole record may duplicate it".into(),
+                                );
+                            }
                             disposition = SubscriberPipeline::failure_disposition(
                                 DeliveryFailureAction::DeadLetter,
                                 capabilities,
                             );
                         }
-                        Err(publish_error) => {
-                            inner.emit_internal("dead_letter_publish", publish_error.to_string());
-                            requested_disposition = DeliveryDisposition::Retry;
-                            if token.as_ref().is_some_and(|token| token.belongs_to(subscription_id)) {
-                                disposition = SubscriberPipeline::failure_disposition(
-                                    DeliveryFailureAction::Requeue,
-                                    capabilities,
-                                );
-                            }
+                        Err(message) => {
+                            inner.emit_internal("dead_letter_publish", message);
+                            dead_letter_forward_failed = true;
+                            stop_after_dead_letter_failure(inner, subscription_id);
                         }
                     }
                 }
                 Ok(None) => {
                     inner.emit_internal("dead_letter_build", "dead-letter event was not created".into());
-                    requested_disposition = DeliveryDisposition::Retry;
-                    if token.as_ref().is_some_and(|token| token.belongs_to(subscription_id)) {
-                        disposition =
-                            SubscriberPipeline::failure_disposition(DeliveryFailureAction::Requeue, capabilities);
-                    }
+                    dead_letter_forward_failed = true;
+                    stop_after_dead_letter_failure(inner, subscription_id);
                 }
                 Err(build_error) => {
                     inner.emit_internal("dead_letter_build", build_error.to_string());
-                    requested_disposition = DeliveryDisposition::Retry;
-                    if token.as_ref().is_some_and(|token| token.belongs_to(subscription_id)) {
-                        disposition =
-                            SubscriberPipeline::failure_disposition(DeliveryFailureAction::Requeue, capabilities);
-                    }
+                    dead_letter_forward_failed = true;
+                    stop_after_dead_letter_failure(inner, subscription_id);
                 }
             }
         } else {
@@ -1900,10 +1935,8 @@ fn finish_failed_delivery<T>(
                 "dead_letter_policy",
                 "dead-letter directive has no configured topic".into(),
             );
-            requested_disposition = DeliveryDisposition::Retry;
-            if token.as_ref().is_some_and(|token| token.belongs_to(subscription_id)) {
-                disposition = SubscriberPipeline::failure_disposition(DeliveryFailureAction::Requeue, capabilities);
-            }
+            dead_letter_forward_failed = true;
+            stop_after_dead_letter_failure(inner, subscription_id);
         }
     } else if action == DeliveryFailureAction::DeadLetter {
         disposition = SubscriberPipeline::failure_disposition(DeliveryFailureAction::DeadLetter, capabilities);
@@ -1923,6 +1956,8 @@ fn finish_failed_delivery<T>(
             subscription_id,
             subscriber_id,
         );
+    } else if dead_letter_forward_failed {
+        // Keep a durable source token unsettled so the provider can recover it.
     } else if token.as_ref().is_some_and(|token| !token.belongs_to(subscription_id)) {
         inner.emit_internal(
             "settlement",
@@ -2026,6 +2061,54 @@ fn settle_rejected(
         attempts: 0,
         error: error.to_string().into(),
     });
+}
+
+/// Publishes one stable dead-letter envelope within the subscription retry
+/// budget.
+fn publish_dead_letter_sync<T: Send + Sync + 'static>(
+    inner: &EventBusInner,
+    envelope: &EventEnvelope<DeadLetterEvent<T>>,
+    retry_policy: Option<&RetryPolicy>,
+    cancellation: Option<&qubit_retry::RetryCancellationToken>,
+    admission_policy: DeadLetterAdmissionPolicy,
+) -> Result<PublishReceipt, String> {
+    let mut publish_once = || {
+        let receipt = publish_internal(inner, PublishRequest::from_envelope(envelope.clone()))
+            .map_err(DeadLetterForwardError::Publish)?;
+        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+            Ok(receipt)
+        } else {
+            Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
+        }
+    };
+    let Some(policy) = retry_policy else {
+        return publish_once().map_err(|error| error.to_string());
+    };
+    let config = dead_letter_retry_config(policy).map_err(|error| error.to_string())?;
+    let mut retry = Retry::new(&config);
+    if let Some(cancellation) = cancellation {
+        retry = retry.cancellation_token(cancellation.clone());
+    }
+    retry
+        .run(&mut publish_once)
+        .map(|success| success.value().clone())
+        .map_err(|error| error.to_string())
+}
+
+/// Stops receiving after forwarding exhausts its budget, retaining the source
+/// token for durable recovery and counting a known loss for ephemeral
+/// providers.
+fn stop_after_dead_letter_failure(inner: &EventBusInner, subscription_id: Id) {
+    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+    }
+    if let Some(control) = inner
+        .subscription_snapshot()
+        .iter()
+        .find(|control| control.id == subscription_id)
+    {
+        control.request_cancel();
+    }
 }
 
 /// Publishes an internally constructed record during graceful shutdown drain.

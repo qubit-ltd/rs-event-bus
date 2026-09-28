@@ -69,9 +69,10 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
 
     /// Closes this receiver and releases its resources.
     ///
-    /// Unsettled deliveries must remain recoverable by the provider after
-    /// close; closing is not an implicit acknowledgement. Dropping the
-    /// receiver without calling this method has the same no-loss requirement.
+    /// For durable subscriptions, implementations must preserve accepted
+    /// unsettled deliveries for recovery after close or cancellation. For
+    /// ephemeral subscriptions, close may discard buffered deliveries; callers
+    /// must use facade shutdown reports and diagnostics to observe known loss.
     /// Dropping this future does not guarantee that provider-side close work
     /// was rolled back. Calling `close` again on the same receiver must be
     /// safe and converge to the closed state; closing an already-closed

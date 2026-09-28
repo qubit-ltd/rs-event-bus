@@ -58,6 +58,7 @@ fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
     let hooks = ConformanceHooks {
         settlement: Some(Arc::new(|| Err("repeated settlement changed result".into()))),
         receive_cancellation: None,
+        durable_recovery: None,
     };
     let report = run_sync(
         || {
@@ -202,6 +203,83 @@ fn bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
     assert!(report.cases().iter().any(
         |case| matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "provider-settlement-idempotence")
     ));
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn strict_conformance_fails_when_required_provider_hooks_are_missing() {
+    use qubit_event_bus::spi::conformance::ConformanceProfile;
+    use qubit_event_bus::spi::conformance::ConformanceSkipReason;
+    use qubit_event_bus::spi::conformance::run_sync_with_profile;
+
+    let report = run_sync_with_profile(
+        crate::support::flume_spi::create,
+        &ConformanceHooks::default(),
+        ConformanceProfile::Strict,
+    );
+    assert!(!report.all_passed());
+    assert!(report.cases().iter().any(|case| {
+        matches!(case, ConformanceCase::Failed { case_id, detail }
+            if case_id == "receive-cancellation" && detail.contains("missing fixture"))
+    }));
+    assert!(report.cases().iter().any(|case| {
+        matches!(case, ConformanceCase::Failed { case_id, detail }
+            if case_id == "durable-unsettled-recovery" && detail.contains("missing fixture"))
+    }));
+    assert!(report.cases().iter().any(|case| {
+        matches!(case, ConformanceCase::Skipped {
+            case_id,
+            reason: ConformanceSkipReason::UnsupportedCapability { capability: "settlement" },
+        } if case_id == "settlement-idempotence")
+    }));
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn strict_conformance_reports_a_provider_durable_recovery_check() {
+    use qubit_event_bus::spi::conformance::ConformanceProfile;
+    use qubit_event_bus::spi::conformance::run_sync_with_profile;
+
+    let hooks = ConformanceHooks {
+        settlement: Some(Arc::new(|| Ok(()))),
+        receive_cancellation: Some(Arc::new(|| Ok(()))),
+        durable_recovery: Some(Arc::new(|| Ok(()))),
+    };
+    let report = run_sync_with_profile(|| Arc::new(FakeEventBusSpi::new()), &hooks, ConformanceProfile::Strict);
+    assert!(report.all_passed(), "{report:?}");
+    assert!(
+        report
+            .cases()
+            .iter()
+            .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "durable-unsettled-recovery"))
+    );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn strict_async_conformance_awaits_a_provider_durable_recovery_check() {
+    use qubit_event_bus::spi::conformance::AsyncConformanceCheck;
+    use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
+    use qubit_event_bus::spi::conformance::ConformanceProfile;
+    use qubit_event_bus::spi::conformance::run_async_with_profile;
+    let check: AsyncConformanceCheck = Arc::new(|| Box::pin(async { Ok(()) }));
+    let hooks = AsyncConformanceHooks {
+        settlement: Some(check.clone()),
+        receive_cancellation: Some(check.clone()),
+        durable_recovery: Some(check),
+    };
+    let report = crate::support::manual_async::block_on(run_async_with_profile(
+        || async { Arc::new(FakeAsyncEventBusSpi::new()) as Arc<dyn AsyncEventBusSpi> },
+        &hooks,
+        ConformanceProfile::Strict,
+    ));
+    assert!(report.all_passed(), "{report:?}");
+    assert!(
+        report
+            .cases()
+            .iter()
+            .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "durable-unsettled-recovery"))
+    );
 }
 
 #[test]

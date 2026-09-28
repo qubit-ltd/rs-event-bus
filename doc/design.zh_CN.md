@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.14）
+# Qubit Event Bus 设计文档（0.15）
 
-> 本文档以 `qubit-event-bus` 0.14.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.15.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -194,7 +194,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.14.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.15.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -329,9 +329,9 @@ pub enum PublishAcknowledgement {
   返回 `Result<(), AdmissionCheckError>`（`VisibilityUnavailable`、`Dropped`、
   `NoAcceptedDestination`、`RejectedDestinations { .. }`）。
 
-这体现 P6：`publish` 返回 `Ok(receipt)` 只意味着 provider 接受了消息，
-"有没有人真的排上队"要看 `admission_outcome()`，且只有
-`PublishVisibility::DestinationAdmissions` 的 provider 才能给出细节。
+这体现 P6：`publish` 返回 `Ok(receipt)` 只表示 provider 调用产生了回执，不一定表示
+目的地已接纳。`admission_outcome()` 区分已知接纳、部分接纳、无目的地、丢弃和 opaque
+确认；只有 `PublishVisibility::DestinationAdmissions` 才能提供目的地明细。
 `publish_all` 返回 `BatchPublishResult`，按输入顺序保留每个请求的
 `Result<PublishReceipt, PublishError>`，某一条失败不影响后续请求继续发布。
 
@@ -339,9 +339,10 @@ pub enum PublishAcknowledgement {
 
 死信 topic 的 payload 类型固定为 `DeadLetterEvent<T>`，包含
 `original_event: Arc<EventEnvelope<T>>`、`subscriber_id`、`reason`
-（最终 `DeliveryError` 的 `Display`）。死信 topic 由
-`DeadLetterPolicy::Topic(name)` 指定名称，facade 按 `Topic::<DeadLetterEvent<T>>::new(name)`
-构造并复用原 topic 的 codec（若有）。
+（最终 `DeliveryError` 的 `Display`）。死信 topic 由 `DeadLetterPolicy::topic(name)` 指定并默认要求 transport acceptance；
+`known_destination(name)` 要求可观察到目的地接纳，opaque provider 会拒绝该策略。facade 按
+`Topic::<DeadLetterEvent<T>>::new(name)` 构造；encoded provider 必须为该类型单独注册 codec。
+同一原始 event 和 subscriber 会得到稳定的死信 event ID，便于去重，但不保证 exactly-once。
 
 ---
 
@@ -471,14 +472,14 @@ pub struct SettlementToken {
 
 `shutdown(ShutdownMode)`：
 
-- `ShutdownMode::Graceful { timeout }`：等待已接受的消息投递完毕，
-  超时返回 `ShutdownOutcome::TimedOut`；`timeout` 覆盖**整个** facade 停机
-  （包括接收器关闭、handler drain 与 provider 停机）；
+- `ShutdownMode::Graceful { timeout }`：为 facade 停机调用方设置 deadline。调用方超时
+  返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指 provider 在自身宽限期
+  结束后完成清理；
 - `ShutdownMode::Immediate`：立刻关闭所有订阅，丢弃或按 provider 语义保留未处理消息；
 - 幂等；停机后 `publish`/`subscribe` 返回 `kind` 为 closed 的 `SpiError::Operation`。
 
-facade 会在自己 drain 完 handler 后**只调用一次** provider `shutdown`
-（同步侧由 `ShutdownCoordinator` 保证，异步侧由 leader CAS 保证）。
+facade 同一时刻最多只有一个 provider `shutdown` 调用在途；失败或取消后后续调用可重试。
+facade API 返回 `ShutdownReport`，SPI 方法仍返回 `ShutdownOutcome`。
 
 ---
 
@@ -913,15 +914,18 @@ shutdown(mode: ShutdownMode)
   ├─ scheduler.stop_admission(immediate)；所有订阅 request_cancel()
   ├─ spawn `event-bus-shutdown` 线程执行 perform_shutdown：
   │     等待 OperationGate 归零 → 等待/清空调度器任务 → join 全部协调线程
-  │     → scheduler.join() → spi.shutdown(mode)（仅一次）→ lifecycle Closed
-  └─ 调用方：非 bus 上下文 → 等待到 Graceful.timeout 对应的 deadline 返回 ShutdownOutcome；
+  │     → scheduler.join() → spi.shutdown(mode)（同一时刻最多一次）→ lifecycle Closed
+  └─ 调用方：等待自己的 deadline，返回 facade 的 ShutdownReport；
               bus 上下文 → 立即返回 ShutdownError::Lifecycle(WouldDeadlock)（停机仍在后台进行）
 ```
 
 - generation 机制让并发的多次 `shutdown()` 调用都能等到**同一次**停机的结果；
   `Immediate` 到来时会把正在 `Graceful` 的这一代升级，正在排队的任务被 `Retry` 归还。
-- `Graceful` 超时返回 `ShutdownOutcome::TimedOut`（或 `ShutdownError::TimedOut`，
-  取决于卡在哪一步），此时 bus 仍处于 `Closing`，后台线程继续收尾。
+- 调用方 deadline 到期返回 `ShutdownError::TimedOut`，不代表 bus 已关闭；同步
+  coordinator 继续后台收尾。SPI 的 `ShutdownOutcome::TimedOut` 表示 provider 在自身
+  Graceful 宽限期后完成清理。
+- 报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃
+  未能精确计数工作的标志。
 - 后台停机线程本身也在 `catch_unwind` 内运行；若它 panic，会以 `Diagnostic::InternalFailure`
   报告并把状态推进到 `Closed`，避免调用方永久等待。
 - `EventBus` 是 `Clone` 的 `Arc` 句柄，**没有 `Drop` 停机逻辑**：协调线程持有
@@ -1277,10 +1281,11 @@ pub enum NotificationOutcome {
 6. 每个订阅至多一条"已从 provider 取出但尚未进入 handler"的消息（同步 `pending`，
    异步 pending + 单 permit）。
 7. `publish`/`subscribe` 在 `Closing` 之后必返回 `Closed`；`shutdown` 幂等且
-   provider `shutdown` 只被调用一次。
+   provider shutdown 同一时刻最多有一个调用在途；失败或取消后可由后续调用重试。
 8. 用户回调 panic 不会导致线程/任务退出或 bus 状态损坏。
 9. 死信最多一级；死信头无法被外部设置或篡改。
-10. 取消/停机不丢消息：未开始的 handler 任务以 `Retry` 归还 provider（能力允许时）。
+10. Durable provider 支持时，取消/停机将未开始任务以 `Retry` 归还；Ephemeral provider
+    可以丢弃未开始任务，facade 会报告已知放弃数量及无法精确统计的 provider 放弃标志。
 11. 持有 facade 内部锁时不调用用户代码。诊断观察者先在 `observers` 锁内做成快照，
     `emit` 在释放锁之后才调用回调；handler、中间件和错误处理器运行在调度线程或
     异步投递任务上，不持有订阅目录、ordering lane 或 tracker 的锁。这样用户回调
@@ -1328,9 +1333,9 @@ pub enum NotificationOutcome {
 作者补充只有自己能验证的幂等/取消检查），返回 `ConformanceReport`
 （`Vec<ConformanceCase::{Passed, Failed, Skipped}>`）。
 当前用例覆盖：能力/载荷模式一致性、`subscribe`、`publish`、`receive-payload`、
-settlement 幂等/冲突、`shutdown`。不支持某项能力的 provider 应让对应用例记为 `Skipped`，
-而不是在测试调用后再返回含糊错误。它是 provider 作者的最低验收门，也是本 crate
-对 SPI 契约的可执行说明。
+settlement 幂等/冲突、`shutdown`。Structural profile 用于 smoke check；Strict profile 会把缺失必需 hook
+转为失败，同时保留 typed unsupported-capability skip。异步 hook 以 future 形式运行，不阻塞 executor。
+Strict profile 配置 provider 专属 fixture 后才可作为验收门。
 
 公共 runner 不覆盖、需要 provider 作者自己补充的检查：
 
@@ -1389,4 +1394,4 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ---
 
-*本文档随 `qubit-event-bus` 0.14.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.15.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*

@@ -5,18 +5,24 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Provider-specific conformance checks.
+//! Nonblocking provider-specific checks for asynchronous conformance runs.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
-/// Optional provider-specific checks for injected failures and cancellation.
+/// A provider-specific async conformance check.
+pub type AsyncConformanceCheck =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
+/// Optional provider-specific checks that require asynchronous fixtures.
 #[derive(Default)]
-pub struct ConformanceHooks {
+pub struct AsyncConformanceHooks {
     /// Checks repeat-settlement idempotence and conflicting dispositions.
-    pub settlement: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    pub settlement: Option<AsyncConformanceCheck>,
     /// Checks cancellation safety using a provider-owned receive fixture.
-    pub receive_cancellation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    pub receive_cancellation: Option<AsyncConformanceCheck>,
     /// Checks that closing with an unsettled durable delivery leaves it
     /// available after reconnecting the same logical subscription.
-    pub durable_recovery: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    pub durable_recovery: Option<AsyncConformanceCheck>,
 }

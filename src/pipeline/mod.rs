@@ -9,8 +9,11 @@
 
 mod admission;
 mod dead_letter;
+mod dead_letter_admission;
 mod dead_letter_build_error;
+mod dead_letter_forward;
 mod diagnostic;
+mod failure_decision;
 mod global_publisher_interceptor;
 mod ordering_lane;
 mod publisher;
@@ -20,13 +23,17 @@ mod subscriber;
 pub(crate) use admission::AdmissionPermit;
 pub(crate) use admission::AdmissionTracker;
 pub(crate) use dead_letter::dead_letter_envelope;
+pub(crate) use dead_letter_admission::was_accepted as dead_letter_was_accepted;
 pub(crate) use dead_letter_build_error::DeadLetterBuildError;
+pub(crate) use dead_letter_forward::DeadLetterForwardError;
+pub(crate) use dead_letter_forward::retry_config as dead_letter_retry_config;
 pub use diagnostic::Diagnostic;
 pub use diagnostic::DiagnosticObserver;
 pub(crate) use diagnostic::PipelineFailure;
 #[cfg(test)]
 pub(crate) use diagnostic::PipelineFailureOrigin;
 pub(crate) use diagnostic::emit_diagnostic;
+pub(crate) use failure_decision::choose_failure_directive;
 pub(crate) use global_publisher_interceptor::GlobalPublisherInterceptor;
 pub(crate) use ordering_lane::AsyncOrderingGuard;
 pub(crate) use ordering_lane::AsyncOrderingLanes;

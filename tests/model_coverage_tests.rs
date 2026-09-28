@@ -122,7 +122,7 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
     assert_eq!(options.error_handlers().len(), 1);
     assert_eq!(options.interceptors().len(), 1);
     assert_eq!(options.async_interceptors().len(), 1);
-    assert!(matches!(options.dead_letter(), Some(DeadLetterPolicy::Topic(name)) if name.as_ref() == "dead.events"));
+    assert!(matches!(options.dead_letter(), Some(policy) if policy.topic_name() == "dead.events"));
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
     assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
     assert_eq!(options.durability(), SubscriptionDurability::Durable);
@@ -222,7 +222,7 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
     assert_eq!(options.error_handlers()[0](&event, &error), FailureDirective::Requeue);
     assert_eq!(options.interceptors().len(), 1);
     assert_eq!(options.async_interceptors().len(), 1);
-    assert!(matches!(options.dead_letter(), Some(DeadLetterPolicy::Topic(name)) if name.as_ref() == "dead.events"));
+    assert!(matches!(options.dead_letter(), Some(policy) if policy.topic_name() == "dead.events"));
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
     assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
     assert_eq!(options.durability(), SubscriptionDurability::Durable);
@@ -384,9 +384,7 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
             })
         ));
     }
-    assert!(
-        matches!(DeadLetterPolicy::topic("dead.events")?, DeadLetterPolicy::Topic(name) if name.as_ref() == "dead.events")
-    );
+    assert!(DeadLetterPolicy::topic("dead.events")?.topic_name() == "dead.events");
     for invalid in ["", " dead.events", "dead.events ", "dead\nevents"] {
         assert!(matches!(
             DeadLetterPolicy::topic(invalid),

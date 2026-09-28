@@ -398,6 +398,7 @@ fn shutdown_provider_error_is_retryable_and_closes_public_admission() {
         ShutdownOutcome::Complete,
         bus.shutdown(ShutdownMode::Immediate)
             .expect("a later shutdown retries the provider")
+            .outcome
     );
     assert_eq!(2, spi.shutdown_calls());
     assert!(matches!(bus.publish(request("after-close")), Err(PublishError::Closed)));
@@ -416,7 +417,9 @@ fn shutdown_is_idempotent_and_caches_the_provider_outcome() {
 
     assert_eq!(
         ShutdownOutcome::Complete,
-        bus.shutdown(ShutdownMode::Immediate).expect("first shutdown completes")
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("first shutdown completes")
+            .outcome
     );
     assert_eq!(
         ShutdownOutcome::Complete,
@@ -424,6 +427,7 @@ fn shutdown_is_idempotent_and_caches_the_provider_outcome() {
             timeout: Duration::from_millis(10),
         })
         .expect("repeated shutdown returns cached outcome")
+        .outcome
     );
     assert_eq!(1, spi.shutdown_calls());
 }

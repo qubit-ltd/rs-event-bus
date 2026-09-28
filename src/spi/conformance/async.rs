@@ -10,7 +10,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::conformance_hooks::ConformanceHooks;
+use super::async_conformance_hooks::AsyncConformanceHooks;
+use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
 use super::conformance_report::payload_matches;
@@ -18,7 +19,6 @@ use super::conformance_report::payload_probes;
 use super::conformance_report::probe_message;
 use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
-use super::conformance_report::push_hook;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::ReceiveOutcome;
@@ -27,7 +27,21 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
 /// Runs common structural checks against a fresh asynchronous provider.
-pub async fn run_async<F, Fut>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
+pub async fn run_async<F, Fut>(factory: F, hooks: &AsyncConformanceHooks) -> ConformanceReport
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Arc<dyn AsyncEventBusSpi>>,
+{
+    run_async_with_profile(factory, hooks, ConformanceProfile::Structural).await
+}
+
+/// Runs asynchronous checks with explicit treatment of missing provider
+/// fixtures.
+pub async fn run_async_with_profile<F, Fut>(
+    factory: F,
+    hooks: &AsyncConformanceHooks,
+    profile: ConformanceProfile,
+) -> ConformanceReport
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Arc<dyn AsyncEventBusSpi>>,
@@ -59,7 +73,9 @@ where
                 });
                 report.push(ConformanceCase::Skipped {
                     case_id: "publish-receive".into(),
-                    reason: "subscription could not be created".into(),
+                    reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                        detail: "subscription could not be created".into(),
+                    },
                 });
                 report.push(match spi.shutdown(ShutdownMode::Immediate).await {
                     Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
@@ -97,7 +113,9 @@ where
                     let case = match (capabilities.settlement(), token.as_ref()) {
                         (SettlementCapabilities::None, None) => ConformanceCase::Skipped {
                             case_id: "settlement-idempotence".into(),
-                            reason: "provider does not support settlement".into(),
+                            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                                capability: "settlement",
+                            },
                         },
                         (SettlementCapabilities::None, Some(_)) => ConformanceCase::Failed {
                             case_id: "settlement-idempotence".into(),
@@ -137,7 +155,9 @@ where
         } else {
             report.push(ConformanceCase::Skipped {
                 case_id: "receive-payload".into(),
-                reason: "publish failed".into(),
+                reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                    detail: "publish failed".into(),
+                },
             });
         }
         report.push(match subscription.close().await {
@@ -163,11 +183,43 @@ where
             },
         });
     }
-    push_hook(
+    push_async_hook(
         &mut report,
         "provider-settlement-idempotence",
         hooks.settlement.as_ref(),
-    );
-    push_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref());
+    )
+    .await;
+    push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
+    push_async_hook(
+        &mut report,
+        "durable-unsettled-recovery",
+        hooks.durable_recovery.as_ref(),
+    )
+    .await;
+    report.apply_profile(profile);
     report
+}
+
+async fn push_async_hook(
+    report: &mut ConformanceReport,
+    case_id: &str,
+    hook: Option<&super::async_conformance_hooks::AsyncConformanceCheck>,
+) {
+    report.push(match hook {
+        Some(check) => match check().await {
+            Ok(()) => ConformanceCase::Passed {
+                case_id: case_id.into(),
+            },
+            Err(detail) => ConformanceCase::Failed {
+                case_id: case_id.into(),
+                detail,
+            },
+        },
+        None => ConformanceCase::Skipped {
+            case_id: case_id.into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                detail: "provider-specific async hook was not supplied".into(),
+            },
+        },
+    });
 }
