@@ -27,6 +27,7 @@ use qubit_event_bus::model::Topic;
 const STATIC_SUBSCRIBER_ID: SubscriberId = SubscriberId::new_static("audit-static");
 const STATIC_PROVIDER_ID: ProviderId = ProviderId::new_static("local-static");
 const STATIC_SCHEMA_ID: SchemaId = SchemaId::new_static("schema-static-v1");
+const STATIC_CONTENT_TYPE: ContentType = ContentType::new_static("application/json");
 
 fn identifier_hash<T: Hash>(value: &T) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -58,6 +59,38 @@ fn static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn
     assert_eq!(STATIC_SCHEMA_ID, runtime_schema_id);
     assert_eq!(identifier_hash(&STATIC_SCHEMA_ID), identifier_hash(&runtime_schema_id));
     Ok(())
+}
+
+#[test]
+fn static_content_type_matches_runtime_value_and_predefined_constants() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(ContentType::new_static("application/json"), STATIC_CONTENT_TYPE);
+    assert_eq!(STATIC_CONTENT_TYPE.as_str(), "application/json");
+    let runtime_content_type = ContentType::new("application/json")?;
+    assert_eq!(STATIC_CONTENT_TYPE, runtime_content_type);
+    assert_eq!(
+        identifier_hash(&STATIC_CONTENT_TYPE),
+        identifier_hash(&runtime_content_type)
+    );
+    assert_eq!(ContentType::TEXT_PLAIN.as_str(), "text/plain");
+    assert_eq!(ContentType::TEXT_PLAIN, ContentType::new("text/plain")?);
+    assert_eq!(ContentType::TEXT_HTML.as_str(), "text/html");
+    assert_eq!(ContentType::TEXT_CSV.as_str(), "text/csv");
+    assert_eq!(ContentType::TEXT_XML.as_str(), "text/xml");
+    assert_eq!(ContentType::APPLICATION_JSON, STATIC_CONTENT_TYPE);
+    assert_eq!(ContentType::APPLICATION_XML.as_str(), "application/xml");
+    assert_eq!(
+        ContentType::APPLICATION_OCTET_STREAM.as_str(),
+        "application/octet-stream"
+    );
+    assert_eq!(ContentType::APPLICATION_CBOR.as_str(), "application/cbor");
+    assert_eq!(ContentType::APPLICATION_PROTOBUF.as_str(), "application/protobuf");
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "invalid content type")]
+fn content_type_new_static_rejects_invalid_value() {
+    let _ = ContentType::new_static("text/");
 }
 
 struct StringCodec {
