@@ -176,6 +176,7 @@ let orders = OrderService::new(bus.clone());
 - `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>` 将事件主题、发布和订阅保持为类型化 API。
 - 同步 facade 和不绑定运行时的异步 facade 使用对象安全的 provider SPI；`qubit-spi` registry 可在创建时选择 provider、检查能力并尝试 fallback。
 - 内置 local provider 为每个订阅者设置有界队列；facade 在 provider 能力允许时支持拦截器、重试、ACK/NACK、死信、顺序、诊断和关闭控制。
+- Codec 回调受 panic 边界保护并返回结构化错误；编码后的字节在 provider 重试间共享。
 - 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
 - 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 

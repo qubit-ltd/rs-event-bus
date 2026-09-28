@@ -128,6 +128,7 @@ let orders = OrderService::new(bus.clone());
 - Provider discovery and creation through `qubit-spi` registries, with creation-time capability checks and fallback.
 - A built-in bounded-queue, in-process provider (`LocalEventBusProvider`).
 - Facade-level interception, retry through the caller's direct `qubit-retry` dependency, ACK/NACK, dead-letter handling, ordering, diagnostics, and lifecycle controls where supported by provider capabilities.
+- Panic-contained codec callbacks, structured codec errors, and shared encoded payload bytes across provider publish attempts.
 - Optional bounded `NotificationPublisher<T>` for nonblocking application notifications; provider admission receipts do not mean handlers have completed.
 - Optional `conformance` feature with a report API for provider-specific SPI contract checks.
 
