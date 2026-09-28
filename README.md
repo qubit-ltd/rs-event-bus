@@ -136,14 +136,13 @@ let orders = OrderService::new(bus.clone());
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
-Both local providers bound queued and unsettled events per subscription (default 1,024) and across one provider instance (default 65,536). A full limit rejects that destination in the publish receipt; a retry keeps its reservation until accept, reject, close, or shutdown. These limits count delivery items, not payload bytes. The synchronous facade allows at most 256 live subscription receiver threads by default; configure `SyncDeliverySchedulerConfig::with_max_subscription_workers` to change the limit. The async provider does not create a receive thread per subscription, but the application must drive `AsyncSubscription::run`. For higher subscription counts, measure `cargo bench --bench local_threads` and `cargo bench --bench local_scale` on the target host; the results are measurements, not a fixed capacity threshold. `EventBusFacadeConfig::with_max_encoded_payload_bytes` optionally limits encoded codec output before provider publish; native payload memory is not byte bounded. Async provider subscriptions are ephemeral: close or drop discards pending and in-flight deliveries, and resubscribing with the same subscriber ID starts empty. Dropping an `AsyncSubscription::run` future while retaining its handle still permits a later `run` to resume facade-owned tasks. See [resource guidance](doc/user_guide.md#configure-the-built-in-local-event-bus).
+Both local providers bound queued and unsettled events per subscription (default 1,024) and across one provider instance (default 65,536). A full limit rejects that destination in the publish receipt; a retry keeps its reservation until accept, reject, close, or shutdown. These limits count delivery items, not payload bytes. The synchronous facade allows at most 256 live subscription receiver threads by default; configure `SyncDeliverySchedulerConfig::with_max_subscription_workers` to change the limit. The async provider does not create a receive thread per subscription, but the application must drive `AsyncSubscription::run`. For higher subscription counts, measure `cargo bench --bench local_threads` and `cargo bench --bench local_scale` on the target host; the results are measurements, not a fixed capacity threshold. `EventBusFacadeConfig::with_max_encoded_payload_bytes` optionally limits encoded codec output before provider publish; native payload memory is not byte bounded. Async provider subscriptions are ephemeral: close or drop discards pending and in-flight deliveries, and resubscribing with the same subscriber ID starts empty. Dropping an `AsyncSubscription::run` future while retaining its handle still permits a later `run` to resume facade-owned tasks. See the [user guide](doc/user_guide.md#configure-the-built-in-local-event-bus).
 
 ## Learn more
 
-- [English user guide](doc/user_guide.md) · [中文用户指南](doc/user_guide.zh_CN.md)
-- [Architecture status (English)](doc/design.md) · [架构设计（中文）](doc/design.zh_CN.md) · [SPI design](doc/design.md#4-provider-spi)
+- [User guide](doc/user_guide.md)
+- [Architecture](doc/design.md) · [SPI design](doc/design.md#4-provider-spi)
 - [API reference](https://docs.rs/qubit-event-bus)
-- [中文 README](README.zh_CN.md)
 
 ## Testing
 
