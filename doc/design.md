@@ -528,8 +528,10 @@ How the facade uses these capabilities (P3):
 `RequiredCapabilities` (§6.2) reuses the same enums so a caller can demand
 "at least these capabilities" at **creation** time and learn about a mismatch before the bus is used.
 `DurabilityCapability` describes the provider's retention guarantee; `SubscriptionModes` separately lists
-which requested modes it accepts. Older custom providers should update `EventBusCapabilities` construction
-to declare their accepted modes. The facade rejects an unsupported mode before calling `subscribe`.
+which requested modes it accepts. Providers migrating from the previous constructor must add the required
+`SubscriptionModes` argument immediately after `DurabilityCapability`: use `EPHEMERAL`, `DURABLE`, or
+`BOTH` according to the modes their `subscribe` implementation accepts. This declaration does not change
+the retention guarantee. The facade rejects an unsupported mode before calling `subscribe`.
 
 ---
 

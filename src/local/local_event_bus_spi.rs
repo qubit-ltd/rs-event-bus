@@ -111,6 +111,7 @@ impl EventBusSpi for LocalEventBusSpi {
             OrderingCapability::PerKey,
             DelayedDeliveryCapability::Native,
             DurabilityCapability::Ephemeral,
+            crate::spi::SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,

@@ -391,6 +391,7 @@ impl EventBusSpi for GatedSpi {
             OrderingCapability::None,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
+            qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,

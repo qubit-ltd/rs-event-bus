@@ -79,6 +79,7 @@ impl EventBusSpi for EmptySpi {
             crate::spi::OrderingCapability::None,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
+            crate::spi::SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
