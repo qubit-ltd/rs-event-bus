@@ -350,7 +350,7 @@ let subscription = bus.subscribe(request, handler)?;
 
 | 目标 | 入口 | 注意事项 |
 | --- | --- | --- |
-| 过滤事件 | `filter` | 总线取到消息后、处理函数运行前，查看事件内容并决定是否跳过。在 local 上，被跳过的消息在发布回执里仍是 `Accepted`；跳过不等于拒绝。 |
+| 过滤事件 | `filter` | 总线取到消息后、处理函数运行前，查看事件内容并决定是否跳过。在 local 上，被跳过的消息在发布回执里仍是 `Accepted`；跳过不等于拒绝。示例见[需要拦截或过滤消息时](#需要拦截或过滤消息时)。 |
 | 由处理函数决定何时确认 | `ack_mode(AckMode::Manual)` | 写入业务数据后调用 `delivery.acknowledgement().ack()`；处理失败可调用 `nack()`。未作决定就返回会被视为失败。示例见[由处理函数决定何时确认](#由处理函数决定何时确认)。 |
 | 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.25"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
 | 失败后选择动作 | `error_handler` | 可要求重试、重新放回队列、转入失败消息主题或放弃；重新入队需要所用实现支持。 |
@@ -447,9 +447,117 @@ let dead_letter_subscription = bus.subscribe(
 
 **过滤**发生在接收方：处理函数运行前，先判断这条消息要不要交给它。**拦截器**则是一段放在发布或处理路径中的自定义代码，适合添加关联信息、记录日志或主动停止后续步骤。普通接入不需要先配置拦截器。
 
-请求中的发布拦截器只影响这一次发布；`EventBusFacadeConfig::publisher_interceptor` 会影响通过该总线对象发出的所有消息。后者可修改 header，返回 `Ok(false)` 会停止发布，报告显示为 `Dropped`。发布错误处理器只负责观察最终错误，不会把错误变成成功。
+订阅侧先执行 `filter`。返回 `true` 时继续；返回 `false` 时按已接纳结算这次投递，订阅拦截器和处理函数都不会运行。过滤器通过之后，顺序是总线级订阅拦截器、该订阅自己的拦截器、最后才是处理函数。每个拦截器都会拿到 `next`，只有调用它，后面的步骤才会执行。同步订阅用 `interceptor` 登记，异步订阅用 `async_interceptor`。同步总线上配置异步拦截器，或异步总线上配置同步拦截器，都会在创建订阅时失败。
 
-订阅方先按 `filter` 判断是否接收，再执行拦截器和处理函数。同步订阅用 `SubscribeOptions::builder().interceptor(...)`，异步订阅用 `async_interceptor(...)`；也可在 `EventBusFacadeConfig` 中为整个总线对象配置。拦截器拿到一个 `next` 回调，必须调用它，后面的处理函数才会执行。同步总线不能配置异步订阅拦截器，异步总线也不能配置同步订阅拦截器；用错会在创建订阅时得到配置错误。
+### 在处理函数之前跳过消息
+
+客户视图可以不保存金额为零的订单：
+
+```rust
+use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .filter(|event| event.payload().total_cents > 0)
+    .build();
+let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
+let subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
+```
+
+金额为零时不会调用 `upsert_order`。内置 local 上，该目标在发布回执里仍是 `Accepted`。`filter` 发生 panic 时，按处理函数失败报告。
+
+### 在处理函数前后插入代码
+
+审计订阅可以先记下订单号，再通过 `next` 进入处理函数：
+
+```rust
+use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .interceptor(|delivery, next| {
+        eprintln!("审计收到 {}", delivery.payload().order_id);
+        next(delivery)
+    })
+    .build();
+let request = SubscribeRequest::new("audit-log", OrderCreated::TOPIC)?.with_options(options);
+let subscription = bus.subscribe(request, move |delivery| store.append_order_created(delivery.payload()))?;
+```
+
+`next(delivery)` 表示继续后面的链。日志输出之后才会写存储。拦截器直接返回、没有调用 `next` 时，处理函数不会执行。拦截器返回的值就是这次投递的结果。
+
+同一段同步回调也可以包住这条总线上所有 `OrderCreated` 订阅。它位于该订阅自己的拦截器外侧，而且只在这条订阅的 `filter` 返回 `true` 之后运行。它要在组装总线配置时登记；`EventBus::local` 接不了这份配置：
+
+```rust
+use qubit_event_bus::model::{Delivery, SubscriberNext};
+use qubit_event_bus::EventBusFacadeConfig;
+
+let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
+    |delivery: Delivery<OrderCreated>, next: SubscriberNext<OrderCreated>| next(delivery),
+);
+```
+
+异步订阅要 `await` 自己的 `next`，返回类型是 `SpiFuture`：
+
+```rust
+use qubit_event_bus::model::{AsyncSubscriberNext, Delivery, SubscribeOptions};
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::DeliveryError;
+
+let options = SubscribeOptions::<OrderCreated>::builder()
+    .async_interceptor(|delivery: Delivery<OrderCreated>, next: AsyncSubscriberNext<OrderCreated>| {
+        Box::pin(async move { next(delivery).await }) as SpiFuture<'static, Result<(), DeliveryError>>
+    })
+    .build();
+```
+
+把 `options` 放进 `SubscribeRequest::with_options`，再 `subscribe(...).await`。对应的总线级方法是 `EventBusFacadeConfig::async_subscriber_interceptor`。
+
+### 改变或停止一次发布
+
+挂在单次请求上的发布拦截器只看这一次的事件信封。返回 `Ok(None)` 表示停止，返回 `Ok(Some(envelope))` 表示带着你返回的信封继续：
+
+```rust
+use qubit_event_bus::model::PublishRequest;
+
+let request = PublishRequest::builder()
+    .topic(OrderCreated::TOPIC)
+    .payload(event)
+    .interceptor(|mut envelope| {
+        if envelope.payload().total_cents == 0 {
+            return Ok(None);
+        }
+        envelope.set_header("request-id", "req-42")?;
+        Ok(Some(envelope))
+    })
+    .build()?;
+let receipt = bus.publish(request)?;
+```
+
+`Ok(None)` 会在调用 provider 之前结束。`receipt.admission_outcome()` 为 `Dropped`，这次调用也不会进入总线级发布拦截器。`Ok(Some(envelope))` 会带着返回信封上的 header 继续。返回 `Err` 则这次发布失败。
+
+### 改变或停止每次发布
+
+`EventBusFacadeConfig::publisher_interceptor` 作用于通过该总线对象发出的每条消息，并且排在“已经返回信封”的请求级拦截器之后。它可以修改 header，不能修改载荷或事件 ID。`Ok(false)` 停止发布，`Ok(true)` 继续：
+
+```rust
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishMetadata;
+use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
+
+let local = LocalEventBusConfig::default();
+let bus_settings = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
+    if metadata.header("suppress") == Some("true") {
+        return Ok(false);
+    }
+    metadata.set_header("service", "orders")?;
+    Ok(true)
+});
+let config = EventBusConfig::default()
+    .with_provider_options(local.provider_options())
+    .with_facade_config(bus_settings);
+let bus = EventBusRegistry::with_local()?.create(&config)?;
+```
+
+`Ok(false)` 时接纳结果为 `Dropped`，provider 不会被调用。发布错误处理器只观察最终的发布失败，不能把失败改成成功；被拦截器丢掉的发布也不会调用它。
 
 ## 配置内置 local 事件总线
 
@@ -613,7 +721,89 @@ submit_sync_provider! {
 
 内置 local 直接传递 Rust 对象，不需要转换。消息要跨进程传递时，通常需要先把对象转换成字节，接收时再还原；负责这件事的组件叫**编码器**（codec）。可以用 `Topic::new_with_codec` / `new_with_shared_codec` 为某类事件指定编码器，也可以把编码器放进 `CodecRegistry`，再通过 `EventBusFacadeConfig::with_codec_registry` 配给总线。主题自带编码器优先；没有才查总线的注册表。创建订阅时会选定编码器，两处都没有时会报错。应用还要约定数据格式与版本兼容方式；本库不内置通用 JSON 编码器。
 
-Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；`decode` panic 会转换为 `CodecError::Panicked`，若 settlement 能力支持则请求 provider 重试。普通 decode 错误会作为无效消息拒绝。可运行的最小实现见[codec 往返示例](../examples/codec_round_trip.rs)。
+Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；`decode` panic 会转换为 `CodecError::Panicked`，若 settlement 能力支持则请求 provider 重试。普通 decode 错误会作为无效消息拒绝。可运行的最小 `String` 实现见[codec 往返示例](../examples/codec_round_trip.rs)。下面的片段为订单事件接上编码器。字节格式由应用自己约定：三行依次是 `order_id`、`customer_id` 和 `total_cents`，且字段中不含换行。本库不提供这种格式。
+
+```rust
+use std::sync::Arc;
+
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::model::{ContentType, SchemaId};
+use qubit_event_bus::CodecError;
+
+struct OrderCreatedCodec(ContentType);
+
+impl EventCodec<OrderCreated> for OrderCreatedCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.0
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
+        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
+        Ok(Arc::from(text.into_bytes()))
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<OrderCreated, CodecError> {
+        let text = std::str::from_utf8(bytes).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        let mut lines = text.lines();
+        let order_id = lines.next().unwrap_or("").to_owned();
+        let customer_id = lines.next().unwrap_or("").to_owned();
+        let total_cents = lines
+            .next()
+            .unwrap_or("")
+            .parse::<u64>()
+            .map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
+            return Err(CodecError::Decode {
+                source: Box::new(std::io::Error::other("expected order_id, customer_id, and total_cents")),
+            });
+        }
+        Ok(OrderCreated {
+            order_id,
+            customer_id,
+            total_cents,
+        })
+    }
+}
+```
+
+`encode` 交出共享字节和内容类型；`decode` 还原 `OrderCreated`，无法还原时返回 `CodecError::Decode`。发布方和订阅方使用同一份带编码器的主题。常量 `OrderCreated::TOPIC` 没有编码器，编码型 provider 不会用它来转换字节：
+
+```rust
+use qubit_event_bus::model::{ContentType, PublishRequest, SubscribeRequest, Topic};
+
+let topic = Topic::new_with_codec(
+    "orders.created",
+    OrderCreatedCodec(ContentType::new("text/plain")?),
+)?;
+let subscription = bus.subscribe(
+    SubscribeRequest::new("audit-log", topic.clone())?,
+    move |delivery| store.append_order_created(delivery.payload()),
+)?;
+let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
+```
+
+发布时，provider 收到的是 `encode` 的字节；投递时，`decode` 还原的值会交给处理函数。内置 local 仍直接传递 Rust 值，不会调用这个编码器。
+
+同一载荷类型的多个主题可以共用注册到总线上的编码器。主题自带的编码器仍然优先；注册表只在主题没有编码器时使用。编码型订阅若两处都没有编码器，会在 provider 创建订阅之前失败，错误是 `SubscribeError::Capability(CapabilityError::CodecRequired)`：
+
+```rust
+use std::sync::Arc;
+
+use qubit_event_bus::codec::CodecRegistry;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
+
+let mut codecs = CodecRegistry::new();
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
+let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
+let config = EventBusConfig::default().with_facade_config(bus_settings);
+```
+
+把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new_with_shared_codec` 挂到主题上。
 
 ## 异步总线与订阅
 
