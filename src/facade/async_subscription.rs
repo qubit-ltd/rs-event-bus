@@ -64,6 +64,8 @@ use crate::pipeline::Diagnostic;
 use crate::pipeline::OrderingLaneKey;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_retry_config;
+use crate::pipeline::is_retry_rule_failure;
+use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
@@ -71,7 +73,6 @@ use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 use crate::spi::ShutdownMode;
 use crate::spi::SpiFuture;
-use crate::spi::TransportPayload;
 
 thread_local! {
     static ACTIVE_BUS_POLLS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -147,6 +148,9 @@ struct AsyncSession<T: 'static> {
 }
 
 struct PendingDelivery<T: 'static> {
+    /// Tracks the message from receive through settlement or explicit
+    /// abandonment.
+    _tracking: super::async_event_bus::AsyncDeliveryGuard,
     event_id: crate::model::EventId,
     event: Option<Arc<EventEnvelope<T>>>,
     token: Option<SettlementToken>,
@@ -670,7 +674,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     self.start_pending_task(handler.clone());
                     continue;
                 }
-                let _guard = self.inner.tracker.track(self.topic.name());
                 let disposition = self.pending.as_ref().and_then(|pending| pending.settlement_intent);
                 if let Some(disposition) = disposition {
                     let event = self
@@ -857,7 +860,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         self.tasks.push(OwnedDeliveryTask {
             started,
             future: Box::pin(async move {
-                let _guard = task.inner.tracker.track(task.topic.name());
                 task.process_pending(handler).await;
                 task.pending
                     .take()
@@ -867,12 +869,14 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     }
 
     fn prepare_message(&mut self, message: InboundMessage) {
+        let tracking = self.inner.tracker.track(self.topic.name());
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
-        let payload = match decode_payload(self.codec.as_ref(), transport_payload) {
+        let payload = match crate::codec::decode_payload(self.codec.as_ref(), transport_payload).map_err(Into::into) {
             Ok(payload) => payload,
             Err(error) => {
                 self.pending = Some(PendingDelivery {
+                    _tracking: tracking,
                     event_id,
                     event: None,
                     token,
@@ -895,6 +899,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let event = Arc::new(event);
         let event_id = event.id().clone();
         self.pending = Some(PendingDelivery {
+            _tracking: tracking,
             event_id,
             event: Some(event),
             token,
@@ -917,9 +922,20 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.settle_pending(disposition, event.as_deref()).await;
             return;
         }
-        if let Some(error) = pending.decode_error.as_ref().map(ToString::to_string) {
-            self.record_failure_diagnostic(0, error.into());
-            self.settle_pending(DeliveryDisposition::Reject, None).await;
+        if let Some(error) = pending.decode_error.as_ref() {
+            let panicked = matches!(error, DeliveryError::Codec(crate::error::CodecError::Panicked { .. }));
+            if panicked {
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "codec_decode".into(),
+                    message: error.to_string().into(),
+                });
+            }
+            self.record_failure_diagnostic(0, error.to_string().into());
+            if panicked {
+                self.settle_pending(DeliveryDisposition::Retry, None).await;
+            } else {
+                self.settle_pending(DeliveryDisposition::Reject, None).await;
+            }
             return;
         }
         let Some(event) = pending.event.as_ref().cloned() else {
@@ -1348,11 +1364,13 @@ async fn run_with_retry<T: Send + Sync + 'static>(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .unwrap_or(FailureDirective::Discard);
-            let terminal = if requested == FailureDirective::Retry {
-                FailureDirective::Discard
-            } else {
-                requested
-            };
+            if is_retry_rule_failure(error.reason()) {
+                inner.emit(&Diagnostic::InternalFailure {
+                    origin: "retry_rule".into(),
+                    message: error.to_string().into(),
+                });
+            }
+            let terminal = choose_terminal_directive(error.reason(), requested);
             Err((Box::new(DeliveryError::Retry(Box::new(error))), count, terminal))
         }
     }
@@ -1516,27 +1534,4 @@ where
         }
     })
     .await
-}
-
-fn decode_payload<T: Send + Sync + 'static>(
-    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
-    payload: TransportPayload,
-) -> Result<Arc<T>, DeliveryError> {
-    match payload {
-        TransportPayload::Native(value) => Arc::downcast::<T>(value).map_err(|_| {
-            crate::error::CodecError::Decode {
-                source: Box::new(std::io::Error::other(
-                    "native payload type does not match subscribed topic",
-                )),
-            }
-            .into()
-        }),
-        TransportPayload::Encoded(encoded) => codec
-            .ok_or_else(|| crate::error::CodecError::Decode {
-                source: Box::new(std::io::Error::other("encoded payload has no resolved codec")),
-            })?
-            .decode(encoded.bytes())
-            .map(Arc::new)
-            .map_err(Into::into),
-    }
 }
