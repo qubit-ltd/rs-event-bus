@@ -1152,11 +1152,15 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 
 `benches/local_scale.rs`（不依赖基准框架的可重复热路径测量）与
 `benches/local_threads.rs`（同步/异步订阅创建与销毁的线程/资源占用）提供
-数量级参考。数值随机器变化，请直接运行：
+数量级参考。`benches/encoded_publish.rs` 检查同步编码载荷在发布重试间是否复用
+分配，`benches/facade_delivery.rs` 测量调用方驱动的异步 facade 经 local SPI 发布。
+数值随机器变化，请直接运行：
 
 ```bash
 cargo bench --bench local_scale
 cargo bench --bench local_threads
+cargo bench --bench encoded_publish
+cargo bench --bench facade_delivery
 ```
 
 同步 facade 为每个订阅创建一个阻塞接收线程，并在调用 provider 前执行
