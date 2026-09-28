@@ -678,6 +678,78 @@ fn idle_async_subscription_does_not_consume_delivery_admission() {
 }
 
 #[test]
+fn async_received_wait_includes_deliveries_queued_for_admission() {
+    use std::sync::atomic::AtomicBool;
+    use std::task::Poll;
+    use std::time::Duration;
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
+    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
+    let topic = Topic::<usize>::new("received-admission.topic").unwrap();
+    let mut sub_a = block_on(async {
+        bus.subscribe(SubscribeRequest::new("received-a", topic.clone()).unwrap())
+            .await
+            .unwrap()
+    });
+    spi.enqueue(InboundMessage::new(
+        TopicAddress::new(topic.name()).unwrap(),
+        EventId::new("received-a-event").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(1_usize)),
+        Some(SettlementToken::new(sub_a.id(), "received-a-token")),
+        Default::default(),
+    ));
+    let block_a = Arc::new(AtomicBool::new(false));
+    let started_a = Arc::new(AtomicUsize::new(0));
+    let keep_a_pending = block_a.clone();
+    let mark_a_started = started_a.clone();
+    let mut run_a = Box::pin(sub_a.run(move |_| {
+        let keep_pending = keep_a_pending.clone();
+        let started = mark_a_started.clone();
+        async move {
+            started.fetch_add(1, Ordering::AcqRel);
+            std::future::poll_fn(move |_| {
+                if keep_pending.load(Ordering::Acquire) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }));
+    for _ in 0..8 {
+        assert!(crate::support::manual_async::poll_once(run_a.as_mut()).is_pending());
+        if started_a.load(Ordering::Acquire) == 1 {
+            break;
+        }
+    }
+    assert_eq!(started_a.load(Ordering::Acquire), 1);
+    let mut sub_b = block_on(bus.subscribe(SubscribeRequest::new("received-b", topic.clone()).unwrap())).unwrap();
+    block_on(bus.publish(PublishRequest::new(topic.clone(), 2).unwrap())).unwrap();
+    let mut run_b = Box::pin(sub_b.run(|_| async { Ok(()) }));
+    for _ in 0..8 {
+        assert!(crate::support::manual_async::poll_once(run_b.as_mut()).is_pending());
+        if block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).unwrap() == WaitOutcome::TimedOut {
+            break;
+        }
+    }
+    assert_eq!(
+        block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).unwrap(),
+        WaitOutcome::TimedOut,
+        "received delivery must remain tracked while it waits for admission",
+    );
+    drop(run_b);
+    block_a.store(true, Ordering::Release);
+    let _ = crate::support::manual_async::poll_once(run_a.as_mut());
+    drop(run_a);
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
 fn async_subscription_runs_different_ordering_keys_concurrently() {
     use std::task::Waker;
 
@@ -2367,6 +2439,103 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
     });
 
     assert_eq!(spi.settlement_count(), 1);
+}
+
+#[test]
+fn async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
+    struct PanicOnceCodec {
+        content_type: ContentType,
+        panicked: Arc<AtomicBool>,
+    }
+    impl EventCodec<String> for PanicOnceCodec {
+        fn content_type(&self) -> &ContentType {
+            &self.content_type
+        }
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+            if !self.panicked.swap(true, Ordering::AcqRel) {
+                panic!("synthetic decode panic");
+            }
+            String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+        }
+    }
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
+    let topic = Topic::new_with_codec(
+        "async.panic-codec",
+        PanicOnceCodec {
+            content_type: ContentType::new("text/plain").unwrap(),
+            panicked: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .unwrap();
+    let handled = Arc::new(AtomicUsize::new(0));
+    let diagnostic_seen = Arc::new(AtomicBool::new(false));
+    let observed = diagnostic_seen.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "codec_decode") {
+            observed.store(true, Ordering::Release);
+        }
+    });
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("panic-codec", topic.clone()).unwrap())).unwrap();
+    let subscription_id = subscription.id();
+    let enqueue = |id: &'static str, token: &'static str| {
+        InboundMessage::new(
+            TopicAddress::new("async.panic-codec").unwrap(),
+            EventId::new(id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(b"ok".as_slice()),
+                ContentType::new("text/plain").unwrap(),
+                None,
+            )),
+            Some(SettlementToken::new(subscription_id, token)),
+            Default::default(),
+        )
+    };
+    spi.enqueue(enqueue("panic-codec-event", "panic-codec-token"));
+    let handled_by_runner = handled.clone();
+    let runner = std::thread::spawn(move || {
+        block_on(subscription.run(move |_| {
+            let handled = handled_by_runner.clone();
+            async move {
+                handled.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+        }))
+    });
+    for _ in 0..100 {
+        if spi.settlement_dispositions() == [DeliveryDisposition::Retry] {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Retry]);
+    assert!(diagnostic_seen.load(Ordering::Acquire));
+    spi.enqueue(enqueue("after-panic-event", "after-panic-token"));
+    for _ in 0..100 {
+        if handled.load(Ordering::Acquire) == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(handled.load(Ordering::Acquire), 1);
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    runner.join().unwrap().unwrap();
+    assert_eq!(
+        spi.settlement_dispositions(),
+        [DeliveryDisposition::Retry, DeliveryDisposition::Accept]
+    );
 }
 
 #[test]

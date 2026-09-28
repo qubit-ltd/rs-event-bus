@@ -35,4 +35,12 @@ pub enum CodecError {
         #[source]
         source: Box<dyn Error + Send + Sync>,
     },
+    /// The codec panicked while performing an operation.
+    #[error("codec {operation} panicked: {message}")]
+    Panicked {
+        /// Codec operation that panicked.
+        operation: &'static str,
+        /// Panic payload rendered as text when possible.
+        message: Box<str>,
+    },
 }

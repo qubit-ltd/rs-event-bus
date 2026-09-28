@@ -57,3 +57,7 @@ harness = false
 [[bench]]
 name = "local_threads"
 harness = false
+
+[[bench]]
+name = "encoded_publish"
+harness = false
