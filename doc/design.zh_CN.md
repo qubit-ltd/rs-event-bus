@@ -518,8 +518,9 @@ facade 如何使用这些能力（对应 P3）：
 `RequiredCapabilities`（§6.2）复用同一套枚举，让调用方在**创建期**就要求
 "至少这些能力”，把能力不匹配尽早暴露。
 `DurabilityCapability` 描述 provider 的保留保证；`SubscriptionModes` 独立声明它接受哪些订阅请求模式。
-旧的自定义 provider 需要更新 `EventBusCapabilities` 构造调用并声明支持的模式。facade 会在调用
-`subscribe` 前拒绝不支持的模式。
+从旧构造器迁移时，需要在 `DurabilityCapability` 后增加必填的 `SubscriptionModes` 参数：按
+`subscribe` 实际接受的请求模式选择 `EPHEMERAL`、`DURABLE` 或 `BOTH`。这项声明不会改变保留保证。
+facade 会在调用 `subscribe` 前拒绝不支持的模式。
 
 ---
 

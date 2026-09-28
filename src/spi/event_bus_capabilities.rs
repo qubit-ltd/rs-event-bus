@@ -42,15 +42,12 @@ impl EventBusCapabilities {
         ordering: OrderingCapability,
         delayed_delivery: DelayedDeliveryCapability,
         durability: DurabilityCapability,
+        subscription_modes: SubscriptionModes,
         consumer_groups: bool,
         replay: ReplayCapability,
         publish_guarantee: PublishGuarantee,
         publish_visibility: PublishVisibility,
     ) -> Self {
-        let subscription_modes = match durability {
-            DurabilityCapability::Ephemeral => SubscriptionModes::EPHEMERAL,
-            DurabilityCapability::Durable => SubscriptionModes::DURABLE,
-        };
         Self {
             payload_modes,
             settlement,
@@ -63,17 +60,6 @@ impl EventBusCapabilities {
             publish_guarantee,
             publish_visibility,
         }
-    }
-
-    /// Overrides the accepted subscription modes.
-    ///
-    /// The default inferred by [`Self::new`] accepts the mode matching the
-    /// provider's durability capability. Use this method when the provider
-    /// accepts a different set, including both modes.
-    #[must_use]
-    pub const fn with_subscription_modes(mut self, modes: SubscriptionModes) -> Self {
-        self.subscription_modes = modes;
-        self
     }
 
     /// Returns the supported payload representations.

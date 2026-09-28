@@ -50,6 +50,7 @@ use crate::model::PublishAcknowledgement;
 ///     EventBusSpi, EventSubscriptionSpi, OrderingCapability, OutboundMessage,
 ///     PayloadModes, PublishGuarantee, PublishVisibility, ReplayCapability,
 ///     SettlementCapabilities, ShutdownMode, ShutdownOutcome, SpiSubscriptionRequest,
+///     SubscriptionModes,
 /// };
 /// use std::sync::Arc;
 ///
@@ -74,6 +75,7 @@ use crate::model::PublishAcknowledgement;
 ///             OrderingCapability::None,
 ///             DelayedDeliveryCapability::None,
 ///             DurabilityCapability::Ephemeral,
+///             SubscriptionModes::EPHEMERAL,
 ///             false,
 ///             ReplayCapability::None,
 ///             PublishGuarantee::FireAndForget,

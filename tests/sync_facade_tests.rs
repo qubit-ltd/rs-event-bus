@@ -280,6 +280,7 @@ struct TestBackend {
     payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
     durability_capability: AtomicUsize,
+    subscription_modes: AtomicUsize,
     consumer_groups: AtomicBool,
     replay_capability: AtomicUsize,
     subscribe_calls: AtomicUsize,
@@ -311,6 +312,7 @@ impl TestBackend {
             payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
             durability_capability: AtomicUsize::new(0),
+            subscription_modes: AtomicUsize::new(0),
             consumer_groups: AtomicBool::new(false),
             replay_capability: AtomicUsize::new(0),
             subscribe_calls: AtomicUsize::new(0),
@@ -374,11 +376,22 @@ impl TestBackend {
     fn set_subscription_capabilities(
         &self,
         durability: DurabilityCapability,
+        subscription_modes: qubit_event_bus::spi::SubscriptionModes,
         consumer_groups: bool,
         replay: ReplayCapability,
     ) {
         self.durability_capability.store(
             usize::from(durability == DurabilityCapability::Durable),
+            Ordering::Release,
+        );
+        self.subscription_modes.store(
+            if subscription_modes == qubit_event_bus::spi::SubscriptionModes::BOTH {
+                2
+            } else if subscription_modes == qubit_event_bus::spi::SubscriptionModes::DURABLE {
+                1
+            } else {
+                0
+            },
             Ordering::Release,
         );
         self.consumer_groups.store(consumer_groups, Ordering::Release);
@@ -589,6 +602,11 @@ impl EventBusSpi for TestBackend {
                 DurabilityCapability::Ephemeral
             } else {
                 DurabilityCapability::Durable
+            },
+            match self.subscription_modes.load(Ordering::Acquire) {
+                1 => qubit_event_bus::spi::SubscriptionModes::DURABLE,
+                2 => qubit_event_bus::spi::SubscriptionModes::BOTH,
+                _ => qubit_event_bus::spi::SubscriptionModes::EPHEMERAL,
             },
             self.consumer_groups.load(Ordering::Acquire),
             match self.replay_capability.load(Ordering::Acquire) {
@@ -948,7 +966,12 @@ fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
     }
 
     let (bus, backend) = create_bus_configured(|backend| {
-        backend.set_subscription_capabilities(DurabilityCapability::Durable, true, ReplayCapability::Position);
+        backend.set_subscription_capabilities(
+            DurabilityCapability::Durable,
+            qubit_event_bus::spi::SubscriptionModes::DURABLE,
+            true,
+            ReplayCapability::Position,
+        );
     });
     let subscription = bus
         .subscribe(

@@ -80,6 +80,7 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
         OrderingCapability::PerKey,
         DelayedDeliveryCapability::Native,
         DurabilityCapability::Durable,
+        qubit_event_bus::spi::SubscriptionModes::DURABLE,
         true,
         ReplayCapability::Timestamp,
         PublishGuarantee::DurablyStored,
@@ -109,12 +110,12 @@ fn subscription_modes_can_declare_both_modes_independently_of_durability() {
         OrderingCapability::PerKey,
         DelayedDeliveryCapability::None,
         DurabilityCapability::Ephemeral,
+        SubscriptionModes::BOTH,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
         PublishVisibility::Opaque,
-    )
-    .with_subscription_modes(SubscriptionModes::BOTH);
+    );
 
     assert!(
         capabilities
