@@ -9,6 +9,8 @@
 
 //! Runtime-neutral asynchronous event-bus facade.
 
+mod internal;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -22,6 +24,12 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 
+pub(super) use internal::AsyncDeliveryGuard;
+pub(super) use internal::AsyncPublishGuard;
+pub(super) use internal::AsyncRunnerGuard;
+pub(super) use internal::AsyncSignal;
+pub(super) use internal::AsyncSubscribeGuard;
+pub(super) use internal::AsyncTracker;
 use qubit_clock::MonotonicClock;
 use qubit_clock::StdMonotonicClock;
 use qubit_clock::Timer;
@@ -135,186 +143,6 @@ pub(super) trait AsyncShutdownDriver: Send + Sync {
         &'a self,
         mode: ShutdownMode,
     ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>>;
-}
-
-#[derive(Default)]
-pub(super) struct AsyncSignal {
-    wakers: Mutex<HashMap<u64, std::task::Waker>>,
-    next_waiter: AtomicU64,
-}
-
-impl AsyncSignal {
-    pub(super) fn notify(&self) {
-        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for (_, waker) in wakers {
-            waker.wake();
-        }
-    }
-    fn register_waiter(&self, id: u64, waker: &std::task::Waker) {
-        self.wakers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, waker.clone());
-    }
-    fn unregister(&self, id: u64) {
-        self.wakers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&id);
-    }
-}
-
-#[derive(Default)]
-pub(super) struct AsyncTracker {
-    state: Mutex<TrackerState>,
-    signal: AsyncSignal,
-}
-
-#[derive(Default)]
-struct TrackerState {
-    active_runners: usize,
-    active_publishes: usize,
-    active_subscribes: usize,
-    active_closes: usize,
-    in_flight: HashMap<Box<str>, usize>,
-}
-
-impl AsyncTracker {
-    pub(super) fn close_started(self: &Arc<Self>) -> AsyncCloseGuard {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_closes += 1;
-        AsyncCloseGuard(self.clone())
-    }
-    pub(super) fn runner_started(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_runners += 1;
-    }
-    pub(super) fn runner_finished(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_runners = state.active_runners.saturating_sub(1);
-        drop(state);
-        self.signal.notify();
-    }
-    fn publish_started(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_publishes += 1;
-    }
-    fn publish_finished(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_publishes = state.active_publishes.saturating_sub(1);
-        drop(state);
-        self.signal.notify();
-    }
-    fn subscribe_started(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_subscribes += 1;
-    }
-    fn subscribe_finished(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_subscribes = state.active_subscribes.saturating_sub(1);
-        drop(state);
-        self.signal.notify();
-    }
-    fn close_finished(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_closes = state.active_closes.saturating_sub(1);
-        drop(state);
-        self.signal.notify();
-    }
-    pub(super) fn track(self: &Arc<Self>, topic: &str) -> AsyncDeliveryGuard {
-        *self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .in_flight
-            .entry(topic.into())
-            .or_default() += 1;
-        AsyncDeliveryGuard {
-            tracker: self.clone(),
-            topic: topic.into(),
-        }
-    }
-    fn is_idle(&self, topic: &str) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .in_flight
-            .get(topic)
-            .copied()
-            .unwrap_or(0)
-            == 0
-    }
-    fn runners_stopped(&self) -> bool {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_runners == 0
-            && state.active_publishes == 0
-            && state.active_subscribes == 0
-            && state.active_closes == 0
-    }
-}
-
-struct AsyncPublishGuard(Arc<AsyncTracker>);
-impl Drop for AsyncPublishGuard {
-    fn drop(&mut self) {
-        self.0.publish_finished();
-    }
-}
-
-struct AsyncSubscribeGuard(Arc<AsyncTracker>);
-impl Drop for AsyncSubscribeGuard {
-    fn drop(&mut self) {
-        self.0.subscribe_finished();
-    }
-}
-
-pub(super) struct AsyncRunnerGuard(Arc<AsyncTracker>);
-impl AsyncRunnerGuard {
-    pub(super) fn enter(tracker: Arc<AsyncTracker>) -> Self {
-        tracker.runner_started();
-        Self(tracker)
-    }
-}
-impl Drop for AsyncRunnerGuard {
-    fn drop(&mut self) {
-        self.0.runner_finished();
-    }
-}
-
-pub(super) struct AsyncCloseGuard(Arc<AsyncTracker>);
-impl Drop for AsyncCloseGuard {
-    fn drop(&mut self) {
-        self.0.close_finished();
-    }
-}
-
-pub(super) struct AsyncDeliveryGuard {
-    tracker: Arc<AsyncTracker>,
-    topic: Box<str>,
-}
-impl Drop for AsyncDeliveryGuard {
-    fn drop(&mut self) {
-        let mut state = self
-            .tracker
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = state.in_flight.get_mut(self.topic.as_ref()) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                state.in_flight.remove(self.topic.as_ref());
-            }
-        }
-        drop(state);
-        self.tracker.signal.notify();
-    }
 }
 
 impl AsyncEventBus {
@@ -883,7 +711,7 @@ impl AsyncEventBusInner {
         }
         self.tracker.publish_started();
         drop(state);
-        Some(AsyncPublishGuard(self.tracker.clone()))
+        Some(AsyncPublishGuard::after_start(self.tracker.clone()))
     }
     fn begin_subscribe(self: &Arc<Self>) -> Option<AsyncSubscribeGuard> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -892,7 +720,7 @@ impl AsyncEventBusInner {
         }
         self.tracker.subscribe_started();
         drop(state);
-        Some(AsyncSubscribeGuard(self.tracker.clone()))
+        Some(AsyncSubscribeGuard::after_start(self.tracker.clone()))
     }
     pub(super) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
         let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1123,7 +951,7 @@ impl SignalRegistration<'_> {
     pub(super) fn new(signal: &AsyncSignal) -> SignalRegistration<'_> {
         SignalRegistration {
             signal,
-            id: signal.next_waiter.fetch_add(1, Ordering::Relaxed),
+            id: signal.next_waiter_id(),
         }
     }
     pub(super) fn register(&self, waker: &std::task::Waker) {
