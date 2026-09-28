@@ -598,9 +598,13 @@ impl ServiceProvider<EventBusSpec> for MyProvider {
 To support discovery, enable `discovery` in the implementation crate and submit to the sync catalog:
 
 ```rust
-qubit_spi::submit_sync_provider! {
-    inventory_entry = qubit_event_bus::registry::sync_provider_inventory::Entry;
-    spec = qubit_event_bus::EventBusSpec;
+use qubit_event_bus::EventBusSpec;
+use qubit_event_bus::registry::sync_provider_inventory::Entry;
+use qubit_spi::submit_sync_provider;
+
+submit_sync_provider! {
+    inventory_entry = Entry;
+    spec = EventBusSpec;
     provider = MyProvider;
 }
 ```
