@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.16)
+# Qubit Event Bus Design (0.17)
 
-> This document describes `qubit-event-bus` 0.16.0 as implemented.
+> This document describes `qubit-event-bus` 0.17.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -212,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.16.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.17.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -331,6 +331,7 @@ pub struct PublishReceipt {
     dispatched_event_id: Option<EventId>, // id actually sent after interceptors; None when dropped
     provider_id: ProviderId,
     acknowledgement: PublishAcknowledgement,
+    duplicate_possible: bool,            // an earlier publish attempt may have been admitted
 }
 
 pub enum PublishAcknowledgement {
@@ -359,7 +360,7 @@ does not by itself mean acceptance. `admission_outcome()` may report accepted, p
 no destinations, no accepted destinations, dropped, or opaque admission. Only a provider
 with `PublishVisibility::DestinationAdmissions` can report destination-level detail.
 `publish_all` returns `BatchPublishResult`, preserving each request's
-`Result<PublishReceipt, PublishError>` in input order. One failure does not stop the later requests.
+`Result<PublishReceipt, PublishFailure>` in input order. One failure does not stop the later requests.
 
 ### 3.6 `DeadLetterEvent<T>`
 
@@ -660,7 +661,7 @@ or `Registry::create`. It is frozen when the facade is created:
 | `async_subscriber_interceptors` | Same shape, async | Global async middleware (used only by `AsyncEventBus`) |
 | `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | Synchronous admission, handler queue, and receiver-thread budget |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | Global in-flight limit of the async facade |
-| `max_encoded_payload_bytes` | `Option<NonZeroUsize>` | Optional limit on encoded codec output before provider publish; `None` is unlimited |
+| `payload_limits` | `PayloadLimits` | Independent positive encoded publish/receive byte limits, each 1,048,576 by default |
 
 The facade reads provider capabilities once during construction and keeps that
 immutable snapshot for later validation. If `capabilities()` panics during direct
@@ -682,13 +683,24 @@ On subscribe, global middleware wraps the request middleware: global, then typed
 Only a `PayloadModes::Encoded` provider **requires** a codec (missing codec →
 `CapabilityError::CodecRequired`). `Native` and `NativeAndEncoded` both use
 `TransportPayload::Native`. The subscribe side decodes an `Encoded` payload with
-the same rule. A decode failure becomes `DeliveryError::Codec`, is `Reject`ed when
-the provider supports it, and emits `Diagnostic::DeliveryFailed { attempts: 0 }`.
-When `max_encoded_payload_bytes` is set, the publisher checks the completed byte
-vector after encoding and before retry or provider calls. This rejects oversized
-encoded output; it does not bound memory allocated while a codec runs. Native
-payloads have no facade byte limit because recursively measuring retained Rust
-objects is not reliable.
+the same resolution rule. `EventCodec::decode` receives `&EncodedPayload`; default
+`validate_metadata` checks exact content type and optional schema equality. The receive
+boundary checks byte length, validates metadata, then decodes, before invoking handlers.
+Only ordinary `CodecError::Decode` takes the existing bad-message `Reject` path.
+`MetadataMismatch`, receive `PayloadTooLarge`, codec `Panicked`, and
+`NativeTypeMismatch` stop reception without any settlement. The first
+`Arc<SubscriptionStopReason>` is retained and exposed by `terminal_failure()`;
+async `run` returns `ReceiveError::Stopped`, including on later runs of the same
+handle. Already-started handlers finish; close errors remain independent.
+Durable work remains recoverable by a new subscription after the configuration
+or codec is repaired. Ephemeral receiver cleanup may discard work, and known
+abandonment is counted once. Healthy subscriptions remain active.
+
+`PayloadLimits` has independent positive `max_publish_bytes` and
+`max_receive_bytes`, both 1 MiB by default. Exactly the limit is permitted;
+there is no unlimited setting. Publication checks after encoding and before
+provider admission; receiving checks before codec callbacks. This does not
+bound codec or Redis-client allocations, nor deep native Rust payload memory.
 
 ### 7.3 Publish pipeline (`PublisherPipeline`)
 
@@ -696,8 +708,8 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
 
 1. **Lifecycle gate.** If the bus is not `Running`, return `PublishError::Closed`.
 2. **Request-level typed interceptors.** `Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`,
-   chained in registration order. An interceptor may replace the whole envelope
-   (which is why the receipt distinguishes `input_event_id` from `dispatched_event_id`).
+   chained in registration order. An interceptor may transform the envelope but cannot change its event ID;
+   an ID change fails with a configuration cause before calling the SPI.
    `None` drops the message and the receipt is `AdmissionOutcome::Dropped`.
    A panic is isolated as `PublishError::InterceptorPanicked`.
 3. **Global metadata interceptors.** They may change headers only. Any `false` drops the message.
@@ -711,8 +723,14 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
    combines `SpiError::retryable()` with the caller's `RetryRule<PublishAttemptError>`.
    The fallback is `RetryFallback::Abort`. Exhaustion becomes
    `PublishError::Retry(Box<RetryError<...>>)`. With no policy there is a single attempt.
-   A provider panic is captured as `SpiError::Operation` with `kind = "spi_panic"`.
-8. **Error handlers.** On failure, `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishError)`
+   Provider errors declare `PublishEffect` through `SpiError::Publish`; generic
+   operation errors and provider panics conservatively mean uncertain admission.
+   The default `DuplicateRiskPolicy::Forbid` aborts uncertain retries before any
+   custom rule. `AllowDuplicates` only permits entry into the existing retry policy.
+   Uncertainty is retained across attempts and sets `duplicate_possible()` on a
+   later successful receipt. In-flight cancellation that returns an error is
+   uncertain; RetryPolicy budgets are soft, not universal hard I/O timeouts.
+8. **Error handlers.** On failure, `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`
    runs in registration order. If any handler panics, the final error becomes
    `PublishError::ErrorHandlerPanicked` and the remaining handlers still run.
 9. **Admission diagnostics.** When the receipt carries `DestinationAdmissions`, each
@@ -721,9 +739,10 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
     `opaque_accepted`, `zero_destinations`, `accepted_destinations`,
     `filtered_destinations`, `rejected_destinations`), readable through `publish_metrics()`.
 
-Internally, `PipelineFailure { origin, error }` records **which step** failed
+Internally, `PipelineFailure { origin, error, publish_effect }` records **which step** failed
 (interceptor, capability, codec, SPI, error handler, and so on) for tests and logs.
-Callers see only `PublishError`.
+Callers receive `PublishFailure` with the original event ID, aggregate effect,
+and structured `PublishError` cause; the source chain is preserved.
 
 ### 7.4 Subscribe pipeline (`SubscriberPipeline`): one message
 
@@ -820,8 +839,11 @@ Details:
 A dead-letter message carries the header `x-qubit-event-bus-dead-letter: v1`.
 When `SubscriberPipeline` reaches a terminal failure for a message that already
 has the header, it does not publish a second-level dead-letter; it `Reject`s.
-Together with dead-letter header protection on the publish path, one message
-produces at most one dead-letter record.
+Dead-letter header protection prevents recursive forwarding. It does not limit
+provider duplicates: forwarding and source settlement are not atomic. A lost
+forward reply or failed source settlement may cause duplicate logical records.
+The publish uncertainty gate also applies here; failed/uncertain forwarding stops
+the source subscription and retains durable recovery state. Consumers deduplicate.
 
 ### 7.7 Relationship to `qubit-retry`
 
@@ -1271,7 +1293,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 
 pub enum NotificationOutcome {
     Published(PublishReceipt),
-    PublishFailed(PublishError),
+    PublishFailed(PublishFailure),
     RequestFailed(EventIdGenerationError),
 }
 ```
@@ -1296,6 +1318,19 @@ pub enum NotificationOutcome {
 
 ---
 
+### 11.1 Worker exit and concurrent close
+
+A completion guard publishes exactly one `Drained` or `Panicked` exit after the
+processing loop and user-owned resource cleanup finish. The outer unwind boundary
+includes observer captures and other worker resources; cleanup panic increments
+`worker_panicked` once. Observer-call panics retain their narrower isolation.
+Thread identity is retained separately from the optional JoinHandle. A worker
+calling close on itself receives `io::ErrorKind::Other` without closing admission.
+External callers take the sender under its lock and drop it outside the lock;
+all waiters observe the same exit. A timed-out caller can wait again; only one
+caller joins, and timed close also respects the thread's actual finished state.
+This handles `panic=unwind`, not abort or indefinitely blocking user destructors.
+
 ## 12. Error model
 
 **Each public operation has its own error enum. `EventBusError` only aggregates them.**
@@ -1303,7 +1338,8 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 
 | Type | Produced by | Principal variants |
 | --- | --- | --- |
-| `PublishError` | `publish` / `publish_all` | `Configuration`, `Capability`, `Codec`, `Spi`, `Retry(Box<RetryError<PublishAttemptError>>)`, `InterceptorPanicked { .. }`, `ErrorHandlerPanicked { .. }`, `Closed` |
+| `PublishFailure` | `publish` / `publish_all` | Original event ID and aggregate effect wrapping `PublishError`: `Configuration`, `Capability`, `Codec`, `Spi`, `Retry(Box<RetryError<PublishAttemptError>>)`, `InterceptorPanicked { .. }`, `ErrorHandlerPanicked { .. }`, `Closed` |
+| `EventBusError` | Aggregate operation error | Transparent `PublishFailure(PublishFailure)` conversion preserves publication identity/effect; `Publish(PublishError)` remains a cause-only conversion |
 | `AdmissionCheckError` | `PublishReceipt::check_admission` | `VisibilityUnavailable`, `Dropped`, `NoAcceptedDestination`, `RejectedDestinations { .. }` |
 | `SubscribeError` | `subscribe` | `Configuration`, `Capability`, `Spi`, `Closed` (a missing codec is `Capability`) |
 | `DeliveryError` | handler return / pipeline | `Handler { source }`, `Codec`, `Spi`, `Retry(Box<RetryError<DeliveryAttemptError>>)` |
@@ -1311,8 +1347,17 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 | `ShutdownError` | `shutdown` | `TimedOut { .. }`, `CoordinatorStart(io::Error)`, `Lifecycle(LifecycleError)` (including `WouldDeadlock`), `Spi`, `SubscriptionClose` |
 | `ProviderError` | registry | `Resolution` (provider not found, or an illegal selection), `Creation` (provider construction failed, or `RequiredCapabilities` are missing) |
 | `EventBusProviderError` | provider authors | The error wrapper a provider `create` returns, aggregated by `qubit-spi` |
-| `SpiError` | provider | `Operation { provider_id, operation, resource, kind, retryable, source }`, `InvalidSettlementToken { .. }` |
+| `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`, `Operation { provider_id, operation, resource, kind, retryable, source }`, `InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | construction or validation | see each type |
+
+`EventBusError` implements `From<PublishFailure>` through its transparent
+`PublishFailure` variant, so `bus.publish(request)?` in an application function
+returning `Result<_, EventBusError>` retains the original event ID, aggregate
+effect, and structured cause. `Publish(PublishError)` remains available for a
+cause without an assigned publication identity. Do not reduce a public publish
+failure to `into_cause()` merely to convert it to the aggregate error, because
+that discards the wrapper's identity/effect. Transparent error propagation
+preserves the underlying source chain.
 
 - `SpiError::retryable()` is the only channel a provider uses to tell the facade
   "this is worth retrying". Publish and delivery retry both consult it.
@@ -1323,7 +1368,7 @@ Errors carry enough context (provider, operation, resource, retryability) and do
   returned by a provider after shutdown is passed through as the `Spi` variant and is not remapped.
 - Enums are `#[non_exhaustive]` so a new variant can be added later.
 - Every error is `Send + Sync + 'static` and can cross threads and tasks.
-- Internal `PipelineFailure { origin, error }` is not public. It carries the failing stage to diagnostics and tests.
+- Internal `PipelineFailure { origin, error, publish_effect }` is not public. It carries the failing stage to diagnostics and tests.
 
 ---
 
@@ -1361,7 +1406,9 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 5. The number of handlers running at once is at most `max_in_flight` (synchronous pool size, or asynchronous admission capacity).
 6. Each subscription has at most one message that has been taken from the provider and has not yet entered a handler (synchronous `pending`; asynchronous pending plus a single permit).
 7. After `Closing`, `publish` and `subscribe` return `Closed`. Shutdown is idempotent and at most one provider shutdown call is in flight; a failed or cancelled call may be retried.
-8. A panic in user code does not exit a thread or task and does not corrupt bus state.
+8. Callback panics are contained. Codec panic stops its subscription; notification
+   cleanup panic publishes a failed worker exit. User code that aborts the process
+   or blocks indefinitely cannot be recovered or forcibly interrupted.
 9. Dead-letter is at most one level deep. The dead-letter header cannot be set or altered from outside the pipeline.
 10. Cancel and shutdown return unstarted durable work as `Retry` when supported. Ephemeral providers may discard unstarted work; the facade reports known abandonment and flags provider-owned abandonment that cannot be counted.
 11. User code is not called while a facade-internal lock is held. Diagnostic observers
@@ -1488,7 +1535,7 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.16.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.17.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
 
 ## Provider specification compile probe
 
@@ -1532,3 +1579,15 @@ pub fn settle_without_borrowing_token<'a>(
     receiver.settle(token, DeliveryDisposition::Accept)
 }
 ```
+
+## Validate a single crate or the coordinated ecosystem
+
+`./project-ci-check.sh` checks this crate's resolved dependency metadata on its own.
+An independent single-crate checkout does not need every downstream repository.
+For a coordinated migration, run `./project-ci-check.sh --ecosystem-root <repos-dir>`
+with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
+`rs-execution-services` below that directory. The gate requires all five roots
+and the seven declared consumer fixtures, resolves locked all-feature Cargo
+metadata, and rejects a graph mixing old event-bus minors with 0.17. Missing
+inputs fail explicitly; this metadata check supplements each project's CI and
+does not prove delivery behavior by itself.

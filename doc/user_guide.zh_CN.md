@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.16.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.17.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.16"
+qubit-event-bus = "0.17"
 ```
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
@@ -267,7 +267,7 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 
 ## 检查发布结果
 
-`bus.publish(...)` 返回的 `Err(PublishError)` 表示这次调用没有正常拿到接收情况报告。即使返回 `Ok(receipt)`，也可能只有部分处理方收到消息。`receipt` 就是这份报告；调用 `receipt.admission_outcome()` 可区分以下情况：
+`bus.publish(...)` 返回的 `Err(PublishFailure)` 表示这次调用没有正常拿到接收情况报告。即使返回 `Ok(receipt)`，也可能只有部分处理方收到消息。`receipt` 就是这份报告；调用 `receipt.admission_outcome()` 可区分以下情况：
 
 | 结果 | 含义 |
 | --- | --- |
@@ -277,6 +277,18 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 | `NoDestinations` | 没找到处理方；检查是否先完成订阅，主题名是否一致。 |
 | `OpaqueAccepted` | 消息传递实现说已接收，但不告诉你具体是哪些处理方。 |
 | `Dropped` | 发布前的拦截规则主动丢弃了消息。 |
+
+### 判断发布失败后能否重发
+
+`publish` 及 `publish_all` 的每项错误都是 `PublishFailure`；用 `event_id()` 追踪原事件，用 `effect()` 判断接纳是否确定，用 `cause()` 和 `source()` 查看保留的错误链。`NotificationOutcome::PublishFailed` 和 `PublishErrorHandler` 也接收该包装。`NotAccepted` 表示确定没有接纳；`MayHaveBeenAccepted` 表示即使调用报错，provider 仍可能已接纳。应用应记录事件 ID，并通过业务存储核对或由幂等消费者收敛结果。
+
+`PublishOptions::builder().duplicate_risk_policy(...)` 默认选择 `DuplicateRiskPolicy::Forbid`。发生未知效果的尝试后，安全门先于自定义 `RetryRule` 停止重试。`AllowDuplicates` 只是允许原有 `qubit-retry` 策略继续判断；它本身既不启用重试，也不保证一定重试。各次尝试共用事件 ID、时间戳和编码字节。typed interceptor 可以转换 envelope，但不能改变事件 ID。
+
+一条逻辑发布曾经出现未知效果，后续即使确定拒绝，最终错误也仍是 `MayHaveBeenAccepted`。允许重复后最终成功时，若前序尝试效果未知，`receipt.duplicate_possible()` 为 true。provider 接纳成功仍不代表 handler 完成或记录已经持久化。
+
+取消也影响结果判断。`RetryCancellationToken` 取消已经开始轮询的 SPI 尝试并使调用返回错误时，接纳效果未知；在 SPI 调用前取消则没有接纳效果。丢弃公开 publish future 不会产生返回的错误；未轮询 future 被丢弃时没有尝试，已启动操作被丢弃后，应用须保留事件 ID 并按可能已发布处理。RetryPolicy 预算是软预算，不承诺所有执行中的 provider 操作都能被硬超时中断，尤其是同步 I/O。
+
+死信转发使用相同安全门。转发失败或结果未知时，源订阅停止，持久源消息不结算。转发与源确认是两个操作：转发成功后源结算失败，可能再次产生相同逻辑死信。消费者必须去重；Redis EventId 和该策略均不提供恰好一次保证。
 
 ### 成功时能看到什么
 
@@ -711,7 +723,7 @@ let bus = EventBusRegistry::with_local()?.create(&config)?;
 
 `SyncDeliverySchedulerConfig::new` 的第一个值必须大于零；第二个值可以为 0，表示只能把消息立即交给空闲工作线程。同步 facade 默认最多创建 256 个活跃订阅接收线程。可以用 `SyncDeliverySchedulerConfig::with_max_subscription_workers(NonZeroUsize::new(64).unwrap())` 调整上限；超过上限时会在调用 provider 创建订阅前失败。此设置限制线程数，不会降低每个阻塞接收线程的开销；订阅量更大时可评估异步总线。使用注册表创建 local 时，要把 `local.provider_options()` 传给 `EventBusConfig`；它包含 `local.queue_capacity` 和 `local.max_total_outstanding` 两个配置键。未知的键、非数字值或零值会在创建时被拒绝。直接调用 `EventBus::local` 只能设置 local 的积压容量；要修改处理并发、编码器或拦截器，就通过 `EventBusRegistry::with_local()` 创建。
 
-对编码传输，可用 `EventBusFacadeConfig::with_max_encoded_payload_bytes(Some(limit))` 在调用 provider 前拒绝超出限制的 codec 输出；默认不限制。检查发生在完整字节向量编码后，不限制编码过程中的内存分配。facade 无法可靠计算原生 Rust payload 的递归占用，因此本地队列仍只按投递条数限流，不承诺字节上限。
+编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，本地队列仍按投递条数限流。
 
 异步总线也使用 `LocalEventBusConfig`。例如把同时处理的消息数设为 8：
 
@@ -752,7 +764,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.16", features = ["discovery"] }
+qubit-event-bus = { version = "0.17", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -844,17 +856,32 @@ submit_sync_provider! {
 
 内置 local 直接传递 Rust 对象，不需要转换。消息要跨进程传递时，通常需要先把对象转换成字节，接收时再还原；负责这件事的组件叫**编码器**（codec）。可以用 `Topic::new_with_codec` / `new_with_shared_codec` 为某类事件指定编码器，也可以把编码器放进 `CodecRegistry`，再通过 `EventBusFacadeConfig::with_codec_registry` 配给总线。主题自带编码器优先；没有才查总线的注册表。创建订阅时会选定编码器，两处都没有时会报错。应用还要约定数据格式与版本兼容方式；本库不内置通用 JSON 编码器。
 
-Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；`decode` panic 会转换为 `CodecError::Panicked`，若 settlement 能力支持则请求 provider 重试。普通 decode 错误会作为无效消息拒绝。可运行的最小 `String` 实现见[codec 往返示例](../examples/codec_round_trip.rs)。下面的片段为订单事件接上编码器。字节格式由应用自己约定：三行依次是 `order_id`、`customer_id` 和 `total_cents`，且字段中不含换行。本库不提供这种格式。
+Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；validate/decode panic 会转换为 `CodecError::Panicked` 并停止该订阅，不结算源消息。元数据不兼容、接收字节超限或 Native 类型不匹配也会停止接收。普通 `CodecError::Decode` 仍作为无效消息拒绝。可运行的最小 `String` 实现见[codec 往返示例](../examples/codec_round_trip.rs)。下面的片段为订单事件接上编码器。字节格式由应用自己约定：三行依次是 `order_id`、`customer_id` 和 `total_cents`，且字段中不含换行。本库不提供这种格式。
 
+下面的应用模块从前文定义的 `orders::events` 导入 `OrderCreated`。此完整 codec 模块由文档 fixture 编译验证：
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/order_created_codec.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Order-event codec compiled from the bilingual user guides.
+
 use std::sync::Arc;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::spi::EncodedPayload;
 
-struct OrderCreatedCodec(ContentType);
+use crate::orders::events::OrderCreated;
+
+pub struct OrderCreatedCodec(pub ContentType);
 
 impl EventCodec<OrderCreated> for OrderCreatedCodec {
     fn content_type(&self) -> &ContentType {
@@ -870,8 +897,8 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
         Ok(Arc::from(text.into_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<OrderCreated, CodecError> {
-        let text = std::str::from_utf8(bytes).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+    fn decode(&self, payload: &EncodedPayload) -> Result<OrderCreated, CodecError> {
+        let text = std::str::from_utf8(payload.bytes()).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
         let mut lines = text.lines();
         let order_id = lines.next().unwrap_or("").to_owned();
         let customer_id = lines.next().unwrap_or("").to_owned();
@@ -1009,6 +1036,16 @@ subscription.run(move |delivery| {
 
 应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行；调用 `close().await` 或丢弃句柄则结束订阅。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
+### 恢复因编码边界失败而停止的订阅
+
+`decode(&EncodedPayload)` 可以读取 `payload.bytes()`、`content_type()` 和 `schema_id()`。默认 `validate_metadata` 精确比较 content type 文本和 `Option<SchemaId>`；`None` 与具名 schema 不兼容，也不会自动规范化 MIME 文本。需要读取历史版本时，须明确重写验证方法、记录允许的版本集合，并选用对应解码逻辑。直接调用 codec 时由调用方验证元数据；facade 会自动验证。
+
+接收顺序是字节限额、元数据验证、解码，最后才运行 filter/middleware/handler。超限输入不会进入任何 codec 回调，元数据不兼容时不会调用 decode。`MetadataMismatch`、接收 `PayloadTooLarge`、`Panicked` 和 `NativeTypeMismatch` 会停止订阅，不执行 `Accept`、`Reject` 或 `Retry`。普通 `CodecError::Decode` 仍作为坏消息拒绝，不能用它表达可恢复的 schema 不兼容。
+
+通过 `subscription.terminal_failure()` 查看首个保留的 `Arc<SubscriptionStopReason>`。`Codec` 包含事件 ID 和结构化 codec 错误；无法可信解析事件 ID 时，`Provider` 包含 provider 错误。异步 `run()` 返回 `ReceiveError::Stopped`；在同一 handle 上再次运行会返回同一原因，不再接收或解码。已经启动的 handler 按原生命周期完成；关闭错误单独报告，不覆盖终止原因。取消 run 或 close future 也不会清除原因。
+
+Redis 等持久 provider 的恢复步骤是：停止旧 handle，修复 codec/版本或容量配置，再使用同一个 durable group 创建新订阅，由 provider 认领未结算记录。不要为消除错误直接确认或删除记录。临时 provider 销毁 receiver 时可能丢弃相关消息，facade 对已知损失计数一次；重新订阅无法取回已经丢弃的工作。其他健康订阅继续运行。
+
 ## 非阻塞通知入口
 
 如果产生消息的代码不能停下来等待同步发布，可使用 `NotificationPublisher<T>`：它先把消息放进一个有容量上限的队列，再由一个后台线程逐条发布。默认最多排队 256 条。`try_publish(payload)` 只说明**成功入队**，并非已经发布；队列满时返回 `TryPublishError::Full(payload)`，关闭后返回 `Closed(payload)`，原数据会还给调用方。观察回调收到 `Published(receipt)`、`PublishFailed(error)` 或 `RequestFailed(error)`；这里的 `Published` 仍不表示处理函数完成。`stats()` 可查看计数。
@@ -1107,6 +1144,8 @@ match notifier.close_with_timeout(Duration::from_secs(30)) {
 ```
 
 后台线程持有 `bus` 的一个副本，因此要先关闭通知发布器，再关闭总线；顺序反过来，排队中的通知会在发布时得到总线已关闭的错误，只能在观察回调里看到 `PublishFailed`。
+
+worker 完成状态包含资源清理，也包含 observer 捕获对象的析构。清理过程 unwind 会使 `worker_panicked` 增加一次；所有关闭调用者都观察到同一个失败终态，不会因 worker 已退出而永久等待。worker 自己调用 close 会返回 `io::ErrorKind::Other`，不关闭入队入口。observer 调用 panic 仍独立隔离，后续通知继续处理。关闭超时后可再次等待，但无法强制中断用户代码。
 
 ## 生命周期、等待与停机
 
@@ -1219,7 +1258,7 @@ println!("provider 关闭结果 {:?}", report.outcome);
 
 | 现象 | 检查顺序 |
 | --- | --- |
-| `PublishError` | 查看具体错误是配置、编码、传递失败、重试结束还是总线已关闭；重试前确认是否可能已有处理方收到。 |
+| `PublishFailure` | 查看具体错误是配置、编码、传递失败、重试结束还是总线已关闭；重试前确认是否可能已有处理方收到。 |
 | `SubscribeError` | 检查订阅设置、所用实现是否支持相关能力、是否需要编码器、总线是否已关闭；启动失败时不要开放业务入口。 |
 | `subscribe` 成功、回执也是 `Accepted`，处理函数却始终不执行 | 异步总线：确认已在一个长期任务中运行 `AsyncSubscription::run`，且该任务没有被提前取消，也没有阻塞在它前面的启动步骤上。同步总线：确认处理函数没有被前一条消息长期阻塞，工作线程上限见[配置内置 local 事件总线](#配置内置-local-事件总线)。 |
 | `NoDestinations` | 检查主题名、载荷类型、订阅是否先于发布建立、同步订阅句柄是否已被 `cancel()`。 |
@@ -1241,3 +1280,13 @@ println!("provider 关闭结果 {:?}", report.outcome);
 ## 延伸阅读
 
 - [中文 README](../README.zh_CN.md) · [迁移指南](migration.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+
+## 单仓验证与五仓整体验证
+
+`./project-ci-check.sh` 默认只检查当前 crate 的依赖解析 metadata；独立单仓用户
+无须下载全部下游。协调迁移时，运行
+`./project-ci-check.sh --ecosystem-root <repos-dir>`，目录下须包含
+`rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
+`rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
+使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
+0.17；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

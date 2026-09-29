@@ -1,0 +1,42 @@
+import os
+import subprocess
+import resource
+import time
+from pathlib import Path
+
+root = Path('/tmp/ordering-t8-evidence')
+binary = {
+    'baseline': '/tmp/ordering-t8-target/release/deps/ordering_keys-c90afe063a8e0dc7',
+    'candidate': '/tmp/ordering-t8-candidate-target/release/deps/ordering_keys-c90afe063a8e0dc7',
+}
+labels = []
+for keys in [4, 64, 1024, 4096]:
+    for window in [4, 64]:
+        for workload in ['balanced', 'same-key', 'churn']:
+            labels.append(f'registry live_keys={keys} ticket_window={window} workload={workload}')
+    for limit in [4, max(keys, 64)]:
+        for workload in ['balanced', 'same-key', 'churn']:
+            labels.append(f'facade input_keys={keys} max_in_flight={limit} workload={workload}')
+
+with (root / 'paired-samples.log').open('w', buffering=1) as output:
+    for index, label in enumerate(labels):
+        order = ['baseline', 'candidate'] if index % 2 == 0 else ['candidate', 'baseline']
+        for variant in order:
+            environment = os.environ.copy()
+            environment['ORDERING_FILTER'] = label
+            output.write(f'BEGIN variant={variant} wall_time={time.time()} label={label}\n')
+            output.write(Path('/proc/loadavg').read_text())
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            started = time.monotonic()
+            result = subprocess.run(['taskset', '-c', '4', binary[variant]], env=environment,
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            elapsed = time.monotonic() - started
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime
+            output.write(result.stdout)
+            output.write(f'PROCESS cpu_seconds={cpu} wall_seconds={elapsed} cpu_wall_ratio={cpu / elapsed} '
+                         f'involuntary_switches={after.ru_nivcsw - before.ru_nivcsw}\n')
+            output.write(f'END variant={variant} exit={result.returncode} wall_time={time.time()}\n')
+            if result.returncode:
+                raise SystemExit(result.returncode)
+        print(f'completed {index + 1}/{len(labels)} {label}', flush=True)

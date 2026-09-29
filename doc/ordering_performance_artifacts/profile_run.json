@@ -1,0 +1,11 @@
+{
+  "exit": 0,
+  "binary": "/tmp/ordering-t8-profile/release/deps/ordering_keys-0e8857df5b94497b",
+  "wall_seconds": 2.980106897000951,
+  "cpu_seconds": 2.9794199999999997,
+  "involuntary_switches": 15,
+  "operations": 262144,
+  "active_keys": 4096,
+  "ticket_window": 64,
+  "team_window": "team resumed; background load recorded, no total-machine isolation"
+}

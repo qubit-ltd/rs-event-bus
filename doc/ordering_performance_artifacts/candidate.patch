@@ -1,0 +1,149 @@
+--- a/src/pipeline/ordering_lane/internal/async_lane.rs
++++ b/src/pipeline/ordering_lane/internal/async_lane.rs
+@@ -8,8 +8,11 @@
+ //! Mutable state and synchronization for one asynchronous ordering lane.
+ 
+ use std::collections::VecDeque;
++use std::collections::HashMap;
+ use std::sync::Mutex;
++use std::sync::Weak;
+ 
++use super::OrderingLaneKey;
+ use super::async_lane_state::AsyncLaneState;
+ 
+ /// One asynchronous FIFO lane and its waiter state.
+@@ -18,15 +21,34 @@
+ pub(super) struct AsyncLane<T> {
+     /// Active turn and queued values with their registered wakers.
+     pub(super) state: Mutex<AsyncLaneState<T>>,
++    /// Registry identity used only after the last strong lane owner releases.
++    registry: Weak<Mutex<HashMap<OrderingLaneKey, Weak<AsyncLane<T>>>>>,
++    /// Stable key paired with this allocation.
++    key: OrderingLaneKey,
+ }
+-impl<T> Default for AsyncLane<T> {
++impl<T> AsyncLane<T> {
+     /// Creates an idle lane with an empty FIFO and no registered waiters.
+-    fn default() -> Self {
++    pub(super) fn new(key: OrderingLaneKey, registry: Weak<Mutex<HashMap<OrderingLaneKey, Weak<AsyncLane<T>>>>>) -> Self {
+         Self {
+             state: Mutex::new(AsyncLaneState {
+                 active: false,
+                 queue: VecDeque::new(),
+             }),
++            registry,
++            key,
+         }
+     }
+ }
++
++impl<T> Drop for AsyncLane<T> {
++    /// Removes only this allocation, after all lane-state locks are released.
++    fn drop(&mut self) {
++        if let Some(registry) = self.registry.upgrade() {
++            let mut lanes = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++            let allocation = self as *const Self;
++            if lanes.get(&self.key).is_some_and(|lane| lane.as_ptr() == allocation) {
++                lanes.remove(&self.key);
++            }
++        }
++    }
++}
+--- a/src/pipeline/ordering_lane/internal/async_ordering_lanes.rs
++++ b/src/pipeline/ordering_lane/internal/async_ordering_lanes.rs
+@@ -25,7 +25,7 @@
+ #[must_use]
+ pub(crate) struct AsyncOrderingLanes<T> {
+     /// Weak lane registry so inactive ordering keys can be reclaimed.
+-    lanes: Mutex<HashMap<OrderingLaneKey, Weak<AsyncLane<T>>>>,
++    lanes: Arc<Mutex<HashMap<OrderingLaneKey, Weak<AsyncLane<T>>>>>,
+     /// Generates FIFO ticket identities.
+     next_ticket: AtomicU64,
+ }
+@@ -36,7 +36,7 @@
+     /// A collection with no live keys and ticket numbering starting at one.
+     pub(crate) fn new() -> Self {
+         Self {
+-            lanes: Mutex::new(HashMap::new()),
++            lanes: Arc::new(Mutex::new(HashMap::new())),
+             next_ticket: AtomicU64::new(1),
+         }
+     }
+@@ -52,9 +52,8 @@
+     pub(crate) fn enqueue(&self, key: OrderingLaneKey, value: T) -> AsyncOrderingTurn<T> {
+         let lane = {
+             let mut lanes = self.lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+-            lanes.retain(|_, lane| lane.strong_count() != 0);
+             lanes.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
+-                let lane = Arc::new(AsyncLane::default());
++                let lane = Arc::new(AsyncLane::new(key.clone(), Arc::downgrade(&self.lanes)));
+                 lanes.insert(key, Arc::downgrade(&lane));
+                 lane
+             })
+@@ -78,3 +77,66 @@
+         Self::new()
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use std::future::Future;
++    use std::task::Context;
++    use std::task::Poll;
++    use std::task::Waker;
++    use std::sync::Arc;
++
++    use qubit_id::Id;
++
++    use super::AsyncOrderingLanes;
++    use super::OrderingLaneKey;
++    use super::AsyncLane;
++
++    /// Verifies final release reclaims the entry without a later enqueue scan.
++    #[test]
++    fn test_final_guard_release_reclaims_registry_entry() {
++        let lanes = AsyncOrderingLanes::new();
++        let key = OrderingLaneKey::new("bench", Some("same-key"), Id::new(1));
++        let guard = match Box::pin(lanes.enqueue(key, ()))
++            .as_mut()
++            .poll(&mut Context::from_waker(Waker::noop()))
++        {
++            Poll::Ready(Some(guard)) => guard,
++            _ => panic!("first turn must acquire its lane"),
++        };
++        assert_eq!(lanes.lanes.lock().unwrap().len(), 1);
++        drop(guard);
++        assert_eq!(lanes.lanes.lock().unwrap().len(), 0);
++    }
++
++    /// Forces final Drop to wait while the same key receives a new allocation.
++    #[test]
++    fn test_old_lane_drop_preserves_recreated_key_allocation() {
++        let lanes = AsyncOrderingLanes::new();
++        let key = OrderingLaneKey::new("bench", Some("same-key"), Id::new(1));
++        let guard = match Box::pin(lanes.enqueue(key.clone(), ()))
++            .as_mut()
++            .poll(&mut Context::from_waker(Waker::noop()))
++        {
++            Poll::Ready(Some(guard)) => guard,
++            _ => panic!("first turn must acquire its lane"),
++        };
++        let mut registry = lanes.lanes.lock().unwrap();
++        let old_weak = registry.get(&key).unwrap().clone();
++        let old = old_weak.upgrade().unwrap();
++        drop(guard);
++        let dropping = std::thread::spawn(move || drop(old));
++        while old_weak.strong_count() != 0 {
++            std::thread::yield_now();
++        }
++        let replacement = Arc::new(AsyncLane::new(key.clone(), Arc::downgrade(&lanes.lanes)));
++        registry.insert(key.clone(), Arc::downgrade(&replacement));
++        drop(registry);
++        dropping.join().unwrap();
++        let registry = lanes.lanes.lock().unwrap();
++        assert_eq!(registry.get(&key).unwrap().as_ptr(), Arc::as_ptr(&replacement));
++        drop(registry);
++        drop(replacement);
++        assert!(lanes.lanes.lock().unwrap().is_empty());
++    }
++}
