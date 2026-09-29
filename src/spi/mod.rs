@@ -7,6 +7,35 @@
 // =============================================================================
 //! Object-safe backend service provider interfaces and transport contracts.
 
+pub use async_event_bus_spi::AsyncEventBusSpi;
+pub use async_event_subscription_spi::AsyncEventSubscriptionSpi;
+pub use delayed_delivery_capability::DelayedDeliveryCapability;
+pub use delivery_disposition::DeliveryDisposition;
+pub use delivery_gap::DeliveryGap;
+pub use durability_capability::DurabilityCapability;
+pub use encoded_payload::EncodedPayload;
+pub use event_bus_capabilities::EventBusCapabilities;
+pub use event_bus_spi::EventBusSpi;
+pub use event_subscription_spi::EventSubscriptionSpi;
+pub use inbound_message::InboundMessage;
+pub use ordering_capability::OrderingCapability;
+pub use ordering_key::OrderingKey;
+pub use outbound_message::OutboundMessage;
+pub use payload_modes::PayloadModes;
+pub use publish_guarantee::PublishGuarantee;
+pub use publish_visibility::PublishVisibility;
+pub use receive_outcome::ReceiveOutcome;
+pub use replay_capability::ReplayCapability;
+pub use settlement_capabilities::SettlementCapabilities;
+pub use settlement_token::SettlementToken;
+pub use shutdown_mode::ShutdownMode;
+pub use shutdown_outcome::ShutdownOutcome;
+pub use spi_future::SpiFuture;
+pub use spi_subscription_request::SpiSubscriptionRequest;
+pub use subscription_modes::SubscriptionModes;
+pub use topic_address::TopicAddress;
+pub use transport_payload::TransportPayload;
+
 #[cfg(feature = "conformance")]
 pub mod conformance;
 
@@ -39,32 +68,3 @@ mod spi_subscription_request;
 mod subscription_modes;
 mod topic_address;
 mod transport_payload;
-
-pub use async_event_bus_spi::AsyncEventBusSpi;
-pub use async_event_subscription_spi::AsyncEventSubscriptionSpi;
-pub use delayed_delivery_capability::DelayedDeliveryCapability;
-pub use delivery_disposition::DeliveryDisposition;
-pub use delivery_gap::DeliveryGap;
-pub use durability_capability::DurabilityCapability;
-pub use encoded_payload::EncodedPayload;
-pub use event_bus_capabilities::EventBusCapabilities;
-pub use event_bus_spi::EventBusSpi;
-pub use event_subscription_spi::EventSubscriptionSpi;
-pub use inbound_message::InboundMessage;
-pub use ordering_capability::OrderingCapability;
-pub use ordering_key::OrderingKey;
-pub use outbound_message::OutboundMessage;
-pub use payload_modes::PayloadModes;
-pub use publish_guarantee::PublishGuarantee;
-pub use publish_visibility::PublishVisibility;
-pub use receive_outcome::ReceiveOutcome;
-pub use replay_capability::ReplayCapability;
-pub use settlement_capabilities::SettlementCapabilities;
-pub use settlement_token::SettlementToken;
-pub use shutdown_mode::ShutdownMode;
-pub use shutdown_outcome::ShutdownOutcome;
-pub use spi_future::SpiFuture;
-pub use spi_subscription_request::SpiSubscriptionRequest;
-pub use subscription_modes::SubscriptionModes;
-pub use topic_address::TopicAddress;
-pub use transport_payload::TransportPayload;

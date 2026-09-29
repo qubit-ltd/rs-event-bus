@@ -59,7 +59,6 @@ impl SubscriptionCloseErrors {
     ///
     /// # Returns
     /// A borrowing iterator in the order failures were recorded.
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
         self.failures.iter().map(Arc::as_ref)
     }

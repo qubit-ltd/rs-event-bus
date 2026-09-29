@@ -21,10 +21,11 @@ use qubit_id::Id;
 use super::async_local_event_bus_spi::close_mailbox;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
+use super::internal::LocalInFlight;
+use super::internal::LocalQueueState;
+use super::internal::LocalSettlementHandle;
+use super::internal::LocalSettlementState;
 use super::local_event_bus_spi::invalid_token_error;
-use super::state::LocalSettlementState;
-
-type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), TimeError>> + Send>>;
 use crate::error::SpiError;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
@@ -32,14 +33,29 @@ use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 use crate::spi::SpiFuture;
 
+type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), TimeError>> + Send>>;
+
 pub(super) struct AsyncLocalEventSubscription {
+    /// Shared async provider queues and outstanding-delivery accounting.
     shared: Arc<AsyncLocalShared>,
+    /// Mailbox owned by this subscription.
     mailbox: Arc<AsyncMailbox>,
+    /// Provider ID used to validate settlement tokens.
     subscription_id: Id,
+    /// Whether close has already unregistered this mailbox.
     closed: bool,
 }
 
 impl AsyncLocalEventSubscription {
+    /// Creates a runner receiver bound to its async provider mailbox.
+    ///
+    /// # Parameters
+    /// - `shared`: shared provider state.
+    /// - `mailbox`: registered queue and wake signal.
+    /// - `subscription_id`: identity that issued settlement tokens.
+    ///
+    /// # Returns
+    /// A single-owner asynchronous receiver.
     pub(super) fn new(shared: Arc<AsyncLocalShared>, mailbox: Arc<AsyncMailbox>, subscription_id: Id) -> Self {
         Self {
             shared,
@@ -146,7 +162,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
         let queue = Arc::clone(&self.mailbox.queue);
         let subscription_id = self.subscription_id;
         let belongs = token.belongs_to(subscription_id);
-        let settlement = token.downcast_ref::<super::state::LocalSettlementHandle>().cloned();
+        let settlement = token.downcast_ref::<LocalSettlementHandle>().cloned();
         Box::pin(async move {
             if !belongs {
                 return Err(invalid_token_error(Some(queue.topic.as_str()), "foreign_subscription"));
@@ -201,6 +217,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
 }
 
 impl Drop for AsyncLocalEventSubscription {
+    /// Closes the mailbox when explicit asynchronous close was not completed.
     fn drop(&mut self) {
         if !self.closed {
             close_mailbox(&self.shared, &self.mailbox);
@@ -208,7 +225,15 @@ impl Drop for AsyncLocalEventSubscription {
     }
 }
 
-fn pop_message(state: &mut super::state::LocalQueueState, subscription_id: Id) -> Option<ReceiveOutcome> {
+/// Moves one ready event into flight and creates its settlement token.
+///
+/// # Parameters
+/// - `state`: queue state containing pending and in-flight deliveries.
+/// - `subscription_id`: identity bound to the generated settlement token.
+///
+/// # Returns
+/// `Some(Message)` when an event is ready, otherwise `None`.
+fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Option<ReceiveOutcome> {
     let event = state.pop_ready(Instant::now())?;
     let next = state.next_delivery_token.checked_add(1)?;
     state.next_delivery_token = next;
@@ -219,7 +244,7 @@ fn pop_message(state: &mut super::state::LocalQueueState, subscription_id: Id) -
     }));
     state.in_flight.insert(
         token_id,
-        super::state::LocalInFlight {
+        LocalInFlight {
             event: event.clone(),
             settlement: settlement.clone(),
         },

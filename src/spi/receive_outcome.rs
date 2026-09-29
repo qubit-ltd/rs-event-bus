@@ -11,6 +11,15 @@ use super::DeliveryGap;
 use super::InboundMessage;
 
 /// Result of a receive call that is not necessarily an error.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::ReceiveOutcome;
+///
+/// let outcome = ReceiveOutcome::TimedOut;
+/// assert!(matches!(outcome, ReceiveOutcome::TimedOut));
+/// ```
 #[non_exhaustive]
 pub enum ReceiveOutcome {
     /// A message was received.

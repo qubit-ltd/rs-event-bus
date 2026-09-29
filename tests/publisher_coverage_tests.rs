@@ -8,8 +8,6 @@
 //! Public publisher-pipeline regression coverage for error and observer
 //! branches.
 
-mod support;
-
 use std::any::TypeId;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -67,6 +65,8 @@ use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
 use support::fake_spi::FakeEventBusSpi;
 use support::manual_async::block_on;
+
+mod support;
 
 struct FailingStringCodec {
     content_type: ContentType,

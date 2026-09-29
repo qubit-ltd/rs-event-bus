@@ -10,6 +10,16 @@
 use crate::model::SubscriptionDurability;
 
 /// The set of subscription durability modes accepted by a provider.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::SubscriptionModes;
+///
+/// assert!(SubscriptionModes::BOTH.supports(
+///     qubit_event_bus::model::SubscriptionDurability::Durable,
+/// ));
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct SubscriptionModes(u8);
@@ -23,6 +33,12 @@ impl SubscriptionModes {
     pub const BOTH: Self = Self(0b11);
 
     /// Returns whether this provider accepts the requested subscription mode.
+    ///
+    /// # Parameters
+    /// - `durability`: subscription persistence mode to check.
+    ///
+    /// # Returns
+    /// `true` when the provider accepts the requested mode.
     #[must_use]
     pub const fn supports(self, durability: SubscriptionDurability) -> bool {
         let required = match durability {

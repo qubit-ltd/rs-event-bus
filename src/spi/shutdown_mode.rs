@@ -19,6 +19,16 @@ use std::time::Duration;
 /// attempt. Rust cannot forcibly stop a blocked synchronous provider call or
 /// handler. Async facade shutdown is driven by its returned future and may be
 /// cancelled by dropping that future.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use qubit_event_bus::spi::ShutdownMode;
+///
+/// let mode = ShutdownMode::Graceful { timeout: Duration::from_secs(5) };
+/// assert!(matches!(mode, ShutdownMode::Graceful { .. }));
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ShutdownMode {

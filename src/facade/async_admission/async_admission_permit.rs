@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::AsyncAdmission;
 
 /// Holds one bus-wide slot through delivery settlement or explicit abandonment.
+#[must_use]
 pub(in crate::facade) struct AsyncAdmissionPermit {
     /// Gate whose in-flight count this permit owns.
     admission: Arc<AsyncAdmission>,
@@ -19,12 +20,20 @@ pub(in crate::facade) struct AsyncAdmissionPermit {
 
 impl AsyncAdmissionPermit {
     /// Creates a permit after the future increments the in-flight count.
+    ///
+    /// # Parameters
+    /// - `admission`: gate whose in-flight counter already includes this
+    ///   permit.
+    ///
+    /// # Returns
+    /// An RAII guard that releases one slot when dropped.
     pub(super) fn new(admission: Arc<AsyncAdmission>) -> Self {
         Self { admission }
     }
 }
 
 impl Drop for AsyncAdmissionPermit {
+    /// Releases the in-flight slot and wakes the next queued waiter.
     fn drop(&mut self) {
         let wakers = {
             let mut state = self

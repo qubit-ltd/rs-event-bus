@@ -15,6 +15,9 @@ use super::AdmissionSummary;
 use super::DestinationAdmission;
 
 /// Non-sensitive metadata returned by a provider after accepting a message.
+///
+/// Keys and values are provider-defined diagnostic details such as partition
+/// and offset identifiers.
 pub type ProviderMessageMetadata = BTreeMap<String, String>;
 
 /// What the publish path has accepted, without promising handler completion.
@@ -53,7 +56,10 @@ pub enum PublishAcknowledgement {
     /// [`DestinationAdmission`] distinguishes an accepted destination, one
     /// intentionally filtered, and one rejected by admission policy or
     /// capacity. `Filtered` is not a queue-capacity failure.
-    DestinationAdmissions(Vec<DestinationAdmission>),
+    DestinationAdmissions(
+        /// Snapshot of each destination's reported admission decision.
+        Vec<DestinationAdmission>,
+    ),
     /// A publisher interceptor intentionally stopped dispatch.
     DroppedByInterceptor,
 }
@@ -67,7 +73,6 @@ impl PublishAcknowledgement {
     ///
     /// # Returns
     /// The provider's admission result without implying handler completion.
-    #[must_use]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         match self {
             Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,
@@ -93,6 +98,9 @@ impl PublishAcknowledgement {
 
     /// Returns whether the publication was intentionally dropped before
     /// dispatch.
+    ///
+    /// # Returns
+    /// `true` when an interceptor stopped publication before provider dispatch.
     #[must_use]
     #[inline]
     pub fn is_dropped(&self) -> bool {

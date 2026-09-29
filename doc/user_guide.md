@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.15.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.16.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -63,11 +63,49 @@ Third-party implementations, codecs, and extension interfaces come after the bas
 
 ## Integrate an order service
 
+<!-- event-bus-source: examples/local_delivery.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+// =============================================================================
+
+use std::sync::mpsc;
+use std::time::Duration;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bus = EventBus::local(LocalEventBusConfig::new())?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).unwrap();
+        },
+    )?;
+    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
+    bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    Ok(())
+}
+```
+
+
 Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.15"
+qubit-event-bus = "0.16"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -681,7 +719,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.15", features = ["discovery"] }
+qubit-event-bus = { version = "0.16", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -851,6 +889,50 @@ let config = EventBusConfig::default().with_facade_config(bus_settings);
 Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new_with_shared_codec` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold.
 
 ## Asynchronous bus and subscriptions
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let mut subscription = bus
+        .subscribe(SubscribeRequest::new("audit", topic.clone())?)
+        .await?;
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let runner = tokio::spawn(async move {
+        subscription
+            .run(move |delivery| {
+                let sender = sender.clone();
+                async move {
+                    sender.send(delivery.payload().clone()).unwrap();
+                    Ok(())
+                }
+            })
+            .await
+    });
+    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
+        .await?;
+    let delivered = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await?;
+    assert_eq!(delivered.as_deref(), Some("order-42"));
+    bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })
+    .await?;
+    runner.await??;
+    Ok(())
+}
+```
+
 
 An application written in async Rust can use `AsyncEventBus`. The bus is not tied to one runtime, but the application still needs an executor such as Tokio to run the async code. `publish`, `subscribe`, `publish_all`, and `shutdown` all need `.await`. Unlike the sync bus, async `subscribe` only creates the subscription. The application must also start a long-running task that executes `subscription.run(...)`, or messages never reach the handler:
 
@@ -1100,4 +1182,4 @@ If the application keeps the `AsyncSubscription` handle itself, `subscription.cl
 
 ## Further reading
 
-- [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
+- [README](../README.md) · [Migration guide](migration.md) · [API reference](https://docs.rs/qubit-event-bus)

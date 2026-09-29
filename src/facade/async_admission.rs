@@ -32,6 +32,12 @@ pub(super) struct AsyncAdmission {
 
 impl AsyncAdmission {
     /// Creates a shared admission gate with the configured in-flight limit.
+    ///
+    /// # Parameters
+    /// - `limit`: maximum number of active delivery permits.
+    ///
+    /// # Returns
+    /// A shared gate with an empty waiter queue and zero in-flight permits.
     pub(super) fn new(limit: usize) -> Arc<Self> {
         Arc::new(Self {
             limit,
@@ -41,6 +47,10 @@ impl AsyncAdmission {
     }
 
     /// Returns a future that waits for the next bus-wide delivery slot.
+    ///
+    /// # Returns
+    /// A future that joins the gate's FIFO queue when first polled.
+    #[must_use]
     pub(super) fn acquire(self: &Arc<Self>) -> AsyncAdmissionFuture {
         AsyncAdmissionFuture::new(
             self.clone(),

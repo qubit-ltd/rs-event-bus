@@ -7,8 +7,6 @@
 // =============================================================================
 //! Runtime-neutral asynchronous facade contract tests.
 
-mod support;
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -83,6 +81,8 @@ use qubit_retry::RetryPolicy;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::manual_async::block_on;
+
+mod support;
 
 fn topic() -> Topic<u32> {
     Topic::new("test.topic").unwrap()

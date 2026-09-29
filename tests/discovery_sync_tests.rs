@@ -5,8 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-#![cfg(feature = "discovery")]
 
+#![cfg(feature = "discovery")]
 use std::sync::Arc;
 
 use qubit_event_bus::EventBusConfig;

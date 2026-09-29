@@ -2,8 +2,11 @@
 name = "discovery-consumer-fixture"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+[workspace]
 
 [dependencies]
 discovery-provider-fixture = { path = "../discovery_provider" }
-qubit-event-bus = { path = "../../..", features = ["discovery"] }
+qubit-event-bus = { version = "0.16.0", path = "../../..", features = ["discovery"] }
 qubit-spi = "0.13"

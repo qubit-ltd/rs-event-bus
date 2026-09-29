@@ -12,6 +12,15 @@
 /// This value describes provider resource cleanup. It does not report
 /// facade-owned deliveries or guarantee that business handlers completed;
 /// inspect the facade's [`crate::ShutdownReport`] for abandonment details.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::ShutdownOutcome;
+///
+/// let outcome = ShutdownOutcome::Complete;
+/// assert_eq!(outcome, ShutdownOutcome::Complete);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ShutdownOutcome {

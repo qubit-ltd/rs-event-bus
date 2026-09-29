@@ -15,6 +15,9 @@ use crate::error::ConfigurationError;
 
 /// A logical subscriber identity, typed topic, and processing policy.
 ///
+/// # Type Parameters
+/// - `T`: payload type received from the selected topic.
+///
 /// # Examples
 ///
 /// ```
@@ -28,9 +31,13 @@ use crate::error::ConfigurationError;
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 pub struct SubscribeRequest<T: 'static> {
+    /// Validated identity of the logical subscriber.
     subscriber_id: SubscriberId,
+    /// Typed topic from which this request receives events.
     topic: Topic<T>,
+    /// Handler and provider policy applied to the registration.
     options: SubscribeOptions<T>,
 }
 
@@ -40,6 +47,13 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     /// The request takes ownership of `topic`; clone it at the call site if it
     /// must be reused. The subscriber ID is validated with
     /// [`SubscriberId::new`].
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: logical subscriber name to validate.
+    /// - `topic`: typed source from which to receive events.
+    ///
+    /// # Returns
+    /// A request with default options and a validated subscriber identity.
     ///
     /// # Errors
     /// Returns [`ConfigurationError::InvalidSubscriberId`] when `subscriber_id`
@@ -55,6 +69,14 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
 
     /// Creates a request from an already validated identity, topic, and
     /// options.
+    ///
+    /// # Parameters
+    /// - `subscriber_id`: previously validated logical identity.
+    /// - `topic`: typed source topic.
+    /// - `options`: validated handler and provider policies.
+    ///
+    /// # Returns
+    /// A request retaining the supplied identity, topic, and options.
     pub(super) fn from_validated_parts(
         subscriber_id: SubscriberId,
         topic: Topic<T>,
@@ -67,33 +89,55 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
         }
     }
     /// Starts a builder for complete subscriber configuration.
+    ///
+    /// # Returns
+    /// An empty request builder requiring an identity and topic.
+    #[inline]
     pub fn builder() -> SubscribeRequestBuilder<T> {
         SubscribeRequestBuilder::new()
     }
     /// Replaces all subscription options with reusable options.
+    ///
+    /// # Parameters
+    /// - `options`: complete policy to apply to this request.
+    ///
+    /// # Returns
+    /// The request with the supplied options.
     pub fn with_options(mut self, options: SubscribeOptions<T>) -> Self {
         self.options = options;
         self
     }
     /// Returns the logical subscriber ID.
+    ///
+    /// # Returns
+    /// The validated logical identity for this subscription.
     #[must_use = "the subscriber ID identifies the logical consumer"]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
     /// Returns the typed topic.
+    ///
+    /// # Returns
+    /// The source topic borrowed from this request.
     #[must_use]
     #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
     }
     /// Returns subscription options.
+    ///
+    /// # Returns
+    /// The handler, retry, and provider policy for the registration.
     #[must_use]
     #[inline]
     pub fn options(&self) -> &SubscribeOptions<T> {
         &self.options
     }
     /// Consumes the request into its identity, topic, and options.
+    ///
+    /// # Returns
+    /// The validated identity, typed topic, and options as owned values.
     pub fn into_parts(self) -> (SubscriberId, Topic<T>, SubscribeOptions<T>) {
         (self.subscriber_id, self.topic, self.options)
     }

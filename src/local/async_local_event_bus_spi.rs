@@ -19,11 +19,11 @@ use super::LocalEventBusConfig;
 use super::async_local_event_subscription::AsyncLocalEventSubscription;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
+use super::internal::LocalEvent;
+use super::internal::LocalQueue;
+use super::internal::LocalQueueState;
 use super::internal::MailboxKey;
 use super::local_event_bus_spi::operation_error;
-use super::state::LocalEvent;
-use super::state::LocalQueue;
-use super::state::LocalQueueState;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
@@ -47,7 +47,21 @@ use crate::spi::TransportPayload;
 
 /// Asynchronous native-only local backend. Receive waits are driven by wakers;
 /// the provider creates no receiver thread per subscription.
+///
+/// # Examples
+///
+/// ```
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use qubit_event_bus::registry::{AsyncEventBusRegistry, EventBusConfig};
+///
+/// let registry = AsyncEventBusRegistry::with_local()?;
+/// let bus = registry.create(&EventBusConfig::default()).await?;
+/// bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct AsyncLocalEventBusSpi {
+    /// Queues and timer shared by async provider operations.
     pub(super) shared: Arc<AsyncLocalShared>,
 }
 
@@ -55,14 +69,10 @@ impl AsyncLocalEventBusSpi {
     /// Creates an async local SPI from validated transport settings.
     ///
     /// # Parameters
-    /// * `config` - Queue and provider-wide outstanding-delivery limits.
+    /// - `config`: validated local provider queue limits.
     ///
     /// # Returns
-    /// An async local SPI that uses the standard timer.
-    ///
-    /// # Errors
-    /// Returns the configuration validation error when either delivery limit
-    /// is zero.
+    /// An async local SPI using the standard timer.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         Self::with_timer(config, Arc::new(StdTimer::new()))
     }
@@ -73,6 +83,13 @@ impl AsyncLocalEventBusSpi {
     /// # Errors
     /// Returns `ConfigurationError::InvalidField` when either configured
     /// capacity is zero.
+    ///
+    /// # Parameters
+    /// - `config`: local provider queue limits.
+    /// - `timer`: runtime-neutral timer used for graceful shutdown.
+    ///
+    /// # Returns
+    /// An async local SPI using the supplied timer.
     pub fn with_timer(
         config: &LocalEventBusConfig,
         timer: Arc<dyn Timer>,
@@ -292,25 +309,29 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     .await?
                 }
             };
-            let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(previous) = bus.outcome {
-                return Ok(previous);
-            }
-            bus.closed = true;
-            let mailboxes = bus.drain_mailboxes();
-            for mailbox in &mailboxes {
-                let mut queue = mailbox.queue.lock();
-                queue.closed = true;
-                let released = queue.pending_count() + queue.in_flight.len();
-                queue.clear_pending();
-                queue.in_flight.clear();
-                self.shared.outstanding.release(released);
-                drop(queue);
+            let (mailboxes, discarded) = {
+                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(previous) = bus.outcome {
+                    return Ok(previous);
+                }
+                bus.closed = true;
+                let mailboxes = bus.drain_mailboxes();
+                let mut discarded = Vec::new();
+                for mailbox in &mailboxes {
+                    let mut queue = mailbox.queue.lock();
+                    queue.closed = true;
+                    let released = queue.pending_count() + queue.in_flight.len();
+                    discarded.extend(queue.clear_pending());
+                    self.shared.outstanding.release(released);
+                }
+                bus.payload_types.clear();
+                bus.outcome = Some(result);
+                (mailboxes, discarded)
+            };
+            drop(discarded);
+            for mailbox in mailboxes {
                 mailbox.queue.async_ready.notify_all();
             }
-            bus.payload_types.clear();
-            bus.outcome = Some(result);
-            drop(bus);
             self.shared.changed.notify_all();
             Ok(result)
         })
@@ -322,24 +343,29 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
 /// The bus lock linearizes close against subscribe and route lookup; the queue
 /// lock then prevents a publisher holding an earlier route snapshot from
 /// adding work after the mailbox has closed. Repeated calls are harmless.
+///
+/// # Parameters
+/// - `shared`: async provider state that owns the mailbox.
+/// - `mailbox`: subscription mailbox to close and remove.
 pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbox>) {
     let key = MailboxKey {
         subscription_id: mailbox.queue.id,
     };
     let topic = mailbox.queue.topic.clone();
-    let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-    {
+    let discarded = {
+        let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut queue = mailbox.queue.lock();
         queue.closed = true;
         let released = queue.pending_count() + queue.in_flight.len();
-        queue.clear_pending();
-        queue.in_flight.clear();
+        let discarded = queue.clear_pending();
         shared.outstanding.release(released);
-    }
-    if bus.remove_mailbox_if_same(key, mailbox) && !bus.has_topic(&topic) {
-        bus.payload_types.remove(&topic);
-    }
-    drop(bus);
+        drop(queue);
+        if bus.remove_mailbox_if_same(key, mailbox) && !bus.has_topic(&topic) {
+            bus.payload_types.remove(&topic);
+        }
+        discarded
+    };
+    drop(discarded);
     mailbox.queue.async_ready.notify_all();
     shared.changed.notify_all();
 }

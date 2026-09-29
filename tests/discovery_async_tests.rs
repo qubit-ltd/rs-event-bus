@@ -5,10 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+
 #![cfg(feature = "discovery")]
-
-mod support;
-
 use std::sync::Arc;
 
 use qubit_event_bus::AsyncEventBusRegistry;
@@ -31,6 +29,8 @@ use qubit_spi::error::ProviderFailureKind;
 use qubit_spi::submit_async_provider;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::manual_async::block_on;
+
+mod support;
 
 struct DiscoveredAsyncProvider;
 

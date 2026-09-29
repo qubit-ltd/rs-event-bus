@@ -12,19 +12,33 @@ use std::sync::Mutex;
 
 use qubit_clock::Timer;
 
-use super::super::async_signal::AsyncSignal;
-use super::super::outstanding_budget::OutstandingBudget;
 use super::AsyncBusState;
+use crate::local::async_signal::AsyncSignal;
+use crate::local::outstanding_budget::OutstandingBudget;
 
 pub(in crate::local) struct AsyncLocalShared {
+    /// Queue capacity copied into each mailbox.
     capacity: usize,
+    /// Provider-wide bound on queued and unsettled deliveries.
     pub(in crate::local) outstanding: OutstandingBudget,
+    /// Mailbox registry and provider lifecycle state.
     pub(in crate::local) state: Mutex<AsyncBusState>,
+    /// Wakes graceful shutdown when queue state changes.
     pub(in crate::local) changed: AsyncSignal,
+    /// Timer used by cancellation-safe provider waits.
     pub(in crate::local) timer: Arc<dyn Timer>,
 }
 
 impl AsyncLocalShared {
+    /// Creates shared provider state with validated positive capacity limits.
+    ///
+    /// # Parameters
+    /// - `capacity`: per-subscription queued and unsettled-message bound.
+    /// - `max_total_outstanding`: provider-wide outstanding-message bound.
+    /// - `timer`: runtime-neutral timer used by async operations.
+    ///
+    /// # Returns
+    /// Shared state with an empty mailbox registry.
     pub(in crate::local) fn new(capacity: usize, max_total_outstanding: usize, timer: Arc<dyn Timer>) -> Self {
         Self {
             capacity,
@@ -35,6 +49,12 @@ impl AsyncLocalShared {
         }
     }
 
+    /// Returns the per-subscription queue capacity.
+    ///
+    /// # Returns
+    /// Maximum number of queued or unsettled deliveries in one mailbox.
+    #[must_use]
+    #[inline]
     pub(in crate::local) fn capacity(&self) -> usize {
         self.capacity
     }

@@ -16,11 +16,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::LocalEventBusConfig;
+use super::internal::LocalEvent;
+use super::internal::LocalQueue;
+use super::internal::LocalQueueState;
+use super::internal::LocalSharedState;
 use super::local_event_subscription::LocalEventSubscription;
-use super::state::LocalEvent;
-use super::state::LocalQueue;
-use super::state::LocalQueueState;
-use super::state::LocalSharedState;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
@@ -45,15 +45,22 @@ use crate::spi::TransportPayload;
 
 /// Synchronous local backend with one bounded queue per subscription.
 pub struct LocalEventBusSpi {
+    /// Queues and provider-wide shutdown state shared by local SPI handles.
     pub(super) shared: Arc<LocalSharedState>,
 }
 
 impl LocalEventBusSpi {
     /// Creates an SPI instance from local transport configuration.
     ///
+    /// # Parameters
+    /// - `config`: validated local provider queue limits.
+    ///
+    /// # Returns
+    /// A synchronous local provider SPI with empty queues.
+    ///
     /// # Errors
-    /// Returns the configuration validation error when either delivery limit is
-    /// zero.
+    /// Returns [`crate::error::ConfigurationError::InvalidField`] if either
+    /// capacity is zero.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         config.validate()?;
         Ok(Self {
@@ -294,11 +301,11 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = queue.lock();
             state.closed = true;
             let released = state.pending_count() + state.in_flight.len();
-            state.clear_pending();
-            state.in_flight.clear();
+            let discarded = state.clear_pending();
             self.shared.outstanding.release(released);
-            queue.ready.notify_all();
             drop(state);
+            drop(discarded);
+            queue.ready.notify_all();
             queue.async_ready.notify_all();
         }
         self.shared
@@ -312,6 +319,16 @@ impl EventBusSpi for LocalEventBusSpi {
 }
 
 /// Rejects SPI payload modes that are outside the local provider capability.
+///
+/// # Parameters
+/// - `message`: outbound message to inspect.
+/// - `topic`: destination used to contextualize failures.
+///
+/// # Returns
+/// `Ok(())` for a native payload.
+///
+/// # Errors
+/// Returns an unsupported-payload-mode SPI error for encoded payloads.
 fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress) -> Result<(), SpiError> {
     match message.payload() {
         TransportPayload::Native(_) => Ok(()),
@@ -324,6 +341,12 @@ fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress)
 }
 
 /// Returns the concrete Rust type carried by a validated native payload.
+///
+/// # Parameters
+/// - `payload`: payload previously checked against local provider capabilities.
+///
+/// # Returns
+/// The concrete native payload `TypeId`.
 fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
     match payload {
         TransportPayload::Native(value) => value.as_ref().type_id(),
@@ -332,6 +355,14 @@ fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
 }
 
 /// Builds a provider-tagged operation error with optional topic context.
+///
+/// # Parameters
+/// - `operation`: SPI operation name.
+/// - `resource`: optional topic or resource identity.
+/// - `kind`: stable provider error kind.
+///
+/// # Returns
+/// A non-retryable operation error tagged with provider ID `local`.
 pub(super) fn operation_error(operation: &'static str, resource: Option<&str>, kind: &'static str) -> SpiError {
     SpiError::Operation {
         provider_id: "local".into(),
@@ -344,6 +375,13 @@ pub(super) fn operation_error(operation: &'static str, resource: Option<&str>, k
 }
 
 /// Builds a provider-tagged invalid-token failure with its stable reason.
+///
+/// # Parameters
+/// - `resource`: optional subscription or topic identity.
+/// - `reason`: stable invalid-token reason.
+///
+/// # Returns
+/// A non-retryable invalid-settlement-token error.
 pub(super) fn invalid_token_error(resource: Option<&str>, reason: &'static str) -> SpiError {
     SpiError::InvalidSettlementToken {
         provider_id: "local".into(),
@@ -356,6 +394,9 @@ pub(super) fn invalid_token_error(resource: Option<&str>, reason: &'static str) 
 }
 
 /// Advances the provider change generation before waking graceful shutdown.
+///
+/// # Parameters
+/// - `shared`: provider state whose waiters must be notified.
 pub(super) fn signal_changed(shared: &LocalSharedState) {
     let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
     state.change_version = state.change_version.wrapping_add(1);

@@ -7,8 +7,6 @@
 // =============================================================================
 //! Additional asynchronous facade lifecycle coverage.
 
-mod support;
-
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -78,6 +76,8 @@ use qubit_event_bus::spi::TransportPayload;
 use qubit_retry::RetryPolicy;
 
 use crate::support::manual_async::block_on;
+
+mod support;
 
 struct FailingTimer {
     clock: StdMonotonicClock,

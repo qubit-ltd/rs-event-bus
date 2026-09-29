@@ -8,6 +8,15 @@
 //! One outcome from a conformance check.
 
 /// Result of one named conformance check.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::conformance::ConformanceCase;
+///
+/// let case = ConformanceCase::Passed { case_id: "publish".into() };
+/// assert!(matches!(case, ConformanceCase::Passed { .. }));
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConformanceCase {
     /// The check completed successfully.
