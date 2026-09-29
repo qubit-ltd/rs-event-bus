@@ -4,6 +4,47 @@
 
 This guide covers `qubit-event-bus` 0.15.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
+## Contents
+
+- [The problem it solves](#the-problem-it-solves)
+- [Where to start](#where-to-start)
+- [Integrate an order service](#integrate-an-order-service)
+  - [Define the shared event](#define-the-shared-event)
+  - [Register both handlers](#register-both-handlers)
+  - [Publish after the transaction commits](#publish-after-the-transaction-commits)
+  - [Types used on this path](#types-used-on-this-path)
+- [Check the publication result](#check-the-publication-result)
+  - [What success looks like](#what-success-looks-like)
+- [Add message details when needed](#add-message-details-when-needed)
+- [Keep events for one object in order](#keep-events-for-one-object-in-order)
+- [Handle failures and retries](#handle-failures-and-retries)
+  - [Retry after a database write fails](#retry-after-a-database-write-fails)
+  - [Let the handler decide when to acknowledge](#let-the-handler-decide-when-to-acknowledge)
+  - [Keep an event that fails for good](#keep-an-event-that-fails-for-good)
+- [Filter or intercept a message](#filter-or-intercept-a-message)
+  - [Skip events the handler should not see](#skip-events-the-handler-should-not-see)
+  - [Run code around the handler](#run-code-around-the-handler)
+  - [Change or stop one publication](#change-or-stop-one-publication)
+  - [Change or stop every publication](#change-or-stop-every-publication)
+- [Configure the built-in local event bus](#configure-the-built-in-local-event-bus)
+  - [Create the bus directly](#create-the-bus-directly)
+- [Choose and connect a third-party implementation](#choose-and-connect-a-third-party-implementation)
+  - [Use an implementation someone else wrote](#use-an-implementation-someone-else-wrote)
+  - [Write a transport yourself](#write-a-transport-yourself)
+  - [Encode events for a cross-process implementation](#encode-events-for-a-cross-process-implementation)
+- [Asynchronous bus and subscriptions](#asynchronous-bus-and-subscriptions)
+- [Non-blocking notification entry](#non-blocking-notification-entry)
+  - [Create the notification publisher at startup](#create-the-notification-publisher-at-startup)
+  - [Enqueue on the request path](#enqueue-on-the-request-path)
+  - [Drain the queue during shutdown](#drain-the-queue-during-shutdown)
+- [Lifecycle, waiting, and shutdown](#lifecycle-waiting-and-shutdown)
+  - [Shut down a sync bus](#shut-down-a-sync-bus)
+  - [Wait for a topic to become idle](#wait-for-a-topic-to-become-idle)
+  - [Shut down an async bus](#shut-down-an-async-bus)
+- [Errors, diagnostics, and troubleshooting](#errors-diagnostics-and-troubleshooting)
+- [Boundaries and a practice checklist](#boundaries-and-a-practice-checklist)
+- [Further reading](#further-reading)
+
 ## The problem it solves
 
 Take an order service. After the order transaction commits, more work remains: write an audit record, and refresh the customer-order view that support staff query. Later the service may also send a notification or sync a warehouse. If the order service calls each of those modules itself, the order module depends on every downstream module. Each new follow-up changes the order path, and that path has to absorb every downstream failure and delay.
@@ -836,15 +877,203 @@ At startup, put `run(...)` on a background task before opening the business entr
 
 When the code that produces a message cannot stop to wait for a synchronous publish, use `NotificationPublisher<T>`. It places the message on a bounded queue, and a background thread publishes each item. The default queue holds 256 items. `try_publish(payload)` means only that the item **was enqueued**, not that it was published. A full queue returns `TryPublishError::Full(payload)`. After close, the call returns `Closed(payload)`. In both cases the original value is given back. The observer callback receives `Published(receipt)`, `PublishFailed(error)`, or `RequestFailed(error)`. `Published` still does not mean the handler finished. `stats()` exposes the counters.
 
-`close()` stops accepting new notifications, finishes items already queued, and waits for the background thread to exit. Use `close_with_timeout(Duration::from_secs(30))` when shutdown needs a bounded wait. It returns an `io::ErrorKind::TimedOut` error if the deadline passes; the worker keeps running and may still publish already-accepted notifications. New calls to `try_publish` return `Closed`, and another `close` or `close_with_timeout` call can wait for the worker later. A timeout cannot interrupt a synchronous provider call. Neither close method shuts down the event bus the publisher uses. The observer runs on that background thread and should return quickly. Do not call either close method on the same notification publisher from inside its observer. Dropping the handle does not wait for the queue to drain. During shutdown, close the notification publisher explicitly, then close the bus.
+### Create the notification publisher at startup
+
+Back in the order scenario: the request thread of the order service wants to hand off `OrderCreated` after the commit without waiting for `bus.publish` to consult every subscriber. Create one notification publisher at startup, after the bus and both subscriptions exist. One publisher serves one topic. The receipt check that used to run on the request path moves into the observer:
+
+```rust
+use std::num::NonZeroUsize;
+use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::{NotificationOutcome, NotificationPublisher};
+
+// `bus` is the EventBus that already holds the audit-log and customer-view subscriptions.
+// Pass NotificationPublisher::<OrderCreated>::default_capacity() as the third argument
+// when the default capacity is fine.
+let notifier = NotificationPublisher::new(
+    bus.clone(),
+    OrderCreated::TOPIC,
+    NonZeroUsize::new(1_024).expect("capacity is non-zero"),
+    |outcome| match outcome {
+        NotificationOutcome::Published(receipt) => {
+            if let Err(error) =
+                receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+            {
+                eprintln!("order event {} admission problem: {error}", receipt.input_event_id().as_str());
+            }
+        }
+        NotificationOutcome::PublishFailed(error) => eprintln!("publishing the order event failed: {error}"),
+        NotificationOutcome::RequestFailed(error) => eprintln!("no event id for the order event: {error}"),
+        // NotificationOutcome is non_exhaustive, so a fallback arm is required.
+        _ => {}
+    },
+)?;
+```
+
+`new` starts a background thread named `event-notification-publisher` and returns an `io::Error` if the thread cannot be created. The observer runs on that thread, once per published item. `receipt` is the same receipt `bus.publish` would return, so the checks from [Check the publication result](#check-the-publication-result) apply. Keep the observer to work that returns quickly, such as logging or updating a metric.
+
+### Enqueue on the request path
+
+After the order transaction commits, the request thread hands the event to `try_publish`. This step does not wait for any subscriber:
+
+```rust
+use qubit_event_bus::TryPublishError;
+
+match notifier.try_publish(event) {
+    Ok(()) => {}
+    Err(TryPublishError::Full(event)) => {
+        // The queue is full and `event` is returned unchanged. Record it for a later
+        // republish, or fall back to a synchronous bus.publish.
+        eprintln!("notification queue is full; order {} was not enqueued", event.order_id);
+    }
+    Err(TryPublishError::Closed(event)) => {
+        // The publisher has started closing, which means the application is shutting down.
+        eprintln!("notification publisher is closed; order {} was not enqueued", event.order_id);
+    }
+}
+```
+
+`Ok(())` means the event is in the queue. The background thread calls `bus.publish` later, and the result reaches the application through the observer above. When the queue is full or closed, the original `event` comes back inside the error, so the caller can republish or record it without keeping a copy. The queue is measured in items. A slow handler fills it gradually, and `Full` is a signal the application should watch.
+
+`stats()` reports the counters at runtime:
+
+```rust
+let stats = notifier.stats();
+println!(
+    "enqueued={} published={} queue_full={} publish_errors={}",
+    stats.enqueued(),
+    stats.published(),
+    stats.queue_full(),
+    stats.publish_errors()
+);
+```
+
+`enqueued` counts items that entered the queue. `published` counts receipts. `queue_full` and `queue_closed` count attempts rejected because the queue was full or already closed. `publish_errors` and `request_errors` correspond to the two failure outcomes. Each counter is loaded independently, so the snapshot is not consistent at one instant, and `published` counts receipts rather than completed handlers.
+
+### Drain the queue during shutdown
+
+`close()` stops accepting new notifications, finishes items already queued, and waits for the background thread to exit. Use `close_with_timeout(Duration::from_secs(30))` when shutdown needs a bounded wait. It returns an `io::ErrorKind::TimedOut` error if the deadline passes; the worker keeps running and may still publish already-accepted notifications. New calls to `try_publish` return `Closed`, and another `close` or `close_with_timeout` call can wait for the worker later. A timeout cannot interrupt a synchronous provider call. Neither close method shuts down the event bus the publisher uses. The observer runs on that background thread and should return quickly. Do not call either close method on the same notification publisher from inside its observer. Dropping the handle does not wait for the queue to drain. During shutdown, close the notification publisher explicitly, then close the bus:
+
+```rust
+use std::io;
+use std::time::Duration;
+
+match notifier.close_with_timeout(Duration::from_secs(30)) {
+    // The queue is drained and the background thread has exited.
+    Ok(()) => {}
+    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+        // The background thread is still publishing queued items; try_publish already returns Closed.
+        // Log and continue shutting down, or call close() again to wait until it finishes.
+        eprintln!("timed out waiting for the notification queue to drain: {error}");
+    }
+    Err(error) => eprintln!("closing the notification publisher failed: {error}"),
+}
+// Then cancel the subscriptions and shut down the bus; see the next section.
+```
+
+The background thread holds a clone of `bus`, so close the notification publisher before the bus. In the opposite order, queued notifications fail at publish time with a closed-bus error that is visible only as `PublishFailed` in the observer.
 
 ## Lifecycle, waiting, and shutdown
 
 Startup order is: create the bus, register every handler, then start accepting business requests. During shutdown, stop new business requests first, then close message sources such as the notification publisher, and then deal with subscriptions and the bus. Cancel a sync subscription with `cancel()`, and an async subscription with `close().await`. If already-received messages should be finished when possible, the order of cancelling subscriptions and shutting down the bus depends on the transport and has to be verified on that transport. Cancelling a subscription does not mean the business write succeeded.
 
+### Shut down a sync bus
+
+This is the shutdown path of the order service on the sync bus. `bus`, `audit_subscription`, `view_subscription`, and `notifier` are the handles created at startup and kept by the application. Run this from the outermost shutdown path of the program, for example after a termination signal:
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::{ShutdownError, WaitOutcome};
+
+// 1. Stop accepting new order requests first (the HTTP listener and similar are the application's job).
+// 2. Close the message sources: drain the notification queue, see the previous section.
+notifier.close_with_timeout(Duration::from_secs(30))?;
+// 3. Wait up to 10 seconds for OrderCreated deliveries the bus has already taken.
+let outcome = bus.wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))?;
+if outcome == WaitOutcome::TimedOut {
+    eprintln!("some OrderCreated handlers have not returned; continuing shutdown");
+}
+// 4. Cancel the subscriptions so no new message is taken from local.
+audit_subscription.cancel()?;
+view_subscription.cancel()?;
+// 5. Shut down the bus, waiting up to 30 seconds.
+match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) {
+    Ok(report) => {
+        println!(
+            "provider outcome {:?}, {} admitted deliveries abandoned",
+            report.outcome, report.known_abandoned_deliveries
+        );
+        if report.provider_may_have_abandoned_deliveries {
+            eprintln!("the transport may have dropped messages it cannot count");
+        }
+    }
+    Err(ShutdownError::TimedOut { timeout }) => {
+        // The bus is still cleaning up in the background and already rejects new operations.
+        // Calling shutdown again waits for the final report. Immediate returns queued messages
+        // instead of draining them, but still waits for running handlers to return.
+        eprintln!("graceful shutdown did not finish within {timeout:?}");
+        let report = bus.shutdown(ShutdownMode::Immediate)?;
+        eprintln!("final report: {report:?}");
+    }
+    Err(error) => return Err(error.into()),
+}
+```
+
+On a normal shutdown of the order example, `report.outcome` is `ShutdownOutcome::Complete` and `known_abandoned_deliveries` is 0. `provider_may_have_abandoned_deliveries` is always `true` on the built-in local provider: local is not durable and cannot prove that no in-process message was lost at close. The flag is a reminder, not an error. A `known_abandoned_deliveries` greater than 0 means admitted messages were given up before a handler ran. The audit rows and customer-view entries for those orders have to come from the application's compensation path.
+
 `ShutdownMode::Graceful { timeout }` stops accepting new work and tries to finish work already received. A caller deadline returns `ShutdownError::TimedOut`; it does not mean the bus is closed. A sync bus may still be cleaning up in the background, and a later `shutdown` call observes the final `ShutdownReport`. `Immediate` cannot forcibly stop business code that is already running. Do not call `shutdown`, `wait_for_idle`, or `wait_for_received_deliveries` from a handler on this same bus when the call would wait for the bus to finish its own work. Those calls return `WouldDeadlock`. Start shutdown from the outermost shutdown path of the program.
 
+### Wait for a topic to become idle
+
 Sync `wait_for_idle(&topic, timeout)` waits until the transport reports that the topic has nothing queued or unfinished. A transport that cannot answer returns `IdleWaitUnsupported`. `wait_for_received_deliveries` waits only for messages the bus has already taken. Idle from either call does not replace a check of the database and of failure records.
+
+To finish the order events still queued inside local before shutdown, not only the ones the bus has already taken, wait for the topic to become idle before cancelling the subscriptions. The built-in local provider supports this query. For a transport that does not, the `IdleWaitUnsupported` arm falls back to waiting for received deliveries only:
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::{LifecycleError, WaitOutcome};
+
+let timeout = Some(Duration::from_secs(10));
+let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
+    Err(LifecycleError::IdleWaitUnsupported) => {
+        // The transport cannot report topic idleness; wait only for deliveries the bus has taken.
+        bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?
+    }
+    other => other?,
+};
+if outcome == WaitOutcome::TimedOut {
+    eprintln!("orders.created still had queued or unfinished messages after 10 seconds");
+}
+```
+
+`Idle` means that, at that moment, the transport holds no queued message for the topic and the bus has no delivery in progress. After new business requests have stopped, an `Idle` result followed by cancellation leaves no admitted-but-unhandled order event behind. `TimedOut` only means the wait expired; a handler may still be running. Both methods look at this bus object in this process only. For a transport connected to a message server, they say nothing about consumers in other processes.
+
+### Shut down an async bus
+
+The async bus follows the same steps, with `.await` on the waits and the shutdown. The `subscription.run(...)` from [Asynchronous bus and subscriptions](#asynchronous-bus-and-subscriptions) is owned by a background task. `bus.shutdown` closes the subscription receiver, and `run` returns `Ok(())`, so the subscription handle does not have to be recovered first:
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::WaitOutcome;
+
+// 1. Stop accepting new order requests.
+// 2. Wait for OrderCreated deliveries the bus has already taken.
+if let WaitOutcome::TimedOut = bus
+    .wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))
+    .await?
+{
+    eprintln!("some OrderCreated handlers have not finished; continuing shutdown");
+}
+// 3. Shut down the bus; the task running subscription.run(...) ends once its subscription closes.
+let report = bus
+    .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) })
+    .await?;
+println!("provider outcome {:?}", report.outcome);
+// 4. Wait for the run task with the executor's own mechanism, such as a Tokio JoinHandle.
+```
+
+If the application keeps the `AsyncSubscription` handle itself, `subscription.close().await` before the bus shutdown ends one subscription on its own. Async `shutdown` is driven by the returned future: dropping that future interrupts the shutdown, so await it to completion. The async bus has no `wait_for_idle`. `wait_for_received_deliveries` again waits only for deliveries the bus has taken, and async local discards still-queued messages when it closes.
 
 ## Errors, diagnostics, and troubleshooting
 

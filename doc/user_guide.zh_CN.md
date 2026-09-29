@@ -4,6 +4,47 @@
 
 本文适用于 `qubit-event-bus` 0.15.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
+## 目录
+
+- [它解决什么问题](#它解决什么问题)
+- [从哪里开始](#从哪里开始)
+- [接入订单服务](#接入订单服务)
+  - [定义共用的事件数据](#定义共用的事件数据)
+  - [注册两个处理模块](#注册两个处理模块)
+  - [提交事务后发布](#提交事务后发布)
+  - [涉及的核心类型](#涉及的核心类型)
+- [检查发布结果](#检查发布结果)
+  - [成功时能看到什么](#成功时能看到什么)
+- [按需补充消息信息](#按需补充消息信息)
+- [保证同一对象的处理顺序](#保证同一对象的处理顺序)
+- [处理失败和重试](#处理失败和重试)
+  - [数据库写入失败后自动重试](#数据库写入失败后自动重试)
+  - [由处理函数决定何时确认](#由处理函数决定何时确认)
+  - [保存最终处理失败的事件](#保存最终处理失败的事件)
+- [需要拦截或过滤消息时](#需要拦截或过滤消息时)
+  - [在处理函数之前跳过消息](#在处理函数之前跳过消息)
+  - [在处理函数前后插入代码](#在处理函数前后插入代码)
+  - [改变或停止一次发布](#改变或停止一次发布)
+  - [改变或停止每次发布](#改变或停止每次发布)
+- [配置内置 local 事件总线](#配置内置-local-事件总线)
+  - [直接创建](#直接创建)
+- [选择和接入第三方实现](#选择和接入第三方实现)
+  - [使用别人已经写好的实现](#使用别人已经写好的实现)
+  - [自己开发一种传递实现](#自己开发一种传递实现)
+  - [跨进程实现需要编码时](#跨进程实现需要编码时)
+- [异步总线与订阅](#异步总线与订阅)
+- [非阻塞通知入口](#非阻塞通知入口)
+  - [在启动时创建通知发布器](#在启动时创建通知发布器)
+  - [在请求路径上入队](#在请求路径上入队)
+  - [停机时排空队列](#停机时排空队列)
+- [生命周期、等待与停机](#生命周期等待与停机)
+  - [同步总线的停机流程](#同步总线的停机流程)
+  - [等待某个主题空闲](#等待某个主题空闲)
+  - [异步总线的停机流程](#异步总线的停机流程)
+- [错误、诊断与排障](#错误诊断与排障)
+- [边界与实践清单](#边界与实践清单)
+- [延伸阅读](#延伸阅读)
+
 ## 它解决什么问题
 
 以一个订单服务为例。订单事务提交后，系统还有几项后续工作：写审计记录、更新供客服查询的客户订单视图；以后可能还要发送通知、同步数据仓库。如果由订单服务逐个调用这些模块，订单模块就要依赖每一个下游模块，每增加一项后续工作都要改动下单流程，还要在下单的请求路径上处理各个下游的失败和延迟。
@@ -834,15 +875,200 @@ subscription.run(move |delivery| {
 
 如果产生消息的代码不能停下来等待同步发布，可使用 `NotificationPublisher<T>`：它先把消息放进一个有容量上限的队列，再由一个后台线程逐条发布。默认最多排队 256 条。`try_publish(payload)` 只说明**成功入队**，并非已经发布；队列满时返回 `TryPublishError::Full(payload)`，关闭后返回 `Closed(payload)`，原数据会还给调用方。观察回调收到 `Published(receipt)`、`PublishFailed(error)` 或 `RequestFailed(error)`；这里的 `Published` 仍不表示处理函数完成。`stats()` 可查看计数。
 
-`close()` 停止接收新通知，处理完已入队消息并等待后台线程退出。停机需要限定等待时间时，可调用 `close_with_timeout(Duration::from_secs(30))`。期限到达会返回 `io::ErrorKind::TimedOut`；worker 会继续运行，可能继续发布已经接纳的通知。此后 `try_publish` 返回 `Closed`，之后可以再次调用 `close()` 或 `close_with_timeout()` 等待 worker 结束。超时不能中断正在执行的同步 provider 调用。两种关闭方法都不会关闭通知发布器使用的事件总线。观察回调运行在后台线程上，应尽快返回；不要从回调内部调用同一个通知发布器的任一关闭方法。只丢弃句柄不会等待队列处理完，停机时应显式关闭通知发布器，再关闭总线。
+### 在启动时创建通知发布器
+
+回到订单场景：订单服务的请求线程只想在事务提交后把 `OrderCreated` 交出去，不想在请求路径上等待 `bus.publish` 逐个询问订阅者。应用启动时，在总线和两个订阅建立之后创建一个通知发布器；一个发布器只服务一个主题。原本在请求路径上做的回执检查，改到观察回调里完成：
+
+```rust
+use std::num::NonZeroUsize;
+use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::{NotificationOutcome, NotificationPublisher};
+
+// bus 是已经建立好 audit-log 和 customer-view 订阅的 EventBus。
+// 不想自定义容量时，第三个参数可以传 NotificationPublisher::<OrderCreated>::default_capacity()。
+let notifier = NotificationPublisher::new(
+    bus.clone(),
+    OrderCreated::TOPIC,
+    NonZeroUsize::new(1_024).expect("capacity is non-zero"),
+    |outcome| match outcome {
+        NotificationOutcome::Published(receipt) => {
+            if let Err(error) =
+                receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+            {
+                eprintln!("订单事件 {} 接纳异常：{error}", receipt.input_event_id().as_str());
+            }
+        }
+        NotificationOutcome::PublishFailed(error) => eprintln!("发布订单事件失败：{error}"),
+        NotificationOutcome::RequestFailed(error) => eprintln!("无法为订单事件生成 ID：{error}"),
+        // NotificationOutcome 标记为 non_exhaustive，需要兜底分支。
+        _ => {}
+    },
+)?;
+```
+
+`new` 会启动名为 `event-notification-publisher` 的后台线程；线程无法创建时返回 `io::Error`。观察回调在这个后台线程上运行，每发布一条就被调用一次，`receipt` 与直接调用 `bus.publish` 得到的回执相同，可以按[检查发布结果](#检查发布结果)中的方法判断。回调里只应做记录日志、更新指标这类很快返回的工作。
+
+### 在请求路径上入队
+
+订单事务提交后，请求线程把事件交给 `try_publish`，这一步不等待任何订阅者：
+
+```rust
+use qubit_event_bus::TryPublishError;
+
+match notifier.try_publish(event) {
+    Ok(()) => {}
+    Err(TryPublishError::Full(event)) => {
+        // 队列已满，event 原样归还。可以记录为待补发，或者退回同步 bus.publish。
+        eprintln!("通知队列已满，订单 {} 的事件未入队", event.order_id);
+    }
+    Err(TryPublishError::Closed(event)) => {
+        // 通知发布器已经开始关闭，说明应用正在停机。
+        eprintln!("通知发布器已关闭，订单 {} 的事件未入队", event.order_id);
+    }
+}
+```
+
+`Ok(())` 表示事件已经进入队列；后台线程随后调用 `bus.publish`，结果通过上面的观察回调交给应用。队列满或已关闭时，原来的 `event` 会随错误一起还回来，调用方可以自行决定补发或记录，不必再复制一份。队列长度按条数计，处理函数变慢会让队列逐渐填满，`Full` 是应用需要关注的信号。
+
+运行期间可用 `stats()` 查看计数：
+
+```rust
+let stats = notifier.stats();
+println!(
+    "enqueued={} published={} queue_full={} publish_errors={}",
+    stats.enqueued(),
+    stats.published(),
+    stats.queue_full(),
+    stats.publish_errors()
+);
+```
+
+`enqueued` 是进入队列的条数，`published` 是拿到回执的条数，`queue_full` 与 `queue_closed` 分别是因队列满和已关闭而被拒绝的次数，`publish_errors` 和 `request_errors` 对应两种失败结果。各计数独立读取，不是同一瞬间的一致快照；`published` 计的是回执，不是处理函数完成的次数。
+
+### 停机时排空队列
+
+`close()` 停止接收新通知，处理完已入队消息并等待后台线程退出。停机需要限定等待时间时，可调用 `close_with_timeout(Duration::from_secs(30))`。期限到达会返回 `io::ErrorKind::TimedOut`；worker 会继续运行，可能继续发布已经接纳的通知。此后 `try_publish` 返回 `Closed`，之后可以再次调用 `close()` 或 `close_with_timeout()` 等待 worker 结束。超时不能中断正在执行的同步 provider 调用。两种关闭方法都不会关闭通知发布器使用的事件总线。观察回调运行在后台线程上，应尽快返回；不要从回调内部调用同一个通知发布器的任一关闭方法。只丢弃句柄不会等待队列处理完，停机时应显式关闭通知发布器，再关闭总线：
+
+```rust
+use std::io;
+use std::time::Duration;
+
+match notifier.close_with_timeout(Duration::from_secs(30)) {
+    // 队列已排空，后台线程已退出。
+    Ok(()) => {}
+    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+        // 后台线程仍在发布已入队的通知；此时 try_publish 已返回 Closed。
+        // 可以记录日志后继续停机，或再次调用 close() 一直等到它结束。
+        eprintln!("等待通知队列排空超时：{error}");
+    }
+    Err(error) => eprintln!("通知发布器关闭失败：{error}"),
+}
+// 之后再取消订阅、关闭总线，见下一节。
+```
+
+后台线程持有 `bus` 的一个副本，因此要先关闭通知发布器，再关闭总线；顺序反过来，排队中的通知会在发布时得到总线已关闭的错误，只能在观察回调里看到 `PublishFailed`。
 
 ## 生命周期、等待与停机
 
 启动顺序是：创建总线 → 登记所有处理函数 → 开始接收业务请求。停机时先停止新业务请求，再关闭通知发布器等消息来源，最后处理订阅和总线。同步订阅用 `cancel()`，异步订阅用 `close().await`。如果需要尽量完成已经接收的消息，要根据所用传递实现决定取消订阅和关闭总线的先后顺序，并在该实现上验证；取消订阅本身不表示业务已经写入成功。
 
+### 同步总线的停机流程
+
+下面把订单服务的同步停机流程写出来。`bus`、`audit_subscription`、`view_subscription` 和 `notifier` 都是启动时创建并由应用保留的句柄；这段代码应放在程序最外层的关闭流程中，例如收到终止信号之后：
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::{ShutdownError, WaitOutcome};
+
+// 1. 应用先停止接收新的下单请求（HTTP 监听器等由应用自己控制）。
+// 2. 关闭消息来源：排空通知队列，见上一节。
+notifier.close_with_timeout(Duration::from_secs(30))?;
+// 3. 等待总线已经取到的 OrderCreated 处理完，最多等 10 秒。
+let outcome = bus.wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))?;
+if outcome == WaitOutcome::TimedOut {
+    eprintln!("仍有 OrderCreated 处理函数未返回，继续停机");
+}
+// 4. 取消订阅：不再从 local 取新消息。
+audit_subscription.cancel()?;
+view_subscription.cancel()?;
+// 5. 关闭总线，最多等 30 秒。
+match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) {
+    Ok(report) => {
+        println!(
+            "provider 关闭结果 {:?}，放弃了 {} 条已接纳的投递",
+            report.outcome, report.known_abandoned_deliveries
+        );
+        if report.provider_may_have_abandoned_deliveries {
+            eprintln!("传递实现可能还丢弃了无法计数的消息");
+        }
+    }
+    Err(ShutdownError::TimedOut { timeout }) => {
+        // 总线仍在后台清理，并且已经拒绝新操作。再调一次 shutdown 可等到最终报告；
+        // 改用 Immediate 会把仍在排队的消息退回，但同样要等正在运行的处理函数返回。
+        eprintln!("平稳关闭在 {timeout:?} 内未完成");
+        let report = bus.shutdown(ShutdownMode::Immediate)?;
+        eprintln!("最终报告：{report:?}");
+    }
+    Err(error) => return Err(error.into()),
+}
+```
+
+订单示例正常停机时，`report.outcome` 为 `ShutdownOutcome::Complete`，`known_abandoned_deliveries` 为 0。`provider_may_have_abandoned_deliveries` 在内置 local 上总是 `true`：local 是非持久实现，无法证明进程内没有消息随关闭丢失，这个标志只是提醒，不是错误。`known_abandoned_deliveries` 大于 0，说明有已经接纳但没来得及处理的消息被放弃了；这些订单的审计记录和客户视图需要由应用的补偿机制补齐。
+
 `ShutdownMode::Graceful { timeout }` 会停止接收新工作，并尽量完成已经接收的工作。调用方 deadline 到期会返回 `ShutdownError::TimedOut`，不表示 bus 已关闭；同步 bus 仍可能在后台清理，后续再次调用 `shutdown` 可观察最终 `ShutdownReport`。`Immediate` 无法强制终止已经运行的业务代码。不要在同一 bus 的 handler 中调用可能等待该 bus 自身工作的 `shutdown`、`wait_for_idle` 或 `wait_for_received_deliveries`；这些调用会返回 `WouldDeadlock`。应从程序最外层的关闭流程发起停机。
 
+### 等待某个主题空闲
+
 同步 `wait_for_idle(&topic, timeout)` 等待所用传递实现报告这个主题已没有排队或未处理完的消息；不支持这项查询时返回 `IdleWaitUnsupported`。`wait_for_received_deliveries` 只等待总线已经取到的消息。两者返回空闲，都不能代替检查数据库和失败记录。
+
+如果停机前想把 local 队列里排队的订单事件也尽量处理完，而不只是总线已取到的那几条，可以在取消订阅之前先等待主题空闲。内置 local 支持这项查询；换成其他传递实现时，用 `IdleWaitUnsupported` 分支退回到只等待已取到的消息：
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::{LifecycleError, WaitOutcome};
+
+let timeout = Some(Duration::from_secs(10));
+let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
+    Err(LifecycleError::IdleWaitUnsupported) => {
+        // 所用传递实现不能报告主题是否空闲，只能等总线已经取到的消息。
+        bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?
+    }
+    other => other?,
+};
+if outcome == WaitOutcome::TimedOut {
+    eprintln!("10 秒内 orders.created 仍有消息排队或未处理完");
+}
+```
+
+`Idle` 表示此刻传递实现里这个主题没有排队消息，总线也没有正在处理的投递；停止新业务请求之后得到 `Idle`，再取消订阅就不会留下已接纳却未处理的订单事件。`TimedOut` 只说明等待期满，处理函数可能还在运行。这两个方法只看本进程内的这个总线对象，对于连接消息服务器的实现，它不能说明其他进程的消费者也处理完了。
+
+### 异步总线的停机流程
+
+异步总线的步骤相同，只是等待和关闭都要 `.await`。[异步总线与订阅](#异步总线与订阅)中的 `subscription.run(...)` 由一个后台任务持有，`bus.shutdown` 会关闭订阅接收端，`run` 随之返回 `Ok(())`，因此不必先取回订阅句柄：
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::WaitOutcome;
+
+// 1. 停止接收新的下单请求。
+// 2. 等待总线已取到的 OrderCreated 处理完。
+if let WaitOutcome::TimedOut = bus
+    .wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))
+    .await?
+{
+    eprintln!("仍有 OrderCreated 处理函数未完成，继续停机");
+}
+// 3. 关闭总线；运行 subscription.run(...) 的任务会在订阅关闭后结束。
+let report = bus
+    .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) })
+    .await?;
+println!("provider 关闭结果 {:?}", report.outcome);
+// 4. 等待 run 任务结束，方式取决于所用执行器，例如 Tokio 的 JoinHandle。
+```
+
+如果应用自己保留了 `AsyncSubscription` 句柄，也可以在关闭总线前调用 `subscription.close().await` 单独结束某个订阅。异步 `shutdown` 由返回的 future 驱动：丢弃这个 future 会中断关闭过程，应等它完成。异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 同样只等待总线已取到的消息，异步 local 关闭时会丢弃仍在排队的消息。
 
 ## 错误、诊断与排障
 
