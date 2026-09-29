@@ -5,10 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-
-
-
+//! Asynchronous local delivery example compiled by the user-guide checks.
 
 use std::time::Duration;
 

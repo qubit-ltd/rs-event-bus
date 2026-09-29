@@ -8,11 +8,18 @@
 //! Measures sync and async local subscription creation and teardown resources.
 
 use std::any::TypeId;
+use std::env;
+use std::fs;
 use std::future::Future;
+use std::hint::black_box;
 use std::io;
+use std::panic;
 use std::pin::Pin;
+use std::pin::pin;
+use std::process;
 use std::process::Child;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::task::Context;
@@ -22,14 +29,19 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::error::ConfigurationError;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
@@ -38,6 +50,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
@@ -50,22 +63,37 @@ const SAMPLES: usize = 7;
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-type ReceiveRunner<'a> = Pin<Box<dyn Future<Output = Result<(), qubit_event_bus::error::ReceiveError>> + 'a>>;
+/// Pinned runner future retained while measuring async subscription shutdown.
+///
+/// # Type Parameters
+/// - `'a`: Lifetime of the borrowed async subscription handle.
+type ReceiveRunner<'a> = Pin<Box<dyn Future<Output = Result<(), ReceiveError>> + 'a>>;
 
 /// One child-process sample result, with an empty thread count off Linux.
 struct Sample {
+    /// Outcome label reported by the benchmark process.
     status: &'static str,
+    /// Time spent creating subscriptions.
     creation_ns: u128,
+    /// Time spent cancelling subscriptions and shutting down the bus.
     close_ns: u128,
+    /// Process thread count before subscription creation when available.
     baseline_threads: Option<usize>,
+    /// Highest process thread count observed during creation when available.
     peak_threads: Option<usize>,
 }
 
 /// Counts process threads on Linux and leaves the metric absent elsewhere.
+///
+/// # Returns
+/// The process thread count on Linux, or `None` on other platforms.
+///
+/// # Errors
+/// Returns an I/O error when Linux `/proc/self/task` cannot be read.
 fn process_thread_count() -> io::Result<Option<usize>> {
     #[cfg(target_os = "linux")]
     {
-        Ok(Some(std::fs::read_dir("/proc/self/task")?.count()))
+        Ok(Some(fs::read_dir("/proc/self/task")?.count()))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -75,6 +103,15 @@ fn process_thread_count() -> io::Result<Option<usize>> {
 }
 
 /// Updates the observed thread high-water mark and reports `/proc` failures.
+///
+/// # Parameters
+/// - `peak`: Current maximum count, updated when a Linux count is available.
+///
+/// # Returns
+/// `Ok(())` when sampling succeeds or the platform has no thread-count metric.
+///
+/// # Errors
+/// Returns an I/O error from the process thread-count read.
 fn update_peak(peak: &mut Option<usize>) -> io::Result<()> {
     if let Some(count) = process_thread_count()? {
         *peak = Some(peak.map_or(count, |previous| previous.max(count)));
@@ -82,7 +119,14 @@ fn update_peak(peak: &mut Option<usize>) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates, subscribes, then cancels one fresh bus; only this work is timed.
+/// Creates, subscribes, then cancels one fresh bus while measuring thread
+/// growth.
+///
+/// # Parameters
+/// - `subscription_count`: Number of empty subscriptions to create.
+///
+/// # Returns
+/// Creation, close, and process-thread measurements for the isolated sample.
 fn sample(subscription_count: usize) -> Sample {
     let started = Instant::now();
     let bus = match EventBus::local(Default::default()) {
@@ -160,7 +204,14 @@ fn sample(subscription_count: usize) -> Sample {
     }
 }
 
-/// Measures async-local subscription creation and teardown on one executor.
+/// Creates and closes async-local subscriptions while measuring executor
+/// thread use.
+///
+/// # Parameters
+/// - `subscription_count`: Number of receive runners to drive.
+///
+/// # Returns
+/// Creation, close, and process-thread measurements for the isolated sample.
 fn sample_async(subscription_count: usize) -> Sample {
     let started = Instant::now();
     let bus = match block_on(AsyncEventBus::local(Default::default())) {
@@ -269,8 +320,13 @@ fn sample_async(subscription_count: usize) -> Sample {
     }
 }
 
-/// Checks that dropping many async subscriptions leaves no stale publish
-/// targets.
+/// Checks dropped async subscriptions leave no publish destinations behind.
+///
+/// # Returns
+/// `Ok(())` when all dropped handles are removed from routing.
+///
+/// # Errors
+/// Returns an I/O-wrapped facade or SPI failure, or a failed routing assertion.
 fn run_async_churn_probe() -> io::Result<()> {
     let bus = block_on(AsyncEventBus::local(Default::default())).map_err(io::Error::other)?;
     let topic = Topic::<u32>::new("thread-profile.async-churn").map_err(io::Error::other)?;
@@ -281,12 +337,12 @@ fn run_async_churn_probe() -> io::Result<()> {
         let subscription = block_on(bus.subscribe(request)).map_err(io::Error::other)?;
         drop(subscription);
     }
+    let elapsed = started.elapsed().as_nanos();
     let threads = process_thread_count()?;
     let receipt =
-        block_on(bus.publish(qubit_event_bus::model::PublishRequest::new(topic, 1).map_err(io::Error::other)?))
-            .map_err(io::Error::other)?;
+        block_on(bus.publish(PublishRequest::new(topic, 1).map_err(io::Error::other)?)).map_err(io::Error::other)?;
     let admissions = match receipt.acknowledgement() {
-        qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(admissions) => admissions.len(),
+        PublishAcknowledgement::DestinationAdmissions(admissions) => admissions.len(),
         _ => {
             return Err(io::Error::other("local provider did not report destination admissions"));
         }
@@ -296,7 +352,7 @@ fn run_async_churn_probe() -> io::Result<()> {
     }
     println!(
         "async_churn,100,{},admissions={},threads={}",
-        started.elapsed().as_nanos(),
+        elapsed,
         admissions,
         optional_number(threads)
     );
@@ -304,7 +360,13 @@ fn run_async_churn_probe() -> io::Result<()> {
     Ok(())
 }
 
-/// Measures hot-topic publish cost while unrelated topic subscriptions grow.
+/// Measures hot-topic publish latency as unrelated subscriptions accumulate.
+///
+/// # Returns
+/// `Ok(())` after printing the routing measurements.
+///
+/// # Errors
+/// Returns an I/O-wrapped provider, message, or settlement failure.
 fn run_async_routing_probe() -> io::Result<()> {
     for cold_topics in [0_usize, 127, 1023] {
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -337,26 +399,28 @@ fn run_async_routing_probe() -> io::Result<()> {
                 cold_receivers.push(block_on(spi.subscribe(request)).map_err(io::Error::other)?);
             }
             let messages = (0..128)
-                .map(
-                    |index| -> Result<OutboundMessage, qubit_event_bus::error::ConfigurationError> {
-                        Ok(OutboundMessage::new(
-                            hot.clone(),
-                            EventId::new(format!("bench-event-{index}"))?,
-                            std::time::SystemTime::now(),
-                            Headers::new(),
-                            None,
-                            None,
-                            TransportPayload::Native(Arc::new(String::from("payload"))),
-                        ))
-                    },
-                )
-                .collect::<Result<Vec<_>, qubit_event_bus::error::ConfigurationError>>()
+                .map(|index| -> Result<OutboundMessage, ConfigurationError> {
+                    Ok(OutboundMessage::new(
+                        hot.clone(),
+                        EventId::new(format!("bench-event-{index}"))?,
+                        SystemTime::now(),
+                        Headers::new(),
+                        None,
+                        None,
+                        TransportPayload::Native(Arc::new(String::from("payload"))),
+                    ))
+                })
+                .collect::<Result<Vec<_>, ConfigurationError>>()
                 .map_err(io::Error::other)?;
-            let started = Instant::now();
+            let mut elapsed = 0;
             for message in messages {
-                block_on(spi.publish(message)).map_err(io::Error::other)?;
+                let message = black_box(message);
+                let started = Instant::now();
+                let result = block_on(spi.publish(message));
+                elapsed += started.elapsed().as_nanos();
+                result.map_err(io::Error::other)?;
                 let outcome = block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
-                let qubit_event_bus::spi::ReceiveOutcome::Message(mut inbound) = outcome else {
+                let ReceiveOutcome::Message(mut inbound) = outcome else {
                     return Err(io::Error::other("hot topic message was not received"));
                 };
                 let token = inbound
@@ -364,7 +428,7 @@ fn run_async_routing_probe() -> io::Result<()> {
                     .ok_or_else(|| io::Error::other("missing settlement token"))?;
                 block_on(hot_receiver.settle(&token, DeliveryDisposition::Accept)).map_err(io::Error::other)?;
             }
-            let elapsed = started.elapsed().as_nanos() / 128;
+            let elapsed = elapsed / 128;
             samples.push(elapsed);
             block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
             drop(cold_receivers);
@@ -379,20 +443,34 @@ fn run_async_routing_probe() -> io::Result<()> {
     Ok(())
 }
 
+/// Wakes the benchmark executor thread after an async task makes progress.
 struct ThreadWake(thread::Thread);
 impl Wake for ThreadWake {
+    /// Unparks the thread that owns this waker.
     fn wake(self: Arc<Self>) {
         self.0.unpark();
     }
+
+    /// Unparks the thread without consuming this shared waker.
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.unpark();
     }
 }
 
+/// Drives a future on the benchmark thread without an async runtime.
+///
+/// # Type Parameters
+/// - `F`: Future to poll.
+///
+/// # Parameters
+/// - `future`: Operation to poll until it completes.
+///
+/// # Returns
+/// The future's output.
 fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
+    let mut future = pin!(future);
     loop {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(output) => return output,
@@ -403,8 +481,15 @@ fn block_on<F: Future>(future: F) -> F::Output {
 
 /// Runs a single sample in a child process so a hung sample cannot poison later
 /// ones.
+///
+/// # Parameters
+/// - `subscription_count`: Number of subscriptions used by the sample.
+/// - `asynchronous`: Whether to run the async local provider sample.
+///
+/// # Side Effects
+/// Prints one status record to stdout; a caught panic becomes a `panic` record.
 fn run_child_sample(subscription_count: usize, asynchronous: bool) {
-    let result = std::panic::catch_unwind(|| {
+    let result = panic::catch_unwind(|| {
         if asynchronous {
             sample_async(subscription_count)
         } else {
@@ -425,12 +510,27 @@ fn run_child_sample(subscription_count: usize, asynchronous: bool) {
 }
 
 /// Formats an optional counter as an empty CSV cell when it is unavailable.
+///
+/// # Parameters
+/// - `value`: Optional count to render.
+///
+/// # Returns
+/// The decimal count or an empty string.
 fn optional_number(value: Option<usize>) -> String {
     value.map_or_else(String::new, |number| number.to_string())
 }
 
 /// Waits for a child to finish or kills it after the per-sample deadline.
-fn wait_with_timeout(child: &mut Child) -> io::Result<Option<std::process::ExitStatus>> {
+///
+/// # Parameters
+/// - `child`: Child process being monitored.
+///
+/// # Returns
+/// The exit status when it finishes, or `None` after timeout and termination.
+///
+/// # Errors
+/// Returns an I/O error if polling, killing, or waiting for the child fails.
+fn wait_with_timeout(child: &mut Child) -> io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + SAMPLE_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -446,8 +546,18 @@ fn wait_with_timeout(child: &mut Child) -> io::Result<Option<std::process::ExitS
 }
 
 /// Spawns one independently isolated measurement and returns its CSV fields.
+///
+/// # Parameters
+/// - `subscription_count`: Number of subscriptions used by the sample.
+/// - `asynchronous`: Whether to run the async local provider sample.
+///
+/// # Returns
+/// Whether it timed out and the child's one-line result record.
+///
+/// # Errors
+/// Returns process creation, waiting, or output collection failures.
 fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Result<(bool, String)> {
-    let executable = std::env::current_exe()?;
+    let executable = env::current_exe()?;
     let mut child = Command::new(executable)
         .arg("--sample")
         .arg(subscription_count.to_string())
@@ -468,6 +578,16 @@ fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Res
 }
 
 /// Runs two discarded warmups followed by seven recorded child samples.
+///
+/// # Parameters
+/// - `subscription_count`: Number of subscriptions per isolated sample.
+/// - `asynchronous`: Whether to measure the async local provider.
+///
+/// # Returns
+/// `Ok(())` after writing all seven CSV records.
+///
+/// # Errors
+/// Returns child process I/O errors or an error when a warmup fails.
 fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
     for _ in 0..WARMUPS {
         let (timed_out, fields) = run_isolated_sample(subscription_count, asynchronous)?;
@@ -497,7 +617,7 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
 
 /// Dispatches child-sample mode or prints the documented seven-sample CSV.
 fn main() {
-    let args = std::env::args()
+    let args = env::args()
         .skip(1)
         .filter(|argument| argument != "--bench")
         .collect::<Vec<_>>();
@@ -508,7 +628,7 @@ fn main() {
     if args.first().is_some_and(|argument| argument == "--sample") {
         let Some(count) = args.get(1).and_then(|value| value.parse::<usize>().ok()) else {
             eprintln!("usage: local_threads --sample <subscription-count> [--async]");
-            std::process::exit(2);
+            process::exit(2);
         };
         run_child_sample(count, args.iter().any(|argument| argument == "--async"));
         return;
@@ -516,28 +636,28 @@ fn main() {
     if args.as_slice() == ["--routing"] {
         if let Err(error) = run_async_routing_probe() {
             eprintln!("async routing probe failed: {error}");
-            std::process::exit(1);
+            process::exit(1);
         }
         return;
     }
     if !args.is_empty() {
         eprintln!("usage: local_threads");
-        std::process::exit(2);
+        process::exit(2);
     }
 
     println!("mode,subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
     for subscription_count in COUNTS {
         if let Err(error) = run(subscription_count, false).and_then(|()| run(subscription_count, true)) {
             eprintln!("thread-profile benchmark failed: {error}");
-            std::process::exit(1);
+            process::exit(1);
         }
     }
     if let Err(error) = run_async_churn_probe() {
         eprintln!("async churn probe failed: {error}");
-        std::process::exit(1);
+        process::exit(1);
     }
     if let Err(error) = run_async_routing_probe() {
         eprintln!("async routing probe failed: {error}");
-        std::process::exit(1);
+        process::exit(1);
     }
 }

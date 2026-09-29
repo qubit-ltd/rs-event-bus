@@ -10,6 +10,7 @@
 use std::panic;
 use std::panic::PanicHookInfo;
 
+/// Owned hook callback retained while a test suppresses panic output.
 type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
 /// Restores the previously installed panic hook when dropped.
@@ -23,6 +24,11 @@ impl PanicHookGuard {
     ///
     /// # Returns
     /// Guard restoring the previous hook when it leaves scope.
+    ///
+    /// # Side Effects
+    ///
+    /// Replaces the process-wide panic hook until the returned guard is
+    /// dropped.
     pub(crate) fn suppress() -> Self {
         let previous_hook = panic::take_hook();
         panic::set_hook(Box::new(|_| {}));

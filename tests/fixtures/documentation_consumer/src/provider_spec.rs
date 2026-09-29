@@ -5,10 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-
-
-
+//! Provider service aliases and subscription calls compiled by documentation checks.
 
 use std::time::Duration;
 

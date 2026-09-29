@@ -23,7 +23,7 @@ impl fmt::Display for BackendFailure {
 impl Error for BackendFailure {}
 
 #[test]
-fn invalid_settlement_token_preserves_spi_context_and_source() {
+fn test_invalid_settlement_token_preserves_spi_context_and_source() {
     let error = SpiError::InvalidSettlementToken {
         provider_id: "local".into(),
         operation: "settle",
@@ -45,7 +45,7 @@ fn invalid_settlement_token_preserves_spi_context_and_source() {
 }
 
 #[test]
-fn operation_failure_exposes_spi_context_and_source() {
+fn test_operation_failure_exposes_spi_context_and_source() {
     let error = SpiError::Operation {
         provider_id: "remote".into(),
         operation: "publish",

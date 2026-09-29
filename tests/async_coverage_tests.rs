@@ -7,6 +7,8 @@
 // =============================================================================
 //! Additional asynchronous facade lifecycle coverage.
 
+mod support;
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -76,8 +78,6 @@ use qubit_event_bus::spi::TransportPayload;
 use qubit_retry::RetryPolicy;
 
 use crate::support::manual_async::block_on;
-
-mod support;
 
 struct FailingTimer {
     clock: StdMonotonicClock,
@@ -221,7 +221,7 @@ impl EventCodec<String> for StringCodec {
 }
 
 #[test]
-fn async_publisher_retries_a_retryable_failure_then_succeeds() {
+fn test_async_publisher_retries_a_retryable_failure_then_succeeds() {
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 1, false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-publisher-retry").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -239,7 +239,7 @@ fn async_publisher_retries_a_retryable_failure_then_succeeds() {
 }
 
 #[test]
-fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
+fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     use qubit_event_bus::EventBusFacadeConfig;
     use qubit_event_bus::facade::PublishMetricsSnapshot;
 
@@ -355,7 +355,7 @@ fn async_publisher_metrics_track_shared_attempts_and_batch_items() {
 }
 
 #[test]
-fn async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled() {
+fn test_async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled() {
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_pending());
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-publisher-metrics-cancelled").unwrap(), spi)
         .expect("valid provider capabilities");
@@ -373,7 +373,7 @@ fn async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled() {
 }
 
 #[test]
-fn async_global_publisher_interceptor_edits_only_validated_headers() {
+fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
     use qubit_event_bus::EventBusFacadeConfig;
     use qubit_event_bus::model::PublishMetadata;
 
@@ -409,7 +409,7 @@ fn async_global_publisher_interceptor_edits_only_validated_headers() {
 }
 
 #[test]
-fn async_string_delivery_runs_error_handler_and_terminates_failure() {
+fn test_async_string_delivery_runs_error_handler_and_terminates_failure() {
     use qubit_event_bus::model::FailureDirective;
     use qubit_event_bus::model::Headers;
     use qubit_event_bus::model::SubscribeOptions;
@@ -455,7 +455,7 @@ fn async_string_delivery_runs_error_handler_and_terminates_failure() {
 }
 
 #[test]
-fn failed_timer_registration_surfaces_after_a_failed_settlement() {
+fn test_failed_timer_registration_surfaces_after_a_failed_settlement() {
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let timer = Arc::new(FailingTimer {
         clock: StdMonotonicClock::new(),
@@ -488,7 +488,7 @@ fn failed_timer_registration_surfaces_after_a_failed_settlement() {
 }
 
 #[test]
-fn async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_failure() {
+fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_failure() {
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-encoded-publisher").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -526,7 +526,7 @@ fn async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_failure(
 }
 
 #[test]
-fn async_terminal_failure_handler_reads_non_clone_payload_and_ordering_metadata() {
+fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_metadata() {
     struct NonClonePayload {
         value: String,
     }
@@ -685,7 +685,7 @@ impl Drop for CloseFailingReceiver {
 }
 
 #[test]
-fn explicit_subscription_close_returns_a_single_close_failure() {
+fn test_explicit_subscription_close_returns_a_single_close_failure() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("close-failing").unwrap(), spi).expect("valid provider capabilities");
@@ -711,7 +711,7 @@ fn explicit_subscription_close_returns_a_single_close_failure() {
 }
 
 #[test]
-fn shutdown_aggregates_multiple_async_subscription_close_failures() {
+fn test_shutdown_aggregates_multiple_async_subscription_close_failures() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus = AsyncEventBus::from_spi(ProviderId::new("close-failing").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -751,7 +751,7 @@ fn shutdown_aggregates_multiple_async_subscription_close_failures() {
 }
 
 #[test]
-fn publish_and_subscribe_are_rejected_after_async_shutdown() {
+fn test_publish_and_subscribe_are_rejected_after_async_shutdown() {
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
 
@@ -771,7 +771,7 @@ fn publish_and_subscribe_are_rejected_after_async_shutdown() {
 }
 
 #[test]
-fn failed_receiver_close_can_be_retried_and_drop_releases_the_receiver() {
+fn test_failed_receiver_close_can_be_retried_and_drop_releases_the_receiver() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus = AsyncEventBus::from_spi(ProviderId::new("close-failing").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -797,7 +797,7 @@ fn failed_receiver_close_can_be_retried_and_drop_releases_the_receiver() {
 }
 
 #[test]
-fn dropping_unrun_subscription_releases_receiver_without_async_close() {
+fn test_dropping_unrun_subscription_releases_receiver_without_async_close() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus = AsyncEventBus::from_spi(ProviderId::new("close-failing").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -816,7 +816,7 @@ fn dropping_unrun_subscription_releases_receiver_without_async_close() {
 }
 
 #[test]
-fn shutdown_cancels_pending_receive_before_closing_receiver() {
+fn test_shutdown_cancels_pending_receive_before_closing_receiver() {
     let spi = Arc::new(CloseFailingSpi::default());
     let bus = AsyncEventBus::from_spi(ProviderId::new("close-failing").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -843,7 +843,7 @@ fn shutdown_cancels_pending_receive_before_closing_receiver() {
 }
 
 #[test]
-fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
+fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::task::Poll;
@@ -930,7 +930,7 @@ fn close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
 }
 
 #[test]
-fn graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
+fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
     use std::sync::atomic::AtomicBool;
     use std::task::Poll;
 
@@ -1106,7 +1106,7 @@ impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
 }
 
 #[test]
-fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
+fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
     let spi = Arc::new(DeadLetterCaptureSpi::default());
     let bus = AsyncEventBus::from_spi(ProviderId::new("dead-letter-capture").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -1272,7 +1272,7 @@ fn async_dead_letter_publish_uses_configured_destination_and_reserved_marker() {
 struct NonCloneDeadLetterPayload;
 
 #[test]
-fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
+fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
     fn run_case(panic_filter: bool) -> (usize, Vec<DeliveryDisposition>, bool) {
         let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
         let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
@@ -1344,7 +1344,7 @@ fn async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
 }
 
 #[test]
-fn async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
+fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");

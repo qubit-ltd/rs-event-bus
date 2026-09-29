@@ -5,8 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 #![cfg(feature = "discovery")]
+
 use std::sync::Arc;
 
 use qubit_event_bus::EventBusConfig;
@@ -24,6 +24,7 @@ use qubit_spi::error::ProviderFailure;
 use qubit_spi::error::RegistryMutationError;
 use qubit_spi::submit_sync_provider;
 
+/// Duplicate provider used to verify inventory conflict diagnostics.
 struct DuplicateProvider;
 
 impl ProviderMetadata for DuplicateProvider {
@@ -54,7 +55,7 @@ submit_sync_provider! {
 }
 
 #[test]
-fn duplicate_discovered_id_reports_source() {
+fn test_duplicate_discovered_id_reports_source() {
     let error = match EventBusRegistry::discover() {
         Ok(_) => panic!("duplicate provider ID must fail"),
         Err(error) => error,

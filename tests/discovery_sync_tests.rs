@@ -5,8 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 #![cfg(feature = "discovery")]
+
 use std::sync::Arc;
 
 use qubit_event_bus::EventBusConfig;
@@ -26,6 +26,7 @@ use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 use qubit_spi::submit_sync_provider;
 
+/// Test provider submitted to sync provider inventory.
 struct DiscoveredSyncProvider;
 
 impl ProviderMetadata for DiscoveredSyncProvider {
@@ -50,7 +51,7 @@ submit_sync_provider! {
 }
 
 #[test]
-fn discovered_sync_provider_is_creatable() {
+fn test_discovered_sync_provider_is_creatable() {
     let registry = EventBusRegistry::discover().unwrap();
     assert!(registry.provider_ids().iter().any(|id| id.as_str() == "local"));
     assert!(

@@ -8,6 +8,8 @@
 //! Public publisher-pipeline regression coverage for error and observer
 //! branches.
 
+mod support;
+
 use std::any::TypeId;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -63,10 +65,9 @@ use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
-use support::fake_spi::FakeEventBusSpi;
-use support::manual_async::block_on;
 
-mod support;
+use crate::support::fake_spi::FakeEventBusSpi;
+use crate::support::manual_async::block_on;
 
 struct FailingStringCodec {
     content_type: ContentType,
@@ -238,7 +239,7 @@ fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
 }
 
 #[test]
-fn publisher_metrics_track_shared_attempts_and_batch_items() {
+fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
     use qubit_event_bus::EventBusFacadeConfig;
     use qubit_event_bus::facade::PublishMetricsSnapshot;
 
@@ -547,7 +548,7 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
 }
 
 #[test]
-fn encoded_publish_retains_codec_failure_and_skips_provider_call() {
+fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let bus = bus(spi.clone());
     let topic = Topic::new_with_codec(
@@ -567,7 +568,7 @@ fn encoded_publish_retains_codec_failure_and_skips_provider_call() {
 }
 
 #[test]
-fn encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
+fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
     let config =
         EventBusFacadeConfig::new().with_max_encoded_payload_bytes(Some(NonZeroUsize::new(4).expect("positive limit")));
     let topic = || {
@@ -616,7 +617,7 @@ fn encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
 }
 
 #[test]
-fn sync_spi_publish_panic_becomes_source_preserving_publish_error() {
+fn test_sync_spi_publish_panic_becomes_source_preserving_publish_error() {
     let bus = bus(Arc::new(PanickingSyncPublishSpi));
     let request = PublishRequest::new(Topic::new("sync.panic").unwrap(), 11_u32).unwrap();
 
@@ -639,7 +640,7 @@ fn sync_spi_publish_panic_becomes_source_preserving_publish_error() {
 }
 
 #[test]
-fn native_publisher_supports_many_domain_payload_types_without_clone_bounds() {
+fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds() {
     struct NonCloneCommand {
         _name: String,
     }
@@ -697,7 +698,7 @@ fn native_publisher_supports_many_domain_payload_types_without_clone_bounds() {
 }
 
 #[test]
-fn encoded_and_hybrid_capabilities_choose_the_supported_representation() {
+fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
     let encoded_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let encoded_bus = bus(encoded_spi.clone());
     let encoded_topic = Topic::new_with_codec(
@@ -734,7 +735,7 @@ fn encoded_and_hybrid_capabilities_choose_the_supported_representation() {
 }
 
 #[test]
-fn typed_metadata_mutation_error_is_returned_before_provider_publish() {
+fn test_typed_metadata_mutation_error_is_returned_before_provider_publish() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let bus = bus(spi.clone());
     let options = PublishOptions::<String>::builder()
@@ -754,7 +755,7 @@ fn typed_metadata_mutation_error_is_returned_before_provider_publish() {
 }
 
 #[test]
-fn retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
+fn test_retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
     let spi = Arc::new(FakeEventBusSpi::new());
     spi.fail_next_publish();
     let bus = bus(spi.clone());
@@ -782,7 +783,7 @@ fn retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
 }
 
 #[test]
-fn direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() {
+fn test_direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() {
     let spi = Arc::new(ScriptedFailureSpi::new(Some(false), 1));
     let bus = bus(spi.clone());
     let request = PublishRequest::new(Topic::new("retry.disabled").unwrap(), 4_u32).unwrap();
@@ -804,7 +805,7 @@ fn direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() {
 }
 
 #[test]
-fn custom_retry_rule_can_override_explicit_non_retryable_spi_classification() {
+fn test_custom_retry_rule_can_override_explicit_non_retryable_spi_classification() {
     let spi = Arc::new(ScriptedFailureSpi::new(Some(false), 1));
     let bus = bus(spi.clone());
     let options = PublishOptions::<u32>::builder()
@@ -822,7 +823,7 @@ fn custom_retry_rule_can_override_explicit_non_retryable_spi_classification() {
 }
 
 #[test]
-fn terminal_publish_error_handler_can_inspect_shared_non_clone_event_context() {
+fn test_terminal_publish_error_handler_can_inspect_shared_non_clone_event_context() {
     struct NonClonePayload(String);
 
     let spi = Arc::new(ScriptedFailureSpi::new(Some(false), 1));
@@ -875,7 +876,7 @@ fn terminal_publish_error_handler_can_inspect_shared_non_clone_event_context() {
 }
 
 #[test]
-fn typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
+fn test_typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let bus = bus(spi.clone());
     let options = PublishOptions::<u32>::builder()
@@ -900,7 +901,7 @@ fn typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
 }
 
 #[test]
-fn async_spi_future_panic_becomes_source_preserving_publish_error() {
+fn test_async_spi_future_panic_becomes_source_preserving_publish_error() {
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-coverage").unwrap(),
         Arc::new(PanickingAsyncPublishSpi),
@@ -925,7 +926,7 @@ fn async_spi_future_panic_becomes_source_preserving_publish_error() {
 }
 
 #[test]
-fn async_spi_future_construction_panic_becomes_source_preserving_publish_error() {
+fn test_async_spi_future_construction_panic_becomes_source_preserving_publish_error() {
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-construction-panic").unwrap(),
         Arc::new(PanickingAsyncPublishConstructionSpi),
@@ -953,7 +954,7 @@ fn async_spi_future_construction_panic_becomes_source_preserving_publish_error()
 }
 
 #[test]
-fn async_publisher_accepts_distinct_native_payload_types_without_clone_bounds() {
+fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_bounds() {
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("async-generic-publisher-coverage").unwrap(),
         Arc::new(AcceptingAsyncPublishSpi),
@@ -1015,7 +1016,7 @@ fn async_publisher_accepts_distinct_native_payload_types_without_clone_bounds() 
 }
 
 #[test]
-fn diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observer_drop() {
+fn test_diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observer_drop() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, true));
     let bus = bus(spi.clone());
     let panic_handle = bus.observe_diagnostics(|_| panic!("observer panic is isolated"));

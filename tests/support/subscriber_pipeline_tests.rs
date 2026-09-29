@@ -5,7 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -45,7 +44,7 @@ fn delivery() -> Delivery<String> {
 }
 
 #[test]
-fn manual_ack_matrix_and_handler_error_precedence_are_enforced() {
+fn test_manual_ack_matrix_and_handler_error_precedence_are_enforced() {
     let acked = delivery();
     acked.acknowledgement().ack().unwrap();
     let outcome = SubscriberPipeline::finish_attempt(AckMode::Manual, &acked, Ok(()));
@@ -118,7 +117,7 @@ fn manual_ack_matrix_and_handler_error_precedence_are_enforced() {
 }
 
 #[test]
-fn subscriber_middleware_unwinds_in_reverse_registration_layers() {
+fn test_subscriber_middleware_unwinds_in_reverse_registration_layers() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let global_order = order.clone();
     let typed_order = order.clone();
@@ -147,7 +146,7 @@ fn subscriber_middleware_unwinds_in_reverse_registration_layers() {
 }
 
 #[test]
-fn async_subscriber_middleware_uses_runtime_neutral_continuations() {
+fn test_async_subscriber_middleware_uses_runtime_neutral_continuations() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let global_order = order.clone();
     let typed_order = order.clone();
@@ -188,7 +187,7 @@ fn async_subscriber_middleware_uses_runtime_neutral_continuations() {
 }
 
 #[test]
-fn admission_permit_is_released_once_on_drop() {
+fn test_admission_permit_is_released_once_on_drop() {
     let tracker = AdmissionTracker::new(1).unwrap();
     let permit = tracker.try_acquire().unwrap();
     assert!(tracker.try_acquire().is_none());
@@ -199,7 +198,7 @@ fn admission_permit_is_released_once_on_drop() {
 }
 
 #[test]
-fn ordering_lanes_preserve_fifo_per_key_and_allow_other_keys() {
+fn test_ordering_lanes_preserve_fifo_per_key_and_allow_other_keys() {
     let lanes = OrderingLanes::new();
     let first = OrderingLaneKey::new("orders", Some("a"), Id::new(1));
     let second = OrderingLaneKey::new("orders", Some("b"), Id::new(1));
@@ -217,7 +216,7 @@ fn ordering_lanes_preserve_fifo_per_key_and_allow_other_keys() {
 }
 
 #[test]
-fn failure_directive_maps_to_terminal_spi_disposition() {
+fn test_failure_directive_maps_to_terminal_spi_disposition() {
     use crate::pipeline::subscriber::DeliveryFailureAction;
     use crate::spi::SettlementCapabilities;
     assert_eq!(
@@ -261,7 +260,7 @@ fn failure_directive_maps_to_terminal_spi_disposition() {
 }
 
 #[test]
-fn subscriber_middleware_panic_is_contained_as_delivery_failure() {
+fn test_subscriber_middleware_panic_is_contained_as_delivery_failure() {
     let panic_layer: Arc<SubscriberInterceptor<String>> = Arc::new(|_, _| panic!("middleware panic"));
     let called = Arc::new(Mutex::new(false));
     let called_handler = called.clone();
@@ -274,7 +273,7 @@ fn subscriber_middleware_panic_is_contained_as_delivery_failure() {
 }
 
 #[test]
-fn attempt_failure_converts_without_losing_delivery_error_as_source() {
+fn test_attempt_failure_converts_without_losing_delivery_error_as_source() {
     let original = DeliveryError::Handler {
         source: Box::new(std::io::Error::other("original")),
     };
@@ -289,7 +288,7 @@ fn attempt_failure_converts_without_losing_delivery_error_as_source() {
 }
 
 #[test]
-fn dead_letter_record_preserves_original_and_prevents_recursive_dead_lettering() {
+fn test_dead_letter_record_preserves_original_and_prevents_recursive_dead_lettering() {
     struct NonClonePayload;
     let topic = Topic::<NonClonePayload>::new("test.events").unwrap();
     let envelope = Arc::new(EventEnvelope::new(topic, NonClonePayload).unwrap());
@@ -327,7 +326,7 @@ fn dead_letter_record_preserves_original_and_prevents_recursive_dead_lettering()
 }
 
 #[test]
-fn async_ordering_waits_without_blocking_and_holds_turn_through_handler_scope() {
+fn test_async_ordering_waits_without_blocking_and_holds_turn_through_handler_scope() {
     let lanes = AsyncOrderingLanes::new();
     let key = OrderingLaneKey::new("orders", Some("customer-1"), Id::new(9));
     let first = block_on(lanes.enqueue(key.clone(), 1)).unwrap();
@@ -343,7 +342,7 @@ fn async_ordering_waits_without_blocking_and_holds_turn_through_handler_scope() 
 }
 
 #[test]
-fn async_ordering_invokes_custom_waker_after_releasing_lane_lock() {
+fn test_async_ordering_invokes_custom_waker_after_releasing_lane_lock() {
     use std::future::Future;
     use std::task::Context;
     use std::task::Poll;

@@ -5,7 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Shared public-pipeline contract checks for publisher behavior.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -218,7 +220,7 @@ impl EventCodec<String> for StringCodec {
 }
 
 #[test]
-fn typed_interceptor_runs_before_global_and_drop_short_circuits_spi() {
+fn test_typed_interceptor_runs_before_global_and_drop_short_circuits_spi() {
     let (spi, state) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
@@ -250,7 +252,7 @@ fn typed_interceptor_runs_before_global_and_drop_short_circuits_spi() {
 }
 
 #[test]
-fn retry_exhaustion_preserves_retry_source_and_failure_origin() {
+fn test_retry_exhaustion_preserves_retry_source_and_failure_origin() {
     let (spi, _) = bus(PayloadModes::Native, usize::MAX);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
@@ -266,7 +268,7 @@ fn retry_exhaustion_preserves_retry_source_and_failure_origin() {
 }
 
 #[test]
-fn retry_replays_the_same_prepared_message_until_provider_accepts() {
+fn test_retry_replays_the_same_prepared_message_until_provider_accepts() {
     let (spi, state) = bus(PayloadModes::Native, 1);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
@@ -277,7 +279,7 @@ fn retry_replays_the_same_prepared_message_until_provider_accepts() {
 }
 
 #[test]
-fn interceptor_panic_is_converted_with_pipeline_origin() {
+fn test_interceptor_panic_is_converted_with_pipeline_origin() {
     let (spi, _) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
@@ -296,7 +298,7 @@ fn interceptor_panic_is_converted_with_pipeline_origin() {
 }
 
 #[test]
-fn encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
+fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);
     let pipeline = make_pipeline(&spi);
     let topic = Topic::new_with_codec(
@@ -321,7 +323,7 @@ fn encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
 }
 
 #[test]
-fn native_payload_does_not_require_clone() {
+fn test_native_payload_does_not_require_clone() {
     struct NonClonePayload;
 
     let (spi, state) = bus(PayloadModes::Native, 0);
@@ -337,7 +339,7 @@ fn native_payload_does_not_require_clone() {
 }
 
 #[test]
-fn native_and_encoded_provider_prefers_native_payload() {
+fn test_native_and_encoded_provider_prefers_native_payload() {
     let (spi, state) = bus(PayloadModes::NativeAndEncoded, 0);
     let pipeline = make_pipeline(&spi);
     let topic = Topic::new_with_codec(
@@ -358,7 +360,7 @@ fn native_and_encoded_provider_prefers_native_payload() {
 }
 
 #[test]
-fn destination_rejection_emits_one_diagnostic_and_observer_panic_is_isolated() {
+fn test_destination_rejection_emits_one_diagnostic_and_observer_panic_is_isolated() {
     let (spi, state) = bus(PayloadModes::Native, 0);
     state.lock().unwrap().reject_destination = true;
     let pipeline = make_pipeline(&spi);
@@ -384,7 +386,7 @@ fn destination_rejection_emits_one_diagnostic_and_observer_panic_is_isolated() {
 }
 
 #[test]
-fn async_publish_is_runtime_neutral() {
+fn test_async_publish_is_runtime_neutral() {
     let (spi, state) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let future = pipeline.publish_async(
@@ -396,7 +398,6 @@ fn async_publish_is_runtime_neutral() {
     );
     let mut future = std::pin::pin!(future);
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    use std::future::Future;
     assert!(matches!(
         future.as_mut().poll(&mut context),
         std::task::Poll::Ready(Ok(_))
@@ -405,7 +406,7 @@ fn async_publish_is_runtime_neutral() {
 }
 
 #[test]
-fn async_publish_retries_after_retryable_failure_without_runtime() {
+fn test_async_publish_retries_after_retryable_failure_without_runtime() {
     let (spi, state) = bus(PayloadModes::Native, 1);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
@@ -424,7 +425,7 @@ fn async_publish_retries_after_retryable_failure_without_runtime() {
 }
 
 #[test]
-fn publish_error_observers_receive_shared_non_clone_payload_and_metadata() {
+fn test_publish_error_observers_receive_shared_non_clone_payload_and_metadata() {
     struct NonClonePayload {
         value: &'static str,
     }
@@ -473,7 +474,7 @@ fn publish_error_observers_receive_shared_non_clone_payload_and_metadata() {
 }
 
 #[test]
-fn publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
+fn test_publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
     let (spi, _) = bus(PayloadModes::Native, usize::MAX);
     let pipeline = make_pipeline(&spi);
     let calls = Arc::new(Mutex::new(Vec::new()));

@@ -65,6 +65,7 @@ use qubit_spi::ProviderSelection;
 use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
+/// Configurable sync provider used to exercise registry selection behavior.
 struct StubProvider {
     id: &'static str,
     aliases: &'static [&'static str],
@@ -100,6 +101,7 @@ impl ServiceProvider<EventBusSpec> for StubProvider {
     }
 }
 
+/// Sync SPI double for registry-created buses.
 struct StubSpi {
     capabilities: EventBusCapabilities,
     publish_fails: bool,
@@ -143,6 +145,7 @@ impl EventBusSpi for StubSpi {
     }
 }
 
+/// Builds a capability set with the requested durability mode.
 fn capabilities(durability: DurabilityCapability) -> EventBusCapabilities {
     EventBusCapabilities::new(
         PayloadModes::Native,
@@ -159,7 +162,7 @@ fn capabilities(durability: DurabilityCapability) -> EventBusCapabilities {
 }
 
 #[test]
-fn registry_per_key_capability_accepts_per_subscription_and_rejects_per_partition() {
+fn test_registry_per_key_capability_accepts_per_subscription_and_rejects_per_partition() {
     for (ordering, accepted) in [
         (OrderingCapability::PerSubscription, true),
         (OrderingCapability::PerPartition, false),
@@ -203,7 +206,7 @@ fn registry_per_key_capability_accepts_per_subscription_and_rejects_per_partitio
 }
 
 #[test]
-fn registry_resolves_alias_and_snapshots_provider_descriptor() {
+fn test_registry_resolves_alias_and_snapshots_provider_descriptor() {
     let registry = EventBusRegistry::new();
     let creates = Arc::new(AtomicUsize::new(0));
     let creates_for_provider = creates.clone();
@@ -241,7 +244,7 @@ fn registry_resolves_alias_and_snapshots_provider_descriptor() {
 }
 
 #[test]
-fn registry_falls_back_when_created_spi_lacks_required_capability() {
+fn test_registry_falls_back_when_created_spi_lacks_required_capability() {
     let registry = EventBusRegistry::new();
     let ephemeral_creates = Arc::new(AtomicUsize::new(0));
     let durable_creates = Arc::new(AtomicUsize::new(0));
@@ -282,7 +285,7 @@ fn registry_falls_back_when_created_spi_lacks_required_capability() {
 }
 
 #[test]
-fn operation_failure_does_not_resolve_a_fallback_provider() {
+fn test_operation_failure_does_not_resolve_a_fallback_provider() {
     let registry = EventBusRegistry::new();
     let first_creates = Arc::new(AtomicUsize::new(0));
     let second_creates = Arc::new(AtomicUsize::new(0));
@@ -322,7 +325,7 @@ fn operation_failure_does_not_resolve_a_fallback_provider() {
 }
 
 #[test]
-fn empty_registry_is_mutable_until_sealed() {
+fn test_empty_registry_is_mutable_until_sealed() {
     let registry = EventBusRegistry::default();
     assert!(registry.provider_ids().is_empty());
     assert!(!registry.is_sealed());
@@ -344,7 +347,7 @@ fn empty_registry_is_mutable_until_sealed() {
 }
 
 #[test]
-fn unavailable_provider_falls_back_only_during_creation() {
+fn test_unavailable_provider_falls_back_only_during_creation() {
     let registry = EventBusRegistry::new();
     let unavailable_creates = Arc::new(AtomicUsize::new(0));
     let success_creates = Arc::new(AtomicUsize::new(0));
@@ -385,7 +388,7 @@ fn unavailable_provider_falls_back_only_during_creation() {
 }
 
 #[test]
-fn creation_failure_is_distinct_from_provider_resolution_failure() {
+fn test_creation_failure_is_distinct_from_provider_resolution_failure() {
     let registry = EventBusRegistry::new();
     let creates = Arc::new(AtomicUsize::new(0));
     registry
@@ -409,7 +412,7 @@ fn creation_failure_is_distinct_from_provider_resolution_failure() {
 }
 
 #[test]
-fn registry_installs_configured_codec_registry_into_the_facade() {
+fn test_registry_installs_configured_codec_registry_into_the_facade() {
     let registry = EventBusRegistry::new();
     let creates = Arc::new(AtomicUsize::new(0));
     registry
@@ -452,6 +455,7 @@ fn registry_installs_configured_codec_registry_into_the_facade() {
     assert!(bus.publish(request).is_ok());
 }
 
+/// Configurable async provider used to exercise async registry selection.
 struct StubAsyncProvider {
     id: &'static str,
     aliases: &'static [&'static str],
@@ -485,6 +489,7 @@ impl AsyncServiceProvider<EventBusSpec> for StubAsyncProvider {
     }
 }
 
+/// Async SPI double that records encoded publications.
 struct StubAsyncSpi {
     capabilities: EventBusCapabilities,
     encoded_messages: Arc<AtomicUsize>,
@@ -529,7 +534,7 @@ impl AsyncEventBusSpi for StubAsyncSpi {
 }
 
 #[test]
-fn async_registry_fallback_retains_the_successful_provider_identity() {
+fn test_async_registry_fallback_retains_the_successful_provider_identity() {
     let registry = AsyncEventBusRegistry::new();
     let ephemeral_creates = Arc::new(AtomicUsize::new(0));
     let durable_creates = Arc::new(AtomicUsize::new(0));
@@ -567,6 +572,16 @@ fn async_registry_fallback_retains_the_successful_provider_identity() {
     assert_eq!("async-durable", receipt.provider_id().as_str());
 }
 
+/// Polls a test future on the current thread until it completes.
+///
+/// # Type Parameters
+/// - `F`: Future being driven to completion.
+///
+/// # Parameters
+/// - `future`: Test future to poll.
+///
+/// # Returns
+/// The future's output.
 fn block_on<F: Future>(future: F) -> F::Output {
     struct ThreadWake(thread::Thread);
     impl Wake for ThreadWake {
@@ -587,7 +602,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 #[test]
-fn async_registry_installs_configured_codec_registry_into_the_facade() {
+fn test_async_registry_installs_configured_codec_registry_into_the_facade() {
     let registry = AsyncEventBusRegistry::new();
     let encoded_messages = Arc::new(AtomicUsize::new(0));
     registry
@@ -629,6 +644,7 @@ fn async_registry_installs_configured_codec_registry_into_the_facade() {
     assert_eq!(1, encoded_messages.load(Ordering::SeqCst));
 }
 
+/// Minimal codec used to verify that registry configuration reaches the facade.
 struct U32Codec {
     content_type: ContentType,
 }

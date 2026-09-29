@@ -22,9 +22,10 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryPolicy;
-use support::fake_spi::FakeAsyncEventBusSpi;
-use support::manual_async::block_on;
-use support::manual_async::poll_once;
+
+use crate::support::fake_spi::FakeAsyncEventBusSpi;
+use crate::support::manual_async::block_on;
+use crate::support::manual_async::poll_once;
 
 mod support;
 

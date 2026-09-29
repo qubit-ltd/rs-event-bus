@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Race contracts for the synchronous delivery scheduler.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use crate::facade::SyncDeliverySchedulerConfig;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 
 #[test]
-fn reservation_cancel_race_does_not_run_owner_settlement_inline() {
+fn test_reservation_cancel_race_does_not_run_owner_settlement_inline() {
     let scheduler = SyncDeliveryScheduler::new(SyncDeliverySchedulerConfig::new(1, 1).expect("valid scheduler config"));
     scheduler.start().expect("scheduler workers start");
     let subscription_id = Id::new(44);

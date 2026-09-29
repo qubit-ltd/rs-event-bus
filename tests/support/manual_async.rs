@@ -14,6 +14,7 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
+/// Wakes the executor thread by un-parking it when a future becomes ready.
 struct ThreadWake(std::thread::Thread);
 impl Wake for ThreadWake {
     fn wake(self: Arc<Self>) {
@@ -24,6 +25,16 @@ impl Wake for ThreadWake {
     }
 }
 
+/// Drives a future to completion on the current thread without a runtime.
+///
+/// # Type Parameters
+/// - `F`: Future to execute.
+///
+/// # Parameters
+/// - `future`: Operation to poll until it returns `Ready`.
+///
+/// # Returns
+/// The future's output.
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
     let mut context = Context::from_waker(&waker);
@@ -36,6 +47,16 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Polls a pinned future once using a waker for the current thread.
+///
+/// # Type Parameters
+/// - `F`: Future to poll.
+///
+/// # Parameters
+/// - `future`: Pinned future whose current state is requested.
+///
+/// # Returns
+/// The result of this single poll.
 pub(crate) fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
     let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
     future.poll(&mut Context::from_waker(&waker))

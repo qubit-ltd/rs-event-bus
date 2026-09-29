@@ -42,7 +42,7 @@ use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TransportPayload;
 
 #[test]
-fn notification_publisher_bounds_queue_and_drains_in_order_on_close() {
+fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -81,7 +81,7 @@ fn notification_publisher_bounds_queue_and_drains_in_order_on_close() {
 }
 
 #[test]
-fn notification_publisher_close_is_idempotent_and_does_not_close_bus() {
+fn test_notification_publisher_close_is_idempotent_and_does_not_close_bus() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -104,7 +104,7 @@ fn notification_publisher_close_is_idempotent_and_does_not_close_bus() {
 }
 
 #[test]
-fn notification_publisher_close_with_timeout_can_be_retried_after_provider_unblocks() {
+fn test_notification_publisher_close_with_timeout_can_be_retried_after_provider_unblocks() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -143,7 +143,7 @@ fn notification_publisher_close_with_timeout_can_be_retried_after_provider_unblo
 }
 
 #[test]
-fn notification_publisher_zero_timeout_is_nonblocking_and_finished_close_succeeds() {
+fn test_notification_publisher_zero_timeout_is_nonblocking_and_finished_close_succeeds() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -176,7 +176,7 @@ fn notification_publisher_zero_timeout_is_nonblocking_and_finished_close_succeed
 }
 
 #[test]
-fn notification_publisher_concurrent_timed_close_callers_can_timeout_and_retry() {
+fn test_notification_publisher_concurrent_timed_close_callers_can_timeout_and_retry() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -222,7 +222,7 @@ fn notification_publisher_concurrent_timed_close_callers_can_timeout_and_retry()
 }
 
 #[test]
-fn notification_stats_snapshot_exposes_all_counters() {
+fn test_notification_stats_snapshot_exposes_all_counters() {
     assert_eq!(256, NotificationPublisher::<String>::default_capacity().get());
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
@@ -248,7 +248,7 @@ fn notification_stats_snapshot_exposes_all_counters() {
 }
 
 #[test]
-fn notification_publisher_concurrent_close_callers_share_worker_completion() {
+fn test_notification_publisher_concurrent_close_callers_share_worker_completion() {
     let spi = Arc::new(GatedSpi::new());
     let bus =
         EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi).expect("valid provider capabilities");
@@ -274,7 +274,7 @@ fn notification_publisher_concurrent_close_callers_share_worker_completion() {
 }
 
 #[test]
-fn notification_publisher_contains_observer_panics_and_continues() {
+fn test_notification_publisher_contains_observer_panics_and_continues() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -296,7 +296,7 @@ fn notification_publisher_contains_observer_panics_and_continues() {
 }
 
 #[test]
-fn notification_observer_cannot_close_its_own_worker() {
+fn test_notification_observer_cannot_close_its_own_worker() {
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -356,6 +356,7 @@ fn notification_observer_cannot_close_its_own_worker() {
     assert_eq!(vec!["first", "second", "third"], *spi.published.lock().unwrap());
 }
 
+/// Blocks only the first publication until the test releases the worker.
 struct GatedSpi {
     entered: Mutex<mpsc::Receiver<String>>,
     entered_sender: Mutex<Option<mpsc::Sender<String>>>,
@@ -378,6 +379,7 @@ impl GatedSpi {
         }
     }
 
+    /// Opens the first-publication gate and wakes its blocked worker.
     fn release(&self) {
         *self.released.0.lock().unwrap() = true;
         self.released.1.notify_all();

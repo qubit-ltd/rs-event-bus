@@ -28,6 +28,16 @@ const WARMUPS: usize = 2;
 const SAMPLES: usize = 7;
 const ITERATIONS: usize = 10_000;
 
+/// Drives a benchmark future by polling and yielding while it is pending.
+///
+/// # Type Parameters
+/// - `F`: Future to poll.
+///
+/// # Parameters
+/// - `future`: Operation driven to completion.
+///
+/// # Returns
+/// The future's output.
 fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
     let mut context = Context::from_waker(Waker::noop());
@@ -39,13 +49,20 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Measures one run of local asynchronous publication operations.
+///
+/// # Returns
+/// Average elapsed nanoseconds per publication in this sample.
 fn sample() -> u128 {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
     let bus = AsyncEventBus::from_spi(ProviderId::new("bench").unwrap(), spi).unwrap();
     let topic = Topic::new("bench.async.publish").unwrap();
+    let requests = (0..ITERATIONS)
+        .map(|value| PublishRequest::new(topic.clone(), value).unwrap())
+        .collect::<Vec<_>>();
     let start = Instant::now();
-    for value in 0..ITERATIONS {
-        block_on(bus.publish(black_box(PublishRequest::new(topic.clone(), value).unwrap()))).unwrap();
+    for request in requests {
+        block_on(bus.publish(black_box(request))).unwrap();
     }
     let elapsed = start.elapsed().as_nanos();
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();

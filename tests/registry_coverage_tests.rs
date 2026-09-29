@@ -195,7 +195,7 @@ fn create_error(required: RequiredCapabilities) -> ProviderError {
 }
 
 #[test]
-fn async_registry_reports_each_unsatisfied_capability_through_creation_error() {
+fn test_async_registry_reports_each_unsatisfied_capability_through_creation_error() {
     let error = create_error(
         RequiredCapabilities::new()
             .with_payload(PayloadModes::Encoded)
@@ -229,7 +229,7 @@ fn async_registry_reports_each_unsatisfied_capability_through_creation_error() {
 }
 
 #[test]
-fn async_registry_resolution_failure_is_distinct_from_creation_failure() {
+fn test_async_registry_resolution_failure_is_distinct_from_creation_failure() {
     let error = block_on(AsyncEventBusRegistry::new().create_selected(
         &ProviderSelection::named("missing").expect("selection is valid"),
         &EventBusConfig::default(),
@@ -239,7 +239,7 @@ fn async_registry_resolution_failure_is_distinct_from_creation_failure() {
 }
 
 #[test]
-fn empty_registries_resolve_their_default_selection_during_create() {
+fn test_empty_registries_resolve_their_default_selection_during_create() {
     let sync_error = EventBusRegistry::new()
         .create(&EventBusConfig::default())
         .map_or_else(|error| error, |_| panic!("empty sync registry has no default provider"));
@@ -253,7 +253,7 @@ fn empty_registries_resolve_their_default_selection_during_create() {
 }
 
 #[test]
-fn async_identified_spi_delegates_facade_operations_and_keeps_provider_identity() {
+fn test_async_identified_spi_delegates_facade_operations_and_keeps_provider_identity() {
     let registry = AsyncEventBusRegistry::new();
     let calls = Arc::new(Counters::default());
     registry
@@ -284,7 +284,7 @@ fn async_identified_spi_delegates_facade_operations_and_keeps_provider_identity(
 }
 
 #[test]
-fn async_registry_classifies_capability_panic_as_creation_failure() {
+fn test_async_registry_classifies_capability_panic_as_creation_failure() {
     let registry = AsyncEventBusRegistry::new();
     let calls = Arc::new(Counters::default());
     calls.panic_capabilities.store(true, Ordering::Release);
@@ -303,7 +303,7 @@ fn async_registry_classifies_capability_panic_as_creation_failure() {
 }
 
 #[test]
-fn async_registry_uses_default_and_configured_selections_and_resolves_aliases() {
+fn test_async_registry_uses_default_and_configured_selections_and_resolves_aliases() {
     let registry = AsyncEventBusRegistry::new();
     let calls = Arc::new(Counters::default());
     registry
@@ -349,7 +349,7 @@ fn async_registry_uses_default_and_configured_selections_and_resolves_aliases() 
 }
 
 #[test]
-fn async_registry_falls_back_for_unsupported_candidates_and_reports_exhaustion() {
+fn test_async_registry_falls_back_for_unsupported_candidates_and_reports_exhaustion() {
     let registry = AsyncEventBusRegistry::new();
     let ephemeral_calls = Arc::new(Counters::default());
     let durable_calls = Arc::new(Counters::default());
@@ -423,7 +423,7 @@ fn async_registry_falls_back_for_unsupported_candidates_and_reports_exhaustion()
 }
 
 #[test]
-fn sync_local_registry_supports_default_and_configured_selection() {
+fn test_sync_local_registry_supports_default_and_configured_selection() {
     let registry = EventBusRegistry::with_local().expect("built-in local provider registers");
     assert_eq!("local", registry.provider_ids()[0].as_str());
     assert_eq!(2, registry.descriptors()[0].aliases().len());
@@ -450,7 +450,7 @@ fn sync_local_registry_supports_default_and_configured_selection() {
 }
 
 #[test]
-fn provider_error_preserves_and_displays_its_cause() {
+fn test_provider_error_preserves_and_displays_its_cause() {
     let error = EventBusProviderError::provider(std::io::Error::other("backend init failed"));
     assert!(error.to_string().contains("backend init failed"));
     assert_eq!(
