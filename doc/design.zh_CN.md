@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.17）
+# Qubit Event Bus 设计文档（0.18）
 
-> 本文档以 `qubit-event-bus` 0.17.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.18.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -110,8 +110,9 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 本 crate **不重导出**这些类型，调用方按需依赖对应 crate，避免版本耦合。
 
 **(P10) 生命周期显式且幂等。**
-`shutdown(ShutdownMode)` 是唯一停机入口，重复调用安全；停机后 API
-返回 `Closed`；`Immediate` 可以加强正在进行的 `Graceful`；drop 订阅句柄
+同步 `EventBus::request_shutdown(ShutdownMode)` 发起或加入关闭，返回
+`EventBusShutdown` ticket；`shutdown` 仍是阻塞便捷方法。重复请求和观察安全；
+停机后 API 返回 `Closed`；`Immediate` 可以加强正在进行的 `Graceful`；drop 订阅句柄
 不等于取消订阅（同步侧），或者等于立即处置（异步侧），但两者都有明确定义。
 
 ### 1.3 非目标
@@ -184,7 +185,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 | `spi` | provider 契约 | `EventBusSpi`、`EventSubscriptionSpi`、`AsyncEventBusSpi`、`AsyncEventSubscriptionSpi`、`SpiFuture`、`OutboundMessage`、`InboundMessage`、`TransportPayload`、`ReceiveOutcome`、`SettlementToken`、`DeliveryDisposition`、`SpiSubscriptionRequest`、`EventBusCapabilities` 及各能力枚举、`ShutdownOutcome`、`DeliveryGap`、`conformance` |
 | `registry` | provider 目录与装配 | `EventBusSpec`、`EventBusProvider`/`AsyncEventBusProvider`（`qubit-spi` 定义 trait 的别名）、`EventBusRegistry`、`AsyncEventBusRegistry`、`EventBusConfig`、`RequiredCapabilities`、`EventBusProviderError`、内部 `EventBusProviderAdapter`/`IdentifiedEventBusSpi`、`sync_provider_inventory`/`async_provider_inventory`（discovery） |
 | `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`AdmissionTracker`、`OrderingLanes`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
-| `facade` | 用户可见的 bus 实现 | `EventBus`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`SyncDeliverySchedulerConfig`、`DeliveryAdmissionConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
+| `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`SyncDeliverySchedulerConfig`、`DeliveryAdmissionConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
 | `local` | 内置进程内 provider | `LocalEventBusConfig`、`LocalEventBusProvider`、`AsyncLocalEventBusProvider`、`LocalEventBusSpi`、`AsyncLocalEventBusSpi`、`LocalQueue`、`OutstandingBudget` |
 | `notification` | 在 `EventBus` 前面加一层永不阻塞的有界发布队列 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
 | `error` | 分层错误类型 | `EventBusError`、`PublishError`、`SubscribeError`、`DeliveryError`、`LifecycleError`、`ShutdownError`、`ProviderError`、`SpiError`、`CapabilityError`、`CodecError`、`ConfigurationError` |
@@ -195,7 +196,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.17.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.18.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -471,12 +472,14 @@ pub struct SettlementToken {
 
 ### 4.6 停机契约
 
-`shutdown(ShutdownMode)`：
+`shutdown(ShutdownMode)`，以及同步 facade 的 `request_shutdown(ShutdownMode)`：
 
-- `ShutdownMode::Graceful { timeout }`：为 facade 停机调用方设置 deadline。调用方超时
-  返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指 provider 在自身宽限期
-  结束后完成清理；
-- `ShutdownMode::Immediate`：立刻关闭所有订阅，丢弃或按 provider 语义保留未处理消息；
+- `ShutdownMode::Graceful { timeout }`：将期限传给 provider。同步 `shutdown` 便捷方法
+  也用它限制自身的观察；独立请求返回的 ticket 可以另用 `wait` 期限或 `wait_async`
+  观察。观察超时返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指
+  provider 在自身宽限期结束后完成清理；
+- `ShutdownMode::Immediate`：请求取消，排队的 facade 工作以 `Retry` 归还，
+  等待已运行工作结束后再清理 provider；底层未处理消息按 provider 语义丢弃或保留；
 - 幂等；停机后 `publish`/`subscribe` 返回 `kind` 为 closed 的 `SpiError::Operation`。
 
 facade 同一时刻最多只有一个 provider `shutdown` 调用在途；失败或取消后后续调用可重试。
@@ -925,29 +928,46 @@ bus 生命周期存活直到 `cancel()` 或 `shutdown()`。`cancel()` 先让调�
 ### 8.7 停机：`ShutdownCoordinator`
 
 ```
-shutdown(mode: ShutdownMode)
-  ├─ lifecycle: Running → Closing（已 Closing/Closed 则进入"加入现有停机"路径）
-  ├─ OperationGate::close_admission()          新 publish/subscribe 立即 Closed
-  ├─ coordinator.begin(mode) → generation       Immediate 可加强正在进行的 Graceful
-  ├─ scheduler.stop_admission(immediate)；所有订阅 request_cancel()
-  ├─ spawn `event-bus-shutdown` 线程执行 perform_shutdown：
-  │     等待 OperationGate 归零 → 等待/清空调度器任务 → join 全部协调线程
-  │     → scheduler.join() → spi.shutdown(mode)（同一时刻最多一次）→ lifecycle Closed
-  └─ 调用方：等待自己的 deadline，返回 facade 的 ShutdownReport；
-              bus 上下文 → 立即返回 ShutdownError::Lifecycle(WouldDeadlock)（停机仍在后台进行）
+request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
+  ├─ Closed → 读取缓存报告的就绪 ticket
+  ├─ lifecycle: Running → Closing；OperationGate::close_admission()
+  ├─ coordinator.begin(mode) → 确切代次；Immediate 加强现有 Graceful
+  ├─ scheduler.request_stop(immediate)；借用订阅 control 发出 request_cancel()
+  ├─ 当前代需要 leader 时启动一个 `event-bus-shutdown` 线程
+  │     启动失败 → Err(ShutdownError::CoordinatorStart)；已加入的 ticket 保留此错误
+  │     等待 OperationGate → 排空/取消队列任务 → 等待并 join worker
+  │     → scheduler.join() → spi.shutdown(mode) → 成功时缓存报告并标记 Closed
+  └─ 返回 Ok(绑定当前代的 ticket)，不等待 handler、join 或 SPI 完成
+
+EventBusShutdown::wait(Some(timeout)) → 同步有界观察
+EventBusShutdown::wait_async()         → 运行时中立的 Waker 观察
+shutdown(mode)                        → request_shutdown(mode) + ticket.wait(mode timeout)
 ```
 
-- generation 机制让并发的多次 `shutdown()` 调用都能等到**同一次**停机的结果；
-  `Immediate` 到来时会把正在 `Graceful` 的这一代升级，正在排队的任务被 `Retry` 归还。
-- 调用方 deadline 到期返回 `ShutdownError::TimedOut`，不代表 bus 已关闭；同步
-  coordinator 继续后台收尾。SPI 的 `ShutdownOutcome::TimedOut` 表示 provider 在自身
-  Graceful 宽限期后完成清理。
-- 报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃
-  未能精确计数工作的标志。
-- 后台停机线程本身也在 `catch_unwind` 内运行；若它 panic，会以 `Diagnostic::InternalFailure`
-  报告并把状态推进到 `Closed`，避免调用方永久等待。
-- `EventBus` 是 `Clone` 的 `Arc` 句柄，**没有 `Drop` 停机逻辑**：协调线程持有
-  `Arc<EventBusInner>`，仅丢弃句柄不会停止它们。调用方必须显式 `shutdown`。
+- 请求只关闭接纳入口、加强停止信号、把待取消工作交给后台、启动协调器，不在
+  请求路径执行排队消息的 settlement/diagnostic 回调，不等 handler/provider，也
+  不 join 线程。因此可以在 bus 回调中发起请求。
+- 每张 ticket 保留确切代次的结果，直到 ticket Drop。多张 ticket 可加入同一代；
+  Immediate 加强当前关闭，使排队任务以 `Retry` 归还，已运行 handler 仍须结束。
+  协调线程启动失败时先把错误交给该代观察者，再允许后续请求重试；旧 ticket
+  不会误读新代的结果。
+- `wait_async` 在同一个状态锁内检查完成并登记 waker；waker 的 clone/drop/wake
+  都在锁外执行。取消 wait 只移除自身登记，ticket 仍保留结果，可以再次观察，
+  不会重发关闭请求或创建额外线程。
+- `wait(Some(timeout))` 只限制观察者。`shutdown(Graceful { timeout })` 用同一
+  timeout 限制同步观察，并把 mode 传给 provider；`shutdown(Immediate)` 没有
+  观察期限，仍会等待完成。观察到期返回 `ShutdownError::TimedOut`，后台清理
+  继续；SPI 的 `ShutdownOutcome::TimedOut` 表示 provider 已在宽限期后完成
+  清理。两种模式都不能杀死阻塞的同步代码。
+- 报告保留 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能
+  放弃无法计数工作的标志。当前协调器串行调用 provider，缓存报告的锁不覆盖
+  SPI shutdown 调用，因此后续请求仍可加强当前关闭。
+- 后台线程将 unwind panic 转为该代的失败，并发出 `Diagnostic::InternalFailure`；
+  观察者收到的是失败，不是关闭成功报告。
+- `EventBus` 是可克隆的 `Arc` 句柄，**Drop 不发起关闭**。后台 worker 可以持有
+  `Arc<EventBusInner>`；调用方必须显式请求关闭并观察完成。ticket Drop 只释放
+  观察登记，不取消后台关闭。
+
 
 ---
 
@@ -1260,7 +1280,7 @@ completion guard 在处理循环及用户资源清理完成后，发布唯一的
 | `SubscribeError` | `subscribe` | `Configuration`、`Capability`、`Spi`、`Closed`（codec 缺失归入 `Capability`） |
 | `DeliveryError` | handler 返回 / 管线 | `Handler { source }`、`Codec`、`Spi`、`Retry(Box<RetryError<DeliveryAttemptError>>)` |
 | `LifecycleError` | `wait_for_*`、`cancel`、停机内部 | `Timer(TimeError)`、`WouldDeadlock { operation }`、`Closed`、`IdleWaitUnsupported`、`Spi`、`SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
-| `ShutdownError` | `shutdown` | `TimedOut { .. }`、`CoordinatorStart(io::Error)`、`Lifecycle(LifecycleError)`（含 `WouldDeadlock`）、`Spi`、`SubscriptionClose` |
+| `ShutdownError` | `request_shutdown`、ticket wait、`shutdown` | `TimedOut { .. }`、`CoordinatorStart(io::Error)`、`Lifecycle(LifecycleError)`（含 `WouldDeadlock`）、`Spi`、`SubscriptionClose` |
 | `ProviderError` | registry | `Resolution`（找不到 provider / 选择非法）、`Creation`（provider 构造失败或 `RequiredCapabilities` 缺失） |
 | `EventBusProviderError` | provider 作者 | provider `create` 返回的错误包装，供 `qubit-spi` 聚合 |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`、`Operation { provider_id, operation, resource, kind, retryable, source }`、`InvalidSettlementToken { .. }` |
@@ -1442,7 +1462,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ---
 
-*本文档随 `qubit-event-bus` 0.17.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.18.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
 
 ## Provider specification compile probe
 
@@ -1495,4 +1515,6 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.17；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.18；缺失输入会明确失败。本轮只协调 EventBus、IoC 和执行服务消费者；rs-task 与
+rs-event-bus-redis 仍须另行迁移 0.18 依赖，完整五仓门禁才能通过。metadata
+检查补充各项目 CI，不能单独证明投递行为。

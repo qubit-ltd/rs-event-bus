@@ -1,6 +1,6 @@
 [package]
 name = "qubit-event-bus"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Haixing Hu <starfish.hu@gmail.com>"]
@@ -17,6 +17,7 @@ include = [
     "/LICENSE",
     "/README.md",
     "/README.zh_CN.md",
+    "/CHANGELOG.md",
     "/doc/**/*.md",
     "/examples/**",
     "/src/**",
@@ -69,3 +70,5 @@ harness = false
 [[bench]]
 name = "ordering_keys"
 harness = false
+
+[workspace]

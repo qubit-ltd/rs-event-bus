@@ -2,6 +2,63 @@
 
 [简体中文](migration.zh_CN.md) · [User guide](user_guide.md) · [Design](design.md)
 
+## Upgrade from 0.17 to 0.18
+
+Use `qubit-event-bus = "0.18"` and `qubit-ioc = "0.3"` for the current managed
+consumer. These coordinated versions are prepared locally; an unpublished
+version must resolve from an explicit path/patch checkout. Final external
+consumer and EventBus commit pins are filled only after the actual versioned
+commits exist. The historical downstream lane remains on its original pinned
+EventBus 0.15 source and does not cover the new managed shutdown or final flush.
+This change coordinates EventBus, IoC, and the execution-services consumer only.
+The five-repository metadata gate also includes rs-task and rs-event-bus-redis;
+their remaining 0.17 dependencies require a separate coordinated upgrade before
+that gate can pass at 0.18. Historical 0.17 examples in those projects are not
+current-0.18 validation.
+
+### Split the request from its completion
+
+| Previous integration | 0.18 integration |
+| --- | --- |
+| Call `EventBus::shutdown` in a synchronous stop/rollback callback | Call `request_shutdown(mode)` and retain its `EventBusShutdown` ticket |
+| Block the callback until the provider and handlers stop | Observe `ticket.wait_async().await` in the managed wait future |
+| Restart shutdown after cancelling an observer | Keep the ticket and await it again; cancellation does not resend a request |
+
+`request_shutdown(ShutdownMode::Graceful { timeout })` closes new admission and
+starts or joins background shutdown without waiting for user handlers or provider
+completion. The mode's timeout goes to the provider. `ticket.wait(Some(timeout))`
+limits only that synchronous observer; `wait_async()` has no built-in deadline.
+An application or IoC `WaitPolicy` supplies its asynchronous observation budget.
+The existing synchronous `shutdown` is request plus blocking wait: Graceful uses
+its timeout for the observer, while Immediate waits without a caller deadline.
+Use `request_shutdown(Immediate)` plus a bounded observer when termination must
+have a budget. Neither mode can forcibly stop blocked synchronous code.
+
+A ticket retains one exact generation. Multiple requests can join that generation;
+Immediate strengthens a running Graceful attempt without replacing an existing
+ticket. Cancelled `wait_async` futures only remove their waker registration. A
+retained ticket can observe repeatedly, and dropping it releases observation
+without cancelling background shutdown. A coordinator start failure remains
+observable to joined tickets even after a later request starts another generation.
+A request on an already closed bus returns a ready ticket with the cached report.
+Dropping an `EventBus` handle alone does not initiate shutdown.
+
+For IoC, keep one shared ticket slot: the graceful callback saves the request's
+ticket; abort requests Immediate and preserves any ticket already stored or being
+awaited; the owned wait future takes the ticket and awaits it without holding the
+slot lock. Preserve request failures as `CleanupError`. Do not use a blocking
+`shutdown` call, or wrap it in `spawn_blocking`, to implement the abort callback.
+Cancelling `ShutdownHandle::wait` leaves its owned resource wait resumable.
+
+Normal applications use `Application::begin_shutdown(ShutdownMode::Graceful)`
+with a bounded `WaitPolicy`, allowing consumers to finish before their dependencies
+close. Failure cleanup requests Immediate and is observed explicitly through
+`BuildFailure::take_cleanup()` and `ShutdownHandle::wait()`. A report's `incomplete`
+entries mean termination was not confirmed; they do not mean those resources were
+killed. After a termination budget expires, shutdown continues to dependencies,
+so availability to an incomplete consumer is no longer guaranteed. See the
+[request/observation example](user_guide.md#request-shutdown-and-observe-it-asynchronously).
+
 ## Upgrade from 0.16 to 0.17
 
 Upgrade the application and every provider together: `qubit-event-bus` 0.17,

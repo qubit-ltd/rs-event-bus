@@ -2,6 +2,52 @@
 
 [English](migration.md) · [用户手册](user_guide.zh_CN.md) · [设计](design.zh_CN.md)
 
+## 从 0.17 升级到 0.18
+
+当前托管消费者使用 `qubit-event-bus = "0.18"` 和 `qubit-ioc = "0.3"`。
+这些版本通过本地联合检出准备；尚未发布的依赖必须明确使用 path/patch，不能
+依赖注册表里的旧版本。消费者及 EventBus 的最终外部 commit pin 要等真实版本
+提交产生后再填写。历史下游 lane 继续使用原来固定的 EventBus 0.15 源码，不覆盖
+本次新增的托管关闭和最终 flush 能力。本轮只协调 EventBus、IoC 和执行服务
+消费者。五仓 metadata 门禁还覆盖 rs-task 与 rs-event-bus-redis；它们仍有 0.17
+依赖，须另行协调升级，才能在 0.18 通过该门禁。那些项目中的历史 0.17 示例
+不能作为当前 0.18 的验证证据。
+
+### 分开关闭请求与完成等待
+
+| 原集成方式 | 0.18 集成方式 |
+| --- | --- |
+| 在同步停止或回滚回调中调用 `EventBus::shutdown` | 调用 `request_shutdown(mode)`，保留 `EventBusShutdown` ticket |
+| 回调阻塞到 provider 和 handler 都结束 | 在托管 wait future 中调用 `ticket.wait_async().await` |
+| 取消观察后重新请求关闭 | 保留 ticket，再次等待；取消不会重发请求 |
+
+`request_shutdown(ShutdownMode::Graceful { timeout })` 会关闭新工作的接纳入口，
+启动或加入后台关闭，不等待 handler 或 provider 完成。mode 中的 timeout 传给
+provider；`ticket.wait(Some(timeout))` 只限制这一次同步观察。
+`wait_async()` 没有内置期限，异步观察预算由应用或 IoC `WaitPolicy` 提供。
+同步 `shutdown` 仍是请求加阻塞等待：Graceful 使用自己的 timeout 限制观察，
+Immediate 则没有调用方期限。需要有限终止预算时，应请求 Immediate 后再进行
+有界观察。两种模式都无法强行停止阻塞的同步代码。
+
+ticket 保留确切的关闭代次。多次请求可加入同一代，Immediate 可以加强正在
+进行的 Graceful，而已有 ticket 继续观察原代。取消 `wait_async` future 只移除
+自己的 waker 登记；保留 ticket 后可以重复观察，丢弃 ticket 也不会取消后台关闭。
+协调线程启动失败时，已加入的 ticket 仍能看到该代错误，不会误读后来重试的结果。
+已经关闭的 bus 返回携带缓存报告的就绪 ticket。仅丢弃 `EventBus` 句柄不会发起关闭。
+
+IoC 适配器保留一个共享 ticket 槽：graceful 回调保存请求的 ticket；abort 回调
+请求 Immediate，但不替换已保存或正在观察的 ticket；一次性 wait future 取出
+原 ticket，释放槽锁后再等待。请求失败应保留为 `CleanupError`。abort 回调不能
+调用阻塞 `shutdown`，也不能用 `spawn_blocking` 包装它来冒充非阻塞请求。
+取消 `ShutdownHandle::wait` 后，其拥有的资源 wait 仍可继续观察。
+
+正常应用通过 `Application::begin_shutdown(ShutdownMode::Graceful)` 和有界
+`WaitPolicy` 关闭，消费者结束后再关闭依赖。失败清理请求 Immediate，应用通过
+`BuildFailure::take_cleanup()` 取出所有权，再显式等待 `ShutdownHandle::wait()`。
+报告中的 `incomplete` 表示没有确认资源终止，不表示资源已被杀死。终止预算耗尽
+后仍会继续关闭依赖，因此不能继续保证未结束消费者的依赖可用。具体代码见
+[请求与观察示例](user_guide.zh_CN.md#请求关闭并异步观察)。
+
 ## 从 0.16 升级到 0.17
 
 应用与 provider 须协调升级：`qubit-event-bus` 0.17、

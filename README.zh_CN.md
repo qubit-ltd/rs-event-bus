@@ -15,10 +15,21 @@
 
 ## 安装
 
+0.18.0 已在本地准备，尚未发布。若应用目录与 `rs-event-bus` 检出处于同一
+父目录，在应用的 `Cargo.toml` 中同时指定直接依赖与 patch，让传递依赖也
+解析到同一份源码：
+
 ```toml
 [dependencies]
-qubit-event-bus = "0.17"
+qubit-event-bus = { version = "0.18", path = "../rs-event-bus" }
+
+[patch.crates-io]
+qubit-event-bus = { version = "0.18", path = "../rs-event-bus" }
 ```
+
+请按实际目录调整相对路径。0.18 发布后，才可改用注册表形式
+`qubit-event-bus = "0.18"` 并移除本地 path/patch。另见
+[0.18 迁移指南](doc/migration.zh_CN.md#从-017-升级到-018)。
 
 ## 快速开始
 
@@ -228,6 +239,22 @@ let orders = OrderService::new(bus.clone());
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。升级 provider 或 codec 前请阅读[迁移指南](doc/migration.zh_CN.md)。
 
+## 请求关闭并观察完成
+
+0.18 新增 `EventBus::request_shutdown(mode)`：它关闭接纳入口，返回
+`EventBusShutdown` ticket，不等待 handler、worker 或 provider。应用持有 ticket，
+通过 `wait(Some(timeout))` 或 `wait_async().await` 获取完成结果。取消异步等待只
+移除该观察者的 waker；之后可再次等待同一 ticket，无须重新请求关闭。ticket
+始终绑定原来的关闭代次，丢弃 ticket 只释放观察登记，后台关闭继续进行。
+丢弃 `EventBus` 句柄不会自动发起关闭。
+
+同步 `shutdown` 仍会等待完成，`Immediate` 也一样。IoC 的停止和回滚回调应
+使用 request API。`Managed` 和 `ShutdownHandle` 的 Drop 路径只请求 abort，
+不会创建或轮询 wait；显式调用 `ShutdownHandle::wait` 才会驱动异步资源清理
+并取得报告。超时只限制观察，不能杀死阻塞的 handler 或 provider 代码。具体用法见
+[关闭指南](doc/user_guide.zh_CN.md#请求关闭并异步观察)和
+[0.18 迁移说明](doc/migration.zh_CN.md#从-017-升级到-018)。
+
 ## 延伸阅读
 
 - [用户手册](doc/user_guide.zh_CN.md)
@@ -262,7 +289,7 @@ Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
 ## 贡献
 
 欢迎贡献。请遵循 Rust API 指南，及时更新公共 API 文档与测试，并在提交
-Pull Request 前运行 `./align-ci.sh` 格式化代码，运行 `./ci-check.sh` 对齐 CI 要求。
+Pull Request 前运行 `./align-ci.sh`格式化代码，运行`./ci-check.sh`对齐CI要求。
 
 ## 作者
 

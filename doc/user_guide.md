@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.17.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.18.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -39,6 +39,7 @@ This guide covers `qubit-event-bus` 0.17.0 on Rust 1.94 or later. It is for Rust
   - [Drain the queue during shutdown](#drain-the-queue-during-shutdown)
 - [Lifecycle, waiting, and shutdown](#lifecycle-waiting-and-shutdown)
   - [Shut down a sync bus](#shut-down-a-sync-bus)
+  - [Request shutdown and observe it asynchronously](#request-shutdown-and-observe-it-asynchronously)
   - [Wait for a topic to become idle](#wait-for-a-topic-to-become-idle)
   - [Shut down an async bus](#shut-down-an-async-bus)
 - [Errors, diagnostics, and troubleshooting](#errors-diagnostics-and-troubleshooting)
@@ -100,12 +101,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 
-Add the dependency:
+Version 0.18.0 is not yet published. With the application directory beside
+`rs-event-bus`, use a local checkout for both direct and transitive resolution:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.17"
+qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus" }
+
+[patch.crates-io]
+qubit-event-bus = { path = "../rs-event-bus" }
 ```
+
+Adjust the path for your layout. Only after publication can you remove the
+path/patch and use `qubit-event-bus = "0.18"` from the registry; see the
+[0.18 migration](migration.md#upgrade-from-017-to-018).
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
 
@@ -763,10 +772,11 @@ This crate currently ships only the `local` implementation, an in-process bus. I
 
 Suppose a crate connects to a message server. Add that crate as a dependency, then tell the bus to use it. One way is explicit registration: build `EventBusRegistry::new()`, call `register` with that implementation, then `create(&config)`. Sync implementations go in `EventBusRegistry`. Async implementations go in `AsyncEventBusRegistry`, and async creation uses `.await`. `provider_ids()` lists registered ids. `EventBusConfig::with_selection` selects one of them.
 
-Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
+Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked. Before publication,
+keep the same local path and `[patch.crates-io]` entry shown above:
 
 ```toml
-qubit-event-bus = { version = "0.17", features = ["discovery"] }
+qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -1193,7 +1203,8 @@ match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) 
         // Calling shutdown again waits for the final report. Immediate returns queued messages
         // instead of draining them, but still waits for running handlers to return.
         eprintln!("graceful shutdown did not finish within {timeout:?}");
-        let report = bus.shutdown(ShutdownMode::Immediate)?;
+        let ticket = bus.request_shutdown(ShutdownMode::Immediate)?;
+        let report = ticket.wait(Some(Duration::from_secs(30)))?;
         eprintln!("final report: {report:?}");
     }
     Err(error) => return Err(error.into()),
@@ -1203,6 +1214,69 @@ match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) 
 On a normal shutdown of the order example, `report.outcome` is `ShutdownOutcome::Complete` and `known_abandoned_deliveries` is 0. `provider_may_have_abandoned_deliveries` is always `true` on the built-in local provider: local is not durable and cannot prove that no in-process message was lost at close. The flag is a reminder, not an error. A `known_abandoned_deliveries` greater than 0 means admitted messages were given up before a handler ran. The audit rows and customer-view entries for those orders have to come from the application's compensation path.
 
 `ShutdownMode::Graceful { timeout }` stops accepting new work and tries to finish work already received. A caller deadline returns `ShutdownError::TimedOut`; it does not mean the bus is closed. A sync bus may still be cleaning up in the background, and a later `shutdown` call observes the final `ShutdownReport`. `Immediate` cannot forcibly stop business code that is already running. Do not call `shutdown`, `wait_for_idle`, or `wait_for_received_deliveries` from a handler on this same bus when the call would wait for the bus to finish its own work. Those calls return `WouldDeadlock`. Start shutdown from the outermost shutdown path of the program.
+
+### Request shutdown and observe it asynchronously
+
+When an async application owns the synchronous `EventBus`, separate a short
+shutdown request from completion observation. This API belongs to `EventBus`,
+not `AsyncEventBus`; the latter still drives shutdown through its own future.
+
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::{EventBus, EventBusShutdown, ShutdownError, ShutdownReport};
+use qubit_event_bus::spi::ShutdownMode;
+
+fn request_graceful(bus: &EventBus) -> Result<EventBusShutdown, ShutdownError> {
+    bus.request_shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    })
+}
+
+async fn observe(ticket: &EventBusShutdown) -> Result<ShutdownReport, ShutdownError> {
+    ticket.wait_async().await
+}
+```
+
+Keep the ticket outside any cancellable observation future. `request_graceful`
+closes admission and starts or joins a background coordinator without waiting for
+handlers, workers, or the provider. `observe` only borrows the ticket: cancelling
+it removes its waker registration, and a later `observe(&ticket)` resumes
+observation without another request. `wait_async` neither blocks a thread nor
+creates a helper thread. Drive it on the application's executor with an explicit
+outer observation deadline; the 30-second mode timeout is passed to the provider
+and does not bound `wait_async`.
+
+A synchronous observer can call `ticket.wait(Some(Duration::from_secs(30)))`.
+An observer timeout does not consume the ticket or stop background shutdown.
+To escalate after a grace budget, request `bus.request_shutdown(ShutdownMode::Immediate)`
+and keep observing the original ticket; drop the extra ticket if it is not needed.
+Immediate only strengthens the active attempt. Each retained ticket binds one
+exact generation and retains its result even if a later start retry creates a
+new generation. Requests on a closed bus return the cached result immediately.
+Dropping a ticket releases its observation registration; dropping a bus handle
+does not automatically initiate shutdown.
+
+`request_shutdown` is safe from a bus callback because it does not wait for that
+callback. Synchronous `shutdown` and `ticket.wait` return `WouldDeadlock` there.
+An async callback must also avoid awaiting completion of work that includes
+itself. Outside callbacks, synchronous `shutdown(Immediate)` still waits for
+running handlers, coordinator joins, and provider shutdown without a caller
+deadline. Use request plus an explicitly bounded observer for cancellation,
+rollback, or Drop integrations; neither a deadline nor Immediate can kill blocked
+synchronous code.
+
+With IoC 0.3, the adapter saves a ticket in its graceful callback and requests
+Immediate in its abort callback. Its owned resource wait takes the saved ticket
+and awaits `wait_async` after releasing the slot lock. `WaitPolicy::bounded`
+provides grace and termination budgets. Cancelling the outer
+`ShutdownHandle::wait` preserves that owned resource wait; restoring observation
+does not replay requests. A termination timeout reports `incomplete` and permits
+shutdown to continue to dependencies. It confirms no forced resource termination
+and no continued availability of those dependencies to an unfinished consumer.
+For failure cleanup, inspect `BuildFailure::cause`, take its cleanup handle, and
+explicitly observe the Immediate cleanup report. See the
+[0.18 migration](migration.md#upgrade-from-017-to-018).
 
 ### Wait for a topic to become idle
 
@@ -1294,6 +1368,9 @@ For a coordinated migration, run `./project-ci-check.sh --ecosystem-root <repos-
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.17. Missing
-inputs fail explicitly; this metadata check supplements each project's CI and
-does not prove delivery behavior by itself.
+metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
+inputs fail explicitly. This three-repository IoC/EventBus/consumer update does
+not upgrade the rs-task or rs-event-bus-redis 0.17 dependencies; the full
+five-repository gate needs their separate 0.18 migration before it can pass.
+The metadata check supplements each project's CI and does not prove delivery
+behavior by itself.

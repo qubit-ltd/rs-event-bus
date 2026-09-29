@@ -10,19 +10,17 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use crate::EventBus;
+use crate::EventBusShutdown;
 use crate::LifecycleError;
 use crate::ShutdownError;
 use crate::ShutdownReport;
 use crate::WaitOutcome;
-use crate::facade::event_bus::internal::clone_spi_error;
 use crate::facade::internal::LifecycleState;
 use crate::facade::internal::is_current_bus_context;
 use crate::model::Topic;
 use crate::spi::ShutdownMode;
-use crate::spi::ShutdownOutcome;
 use crate::spi::TopicAddress;
 
 impl EventBus {
@@ -142,65 +140,65 @@ impl EventBus {
             ShutdownMode::Graceful { timeout } => Some(timeout),
             ShutdownMode::Immediate => None,
         };
-        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
-        {
+        self.request_shutdown(mode)?.wait(timeout)
+    }
+
+    /// Requests shutdown without waiting for handlers, workers or the provider.
+    /// Closes admission and strengthens the current attempt when Immediate is
+    /// requested. Graceful's timeout is passed to the provider; ticket timeouts
+    /// apply only to the observer. Safe within this bus's callbacks and
+    /// workers. Returns a ticket bound to the exact attempt or a ready
+    /// cached ticket if already closed. A thread start failure is published
+    /// to joined tickets before returning `CoordinatorStart`; a subsequent
+    /// request may retry.
+    pub fn request_shutdown(&self, mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError> {
+        self.request_shutdown_with_spawner(mode, |inner, generation| {
+            thread::Builder::new()
+                .name("event-bus-shutdown".to_owned())
+                .spawn(move || inner.run_shutdown(generation))
+                .map(|_| ())
+        })
+    }
+
+    /// Requests a generation using the supplied coordinator thread launcher.
+    /// The launcher runs after admission closes and lifecycle locks are
+    /// released; start errors are published to existing generation
+    /// observers before return.
+    fn request_shutdown_with_spawner<F>(&self, mode: ShutdownMode, spawn: F) -> Result<EventBusShutdown, ShutdownError>
+    where
+        F: FnOnce(Arc<crate::facade::event_bus::EventBusInner>, u64) -> std::io::Result<()>,
+    {
+        let (start, generation) = {
             let mut state = self.lock_lifecycle();
             if *state == LifecycleState::Closed {
-                if let Some(errors) = self.inner.close_errors_snapshot() {
-                    return Err(ShutdownError::SubscriptionClose(errors));
-                }
-                return Ok(self
-                    .inner
-                    .shutdown_gate
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .report
-                    .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
-            }
-            *state = LifecycleState::Closing;
-        }
-        self.inner.operations.close_admission();
-
-        loop {
-            let (start, generation) = self.inner.shutdown_coordinator.begin(mode);
-            self.inner
-                .scheduler
-                .stop_admission(matches!(mode, ShutdownMode::Immediate));
-            for control in &self.inner.subscription_snapshot() {
-                control.request_cancel();
-            }
-            if start {
-                let inner = self.inner.clone();
-                let spawn = thread::Builder::new()
-                    .name("event-bus-shutdown".to_owned())
-                    .spawn(move || inner.run_shutdown(generation));
-                if let Err(error) = spawn {
-                    self.inner.shutdown_coordinator.abort_start(generation);
-                    return Err(ShutdownError::CoordinatorStart(error));
-                }
-            }
-            let (timed_out, result) = self.inner.shutdown_coordinator.wait(generation, deadline);
-            if timed_out {
-                return Err(ShutdownError::TimedOut {
-                    timeout: timeout.expect("only graceful shutdown has a deadline"),
+                return Ok(EventBusShutdown {
+                    inner: self.inner.clone(),
+                    generation: None,
                 });
             }
-            let Some(result) = result else {
-                continue;
-            };
-            result.map_err(clone_spi_error)?;
-            if let Some(errors) = self.inner.close_errors_snapshot() {
-                return Err(ShutdownError::SubscriptionClose(errors));
-            }
-            let report = self
-                .inner
-                .shutdown_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .report
-                .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false));
-            return Ok(report);
+            *state = LifecycleState::Closing;
+            self.inner.operations.close_admission();
+            self.inner.shutdown_coordinator.begin(mode)
+        };
+        let ticket = EventBusShutdown {
+            inner: self.inner.clone(),
+            generation: Some(generation),
+        };
+        self.inner.scheduler.request_stop(matches!(
+            self.inner.shutdown_coordinator.mode(generation),
+            ShutdownMode::Immediate
+        ));
+        self.inner
+            .signal_subscriptions(crate::facade::SubscriptionControl::request_cancel);
+        if start && let Err(error) = spawn(self.inner.clone(), generation) {
+            let returned = error.raw_os_error().map_or_else(
+                || std::io::Error::new(error.kind(), error.to_string()),
+                std::io::Error::from_raw_os_error,
+            );
+            self.inner.shutdown_coordinator.abort_start(generation, error);
+            return Err(ShutdownError::CoordinatorStart(returned));
         }
+        Ok(ticket)
     }
 
     /// Locks the lifecycle state while recovering from internal poison.
@@ -212,5 +210,46 @@ impl EventBus {
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::sync::Mutex;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    use std::time::Duration;
+
+    use crate::EventBus;
+    use crate::ShutdownError;
+    use crate::local::LocalEventBusConfig;
+    use crate::spi::ShutdownMode;
+    #[test]
+    fn test_failed_start_ticket_remains_ready_after_successful_retry() {
+        let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
+        let joined = Mutex::new(None);
+        let error = bus
+            .request_shutdown_with_spawner(ShutdownMode::Immediate, |_, _| {
+                *joined.lock().expect("ticket slot") =
+                    Some(bus.request_shutdown(ShutdownMode::Immediate).expect("join ticket"));
+                Err(std::io::Error::other("injected coordinator start failure"))
+            })
+            .err()
+            .expect("start failure");
+        assert!(matches!(error, ShutdownError::CoordinatorStart(_)));
+        let old = joined.into_inner().expect("ticket slot").expect("joined ticket");
+        let retry = bus.request_shutdown(ShutdownMode::Immediate).expect("retry starts");
+        retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
+        assert!(matches!(
+            old.wait(Some(Duration::ZERO)),
+            Err(ShutdownError::CoordinatorStart(_))
+        ));
+        let mut future = Box::pin(old.wait_async());
+        assert!(matches!(
+            future.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Err(ShutdownError::CoordinatorStart(_)))
+        ));
     }
 }

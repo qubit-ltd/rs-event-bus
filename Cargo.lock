@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-event-bus"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "loom",
  "qubit-argument",

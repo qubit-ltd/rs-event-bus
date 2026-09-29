@@ -14,7 +14,7 @@ FIXTURES = (
     "rs-event-bus/tests/fixtures/documentation_consumer",
     "rs-event-bus-redis/tests/fixtures/business_consumer",
     "rs-task/tests/fixtures/doc-examples",
-    "rs-ioc/tests/fixtures/application_consumer",
+    "rs-ioc/tests/fixtures/application_consumer_current",
     "rs-execution-services/tests/fixtures/ioc_application_consumer",
 )
 
@@ -43,8 +43,8 @@ def validate_graph(graph, *, require_bus, expected_core=None):
         identities = ", ".join(package["id"] for package in packages)
         raise ValueError(f"multiple qubit-event-bus packages: {identities}")
     package = packages[0]
-    if package["version"].split(".")[:2] != ["0", "17"]:
-        raise ValueError(f"expected qubit-event-bus 0.17.x, got {package['version']}")
+    if package["version"].split(".")[:2] != ["0", "18"]:
+        raise ValueError(f"expected qubit-event-bus 0.18.x, got {package['version']}")
     if expected_core is not None:
         expected = (expected_core / "Cargo.toml").resolve()
         actual = Path(package["manifest_path"]).resolve()
