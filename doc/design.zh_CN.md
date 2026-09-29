@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.15）
+# Qubit Event Bus 设计文档（0.16）
 
-> 本文档以 `qubit-event-bus` 0.15.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.16.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -194,7 +194,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.15.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.16.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -1356,6 +1356,14 @@ Strict profile 配置 provider 专属 fixture 后才可作为验收门。
 - 错误携带 provider 上下文，且 `source` 可追溯；
 - `Debug` 输出不泄漏敏感的 provider options。
 
+Strict 恢复检查由 provider 声明的订阅模式决定：Durable 模式必须提供 durable
+恢复 fixture，Ephemeral 模式必须提供清理 fixture。provider 不支持的模式会以带类型的
+skip 报告；缺少必需 fixture 则让报告失败。同步方法没有可取消的 future，因此同步
+cancellation 用例标记为 `NotApplicable`。取消异步 receive future 与销毁 receiver
+不同：provider 已取出的消息仍须能由后续 receive 或恢复流程取得。Durable receiver
+close 或 drop 后必须保留已接纳但未结算的消息；Ephemeral provider 可以丢弃这些消息。
+close 和 drop 都不能隐式确认未结算消息。
+
 ### 15.4 文档验证
 
 公共 trait 和主要类型带可运行的 rustdoc 示例。README 与用户手册在介绍 retry
@@ -1397,4 +1405,38 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ---
 
-*本文档随 `qubit-event-bus` 0.15.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.16.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+
+## Provider specification compile probe
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::EventBusSpec;
+use qubit_event_bus::error::SpiError;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_spi::AsyncServiceSpec;
+use qubit_spi::ServiceSpec;
+use qubit_spi::SyncServiceSpec;
+
+pub type ProviderConfig = <EventBusSpec as ServiceSpec>::Config;
+pub type SyncOutput = <EventBusSpec as SyncServiceSpec>::Output;
+pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
+
+pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOutcome, SpiError> {
+    receiver.receive(Duration::ZERO)
+}
+
+pub fn settle_without_borrowing_token<'a>(
+    receiver: &'a mut dyn AsyncEventSubscriptionSpi,
+    token: &SettlementToken,
+) -> SpiFuture<'a, Result<(), SpiError>> {
+    receiver.settle(token, DeliveryDisposition::Accept)
+}
+```
