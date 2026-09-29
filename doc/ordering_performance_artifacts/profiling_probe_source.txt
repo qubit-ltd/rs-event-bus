@@ -1,0 +1,22 @@
+use std::hint::black_box;
+
+#[inline(never)]
+fn expensive_scan(size: u64) -> u64 {
+    let mut value = 0_u64;
+    for index in 0..size {
+        value = black_box(value.wrapping_add(black_box(index)));
+    }
+    value
+}
+
+#[inline(never)]
+fn cheap_call() -> u64 {
+    black_box(7)
+}
+
+fn main() {
+    for _ in 0..500 {
+        black_box(expensive_scan(1_000_000));
+        black_box(cheap_call());
+    }
+}

@@ -1,0 +1,91 @@
+{
+  "date": "2026-09-29",
+  "comparison": {
+    "baseline": {
+      "binary_sha256": "ff92a379ab141ad00c87155fae84bc275258f9a779676c111d48726e6a15848c",
+      "session_binary_path": "/tmp/ordering-t8-target/release/deps/ordering_keys-c90afe063a8e0dc7",
+      "manifest_snapshot_version": "0.16.0",
+      "rustc": "1.94.0 (4a4ef493e 2026-03-02)",
+      "cargo_profile": "bench defaults: opt-level=3, lto=false, codegen-units=16",
+      "rustflags": null,
+      "source_sha256": {
+        "Cargo.toml": "ad1e5252b363ddf918911d75674baa4b7e2019ceb062bcc66bb6ca549456a10e",
+        "Cargo.lock": "9deb755b92ee9b70316c780dffa193c53674414dae7cb84200595ba088d9e770",
+        "benches/ordering_keys.rs": "2997d68798675de5e3701ed92e414483e22a43808e78171e01872d223d39bd96",
+        "src/pipeline/ordering_lane/internal/async_lane.rs": "e346cc1bd9dd4b736f8cc6bff623daddcd26ba6e3115d7efd0b9183d0525b4d3",
+        "src/pipeline/ordering_lane/internal/async_ordering_lanes.rs": "3d0aa6de9992b09d37d004568e2821d44e34125284443d05cf8a5c5bdd926b12"
+      }
+    },
+    "candidate": {
+      "binary_sha256": "1a8e728c2b55151290b6fe93c4eed008435f6a753c3521f882e40fb4715d88d3",
+      "session_binary_path": "/tmp/ordering-t8-candidate-target/release/deps/ordering_keys-c90afe063a8e0dc7",
+      "manifest_snapshot_version": "0.16.0",
+      "rustc": "1.94.0 (4a4ef493e 2026-03-02)",
+      "cargo_profile": "bench defaults: opt-level=3, lto=false, codegen-units=16",
+      "rustflags": null,
+      "source_sha256": {
+        "Cargo.toml": "ad1e5252b363ddf918911d75674baa4b7e2019ceb062bcc66bb6ca549456a10e",
+        "Cargo.lock": "9deb755b92ee9b70316c780dffa193c53674414dae7cb84200595ba088d9e770",
+        "benches/ordering_keys.rs": "2997d68798675de5e3701ed92e414483e22a43808e78171e01872d223d39bd96",
+        "src/pipeline/ordering_lane/internal/async_lane.rs": "10c05205a6f149af5869d58f38d0fcb5f1bf393ca503b3014aaed5078b752ce7",
+        "src/pipeline/ordering_lane/internal/async_ordering_lanes.rs": "9769b728bfbc071f5fe527b16480f0ca51c5433b562b3ab493c7b0a7891dbed6"
+      }
+    }
+  },
+  "profile": {
+    "exit": 0,
+    "binary": "/tmp/ordering-t8-profile/release/deps/ordering_keys-0e8857df5b94497b",
+    "wall_seconds": 2.980106897000951,
+    "cpu_seconds": 2.9794199999999997,
+    "involuntary_switches": 15,
+    "operations": 262144,
+    "active_keys": 4096,
+    "ticket_window": 64,
+    "team_window": "team resumed; background load recorded, no total-machine isolation",
+    "binary_sha256": "68ce9e69e9d8c8989a9046da9c8138978ee9180b6a7266ccda793bfc2c201603",
+    "gmon_sha256": "5cdb6c104a0c4e193ad2e13bfa2bca8fb0a1225e80ec84f1787c57e4f327d6c6",
+    "rustc": "1.98.0-nightly (e7815e522 2026-06-04)",
+    "compiler_arguments": [
+      "-Zinstrument-mcount=yes",
+      "-Cdebuginfo=2",
+      "-Cstrip=none",
+      "-Cforce-frame-pointers=yes",
+      "-Clink-arg=-pg"
+    ],
+    "retain_cpu_samples": 223,
+    "total_cpu_samples": 284,
+    "retain_total_cpu_percent": 78.52
+  },
+  "warmups_per_configuration": 2,
+  "accepted_per_configuration_side": 7,
+  "paired_configurations": 48,
+  "accepted_samples": 672,
+  "rejected_samples": 748,
+  "cpu_validity": "registry thread CPU/wall >=0.98; facade process CPU/wall >=0.98, both clocks recorded",
+  "affinity_cpu": 4,
+  "hardware": "Intel Core i5-9600K, 6 physical cores, no SMT, 9MiB L3",
+  "governor": "powersave with dynamic turbo",
+  "platform": "x86_64 Linux 7.0.0-34-generic",
+  "environment": "team heavy tools paused for comparison; external CI and desktop processes remained; no claim of machine-wide isolation",
+  "decision": {
+    "retain_cpu_at_least_10_percent": "pass",
+    "high_key_median_improvement_at_least_15_percent": "pass, 82.12–97.97%",
+    "default_regression_at_most_5_percent": "fail, default registry churn +52.05%, facade same-key +9.06%",
+    "production": "unchanged; candidate rejected"
+  },
+  "artifact_sha256": {
+    "paired_samples.txt": "a3284e0f0f809dc6af52bc754d77448b488bdcd5b31d135d6011107b2bbf0717",
+    "README.md": "75ddc2ca95875fbbef6669f53ab5746c358b9b710eb73bdea08deb837c199c8c",
+    "candidate.patch": "f5d449ca3a5233e7619dfb09d06eb01365ff479b82a84e7e46e2913338313920",
+    "profiling_probe.txt": "9cac0bf5cbd1a43256a7f2e720f5ac6aead7004a4048fdfb74f25471d9dd7d05",
+    "paired_results.json": "8bbc72bb198a9dfaf55290f5bd4d5b10b0bc22786fb549c23a55612155b34347",
+    "profiling_probe_source.txt": "a8756d6750ba54854aefef8321a17df0039350ee670acc38e7e5082a3af014e2",
+    "ordering_source_snapshot.json": "d3018d417be0784f205b27c1735a72f8fa90b3c4c30374954651c7203bd309ef",
+    "cpu_line_profile.txt": "084c3a83721dfb128c81d749bd6416140ffe149c4b6dffb1508b90c71fb553d4",
+    "cpu_flat_profile.txt": "890e0454336a124df190904d348ed9718153c093be0d239d1bb6a39aee439168",
+    "paired_runner.txt": "85cdc2b5e5127fa4dd1e1a12f9214236f18b4d39d97db9871aad5637c7d408e9",
+    "profile_run.json": "085e1247e3ca21eacfa0bca01d7f6afccbbe3ebe63cc688c4c54726b7d4b4a3f",
+    "source_sha256.json": "bf363e6d9040423adaa7706fe9f8081e97100c694c23d063cccf8186162c8c53",
+    "cargo_entrypoint.txt": "75f3f7243fa1ee98bb213287a4fe423897348968756569bf714f8fb94c4274bc"
+  }
+}

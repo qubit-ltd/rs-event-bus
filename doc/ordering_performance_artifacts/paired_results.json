@@ -1,0 +1,6818 @@
+{
+  "registry live_keys=4 ticket_window=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 568,
+          "wait_p95_ns": 703,
+          "cpu_ns": 8016708,
+          "process_cpu_ns": 8018889,
+          "wall_ns": 8014902
+        },
+        {
+          "ns_per_operation": 247,
+          "observed": 32768,
+          "wait_median_ns": 568,
+          "wait_p95_ns": 708,
+          "cpu_ns": 8091691,
+          "process_cpu_ns": 8093881,
+          "wall_ns": 8102405
+        },
+        {
+          "ns_per_operation": 245,
+          "observed": 32768,
+          "wait_median_ns": 573,
+          "wait_p95_ns": 708,
+          "cpu_ns": 8047739,
+          "process_cpu_ns": 8049384,
+          "wall_ns": 8046359
+        },
+        {
+          "ns_per_operation": 246,
+          "observed": 32768,
+          "wait_median_ns": 576,
+          "wait_p95_ns": 716,
+          "cpu_ns": 8085362,
+          "process_cpu_ns": 8086429,
+          "wall_ns": 8084013
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 567,
+          "wait_p95_ns": 701,
+          "cpu_ns": 8019538,
+          "process_cpu_ns": 8021435,
+          "wall_ns": 8018102
+        },
+        {
+          "ns_per_operation": 254,
+          "observed": 32768,
+          "wait_median_ns": 574,
+          "wait_p95_ns": 722,
+          "cpu_ns": 8209619,
+          "process_cpu_ns": 8211389,
+          "wall_ns": 8343342
+        },
+        {
+          "ns_per_operation": 248,
+          "observed": 32768,
+          "wait_median_ns": 567,
+          "wait_p95_ns": 703,
+          "cpu_ns": 8040686,
+          "process_cpu_ns": 8044994,
+          "wall_ns": 8148304
+        }
+      ],
+      "median": 246,
+      "mad": 2,
+      "discarded": 12
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 556,
+          "wait_p95_ns": 691,
+          "cpu_ns": 7855928,
+          "process_cpu_ns": 7857653,
+          "wall_ns": 7863652
+        },
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 546,
+          "wait_p95_ns": 703,
+          "cpu_ns": 7850726,
+          "process_cpu_ns": 7852526,
+          "wall_ns": 7859757
+        },
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 550,
+          "wait_p95_ns": 697,
+          "cpu_ns": 7845371,
+          "process_cpu_ns": 7847620,
+          "wall_ns": 7843896
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 557,
+          "wait_p95_ns": 717,
+          "cpu_ns": 7989281,
+          "process_cpu_ns": 7991357,
+          "wall_ns": 7997039
+        },
+        {
+          "ns_per_operation": 242,
+          "observed": 32768,
+          "wait_median_ns": 560,
+          "wait_p95_ns": 705,
+          "cpu_ns": 7944678,
+          "process_cpu_ns": 7946412,
+          "wall_ns": 7952079
+        },
+        {
+          "ns_per_operation": 238,
+          "observed": 32768,
+          "wait_median_ns": 556,
+          "wait_p95_ns": 686,
+          "cpu_ns": 7812910,
+          "process_cpu_ns": 7814140,
+          "wall_ns": 7826168
+        },
+        {
+          "ns_per_operation": 241,
+          "observed": 32768,
+          "wait_median_ns": 556,
+          "wait_p95_ns": 697,
+          "cpu_ns": 7888622,
+          "process_cpu_ns": 7890169,
+          "wall_ns": 7907561
+        }
+      ],
+      "median": 239,
+      "mad": 1,
+      "discarded": 4
+    }
+  },
+  "registry live_keys=4 ticket_window=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 546,
+          "wait_p95_ns": 692,
+          "cpu_ns": 7849110,
+          "process_cpu_ns": 7850845,
+          "wall_ns": 7857322
+        },
+        {
+          "ns_per_operation": 248,
+          "observed": 32768,
+          "wait_median_ns": 574,
+          "wait_p95_ns": 723,
+          "cpu_ns": 8140305,
+          "process_cpu_ns": 8141906,
+          "wall_ns": 8138907
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 578,
+          "wait_p95_ns": 736,
+          "cpu_ns": 8282677,
+          "process_cpu_ns": 8284612,
+          "wall_ns": 8320933
+        },
+        {
+          "ns_per_operation": 251,
+          "observed": 32768,
+          "wait_median_ns": 573,
+          "wait_p95_ns": 727,
+          "cpu_ns": 8215514,
+          "process_cpu_ns": 8222930,
+          "wall_ns": 8252462
+        },
+        {
+          "ns_per_operation": 255,
+          "observed": 32768,
+          "wait_median_ns": 571,
+          "wait_p95_ns": 725,
+          "cpu_ns": 8212207,
+          "process_cpu_ns": 8213895,
+          "wall_ns": 8376468
+        },
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 573,
+          "wait_p95_ns": 722,
+          "cpu_ns": 8144755,
+          "process_cpu_ns": 8146872,
+          "wall_ns": 8164320
+        },
+        {
+          "ns_per_operation": 246,
+          "observed": 32768,
+          "wait_median_ns": 568,
+          "wait_p95_ns": 717,
+          "cpu_ns": 8084106,
+          "process_cpu_ns": 8085815,
+          "wall_ns": 8082057
+        }
+      ],
+      "median": 249,
+      "mad": 3,
+      "discarded": 38
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 245,
+          "observed": 32768,
+          "wait_median_ns": 571,
+          "wait_p95_ns": 695,
+          "cpu_ns": 8056128,
+          "process_cpu_ns": 8057900,
+          "wall_ns": 8054754
+        },
+        {
+          "ns_per_operation": 254,
+          "observed": 32768,
+          "wait_median_ns": 587,
+          "wait_p95_ns": 728,
+          "cpu_ns": 8355216,
+          "process_cpu_ns": 8357011,
+          "wall_ns": 8353934
+        },
+        {
+          "ns_per_operation": 262,
+          "observed": 32768,
+          "wait_median_ns": 606,
+          "wait_p95_ns": 737,
+          "cpu_ns": 8585545,
+          "process_cpu_ns": 8587120,
+          "wall_ns": 8617187
+        },
+        {
+          "ns_per_operation": 261,
+          "observed": 32768,
+          "wait_median_ns": 600,
+          "wait_p95_ns": 736,
+          "cpu_ns": 8559599,
+          "process_cpu_ns": 8561709,
+          "wall_ns": 8567901
+        },
+        {
+          "ns_per_operation": 265,
+          "observed": 32768,
+          "wait_median_ns": 608,
+          "wait_p95_ns": 759,
+          "cpu_ns": 8696981,
+          "process_cpu_ns": 8699337,
+          "wall_ns": 8703178
+        },
+        {
+          "ns_per_operation": 256,
+          "observed": 32768,
+          "wait_median_ns": 596,
+          "wait_p95_ns": 729,
+          "cpu_ns": 8389974,
+          "process_cpu_ns": 8392799,
+          "wall_ns": 8406449
+        },
+        {
+          "ns_per_operation": 255,
+          "observed": 32768,
+          "wait_median_ns": 584,
+          "wait_p95_ns": 754,
+          "cpu_ns": 8377303,
+          "process_cpu_ns": 8379885,
+          "wall_ns": 8374462
+        }
+      ],
+      "median": 256,
+      "mad": 5,
+      "discarded": 4
+    }
+  },
+  "registry live_keys=4 ticket_window=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 285,
+          "observed": 0,
+          "wait_median_ns": 250,
+          "wait_p95_ns": 323,
+          "cpu_ns": 9351754,
+          "process_cpu_ns": 9358543,
+          "wall_ns": 9350002
+        },
+        {
+          "ns_per_operation": 291,
+          "observed": 0,
+          "wait_median_ns": 253,
+          "wait_p95_ns": 333,
+          "cpu_ns": 9557664,
+          "process_cpu_ns": 9559417,
+          "wall_ns": 9556249
+        },
+        {
+          "ns_per_operation": 293,
+          "observed": 0,
+          "wait_median_ns": 256,
+          "wait_p95_ns": 328,
+          "cpu_ns": 9571808,
+          "process_cpu_ns": 9573744,
+          "wall_ns": 9603570
+        },
+        {
+          "ns_per_operation": 292,
+          "observed": 0,
+          "wait_median_ns": 254,
+          "wait_p95_ns": 331,
+          "cpu_ns": 9558089,
+          "process_cpu_ns": 9559723,
+          "wall_ns": 9575505
+        },
+        {
+          "ns_per_operation": 291,
+          "observed": 0,
+          "wait_median_ns": 255,
+          "wait_p95_ns": 329,
+          "cpu_ns": 9535065,
+          "process_cpu_ns": 9537244,
+          "wall_ns": 9548928
+        },
+        {
+          "ns_per_operation": 293,
+          "observed": 0,
+          "wait_median_ns": 256,
+          "wait_p95_ns": 331,
+          "cpu_ns": 9597430,
+          "process_cpu_ns": 9599648,
+          "wall_ns": 9603651
+        },
+        {
+          "ns_per_operation": 293,
+          "observed": 0,
+          "wait_median_ns": 255,
+          "wait_p95_ns": 336,
+          "cpu_ns": 9613008,
+          "process_cpu_ns": 9614798,
+          "wall_ns": 9611610
+        }
+      ],
+      "median": 292,
+      "mad": 1,
+      "discarded": 7
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 447,
+          "observed": 0,
+          "wait_median_ns": 396,
+          "wait_p95_ns": 494,
+          "cpu_ns": 14417918,
+          "process_cpu_ns": 14424491,
+          "wall_ns": 14653887
+        },
+        {
+          "ns_per_operation": 445,
+          "observed": 0,
+          "wait_median_ns": 398,
+          "wait_p95_ns": 492,
+          "cpu_ns": 14522821,
+          "process_cpu_ns": 14526994,
+          "wall_ns": 14583257
+        },
+        {
+          "ns_per_operation": 438,
+          "observed": 0,
+          "wait_median_ns": 393,
+          "wait_p95_ns": 486,
+          "cpu_ns": 14312741,
+          "process_cpu_ns": 14315413,
+          "wall_ns": 14375961
+        },
+        {
+          "ns_per_operation": 444,
+          "observed": 0,
+          "wait_median_ns": 397,
+          "wait_p95_ns": 495,
+          "cpu_ns": 14450227,
+          "process_cpu_ns": 14458343,
+          "wall_ns": 14554675
+        },
+        {
+          "ns_per_operation": 439,
+          "observed": 0,
+          "wait_median_ns": 397,
+          "wait_p95_ns": 481,
+          "cpu_ns": 14377037,
+          "process_cpu_ns": 14379029,
+          "wall_ns": 14407281
+        },
+        {
+          "ns_per_operation": 446,
+          "observed": 0,
+          "wait_median_ns": 399,
+          "wait_p95_ns": 502,
+          "cpu_ns": 14594570,
+          "process_cpu_ns": 14596788,
+          "wall_ns": 14622865
+        },
+        {
+          "ns_per_operation": 443,
+          "observed": 0,
+          "wait_median_ns": 402,
+          "wait_p95_ns": 488,
+          "cpu_ns": 14504971,
+          "process_cpu_ns": 14507135,
+          "wall_ns": 14533636
+        }
+      ],
+      "median": 444,
+      "mad": 2,
+      "discarded": 7
+    }
+  },
+  "registry live_keys=4 ticket_window=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 245,
+          "observed": 32768,
+          "wait_median_ns": 581,
+          "wait_p95_ns": 727,
+          "cpu_ns": 8040277,
+          "process_cpu_ns": 8042694,
+          "wall_ns": 8038699
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 577,
+          "wait_p95_ns": 716,
+          "cpu_ns": 7973315,
+          "process_cpu_ns": 7975153,
+          "wall_ns": 7971953
+        },
+        {
+          "ns_per_operation": 242,
+          "observed": 32768,
+          "wait_median_ns": 575,
+          "wait_p95_ns": 706,
+          "cpu_ns": 7949874,
+          "process_cpu_ns": 7951154,
+          "wall_ns": 7953685
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 573,
+          "wait_p95_ns": 702,
+          "cpu_ns": 7910610,
+          "process_cpu_ns": 7911950,
+          "wall_ns": 8005620
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 575,
+          "wait_p95_ns": 712,
+          "cpu_ns": 7987324,
+          "process_cpu_ns": 7989260,
+          "wall_ns": 7986253
+        },
+        {
+          "ns_per_operation": 236,
+          "observed": 32768,
+          "wait_median_ns": 567,
+          "wait_p95_ns": 685,
+          "cpu_ns": 7740384,
+          "process_cpu_ns": 7742273,
+          "wall_ns": 7742303
+        },
+        {
+          "ns_per_operation": 241,
+          "observed": 32768,
+          "wait_median_ns": 569,
+          "wait_p95_ns": 682,
+          "cpu_ns": 7841684,
+          "process_cpu_ns": 7843316,
+          "wall_ns": 7911621
+        }
+      ],
+      "median": 243,
+      "mad": 1,
+      "discarded": 6
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 589,
+          "wait_p95_ns": 728,
+          "cpu_ns": 8176383,
+          "process_cpu_ns": 8177546,
+          "wall_ns": 8174672
+        },
+        {
+          "ns_per_operation": 258,
+          "observed": 32768,
+          "wait_median_ns": 618,
+          "wait_p95_ns": 750,
+          "cpu_ns": 8458490,
+          "process_cpu_ns": 8460142,
+          "wall_ns": 8457216
+        },
+        {
+          "ns_per_operation": 256,
+          "observed": 32768,
+          "wait_median_ns": 609,
+          "wait_p95_ns": 744,
+          "cpu_ns": 8415254,
+          "process_cpu_ns": 8416369,
+          "wall_ns": 8414146
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 600,
+          "wait_p95_ns": 732,
+          "cpu_ns": 8309772,
+          "process_cpu_ns": 8311151,
+          "wall_ns": 8308389
+        },
+        {
+          "ns_per_operation": 254,
+          "observed": 32768,
+          "wait_median_ns": 605,
+          "wait_p95_ns": 736,
+          "cpu_ns": 8337271,
+          "process_cpu_ns": 8338991,
+          "wall_ns": 8336088
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 597,
+          "wait_p95_ns": 742,
+          "cpu_ns": 8300863,
+          "process_cpu_ns": 8302642,
+          "wall_ns": 8299495
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 600,
+          "wait_p95_ns": 723,
+          "cpu_ns": 8213919,
+          "process_cpu_ns": 8218176,
+          "wall_ns": 8275737
+        }
+      ],
+      "median": 253,
+      "mad": 1,
+      "discarded": 4
+    }
+  },
+  "registry live_keys=4 ticket_window=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 257,
+          "observed": 32768,
+          "wait_median_ns": 8451,
+          "wait_p95_ns": 10435,
+          "cpu_ns": 8433911,
+          "process_cpu_ns": 8442194,
+          "wall_ns": 8432374
+        },
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 8224,
+          "wait_p95_ns": 10158,
+          "cpu_ns": 8185050,
+          "process_cpu_ns": 8186629,
+          "wall_ns": 8183716
+        },
+        {
+          "ns_per_operation": 259,
+          "observed": 32768,
+          "wait_median_ns": 8725,
+          "wait_p95_ns": 10751,
+          "cpu_ns": 8489143,
+          "process_cpu_ns": 8491193,
+          "wall_ns": 8487808
+        },
+        {
+          "ns_per_operation": 260,
+          "observed": 32768,
+          "wait_median_ns": 8624,
+          "wait_p95_ns": 10752,
+          "cpu_ns": 8538865,
+          "process_cpu_ns": 8540598,
+          "wall_ns": 8537528
+        },
+        {
+          "ns_per_operation": 250,
+          "observed": 32768,
+          "wait_median_ns": 8229,
+          "wait_p95_ns": 10183,
+          "cpu_ns": 8204231,
+          "process_cpu_ns": 8205784,
+          "wall_ns": 8210718
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 8311,
+          "wait_p95_ns": 10284,
+          "cpu_ns": 8298152,
+          "process_cpu_ns": 8301381,
+          "wall_ns": 8312332
+        },
+        {
+          "ns_per_operation": 261,
+          "observed": 32768,
+          "wait_median_ns": 8634,
+          "wait_p95_ns": 10769,
+          "cpu_ns": 8562970,
+          "process_cpu_ns": 8565080,
+          "wall_ns": 8575588
+        }
+      ],
+      "median": 257,
+      "mad": 4,
+      "discarded": 2
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 8249,
+          "wait_p95_ns": 10140,
+          "cpu_ns": 8297020,
+          "process_cpu_ns": 8298596,
+          "wall_ns": 8322584
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 8335,
+          "wait_p95_ns": 10141,
+          "cpu_ns": 8257422,
+          "process_cpu_ns": 8259052,
+          "wall_ns": 8311406
+        },
+        {
+          "ns_per_operation": 253,
+          "observed": 32768,
+          "wait_median_ns": 8262,
+          "wait_p95_ns": 10190,
+          "cpu_ns": 8278604,
+          "process_cpu_ns": 8283071,
+          "wall_ns": 8309670
+        },
+        {
+          "ns_per_operation": 251,
+          "observed": 32768,
+          "wait_median_ns": 8213,
+          "wait_p95_ns": 10040,
+          "cpu_ns": 8208066,
+          "process_cpu_ns": 8213689,
+          "wall_ns": 8247450
+        },
+        {
+          "ns_per_operation": 254,
+          "observed": 32768,
+          "wait_median_ns": 8315,
+          "wait_p95_ns": 10214,
+          "cpu_ns": 8294616,
+          "process_cpu_ns": 8300585,
+          "wall_ns": 8324792
+        },
+        {
+          "ns_per_operation": 250,
+          "observed": 32768,
+          "wait_median_ns": 8260,
+          "wait_p95_ns": 10098,
+          "cpu_ns": 8195313,
+          "process_cpu_ns": 8197222,
+          "wall_ns": 8199386
+        },
+        {
+          "ns_per_operation": 255,
+          "observed": 32768,
+          "wait_median_ns": 8416,
+          "wait_p95_ns": 10261,
+          "cpu_ns": 8362599,
+          "process_cpu_ns": 8364611,
+          "wall_ns": 8361403
+        }
+      ],
+      "median": 253,
+      "mad": 1,
+      "discarded": 11
+    }
+  },
+  "registry live_keys=4 ticket_window=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 450,
+          "observed": 0,
+          "wait_median_ns": 405,
+          "wait_p95_ns": 504,
+          "cpu_ns": 14708680,
+          "process_cpu_ns": 14710102,
+          "wall_ns": 14752173
+        },
+        {
+          "ns_per_operation": 451,
+          "observed": 0,
+          "wait_median_ns": 404,
+          "wait_p95_ns": 513,
+          "cpu_ns": 14786762,
+          "process_cpu_ns": 14789087,
+          "wall_ns": 14809028
+        },
+        {
+          "ns_per_operation": 446,
+          "observed": 0,
+          "wait_median_ns": 398,
+          "wait_p95_ns": 509,
+          "cpu_ns": 14615930,
+          "process_cpu_ns": 14617158,
+          "wall_ns": 14614636
+        },
+        {
+          "ns_per_operation": 440,
+          "observed": 0,
+          "wait_median_ns": 396,
+          "wait_p95_ns": 495,
+          "cpu_ns": 14428510,
+          "process_cpu_ns": 14430548,
+          "wall_ns": 14450065
+        },
+        {
+          "ns_per_operation": 451,
+          "observed": 0,
+          "wait_median_ns": 396,
+          "wait_p95_ns": 510,
+          "cpu_ns": 14572230,
+          "process_cpu_ns": 14574529,
+          "wall_ns": 14778553
+        },
+        {
+          "ns_per_operation": 444,
+          "observed": 0,
+          "wait_median_ns": 394,
+          "wait_p95_ns": 515,
+          "cpu_ns": 14534753,
+          "process_cpu_ns": 14537204,
+          "wall_ns": 14552335
+        },
+        {
+          "ns_per_operation": 441,
+          "observed": 0,
+          "wait_median_ns": 395,
+          "wait_p95_ns": 506,
+          "cpu_ns": 14484480,
+          "process_cpu_ns": 14486279,
+          "wall_ns": 14483266
+        }
+      ],
+      "median": 446,
+      "mad": 5,
+      "discarded": 8
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 299,
+          "observed": 0,
+          "wait_median_ns": 258,
+          "wait_p95_ns": 339,
+          "cpu_ns": 9743900,
+          "process_cpu_ns": 9752747,
+          "wall_ns": 9811334
+        },
+        {
+          "ns_per_operation": 296,
+          "observed": 0,
+          "wait_median_ns": 257,
+          "wait_p95_ns": 339,
+          "cpu_ns": 9681377,
+          "process_cpu_ns": 9686912,
+          "wall_ns": 9709026
+        },
+        {
+          "ns_per_operation": 287,
+          "observed": 0,
+          "wait_median_ns": 252,
+          "wait_p95_ns": 326,
+          "cpu_ns": 9412719,
+          "process_cpu_ns": 9415167,
+          "wall_ns": 9434975
+        },
+        {
+          "ns_per_operation": 297,
+          "observed": 0,
+          "wait_median_ns": 258,
+          "wait_p95_ns": 340,
+          "cpu_ns": 9736153,
+          "process_cpu_ns": 9738747,
+          "wall_ns": 9762747
+        },
+        {
+          "ns_per_operation": 295,
+          "observed": 0,
+          "wait_median_ns": 256,
+          "wait_p95_ns": 329,
+          "cpu_ns": 9593821,
+          "process_cpu_ns": 9597400,
+          "wall_ns": 9676831
+        },
+        {
+          "ns_per_operation": 298,
+          "observed": 0,
+          "wait_median_ns": 256,
+          "wait_p95_ns": 345,
+          "cpu_ns": 9757842,
+          "process_cpu_ns": 9764490,
+          "wall_ns": 9778211
+        },
+        {
+          "ns_per_operation": 301,
+          "observed": 0,
+          "wait_median_ns": 258,
+          "wait_p95_ns": 349,
+          "cpu_ns": 9844183,
+          "process_cpu_ns": 9846031,
+          "wall_ns": 9881452
+        }
+      ],
+      "median": 297,
+      "mad": 2,
+      "discarded": 16
+    }
+  },
+  "facade input_keys=4 max_in_flight=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4242,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8689802,
+          "process_cpu_ns": 8692407,
+          "wall_ns": 8688485
+        },
+        {
+          "ns_per_operation": 4112,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8359889,
+          "process_cpu_ns": 8366601,
+          "wall_ns": 8423098
+        },
+        {
+          "ns_per_operation": 4049,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8148798,
+          "process_cpu_ns": 8150554,
+          "wall_ns": 8293945
+        },
+        {
+          "ns_per_operation": 4271,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8701248,
+          "process_cpu_ns": 8702902,
+          "wall_ns": 8748497
+        },
+        {
+          "ns_per_operation": 4345,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8803207,
+          "process_cpu_ns": 8805474,
+          "wall_ns": 8900397
+        },
+        {
+          "ns_per_operation": 4256,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8654594,
+          "process_cpu_ns": 8656454,
+          "wall_ns": 8716788
+        },
+        {
+          "ns_per_operation": 4192,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8580450,
+          "process_cpu_ns": 8582321,
+          "wall_ns": 8586908
+        }
+      ],
+      "median": 4242,
+      "mad": 50,
+      "discarded": 11
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4190,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8576721,
+          "process_cpu_ns": 8579555,
+          "wall_ns": 8582320
+        },
+        {
+          "ns_per_operation": 4270,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8697384,
+          "process_cpu_ns": 8699895,
+          "wall_ns": 8746799
+        },
+        {
+          "ns_per_operation": 4396,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8997541,
+          "process_cpu_ns": 8999651,
+          "wall_ns": 9004852
+        },
+        {
+          "ns_per_operation": 4358,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8904605,
+          "process_cpu_ns": 8907512,
+          "wall_ns": 8926001
+        },
+        {
+          "ns_per_operation": 4210,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8616670,
+          "process_cpu_ns": 8618429,
+          "wall_ns": 8623500
+        },
+        {
+          "ns_per_operation": 4216,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8611168,
+          "process_cpu_ns": 8612801,
+          "wall_ns": 8635569
+        },
+        {
+          "ns_per_operation": 4259,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8695814,
+          "process_cpu_ns": 8697560,
+          "wall_ns": 8722871
+        }
+      ],
+      "median": 4259,
+      "mad": 49,
+      "discarded": 7
+    }
+  },
+  "facade input_keys=4 max_in_flight=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4183,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8519829,
+          "process_cpu_ns": 8527748,
+          "wall_ns": 8567362
+        },
+        {
+          "ns_per_operation": 4204,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8577823,
+          "process_cpu_ns": 8579439,
+          "wall_ns": 8609800
+        },
+        {
+          "ns_per_operation": 4238,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8674286,
+          "process_cpu_ns": 8676074,
+          "wall_ns": 8680157
+        },
+        {
+          "ns_per_operation": 4246,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8663338,
+          "process_cpu_ns": 8665451,
+          "wall_ns": 8695813
+        },
+        {
+          "ns_per_operation": 4247,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8669004,
+          "process_cpu_ns": 8671547,
+          "wall_ns": 8698023
+        },
+        {
+          "ns_per_operation": 4210,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8617681,
+          "process_cpu_ns": 8620053,
+          "wall_ns": 8623671
+        },
+        {
+          "ns_per_operation": 4259,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8698304,
+          "process_cpu_ns": 8700088,
+          "wall_ns": 8724266
+        }
+      ],
+      "median": 4238,
+      "mad": 21,
+      "discarded": 3
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3886,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7884565,
+          "process_cpu_ns": 7886553,
+          "wall_ns": 7959522
+        },
+        {
+          "ns_per_operation": 3871,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7900492,
+          "process_cpu_ns": 7904222,
+          "wall_ns": 7927933
+        },
+        {
+          "ns_per_operation": 3802,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7750306,
+          "process_cpu_ns": 7752176,
+          "wall_ns": 7786744
+        },
+        {
+          "ns_per_operation": 4091,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8348130,
+          "process_cpu_ns": 8351805,
+          "wall_ns": 8378640
+        },
+        {
+          "ns_per_operation": 3959,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8101556,
+          "process_cpu_ns": 8102917,
+          "wall_ns": 8108487
+        },
+        {
+          "ns_per_operation": 3927,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7999999,
+          "process_cpu_ns": 8003552,
+          "wall_ns": 8043967
+        },
+        {
+          "ns_per_operation": 3801,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7778411,
+          "process_cpu_ns": 7780309,
+          "wall_ns": 7784584
+        }
+      ],
+      "median": 3886,
+      "mad": 73,
+      "discarded": 7
+    }
+  },
+  "facade input_keys=4 max_in_flight=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4030,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8210043,
+          "process_cpu_ns": 8211999,
+          "wall_ns": 8253558
+        },
+        {
+          "ns_per_operation": 4006,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8186259,
+          "process_cpu_ns": 8188028,
+          "wall_ns": 8206234
+        },
+        {
+          "ns_per_operation": 4066,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8320548,
+          "process_cpu_ns": 8322718,
+          "wall_ns": 8327491
+        },
+        {
+          "ns_per_operation": 4451,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9060598,
+          "process_cpu_ns": 9062649,
+          "wall_ns": 9117006
+        },
+        {
+          "ns_per_operation": 4302,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8801770,
+          "process_cpu_ns": 8803353,
+          "wall_ns": 8810893
+        },
+        {
+          "ns_per_operation": 4308,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8818564,
+          "process_cpu_ns": 8824168,
+          "wall_ns": 8823099
+        },
+        {
+          "ns_per_operation": 4276,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8752029,
+          "process_cpu_ns": 8755705,
+          "wall_ns": 8759119
+        }
+      ],
+      "median": 4276,
+      "mad": 175,
+      "discarded": 9
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4529,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9277894,
+          "process_cpu_ns": 9280015,
+          "wall_ns": 9276717
+        },
+        {
+          "ns_per_operation": 4552,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9325236,
+          "process_cpu_ns": 9327354,
+          "wall_ns": 9324095
+        },
+        {
+          "ns_per_operation": 4730,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9678066,
+          "process_cpu_ns": 9680192,
+          "wall_ns": 9688132
+        },
+        {
+          "ns_per_operation": 4645,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9508794,
+          "process_cpu_ns": 9511280,
+          "wall_ns": 9513767
+        },
+        {
+          "ns_per_operation": 4401,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9011271,
+          "process_cpu_ns": 9015806,
+          "wall_ns": 9014918
+        },
+        {
+          "ns_per_operation": 4433,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9071576,
+          "process_cpu_ns": 9073025,
+          "wall_ns": 9079669
+        },
+        {
+          "ns_per_operation": 4495,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9203416,
+          "process_cpu_ns": 9214971,
+          "wall_ns": 9206899
+        }
+      ],
+      "median": 4529,
+      "mad": 96,
+      "discarded": 34
+    }
+  },
+  "facade input_keys=4 max_in_flight=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4342,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8872642,
+          "process_cpu_ns": 8875311,
+          "wall_ns": 8892609
+        },
+        {
+          "ns_per_operation": 4290,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8770798,
+          "process_cpu_ns": 8773329,
+          "wall_ns": 8787330
+        },
+        {
+          "ns_per_operation": 4322,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8846497,
+          "process_cpu_ns": 8848724,
+          "wall_ns": 8852479
+        },
+        {
+          "ns_per_operation": 4361,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8925655,
+          "process_cpu_ns": 8927414,
+          "wall_ns": 8932217
+        },
+        {
+          "ns_per_operation": 4139,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8479133,
+          "process_cpu_ns": 8481113,
+          "wall_ns": 8477024
+        },
+        {
+          "ns_per_operation": 4203,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8590517,
+          "process_cpu_ns": 8592495,
+          "wall_ns": 8609079
+        },
+        {
+          "ns_per_operation": 4286,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8678606,
+          "process_cpu_ns": 8680905,
+          "wall_ns": 8778635
+        }
+      ],
+      "median": 4290,
+      "mad": 52,
+      "discarded": 18
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4063,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8237809,
+          "process_cpu_ns": 8246280,
+          "wall_ns": 8322854
+        },
+        {
+          "ns_per_operation": 4009,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8148888,
+          "process_cpu_ns": 8151541,
+          "wall_ns": 8211431
+        },
+        {
+          "ns_per_operation": 3879,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7936778,
+          "process_cpu_ns": 7938603,
+          "wall_ns": 7945168
+        },
+        {
+          "ns_per_operation": 4200,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8597438,
+          "process_cpu_ns": 8599520,
+          "wall_ns": 8603080
+        },
+        {
+          "ns_per_operation": 4196,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8561984,
+          "process_cpu_ns": 8563565,
+          "wall_ns": 8594324
+        },
+        {
+          "ns_per_operation": 4219,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8643540,
+          "process_cpu_ns": 8645219,
+          "wall_ns": 8641913
+        },
+        {
+          "ns_per_operation": 4278,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8764729,
+          "process_cpu_ns": 8766652,
+          "wall_ns": 8763155
+        }
+      ],
+      "median": 4196,
+      "mad": 82,
+      "discarded": 31
+    }
+  },
+  "facade input_keys=4 max_in_flight=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4093,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8356525,
+          "process_cpu_ns": 8358340,
+          "wall_ns": 8384465
+        },
+        {
+          "ns_per_operation": 3982,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8143615,
+          "process_cpu_ns": 8145862,
+          "wall_ns": 8156977
+        },
+        {
+          "ns_per_operation": 4089,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8358773,
+          "process_cpu_ns": 8361486,
+          "wall_ns": 8374596
+        },
+        {
+          "ns_per_operation": 3930,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7976224,
+          "process_cpu_ns": 7979674,
+          "wall_ns": 8050472
+        },
+        {
+          "ns_per_operation": 4156,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8436283,
+          "process_cpu_ns": 8444772,
+          "wall_ns": 8513415
+        },
+        {
+          "ns_per_operation": 4177,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8455847,
+          "process_cpu_ns": 8458922,
+          "wall_ns": 8555869
+        },
+        {
+          "ns_per_operation": 4001,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8186549,
+          "process_cpu_ns": 8188121,
+          "wall_ns": 8194659
+        }
+      ],
+      "median": 4089,
+      "mad": 88,
+      "discarded": 39
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4537,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9276164,
+          "process_cpu_ns": 9277990,
+          "wall_ns": 9293380
+        },
+        {
+          "ns_per_operation": 4526,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9216597,
+          "process_cpu_ns": 9218397,
+          "wall_ns": 9270544
+        },
+        {
+          "ns_per_operation": 4416,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9029338,
+          "process_cpu_ns": 9032999,
+          "wall_ns": 9044188
+        },
+        {
+          "ns_per_operation": 4324,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8847725,
+          "process_cpu_ns": 8849494,
+          "wall_ns": 8855599
+        },
+        {
+          "ns_per_operation": 4311,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8824243,
+          "process_cpu_ns": 8827126,
+          "wall_ns": 8829265
+        },
+        {
+          "ns_per_operation": 4391,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8975661,
+          "process_cpu_ns": 8977660,
+          "wall_ns": 8993661
+        },
+        {
+          "ns_per_operation": 4386,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8965490,
+          "process_cpu_ns": 8973373,
+          "wall_ns": 8983698
+        }
+      ],
+      "median": 4391,
+      "mad": 67,
+      "discarded": 10
+    }
+  },
+  "facade input_keys=4 max_in_flight=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4329,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8764916,
+          "process_cpu_ns": 8768338,
+          "wall_ns": 8867594
+        },
+        {
+          "ns_per_operation": 4387,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8905697,
+          "process_cpu_ns": 8914164,
+          "wall_ns": 8986354
+        },
+        {
+          "ns_per_operation": 4556,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9181414,
+          "process_cpu_ns": 9183364,
+          "wall_ns": 9332365
+        },
+        {
+          "ns_per_operation": 4568,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9321790,
+          "process_cpu_ns": 9323829,
+          "wall_ns": 9357294
+        },
+        {
+          "ns_per_operation": 4628,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9472787,
+          "process_cpu_ns": 9475925,
+          "wall_ns": 9479863
+        },
+        {
+          "ns_per_operation": 4639,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9448816,
+          "process_cpu_ns": 9451242,
+          "wall_ns": 9502245
+        },
+        {
+          "ns_per_operation": 4481,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9167275,
+          "process_cpu_ns": 9169493,
+          "wall_ns": 9178977
+        }
+      ],
+      "median": 4556,
+      "mad": 75,
+      "discarded": 10
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4233,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8656782,
+          "process_cpu_ns": 8658821,
+          "wall_ns": 8671042
+        },
+        {
+          "ns_per_operation": 4397,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8980476,
+          "process_cpu_ns": 8983481,
+          "wall_ns": 9005189
+        },
+        {
+          "ns_per_operation": 4346,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8896836,
+          "process_cpu_ns": 8901000,
+          "wall_ns": 8902355
+        },
+        {
+          "ns_per_operation": 4302,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8800450,
+          "process_cpu_ns": 8802352,
+          "wall_ns": 8810559
+        },
+        {
+          "ns_per_operation": 4415,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9022124,
+          "process_cpu_ns": 9024202,
+          "wall_ns": 9043038
+        },
+        {
+          "ns_per_operation": 4407,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8935230,
+          "process_cpu_ns": 8938206,
+          "wall_ns": 9027128
+        },
+        {
+          "ns_per_operation": 4490,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9188375,
+          "process_cpu_ns": 9192576,
+          "wall_ns": 9196136
+        }
+      ],
+      "median": 4397,
+      "mad": 51,
+      "discarded": 2
+    }
+  },
+  "registry live_keys=64 ticket_window=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 318,
+          "observed": 32768,
+          "wait_median_ns": 761,
+          "wait_p95_ns": 1006,
+          "cpu_ns": 10430236,
+          "process_cpu_ns": 10431907,
+          "wall_ns": 10440143
+        },
+        {
+          "ns_per_operation": 327,
+          "observed": 32768,
+          "wait_median_ns": 772,
+          "wait_p95_ns": 1057,
+          "cpu_ns": 10738804,
+          "process_cpu_ns": 10740343,
+          "wall_ns": 10746339
+        },
+        {
+          "ns_per_operation": 325,
+          "observed": 32768,
+          "wait_median_ns": 767,
+          "wait_p95_ns": 1025,
+          "cpu_ns": 10674169,
+          "process_cpu_ns": 10676027,
+          "wall_ns": 10672667
+        },
+        {
+          "ns_per_operation": 322,
+          "observed": 32768,
+          "wait_median_ns": 753,
+          "wait_p95_ns": 1026,
+          "cpu_ns": 10566057,
+          "process_cpu_ns": 10568129,
+          "wall_ns": 10564659
+        },
+        {
+          "ns_per_operation": 320,
+          "observed": 32768,
+          "wait_median_ns": 763,
+          "wait_p95_ns": 1015,
+          "cpu_ns": 10499408,
+          "process_cpu_ns": 10501148,
+          "wall_ns": 10514902
+        },
+        {
+          "ns_per_operation": 323,
+          "observed": 32768,
+          "wait_median_ns": 763,
+          "wait_p95_ns": 992,
+          "cpu_ns": 10472049,
+          "process_cpu_ns": 10473739,
+          "wall_ns": 10598005
+        },
+        {
+          "ns_per_operation": 319,
+          "observed": 32768,
+          "wait_median_ns": 769,
+          "wait_p95_ns": 1013,
+          "cpu_ns": 10437995,
+          "process_cpu_ns": 10439342,
+          "wall_ns": 10471930
+        }
+      ],
+      "median": 322,
+      "mad": 3,
+      "discarded": 39
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 259,
+          "observed": 32768,
+          "wait_median_ns": 587,
+          "wait_p95_ns": 805,
+          "cpu_ns": 8477636,
+          "process_cpu_ns": 8479377,
+          "wall_ns": 8496478
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 565,
+          "wait_p95_ns": 717,
+          "cpu_ns": 7999186,
+          "process_cpu_ns": 8001441,
+          "wall_ns": 7997626
+        },
+        {
+          "ns_per_operation": 236,
+          "observed": 32768,
+          "wait_median_ns": 545,
+          "wait_p95_ns": 679,
+          "cpu_ns": 7705968,
+          "process_cpu_ns": 7707791,
+          "wall_ns": 7747848
+        },
+        {
+          "ns_per_operation": 236,
+          "observed": 32768,
+          "wait_median_ns": 547,
+          "wait_p95_ns": 687,
+          "cpu_ns": 7753226,
+          "process_cpu_ns": 7754439,
+          "wall_ns": 7751181
+        },
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 545,
+          "wait_p95_ns": 684,
+          "cpu_ns": 7863388,
+          "process_cpu_ns": 7864736,
+          "wall_ns": 7861619
+        },
+        {
+          "ns_per_operation": 259,
+          "observed": 32768,
+          "wait_median_ns": 581,
+          "wait_p95_ns": 809,
+          "cpu_ns": 8454779,
+          "process_cpu_ns": 8456403,
+          "wall_ns": 8501119
+        },
+        {
+          "ns_per_operation": 257,
+          "observed": 32768,
+          "wait_median_ns": 584,
+          "wait_p95_ns": 791,
+          "cpu_ns": 8430901,
+          "process_cpu_ns": 8432797,
+          "wall_ns": 8452241
+        }
+      ],
+      "median": 244,
+      "mad": 8,
+      "discarded": 47
+    }
+  },
+  "registry live_keys=64 ticket_window=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 245,
+          "observed": 32768,
+          "wait_median_ns": 566,
+          "wait_p95_ns": 699,
+          "cpu_ns": 8035735,
+          "process_cpu_ns": 8037614,
+          "wall_ns": 8043730
+        },
+        {
+          "ns_per_operation": 242,
+          "observed": 32768,
+          "wait_median_ns": 554,
+          "wait_p95_ns": 704,
+          "cpu_ns": 7950102,
+          "process_cpu_ns": 7951800,
+          "wall_ns": 7957967
+        },
+        {
+          "ns_per_operation": 240,
+          "observed": 32768,
+          "wait_median_ns": 553,
+          "wait_p95_ns": 693,
+          "cpu_ns": 7887457,
+          "process_cpu_ns": 7889467,
+          "wall_ns": 7885815
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 556,
+          "wait_p95_ns": 708,
+          "cpu_ns": 7967558,
+          "process_cpu_ns": 7969376,
+          "wall_ns": 7972941
+        },
+        {
+          "ns_per_operation": 245,
+          "observed": 32768,
+          "wait_median_ns": 565,
+          "wait_p95_ns": 700,
+          "cpu_ns": 8034762,
+          "process_cpu_ns": 8036194,
+          "wall_ns": 8033064
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 575,
+          "wait_p95_ns": 725,
+          "cpu_ns": 8158781,
+          "process_cpu_ns": 8160339,
+          "wall_ns": 8259718
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 559,
+          "wait_p95_ns": 706,
+          "cpu_ns": 8017457,
+          "process_cpu_ns": 8020168,
+          "wall_ns": 8016015
+        }
+      ],
+      "median": 244,
+      "mad": 1,
+      "discarded": 32
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 317,
+          "observed": 32768,
+          "wait_median_ns": 747,
+          "wait_p95_ns": 1006,
+          "cpu_ns": 10397307,
+          "process_cpu_ns": 10399181,
+          "wall_ns": 10395895
+        },
+        {
+          "ns_per_operation": 314,
+          "observed": 32768,
+          "wait_median_ns": 734,
+          "wait_p95_ns": 1000,
+          "cpu_ns": 10316743,
+          "process_cpu_ns": 10318793,
+          "wall_ns": 10315158
+        },
+        {
+          "ns_per_operation": 317,
+          "observed": 32768,
+          "wait_median_ns": 744,
+          "wait_p95_ns": 1013,
+          "cpu_ns": 10420141,
+          "process_cpu_ns": 10422271,
+          "wall_ns": 10418106
+        },
+        {
+          "ns_per_operation": 317,
+          "observed": 32768,
+          "wait_median_ns": 739,
+          "wait_p95_ns": 999,
+          "cpu_ns": 10386766,
+          "process_cpu_ns": 10388387,
+          "wall_ns": 10402379
+        },
+        {
+          "ns_per_operation": 320,
+          "observed": 32768,
+          "wait_median_ns": 752,
+          "wait_p95_ns": 989,
+          "cpu_ns": 10387869,
+          "process_cpu_ns": 10389421,
+          "wall_ns": 10507879
+        },
+        {
+          "ns_per_operation": 322,
+          "observed": 32768,
+          "wait_median_ns": 762,
+          "wait_p95_ns": 1017,
+          "cpu_ns": 10556345,
+          "process_cpu_ns": 10558124,
+          "wall_ns": 10554628
+        },
+        {
+          "ns_per_operation": 322,
+          "observed": 32768,
+          "wait_median_ns": 752,
+          "wait_p95_ns": 1039,
+          "cpu_ns": 10563161,
+          "process_cpu_ns": 10564898,
+          "wall_ns": 10577115
+        }
+      ],
+      "median": 317,
+      "mad": 3,
+      "discarded": 22
+    }
+  },
+  "registry live_keys=64 ticket_window=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 460,
+          "observed": 0,
+          "wait_median_ns": 406,
+          "wait_p95_ns": 507,
+          "cpu_ns": 14940230,
+          "process_cpu_ns": 14942180,
+          "wall_ns": 15102100
+        },
+        {
+          "ns_per_operation": 461,
+          "observed": 0,
+          "wait_median_ns": 411,
+          "wait_p95_ns": 513,
+          "cpu_ns": 15083296,
+          "process_cpu_ns": 15085227,
+          "wall_ns": 15110797
+        },
+        {
+          "ns_per_operation": 465,
+          "observed": 0,
+          "wait_median_ns": 411,
+          "wait_p95_ns": 530,
+          "cpu_ns": 15200133,
+          "process_cpu_ns": 15201970,
+          "wall_ns": 15253734
+        },
+        {
+          "ns_per_operation": 468,
+          "observed": 0,
+          "wait_median_ns": 413,
+          "wait_p95_ns": 524,
+          "cpu_ns": 15219971,
+          "process_cpu_ns": 15222646,
+          "wall_ns": 15335499
+        },
+        {
+          "ns_per_operation": 467,
+          "observed": 0,
+          "wait_median_ns": 413,
+          "wait_p95_ns": 528,
+          "cpu_ns": 15198417,
+          "process_cpu_ns": 15200339,
+          "wall_ns": 15313461
+        },
+        {
+          "ns_per_operation": 461,
+          "observed": 0,
+          "wait_median_ns": 409,
+          "wait_p95_ns": 521,
+          "cpu_ns": 15108082,
+          "process_cpu_ns": 15110769,
+          "wall_ns": 15134268
+        },
+        {
+          "ns_per_operation": 471,
+          "observed": 0,
+          "wait_median_ns": 420,
+          "wait_p95_ns": 566,
+          "cpu_ns": 15439124,
+          "process_cpu_ns": 15441400,
+          "wall_ns": 15447680
+        }
+      ],
+      "median": 465,
+      "mad": 4,
+      "discarded": 20
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 473,
+          "observed": 0,
+          "wait_median_ns": 417,
+          "wait_p95_ns": 556,
+          "cpu_ns": 15469019,
+          "process_cpu_ns": 15470872,
+          "wall_ns": 15504027
+        },
+        {
+          "ns_per_operation": 465,
+          "observed": 0,
+          "wait_median_ns": 406,
+          "wait_p95_ns": 552,
+          "cpu_ns": 15240968,
+          "process_cpu_ns": 15243024,
+          "wall_ns": 15248143
+        },
+        {
+          "ns_per_operation": 454,
+          "observed": 0,
+          "wait_median_ns": 401,
+          "wait_p95_ns": 531,
+          "cpu_ns": 14889742,
+          "process_cpu_ns": 14893246,
+          "wall_ns": 14903392
+        },
+        {
+          "ns_per_operation": 472,
+          "observed": 0,
+          "wait_median_ns": 414,
+          "wait_p95_ns": 559,
+          "cpu_ns": 15456600,
+          "process_cpu_ns": 15459043,
+          "wall_ns": 15478677
+        },
+        {
+          "ns_per_operation": 467,
+          "observed": 0,
+          "wait_median_ns": 408,
+          "wait_p95_ns": 529,
+          "cpu_ns": 15040192,
+          "process_cpu_ns": 15045882,
+          "wall_ns": 15320973
+        },
+        {
+          "ns_per_operation": 461,
+          "observed": 0,
+          "wait_median_ns": 409,
+          "wait_p95_ns": 523,
+          "cpu_ns": 15046944,
+          "process_cpu_ns": 15049137,
+          "wall_ns": 15138317
+        },
+        {
+          "ns_per_operation": 472,
+          "observed": 0,
+          "wait_median_ns": 410,
+          "wait_p95_ns": 534,
+          "cpu_ns": 15185960,
+          "process_cpu_ns": 15195050,
+          "wall_ns": 15466793
+        }
+      ],
+      "median": 467,
+      "mad": 5,
+      "discarded": 6
+    }
+  },
+  "registry live_keys=64 ticket_window=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 246,
+          "observed": 32768,
+          "wait_median_ns": 7870,
+          "wait_p95_ns": 9845,
+          "cpu_ns": 8068348,
+          "process_cpu_ns": 8069548,
+          "wall_ns": 8091005
+        },
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 7913,
+          "wait_p95_ns": 9934,
+          "cpu_ns": 8141982,
+          "process_cpu_ns": 8143818,
+          "wall_ns": 8178602
+        },
+        {
+          "ns_per_operation": 251,
+          "observed": 32768,
+          "wait_median_ns": 8049,
+          "wait_p95_ns": 9998,
+          "cpu_ns": 8240706,
+          "process_cpu_ns": 8243294,
+          "wall_ns": 8252904
+        },
+        {
+          "ns_per_operation": 250,
+          "observed": 32768,
+          "wait_median_ns": 8201,
+          "wait_p95_ns": 9835,
+          "cpu_ns": 8189125,
+          "process_cpu_ns": 8190427,
+          "wall_ns": 8195292
+        },
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 7998,
+          "wait_p95_ns": 10015,
+          "cpu_ns": 8179140,
+          "process_cpu_ns": 8181193,
+          "wall_ns": 8185148
+        },
+        {
+          "ns_per_operation": 248,
+          "observed": 32768,
+          "wait_median_ns": 7957,
+          "wait_p95_ns": 9996,
+          "cpu_ns": 8136566,
+          "process_cpu_ns": 8138777,
+          "wall_ns": 8150931
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 8275,
+          "wait_p95_ns": 10250,
+          "cpu_ns": 8245406,
+          "process_cpu_ns": 8247240,
+          "wall_ns": 8277247
+        }
+      ],
+      "median": 249,
+      "mad": 1,
+      "discarded": 7
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 306,
+          "observed": 32768,
+          "wait_median_ns": 9798,
+          "wait_p95_ns": 13375,
+          "cpu_ns": 10028825,
+          "process_cpu_ns": 10031920,
+          "wall_ns": 10037459
+        },
+        {
+          "ns_per_operation": 319,
+          "observed": 32768,
+          "wait_median_ns": 10446,
+          "wait_p95_ns": 13788,
+          "cpu_ns": 10458723,
+          "process_cpu_ns": 10460986,
+          "wall_ns": 10466800
+        },
+        {
+          "ns_per_operation": 315,
+          "observed": 32768,
+          "wait_median_ns": 10166,
+          "wait_p95_ns": 13895,
+          "cpu_ns": 10336365,
+          "process_cpu_ns": 10339051,
+          "wall_ns": 10343907
+        },
+        {
+          "ns_per_operation": 318,
+          "observed": 32768,
+          "wait_median_ns": 10438,
+          "wait_p95_ns": 13783,
+          "cpu_ns": 10439545,
+          "process_cpu_ns": 10441194,
+          "wall_ns": 10437338
+        },
+        {
+          "ns_per_operation": 314,
+          "observed": 32768,
+          "wait_median_ns": 10094,
+          "wait_p95_ns": 13816,
+          "cpu_ns": 10263064,
+          "process_cpu_ns": 10265352,
+          "wall_ns": 10290381
+        },
+        {
+          "ns_per_operation": 312,
+          "observed": 32768,
+          "wait_median_ns": 10003,
+          "wait_p95_ns": 13702,
+          "cpu_ns": 10217996,
+          "process_cpu_ns": 10220707,
+          "wall_ns": 10237814
+        },
+        {
+          "ns_per_operation": 317,
+          "observed": 32768,
+          "wait_median_ns": 10382,
+          "wait_p95_ns": 13628,
+          "cpu_ns": 10369589,
+          "process_cpu_ns": 10371829,
+          "wall_ns": 10390393
+        }
+      ],
+      "median": 315,
+      "mad": 3,
+      "discarded": 2
+    }
+  },
+  "registry live_keys=64 ticket_window=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 310,
+          "observed": 32768,
+          "wait_median_ns": 10155,
+          "wait_p95_ns": 13813,
+          "cpu_ns": 10160639,
+          "process_cpu_ns": 10162857,
+          "wall_ns": 10182574
+        },
+        {
+          "ns_per_operation": 321,
+          "observed": 32768,
+          "wait_median_ns": 10459,
+          "wait_p95_ns": 13990,
+          "cpu_ns": 10499216,
+          "process_cpu_ns": 10501227,
+          "wall_ns": 10532450
+        },
+        {
+          "ns_per_operation": 310,
+          "observed": 32768,
+          "wait_median_ns": 10124,
+          "wait_p95_ns": 13763,
+          "cpu_ns": 10142657,
+          "process_cpu_ns": 10148428,
+          "wall_ns": 10168530
+        },
+        {
+          "ns_per_operation": 305,
+          "observed": 32768,
+          "wait_median_ns": 9883,
+          "wait_p95_ns": 13563,
+          "cpu_ns": 9972943,
+          "process_cpu_ns": 9975438,
+          "wall_ns": 10013617
+        },
+        {
+          "ns_per_operation": 319,
+          "observed": 32768,
+          "wait_median_ns": 10490,
+          "wait_p95_ns": 14185,
+          "cpu_ns": 10466176,
+          "process_cpu_ns": 10468054,
+          "wall_ns": 10485073
+        },
+        {
+          "ns_per_operation": 316,
+          "observed": 32768,
+          "wait_median_ns": 10070,
+          "wait_p95_ns": 13866,
+          "cpu_ns": 10189495,
+          "process_cpu_ns": 10194334,
+          "wall_ns": 10366316
+        },
+        {
+          "ns_per_operation": 312,
+          "observed": 32768,
+          "wait_median_ns": 10062,
+          "wait_p95_ns": 13919,
+          "cpu_ns": 10232693,
+          "process_cpu_ns": 10235156,
+          "wall_ns": 10254166
+        }
+      ],
+      "median": 312,
+      "mad": 4,
+      "discarded": 12
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 250,
+          "observed": 32768,
+          "wait_median_ns": 8327,
+          "wait_p95_ns": 10103,
+          "cpu_ns": 8209692,
+          "process_cpu_ns": 8210929,
+          "wall_ns": 8215086
+        },
+        {
+          "ns_per_operation": 249,
+          "observed": 32768,
+          "wait_median_ns": 8176,
+          "wait_p95_ns": 10114,
+          "cpu_ns": 8183937,
+          "process_cpu_ns": 8185790,
+          "wall_ns": 8182418
+        },
+        {
+          "ns_per_operation": 250,
+          "observed": 32768,
+          "wait_median_ns": 8208,
+          "wait_p95_ns": 10129,
+          "cpu_ns": 8202100,
+          "process_cpu_ns": 8204238,
+          "wall_ns": 8222063
+        },
+        {
+          "ns_per_operation": 260,
+          "observed": 32768,
+          "wait_median_ns": 8594,
+          "wait_p95_ns": 10422,
+          "cpu_ns": 8530236,
+          "process_cpu_ns": 8531998,
+          "wall_ns": 8536084
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 8226,
+          "wait_p95_ns": 10164,
+          "cpu_ns": 8267625,
+          "process_cpu_ns": 8270110,
+          "wall_ns": 8265938
+        },
+        {
+          "ns_per_operation": 247,
+          "observed": 32768,
+          "wait_median_ns": 8108,
+          "wait_p95_ns": 9998,
+          "cpu_ns": 8096677,
+          "process_cpu_ns": 8098866,
+          "wall_ns": 8102182
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 8045,
+          "wait_p95_ns": 9862,
+          "cpu_ns": 8003123,
+          "process_cpu_ns": 8004961,
+          "wall_ns": 8022034
+        }
+      ],
+      "median": 250,
+      "mad": 2,
+      "discarded": 5
+    }
+  },
+  "registry live_keys=64 ticket_window=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 472,
+          "observed": 0,
+          "wait_median_ns": 412,
+          "wait_p95_ns": 532,
+          "cpu_ns": 15250046,
+          "process_cpu_ns": 15259244,
+          "wall_ns": 15476258
+        },
+        {
+          "ns_per_operation": 466,
+          "observed": 0,
+          "wait_median_ns": 416,
+          "wait_p95_ns": 534,
+          "cpu_ns": 15265718,
+          "process_cpu_ns": 15267333,
+          "wall_ns": 15284431
+        },
+        {
+          "ns_per_operation": 469,
+          "observed": 0,
+          "wait_median_ns": 417,
+          "wait_p95_ns": 545,
+          "cpu_ns": 15393761,
+          "process_cpu_ns": 15396275,
+          "wall_ns": 15396359
+        },
+        {
+          "ns_per_operation": 476,
+          "observed": 0,
+          "wait_median_ns": 418,
+          "wait_p95_ns": 565,
+          "cpu_ns": 15585949,
+          "process_cpu_ns": 15587980,
+          "wall_ns": 15621192
+        },
+        {
+          "ns_per_operation": 479,
+          "observed": 0,
+          "wait_median_ns": 417,
+          "wait_p95_ns": 555,
+          "cpu_ns": 15457536,
+          "process_cpu_ns": 15461378,
+          "wall_ns": 15715492
+        },
+        {
+          "ns_per_operation": 465,
+          "observed": 0,
+          "wait_median_ns": 413,
+          "wait_p95_ns": 544,
+          "cpu_ns": 15256503,
+          "process_cpu_ns": 15258364,
+          "wall_ns": 15262597
+        },
+        {
+          "ns_per_operation": 473,
+          "observed": 0,
+          "wait_median_ns": 420,
+          "wait_p95_ns": 557,
+          "cpu_ns": 15512810,
+          "process_cpu_ns": 15515532,
+          "wall_ns": 15511179
+        }
+      ],
+      "median": 472,
+      "mad": 4,
+      "discarded": 8
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 458,
+          "observed": 0,
+          "wait_median_ns": 411,
+          "wait_p95_ns": 529,
+          "cpu_ns": 14953703,
+          "process_cpu_ns": 14955853,
+          "wall_ns": 15021730
+        },
+        {
+          "ns_per_operation": 452,
+          "observed": 0,
+          "wait_median_ns": 408,
+          "wait_p95_ns": 498,
+          "cpu_ns": 14810310,
+          "process_cpu_ns": 14811712,
+          "wall_ns": 14815502
+        },
+        {
+          "ns_per_operation": 457,
+          "observed": 0,
+          "wait_median_ns": 411,
+          "wait_p95_ns": 501,
+          "cpu_ns": 14701529,
+          "process_cpu_ns": 14703355,
+          "wall_ns": 14990162
+        },
+        {
+          "ns_per_operation": 454,
+          "observed": 0,
+          "wait_median_ns": 408,
+          "wait_p95_ns": 506,
+          "cpu_ns": 14695094,
+          "process_cpu_ns": 14699513,
+          "wall_ns": 14894558
+        },
+        {
+          "ns_per_operation": 463,
+          "observed": 0,
+          "wait_median_ns": 414,
+          "wait_p95_ns": 528,
+          "cpu_ns": 15169669,
+          "process_cpu_ns": 15172058,
+          "wall_ns": 15197077
+        },
+        {
+          "ns_per_operation": 461,
+          "observed": 0,
+          "wait_median_ns": 412,
+          "wait_p95_ns": 517,
+          "cpu_ns": 15090888,
+          "process_cpu_ns": 15092641,
+          "wall_ns": 15122525
+        },
+        {
+          "ns_per_operation": 450,
+          "observed": 0,
+          "wait_median_ns": 409,
+          "wait_p95_ns": 509,
+          "cpu_ns": 14714800,
+          "process_cpu_ns": 14718200,
+          "wall_ns": 14746359
+        }
+      ],
+      "median": 457,
+      "mad": 4,
+      "discarded": 25
+    }
+  },
+  "facade input_keys=64 max_in_flight=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3799,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7781771,
+          "process_cpu_ns": 7783432,
+          "wall_ns": 7780519
+        },
+        {
+          "ns_per_operation": 4191,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8550068,
+          "process_cpu_ns": 8552289,
+          "wall_ns": 8584291
+        },
+        {
+          "ns_per_operation": 4112,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8301463,
+          "process_cpu_ns": 8303367,
+          "wall_ns": 8423123
+        },
+        {
+          "ns_per_operation": 4075,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8327132,
+          "process_cpu_ns": 8329505,
+          "wall_ns": 8347518
+        },
+        {
+          "ns_per_operation": 3892,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7948908,
+          "process_cpu_ns": 7950236,
+          "wall_ns": 7972296
+        },
+        {
+          "ns_per_operation": 4073,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8290406,
+          "process_cpu_ns": 8292259,
+          "wall_ns": 8341572
+        },
+        {
+          "ns_per_operation": 4031,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8257025,
+          "process_cpu_ns": 8259245,
+          "wall_ns": 8255556
+        }
+      ],
+      "median": 4073,
+      "mad": 42,
+      "discarded": 21
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4222,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8603261,
+          "process_cpu_ns": 8605233,
+          "wall_ns": 8648154
+        },
+        {
+          "ns_per_operation": 4347,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8854956,
+          "process_cpu_ns": 8857105,
+          "wall_ns": 8902732
+        },
+        {
+          "ns_per_operation": 4281,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8696845,
+          "process_cpu_ns": 8699876,
+          "wall_ns": 8768084
+        },
+        {
+          "ns_per_operation": 4262,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8700452,
+          "process_cpu_ns": 8705836,
+          "wall_ns": 8729323
+        },
+        {
+          "ns_per_operation": 4328,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8822867,
+          "process_cpu_ns": 8824800,
+          "wall_ns": 8864383
+        },
+        {
+          "ns_per_operation": 4248,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8702660,
+          "process_cpu_ns": 8704199,
+          "wall_ns": 8701482
+        },
+        {
+          "ns_per_operation": 4186,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8526884,
+          "process_cpu_ns": 8528892,
+          "wall_ns": 8573253
+        }
+      ],
+      "median": 4262,
+      "mad": 40,
+      "discarded": 13
+    }
+  },
+  "facade input_keys=64 max_in_flight=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4094,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8387269,
+          "process_cpu_ns": 8389255,
+          "wall_ns": 8385348
+        },
+        {
+          "ns_per_operation": 3954,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8060491,
+          "process_cpu_ns": 8062311,
+          "wall_ns": 8098898
+        },
+        {
+          "ns_per_operation": 4059,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8233055,
+          "process_cpu_ns": 8236706,
+          "wall_ns": 8314699
+        },
+        {
+          "ns_per_operation": 4033,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8262522,
+          "process_cpu_ns": 8264096,
+          "wall_ns": 8260973
+        },
+        {
+          "ns_per_operation": 4053,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8288955,
+          "process_cpu_ns": 8291383,
+          "wall_ns": 8301935
+        },
+        {
+          "ns_per_operation": 4056,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8288927,
+          "process_cpu_ns": 8296397,
+          "wall_ns": 8308340
+        },
+        {
+          "ns_per_operation": 4065,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8289962,
+          "process_cpu_ns": 8294126,
+          "wall_ns": 8327021
+        }
+      ],
+      "median": 4056,
+      "mad": 9,
+      "discarded": 8
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3871,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7889068,
+          "process_cpu_ns": 7890741,
+          "wall_ns": 7928567
+        },
+        {
+          "ns_per_operation": 3912,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7991305,
+          "process_cpu_ns": 7993515,
+          "wall_ns": 8012201
+        },
+        {
+          "ns_per_operation": 3932,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7983675,
+          "process_cpu_ns": 7986191,
+          "wall_ns": 8053448
+        },
+        {
+          "ns_per_operation": 3761,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7686908,
+          "process_cpu_ns": 7688563,
+          "wall_ns": 7702919
+        },
+        {
+          "ns_per_operation": 3858,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7880514,
+          "process_cpu_ns": 7882145,
+          "wall_ns": 7901192
+        },
+        {
+          "ns_per_operation": 3696,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7570862,
+          "process_cpu_ns": 7572274,
+          "wall_ns": 7569813
+        },
+        {
+          "ns_per_operation": 3876,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7934653,
+          "process_cpu_ns": 7936561,
+          "wall_ns": 7939920
+        }
+      ],
+      "median": 3871,
+      "mad": 41,
+      "discarded": 12
+    }
+  },
+  "facade input_keys=64 max_in_flight=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3995,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8183492,
+          "process_cpu_ns": 8185412,
+          "wall_ns": 8182363
+        },
+        {
+          "ns_per_operation": 4104,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8400243,
+          "process_cpu_ns": 8403077,
+          "wall_ns": 8406162
+        },
+        {
+          "ns_per_operation": 4249,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8690864,
+          "process_cpu_ns": 8693485,
+          "wall_ns": 8703080
+        },
+        {
+          "ns_per_operation": 4134,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8469368,
+          "process_cpu_ns": 8471237,
+          "wall_ns": 8468170
+        },
+        {
+          "ns_per_operation": 4207,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8619278,
+          "process_cpu_ns": 8620932,
+          "wall_ns": 8617731
+        },
+        {
+          "ns_per_operation": 4165,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8533131,
+          "process_cpu_ns": 8534936,
+          "wall_ns": 8531716
+        },
+        {
+          "ns_per_operation": 4256,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8718830,
+          "process_cpu_ns": 8720869,
+          "wall_ns": 8716625
+        }
+      ],
+      "median": 4165,
+      "mad": 61,
+      "discarded": 5
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4318,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8836911,
+          "process_cpu_ns": 8838972,
+          "wall_ns": 8844396
+        },
+        {
+          "ns_per_operation": 4509,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9236930,
+          "process_cpu_ns": 9238700,
+          "wall_ns": 9235534
+        },
+        {
+          "ns_per_operation": 4437,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9089989,
+          "process_cpu_ns": 9091896,
+          "wall_ns": 9088699
+        },
+        {
+          "ns_per_operation": 4591,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9404700,
+          "process_cpu_ns": 9406593,
+          "wall_ns": 9403458
+        },
+        {
+          "ns_per_operation": 4441,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9097137,
+          "process_cpu_ns": 9102144,
+          "wall_ns": 9095888
+        },
+        {
+          "ns_per_operation": 4374,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8960234,
+          "process_cpu_ns": 8962052,
+          "wall_ns": 8958871
+        },
+        {
+          "ns_per_operation": 4401,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9014225,
+          "process_cpu_ns": 9016074,
+          "wall_ns": 9013273
+        }
+      ],
+      "median": 4437,
+      "mad": 63,
+      "discarded": 1
+    }
+  },
+  "facade input_keys=64 max_in_flight=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4373,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8959225,
+          "process_cpu_ns": 8960959,
+          "wall_ns": 8957812
+        },
+        {
+          "ns_per_operation": 4421,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9056742,
+          "process_cpu_ns": 9058853,
+          "wall_ns": 9055523
+        },
+        {
+          "ns_per_operation": 4463,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9142717,
+          "process_cpu_ns": 9145247,
+          "wall_ns": 9141245
+        },
+        {
+          "ns_per_operation": 4476,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9168497,
+          "process_cpu_ns": 9170818,
+          "wall_ns": 9167035
+        },
+        {
+          "ns_per_operation": 4445,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9105650,
+          "process_cpu_ns": 9107136,
+          "wall_ns": 9104432
+        },
+        {
+          "ns_per_operation": 4320,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8838546,
+          "process_cpu_ns": 8842317,
+          "wall_ns": 8848480
+        },
+        {
+          "ns_per_operation": 4329,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8868822,
+          "process_cpu_ns": 8871203,
+          "wall_ns": 8867595
+        }
+      ],
+      "median": 4421,
+      "mad": 48,
+      "discarded": 6
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3983,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8105877,
+          "process_cpu_ns": 8107591,
+          "wall_ns": 8157256
+        },
+        {
+          "ns_per_operation": 3929,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8043746,
+          "process_cpu_ns": 8045853,
+          "wall_ns": 8048246
+        },
+        {
+          "ns_per_operation": 4013,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8195525,
+          "process_cpu_ns": 8197906,
+          "wall_ns": 8220066
+        },
+        {
+          "ns_per_operation": 3867,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7922555,
+          "process_cpu_ns": 7924125,
+          "wall_ns": 7921240
+        },
+        {
+          "ns_per_operation": 3806,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7796716,
+          "process_cpu_ns": 7798824,
+          "wall_ns": 7795427
+        },
+        {
+          "ns_per_operation": 3727,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7636150,
+          "process_cpu_ns": 7637659,
+          "wall_ns": 7634761
+        },
+        {
+          "ns_per_operation": 3671,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7520465,
+          "process_cpu_ns": 7522053,
+          "wall_ns": 7518998
+        }
+      ],
+      "median": 3867,
+      "mad": 116,
+      "discarded": 4
+    }
+  },
+  "facade input_keys=64 max_in_flight=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3609,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7340457,
+          "process_cpu_ns": 7342081,
+          "wall_ns": 7391522
+        },
+        {
+          "ns_per_operation": 3609,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7394167,
+          "process_cpu_ns": 7395357,
+          "wall_ns": 7392876
+        },
+        {
+          "ns_per_operation": 3596,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7366315,
+          "process_cpu_ns": 7367594,
+          "wall_ns": 7365181
+        },
+        {
+          "ns_per_operation": 3591,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7356920,
+          "process_cpu_ns": 7358392,
+          "wall_ns": 7355705
+        },
+        {
+          "ns_per_operation": 3587,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7348047,
+          "process_cpu_ns": 7349598,
+          "wall_ns": 7346885
+        },
+        {
+          "ns_per_operation": 3799,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7783739,
+          "process_cpu_ns": 7786515,
+          "wall_ns": 7781695
+        },
+        {
+          "ns_per_operation": 3474,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7116184,
+          "process_cpu_ns": 7117862,
+          "wall_ns": 7115190
+        }
+      ],
+      "median": 3596,
+      "mad": 13,
+      "discarded": 1
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3668,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7513776,
+          "process_cpu_ns": 7515114,
+          "wall_ns": 7512233
+        },
+        {
+          "ns_per_operation": 3746,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7674726,
+          "process_cpu_ns": 7676352,
+          "wall_ns": 7673211
+        },
+        {
+          "ns_per_operation": 3864,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7908743,
+          "process_cpu_ns": 7910888,
+          "wall_ns": 7913953
+        },
+        {
+          "ns_per_operation": 3691,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7561808,
+          "process_cpu_ns": 7563170,
+          "wall_ns": 7560856
+        },
+        {
+          "ns_per_operation": 3916,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8023185,
+          "process_cpu_ns": 8024885,
+          "wall_ns": 8021221
+        },
+        {
+          "ns_per_operation": 3711,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7602115,
+          "process_cpu_ns": 7603869,
+          "wall_ns": 7601177
+        },
+        {
+          "ns_per_operation": 3809,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7801819,
+          "process_cpu_ns": 7803960,
+          "wall_ns": 7800922
+        }
+      ],
+      "median": 3746,
+      "mad": 63,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=64 max_in_flight=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4145,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8490446,
+          "process_cpu_ns": 8492182,
+          "wall_ns": 8489088
+        },
+        {
+          "ns_per_operation": 3903,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7996523,
+          "process_cpu_ns": 7998194,
+          "wall_ns": 7995278
+        },
+        {
+          "ns_per_operation": 3835,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7856591,
+          "process_cpu_ns": 7857923,
+          "wall_ns": 7855306
+        },
+        {
+          "ns_per_operation": 3970,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8031492,
+          "process_cpu_ns": 8033034,
+          "wall_ns": 8130836
+        },
+        {
+          "ns_per_operation": 3846,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7877990,
+          "process_cpu_ns": 7879462,
+          "wall_ns": 7876758
+        },
+        {
+          "ns_per_operation": 3875,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7938038,
+          "process_cpu_ns": 7939109,
+          "wall_ns": 7936835
+        },
+        {
+          "ns_per_operation": 3859,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7904488,
+          "process_cpu_ns": 7905743,
+          "wall_ns": 7903291
+        }
+      ],
+      "median": 3875,
+      "mad": 29,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3546,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7264368,
+          "process_cpu_ns": 7265281,
+          "wall_ns": 7263569
+        },
+        {
+          "ns_per_operation": 3508,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7185242,
+          "process_cpu_ns": 7186196,
+          "wall_ns": 7184572
+        },
+        {
+          "ns_per_operation": 3574,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7321643,
+          "process_cpu_ns": 7322521,
+          "wall_ns": 7320925
+        },
+        {
+          "ns_per_operation": 3716,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7612670,
+          "process_cpu_ns": 7613936,
+          "wall_ns": 7611959
+        },
+        {
+          "ns_per_operation": 3978,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8149214,
+          "process_cpu_ns": 8151301,
+          "wall_ns": 8148074
+        },
+        {
+          "ns_per_operation": 3621,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7416772,
+          "process_cpu_ns": 7417770,
+          "wall_ns": 7415835
+        },
+        {
+          "ns_per_operation": 3590,
+          "observed": 64,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7353969,
+          "process_cpu_ns": 7354967,
+          "wall_ns": 7353289
+        }
+      ],
+      "median": 3590,
+      "mad": 44,
+      "discarded": 1
+    }
+  },
+  "registry live_keys=1024 ticket_window=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 2228,
+          "observed": 32768,
+          "wait_median_ns": 6350,
+          "wait_p95_ns": 8610,
+          "cpu_ns": 73039434,
+          "process_cpu_ns": 73040582,
+          "wall_ns": 73037103
+        },
+        {
+          "ns_per_operation": 2040,
+          "observed": 32768,
+          "wait_median_ns": 5792,
+          "wait_p95_ns": 7852,
+          "cpu_ns": 66849315,
+          "process_cpu_ns": 66850404,
+          "wall_ns": 66846940
+        },
+        {
+          "ns_per_operation": 2283,
+          "observed": 32768,
+          "wait_median_ns": 6114,
+          "wait_p95_ns": 8833,
+          "cpu_ns": 74822246,
+          "process_cpu_ns": 74823708,
+          "wall_ns": 74819764
+        },
+        {
+          "ns_per_operation": 2264,
+          "observed": 32768,
+          "wait_median_ns": 6191,
+          "wait_p95_ns": 8859,
+          "cpu_ns": 74197359,
+          "process_cpu_ns": 74198503,
+          "wall_ns": 74209746
+        },
+        {
+          "ns_per_operation": 2366,
+          "observed": 32768,
+          "wait_median_ns": 6445,
+          "wait_p95_ns": 9211,
+          "cpu_ns": 77361607,
+          "process_cpu_ns": 77363718,
+          "wall_ns": 77537729
+        },
+        {
+          "ns_per_operation": 2247,
+          "observed": 32768,
+          "wait_median_ns": 6106,
+          "wait_p95_ns": 8707,
+          "cpu_ns": 73654798,
+          "process_cpu_ns": 73656186,
+          "wall_ns": 73658227
+        },
+        {
+          "ns_per_operation": 2141,
+          "observed": 32768,
+          "wait_median_ns": 6023,
+          "wait_p95_ns": 8301,
+          "cpu_ns": 70189848,
+          "process_cpu_ns": 70191149,
+          "wall_ns": 70187323
+        }
+      ],
+      "median": 2247,
+      "mad": 36,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 558,
+          "wait_p95_ns": 690,
+          "cpu_ns": 7844737,
+          "process_cpu_ns": 7846498,
+          "wall_ns": 7843387
+        },
+        {
+          "ns_per_operation": 241,
+          "observed": 32768,
+          "wait_median_ns": 560,
+          "wait_p95_ns": 698,
+          "cpu_ns": 7930412,
+          "process_cpu_ns": 7931671,
+          "wall_ns": 7928465
+        },
+        {
+          "ns_per_operation": 246,
+          "observed": 32768,
+          "wait_median_ns": 557,
+          "wait_p95_ns": 683,
+          "cpu_ns": 8070637,
+          "process_cpu_ns": 8072265,
+          "wall_ns": 8069682
+        },
+        {
+          "ns_per_operation": 251,
+          "observed": 32768,
+          "wait_median_ns": 562,
+          "wait_p95_ns": 700,
+          "cpu_ns": 8249542,
+          "process_cpu_ns": 8250646,
+          "wall_ns": 8248321
+        },
+        {
+          "ns_per_operation": 240,
+          "observed": 32768,
+          "wait_median_ns": 557,
+          "wait_p95_ns": 682,
+          "cpu_ns": 7892275,
+          "process_cpu_ns": 7894102,
+          "wall_ns": 7891087
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 559,
+          "wait_p95_ns": 682,
+          "cpu_ns": 7975726,
+          "process_cpu_ns": 7976634,
+          "wall_ns": 7974683
+        },
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 561,
+          "wait_p95_ns": 700,
+          "cpu_ns": 7846141,
+          "process_cpu_ns": 7847475,
+          "wall_ns": 7845072
+        }
+      ],
+      "median": 241,
+      "mad": 2,
+      "discarded": 0
+    }
+  },
+  "registry live_keys=1024 ticket_window=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 230,
+          "observed": 32768,
+          "wait_median_ns": 528,
+          "wait_p95_ns": 618,
+          "cpu_ns": 7551338,
+          "process_cpu_ns": 7552359,
+          "wall_ns": 7550171
+        },
+        {
+          "ns_per_operation": 234,
+          "observed": 32768,
+          "wait_median_ns": 543,
+          "wait_p95_ns": 624,
+          "cpu_ns": 7674803,
+          "process_cpu_ns": 7675888,
+          "wall_ns": 7673553
+        },
+        {
+          "ns_per_operation": 225,
+          "observed": 32768,
+          "wait_median_ns": 532,
+          "wait_p95_ns": 604,
+          "cpu_ns": 7385666,
+          "process_cpu_ns": 7386821,
+          "wall_ns": 7384440
+        },
+        {
+          "ns_per_operation": 237,
+          "observed": 32768,
+          "wait_median_ns": 535,
+          "wait_p95_ns": 637,
+          "cpu_ns": 7770003,
+          "process_cpu_ns": 7771372,
+          "wall_ns": 7768457
+        },
+        {
+          "ns_per_operation": 239,
+          "observed": 32768,
+          "wait_median_ns": 532,
+          "wait_p95_ns": 616,
+          "cpu_ns": 7795387,
+          "process_cpu_ns": 7796903,
+          "wall_ns": 7839802
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 537,
+          "wait_p95_ns": 666,
+          "cpu_ns": 7979717,
+          "process_cpu_ns": 7981228,
+          "wall_ns": 7978149
+        },
+        {
+          "ns_per_operation": 248,
+          "observed": 32768,
+          "wait_median_ns": 542,
+          "wait_p95_ns": 671,
+          "cpu_ns": 8142534,
+          "process_cpu_ns": 8143936,
+          "wall_ns": 8141264
+        }
+      ],
+      "median": 237,
+      "mad": 6,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 2249,
+          "observed": 32768,
+          "wait_median_ns": 6276,
+          "wait_p95_ns": 8872,
+          "cpu_ns": 73708631,
+          "process_cpu_ns": 73709902,
+          "wall_ns": 73706040
+        },
+        {
+          "ns_per_operation": 2254,
+          "observed": 32768,
+          "wait_median_ns": 6324,
+          "wait_p95_ns": 8787,
+          "cpu_ns": 73867211,
+          "process_cpu_ns": 73868373,
+          "wall_ns": 73864661
+        },
+        {
+          "ns_per_operation": 2194,
+          "observed": 32768,
+          "wait_median_ns": 6127,
+          "wait_p95_ns": 8492,
+          "cpu_ns": 71926769,
+          "process_cpu_ns": 71928077,
+          "wall_ns": 71924232
+        },
+        {
+          "ns_per_operation": 2245,
+          "observed": 32768,
+          "wait_median_ns": 6288,
+          "wait_p95_ns": 8692,
+          "cpu_ns": 73596385,
+          "process_cpu_ns": 73597739,
+          "wall_ns": 73593760
+        },
+        {
+          "ns_per_operation": 2133,
+          "observed": 32768,
+          "wait_median_ns": 5950,
+          "wait_p95_ns": 8261,
+          "cpu_ns": 69898823,
+          "process_cpu_ns": 69900115,
+          "wall_ns": 69896193
+        },
+        {
+          "ns_per_operation": 2399,
+          "observed": 32768,
+          "wait_median_ns": 6382,
+          "wait_p95_ns": 9645,
+          "cpu_ns": 78532906,
+          "process_cpu_ns": 78534545,
+          "wall_ns": 78637648
+        },
+        {
+          "ns_per_operation": 2554,
+          "observed": 32768,
+          "wait_median_ns": 6433,
+          "wait_p95_ns": 10205,
+          "cpu_ns": 83632709,
+          "process_cpu_ns": 83634065,
+          "wall_ns": 83691776
+        }
+      ],
+      "median": 2249,
+      "mad": 55,
+      "discarded": 2
+    }
+  },
+  "registry live_keys=1024 ticket_window=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3104,
+          "observed": 0,
+          "wait_median_ns": 2957,
+          "wait_p95_ns": 3619,
+          "cpu_ns": 101341269,
+          "process_cpu_ns": 101343319,
+          "wall_ns": 101723309
+        },
+        {
+          "ns_per_operation": 2974,
+          "observed": 0,
+          "wait_median_ns": 2837,
+          "wait_p95_ns": 3482,
+          "cpu_ns": 96463932,
+          "process_cpu_ns": 96465678,
+          "wall_ns": 97462050
+        },
+        {
+          "ns_per_operation": 3128,
+          "observed": 0,
+          "wait_median_ns": 2921,
+          "wait_p95_ns": 3664,
+          "cpu_ns": 100501821,
+          "process_cpu_ns": 100503212,
+          "wall_ns": 102509963
+        },
+        {
+          "ns_per_operation": 3101,
+          "observed": 0,
+          "wait_median_ns": 2953,
+          "wait_p95_ns": 3685,
+          "cpu_ns": 100559619,
+          "process_cpu_ns": 100561510,
+          "wall_ns": 101630015
+        },
+        {
+          "ns_per_operation": 3038,
+          "observed": 0,
+          "wait_median_ns": 2897,
+          "wait_p95_ns": 3551,
+          "cpu_ns": 98314010,
+          "process_cpu_ns": 98315959,
+          "wall_ns": 99561089
+        },
+        {
+          "ns_per_operation": 3052,
+          "observed": 0,
+          "wait_median_ns": 2902,
+          "wait_p95_ns": 3623,
+          "cpu_ns": 98869452,
+          "process_cpu_ns": 98872962,
+          "wall_ns": 100021924
+        },
+        {
+          "ns_per_operation": 3161,
+          "observed": 0,
+          "wait_median_ns": 2983,
+          "wait_p95_ns": 3680,
+          "cpu_ns": 101910409,
+          "process_cpu_ns": 101912584,
+          "wall_ns": 103587076
+        }
+      ],
+      "median": 3101,
+      "mad": 49,
+      "discarded": 67
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 529,
+          "observed": 0,
+          "wait_median_ns": 450,
+          "wait_p95_ns": 723,
+          "cpu_ns": 17226520,
+          "process_cpu_ns": 17229477,
+          "wall_ns": 17340894
+        },
+        {
+          "ns_per_operation": 518,
+          "observed": 0,
+          "wait_median_ns": 450,
+          "wait_p95_ns": 674,
+          "cpu_ns": 16981209,
+          "process_cpu_ns": 16988202,
+          "wall_ns": 16978993
+        },
+        {
+          "ns_per_operation": 528,
+          "observed": 0,
+          "wait_median_ns": 457,
+          "wait_p95_ns": 702,
+          "cpu_ns": 17313839,
+          "process_cpu_ns": 17315701,
+          "wall_ns": 17316916
+        },
+        {
+          "ns_per_operation": 493,
+          "observed": 0,
+          "wait_median_ns": 419,
+          "wait_p95_ns": 604,
+          "cpu_ns": 16155392,
+          "process_cpu_ns": 16157060,
+          "wall_ns": 16162080
+        },
+        {
+          "ns_per_operation": 519,
+          "observed": 0,
+          "wait_median_ns": 452,
+          "wait_p95_ns": 682,
+          "cpu_ns": 17031474,
+          "process_cpu_ns": 17034469,
+          "wall_ns": 17029465
+        },
+        {
+          "ns_per_operation": 519,
+          "observed": 0,
+          "wait_median_ns": 450,
+          "wait_p95_ns": 693,
+          "cpu_ns": 17034073,
+          "process_cpu_ns": 17035993,
+          "wall_ns": 17032323
+        },
+        {
+          "ns_per_operation": 518,
+          "observed": 0,
+          "wait_median_ns": 445,
+          "wait_p95_ns": 675,
+          "cpu_ns": 16947556,
+          "process_cpu_ns": 16952432,
+          "wall_ns": 16993171
+        }
+      ],
+      "median": 519,
+      "mad": 1,
+      "discarded": 4
+    }
+  },
+  "registry live_keys=1024 ticket_window=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 268,
+          "observed": 32768,
+          "wait_median_ns": 8613,
+          "wait_p95_ns": 11335,
+          "cpu_ns": 8790578,
+          "process_cpu_ns": 8792140,
+          "wall_ns": 8789140
+        },
+        {
+          "ns_per_operation": 276,
+          "observed": 32768,
+          "wait_median_ns": 8644,
+          "wait_p95_ns": 11428,
+          "cpu_ns": 9060351,
+          "process_cpu_ns": 9062479,
+          "wall_ns": 9058604
+        },
+        {
+          "ns_per_operation": 278,
+          "observed": 32768,
+          "wait_median_ns": 8791,
+          "wait_p95_ns": 11909,
+          "cpu_ns": 9125108,
+          "process_cpu_ns": 9127702,
+          "wall_ns": 9123673
+        },
+        {
+          "ns_per_operation": 275,
+          "observed": 32768,
+          "wait_median_ns": 8747,
+          "wait_p95_ns": 11740,
+          "cpu_ns": 9028977,
+          "process_cpu_ns": 9030751,
+          "wall_ns": 9027005
+        },
+        {
+          "ns_per_operation": 278,
+          "observed": 32768,
+          "wait_median_ns": 8807,
+          "wait_p95_ns": 11629,
+          "cpu_ns": 9128921,
+          "process_cpu_ns": 9130808,
+          "wall_ns": 9138853
+        },
+        {
+          "ns_per_operation": 271,
+          "observed": 32768,
+          "wait_median_ns": 8630,
+          "wait_p95_ns": 11459,
+          "cpu_ns": 8910709,
+          "process_cpu_ns": 8912776,
+          "wall_ns": 8908694
+        },
+        {
+          "ns_per_operation": 267,
+          "observed": 32768,
+          "wait_median_ns": 8455,
+          "wait_p95_ns": 11332,
+          "cpu_ns": 8738744,
+          "process_cpu_ns": 8740443,
+          "wall_ns": 8757788
+        }
+      ],
+      "median": 275,
+      "mad": 3,
+      "discarded": 10
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 2668,
+          "observed": 32768,
+          "wait_median_ns": 86270,
+          "wait_p95_ns": 157958,
+          "cpu_ns": 87356827,
+          "process_cpu_ns": 87361736,
+          "wall_ns": 87453706
+        },
+        {
+          "ns_per_operation": 2624,
+          "observed": 32768,
+          "wait_median_ns": 84660,
+          "wait_p95_ns": 154849,
+          "cpu_ns": 86014130,
+          "process_cpu_ns": 86016095,
+          "wall_ns": 86011104
+        },
+        {
+          "ns_per_operation": 2513,
+          "observed": 32768,
+          "wait_median_ns": 81300,
+          "wait_p95_ns": 148167,
+          "cpu_ns": 82221946,
+          "process_cpu_ns": 82225532,
+          "wall_ns": 82362659
+        },
+        {
+          "ns_per_operation": 2532,
+          "observed": 32768,
+          "wait_median_ns": 81383,
+          "wait_p95_ns": 148665,
+          "cpu_ns": 82967499,
+          "process_cpu_ns": 82969729,
+          "wall_ns": 82997391
+        },
+        {
+          "ns_per_operation": 2645,
+          "observed": 32768,
+          "wait_median_ns": 84951,
+          "wait_p95_ns": 155604,
+          "cpu_ns": 86682380,
+          "process_cpu_ns": 86684498,
+          "wall_ns": 86679454
+        },
+        {
+          "ns_per_operation": 2612,
+          "observed": 32768,
+          "wait_median_ns": 83401,
+          "wait_p95_ns": 152505,
+          "cpu_ns": 84274111,
+          "process_cpu_ns": 84275939,
+          "wall_ns": 85613149
+        },
+        {
+          "ns_per_operation": 2661,
+          "observed": 32768,
+          "wait_median_ns": 85874,
+          "wait_p95_ns": 157303,
+          "cpu_ns": 87205604,
+          "process_cpu_ns": 87207301,
+          "wall_ns": 87222019
+        }
+      ],
+      "median": 2624,
+      "mad": 37,
+      "discarded": 27
+    }
+  },
+  "registry live_keys=1024 ticket_window=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 2669,
+          "observed": 32768,
+          "wait_median_ns": 86179,
+          "wait_p95_ns": 157333,
+          "cpu_ns": 86027573,
+          "process_cpu_ns": 86032658,
+          "wall_ns": 87479936
+        },
+        {
+          "ns_per_operation": 2583,
+          "observed": 32768,
+          "wait_median_ns": 84195,
+          "wait_p95_ns": 153201,
+          "cpu_ns": 84608341,
+          "process_cpu_ns": 84610093,
+          "wall_ns": 84660653
+        },
+        {
+          "ns_per_operation": 2609,
+          "observed": 32768,
+          "wait_median_ns": 84294,
+          "wait_p95_ns": 154249,
+          "cpu_ns": 85473260,
+          "process_cpu_ns": 85475432,
+          "wall_ns": 85504165
+        },
+        {
+          "ns_per_operation": 2567,
+          "observed": 32768,
+          "wait_median_ns": 83482,
+          "wait_p95_ns": 152302,
+          "cpu_ns": 84093691,
+          "process_cpu_ns": 84096609,
+          "wall_ns": 84143081
+        },
+        {
+          "ns_per_operation": 2504,
+          "observed": 32768,
+          "wait_median_ns": 80764,
+          "wait_p95_ns": 148961,
+          "cpu_ns": 82054966,
+          "process_cpu_ns": 82056553,
+          "wall_ns": 82061236
+        },
+        {
+          "ns_per_operation": 2465,
+          "observed": 32768,
+          "wait_median_ns": 79990,
+          "wait_p95_ns": 146582,
+          "cpu_ns": 80528378,
+          "process_cpu_ns": 80530600,
+          "wall_ns": 80799685
+        },
+        {
+          "ns_per_operation": 2524,
+          "observed": 32768,
+          "wait_median_ns": 82182,
+          "wait_p95_ns": 149395,
+          "cpu_ns": 82715748,
+          "process_cpu_ns": 82717109,
+          "wall_ns": 82721281
+        }
+      ],
+      "median": 2567,
+      "mad": 43,
+      "discarded": 2
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 238,
+          "observed": 32768,
+          "wait_median_ns": 7811,
+          "wait_p95_ns": 9606,
+          "cpu_ns": 7812859,
+          "process_cpu_ns": 7814560,
+          "wall_ns": 7811668
+        },
+        {
+          "ns_per_operation": 244,
+          "observed": 32768,
+          "wait_median_ns": 7920,
+          "wait_p95_ns": 9665,
+          "cpu_ns": 8017319,
+          "process_cpu_ns": 8018464,
+          "wall_ns": 8015919
+        },
+        {
+          "ns_per_operation": 233,
+          "observed": 32768,
+          "wait_median_ns": 7709,
+          "wait_p95_ns": 9357,
+          "cpu_ns": 7655584,
+          "process_cpu_ns": 7656984,
+          "wall_ns": 7653990
+        },
+        {
+          "ns_per_operation": 233,
+          "observed": 32768,
+          "wait_median_ns": 7684,
+          "wait_p95_ns": 9330,
+          "cpu_ns": 7649603,
+          "process_cpu_ns": 7651321,
+          "wall_ns": 7648341
+        },
+        {
+          "ns_per_operation": 235,
+          "observed": 32768,
+          "wait_median_ns": 7798,
+          "wait_p95_ns": 9361,
+          "cpu_ns": 7723597,
+          "process_cpu_ns": 7725036,
+          "wall_ns": 7722596
+        },
+        {
+          "ns_per_operation": 237,
+          "observed": 32768,
+          "wait_median_ns": 7956,
+          "wait_p95_ns": 9644,
+          "cpu_ns": 7796459,
+          "process_cpu_ns": 7798037,
+          "wall_ns": 7795161
+        },
+        {
+          "ns_per_operation": 237,
+          "observed": 32768,
+          "wait_median_ns": 7759,
+          "wait_p95_ns": 9463,
+          "cpu_ns": 7767309,
+          "process_cpu_ns": 7768470,
+          "wall_ns": 7766141
+        }
+      ],
+      "median": 237,
+      "mad": 2,
+      "discarded": 0
+    }
+  },
+  "registry live_keys=1024 ticket_window=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 465,
+          "observed": 0,
+          "wait_median_ns": 402,
+          "wait_p95_ns": 561,
+          "cpu_ns": 15254377,
+          "process_cpu_ns": 15255825,
+          "wall_ns": 15252263
+        },
+        {
+          "ns_per_operation": 446,
+          "observed": 0,
+          "wait_median_ns": 400,
+          "wait_p95_ns": 498,
+          "cpu_ns": 14620343,
+          "process_cpu_ns": 14622074,
+          "wall_ns": 14619069
+        },
+        {
+          "ns_per_operation": 460,
+          "observed": 0,
+          "wait_median_ns": 403,
+          "wait_p95_ns": 534,
+          "cpu_ns": 15087406,
+          "process_cpu_ns": 15088716,
+          "wall_ns": 15085706
+        },
+        {
+          "ns_per_operation": 459,
+          "observed": 0,
+          "wait_median_ns": 401,
+          "wait_p95_ns": 545,
+          "cpu_ns": 15065794,
+          "process_cpu_ns": 15067363,
+          "wall_ns": 15064524
+        },
+        {
+          "ns_per_operation": 480,
+          "observed": 0,
+          "wait_median_ns": 406,
+          "wait_p95_ns": 632,
+          "cpu_ns": 15747383,
+          "process_cpu_ns": 15749067,
+          "wall_ns": 15745741
+        },
+        {
+          "ns_per_operation": 464,
+          "observed": 0,
+          "wait_median_ns": 402,
+          "wait_p95_ns": 553,
+          "cpu_ns": 15210411,
+          "process_cpu_ns": 15212609,
+          "wall_ns": 15208721
+        },
+        {
+          "ns_per_operation": 446,
+          "observed": 0,
+          "wait_median_ns": 399,
+          "wait_p95_ns": 493,
+          "cpu_ns": 14626113,
+          "process_cpu_ns": 14627778,
+          "wall_ns": 14624708
+        }
+      ],
+      "median": 460,
+      "mad": 5,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 2571,
+          "observed": 0,
+          "wait_median_ns": 2509,
+          "wait_p95_ns": 2798,
+          "cpu_ns": 84253814,
+          "process_cpu_ns": 84254950,
+          "wall_ns": 84251283
+        },
+        {
+          "ns_per_operation": 2573,
+          "observed": 0,
+          "wait_median_ns": 2569,
+          "wait_p95_ns": 2768,
+          "cpu_ns": 84326209,
+          "process_cpu_ns": 84327305,
+          "wall_ns": 84323695
+        },
+        {
+          "ns_per_operation": 2549,
+          "observed": 0,
+          "wait_median_ns": 2555,
+          "wait_p95_ns": 2808,
+          "cpu_ns": 83529287,
+          "process_cpu_ns": 83530358,
+          "wall_ns": 83526691
+        },
+        {
+          "ns_per_operation": 2544,
+          "observed": 0,
+          "wait_median_ns": 2455,
+          "wait_p95_ns": 2780,
+          "cpu_ns": 83392989,
+          "process_cpu_ns": 83394617,
+          "wall_ns": 83389663
+        },
+        {
+          "ns_per_operation": 2606,
+          "observed": 0,
+          "wait_median_ns": 2495,
+          "wait_p95_ns": 3001,
+          "cpu_ns": 85405837,
+          "process_cpu_ns": 85407159,
+          "wall_ns": 85403079
+        },
+        {
+          "ns_per_operation": 2777,
+          "observed": 0,
+          "wait_median_ns": 2617,
+          "wait_p95_ns": 2967,
+          "cpu_ns": 89519678,
+          "process_cpu_ns": 89521027,
+          "wall_ns": 91018499
+        },
+        {
+          "ns_per_operation": 2611,
+          "observed": 0,
+          "wait_median_ns": 2566,
+          "wait_p95_ns": 3035,
+          "cpu_ns": 85565729,
+          "process_cpu_ns": 85567702,
+          "wall_ns": 85579839
+        }
+      ],
+      "median": 2573,
+      "mad": 29,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=1024 max_in_flight=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3934,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8057449,
+          "process_cpu_ns": 8059129,
+          "wall_ns": 8058656
+        },
+        {
+          "ns_per_operation": 3930,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8050229,
+          "process_cpu_ns": 8051502,
+          "wall_ns": 8049167
+        },
+        {
+          "ns_per_operation": 4064,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8326223,
+          "process_cpu_ns": 8327862,
+          "wall_ns": 8324797
+        },
+        {
+          "ns_per_operation": 4038,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8272137,
+          "process_cpu_ns": 8274182,
+          "wall_ns": 8270898
+        },
+        {
+          "ns_per_operation": 4040,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8276002,
+          "process_cpu_ns": 8277673,
+          "wall_ns": 8274774
+        },
+        {
+          "ns_per_operation": 4226,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8619004,
+          "process_cpu_ns": 8625529,
+          "wall_ns": 8655002
+        },
+        {
+          "ns_per_operation": 4126,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8426399,
+          "process_cpu_ns": 8427958,
+          "wall_ns": 8450123
+        }
+      ],
+      "median": 4040,
+      "mad": 86,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4289,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8785365,
+          "process_cpu_ns": 8786984,
+          "wall_ns": 8784114
+        },
+        {
+          "ns_per_operation": 4120,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8440841,
+          "process_cpu_ns": 8442327,
+          "wall_ns": 8439555
+        },
+        {
+          "ns_per_operation": 4154,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8509538,
+          "process_cpu_ns": 8510981,
+          "wall_ns": 8508573
+        },
+        {
+          "ns_per_operation": 4247,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8691950,
+          "process_cpu_ns": 8693559,
+          "wall_ns": 8697888
+        },
+        {
+          "ns_per_operation": 4289,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8786459,
+          "process_cpu_ns": 8787626,
+          "wall_ns": 8785287
+        },
+        {
+          "ns_per_operation": 4234,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8672469,
+          "process_cpu_ns": 8673842,
+          "wall_ns": 8671370
+        },
+        {
+          "ns_per_operation": 4321,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8846295,
+          "process_cpu_ns": 8847521,
+          "wall_ns": 8849429
+        }
+      ],
+      "median": 4247,
+      "mad": 42,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=1024 max_in_flight=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3847,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7881695,
+          "process_cpu_ns": 7883195,
+          "wall_ns": 7880585
+        },
+        {
+          "ns_per_operation": 3613,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7401288,
+          "process_cpu_ns": 7402375,
+          "wall_ns": 7400051
+        },
+        {
+          "ns_per_operation": 3669,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7516224,
+          "process_cpu_ns": 7517393,
+          "wall_ns": 7515187
+        },
+        {
+          "ns_per_operation": 3626,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7427340,
+          "process_cpu_ns": 7428943,
+          "wall_ns": 7426498
+        },
+        {
+          "ns_per_operation": 3739,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7630745,
+          "process_cpu_ns": 7631785,
+          "wall_ns": 7658109
+        },
+        {
+          "ns_per_operation": 3673,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7524701,
+          "process_cpu_ns": 7525887,
+          "wall_ns": 7523687
+        },
+        {
+          "ns_per_operation": 3767,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7716224,
+          "process_cpu_ns": 7717289,
+          "wall_ns": 7715064
+        }
+      ],
+      "median": 3673,
+      "mad": 60,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3624,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7422893,
+          "process_cpu_ns": 7424642,
+          "wall_ns": 7422068
+        },
+        {
+          "ns_per_operation": 3437,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7039942,
+          "process_cpu_ns": 7041396,
+          "wall_ns": 7038985
+        },
+        {
+          "ns_per_operation": 3459,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7085445,
+          "process_cpu_ns": 7087236,
+          "wall_ns": 7084575
+        },
+        {
+          "ns_per_operation": 3631,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7438258,
+          "process_cpu_ns": 7439246,
+          "wall_ns": 7437422
+        },
+        {
+          "ns_per_operation": 3561,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7295349,
+          "process_cpu_ns": 7296741,
+          "wall_ns": 7294232
+        },
+        {
+          "ns_per_operation": 3474,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7116432,
+          "process_cpu_ns": 7117946,
+          "wall_ns": 7115575
+        },
+        {
+          "ns_per_operation": 3592,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7357846,
+          "process_cpu_ns": 7359809,
+          "wall_ns": 7356999
+        }
+      ],
+      "median": 3561,
+      "mad": 70,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=1024 max_in_flight=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3635,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7445552,
+          "process_cpu_ns": 7446738,
+          "wall_ns": 7444540
+        },
+        {
+          "ns_per_operation": 3708,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7596960,
+          "process_cpu_ns": 7597841,
+          "wall_ns": 7595955
+        },
+        {
+          "ns_per_operation": 3622,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7419266,
+          "process_cpu_ns": 7420326,
+          "wall_ns": 7418249
+        },
+        {
+          "ns_per_operation": 3657,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7491659,
+          "process_cpu_ns": 7492701,
+          "wall_ns": 7490815
+        },
+        {
+          "ns_per_operation": 3628,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7431941,
+          "process_cpu_ns": 7432785,
+          "wall_ns": 7431337
+        },
+        {
+          "ns_per_operation": 3516,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7202566,
+          "process_cpu_ns": 7203397,
+          "wall_ns": 7201979
+        },
+        {
+          "ns_per_operation": 3620,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7415260,
+          "process_cpu_ns": 7416166,
+          "wall_ns": 7414592
+        }
+      ],
+      "median": 3628,
+      "mad": 8,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3886,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7908173,
+          "process_cpu_ns": 7909238,
+          "wall_ns": 7959320
+        },
+        {
+          "ns_per_operation": 3767,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7717014,
+          "process_cpu_ns": 7717892,
+          "wall_ns": 7716207
+        },
+        {
+          "ns_per_operation": 3726,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7631983,
+          "process_cpu_ns": 7633344,
+          "wall_ns": 7631286
+        },
+        {
+          "ns_per_operation": 3659,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7495705,
+          "process_cpu_ns": 7496455,
+          "wall_ns": 7494964
+        },
+        {
+          "ns_per_operation": 3708,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7596716,
+          "process_cpu_ns": 7597476,
+          "wall_ns": 7596009
+        },
+        {
+          "ns_per_operation": 3659,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7494593,
+          "process_cpu_ns": 7495352,
+          "wall_ns": 7493865
+        },
+        {
+          "ns_per_operation": 3718,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7543629,
+          "process_cpu_ns": 7544447,
+          "wall_ns": 7616458
+        }
+      ],
+      "median": 3718,
+      "mad": 49,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=1024 max_in_flight=1024 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4231,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8666806,
+          "process_cpu_ns": 8671351,
+          "wall_ns": 8665581
+        },
+        {
+          "ns_per_operation": 4358,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8833819,
+          "process_cpu_ns": 8844168,
+          "wall_ns": 8926474
+        },
+        {
+          "ns_per_operation": 4122,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8445327,
+          "process_cpu_ns": 8447655,
+          "wall_ns": 8443826
+        },
+        {
+          "ns_per_operation": 4265,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8715669,
+          "process_cpu_ns": 8717533,
+          "wall_ns": 8735127
+        },
+        {
+          "ns_per_operation": 4399,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9011951,
+          "process_cpu_ns": 9014730,
+          "wall_ns": 9010469
+        },
+        {
+          "ns_per_operation": 4268,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8742699,
+          "process_cpu_ns": 8745810,
+          "wall_ns": 8741340
+        },
+        {
+          "ns_per_operation": 4325,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8859561,
+          "process_cpu_ns": 8861984,
+          "wall_ns": 8857788
+        }
+      ],
+      "median": 4268,
+      "mad": 57,
+      "discarded": 11
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3846,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7878911,
+          "process_cpu_ns": 7881198,
+          "wall_ns": 7877370
+        },
+        {
+          "ns_per_operation": 3835,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7856051,
+          "process_cpu_ns": 7859197,
+          "wall_ns": 7854428
+        },
+        {
+          "ns_per_operation": 4155,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8492501,
+          "process_cpu_ns": 8495697,
+          "wall_ns": 8510059
+        },
+        {
+          "ns_per_operation": 4143,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8397491,
+          "process_cpu_ns": 8399722,
+          "wall_ns": 8486168
+        },
+        {
+          "ns_per_operation": 3869,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7925788,
+          "process_cpu_ns": 7928586,
+          "wall_ns": 7924335
+        },
+        {
+          "ns_per_operation": 3711,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7602178,
+          "process_cpu_ns": 7603832,
+          "wall_ns": 7600288
+        },
+        {
+          "ns_per_operation": 3937,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8066130,
+          "process_cpu_ns": 8069501,
+          "wall_ns": 8064494
+        }
+      ],
+      "median": 3869,
+      "mad": 68,
+      "discarded": 3
+    }
+  },
+  "facade input_keys=1024 max_in_flight=1024 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4059,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8234236,
+          "process_cpu_ns": 8236454,
+          "wall_ns": 8313126
+        },
+        {
+          "ns_per_operation": 3972,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8137876,
+          "process_cpu_ns": 8139540,
+          "wall_ns": 8136414
+        },
+        {
+          "ns_per_operation": 4088,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8375328,
+          "process_cpu_ns": 8377076,
+          "wall_ns": 8373971
+        },
+        {
+          "ns_per_operation": 4085,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8368723,
+          "process_cpu_ns": 8370864,
+          "wall_ns": 8367023
+        },
+        {
+          "ns_per_operation": 4136,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8474084,
+          "process_cpu_ns": 8475838,
+          "wall_ns": 8472546
+        },
+        {
+          "ns_per_operation": 4081,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8360779,
+          "process_cpu_ns": 8362839,
+          "wall_ns": 8359300
+        },
+        {
+          "ns_per_operation": 4057,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8311084,
+          "process_cpu_ns": 8313056,
+          "wall_ns": 8309424
+        }
+      ],
+      "median": 4081,
+      "mad": 22,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 4639,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9454940,
+          "process_cpu_ns": 9457462,
+          "wall_ns": 9501969
+        },
+        {
+          "ns_per_operation": 4571,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9363078,
+          "process_cpu_ns": 9365316,
+          "wall_ns": 9361846
+        },
+        {
+          "ns_per_operation": 4623,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9434612,
+          "process_cpu_ns": 9436627,
+          "wall_ns": 9468361
+        },
+        {
+          "ns_per_operation": 4476,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9168948,
+          "process_cpu_ns": 9170868,
+          "wall_ns": 9167137
+        },
+        {
+          "ns_per_operation": 4598,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9291998,
+          "process_cpu_ns": 9298781,
+          "wall_ns": 9417112
+        },
+        {
+          "ns_per_operation": 4642,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9478885,
+          "process_cpu_ns": 9481096,
+          "wall_ns": 9506915
+        },
+        {
+          "ns_per_operation": 4617,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 9447203,
+          "process_cpu_ns": 9449077,
+          "wall_ns": 9456514
+        }
+      ],
+      "median": 4617,
+      "mad": 22,
+      "discarded": 5
+    }
+  },
+  "facade input_keys=1024 max_in_flight=1024 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3879,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7938037,
+          "process_cpu_ns": 7941365,
+          "wall_ns": 7945614
+        },
+        {
+          "ns_per_operation": 3932,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7934207,
+          "process_cpu_ns": 7936206,
+          "wall_ns": 8054726
+        },
+        {
+          "ns_per_operation": 3820,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7826241,
+          "process_cpu_ns": 7828616,
+          "wall_ns": 7824809
+        },
+        {
+          "ns_per_operation": 3635,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7447308,
+          "process_cpu_ns": 7449790,
+          "wall_ns": 7445949
+        },
+        {
+          "ns_per_operation": 3902,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7993898,
+          "process_cpu_ns": 7997521,
+          "wall_ns": 7992096
+        },
+        {
+          "ns_per_operation": 3817,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7820622,
+          "process_cpu_ns": 7822498,
+          "wall_ns": 7819174
+        },
+        {
+          "ns_per_operation": 3990,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8170303,
+          "process_cpu_ns": 8172429,
+          "wall_ns": 8172167
+        }
+      ],
+      "median": 3879,
+      "mad": 59,
+      "discarded": 3
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3508,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7186438,
+          "process_cpu_ns": 7190064,
+          "wall_ns": 7184886
+        },
+        {
+          "ns_per_operation": 3669,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7516989,
+          "process_cpu_ns": 7519254,
+          "wall_ns": 7515349
+        },
+        {
+          "ns_per_operation": 4005,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8193702,
+          "process_cpu_ns": 8195928,
+          "wall_ns": 8202326
+        },
+        {
+          "ns_per_operation": 3613,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7401685,
+          "process_cpu_ns": 7404497,
+          "wall_ns": 7399597
+        },
+        {
+          "ns_per_operation": 3844,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 7875992,
+          "process_cpu_ns": 7878073,
+          "wall_ns": 7874546
+        },
+        {
+          "ns_per_operation": 4098,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8394707,
+          "process_cpu_ns": 8396523,
+          "wall_ns": 8393202
+        },
+        {
+          "ns_per_operation": 4090,
+          "observed": 1024,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 8378860,
+          "process_cpu_ns": 8381122,
+          "wall_ns": 8377682
+        }
+      ],
+      "median": 3844,
+      "mad": 231,
+      "discarded": 1
+    }
+  },
+  "registry live_keys=4096 ticket_window=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 10830,
+          "observed": 32768,
+          "wait_median_ns": 30927,
+          "wait_p95_ns": 42917,
+          "cpu_ns": 354881658,
+          "process_cpu_ns": 354884556,
+          "wall_ns": 354880400
+        },
+        {
+          "ns_per_operation": 10484,
+          "observed": 32768,
+          "wait_median_ns": 30680,
+          "wait_p95_ns": 41740,
+          "cpu_ns": 343559895,
+          "process_cpu_ns": 343561175,
+          "wall_ns": 343556014
+        },
+        {
+          "ns_per_operation": 10806,
+          "observed": 32768,
+          "wait_median_ns": 30627,
+          "wait_p95_ns": 42752,
+          "cpu_ns": 354028917,
+          "process_cpu_ns": 354030190,
+          "wall_ns": 354116588
+        },
+        {
+          "ns_per_operation": 10911,
+          "observed": 32768,
+          "wait_median_ns": 30844,
+          "wait_p95_ns": 43441,
+          "cpu_ns": 357542542,
+          "process_cpu_ns": 357544213,
+          "wall_ns": 357555993
+        },
+        {
+          "ns_per_operation": 10714,
+          "observed": 32768,
+          "wait_median_ns": 30680,
+          "wait_p95_ns": 42787,
+          "cpu_ns": 351085065,
+          "process_cpu_ns": 351086188,
+          "wall_ns": 351086987
+        },
+        {
+          "ns_per_operation": 10572,
+          "observed": 32768,
+          "wait_median_ns": 30184,
+          "wait_p95_ns": 41290,
+          "cpu_ns": 346410455,
+          "process_cpu_ns": 346411792,
+          "wall_ns": 346432734
+        },
+        {
+          "ns_per_operation": 10551,
+          "observed": 32768,
+          "wait_median_ns": 30267,
+          "wait_p95_ns": 41349,
+          "cpu_ns": 345742392,
+          "process_cpu_ns": 345744465,
+          "wall_ns": 345738165
+        }
+      ],
+      "median": 10714,
+      "mad": 142,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 247,
+          "observed": 32768,
+          "wait_median_ns": 580,
+          "wait_p95_ns": 777,
+          "cpu_ns": 8106290,
+          "process_cpu_ns": 8107985,
+          "wall_ns": 8105182
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 579,
+          "wait_p95_ns": 786,
+          "cpu_ns": 8273646,
+          "process_cpu_ns": 8274873,
+          "wall_ns": 8272454
+        },
+        {
+          "ns_per_operation": 257,
+          "observed": 32768,
+          "wait_median_ns": 586,
+          "wait_p95_ns": 816,
+          "cpu_ns": 8422907,
+          "process_cpu_ns": 8424915,
+          "wall_ns": 8421563
+        },
+        {
+          "ns_per_operation": 256,
+          "observed": 32768,
+          "wait_median_ns": 589,
+          "wait_p95_ns": 853,
+          "cpu_ns": 8402143,
+          "process_cpu_ns": 8403497,
+          "wall_ns": 8400589
+        },
+        {
+          "ns_per_operation": 252,
+          "observed": 32768,
+          "wait_median_ns": 587,
+          "wait_p95_ns": 823,
+          "cpu_ns": 8286305,
+          "process_cpu_ns": 8287662,
+          "wall_ns": 8285212
+        },
+        {
+          "ns_per_operation": 243,
+          "observed": 32768,
+          "wait_median_ns": 577,
+          "wait_p95_ns": 753,
+          "cpu_ns": 7995954,
+          "process_cpu_ns": 7997393,
+          "wall_ns": 7995025
+        },
+        {
+          "ns_per_operation": 247,
+          "observed": 32768,
+          "wait_median_ns": 579,
+          "wait_p95_ns": 774,
+          "cpu_ns": 8100509,
+          "process_cpu_ns": 8101597,
+          "wall_ns": 8099445
+        }
+      ],
+      "median": 252,
+      "mad": 5,
+      "discarded": 0
+    }
+  },
+  "registry live_keys=4096 ticket_window=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 218,
+          "observed": 32768,
+          "wait_median_ns": 530,
+          "wait_p95_ns": 605,
+          "cpu_ns": 7155398,
+          "process_cpu_ns": 7157179,
+          "wall_ns": 7154508
+        },
+        {
+          "ns_per_operation": 222,
+          "observed": 32768,
+          "wait_median_ns": 532,
+          "wait_p95_ns": 604,
+          "cpu_ns": 7296133,
+          "process_cpu_ns": 7297164,
+          "wall_ns": 7295023
+        },
+        {
+          "ns_per_operation": 222,
+          "observed": 32768,
+          "wait_median_ns": 531,
+          "wait_p95_ns": 604,
+          "cpu_ns": 7304033,
+          "process_cpu_ns": 7305027,
+          "wall_ns": 7303062
+        },
+        {
+          "ns_per_operation": 221,
+          "observed": 32768,
+          "wait_median_ns": 527,
+          "wait_p95_ns": 609,
+          "cpu_ns": 7255468,
+          "process_cpu_ns": 7256492,
+          "wall_ns": 7254415
+        },
+        {
+          "ns_per_operation": 223,
+          "observed": 32768,
+          "wait_median_ns": 536,
+          "wait_p95_ns": 610,
+          "cpu_ns": 7312388,
+          "process_cpu_ns": 7313433,
+          "wall_ns": 7311626
+        },
+        {
+          "ns_per_operation": 218,
+          "observed": 32768,
+          "wait_median_ns": 531,
+          "wait_p95_ns": 605,
+          "cpu_ns": 7154055,
+          "process_cpu_ns": 7155347,
+          "wall_ns": 7153094
+        },
+        {
+          "ns_per_operation": 219,
+          "observed": 32768,
+          "wait_median_ns": 527,
+          "wait_p95_ns": 603,
+          "cpu_ns": 7187383,
+          "process_cpu_ns": 7188344,
+          "wall_ns": 7186449
+        }
+      ],
+      "median": 221,
+      "mad": 2,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 10375,
+          "observed": 32768,
+          "wait_median_ns": 30447,
+          "wait_p95_ns": 41027,
+          "cpu_ns": 339975275,
+          "process_cpu_ns": 339976605,
+          "wall_ns": 339996045
+        },
+        {
+          "ns_per_operation": 10853,
+          "observed": 32768,
+          "wait_median_ns": 30606,
+          "wait_p95_ns": 42079,
+          "cpu_ns": 349679566,
+          "process_cpu_ns": 349688198,
+          "wall_ns": 355659678
+        },
+        {
+          "ns_per_operation": 11148,
+          "observed": 32768,
+          "wait_median_ns": 31465,
+          "wait_p95_ns": 44518,
+          "cpu_ns": 364514011,
+          "process_cpu_ns": 364517044,
+          "wall_ns": 365310459
+        },
+        {
+          "ns_per_operation": 10814,
+          "observed": 32768,
+          "wait_median_ns": 30928,
+          "wait_p95_ns": 42889,
+          "cpu_ns": 354293299,
+          "process_cpu_ns": 354295272,
+          "wall_ns": 354361703
+        },
+        {
+          "ns_per_operation": 10896,
+          "observed": 32768,
+          "wait_median_ns": 30982,
+          "wait_p95_ns": 42907,
+          "cpu_ns": 357022894,
+          "process_cpu_ns": 357024674,
+          "wall_ns": 357059654
+        },
+        {
+          "ns_per_operation": 10936,
+          "observed": 32768,
+          "wait_median_ns": 31063,
+          "wait_p95_ns": 43236,
+          "cpu_ns": 358343615,
+          "process_cpu_ns": 358345258,
+          "wall_ns": 358362858
+        },
+        {
+          "ns_per_operation": 11367,
+          "observed": 32768,
+          "wait_median_ns": 31199,
+          "wait_p95_ns": 44417,
+          "cpu_ns": 365656648,
+          "process_cpu_ns": 365658601,
+          "wall_ns": 372488882
+        }
+      ],
+      "median": 10896,
+      "mad": 82,
+      "discarded": 8
+    }
+  },
+  "registry live_keys=4096 ticket_window=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 11091,
+          "observed": 0,
+          "wait_median_ns": 10746,
+          "wait_p95_ns": 11487,
+          "cpu_ns": 363446568,
+          "process_cpu_ns": 363448093,
+          "wall_ns": 363458067
+        },
+        {
+          "ns_per_operation": 10749,
+          "observed": 0,
+          "wait_median_ns": 10547,
+          "wait_p95_ns": 10925,
+          "cpu_ns": 352236362,
+          "process_cpu_ns": 352237920,
+          "wall_ns": 352241537
+        },
+        {
+          "ns_per_operation": 10721,
+          "observed": 0,
+          "wait_median_ns": 10530,
+          "wait_p95_ns": 10875,
+          "cpu_ns": 351317327,
+          "process_cpu_ns": 351318790,
+          "wall_ns": 351333824
+        },
+        {
+          "ns_per_operation": 10827,
+          "observed": 0,
+          "wait_median_ns": 10528,
+          "wait_p95_ns": 11055,
+          "cpu_ns": 354810440,
+          "process_cpu_ns": 354811917,
+          "wall_ns": 354802288
+        },
+        {
+          "ns_per_operation": 10797,
+          "observed": 0,
+          "wait_median_ns": 10555,
+          "wait_p95_ns": 10992,
+          "cpu_ns": 353758464,
+          "process_cpu_ns": 353760671,
+          "wall_ns": 353809871
+        },
+        {
+          "ns_per_operation": 10640,
+          "observed": 0,
+          "wait_median_ns": 10500,
+          "wait_p95_ns": 10784,
+          "cpu_ns": 348632568,
+          "process_cpu_ns": 348634002,
+          "wall_ns": 348656317
+        },
+        {
+          "ns_per_operation": 10760,
+          "observed": 0,
+          "wait_median_ns": 10507,
+          "wait_p95_ns": 10973,
+          "cpu_ns": 352590997,
+          "process_cpu_ns": 352593070,
+          "wall_ns": 352593559
+        }
+      ],
+      "median": 10760,
+      "mad": 39,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 530,
+          "observed": 0,
+          "wait_median_ns": 454,
+          "wait_p95_ns": 710,
+          "cpu_ns": 17292151,
+          "process_cpu_ns": 17294487,
+          "wall_ns": 17381551
+        },
+        {
+          "ns_per_operation": 530,
+          "observed": 0,
+          "wait_median_ns": 469,
+          "wait_p95_ns": 746,
+          "cpu_ns": 17399310,
+          "process_cpu_ns": 17401168,
+          "wall_ns": 17397905
+        },
+        {
+          "ns_per_operation": 535,
+          "observed": 0,
+          "wait_median_ns": 454,
+          "wait_p95_ns": 704,
+          "cpu_ns": 17541590,
+          "process_cpu_ns": 17543554,
+          "wall_ns": 17540003
+        },
+        {
+          "ns_per_operation": 534,
+          "observed": 0,
+          "wait_median_ns": 458,
+          "wait_p95_ns": 721,
+          "cpu_ns": 17506924,
+          "process_cpu_ns": 17509465,
+          "wall_ns": 17505606
+        },
+        {
+          "ns_per_operation": 538,
+          "observed": 0,
+          "wait_median_ns": 471,
+          "wait_p95_ns": 755,
+          "cpu_ns": 17659346,
+          "process_cpu_ns": 17661042,
+          "wall_ns": 17657840
+        },
+        {
+          "ns_per_operation": 539,
+          "observed": 0,
+          "wait_median_ns": 461,
+          "wait_p95_ns": 730,
+          "cpu_ns": 17677351,
+          "process_cpu_ns": 17679014,
+          "wall_ns": 17675927
+        },
+        {
+          "ns_per_operation": 553,
+          "observed": 0,
+          "wait_median_ns": 476,
+          "wait_p95_ns": 780,
+          "cpu_ns": 17834824,
+          "process_cpu_ns": 17837024,
+          "wall_ns": 18126540
+        }
+      ],
+      "median": 535,
+      "mad": 4,
+      "discarded": 0
+    }
+  },
+  "registry live_keys=4096 ticket_window=64 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 299,
+          "observed": 32768,
+          "wait_median_ns": 9349,
+          "wait_p95_ns": 13329,
+          "cpu_ns": 9807175,
+          "process_cpu_ns": 9808991,
+          "wall_ns": 9805858
+        },
+        {
+          "ns_per_operation": 305,
+          "observed": 32768,
+          "wait_median_ns": 9543,
+          "wait_p95_ns": 13545,
+          "cpu_ns": 10010383,
+          "process_cpu_ns": 10011964,
+          "wall_ns": 10008864
+        },
+        {
+          "ns_per_operation": 319,
+          "observed": 32768,
+          "wait_median_ns": 9982,
+          "wait_p95_ns": 14897,
+          "cpu_ns": 10485351,
+          "process_cpu_ns": 10487605,
+          "wall_ns": 10483821
+        },
+        {
+          "ns_per_operation": 320,
+          "observed": 32768,
+          "wait_median_ns": 10070,
+          "wait_p95_ns": 14678,
+          "cpu_ns": 10487910,
+          "process_cpu_ns": 10490117,
+          "wall_ns": 10486501
+        },
+        {
+          "ns_per_operation": 308,
+          "observed": 32768,
+          "wait_median_ns": 9796,
+          "wait_p95_ns": 14050,
+          "cpu_ns": 10107095,
+          "process_cpu_ns": 10108744,
+          "wall_ns": 10105789
+        },
+        {
+          "ns_per_operation": 323,
+          "observed": 32768,
+          "wait_median_ns": 10327,
+          "wait_p95_ns": 14684,
+          "cpu_ns": 10603849,
+          "process_cpu_ns": 10605424,
+          "wall_ns": 10602456
+        },
+        {
+          "ns_per_operation": 311,
+          "observed": 32768,
+          "wait_median_ns": 9961,
+          "wait_p95_ns": 14262,
+          "cpu_ns": 10219605,
+          "process_cpu_ns": 10221279,
+          "wall_ns": 10218355
+        }
+      ],
+      "median": 311,
+      "mad": 8,
+      "discarded": 1
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 10911,
+          "observed": 32768,
+          "wait_median_ns": 354125,
+          "wait_p95_ns": 662405,
+          "cpu_ns": 357534392,
+          "process_cpu_ns": 357536456,
+          "wall_ns": 357557611
+        },
+        {
+          "ns_per_operation": 10662,
+          "observed": 32768,
+          "wait_median_ns": 346193,
+          "wait_p95_ns": 648180,
+          "cpu_ns": 349384380,
+          "process_cpu_ns": 349386225,
+          "wall_ns": 349401813
+        },
+        {
+          "ns_per_operation": 10551,
+          "observed": 32768,
+          "wait_median_ns": 342990,
+          "wait_p95_ns": 641031,
+          "cpu_ns": 345732205,
+          "process_cpu_ns": 345733769,
+          "wall_ns": 345736903
+        },
+        {
+          "ns_per_operation": 10726,
+          "observed": 32768,
+          "wait_median_ns": 347729,
+          "wait_p95_ns": 651480,
+          "cpu_ns": 351429312,
+          "process_cpu_ns": 351431493,
+          "wall_ns": 351475091
+        },
+        {
+          "ns_per_operation": 10933,
+          "observed": 32768,
+          "wait_median_ns": 354679,
+          "wait_p95_ns": 663504,
+          "cpu_ns": 358237551,
+          "process_cpu_ns": 358239342,
+          "wall_ns": 358283476
+        },
+        {
+          "ns_per_operation": 10688,
+          "observed": 32768,
+          "wait_median_ns": 346559,
+          "wait_p95_ns": 648788,
+          "cpu_ns": 350219415,
+          "process_cpu_ns": 350220827,
+          "wall_ns": 350226666
+        },
+        {
+          "ns_per_operation": 10545,
+          "observed": 32768,
+          "wait_median_ns": 343332,
+          "wait_p95_ns": 641329,
+          "cpu_ns": 345575944,
+          "process_cpu_ns": 345577499,
+          "wall_ns": 345553015
+        }
+      ],
+      "median": 10688,
+      "mad": 137,
+      "discarded": 1
+    }
+  },
+  "registry live_keys=4096 ticket_window=64 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 10829,
+          "observed": 32768,
+          "wait_median_ns": 351243,
+          "wait_p95_ns": 656198,
+          "cpu_ns": 353300025,
+          "process_cpu_ns": 353301653,
+          "wall_ns": 354861647
+        },
+        {
+          "ns_per_operation": 10553,
+          "observed": 32768,
+          "wait_median_ns": 342053,
+          "wait_p95_ns": 640762,
+          "cpu_ns": 345802307,
+          "process_cpu_ns": 345803416,
+          "wall_ns": 345813031
+        },
+        {
+          "ns_per_operation": 10696,
+          "observed": 32768,
+          "wait_median_ns": 346371,
+          "wait_p95_ns": 649509,
+          "cpu_ns": 350498569,
+          "process_cpu_ns": 350500177,
+          "wall_ns": 350506015
+        },
+        {
+          "ns_per_operation": 10918,
+          "observed": 32768,
+          "wait_median_ns": 353961,
+          "wait_p95_ns": 662839,
+          "cpu_ns": 357741267,
+          "process_cpu_ns": 357742805,
+          "wall_ns": 357776462
+        },
+        {
+          "ns_per_operation": 10812,
+          "observed": 32768,
+          "wait_median_ns": 351549,
+          "wait_p95_ns": 657695,
+          "cpu_ns": 354226719,
+          "process_cpu_ns": 354228411,
+          "wall_ns": 354288822
+        },
+        {
+          "ns_per_operation": 10713,
+          "observed": 32768,
+          "wait_median_ns": 347533,
+          "wait_p95_ns": 650577,
+          "cpu_ns": 351014778,
+          "process_cpu_ns": 351015974,
+          "wall_ns": 351045816
+        },
+        {
+          "ns_per_operation": 10735,
+          "observed": 32768,
+          "wait_median_ns": 349272,
+          "wait_p95_ns": 651563,
+          "cpu_ns": 351758819,
+          "process_cpu_ns": 351760244,
+          "wall_ns": 351781194
+        }
+      ],
+      "median": 10735,
+      "mad": 77,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 232,
+          "observed": 32768,
+          "wait_median_ns": 7690,
+          "wait_p95_ns": 9414,
+          "cpu_ns": 7619291,
+          "process_cpu_ns": 7620580,
+          "wall_ns": 7618158
+        },
+        {
+          "ns_per_operation": 235,
+          "observed": 32768,
+          "wait_median_ns": 7755,
+          "wait_p95_ns": 9348,
+          "cpu_ns": 7723833,
+          "process_cpu_ns": 7724988,
+          "wall_ns": 7722666
+        },
+        {
+          "ns_per_operation": 232,
+          "observed": 32768,
+          "wait_median_ns": 7660,
+          "wait_p95_ns": 9397,
+          "cpu_ns": 7625027,
+          "process_cpu_ns": 7626918,
+          "wall_ns": 7623893
+        },
+        {
+          "ns_per_operation": 231,
+          "observed": 32768,
+          "wait_median_ns": 7606,
+          "wait_p95_ns": 9325,
+          "cpu_ns": 7577707,
+          "process_cpu_ns": 7579123,
+          "wall_ns": 7576704
+        },
+        {
+          "ns_per_operation": 232,
+          "observed": 32768,
+          "wait_median_ns": 7645,
+          "wait_p95_ns": 9356,
+          "cpu_ns": 7622117,
+          "process_cpu_ns": 7623375,
+          "wall_ns": 7620565
+        },
+        {
+          "ns_per_operation": 237,
+          "observed": 32768,
+          "wait_median_ns": 7814,
+          "wait_p95_ns": 9632,
+          "cpu_ns": 7781116,
+          "process_cpu_ns": 7782380,
+          "wall_ns": 7785076
+        },
+        {
+          "ns_per_operation": 236,
+          "observed": 32768,
+          "wait_median_ns": 7745,
+          "wait_p95_ns": 9569,
+          "cpu_ns": 7738398,
+          "process_cpu_ns": 7740210,
+          "wall_ns": 7736696
+        }
+      ],
+      "median": 232,
+      "mad": 1,
+      "discarded": 1
+    }
+  },
+  "registry live_keys=4096 ticket_window=64 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 488,
+          "observed": 0,
+          "wait_median_ns": 433,
+          "wait_p95_ns": 621,
+          "cpu_ns": 16016631,
+          "process_cpu_ns": 16018231,
+          "wall_ns": 16015080
+        },
+        {
+          "ns_per_operation": 496,
+          "observed": 0,
+          "wait_median_ns": 433,
+          "wait_p95_ns": 619,
+          "cpu_ns": 16276252,
+          "process_cpu_ns": 16277685,
+          "wall_ns": 16275082
+        },
+        {
+          "ns_per_operation": 488,
+          "observed": 0,
+          "wait_median_ns": 438,
+          "wait_p95_ns": 617,
+          "cpu_ns": 15986819,
+          "process_cpu_ns": 15988689,
+          "wall_ns": 15993610
+        },
+        {
+          "ns_per_operation": 492,
+          "observed": 0,
+          "wait_median_ns": 441,
+          "wait_p95_ns": 635,
+          "cpu_ns": 16138271,
+          "process_cpu_ns": 16139438,
+          "wall_ns": 16137183
+        },
+        {
+          "ns_per_operation": 488,
+          "observed": 0,
+          "wait_median_ns": 438,
+          "wait_p95_ns": 629,
+          "cpu_ns": 16021003,
+          "process_cpu_ns": 16022467,
+          "wall_ns": 16019879
+        },
+        {
+          "ns_per_operation": 479,
+          "observed": 0,
+          "wait_median_ns": 428,
+          "wait_p95_ns": 599,
+          "cpu_ns": 15697470,
+          "process_cpu_ns": 15699041,
+          "wall_ns": 15696259
+        },
+        {
+          "ns_per_operation": 470,
+          "observed": 0,
+          "wait_median_ns": 417,
+          "wait_p95_ns": 580,
+          "cpu_ns": 15421031,
+          "process_cpu_ns": 15422929,
+          "wall_ns": 15419791
+        }
+      ],
+      "median": 488,
+      "mad": 4,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 10725,
+          "observed": 0,
+          "wait_median_ns": 10590,
+          "wait_p95_ns": 10895,
+          "cpu_ns": 351436944,
+          "process_cpu_ns": 351438288,
+          "wall_ns": 351443607
+        },
+        {
+          "ns_per_operation": 10869,
+          "observed": 0,
+          "wait_median_ns": 10613,
+          "wait_p95_ns": 11070,
+          "cpu_ns": 356156764,
+          "process_cpu_ns": 356158631,
+          "wall_ns": 356174995
+        },
+        {
+          "ns_per_operation": 11089,
+          "observed": 0,
+          "wait_median_ns": 10744,
+          "wait_p95_ns": 11284,
+          "cpu_ns": 363369023,
+          "process_cpu_ns": 363370620,
+          "wall_ns": 363385601
+        },
+        {
+          "ns_per_operation": 11103,
+          "observed": 0,
+          "wait_median_ns": 10779,
+          "wait_p95_ns": 11467,
+          "cpu_ns": 363723254,
+          "process_cpu_ns": 363725175,
+          "wall_ns": 363844919
+        },
+        {
+          "ns_per_operation": 11266,
+          "observed": 0,
+          "wait_median_ns": 11000,
+          "wait_p95_ns": 11747,
+          "cpu_ns": 368453110,
+          "process_cpu_ns": 368454555,
+          "wall_ns": 369179477
+        },
+        {
+          "ns_per_operation": 10912,
+          "observed": 0,
+          "wait_median_ns": 10669,
+          "wait_p95_ns": 11102,
+          "cpu_ns": 357572120,
+          "process_cpu_ns": 357573987,
+          "wall_ns": 357574273
+        },
+        {
+          "ns_per_operation": 10831,
+          "observed": 0,
+          "wait_median_ns": 10539,
+          "wait_p95_ns": 11022,
+          "cpu_ns": 354910211,
+          "process_cpu_ns": 354911681,
+          "wall_ns": 354926162
+        }
+      ],
+      "median": 10912,
+      "mad": 177,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4 workload=balanced": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3686,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30191375,
+          "process_cpu_ns": 30192931,
+          "wall_ns": 30199756
+        },
+        {
+          "ns_per_operation": 3674,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30103038,
+          "process_cpu_ns": 30104747,
+          "wall_ns": 30101497
+        },
+        {
+          "ns_per_operation": 3742,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30664378,
+          "process_cpu_ns": 30666100,
+          "wall_ns": 30662281
+        },
+        {
+          "ns_per_operation": 3681,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30160394,
+          "process_cpu_ns": 30162107,
+          "wall_ns": 30158568
+        },
+        {
+          "ns_per_operation": 3666,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30038125,
+          "process_cpu_ns": 30039740,
+          "wall_ns": 30036617
+        },
+        {
+          "ns_per_operation": 3613,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29603918,
+          "process_cpu_ns": 29605656,
+          "wall_ns": 29602322
+        },
+        {
+          "ns_per_operation": 3620,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29656239,
+          "process_cpu_ns": 29657816,
+          "wall_ns": 29660108
+        }
+      ],
+      "median": 3674,
+      "mad": 12,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3923,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32139753,
+          "process_cpu_ns": 32144606,
+          "wall_ns": 32137909
+        },
+        {
+          "ns_per_operation": 4173,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34188561,
+          "process_cpu_ns": 34190361,
+          "wall_ns": 34186538
+        },
+        {
+          "ns_per_operation": 4172,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34185039,
+          "process_cpu_ns": 34187024,
+          "wall_ns": 34183200
+        },
+        {
+          "ns_per_operation": 4058,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33247593,
+          "process_cpu_ns": 33249233,
+          "wall_ns": 33245543
+        },
+        {
+          "ns_per_operation": 4159,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34073079,
+          "process_cpu_ns": 34074247,
+          "wall_ns": 34071196
+        },
+        {
+          "ns_per_operation": 4171,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34169508,
+          "process_cpu_ns": 34171197,
+          "wall_ns": 34173885
+        },
+        {
+          "ns_per_operation": 4252,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34842361,
+          "process_cpu_ns": 34844494,
+          "wall_ns": 34840325
+        }
+      ],
+      "median": 4171,
+      "mad": 12,
+      "discarded": 1
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4 workload=same-key": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3733,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30587135,
+          "process_cpu_ns": 30588609,
+          "wall_ns": 30585004
+        },
+        {
+          "ns_per_operation": 3971,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32500419,
+          "process_cpu_ns": 32502119,
+          "wall_ns": 32532103
+        },
+        {
+          "ns_per_operation": 3697,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30293071,
+          "process_cpu_ns": 30294386,
+          "wall_ns": 30291430
+        },
+        {
+          "ns_per_operation": 3648,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29889800,
+          "process_cpu_ns": 29891267,
+          "wall_ns": 29888255
+        },
+        {
+          "ns_per_operation": 3715,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30437426,
+          "process_cpu_ns": 30439207,
+          "wall_ns": 30440857
+        },
+        {
+          "ns_per_operation": 3698,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30298506,
+          "process_cpu_ns": 30299700,
+          "wall_ns": 30296921
+        },
+        {
+          "ns_per_operation": 3698,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30298241,
+          "process_cpu_ns": 30299430,
+          "wall_ns": 30296723
+        }
+      ],
+      "median": 3698,
+      "mad": 17,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3329,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 27279046,
+          "process_cpu_ns": 27280367,
+          "wall_ns": 27277581
+        },
+        {
+          "ns_per_operation": 3378,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 27672993,
+          "process_cpu_ns": 27674275,
+          "wall_ns": 27678471
+        },
+        {
+          "ns_per_operation": 3367,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 27589341,
+          "process_cpu_ns": 27590688,
+          "wall_ns": 27587783
+        },
+        {
+          "ns_per_operation": 3540,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29005974,
+          "process_cpu_ns": 29008039,
+          "wall_ns": 29004592
+        },
+        {
+          "ns_per_operation": 3395,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 27807584,
+          "process_cpu_ns": 27808723,
+          "wall_ns": 27811991
+        },
+        {
+          "ns_per_operation": 3466,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28399471,
+          "process_cpu_ns": 28400679,
+          "wall_ns": 28398012
+        },
+        {
+          "ns_per_operation": 3637,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29801298,
+          "process_cpu_ns": 29802717,
+          "wall_ns": 29799510
+        }
+      ],
+      "median": 3395,
+      "mad": 66,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4 workload=churn": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3767,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30828644,
+          "process_cpu_ns": 30830022,
+          "wall_ns": 30859322
+        },
+        {
+          "ns_per_operation": 3715,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30438098,
+          "process_cpu_ns": 30439943,
+          "wall_ns": 30436578
+        },
+        {
+          "ns_per_operation": 3900,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31953532,
+          "process_cpu_ns": 31955209,
+          "wall_ns": 31951700
+        },
+        {
+          "ns_per_operation": 3912,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32037909,
+          "process_cpu_ns": 32039547,
+          "wall_ns": 32050198
+        },
+        {
+          "ns_per_operation": 3833,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31407877,
+          "process_cpu_ns": 31409576,
+          "wall_ns": 31406032
+        },
+        {
+          "ns_per_operation": 3963,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32428548,
+          "process_cpu_ns": 32430242,
+          "wall_ns": 32470787
+        },
+        {
+          "ns_per_operation": 3868,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31685160,
+          "process_cpu_ns": 31687366,
+          "wall_ns": 31689316
+        }
+      ],
+      "median": 3868,
+      "mad": 44,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3974,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32562371,
+          "process_cpu_ns": 32564115,
+          "wall_ns": 32560628
+        },
+        {
+          "ns_per_operation": 3886,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31836330,
+          "process_cpu_ns": 31837706,
+          "wall_ns": 31834789
+        },
+        {
+          "ns_per_operation": 3897,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31922139,
+          "process_cpu_ns": 31923848,
+          "wall_ns": 31928611
+        },
+        {
+          "ns_per_operation": 3998,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 32755620,
+          "process_cpu_ns": 32756835,
+          "wall_ns": 32754031
+        },
+        {
+          "ns_per_operation": 4116,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33712749,
+          "process_cpu_ns": 33714164,
+          "wall_ns": 33726044
+        },
+        {
+          "ns_per_operation": 4176,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34186568,
+          "process_cpu_ns": 34188579,
+          "wall_ns": 34214794
+        },
+        {
+          "ns_per_operation": 4155,
+          "observed": 4,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 34040541,
+          "process_cpu_ns": 34042091,
+          "wall_ns": 34043590
+        }
+      ],
+      "median": 3998,
+      "mad": 112,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4096 workload=balanced": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3851,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31552135,
+          "process_cpu_ns": 31553907,
+          "wall_ns": 31549524
+        },
+        {
+          "ns_per_operation": 3817,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31274643,
+          "process_cpu_ns": 31276035,
+          "wall_ns": 31272845
+        },
+        {
+          "ns_per_operation": 3574,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29280221,
+          "process_cpu_ns": 29281817,
+          "wall_ns": 29278655
+        },
+        {
+          "ns_per_operation": 4390,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 35944603,
+          "process_cpu_ns": 35946719,
+          "wall_ns": 35965547
+        },
+        {
+          "ns_per_operation": 4097,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33540212,
+          "process_cpu_ns": 33542082,
+          "wall_ns": 33564288
+        },
+        {
+          "ns_per_operation": 3657,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29965027,
+          "process_cpu_ns": 29966649,
+          "wall_ns": 29963310
+        },
+        {
+          "ns_per_operation": 3687,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30212664,
+          "process_cpu_ns": 30214917,
+          "wall_ns": 30211107
+        }
+      ],
+      "median": 3817,
+      "mad": 160,
+      "discarded": 0
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3493,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28619160,
+          "process_cpu_ns": 28620800,
+          "wall_ns": 28616924
+        },
+        {
+          "ns_per_operation": 3589,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29406203,
+          "process_cpu_ns": 29407984,
+          "wall_ns": 29404302
+        },
+        {
+          "ns_per_operation": 3624,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29692909,
+          "process_cpu_ns": 29694999,
+          "wall_ns": 29695708
+        },
+        {
+          "ns_per_operation": 3333,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 27305507,
+          "process_cpu_ns": 27307255,
+          "wall_ns": 27304128
+        },
+        {
+          "ns_per_operation": 3855,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31582846,
+          "process_cpu_ns": 31585254,
+          "wall_ns": 31585073
+        },
+        {
+          "ns_per_operation": 3536,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28976941,
+          "process_cpu_ns": 28978793,
+          "wall_ns": 28975089
+        },
+        {
+          "ns_per_operation": 3597,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29469005,
+          "process_cpu_ns": 29471157,
+          "wall_ns": 29467321
+        }
+      ],
+      "median": 3589,
+      "mad": 53,
+      "discarded": 1
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4096 workload=same-key": {
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 3598,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29479596,
+          "process_cpu_ns": 29480762,
+          "wall_ns": 29478084
+        },
+        {
+          "ns_per_operation": 3601,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29501221,
+          "process_cpu_ns": 29502960,
+          "wall_ns": 29499844
+        },
+        {
+          "ns_per_operation": 3554,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29120929,
+          "process_cpu_ns": 29122113,
+          "wall_ns": 29119412
+        },
+        {
+          "ns_per_operation": 3526,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28888398,
+          "process_cpu_ns": 28890166,
+          "wall_ns": 28886613
+        },
+        {
+          "ns_per_operation": 3488,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28575093,
+          "process_cpu_ns": 28576452,
+          "wall_ns": 28573725
+        },
+        {
+          "ns_per_operation": 3484,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28539437,
+          "process_cpu_ns": 28540870,
+          "wall_ns": 28543758
+        },
+        {
+          "ns_per_operation": 3737,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30621464,
+          "process_cpu_ns": 30622714,
+          "wall_ns": 30619918
+        }
+      ],
+      "median": 3554,
+      "mad": 47,
+      "discarded": 0
+    },
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3628,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29727991,
+          "process_cpu_ns": 29729479,
+          "wall_ns": 29726494
+        },
+        {
+          "ns_per_operation": 3632,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29755994,
+          "process_cpu_ns": 29757303,
+          "wall_ns": 29754496
+        },
+        {
+          "ns_per_operation": 3684,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30183145,
+          "process_cpu_ns": 30184913,
+          "wall_ns": 30181801
+        },
+        {
+          "ns_per_operation": 3696,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30281677,
+          "process_cpu_ns": 30283294,
+          "wall_ns": 30280289
+        },
+        {
+          "ns_per_operation": 3665,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30028073,
+          "process_cpu_ns": 30029438,
+          "wall_ns": 30026330
+        },
+        {
+          "ns_per_operation": 3618,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29638433,
+          "process_cpu_ns": 29640002,
+          "wall_ns": 29639316
+        },
+        {
+          "ns_per_operation": 3648,
+          "observed": 1,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29887406,
+          "process_cpu_ns": 29888885,
+          "wall_ns": 29886047
+        }
+      ],
+      "median": 3648,
+      "mad": 20,
+      "discarded": 0
+    }
+  },
+  "facade input_keys=4096 max_in_flight=4096 workload=churn": {
+    "candidate": {
+      "samples": [
+        {
+          "ns_per_operation": 3617,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29636728,
+          "process_cpu_ns": 29638622,
+          "wall_ns": 29635050
+        },
+        {
+          "ns_per_operation": 3789,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 31046643,
+          "process_cpu_ns": 31048183,
+          "wall_ns": 31044870
+        },
+        {
+          "ns_per_operation": 3638,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29802718,
+          "process_cpu_ns": 29804444,
+          "wall_ns": 29804624
+        },
+        {
+          "ns_per_operation": 4112,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33576781,
+          "process_cpu_ns": 33578732,
+          "wall_ns": 33690679
+        },
+        {
+          "ns_per_operation": 3631,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 29754331,
+          "process_cpu_ns": 29756180,
+          "wall_ns": 29752146
+        },
+        {
+          "ns_per_operation": 3706,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30366817,
+          "process_cpu_ns": 30368514,
+          "wall_ns": 30364956
+        },
+        {
+          "ns_per_operation": 3665,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30028240,
+          "process_cpu_ns": 30030581,
+          "wall_ns": 30026291
+        }
+      ],
+      "median": 3665,
+      "mad": 41,
+      "discarded": 2
+    },
+    "baseline": {
+      "samples": [
+        {
+          "ns_per_operation": 4070,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33251023,
+          "process_cpu_ns": 33253520,
+          "wall_ns": 33345910
+        },
+        {
+          "ns_per_operation": 3703,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 30343142,
+          "process_cpu_ns": 30345881,
+          "wall_ns": 30341263
+        },
+        {
+          "ns_per_operation": 3439,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28179090,
+          "process_cpu_ns": 28180690,
+          "wall_ns": 28177402
+        },
+        {
+          "ns_per_operation": 3451,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28275869,
+          "process_cpu_ns": 28277515,
+          "wall_ns": 28274031
+        },
+        {
+          "ns_per_operation": 4136,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 33234013,
+          "process_cpu_ns": 33237104,
+          "wall_ns": 33888482
+        },
+        {
+          "ns_per_operation": 3466,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28395943,
+          "process_cpu_ns": 28397698,
+          "wall_ns": 28394070
+        },
+        {
+          "ns_per_operation": 3436,
+          "observed": 4096,
+          "wait_median_ns": 0,
+          "wait_p95_ns": 0,
+          "cpu_ns": 28152157,
+          "process_cpu_ns": 28153986,
+          "wall_ns": 28150158
+        }
+      ],
+      "median": 3466,
+      "mad": 30,
+      "discarded": 1
+    }
+  }
+}

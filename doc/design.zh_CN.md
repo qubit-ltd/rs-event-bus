@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.16）
+# Qubit Event Bus 设计文档（0.17）
 
-> 本文档以 `qubit-event-bus` 0.16.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.17.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -195,7 +195,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.16.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.17.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -307,9 +307,10 @@ facade 共同持有，handler 返回后 facade 读取它来决定 settlement（�
 ```rust
 pub struct PublishReceipt {
     input_event_id: EventId,            // 调用方传入的 envelope ID
-    dispatched_event_id: Option<EventId>, // 拦截器可能替换 envelope，这是真正发出的 ID；被丢弃时为 None
+    dispatched_event_id: Option<EventId>, // 保留原事件 ID；被丢弃时为 None
     provider_id: ProviderId,
     acknowledgement: PublishAcknowledgement,
+    duplicate_possible: bool,            // 前序发布尝试可能已接纳
 }
 
 pub enum PublishAcknowledgement {
@@ -334,7 +335,7 @@ pub enum PublishAcknowledgement {
 目的地已接纳。`admission_outcome()` 区分已知接纳、部分接纳、无目的地、丢弃和 opaque
 确认；只有 `PublishVisibility::DestinationAdmissions` 才能提供目的地明细。
 `publish_all` 返回 `BatchPublishResult`，按输入顺序保留每个请求的
-`Result<PublishReceipt, PublishError>`，某一条失败不影响后续请求继续发布。
+`Result<PublishReceipt, PublishFailure>`，某一条失败不影响后续请求继续发布。
 
 ### 3.6 `DeadLetterEvent<T>`
 
@@ -634,7 +635,7 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `async_subscriber_interceptors` | 同上，异步版本 | 全局异步中间件（仅 `AsyncEventBus` 使用） |
 | `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | 同步接手上限、handler 队列与接收线程预算 |
 | `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | 异步 facade 全局 in-flight 上限 |
-| `max_encoded_payload_bytes` | `Option<NonZeroUsize>` | 可选的编码输出上限，在调用 provider 前检查；`None` 表示不限制 |
+| `payload_limits` | `PayloadLimits` | 编码发布和接收的独立正数上限，默认各 1,048,576 字节 |
 
 facade 创建时只读取一次 provider capabilities，并在后续校验中使用不可变快照。
 直接构造时若 `capabilities()` panic，构造函数返回 `SpiError`，分类为终态
@@ -654,12 +655,22 @@ facade 创建时只读取一次 provider capabilities，并在后续校验中使
 
 只有 `PayloadModes::Encoded` 的 provider 才**必须**有 codec（缺失 →
 `CapabilityError::CodecRequired`）；`Native` 与 `NativeAndEncoded` 都走
-`TransportPayload::Native`。消费侧对 `Encoded` 载荷用同一解析规则解码；
-解码失败 → `DeliveryError::Codec`，直接 `Reject`（若 provider 支持）并发
-`Diagnostic::DeliveryFailed { attempts: 0 }`。
-设置 `max_encoded_payload_bytes` 后，publisher 在完成编码后、重试和调用 provider
-前检查字节向量长度。它会拒绝超限编码输出，但不会限制 codec 执行时的内存分配。原生
-payload 无 facade 字节上限，因为无法可靠递归计算 Rust 对象保留的内存。
+`TransportPayload::Native`。消费侧对 `Encoded` 载荷使用同一解析规则。`EventCodec::decode` 接收
+`&EncodedPayload`；默认 `validate_metadata` 精确比较 content type 与可选 schema。
+接收顺序为字节限额、元数据验证、解码，之后才启动 handler。
+只有普通 `CodecError::Decode` 沿用坏消息 `Reject` 路径。
+`MetadataMismatch`、接收 `PayloadTooLarge`、codec `Panicked` 和
+`NativeTypeMismatch` 会停止接收，不执行任何 settlement。首个
+`Arc<SubscriptionStopReason>` 保留在 `terminal_failure()` 中；异步 `run`
+返回 `ReceiveError::Stopped`，同一 handle 再次运行也返回同一原因。
+已启动的 handler 继续完成，关闭错误单独保留。修复配置或 codec 后，创建新订阅
+恢复持久消息；临时 receiver 清理可能丢弃消息，已知损失只计数一次。
+其他健康订阅不受影响。
+
+`PayloadLimits` 包含独立正数 `max_publish_bytes` 和 `max_receive_bytes`，
+默认各 1 MiB，恰好达到上限允许，没有无限额配置。发布在编码完成后、provider
+接纳前检查；接收在任何 codec 回调前检查。它不限制 codec 或 Redis 客户端预先
+分配，也不能可靠计算 Native Rust payload 的深层内存。
 
 ### 7.3 发布管线（`PublisherPipeline`）
 
@@ -667,8 +678,8 @@ payload 无 facade 字节上限，因为无法可靠递归计算 Rust 对象保�
 
 1. **生命周期门禁**：bus 非 `Running` → `PublishError::Closed`。
 2. **请求级 typed 拦截器**：`Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`，
-   按注册顺序链式执行；可以整体替换 envelope（因此回执区分 `input_event_id` 与
-   `dispatched_event_id`）；返回 `None` 表示丢弃 → 回执 `AdmissionOutcome::Dropped`；
+   按注册顺序链式执行；可以转换 envelope，但不能改变事件 ID；改变 ID 会在 SPI 调用前
+   返回配置错误；返回 `None` 表示丢弃 → 回执 `AdmissionOutcome::Dropped`；
    panic 被隔离为 `PublishError::InterceptorPanicked`。
 3. **全局 metadata 拦截器**：只能改 headers；任一返回 `false` → 丢弃。
 4. **死信头保护**：无论拦截器如何改动，如果原始 envelope 带死信头，重新写回，
@@ -681,9 +692,13 @@ payload 无 facade 字节上限，因为无法可靠递归计算 Rust 对象保�
    `AsyncRetry`（异步，带 `Timer`）包裹 `spi.publish`。重试判定综合
    `SpiError::retryable()` 与用户 `RetryRule<PublishAttemptError>`；
    `RetryFallback::Abort`；耗尽 → `PublishError::Retry(Box<RetryError<...>>)`。
-   未配置策略则单次尝试。provider panic 被捕获为不可重试的 `SpiError::Operation`
-   （`kind = "provider_panicked"`）。
-8. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishError)`；
+   未配置策略则单次尝试。provider 通过 `SpiError::Publish` 声明 `PublishEffect`；
+   通用 operation 错误和 provider panic 保守视为接纳未知。默认
+   `DuplicateRiskPolicy::Forbid` 在自定义规则前终止未知效果的重试；
+   `AllowDuplicates` 仅允许原策略继续判断。未知效果跨尝试保留，后续成功回执
+   的 `duplicate_possible()` 为 true。进行中的尝试被取消并返回错误时效果未知；
+   RetryPolicy 预算是软预算，不是通用的 I/O 硬超时。
+8. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`；
    任何一个 panic → 最终错误替换为 `PublishError::ErrorHandlerPanicked`，
    其余处理器仍继续执行。
 9. **接纳诊断**：回执携带 `DestinationAdmissions` 时，对每个被拒绝的目的地发
@@ -692,8 +707,8 @@ payload 无 facade 字节上限，因为无法可靠递归计算 Rust 对象保�
     `opaque_accepted`、`zero_destinations`、`accepted_destinations`、
     `filtered_destinations`、`rejected_destinations`），通过 `publish_metrics()` 读取。
 
-内部用 `PipelineFailure { origin, error }` 携带失败**发生在哪一步**（拦截器、
-能力、编码、SPI、错误处理器…），便于测试断言与日志，但对外只暴露 `PublishError`。
+内部用 `PipelineFailure { origin, error, publish_effect }` 携带失败**发生在哪一步**（拦截器、
+能力、编码、SPI、错误处理器…），便于测试断言与日志，对外返回保留原事件 ID、聚合效果和 `PublishError` 原因链的 `PublishFailure`。
 
 ### 7.4 消费管线（`SubscriberPipeline`）：单条消息的处理
 
@@ -781,8 +796,9 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
 ### 7.6 死信递归防护
 
 死信消息带 `x-qubit-event-bus-dead-letter: v1` 头，`SubscriberPipeline` 遇到带头消息
-的终态失败时不再发布第二级死信，只 `Reject`。加上发布管线的"死信头保护"，
-可保证一条消息最多产生一条死信记录。
+的终态失败时不再发布第二级死信，只 `Reject`。死信头保护限制递归层数，不保证只产生一条记录。
+转发和源结算不是原子事务；转发回复丢失或源结算失败仍可能重复。
+未知转发结果受发布安全门约束，并停止源订阅、保留持久恢复状态。消费者必须去重。
 
 ### 7.7 与 `qubit-retry` 的关系
 
@@ -1193,7 +1209,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 
 pub enum NotificationOutcome {
     Published(PublishReceipt),
-    PublishFailed(PublishError),
+    PublishFailed(PublishFailure),
     RequestFailed(EventIdGenerationError),
 }
 ```
@@ -1221,6 +1237,16 @@ pub enum NotificationOutcome {
 
 ---
 
+### 11.1 worker 退出与并发关闭
+
+completion guard 在处理循环及用户资源清理完成后，发布唯一的 `Drained` 或
+`Panicked` 终态。最外层 unwind 边界包含 observer 捕获对象和其他 worker 资源；
+清理 panic 使 `worker_panicked` 增加一次，observer 调用 panic 仍独立隔离。
+线程身份与可被取走的 JoinHandle 分开保存。worker 自己调用 close 返回
+`io::ErrorKind::Other`，不关闭入队入口。外部调用者在锁内取出 sender，锁外析构；
+所有等待者观察同一终态。超时后可再次等待，只有一个调用者 join，限时关闭还会
+检查线程实际完成状态。该机制适用于 `panic=unwind`，不处理 abort 或无限阻塞析构。
+
 ## 12. 错误模型
 
 分层原则：**每个公开操作有自己的错误枚举，`EventBusError` 只是聚合**；
@@ -1228,7 +1254,8 @@ pub enum NotificationOutcome {
 
 | 类型 | 出处 | 主要变体 |
 | --- | --- | --- |
-| `PublishError` | `publish`/`publish_all` | `Configuration`、`Capability`、`Codec`、`Spi`、`Retry(Box<RetryError<PublishAttemptError>>)`、`InterceptorPanicked { .. }`、`ErrorHandlerPanicked { .. }`、`Closed` |
+| `PublishFailure` | `publish`/`publish_all` | 原事件 ID 和聚合效果包装 `PublishError`： `Configuration`、`Capability`、`Codec`、`Spi`、`Retry(Box<RetryError<PublishAttemptError>>)`、`InterceptorPanicked { .. }`、`ErrorHandlerPanicked { .. }`、`Closed` |
+| `EventBusError` | 聚合操作错误 | 透明 `PublishFailure(PublishFailure)` 转换保留发布身份和效果；`Publish(PublishError)` 仍为仅原因的转换 |
 | `AdmissionCheckError` | `PublishReceipt::check_admission` | `VisibilityUnavailable`、`Dropped`、`NoAcceptedDestination`、`RejectedDestinations { .. }` |
 | `SubscribeError` | `subscribe` | `Configuration`、`Capability`、`Spi`、`Closed`（codec 缺失归入 `Capability`） |
 | `DeliveryError` | handler 返回 / 管线 | `Handler { source }`、`Codec`、`Spi`、`Retry(Box<RetryError<DeliveryAttemptError>>)` |
@@ -1236,8 +1263,14 @@ pub enum NotificationOutcome {
 | `ShutdownError` | `shutdown` | `TimedOut { .. }`、`CoordinatorStart(io::Error)`、`Lifecycle(LifecycleError)`（含 `WouldDeadlock`）、`Spi`、`SubscriptionClose` |
 | `ProviderError` | registry | `Resolution`（找不到 provider / 选择非法）、`Creation`（provider 构造失败或 `RequiredCapabilities` 缺失） |
 | `EventBusProviderError` | provider 作者 | provider `create` 返回的错误包装，供 `qubit-spi` 聚合 |
-| `SpiError` | provider | `Operation { provider_id, operation, resource, kind, retryable, source }`、`InvalidSettlementToken { .. }` |
+| `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`、`Operation { provider_id, operation, resource, kind, retryable, source }`、`InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | 构造期或校验 | 见各自定义 |
+
+`EventBusError` 通过透明的 `PublishFailure` 变体实现 `From<PublishFailure>`。
+应用函数返回 `Result<_, EventBusError>` 时，可以直接使用 `bus.publish(request)?`，
+保留原事件 ID、聚合效果和结构化原因。`Publish(PublishError)` 仍用于没有分配
+发布身份的仅原因转换。不要为了转换为聚合错误先调用 `into_cause()`，否则会丢失
+wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 - `SpiError::retryable()` 是 provider 向 facade 传达"值得重试"的唯一通道，
   发布/投递重试都参考它。
@@ -1247,7 +1280,7 @@ pub enum NotificationOutcome {
   provider 在停机后返回的关闭类 `SpiError` 按 `Spi` 变体原样传出，不做二次映射。
 - 所有枚举标注 `#[non_exhaustive]`，为未来新增变体保留空间。
 - 所有错误 `Send + Sync + 'static`，可跨线程/任务传递。
-- 内部 `PipelineFailure { origin, error }` 不对外暴露，只用于把失败阶段传给诊断与测试。
+- 内部 `PipelineFailure { origin, error, publish_effect }` 不对外暴露，只用于把失败阶段传给诊断与测试。
 
 ---
 
@@ -1288,7 +1321,8 @@ pub enum NotificationOutcome {
    异步 pending + 单 permit）。
 7. `publish`/`subscribe` 在 `Closing` 之后必返回 `Closed`；`shutdown` 幂等且
    provider shutdown 同一时刻最多有一个调用在途；失败或取消后可由后续调用重试。
-8. 用户回调 panic 不会导致线程/任务退出或 bus 状态损坏。
+8. 回调 panic 被隔离；codec panic 停止该订阅，通知资源清理 panic 发布失败终态。
+   进程 abort 或用户代码无限阻塞不能由库恢复或强制中断。
 9. 死信最多一级；死信头无法被外部设置或篡改。
 10. Durable provider 支持时，取消/停机将未开始任务以 `Retry` 归还；Ephemeral provider
     可以丢弃未开始任务，facade 会报告已知放弃数量及无法精确统计的 provider 放弃标志。
@@ -1408,7 +1442,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ---
 
-*本文档随 `qubit-event-bus` 0.16.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.17.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
 
 ## Provider specification compile probe
 
@@ -1452,3 +1486,13 @@ pub fn settle_without_borrowing_token<'a>(
     receiver.settle(token, DeliveryDisposition::Accept)
 }
 ```
+
+## 单仓验证与五仓整体验证
+
+`./project-ci-check.sh` 默认只检查当前 crate 的依赖解析 metadata；独立单仓用户
+无须下载全部下游。协调迁移时，运行
+`./project-ci-check.sh --ecosystem-root <repos-dir>`，目录下须包含
+`rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
+`rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
+使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
+0.17；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

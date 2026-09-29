@@ -1,0 +1,97 @@
+Flat profile:
+
+Each sample counts as 0.01 seconds.
+  %   cumulative   self              self     total           
+ time   seconds   seconds    calls  ns/call  ns/call  name    
+ 34.86      0.99     0.99                             <hashbrown::map::HashMap<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>, std::hash::random::RandomState>>::retain::<<ordering_keys::ordering::async_ordering_lanes::AsyncOrderingLanes<usize>>::enqueue::{closure#0}> (map.rs:904 @ c6c0f)
+ 34.86      1.98     0.99                             <ordering_keys::ordering::async_ordering_lanes::AsyncOrderingLanes<usize>>::enqueue::{closure#0} (async_ordering_lanes.rs:55 @ c6c0c)
+  8.80      2.23     0.25                             <hashbrown::map::HashMap<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>, std::hash::random::RandomState>>::retain::<<ordering_keys::ordering::async_ordering_lanes::AsyncOrderingLanes<usize>>::enqueue::{closure#0}> (map.rs:905 @ c6ba3)
+  5.11      2.38     0.14                             <*mut (ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>)>::sub (mut_ptr.rs:1073 @ c6bf3)
+  3.70      2.48     0.10                             <hashbrown::control::bitmask::BitMask>::lowest_set_bit (bitmask.rs:40 @ c6bbb)
+  2.99      2.56     0.09                             <hashbrown::raw::RawIter<(ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>)> as core::iter::traits::iterator::Iterator>::next (raw.rs:3853 @ c6bb9)
+  2.82      2.65     0.08                             core::sync::atomic::atomic_load::<usize> (atomic.rs:3899 @ c6c09)
+  1.76      2.69     0.05                             <alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>>::inner (sync.rs:3351 @ c6bfe)
+  1.06      2.73     0.03                             <alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>>::inner (sync.rs:3352 @ c6c03)
+  0.70      2.75     0.02                             <core::num::nonzero::NonZero<u16>>::trailing_zeros (nonzero.rs:628 @ c6bee)
+  0.53      2.76     0.01                             <hashbrown::control::bitmask::BitMask>::lowest_set_bit (bitmask.rs:40 @ c6bec)
+  0.35      2.77     0.01  1613845     6.20     6.20  __rustc::__rust_dealloc
+  0.35      2.78     0.01                             core::ptr::write::<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey> (mod.rs:1933 @ ba593)
+  0.35      2.79     0.01                             core::ptr::write::<(usize, core::option::Option<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, usize)> (mod.rs:1933 @ ba3b9)
+  0.35      2.80     0.01                             core::sync::atomic::atomic_sub::<usize, usize> (atomic.rs:3951 @ c7e80)
+  0.35      2.81     0.01                             <*const u8>::add (const_ptr.rs:864 @ c6bdc)
+  0.18      2.81     0.01                             core::sync::atomic::atomic_load::<usize> (atomic.rs:3899 @ c7bd7)
+  0.18      2.82     0.01                             <*mut u128>::add (mut_ptr.rs:962 @ cb1be)
+  0.18      2.83     0.01                             <std::sys::sync::mutex::futex::Mutex>::lock (futex.rs:32 @ c7bd5)
+  0.18      2.83     0.01                             <u128 as core::cmp::PartialOrd>::lt (cmp.rs:1916 @ cb1b4)
+  0.18      2.83     0.01                             <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write (sip.rs:278 @ e33d8)
+  0.18      2.84     0.01                             <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write (sip.rs:279 @ e33db)
+  0.00      2.84     0.00  1664994     0.00     0.00  <&qubit_event_bus::model::schema_id::SchemaId as core::fmt::Debug>::fmt (mod.rs:2872 @ e3280)
+  0.00      2.84     0.00  1613846     0.00     0.00  __rustc::__rust_alloc
+  0.00      2.84     0.00  1613846     0.00     0.00  __rustc::__rust_no_alloc_shim_is_unstable_v2
+  0.00      2.84     0.00  1048576     0.00     0.00  <alloc::sync::Arc<qubit_event_bus::error::subscription_close_failure::SubscriptionCloseFailure> as core::error::Error>::type_id (error.rs:122 @ 721c0)
+  0.00      2.84     0.00   528384     0.00     0.00  <ordering_keys::ordering::async_ordering_turn::AsyncOrderingTurn<usize> as core::future::future::Future>::poll (async_ordering_turn.rs:49 @ c7b80)
+  0.00      2.84     0.00   277499     0.00     0.00  <std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&ordering_keys::ordering::ordering_lane_key::OrderingLaneKey> (mod.rs:694 @ e0970)
+  0.00      2.84     0.00   270336     0.00     0.00  <ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>::new (ordering_lane_key.rs:34 @ be130)
+  0.00      2.84     0.00   266240     0.00     0.00  <ordering_keys::ordering::async_ordering_lanes::AsyncOrderingLanes<usize>>::enqueue (async_ordering_lanes.rs:52 @ c6af0)
+  0.00      2.84     0.00   266240     0.00     0.00  <ordering_keys::ordering::async_ordering_turn::AsyncOrderingTurn<usize> as core::ops::drop::Drop>::drop (async_ordering_turn.rs:80 @ c8c40)
+  0.00      2.84     0.00   256240     0.00     0.00  __rustc::__rust_realloc
+  0.00      2.84     0.00    35686     0.00     0.00  core::slice::sort::shared::pivot::median3_rec::<u128, <u128 as core::cmp::PartialOrd>::lt> (pivot.rs:55 @ cae20)
+  0.00      2.84     0.00    17300     0.00     0.00  core::slice::sort::shared::smallsort::sort8_stable::<u128, <u128 as core::cmp::PartialOrd>::lt> (smallsort.rs:657 @ b7210)
+  0.00      2.84     0.00    12986     0.00     0.00  core::slice::sort::shared::smallsort::small_sort_general::<u128, <u128 as core::cmp::PartialOrd>::lt> (smallsort.rs:205 @ b7680)
+  0.00      2.84     0.00    12986     0.00     0.00  core::slice::sort::unstable::quicksort::quicksort::<u128, <u128 as core::cmp::PartialOrd>::lt> (quicksort.rs:21 @ cb020)
+  0.00      2.84     0.00     4096     0.00     0.00  ordering_keys::acquire::<usize, ordering_keys::ordering::async_ordering_turn::AsyncOrderingTurn<usize>> (ordering_keys.rs:122 @ 53cf0)
+  0.00      2.84     0.00     4096     0.00     0.00  <hashbrown::map::HashMap<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>, std::hash::random::RandomState>>::insert (map.rs:1806 @ bac20)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::raw_vec::RawVec<(u64, core::option::Option<usize>, core::option::Option<core::task::wake::Waker>)>>::grow_one (mod.rs:186 @ be550)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::raw_vec::RawVec<u128>>::grow_one (mod.rs:186 @ be5c0)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::collections::vec_deque::VecDeque<(u64, core::option::Option<usize>, core::option::Option<core::task::wake::Waker>)>>::grow (mod.rs:2792 @ c7a10)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::sync::Arc<ordering_keys::ordering::async_lane::AsyncLane<usize>>>::drop_slow (sync.rs:2128 @ c1200)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::vec::drain::Drain<(usize, core::pin::Pin<alloc::boxed::Box<ordering_keys::ordering::async_ordering_turn::AsyncOrderingTurn<usize>>>, std::time::Instant)> as core::ops::drop::Drop>::drop (drain.rs:174 @ e34c0)
+  0.00      2.84     0.00     4096     0.00     0.00  <alloc::collections::vec_deque::VecDeque<(u64, core::option::Option<usize>, core::option::Option<core::task::wake::Waker>)> as core::ops::drop::Drop>::drop (mod.rs:138 @ c8960)
+  0.00      2.84     0.00     4096     0.00     0.00  <ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize> as core::ops::drop::Drop>::drop (async_ordering_guard.rs:41 @ df750)
+  0.00      2.84     0.00       12     0.00     0.00  <hashbrown::raw::RawTable<(qubit_id::id::Id, alloc::sync::Arc<dyn qubit_event_bus::facade::async_event_bus::internal::async_shutdown_driver::AsyncShutdownDriver>)>>::remove_entry::<hashbrown::map::equivalent_key<qubit_id::id::Id, qubit_id::id::Id, alloc::sync::Arc<dyn qubit_event_bus::facade::async_event_bus::internal::async_shutdown_driver::AsyncShutdownDriver>>::{closure#0}> (raw.rs:817 @ c8fb0)
+  0.00      2.84     0.00        2     0.00     0.00  <core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::keys::{closure#0}> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, <alloc::vec::Vec<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>>::extend_trusted<core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::keys::{closure#0}>>::{closure#0}>::{closure#0}> (map.rs:124 @ ba530)
+  0.00      2.84     0.00        2     0.00     0.00  <alloc::vec::Vec<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::keys::{closure#0}>>>::from_iter (spec_from_iter_nested.rs:50 @ c4d70)
+  0.00      2.84     0.00        1     0.00     0.00  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> (backtrace.rs:162 @ ca900)
+  0.00      2.84     0.00        1     0.00     0.00  core::slice::sort::unstable::ipnsort::<u128, <u128 as core::cmp::PartialOrd>::lt> (mod.rs:114 @ cac80)
+  0.00      2.84     0.00        1     0.00     0.00  <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global> (mod.rs:661 @ bdf00)
+  0.00      2.84     0.00        1     0.00     0.00  <core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::registry_sample::{closure#1}> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<(usize, core::option::Option<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, usize), <alloc::vec::Vec<(usize, core::option::Option<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, usize)>>::extend_trusted<core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::registry_sample::{closure#1}>>::{closure#0}>::{closure#0}> (map.rs:124 @ ba340)
+  0.00      2.84     0.00        1     0.00     0.00  <core::iter::adapters::map::Map<core::slice::iter::Iter<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, ordering_keys::registry_sample::{closure#0}> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<core::option::Option<ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize>>, <alloc::vec::Vec<core::option::Option<ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize>>>>::extend_trusted<core::iter::adapters::map::Map<core::slice::iter::Iter<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, ordering_keys::registry_sample::{closure#0}>>::{closure#0}>::{closure#0}> (map.rs:124 @ ba690)
+  0.00      2.84     0.00        1     0.00     0.00  ordering_keys::registry_sample (ordering_keys.rs:146 @ 6cf50)
+  0.00      2.84     0.00        1     0.00     0.00  ordering_keys::main (ordering_keys.rs:382 @ 6e980)
+  0.00      2.84     0.00        1     0.00     0.00  <alloc::vec::Vec<core::option::Option<ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize>>, core::iter::adapters::map::Map<core::slice::iter::Iter<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, ordering_keys::registry_sample::{closure#0}>>>::from_iter (spec_from_iter_nested.rs:50 @ c4b80)
+  0.00      2.84     0.00        1     0.00     0.00  <alloc::vec::Vec<(usize, core::option::Option<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, usize)> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<(usize, core::option::Option<ordering_keys::ordering::ordering_lane_key::OrderingLaneKey>, usize), core::iter::adapters::map::Map<core::ops::range::Range<usize>, ordering_keys::registry_sample::{closure#1}>>>::from_iter (spec_from_iter_nested.rs:50 @ c4e60)
+  0.00      2.84     0.00        1     0.00     0.00  <hashbrown::raw::RawTable<(ordering_keys::ordering::ordering_lane_key::OrderingLaneKey, alloc::sync::Weak<ordering_keys::ordering::async_lane::AsyncLane<usize>>)> as core::ops::drop::Drop>::drop (raw.rs:3486 @ cb960)
+  0.00      2.84     0.00        1     0.00     0.00  <alloc::vec::Vec<core::option::Option<ordering_keys::ordering::async_ordering_guard::AsyncOrderingGuard<usize>>> as core::ops::drop::Drop>::drop (mod.rs:4292 @ c5210)
+
+ %         the percentage of the total running time of the
+time       program used by this function.
+
+cumulative a running sum of the number of seconds accounted
+ seconds   for by this function and those listed above it.
+
+ self      the number of seconds accounted for by this
+seconds    function alone.  This is the major sort for this
+           listing.
+
+calls      the number of times this function was invoked, if
+           this function is profiled, else blank.
+
+ self      the average number of milliseconds spent in this
+ms/call    function per call, if this function is profiled,
+	   else blank.
+
+ total     the average number of milliseconds spent in this
+ms/call    function and its descendents per call, if this
+	   function is profiled, else blank.
+
+name       the name of the function.  This is the minor sort
+           for this listing. The index shows the location of
+	   the function in the gprof listing. If the index is
+	   in parenthesis it shows where it would appear in
+	   the gprof listing if it were to be printed.
+
+Copyright (C) 2012-2024 Free Software Foundation, Inc.
+
+Copying and distribution of this file, with or without modification,
+are permitted in any medium without royalty provided the copyright
+notice and this notice are preserved.

@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.16.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.17.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -104,7 +104,7 @@ Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.16"
+qubit-event-bus = "0.17"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -267,7 +267,7 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 
 ## Check the publication result
 
-`Err(PublishError)` from `bus.publish(...)` means the call did not obtain an admission report. `Ok(receipt)` can still mean that only some destinations received the message. `receipt` is that report. `receipt.admission_outcome()` distinguishes:
+`Err(PublishFailure)` from `bus.publish(...)` means the call did not obtain an admission report. `Ok(receipt)` can still mean that only some destinations received the message. `receipt` is that report. `receipt.admission_outcome()` distinguishes:
 
 | Outcome | Meaning |
 | --- | --- |
@@ -277,6 +277,18 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 | `NoDestinations` | No destination was found. Check that subscriptions exist and that the topic name matches. |
 | `OpaqueAccepted` | The transport says it accepted the message and does not identify the destinations. |
 | `Dropped` | A publish interceptor discarded the message before delivery. |
+
+### Decide whether a failed publication can be repeated
+
+`publish` and each `publish_all` item return `PublishFailure`, including `event_id()`, `effect()`, and `cause()`; `source()` preserves the cause chain. `NotificationOutcome::PublishFailed` and `PublishErrorHandler` receive the same wrapper. `NotAccepted` means no admission occurred; `MayHaveBeenAccepted` means a provider may have accepted the event even though the caller got an error. Keep the event ID in application telemetry and reconcile uncertain results with the business store or an idempotent consumer.
+
+`PublishOptions::builder().duplicate_risk_policy(...)` defaults to `DuplicateRiskPolicy::Forbid`. This hard gate stops retries after an uncertain attempt, ahead of custom `RetryRule` decisions. `AllowDuplicates` permits the configured `qubit-retry` policy to consider another attempt; it neither enables retry by itself nor guarantees that retry will occur. Retries reuse the event ID, timestamp, and encoded bytes. Typed interceptors may transform the envelope but cannot change its event ID.
+
+Uncertainty is retained across the whole logical publication: a later definite rejection cannot turn an earlier uncertain attempt into `NotAccepted`. If permitted retries eventually succeed, `receipt.duplicate_possible()` is true when an earlier attempt was uncertain. Successful provider admission still does not prove handler completion or persistence.
+
+Cancellation is also a result boundary. If `RetryCancellationToken` cancels an already-polled SPI attempt and the call returns an error, its effect is uncertain. Cancelling before the SPI is called has no admission effect. Dropping the public publish future produces no returned failure; dropping an unpolled future makes no attempt, while dropping an already-started operation requires the application to retain its event ID and treat the outcome as possibly published. RetryPolicy budgets are soft budgets and do not promise a hard timeout of every in-flight provider operation, especially synchronous I/O.
+
+Dead-letter forwarding uses the same uncertainty gate. A failed or uncertain forward stops the source subscription and leaves durable source work unsettled. Forwarding and source acknowledgement are separate operations: a successful forward followed by a failed source settlement can produce the same logical dead-letter again. Consumers must deduplicate; neither a Redis EventId nor this policy provides exactly-once delivery.
 
 ### What success looks like
 
@@ -713,7 +725,7 @@ let bus = EventBusRegistry::with_local()?.create(&config)?;
 
 The first argument of `SyncDeliverySchedulerConfig::new` must be greater than zero. The second may be 0, which means a message can be handed only to an idle worker immediately. The sync facade also allows at most 256 live subscription receiver threads by default. Set `SyncDeliverySchedulerConfig::with_max_subscription_workers(NonZeroUsize::new(64).unwrap())` to choose another limit. A subscription over the limit fails before the provider is asked to create it. This bounds thread count; it does not reduce the cost of each blocking receiver. Consider the async bus when the application needs more subscriptions. Creating local through the registry requires passing `local.provider_options()` on `EventBusConfig`. Those options contain the keys `local.queue_capacity` and `local.max_total_outstanding`. An unknown key, a non-numeric value, or zero is rejected at creation. `EventBus::local` sets only the local outstanding capacity. To change handler concurrency, codecs, or interceptors, create the bus with `EventBusRegistry::with_local()`.
 
-For encoded transports, `EventBusFacadeConfig::with_max_encoded_payload_bytes(Some(limit))` rejects codec output larger than `limit` before calling the provider. The default is unlimited. This checks the completed encoded byte vector; it does not cap allocations made while encoding. Native Rust payloads have no byte-size check because their retained memory cannot be measured reliably by the facade. Local queue limits remain counts of deliveries, not bytes.
+For encoded transports, `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))` sets two positive `NonZeroUsize` limits. Both default to 1,048,576 bytes; exactly the limit is allowed. Publishing checks completed codec output before calling the provider; receiving checks bytes before any codec callback. There is no unlimited setting. This does not cap allocations inside encoding or the transport client. Native Rust payloads have no byte-size check because their retained memory cannot be measured reliably by the facade. Local queue limits count deliveries, not bytes.
 
 The async bus uses `LocalEventBusConfig` as well. This example allows 8 messages in progress at once:
 
@@ -754,7 +766,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.16", features = ["discovery"] }
+qubit-event-bus = { version = "0.17", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -846,17 +858,32 @@ An async implementation uses the separate async catalog and `submit_async_provid
 
 The built-in local provider passes Rust objects directly and needs no conversion. A message that crosses a process boundary usually has to be turned into bytes and restored on receipt. The component that does this is a **codec**. `Topic::new_with_codec` / `new_with_shared_codec` attaches a codec to one event type. A codec can also be placed in a `CodecRegistry` and given to the bus with `EventBusFacadeConfig::with_codec_registry`. A codec on the topic wins. The bus registry is consulted only when the topic has none. The codec is chosen when the subscription is created, and creation fails when both are missing. The application also has to agree on the data format and on version compatibility. This crate does not include a general JSON codec.
 
-Codec callbacks run behind a panic boundary. A returned encode error or an encode/metadata panic fails publication before the provider is called; a decode panic becomes `CodecError::Panicked` and requests provider retry when settlement supports it. A regular decode error is rejected as an invalid message. The [codec round-trip example](../examples/codec_round_trip.rs) shows a minimal executable implementation for `String`. The fragments below attach a codec to the order event. The byte layout is the application's own convention: three lines, `order_id`, `customer_id`, and `total_cents`, and none of those fields contains a newline. This crate does not supply that layout.
+Codec callbacks run behind a panic boundary. A returned encode error or an encode/metadata panic fails publication before the provider is called; a validate/decode panic becomes `CodecError::Panicked` and stops that subscription without settling the source. Metadata mismatch, receive-size overflow, and native type mismatch also stop reception. A regular `CodecError::Decode` is rejected as an invalid message. The [codec round-trip example](../examples/codec_round_trip.rs) shows a minimal executable implementation for `String`. The fragments below attach a codec to the order event. The byte layout is the application's own convention: three lines, `order_id`, `customer_id`, and `total_cents`, and none of those fields contains a newline. This crate does not supply that layout.
 
+This application module imports `OrderCreated` from the `orders::events` module introduced above. The complete codec module below is compiled by the documentation fixture:
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/order_created_codec.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Order-event codec compiled from the bilingual user guides.
+
 use std::sync::Arc;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::spi::EncodedPayload;
 
-struct OrderCreatedCodec(ContentType);
+use crate::orders::events::OrderCreated;
+
+pub struct OrderCreatedCodec(pub ContentType);
 
 impl EventCodec<OrderCreated> for OrderCreatedCodec {
     fn content_type(&self) -> &ContentType {
@@ -872,8 +899,8 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
         Ok(Arc::from(text.into_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<OrderCreated, CodecError> {
-        let text = std::str::from_utf8(bytes).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+    fn decode(&self, payload: &EncodedPayload) -> Result<OrderCreated, CodecError> {
+        let text = std::str::from_utf8(payload.bytes()).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
         let mut lines = text.lines();
         let order_id = lines.next().unwrap_or("").to_owned();
         let customer_id = lines.next().unwrap_or("").to_owned();
@@ -1011,6 +1038,16 @@ subscription.run(move |delivery| {
 
 At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await`, or dropping the handle, ends the subscription. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
 
+### Recover a stopped encoded subscription
+
+`decode(&EncodedPayload)` reads `payload.bytes()`, `content_type()`, and `schema_id()`. The default `validate_metadata` requires exact content type text and exact `Option<SchemaId>` equality: `None` does not match a named schema, and MIME text is not silently normalized. Override validation only for a documented compatible version set, then select the corresponding decoder explicitly. Direct codec callers must validate metadata themselves; the facade does so automatically.
+
+The receive order is byte-limit check, metadata validation, decode, then filter/middleware/handler. Oversized bytes never reach codec callbacks, and incompatible metadata never reaches decode. `MetadataMismatch`, receive `PayloadTooLarge`, `Panicked`, and `NativeTypeMismatch` stop the subscription without `Accept`, `Reject`, or `Retry`. Ordinary `CodecError::Decode` remains a bad-message rejection and is not a schema recovery mechanism.
+
+Inspect `subscription.terminal_failure()` for the first retained `Arc<SubscriptionStopReason>`. `Codec` contains an event ID and structured codec error; `Provider` contains the provider error when no trustworthy event ID is available. Async `run()` returns `ReceiveError::Stopped` and later runs on the same handle return the same cause without receiving or decoding again. Already-started handlers finish under their existing lifecycle. A close failure is reported independently and does not replace this cause; cancelling a run or close future does not clear the retained cause.
+
+For Redis or another durable provider, stop the old handle, fix the codec/version or size configuration, and create a new subscription using the same durable group. Its recovery mechanism can reclaim the unsettled record. Do not acknowledge or delete it just to silence the failure. For an ephemeral provider, destroying the receiver can discard the offending work; the facade counts a known abandonment once, and resubscribing cannot recover discarded messages. Other healthy subscriptions continue running.
+
 ## Non-blocking notification entry
 
 When the code that produces a message cannot stop to wait for a synchronous publish, use `NotificationPublisher<T>`. It places the message on a bounded queue, and a background thread publishes each item. The default queue holds 256 items. `try_publish(payload)` means only that the item **was enqueued**, not that it was published. A full queue returns `TryPublishError::Full(payload)`. After close, the call returns `Closed(payload)`. In both cases the original value is given back. The observer callback receives `Published(receipt)`, `PublishFailed(error)`, or `RequestFailed(error)`. `Published` still does not mean the handler finished. `stats()` exposes the counters.
@@ -1111,6 +1148,8 @@ match notifier.close_with_timeout(Duration::from_secs(30)) {
 ```
 
 The background thread holds a clone of `bus`, so close the notification publisher before the bus. In the opposite order, queued notifications fail at publish time with a closed-bus error that is visible only as `PublishFailed` in the observer.
+
+Worker completion includes resource cleanup, including user-owned observer captures. An unwind during cleanup records `worker_panicked` once; every closer observes the same failed exit instead of timing out forever. Calling close from the worker itself returns `io::ErrorKind::Other` without closing admission. Observer-call panics remain isolated and later queued notifications continue. A timed-out closer can wait again later; it cannot forcibly stop user code.
 
 ## Lifecycle, waiting, and shutdown
 
@@ -1224,7 +1263,7 @@ If the application keeps the `AsyncSubscription` handle itself, `subscription.cl
 
 | Symptom | What to check |
 | --- | --- |
-| `PublishError` | See whether the error is configuration, a codec, a transport failure, retries exhausted, or a closed bus. Before retrying, check whether a destination may already have received the event. |
+| `PublishFailure` | Inspect `event_id()`, `effect()`, and `cause()`. A failed call may already have reached the provider; do not retry uncertain admission without a duplicate policy. |
 | `SubscribeError` | Check the subscription settings, whether the transport supports the capability, whether a codec is required, and whether the bus is already closed. Do not open the business entry point if startup failed. |
 | `subscribe` succeeded, the receipt is `Accepted`, and the handler never runs | Async bus: confirm `AsyncSubscription::run` is running on a long-lived task, that the task was not cancelled early, and that an earlier startup step is not blocked on it. Sync bus: confirm an earlier message is not blocking a handler for a long time. Worker limits are in [Configure the built-in local event bus](#configure-the-built-in-local-event-bus). |
 | `NoDestinations` | Check the topic name, the payload type, that the subscription was created before the publish, and that the sync handle has not been `cancel()`ed. |
@@ -1246,3 +1285,15 @@ If the application keeps the `AsyncSubscription` handle itself, `subscription.cl
 ## Further reading
 
 - [README](../README.md) · [Migration guide](migration.md) · [API reference](https://docs.rs/qubit-event-bus)
+
+## Validate a single crate or the coordinated ecosystem
+
+`./project-ci-check.sh` checks this crate's resolved dependency metadata on its own.
+An independent single-crate checkout does not need every downstream repository.
+For a coordinated migration, run `./project-ci-check.sh --ecosystem-root <repos-dir>`
+with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
+`rs-execution-services` below that directory. The gate requires all five roots
+and the seven declared consumer fixtures, resolves locked all-feature Cargo
+metadata, and rejects a graph mixing old event-bus minors with 0.17. Missing
+inputs fail explicitly; this metadata check supplements each project's CI and
+does not prove delivery behavior by itself.
