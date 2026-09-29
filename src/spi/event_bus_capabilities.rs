@@ -22,11 +22,16 @@ use super::SubscriptionModes;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::spi::{
-///     DelayedDeliveryCapability, DurabilityCapability, EventBusCapabilities,
-///     OrderingCapability, PayloadModes, PublishGuarantee, PublishVisibility,
-///     ReplayCapability, SettlementCapabilities, SubscriptionModes,
-/// };
+/// use qubit_event_bus::spi::DelayedDeliveryCapability;
+/// use qubit_event_bus::spi::DurabilityCapability;
+/// use qubit_event_bus::spi::EventBusCapabilities;
+/// use qubit_event_bus::spi::OrderingCapability;
+/// use qubit_event_bus::spi::PayloadModes;
+/// use qubit_event_bus::spi::PublishGuarantee;
+/// use qubit_event_bus::spi::PublishVisibility;
+/// use qubit_event_bus::spi::ReplayCapability;
+/// use qubit_event_bus::spi::SettlementCapabilities;
+/// use qubit_event_bus::spi::SubscriptionModes;
 ///
 /// let capabilities = EventBusCapabilities::new(
 ///     PayloadModes::Native, SettlementCapabilities::None,
@@ -41,15 +46,25 @@ use super::SubscriptionModes;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 pub struct EventBusCapabilities {
+    /// Native and encoded payload forms accepted by this backend instance.
     payload_modes: PayloadModes,
+    /// Delivery settlement operations supported by its subscriptions.
     settlement: SettlementCapabilities,
+    /// Strongest ordering scope guaranteed by the transport.
     ordering: OrderingCapability,
+    /// Whether the backend natively schedules delayed delivery.
     delayed_delivery: DelayedDeliveryCapability,
+    /// Message retention while subscribers are absent.
     durability: DurabilityCapability,
+    /// Ephemeral and durable subscription modes accepted by the backend.
     subscription_modes: SubscriptionModes,
+    /// Whether the backend supports provider-managed consumer groups.
     consumer_groups: bool,
+    /// Historical starting positions supported by new subscriptions.
     replay: ReplayCapability,
+    /// Guarantee represented by a successful provider publish result.
     publish_guarantee: PublishGuarantee,
+    /// Whether publication reports individual destination admission outcomes.
     publish_visibility: PublishVisibility,
 }
 

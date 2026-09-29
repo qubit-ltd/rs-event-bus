@@ -28,11 +28,20 @@ pub(crate) struct IdentifiedEventBusSpi {
     provider_id: ProviderId,
     /// Provider-owned implementation receiving all transport operations.
     inner: std::sync::Arc<dyn EventBusSpi>,
+    /// Capability snapshot checked before the facade was created.
     capabilities: EventBusCapabilities,
 }
 
 impl IdentifiedEventBusSpi {
     /// Binds one validated provider identity to its concrete SPI output.
+    ///
+    /// # Parameters
+    /// - `provider_id`: canonical identity recorded at provider registration.
+    /// - `inner`: provider implementation receiving transport operations.
+    /// - `capabilities`: validated capabilities reported by the provider.
+    ///
+    /// # Returns
+    /// An identity proxy that delegates to `inner`.
     pub(crate) fn new(
         provider_id: ProviderId,
         inner: std::sync::Arc<dyn EventBusSpi>,
@@ -47,26 +56,76 @@ impl IdentifiedEventBusSpi {
 }
 
 impl EventBusSpi for IdentifiedEventBusSpi {
+    /// Returns the canonical identity attached during provider adaptation.
+    ///
+    /// # Returns
+    /// The stable provider ID; this adapter always has one.
     fn provider_id(&self) -> Option<ProviderId> {
         Some(self.provider_id.clone())
     }
 
+    /// Returns the capabilities validated by the provider adapter.
+    ///
+    /// # Returns
+    /// The immutable capability snapshot used when the facade was created.
+    #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
         self.capabilities
     }
 
+    /// Publishes through the provider-owned SPI.
+    ///
+    /// # Parameters
+    /// - `message`: transport message to forward unchanged.
+    ///
+    /// # Returns
+    /// The provider's publication acknowledgement.
+    ///
+    /// # Errors
+    /// Returns the SPI failure produced by the wrapped provider.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
 
+    /// Registers a provider subscription and returns its receiver.
+    ///
+    /// # Parameters
+    /// - `request`: provider subscription parameters to forward unchanged.
+    ///
+    /// # Returns
+    /// The provider-owned subscription receiver.
+    ///
+    /// # Errors
+    /// Returns the SPI failure produced by the wrapped provider.
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.inner.subscribe(request)
     }
 
+    /// Queries whether the wrapped provider has drained a topic.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose outstanding work is queried.
+    /// - `timeout`: maximum provider wait, or `None` for an unbounded wait.
+    ///
+    /// # Returns
+    /// The provider's idle result, or `None` when it cannot report topic idle.
+    ///
+    /// # Errors
+    /// Returns the SPI failure produced by the wrapped provider.
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         self.inner.wait_for_topic_idle(topic, timeout)
     }
 
+    /// Forwards shutdown to the provider-owned SPI.
+    ///
+    /// # Parameters
+    /// - `mode`: graceful or immediate shutdown behavior.
+    ///
+    /// # Returns
+    /// The provider's stable shutdown outcome.
+    ///
+    /// # Errors
+    /// Returns the SPI failure produced by the wrapped provider.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         self.inner.shutdown(mode)
     }

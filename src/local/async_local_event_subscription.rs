@@ -21,11 +21,8 @@ use qubit_id::Id;
 use super::async_local_event_bus_spi::close_mailbox;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
-use super::internal::LocalInFlight;
-use super::internal::LocalQueueState;
-use super::internal::LocalSettlementHandle;
-use super::internal::LocalSettlementState;
 use super::local_event_bus_spi::invalid_token_error;
+use super::state::LocalSettlementState;
 use crate::error::SpiError;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
@@ -33,8 +30,10 @@ use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 use crate::spi::SpiFuture;
 
+/// Boxed timer future used to wake a receive poll at its next deadline.
 type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), TimeError>> + Send>>;
 
+/// Asynchronous receiver that owns and settles one local provider mailbox.
 pub(super) struct AsyncLocalEventSubscription {
     /// Shared async provider queues and outstanding-delivery accounting.
     shared: Arc<AsyncLocalShared>,
@@ -67,6 +66,16 @@ impl AsyncLocalEventSubscription {
 }
 
 impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
+    /// Waits cancellation-safely for a ready queue event or the timeout.
+    ///
+    /// # Parameters
+    /// - `timeout`: maximum wait duration; `Duration::MAX` waits until woken.
+    ///
+    /// # Returns
+    /// A message, timeout, or closed outcome from the mailbox.
+    ///
+    /// # Errors
+    /// Returns an SPI error if timer polling fails.
     fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         let queue = Arc::clone(&self.mailbox.queue);
         let subscription_id = self.subscription_id;
@@ -154,6 +163,17 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
         })
     }
 
+    /// Applies an idempotent disposition to a token issued by this mailbox.
+    ///
+    /// # Parameters
+    /// - `token`: provider-issued token to settle.
+    /// - `disposition`: accept, retry, or reject action.
+    ///
+    /// # Returns
+    /// A future that completes after the event is requeued or released.
+    ///
+    /// # Errors
+    /// Returns an SPI error for a foreign, unknown, or conflicting token.
     fn settle<'a>(
         &'a mut self,
         token: &SettlementToken,
@@ -162,7 +182,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
         let queue = Arc::clone(&self.mailbox.queue);
         let subscription_id = self.subscription_id;
         let belongs = token.belongs_to(subscription_id);
-        let settlement = token.downcast_ref::<LocalSettlementHandle>().cloned();
+        let settlement = token.downcast_ref::<super::state::LocalSettlementHandle>().cloned();
         Box::pin(async move {
             if !belongs {
                 return Err(invalid_token_error(Some(queue.topic.as_str()), "foreign_subscription"));
@@ -205,6 +225,10 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
         })
     }
 
+    /// Closes this mailbox and discards its unsettled ephemeral deliveries.
+    ///
+    /// # Returns
+    /// A future that completes after the mailbox is unregistered and woken.
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         let shared = Arc::clone(&self.shared);
         let mailbox = Arc::clone(&self.mailbox);
@@ -232,8 +256,9 @@ impl Drop for AsyncLocalEventSubscription {
 /// - `subscription_id`: identity bound to the generated settlement token.
 ///
 /// # Returns
-/// `Some(Message)` when an event is ready, otherwise `None`.
-fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Option<ReceiveOutcome> {
+/// `Some(ReceiveOutcome::Message)` when an event is ready and its settlement
+/// sequence can advance; otherwise `None`.
+fn pop_message(state: &mut super::state::LocalQueueState, subscription_id: Id) -> Option<ReceiveOutcome> {
     let event = state.pop_ready(Instant::now())?;
     let next = state.next_delivery_token.checked_add(1)?;
     state.next_delivery_token = next;
@@ -244,7 +269,7 @@ fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Option<Recei
     }));
     state.in_flight.insert(
         token_id,
-        LocalInFlight {
+        super::state::LocalInFlight {
             event: event.clone(),
             settlement: settlement.clone(),
         },

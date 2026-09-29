@@ -42,14 +42,18 @@ pub type EventBusProvider = dyn ProviderDefinition<EventBusSpec>;
 pub type AsyncEventBusProvider = dyn AsyncProviderDefinition<EventBusSpec>;
 
 impl ServiceSpec for EventBusSpec {
+    /// Provider selection, capability requirements, and creation options.
     type Config = EventBusConfig;
+    /// Classified provider creation failure used for registry fallback.
     type Error = EventBusProviderError;
 }
 
 impl SyncServiceSpec for EventBusSpec {
+    /// Shared synchronous transport instance returned by a provider.
     type Output = Arc<dyn EventBusSpi>;
 }
 
 impl AsyncServiceSpec for EventBusSpec {
+    /// Shared asynchronous transport instance returned by a provider.
     type Output = Arc<dyn AsyncEventBusSpi>;
 }

@@ -12,6 +12,22 @@ use std::panic::AssertUnwindSafe;
 use crate::error::SpiError;
 
 /// Runs one synchronous portion of a provider call and classifies an unwind.
+///
+/// # Type Parameters
+/// - `T`: Result type returned by the provider operation when it succeeds.
+///
+/// # Parameters
+/// - `provider_id`: identity attached to failures at the SPI boundary.
+/// - `operation`: stable operation name included in a structured failure.
+/// - `resource`: optional topic or resource associated with the operation.
+/// - `call`: synchronous provider operation to invoke.
+///
+/// # Returns
+/// The operation result, or a non-retryable provider panic error.
+///
+/// # Errors
+/// Returns [`SpiError::Operation`] with kind `provider_panicked` if `call`
+/// unwinds. Errors contained in `T` are returned as part of `Ok(T)`.
 pub(crate) fn catch_spi_call<T>(
     provider_id: &str,
     operation: &'static str,
@@ -23,6 +39,15 @@ pub(crate) fn catch_spi_call<T>(
 }
 
 /// Converts a Rust panic payload into the stable provider failure shape.
+///
+/// # Parameters
+/// - `provider_id`: provider identity reported in the resulting error.
+/// - `operation`: stable operation name where the panic occurred.
+/// - `resource`: optional resource associated with that operation.
+/// - `payload`: panic value captured from the provider call.
+///
+/// # Returns
+/// A non-retryable SPI operation error containing stable panic context.
 pub(crate) fn provider_panic(
     provider_id: &str,
     operation: &'static str,
@@ -50,7 +75,7 @@ mod tests {
     use crate::error::SpiError;
 
     #[test]
-    fn catches_provider_panic_payloads_and_preserves_call_results() {
+    fn test_catches_provider_panic_payloads_and_preserves_call_results() {
         assert_eq!(
             7,
             catch_spi_call("test", "operation", None, || 7).expect("call succeeds")

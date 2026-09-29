@@ -19,6 +19,20 @@ use crate::pipeline::DeadLetterForwardError;
 
 /// Builds a retry flow using the subscription's bounded retry and backoff
 /// budget.
+///
+/// # Parameters
+///
+/// - `policy`: Retry limit and backoff configuration supplied by the
+///   subscription.
+///
+/// # Returns
+///
+/// A retry configuration that retries failed forwarding attempts and aborts
+/// when exhausted.
+///
+/// # Errors
+///
+/// Returns an error when the policy cannot produce a valid retry configuration.
 pub(crate) fn retry_config(policy: &RetryPolicy) -> Result<RetryConfig<DeadLetterForwardError>, RetryPolicyError> {
     RetryConfig::builder()
         .policy(policy.clone())

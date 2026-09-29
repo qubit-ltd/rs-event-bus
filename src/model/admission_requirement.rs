@@ -19,6 +19,7 @@
 /// assert_eq!(requirement, AdmissionRequirement::AtLeastOneAccepted);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub enum AdmissionRequirement {
     /// Require at least one destination to accept the event.
     AtLeastOneAccepted,

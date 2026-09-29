@@ -39,6 +39,7 @@ impl NotificationStats {
     /// # Returns
     /// A snapshot containing relaxed atomic loads of the current counters. The
     /// values are not guaranteed to represent one globally consistent instant.
+    #[must_use = "Use the returned query result."]
     pub(super) fn snapshot(&self) -> NotificationStatsSnapshot {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         NotificationStatsSnapshot {

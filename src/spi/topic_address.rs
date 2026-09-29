@@ -22,7 +22,11 @@ use crate::util::validated_text::is_valid_topic_name;
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
-pub struct TopicAddress(Box<str>);
+pub struct TopicAddress(
+    /// Owned portable topic name validated before crossing the transport
+    /// boundary.
+    Box<str>,
+);
 
 impl TopicAddress {
     /// Creates a topic address after validating its portable name.

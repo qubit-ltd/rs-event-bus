@@ -63,7 +63,6 @@ pub trait EventSubscriptionSpi: Send + 'static {
     /// Durable subscriptions must preserve accepted unsettled deliveries for
     /// recovery after close. Ephemeral subscriptions may discard buffered
     /// deliveries; facade shutdown reports disclose known loss and uncertainty.
-    /// Neither behavior implicitly acknowledges an unsettled delivery.
     ///
     /// # Returns
     /// Success after receiver resources have been released.

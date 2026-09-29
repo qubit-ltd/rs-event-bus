@@ -28,6 +28,7 @@ use std::error::Error;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum SpiError {
     /// A provider operation failed and retained its original error.
     #[error("provider {provider_id} failed {operation} ({kind}): {source}")]

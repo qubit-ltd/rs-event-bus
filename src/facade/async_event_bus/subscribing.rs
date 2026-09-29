@@ -7,16 +7,18 @@
 // =============================================================================
 //! Asynchronous event bus subscribing operations.
 
+use std::sync::atomic::Ordering;
+
+use qubit_id::Id;
+
 use super::AsyncShutdownDriver;
 use crate::AsyncEventBus;
 use crate::AsyncSubscription;
 use crate::CapabilityError;
 use crate::SubscribeError;
+use crate::codec::resolve_codec;
 use crate::facade::async_event_bus::BusState;
-use crate::facade::async_event_bus::Id;
-use crate::facade::async_event_bus::Ordering;
 use crate::facade::async_event_bus::catch_spi_future;
-use crate::facade::async_event_bus::resolve_codec;
 use crate::model::SubscribeRequest;
 use crate::spi::PayloadModes;
 use crate::spi::ShutdownMode;

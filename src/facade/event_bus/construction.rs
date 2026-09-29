@@ -7,6 +7,12 @@
 // =============================================================================
 //! Event bus construction operations.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+
 use crate::EventBus;
 use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
@@ -14,12 +20,7 @@ use crate::EventBusRegistry;
 use crate::ProviderError;
 use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
-use crate::facade::event_bus::Arc;
-use crate::facade::event_bus::AtomicU64;
-use crate::facade::event_bus::AtomicUsize;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::HashMap;
-use crate::facade::event_bus::Mutex;
 use crate::facade::event_bus::OperationGate;
 use crate::facade::event_bus::ShutdownState;
 use crate::facade::event_bus::SubscriptionWorkerBudget;
@@ -37,6 +38,12 @@ impl EventBus {
     /// This convenience path uses the same provider registry and SPI
     /// validation as explicit provider selection. The supplied configuration
     /// controls local transport queues; facade behavior retains its defaults.
+    ///
+    /// # Parameters
+    /// - `config`: configuration for the built-in local transport.
+    ///
+    /// # Returns
+    /// A running facade backed by the local provider.
     ///
     /// # Errors
     /// Returns an error if the local provider cannot be registered or created,
@@ -57,6 +64,13 @@ impl EventBus {
     /// bounded pool. Use a registry when provider selection or creation
     /// fallback is required.
     ///
+    /// # Parameters
+    /// - `provider_id`: stable identifier assigned to the provider.
+    /// - `spi`: provider implementation shared with the facade.
+    ///
+    /// # Returns
+    /// A running facade with default facade configuration.
+    ///
     /// # Errors
     /// Returns the provider's capability call failure. A Rust panic from that
     /// call is reported as a terminal `provider_panicked` SPI error.
@@ -68,6 +82,14 @@ impl EventBus {
     ///
     /// The codec registry is frozen into the publisher pipeline at
     /// construction; later changes require constructing a new facade.
+    ///
+    /// # Parameters
+    /// - `provider_id`: stable identifier assigned to the provider.
+    /// - `spi`: provider implementation shared with the facade.
+    /// - `config`: codec, middleware, and delivery settings for the facade.
+    ///
+    /// # Returns
+    /// A running facade using the supplied configuration.
     ///
     /// # Errors
     /// Returns the provider's capability call failure, including a terminal

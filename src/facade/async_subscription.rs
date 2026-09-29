@@ -5,44 +5,22 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-// qubit-style: allow multiple-public-types
-
 //! Caller-driven asynchronous subscription runner.
 
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
-use std::task::Poll;
 use std::time::Duration;
 
-pub(super) use internal::is_current_bus_poll;
 use qubit_id::Id;
-use qubit_retry::AsyncRetry;
-use qubit_retry::AttemptFailure;
-use qubit_retry::RetryCancellationToken;
-use qubit_retry::RetryConfig;
-use qubit_retry::RetryContext;
-use qubit_retry::RetryDecision;
-use qubit_retry::RetryFallback;
-use qubit_retry::RetryPolicy;
 
 use self::internal::AsyncSession;
-use self::internal::AsyncSubscriptionControl;
+pub(in crate::facade) use self::internal::AsyncSubscriptionControl;
 use self::internal::SessionSignals;
-use super::async_admission::AsyncAdmissionPermit;
 use super::async_event_bus::AsyncEventBusInner;
 use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
-use super::async_event_bus::AsyncSignal;
 use super::async_event_bus::BusState;
 use super::async_event_bus::SignalRegistration;
-use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseErrors;
@@ -56,14 +34,23 @@ use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::ShutdownMode;
 use crate::spi::SpiFuture;
 
-mod dead_letter;
-mod delivery_task;
 mod internal;
-mod waiting;
+// Publishes asynchronous dead-letter records through the facade pipeline.
+mod dead_letter;
+// Runs retry attempts and reports terminal delivery failures.
+mod delivery_task;
+
+pub(super) use internal::is_current_bus_poll;
 
 /// Boxed subscriber handler that returns a runtime-neutral future.
+///
+/// # Type Parameters
+/// - `T`: payload type accepted by the handler.
 type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
 /// Shared owner of a subscriber handler callback.
+///
+/// # Type Parameters
+/// - `T`: payload type accepted by the handler.
 type SharedAsyncHandler<T> = Arc<AsyncHandler<T>>;
 /// Delivery failure, number of attempts, and selected terminal directive.
 type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
@@ -79,17 +66,22 @@ type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::{AsyncSubscription, DeliveryError};
+/// use qubit_event_bus::AsyncEventBus;
+/// use qubit_event_bus::AsyncSubscription;
+/// use qubit_event_bus::local::LocalEventBusConfig;
 ///
-/// async fn run(subscription: &mut AsyncSubscription<String>) -> Result<(), Box<dyn std::error::Error>> {
-///     subscription.run(|delivery| async move {
-///         consume(delivery.payload()).await?;
-///         Ok::<(), DeliveryError>(())
-///     }).await?;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
+///
+/// async fn close_unstarted() -> Result<(), Box<dyn std::error::Error>> {
+///     let bus = AsyncEventBus::local(LocalEventBusConfig::default()).await?;
+///     let topic = Topic::<String>::new("orders.created")?;
+///     let request = SubscribeRequest::new("audit", topic)?;
+///     let mut subscription = bus.subscribe(request).await?;
+///     subscription.close().await?;
+///     bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await?;
 ///     Ok(())
 /// }
-///
-/// async fn consume(_value: &str) -> Result<(), DeliveryError> { Ok(()) }
 /// ```
 ///
 /// # Type Parameters
@@ -170,6 +162,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Returns
     /// The validated logical subscriber name.
+    #[must_use = "Use the returned subscriber id."]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
@@ -182,6 +175,22 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// may run concurrently; messages with the same key retain receive order.
     /// Dropping this future pauses the session. A later call resumes existing
     /// handler futures before using its handler for new messages.
+    ///
+    /// # Type Parameters
+    /// - `H`: handler factory callable type.
+    /// - `F`: future returned by the handler.
+    ///
+    /// # Parameters
+    /// - `handler`: callback run for each newly received delivery.
+    ///
+    /// # Returns
+    /// `Ok(())` when the provider closes or shutdown stops the runner.
+    ///
+    /// # Errors
+    /// Returns provider receive, timer, or receiver close failures.
+    ///
+    /// # Panics
+    /// Panics if the session lease invariant is violated internally.
     pub async fn run<H, F>(&mut self, handler: H) -> Result<(), ReceiveError>
     where
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
@@ -197,6 +206,12 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     }
 
     /// Stops this session and closes its provider receiver.
+    ///
+    /// # Returns
+    /// `Ok(())` after receiver cleanup completes.
+    ///
+    /// # Errors
+    /// Returns a lifecycle error when provider receiver close fails.
     pub async fn close(&mut self) -> Result<(), crate::error::LifecycleError> {
         if self.control.bus.upgrade().is_none_or(|inner| {
             *inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != BusState::Running
@@ -215,7 +230,41 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
 }
 
 impl<T: 'static> Drop for AsyncSubscription<T> {
+    /// Signals stop and relinquishes an unstarted session synchronously.
     fn drop(&mut self) {
         self.control.dispose();
     }
+}
+
+/// Awaits an operation until it completes or the subscription stops.
+///
+/// # Type Parameters
+/// - `F`: future type being awaited.
+///
+/// # Parameters
+/// - `future`: timer or asynchronous operation.
+/// - `control`: session stop signals.
+///
+/// # Returns
+/// `Some` with the future output when complete, or `None` after stop.
+async fn await_or_stop<F>(future: F, control: &SessionSignals) -> Option<F::Output>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    let registration = SignalRegistration::new(control.signal());
+    std::future::poll_fn(|cx| {
+        if control.is_stopped() {
+            return std::task::Poll::Ready(None);
+        }
+        registration.register(cx.waker());
+        if control.is_stopped() {
+            return std::task::Poll::Ready(None);
+        }
+        match future.as_mut().poll(cx) {
+            std::task::Poll::Ready(value) => std::task::Poll::Ready(Some(value)),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    })
+    .await
 }

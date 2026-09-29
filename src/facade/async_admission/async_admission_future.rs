@@ -44,6 +44,7 @@ impl AsyncAdmissionFuture {
 }
 
 impl Future for AsyncAdmissionFuture {
+    /// Admission permit for the acquired slot.
     type Output = AsyncAdmissionPermit;
 
     /// Registers or refreshes this waiter's waker and admits it when it is the

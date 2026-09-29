@@ -5,111 +5,67 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-// qubit-style: allow multiple-public-types
-
 //! A cancellable handle for a facade-managed synchronous subscription.
 
-use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
+mod internal;
 
+use std::sync::Arc;
+
+pub(crate) use internal::SubscriptionControl;
 use qubit_id::Id;
 
 use super::internal::is_current_bus_context;
 use crate::error::LifecycleError;
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
-use crate::error::SubscriptionCloseFailure;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::model::SubscriberId;
-
-/// A single subscription worker's coordination state.
-pub(crate) struct SubscriptionControl {
-    pub(super) id: Id,
-    pub(super) subscriber_id: SubscriberId,
-    cancelled: AtomicBool,
-    pub(super) worker: Mutex<Option<JoinHandle<()>>>,
-    pub(super) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
-    finished: Mutex<bool>,
-    finished_changed: Condvar,
-}
-
-impl SubscriptionControl {
-    /// Creates an active control block before its worker thread is spawned.
-    pub(crate) fn new(id: Id, subscriber_id: SubscriberId) -> Arc<Self> {
-        Arc::new(Self {
-            id,
-            subscriber_id,
-            cancelled: AtomicBool::new(false),
-            worker: Mutex::new(None),
-            close_error: Mutex::new(None),
-            finished: Mutex::new(false),
-            finished_changed: Condvar::new(),
-        })
-    }
-
-    /// Publishes the worker join handle after a successful thread spawn.
-    pub(crate) fn set_worker(&self, worker: JoinHandle<()>) {
-        *self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(worker);
-    }
-
-    /// Returns whether cancellation was requested for this subscription.
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
-    }
-
-    /// Requests worker cancellation without waiting for an executing handler.
-    pub(crate) fn request_cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-    }
-
-    /// Stores a provider close failure for the next lifecycle caller to
-    /// observe.
-    pub(crate) fn record_close_error(&self, error: Arc<SubscriptionCloseFailure>) {
-        let mut slot = self
-            .close_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.is_none() {
-            *slot = Some(error);
-        }
-    }
-
-    /// Marks the receiver worker fully closed and wakes concurrent cancellers.
-    pub(crate) fn mark_finished(&self) {
-        *self.finished.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.finished_changed.notify_all();
-    }
-
-    /// Waits until the receiver worker has completed close and cleanup.
-    fn wait_finished(&self) {
-        let mut finished = self.finished.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !*finished {
-            finished = self
-                .finished_changed
-                .wait(finished)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-    }
-}
 
 /// Handle for one typed subscription managed by an [`super::EventBus`].
 ///
 /// Dropping the handle does not cancel its worker. Call [`Self::cancel`] or
 /// shut down the owning bus explicitly.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::EventBus;
+/// use qubit_event_bus::Subscription;
+/// use qubit_event_bus::local::LocalEventBusConfig;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
+/// use qubit_event_bus::spi::ShutdownMode;
+///
+/// let bus = EventBus::local(LocalEventBusConfig::new()).unwrap();
+/// let topic = Topic::<String>::new("orders.created").unwrap();
+/// let subscription: Subscription = bus.subscribe(
+///     SubscribeRequest::new("audit", topic).unwrap(), |_| {},
+/// ).unwrap();
+/// assert_eq!(subscription.subscriber_id().as_str(), "audit");
+/// subscription.cancel().unwrap();
+/// assert!(subscription.is_cancelled());
+/// bus.shutdown(ShutdownMode::Immediate).unwrap();
+/// ```
 #[must_use = "dropping a subscription handle does not cancel it; call cancel() or shut down the bus"]
 pub struct Subscription {
+    /// Shared worker cancellation and completion state.
     control: Arc<SubscriptionControl>,
+    /// Identity used to detect waits from this bus's own callbacks.
     bus_identity: usize,
+    /// Scheduler used to release queued work when cancellation begins.
     scheduler: Arc<SyncDeliveryScheduler>,
 }
 
 impl Subscription {
     /// Creates a public handle for a successfully started subscription worker.
+    ///
+    /// # Parameters
+    /// - `control`: worker state for the provider receiver.
+    /// - `bus_identity`: identity used to recognize calls from this bus.
+    /// - `scheduler`: scheduler whose queued work is released on cancellation.
+    ///
+    /// # Returns
+    /// A handle that can cancel and join the worker.
     pub(super) fn new(
         control: Arc<SubscriptionControl>,
         bus_identity: usize,
@@ -124,16 +80,31 @@ impl Subscription {
 
     /// Returns the bus-local object ID, distinct from the logical subscriber
     /// ID.
+    ///
+    /// # Returns
+    /// The provider token identity used by this subscription.
+    #[must_use = "Use the returned id."]
+    #[inline]
     pub fn id(&self) -> Id {
         self.control.id
     }
 
     /// Returns the caller-supplied logical subscriber identity.
+    ///
+    /// # Returns
+    /// The validated logical subscriber name.
+    #[must_use = "Use the returned subscriber id."]
+    #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.control.subscriber_id
     }
 
     /// Returns whether cancellation has been requested.
+    ///
+    /// # Returns
+    /// True after cancellation begins, otherwise false.
+    #[must_use]
+    #[inline]
     pub fn is_cancelled(&self) -> bool {
         self.control.is_cancelled()
     }
@@ -142,6 +113,10 @@ impl Subscription {
     /// externally. Any worker owned by the same bus only requests
     /// cancellation and does not join, preventing cross-subscription join
     /// cycles.
+    ///
+    /// # Returns
+    /// Success after worker cleanup, or immediately after cancellation from a
+    /// callback owned by this bus.
     ///
     /// # Errors
     /// Returns [`LifecycleError::SubscriptionClose`] if the worker cannot close
@@ -169,6 +144,12 @@ impl Subscription {
     }
 
     /// Joins the worker when it has not already been joined.
+    ///
+    /// # Returns
+    /// Success if no worker remains or the worker joined normally.
+    ///
+    /// # Errors
+    /// Returns an SPI lifecycle error if the worker thread panicked.
     fn join_worker(&self) -> Result<(), LifecycleError> {
         let worker = self
             .control

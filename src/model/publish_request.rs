@@ -74,22 +74,11 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     pub fn builder() -> PublishRequestBuilder<T> {
         PublishRequestBuilder::new()
     }
-    /// Replaces all per-publication policy with reusable options.
-    ///
-    /// # Parameters
-    /// - `options`: policy applied to this publication.
-    ///
-    /// # Returns
-    /// The request with its policy replaced.
-    pub fn with_options(mut self, options: PublishOptions<T>) -> Self {
-        self.options = options;
-        self
-    }
     /// Returns the typed topic.
     ///
     /// # Returns
     /// The topic carried by the envelope.
-    #[must_use]
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &Topic<T> {
         self.envelope.topic()
@@ -101,7 +90,6 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
-    #[must_use]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.envelope.header(key)
     }
@@ -109,6 +97,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The validated event envelope borrowed from this request.
+    #[must_use = "Use the returned envelope."]
     #[inline]
     pub fn envelope(&self) -> &EventEnvelope<T> {
         &self.envelope
@@ -121,6 +110,17 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     #[inline]
     pub fn options(&self) -> &PublishOptions<T> {
         &self.options
+    }
+    /// Replaces all per-publication policy with reusable options.
+    ///
+    /// # Parameters
+    /// - `options`: policy applied to this publication.
+    ///
+    /// # Returns
+    /// The request with its policy replaced.
+    pub fn with_options(mut self, options: PublishOptions<T>) -> Self {
+        self.options = options;
+        self
     }
     /// Consumes the request into its envelope and options.
     ///

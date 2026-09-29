@@ -35,20 +35,21 @@ impl ContentType {
     /// parameters. Each component may contain ASCII letters, digits, `-`, `_`,
     /// `+`, or `.`.
     ///
-    /// # Panics
-    /// Panics during constant evaluation, or at runtime, if either component
-    /// is empty or contains a character outside the accepted ASCII token set.
-    ///
     /// # Parameters
     /// - `value`: the static MIME type string to validate and borrow.
     ///
     /// # Returns
     /// A content type borrowing `value` without allocating.
     ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, if either component
+    /// is empty or contains a character outside the accepted ASCII token set.
+    ///
     /// ```compile_fail
     /// use qubit_event_bus::model::ContentType;
     /// const INVALID_CONTENT_TYPE: ContentType = ContentType::new_static("text/");
     /// ```
+    #[must_use]
     pub const fn new_static(value: &'static str) -> Self {
         assert!(is_valid_content_type(value), "invalid content type");
         Self(Cow::Borrowed(value))
@@ -119,6 +120,13 @@ impl ContentType {
 }
 
 /// Checks that `value` is a MIME type with exactly one slash.
+///
+/// # Parameters
+/// - `value`: candidate media type without parameters.
+///
+/// # Returns
+/// `true` for two nonempty accepted ASCII tokens separated by one slash.
+#[must_use = "Use the returned query result."]
 const fn is_valid_content_type(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut index = 0;
@@ -134,6 +142,12 @@ const fn is_valid_content_type(value: &str) -> bool {
 }
 
 /// Checks the ASCII token syntax accepted for each MIME type component.
+///
+/// # Parameters
+/// - `value`: candidate type or subtype component.
+///
+/// # Returns
+/// `true` when nonempty and composed only of accepted ASCII token bytes.
 const fn valid_mime_token(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {

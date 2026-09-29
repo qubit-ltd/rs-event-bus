@@ -5,20 +5,21 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Async subscription session close and delivery abandonment.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::super::AsyncSubscriptionControl;
 use crate::Diagnostic;
 use crate::facade::async_event_bus::catch_spi_future;
-use crate::facade::async_subscription::Arc;
 use crate::facade::async_subscription::AsyncSession;
 use crate::facade::async_subscription::BusState;
-use crate::facade::async_subscription::Ordering;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
 use crate::spi::ShutdownMode;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
-    /// Stops this receiver and asynchronously releases provider resources.
     /// Stops this receiver and asynchronously releases provider resources.
     ///
     /// # Parameters
@@ -67,6 +68,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// # Returns
     /// Success or the canonical provider close failure.
+    ///
+    /// # Errors
+    /// Returns the canonical failure recorded for this receiver's close.
     pub(in crate::facade) async fn close_inner(
         &mut self,
         control: &AsyncSubscriptionControl<T>,

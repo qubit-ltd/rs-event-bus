@@ -16,6 +16,7 @@ use std::task::Waker;
 
 use super::internal::AsyncWaiter;
 
+/// Waker registry used to notify asynchronous local-provider waiters.
 #[derive(Default)]
 pub(super) struct AsyncSignal {
     /// Generates unique waiter registration IDs.
@@ -25,7 +26,7 @@ pub(super) struct AsyncSignal {
 }
 
 impl AsyncSignal {
-    /// Adds or replaces a waiter registration for one poll.
+    /// Registers the current task for notification.
     ///
     /// # Parameters
     /// - `waker`: task to wake when the signal changes.
@@ -58,6 +59,9 @@ impl AsyncSignal {
     }
 
     /// Returns the number of registered waiters for unit tests.
+    ///
+    /// # Returns
+    /// The current number of stored task wakers.
     #[must_use]
     #[cfg(test)]
     fn waiter_count(&self) -> usize {
@@ -133,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_wakers_are_removed_and_notified_outside_the_registry_lock() {
+    fn test_registered_wakers_are_removed_and_notified_outside_the_registry_lock() {
         let signal = AsyncSignal::default();
         let counter = Arc::new(CountWake::default());
         let waker = Waker::from(counter.clone());
@@ -146,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_a_pending_registration_cleans_it_up() {
+    fn test_dropping_a_pending_registration_cleans_it_up() {
         let signal = AsyncSignal::default();
         let counter = Arc::new(CountWake::default());
         drop(signal.register(&Waker::from(counter)));
@@ -154,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_waker_supports_wake_by_reference() {
+    fn test_registered_waker_supports_wake_by_reference() {
         let signal = AsyncSignal::default();
         let counter = Arc::new(CountWake::default());
         let waker = Waker::from(counter.clone());
@@ -164,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn waker_clone_and_drop_are_outside_the_registry_lock() {
+    fn test_waker_clone_and_drop_are_outside_the_registry_lock() {
         let signal = Arc::new(AsyncSignal::default());
         let probe = Arc::new(CloneDropProbe {
             signal: Arc::downgrade(&signal),

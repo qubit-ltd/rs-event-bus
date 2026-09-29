@@ -22,7 +22,10 @@ use crate::model::SubscriptionDurability;
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct SubscriptionModes(u8);
+pub struct SubscriptionModes(
+    /// Bit mask whose low bits enable ephemeral and durable subscriptions.
+    u8,
+);
 
 impl SubscriptionModes {
     /// Provider accepts ephemeral subscriptions.
@@ -40,6 +43,7 @@ impl SubscriptionModes {
     /// # Returns
     /// `true` when the provider accepts the requested mode.
     #[must_use]
+    #[inline]
     pub const fn supports(self, durability: SubscriptionDurability) -> bool {
         let required = match durability {
             SubscriptionDurability::Ephemeral => Self::EPHEMERAL.0,

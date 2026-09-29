@@ -27,6 +27,7 @@ use crate::error::SubscriptionCloseErrors;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum ShutdownError {
     /// The graceful shutdown deadline elapsed.
     #[error("event bus shutdown timed out after {timeout:?}")]

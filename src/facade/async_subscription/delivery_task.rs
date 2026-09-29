@@ -5,22 +5,25 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Delivery attempt execution and terminal failure handling.
+
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+
+use qubit_retry::AsyncRetry;
+use qubit_retry::AttemptFailure;
+use qubit_retry::RetryConfig;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
+use qubit_retry::RetryFallback;
 
 use crate::DeliveryError;
 use crate::Diagnostic;
-use crate::facade::async_subscription::Arc;
+use crate::error::DeliveryAttemptError;
 use crate::facade::async_subscription::AsyncEventBusInner;
-use crate::facade::async_subscription::AsyncRetry;
-use crate::facade::async_subscription::AtomicU32;
-use crate::facade::async_subscription::AttemptFailure;
-use crate::facade::async_subscription::DeliveryAttemptError;
-use crate::facade::async_subscription::Mutex;
-use crate::facade::async_subscription::Ordering;
-use crate::facade::async_subscription::RetryConfig;
-use crate::facade::async_subscription::RetryContext;
-use crate::facade::async_subscription::RetryDecision;
 use crate::facade::async_subscription::RetryFailure;
-use crate::facade::async_subscription::RetryFallback;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::choose_terminal_directive;
 use crate::model::Delivery;
@@ -31,6 +34,9 @@ use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::is_retry_rule_failure;
 
 /// Runs subscriber middleware and one handler attempt.
+///
+/// # Type Parameters
+/// - `T`: Payload type carried by the delivery.
 ///
 /// # Parameters
 /// - `options`: middleware and acknowledgement policy.

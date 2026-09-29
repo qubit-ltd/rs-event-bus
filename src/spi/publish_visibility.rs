@@ -8,6 +8,15 @@
 //! Visibility of provider publish admission results.
 
 /// Whether publication can report individual destination admissions.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::PublishVisibility;
+///
+/// let visibility = PublishVisibility::DestinationAdmissions;
+/// assert_eq!(visibility, PublishVisibility::DestinationAdmissions);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PublishVisibility {

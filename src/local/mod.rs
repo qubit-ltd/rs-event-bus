@@ -22,3 +22,4 @@ mod local_event_bus_provider;
 mod local_event_bus_spi;
 mod local_event_subscription;
 pub(super) mod outstanding_budget;
+mod state;

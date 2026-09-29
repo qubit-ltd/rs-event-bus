@@ -79,7 +79,7 @@ impl<T: 'static> Delivery<T> {
     ///
     /// # Returns
     /// The event payload borrowed from the retained envelope.
-    #[must_use]
+    #[must_use = "Use the returned payload."]
     #[inline]
     pub fn payload(&self) -> &T {
         self.event.payload()
@@ -88,16 +88,10 @@ impl<T: 'static> Delivery<T> {
     ///
     /// # Returns
     /// The envelope containing the event metadata and payload.
+    #[must_use = "Use the returned event."]
     #[inline]
     pub fn event(&self) -> &EventEnvelope<T> {
         &self.event
-    }
-    /// Returns a shared owner for use by retry and dead-letter policies.
-    ///
-    /// # Returns
-    /// Another shared pointer to the retained event envelope.
-    pub(crate) fn event_arc(&self) -> Arc<EventEnvelope<T>> {
-        self.event.clone()
     }
     /// Creates a fresh per-attempt acknowledgement while retaining event
     /// context.
@@ -131,5 +125,15 @@ impl<T: 'static> Delivery<T> {
     #[inline]
     pub fn acknowledgement(&self) -> &Acknowledgement {
         &self.acknowledgement
+    }
+
+    /// Returns a shared owner for use by retry and dead-letter policies.
+    ///
+    /// # Returns
+    /// Another shared pointer to the retained event envelope.
+    #[must_use]
+    #[inline]
+    pub(crate) fn event_arc(&self) -> Arc<EventEnvelope<T>> {
+        self.event.clone()
     }
 }

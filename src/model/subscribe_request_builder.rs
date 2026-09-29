@@ -44,7 +44,11 @@ use crate::error::DeliveryError;
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::model::{AckMode, FailureDirective, SubscribeOptions, SubscribeRequest, Topic};
+/// use qubit_event_bus::model::AckMode;
+/// use qubit_event_bus::model::FailureDirective;
+/// use qubit_event_bus::model::SubscribeOptions;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
 /// use qubit_event_bus::SubscriberId;
 /// let options = SubscribeOptions::<String>::builder()
 ///     .ack_mode(AckMode::Manual)
@@ -100,6 +104,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned subscriber id."]
     pub fn subscriber_id(mut self, value: SubscriberId) -> Self {
         self.subscriber_id = Some(value);
         self
@@ -111,6 +116,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned topic."]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
         self
@@ -122,6 +128,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned ack mode."]
     pub fn ack_mode(mut self, value: AckMode) -> Self {
         self.options.ack_mode = value;
         self
@@ -254,6 +261,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned ordering policy."]
     pub fn ordering_policy(mut self, value: OrderingPolicy) -> Self {
         self.options.ordering_policy = value;
         self
@@ -276,6 +284,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned durability."]
     pub fn durability(mut self, value: SubscriptionDurability) -> Self {
         self.options.durability = value;
         self
@@ -287,6 +296,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned start position."]
     pub fn start_position(mut self, value: StartPosition) -> Self {
         self.options.start_position = value;
         self

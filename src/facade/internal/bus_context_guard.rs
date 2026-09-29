@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 
 thread_local! {
+    /// Stack of bus identities whose synchronous facade work is active here.
     static CURRENT_BUS_CONTEXTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -54,6 +55,7 @@ impl Drop for BusContextGuard {
 /// # Returns
 /// `true` when that bus currently owns a synchronous execution scope on this
 /// thread.
+#[must_use = "Use the returned query result."]
 pub(in crate::facade) fn is_current_bus_context(bus_identity: usize) -> bool {
     CURRENT_BUS_CONTEXTS.with(|contexts| contexts.borrow().contains(&bus_identity))
 }

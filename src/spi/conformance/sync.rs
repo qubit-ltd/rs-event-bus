@@ -42,6 +42,9 @@ use crate::spi::ShutdownOutcome;
 ///
 /// # Returns
 /// Results for each conformance check that ran or was skipped.
+///
+/// # Panics
+/// Panics if the provider factory or an SPI method unwinds.
 pub fn run_sync<F>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
@@ -62,6 +65,9 @@ where
 ///
 /// # Returns
 /// Results for each conformance check that ran or was skipped.
+///
+/// # Panics
+/// Panics if the provider factory or an SPI method unwinds.
 pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: ConformanceProfile) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,

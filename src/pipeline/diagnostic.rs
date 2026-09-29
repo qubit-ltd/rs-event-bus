@@ -5,20 +5,36 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-// qubit-style: allow multiple-public-types
-
 //! Public runtime observations emitted by event-bus facades.
 
+mod internal;
+
+pub(crate) use internal::PipelineFailure;
+pub(crate) use internal::PipelineFailureOrigin;
 use qubit_id::Id;
 
-use crate::error::EventBusError;
 use crate::model::EventId;
 use crate::model::SubscriberId;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DeliveryGap;
 
 /// A runtime fact reported by an event-bus facade.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::SubscriberId;
+/// use qubit_event_bus::pipeline::Diagnostic;
+///
+/// let diagnostic = Diagnostic::AdmissionRejected {
+///     event_id: EventId::new("event-1").unwrap(),
+///     topic: "orders.created".into(),
+///     subscriber_id: SubscriberId::new("audit-log").unwrap(),
+///     reason: "queue is full".into(),
+/// };
+/// assert!(matches!(diagnostic, Diagnostic::AdmissionRejected { .. }));
+/// ```
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Diagnostic {
@@ -101,60 +117,12 @@ pub enum Diagnostic {
 /// Callback used by a facade to deliver runtime diagnostics.
 pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 
-/// The stage that produced a publisher pipeline failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub(crate) enum PipelineFailureOrigin {
-    /// Typed or global publisher interceptor failed.
-    Interceptor,
-    /// The selected SPI does not support the requested payload mode.
-    Capability,
-    /// Encoding the event payload failed.
-    Codec,
-    /// The selected provider failed during publication.
-    Provider,
-    /// Retry execution terminated before publication succeeded.
-    Retry,
-}
-
-/// Failure carrying its origin without inspecting or cloning the error.
-#[derive(Debug, thiserror::Error)]
-#[error("publisher pipeline failed at {origin:?}: {error}")]
-pub(crate) struct PipelineFailure {
-    origin: PipelineFailureOrigin,
-    #[source]
-    error: Box<EventBusError>,
-}
-
-impl PipelineFailure {
-    /// Creates a failure with explicit publisher pipeline provenance.
-    pub(crate) fn new(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> Self {
-        Self {
-            origin,
-            error: Box::new(error.into()),
-        }
-    }
-
-    /// Returns the publisher pipeline failure stage.
-    #[cfg(test)]
-    pub(crate) fn origin(&self) -> PipelineFailureOrigin {
-        self.origin
-    }
-
-    /// Returns the borrowed aggregate error for classification.
-    #[cfg(test)]
-    pub(crate) fn error(&self) -> &EventBusError {
-        &self.error
-    }
-
-    /// Consumes the wrapper and returns its original operation error.
-    pub(crate) fn into_error(self) -> EventBusError {
-        *self.error
-    }
-}
-
 /// Calls each active observer in registration order, containing observer
 /// panics.
+///
+/// # Parameters
+/// - `observers`: observers to invoke in their registration order.
+/// - `diagnostic`: runtime fact passed to each observer.
 pub(crate) fn emit_diagnostic(observers: &[std::sync::Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
     for observer in observers {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(diagnostic)));

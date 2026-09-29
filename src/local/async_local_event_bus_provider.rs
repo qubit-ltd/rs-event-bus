@@ -30,7 +30,8 @@ use crate::spi::AsyncEventBusSpi;
 ///
 /// ```
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::registry::{AsyncEventBusRegistry, EventBusConfig};
+/// use qubit_event_bus::registry::AsyncEventBusRegistry;
+/// use qubit_event_bus::registry::EventBusConfig;
 ///
 /// let registry = AsyncEventBusRegistry::with_local()?;
 /// let bus = registry.create(&EventBusConfig::default()).await?;
@@ -42,6 +43,10 @@ use crate::spi::AsyncEventBusSpi;
 pub struct AsyncLocalEventBusProvider;
 
 impl ProviderMetadata for AsyncLocalEventBusProvider {
+    /// Returns the stable local provider identity and its selection aliases.
+    ///
+    /// # Returns
+    /// A descriptor for the built-in in-process provider.
     fn descriptor(&self) -> ProviderDescriptor {
         ProviderDescriptor::new(ProviderId::new("local").expect("static provider ID is valid"))
             .with_aliases(["memory", "in-process"])
@@ -50,6 +55,17 @@ impl ProviderMetadata for AsyncLocalEventBusProvider {
 }
 
 impl AsyncServiceProvider<EventBusSpec> for AsyncLocalEventBusProvider {
+    /// Builds an asynchronous local SPI using the standard timer.
+    ///
+    /// # Parameters
+    /// - `config`: facade and provider configuration supplied by the registry.
+    ///
+    /// # Returns
+    /// A future resolving to the constructed provider SPI.
+    ///
+    /// # Errors
+    /// Returns an invalid-configuration provider failure when local options
+    /// cannot be parsed or validated.
     fn create_configured<'a>(
         &'a self,
         config: &'a EventBusConfig,

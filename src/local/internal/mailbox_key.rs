@@ -9,6 +9,7 @@
 
 use qubit_id::Id;
 
+/// Identity of one subscriber mailbox in the async provider registry.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::local) struct MailboxKey {
     /// Bus-local subscription ID used as the mailbox identity.

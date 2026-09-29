@@ -8,6 +8,15 @@
 //! Terminal disposition for a received delivery.
 
 /// Action applied to a delivery through its provider settlement token.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::DeliveryDisposition;
+///
+/// let disposition = DeliveryDisposition::Accept;
+/// assert_eq!(disposition, DeliveryDisposition::Accept);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum DeliveryDisposition {

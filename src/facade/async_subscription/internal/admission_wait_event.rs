@@ -1,20 +1,30 @@
 // =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
+//    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Internal asynchronous subscription state.
 
-use crate::facade::async_subscription::AsyncAdmissionPermit;
-use crate::facade::async_subscription::internal::pending_delivery::PendingDelivery;
+use super::PendingDelivery;
+use crate::facade::async_admission::AsyncAdmissionPermit;
 
 /// Event returned while waiting for a delivery permit.
+///
+/// # Type Parameters
+/// - `T`: payload type retained by a completed delivery.
 pub(in crate::facade::async_subscription) enum AdmissionWaitEvent<T: 'static> {
     /// Admission capacity became available.
-    Permit(AsyncAdmissionPermit),
+    Permit(
+        /// Slot retained for the pending delivery.
+        AsyncAdmissionPermit,
+    ),
     /// A delivery task completed while capacity was unavailable.
-    Delivery(Box<PendingDelivery<T>>),
+    Delivery(
+        /// Completed handler task awaiting terminal settlement.
+        Box<PendingDelivery<T>>,
+    ),
     /// Immediate shutdown requested that no new task start.
     ImmediateStop,
 }

@@ -13,6 +13,23 @@ use crate::spi::ShutdownOutcome;
 ///
 /// A successful shutdown report describes resource cleanup. It does not claim
 /// that every publication reached a handler or completed its business effect.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use qubit_event_bus::local::LocalEventBusConfig;
+/// use qubit_event_bus::EventBus;
+/// use qubit_event_bus::spi::ShutdownMode;
+/// use qubit_event_bus::spi::ShutdownOutcome;
+///
+/// let bus = EventBus::local(LocalEventBusConfig::default())?;
+/// let report = bus.shutdown(ShutdownMode::Immediate)?;
+/// assert_eq!(report.outcome, ShutdownOutcome::Complete);
+/// assert_eq!(report.known_abandoned_deliveries, 0);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShutdownReport {
     /// Final provider shutdown result.
@@ -26,6 +43,15 @@ pub struct ShutdownReport {
 
 impl ShutdownReport {
     /// Creates a report after the facade has completed provider shutdown.
+    ///
+    /// # Parameters
+    /// - `outcome`: provider's final shutdown outcome.
+    /// - `known_abandoned_deliveries`: facade-counted deliveries abandoned.
+    /// - `provider_may_have_abandoned_deliveries`: whether the provider may
+    ///   have abandoned work the facade cannot count.
+    ///
+    /// # Returns
+    /// A report combining provider outcome and facade-known cleanup details.
     pub(crate) fn new(
         outcome: ShutdownOutcome,
         known_abandoned_deliveries: u64,

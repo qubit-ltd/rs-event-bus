@@ -5,21 +5,21 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! RAII reservation for one synchronous subscription worker.
+//! Drop-based reservation of one subscription worker slot.
 
-use crate::facade::event_bus::Arc;
-use crate::facade::event_bus::Ordering;
-use crate::facade::event_bus::SubscriptionWorkerBudget;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-pub(in crate::facade) struct SubscriptionWorkerPermit(Arc<SubscriptionWorkerBudget>);
+use super::subscription_worker_budget::SubscriptionWorkerBudget;
 
-impl SubscriptionWorkerPermit {
-    pub(in crate::facade) fn new(budget: Arc<SubscriptionWorkerBudget>) -> Self {
-        Self(budget)
-    }
-}
+/// Keeps a worker slot reserved until the worker exits.
+pub(in crate::facade) struct SubscriptionWorkerPermit(
+    /// Budget whose active worker reservation is released on drop.
+    pub(in crate::facade) Arc<SubscriptionWorkerBudget>,
+);
 
 impl Drop for SubscriptionWorkerPermit {
+    /// Releases the reserved worker slot.
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::AcqRel);
     }

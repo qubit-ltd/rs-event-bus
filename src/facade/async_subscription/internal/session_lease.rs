@@ -1,18 +1,23 @@
 // =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
+//    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Internal asynchronous subscription state.
 
-use crate::facade::async_subscription::AsyncSession;
-use crate::facade::async_subscription::AsyncSubscriptionControl;
+use super::AsyncSession;
+use super::AsyncSubscriptionControl;
 
-/// Exclusive lease that returns the session to its control when dropped.
+/// Temporarily owns the session while a runner or shutdown caller uses it.
+///
+/// # Type Parameters
+/// - `'a`: lifetime of the subscription control borrowed by this lease.
+/// - `T`: payload type retained by the session.
 pub(in crate::facade::async_subscription) struct SessionLease<'a, T: 'static> {
     /// Coordinator that regains the session when this lease is dropped.
-    pub(super) control: &'a AsyncSubscriptionControl<T>,
+    pub(in crate::facade::async_subscription) control: &'a AsyncSubscriptionControl<T>,
     /// Session exclusively held by this lease.
     pub(in crate::facade::async_subscription) session: Option<AsyncSession<T>>,
 }

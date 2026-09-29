@@ -37,7 +37,9 @@ const MAX_TOTAL_OUTSTANDING_OPTION: &str = "local.max_total_outstanding";
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalEventBusConfig {
+    /// Maximum queued and unsettled delivery items for each subscription.
     queue_capacity: usize,
+    /// Maximum outstanding delivery items shared by all provider subscriptions.
     max_total_outstanding: usize,
 }
 
@@ -160,23 +162,19 @@ impl LocalEventBusConfig {
     /// malformed values, or zero limits.
     pub(crate) fn from_provider_options(config: &EventBusConfig) -> Result<Self, ConfigurationError> {
         let mut local = Self::default();
-        let options: &ProviderOptions = config.provider_options();
-        for (key, value) in options.iter() {
-            let key: &String = key;
-            let value: &String = value;
+        for (key, value) in config.provider_options() {
             match key.as_str() {
                 QUEUE_CAPACITY_OPTION => {
-                    local.queue_capacity = value.parse::<usize>().map_err(|_| ConfigurationError::InvalidField {
+                    local.queue_capacity = value.parse().map_err(|_| ConfigurationError::InvalidField {
                         field: QUEUE_CAPACITY_OPTION,
                         message: "must be a positive integer".into(),
                     })?;
                 }
                 MAX_TOTAL_OUTSTANDING_OPTION => {
-                    local.max_total_outstanding =
-                        value.parse::<usize>().map_err(|_| ConfigurationError::InvalidField {
-                            field: MAX_TOTAL_OUTSTANDING_OPTION,
-                            message: "must be a positive integer".into(),
-                        })?;
+                    local.max_total_outstanding = value.parse().map_err(|_| ConfigurationError::InvalidField {
+                        field: MAX_TOTAL_OUTSTANDING_OPTION,
+                        message: "must be a positive integer".into(),
+                    })?;
                 }
                 _ => {
                     return Err(ConfigurationError::InvalidField {
@@ -192,6 +190,10 @@ impl LocalEventBusConfig {
 }
 
 impl Default for LocalEventBusConfig {
+    /// Creates the default per-subscription and provider-wide queue limits.
+    ///
+    /// # Returns
+    /// A configuration with capacities of 1,024 and 65,536 respectively.
     fn default() -> Self {
         Self::new()
     }

@@ -12,10 +12,19 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Decrements the active runner count when a runner future is dropped.
-pub(in crate::facade) struct AsyncRunnerGuard(Arc<AsyncTracker>);
+pub(in crate::facade) struct AsyncRunnerGuard(
+    /// Tracker whose active runner count this guard owns.
+    Arc<AsyncTracker>,
+);
 
 impl AsyncRunnerGuard {
     /// Increments the tracker and creates a guard for one active runner.
+    ///
+    /// # Parameters
+    /// - `tracker`: lifecycle tracker whose active-runner count is incremented.
+    ///
+    /// # Returns
+    /// A guard that releases the runner count when dropped.
     pub(in crate::facade) fn enter(tracker: Arc<AsyncTracker>) -> Self {
         tracker.runner_started();
         Self(tracker)
@@ -23,6 +32,7 @@ impl AsyncRunnerGuard {
 }
 
 impl Drop for AsyncRunnerGuard {
+    /// Releases the runner count.
     fn drop(&mut self) {
         self.0.runner_finished();
     }

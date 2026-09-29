@@ -6,21 +6,9 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
-// qubit-style: allow multiple-public-types
-
 //! Runtime-neutral asynchronous event-bus facade.
 
-use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::task::Poll;
-use std::time::Duration;
 
 pub(super) use internal::AsyncDeliveryGuard;
 pub(super) use internal::AsyncEventBusInner;
@@ -29,36 +17,36 @@ pub(super) use internal::AsyncShutdownDriver;
 pub(super) use internal::AsyncSignal;
 pub(super) use internal::AsyncTracker;
 pub(super) use internal::BusState;
-pub(super) use internal::ShutdownLeaderGuard;
-pub(super) use internal::ShutdownWait;
+pub(in crate::facade::async_event_bus) use internal::ShutdownLeaderGuard;
+pub(in crate::facade::async_event_bus) use internal::ShutdownWait;
 pub(super) use internal::SignalRegistration;
-pub(super) use internal::catch_spi_future;
-use qubit_clock::StdMonotonicClock;
-use qubit_clock::Timer;
-use qubit_clock::TimerFuture;
-use qubit_id::Id;
+pub(in crate::facade) use internal::catch_spi_future_fn as catch_spi_future;
 
-use super::async_admission::AsyncAdmission;
-use crate::codec::resolve_codec;
-use crate::error::SubscriptionCloseErrors;
-use crate::error::SubscriptionCloseFailure;
-
+// Owns shared async provider and lifecycle state.
 mod internal;
 
+// Implements async facade construction and provider setup.
 mod construction;
+// Registers and emits bus diagnostics.
 mod diagnostics;
+// Implements async wait and shutdown lifecycle operations.
 mod lifecycle;
+// Implements async publish operations.
 mod publishing;
+// Implements async subscription creation.
 mod subscribing;
-mod waiting;
+// Implements waits for deliveries received by the facade.
+pub(in crate::facade) mod waiting;
 
 /// A cloneable runtime-neutral asynchronous facade over one provider SPI.
 ///
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::model::{SubscribeRequest, Topic};
-/// use qubit_event_bus::{AsyncEventBus, DeliveryError};
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
+/// use qubit_event_bus::AsyncEventBus;
+/// use qubit_event_bus::DeliveryError;
 ///
 /// async fn consume(bus: &AsyncEventBus) -> Result<(), Box<dyn std::error::Error>> {
 ///     let topic = Topic::<String>::new("orders.created")?;

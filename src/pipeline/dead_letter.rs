@@ -21,6 +21,22 @@ use crate::model::SubscriberId;
 use crate::model::Topic;
 
 /// Builds a dead-letter record without mutating or cloning the original event.
+///
+/// # Type Parameters
+/// - `T`: payload type retained by the original delivery.
+///
+/// # Parameters
+/// - `delivery`: Failed delivery whose event and subscriber identify the
+///   record.
+/// - `error`: Terminal processing failure summarized in the dead-letter record.
+/// - `topic`: Destination for the dead-letter event.
+///
+/// # Returns
+/// The constructed envelope, or `None` when the delivery is already a dead
+/// letter.
+///
+/// # Errors
+/// Returns an error when `topic` is not a valid topic name.
 pub(crate) fn dead_letter_envelope<T: 'static>(
     delivery: &Delivery<T>,
     error: &DeliveryError,
@@ -45,7 +61,28 @@ pub(crate) fn dead_letter_envelope<T: 'static>(
 /// logical subscriber. This supports deduplication but does not provide
 /// exactly-once delivery; providers may accept a publish whose response is
 /// lost.
+///
+/// # Parameters
+/// - `event_id`: identity of the original event.
+/// - `subscriber_id`: logical subscriber that handled the event.
+///
+/// # Returns
+/// A stable event ID scoped to the original event and subscriber.
+///
+/// # Panics
+///
+/// Panics only if the generated portable ID violates `EventId` validation.
 fn dead_letter_id(event_id: &EventId, subscriber_id: &SubscriberId) -> EventId {
+    /// Computes a seeded hash over two identifiers with a separator.
+    ///
+    /// # Parameters
+    /// - `seed`: initial hash state.
+    /// - `first`: first identifier component.
+    /// - `second`: second identifier component.
+    ///
+    /// # Returns
+    /// The 64-bit hash of the ordered components.
+    #[inline]
     fn hash(seed: u64, first: &str, second: &str) -> u64 {
         let mut value = seed;
         for byte in first.bytes().chain([0]).chain(second.bytes()) {

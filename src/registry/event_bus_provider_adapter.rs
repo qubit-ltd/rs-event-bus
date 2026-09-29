@@ -36,6 +36,16 @@ pub(crate) struct EventBusProviderAdapter {
 
 impl EventBusProviderAdapter {
     /// Captures the provider descriptor once and validates its facade identity.
+    ///
+    /// # Parameters
+    /// - `provider`: synchronous factory whose metadata and SPI are adapted.
+    ///
+    /// # Returns
+    /// An adapter with a stable descriptor and facade provider ID.
+    ///
+    /// # Panics
+    /// Panics if the provider descriptor callback panics or its provider ID
+    /// violates the facade's validated provider-ID invariants.
     pub(crate) fn new(provider: Arc<EventBusProvider>) -> Self {
         let descriptor = provider.descriptor();
         let provider_id =
@@ -49,12 +59,27 @@ impl EventBusProviderAdapter {
 }
 
 impl ProviderMetadata for EventBusProviderAdapter {
+    /// Returns the provider metadata captured when the adapter was created.
+    ///
+    /// # Returns
+    /// A clone of the immutable descriptor snapshot used for registry identity.
     fn descriptor(&self) -> ProviderDescriptor {
         self.descriptor.clone()
     }
 }
 
 impl ServiceProvider<EventBusSpec> for EventBusProviderAdapter {
+    /// Creates a synchronous SPI and validates its declared capabilities.
+    ///
+    /// # Parameters
+    /// - `config`: facade configuration and required provider capabilities.
+    ///
+    /// # Returns
+    /// An identity-tagged SPI after all requested capabilities are available.
+    ///
+    /// # Errors
+    /// Returns the provider's creation failure, a capability-query failure, or
+    /// an unsupported-capability failure when the SPI cannot meet `config`.
     fn create_configured(
         &self,
         config: &EventBusConfig,

@@ -7,7 +7,8 @@
 // =============================================================================
 //! Shared publishing and subscription processing.
 
-mod admission;
+#[path = "admission_tracker.rs"]
+mod admission_tracker;
 mod dead_letter;
 mod dead_letter_admission;
 mod dead_letter_build_error;
@@ -17,13 +18,19 @@ mod diagnostic;
 mod failure_decision;
 mod global_publisher_interceptor;
 mod ordering_lane;
+#[path = "publisher_pipeline.rs"]
 mod publisher;
 mod retry;
 mod retry_terminal;
-mod subscriber;
+mod subscriber_pipeline;
 
-pub(crate) use admission::AdmissionPermit;
-pub(crate) use admission::AdmissionTracker;
+#[cfg(test)]
+pub(crate) mod subscriber {
+    pub(crate) use super::subscriber_pipeline::DeliveryFailureAction;
+}
+
+pub(crate) use admission_tracker::AdmissionPermit;
+pub(crate) use admission_tracker::AdmissionTracker;
 pub(crate) use dead_letter::dead_letter_envelope;
 pub(crate) use dead_letter_admission::was_accepted as dead_letter_was_accepted;
 pub(crate) use dead_letter_build_error::DeadLetterBuildError;
@@ -47,9 +54,9 @@ pub(crate) use ordering_lane::OrderingLanes;
 pub(crate) use publisher::PublisherPipeline;
 pub(crate) use retry_terminal::is_retry_rule_failure;
 pub(crate) use retry_terminal::terminal_directive;
-pub(crate) use subscriber::DeliveryFailureAction;
-pub(crate) use subscriber::DeliveryOutcome;
-pub(crate) use subscriber::SubscriberPipeline;
+pub(crate) use subscriber_pipeline::DeliveryFailureAction;
+pub(crate) use subscriber_pipeline::DeliveryOutcome;
+pub(crate) use subscriber_pipeline::SubscriberPipeline;
 
 #[cfg(test)]
 #[path = "../../tests/support/publisher_pipeline_tests.rs"]

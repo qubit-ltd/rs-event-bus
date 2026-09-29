@@ -89,7 +89,8 @@ pub type AsyncSubscriberInterceptor<T> = dyn Fn(Delivery<T>, AsyncSubscriberNext
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::model::{AckMode, SubscribeOptions};
+/// use qubit_event_bus::model::AckMode;
+/// use qubit_event_bus::model::SubscribeOptions;
 ///
 /// let options = SubscribeOptions::<String>::builder()
 ///     .ack_mode(AckMode::Manual)
@@ -176,7 +177,6 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// A new options value with the same defaults as [`Self::default`].
-    #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -195,6 +195,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The configured handler acknowledgement behavior.
+    #[must_use = "Use the returned ack mode."]
     #[inline]
     pub fn ack_mode(&self) -> AckMode {
         self.ack_mode
@@ -204,8 +205,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The filter callback when one is configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned filter."]
     pub fn filter(&self) -> Option<&Arc<EventFilter<T>>> {
         self.filter.as_ref()
     }
@@ -214,8 +215,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The retry schedule when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry policy."]
     pub fn retry_policy(&self) -> Option<&RetryPolicy> {
         self.retry_policy.as_ref()
     }
@@ -224,8 +225,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The custom retry rule when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry rule."]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<DeliveryAttemptError>>> {
         self.retry_rule.as_ref()
     }
@@ -234,8 +235,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The shared cancellation token when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry cancellation token."]
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }
@@ -274,8 +275,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The terminal failure policy when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned dead letter."]
     pub fn dead_letter(&self) -> Option<&DeadLetterPolicy> {
         self.dead_letter.as_ref()
     }
@@ -284,6 +285,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The provider ordering requirement.
+    #[must_use = "Use the returned ordering policy."]
     #[inline]
     pub fn ordering_policy(&self) -> OrderingPolicy {
         self.ordering_policy
@@ -293,8 +295,8 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The shared consumer group when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned consumer group."]
     pub fn consumer_group(&self) -> Option<&ConsumerGroup> {
         self.consumer_group.as_ref()
     }
@@ -303,6 +305,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The requested persistence guarantee.
+    #[must_use = "Use the returned durability."]
     #[inline]
     pub fn durability(&self) -> SubscriptionDurability {
         self.durability
@@ -312,6 +315,7 @@ impl<T: 'static> SubscribeOptions<T> {
     ///
     /// # Returns
     /// The provider offset or cursor request.
+    #[must_use = "Use the returned start position."]
     #[inline]
     pub fn start_position(&self) -> &StartPosition {
         &self.start_position

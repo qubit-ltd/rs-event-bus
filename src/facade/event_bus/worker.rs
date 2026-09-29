@@ -8,26 +8,29 @@
 //! Single-owner receive and settlement coordination.
 
 #![allow(clippy::too_many_arguments)]
+
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use qubit_id::Id;
+
 use super::internal::close_spi_subscription;
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::EventId;
 use crate::SubscriberId;
+use crate::error::SubscriptionCloseFailure;
 use crate::facade::DeliveryTrackerGuard;
 use crate::facade::SubscriptionControl;
-use crate::facade::event_bus::Arc;
 use crate::facade::event_bus::CoordinatorMessage;
-use crate::facade::event_bus::Duration;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::HashMap;
-use crate::facade::event_bus::Id;
-use crate::facade::event_bus::Ordering;
 use crate::facade::event_bus::OwnerSettlementRouter;
-use crate::facade::event_bus::SubscriptionCloseFailure;
-use crate::facade::event_bus::VecDeque;
 use crate::facade::event_bus::delivery::process_inbound;
 use crate::facade::event_bus::failure::panic_message;
-use crate::facade::event_bus::mpsc;
 use crate::facade::internal::BusContextGuard;
 use crate::facade::internal::LifecycleState;
 use crate::facade::lifecycle::receive_poll_interval;
@@ -39,6 +42,31 @@ use crate::spi::InboundMessage;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 
+/// Runs the receive owner for one subscription until it has fully stopped.
+///
+/// The owner serializes provider receives and settlements while dispatching
+/// admitted deliveries to the scheduler.
+///
+/// # Type Parameters
+///
+/// * `T` - The decoded event type delivered to the subscriber.
+///
+/// # Parameters
+///
+/// * `inner` - Shared event bus state.
+/// * `bus_identity` - Identity used to establish the worker's bus context.
+/// * `control` - Cancellation and completion state for the subscription.
+/// * `spi_subscription` - Provider subscription owned by this worker.
+/// * `topic` - Topic whose messages are received.
+/// * `codec` - Optional codec used to decode received payloads.
+/// * `subscriber_id` - Identifier used for diagnostics and provider calls.
+/// * `options` - Subscription delivery and ordering options.
+/// * `handler` - Subscriber callback invoked for each admitted delivery.
+///
+/// # Side Effects
+///
+/// Provider receive or close failures are reported through event bus
+/// diagnostics; this worker does not return them to its caller.
 pub(in crate::facade) fn run_subscription_worker<T>(
     inner: Arc<EventBusInner>,
     bus_identity: usize,
@@ -247,6 +275,23 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     control.mark_finished();
 }
 
+/// Applies one settlement through the subscription's provider-owned SPI.
+///
+/// # Parameters
+///
+/// * `inner` - Shared event bus state used to emit settlement diagnostics.
+/// * `spi_subscription` - Provider subscription that owns the token.
+/// * `token` - Provider-issued token identifying the delivery to settle.
+/// * `disposition` - Requested accept, retry, or reject disposition.
+/// * `event_id` - Identifier included in failure diagnostics.
+/// * `topic` - Topic included in failure diagnostics.
+/// * `subscription_id` - Subscription expected to own the token.
+/// * `subscriber_id` - Subscriber included in failure diagnostics.
+///
+/// # Returns
+///
+/// `true` when settlement completed or cannot be retried; `false` when a
+/// retryable provider error leaves the settlement pending.
 pub(in crate::facade) fn apply_owner_settlement(
     inner: &EventBusInner,
     spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
@@ -298,6 +343,18 @@ pub(in crate::facade) fn apply_owner_settlement(
     }
 }
 
+/// Applies a queued owner message and notifies its waiter when it is complete.
+///
+/// # Parameters
+///
+/// * `inner` - Shared event bus state used for provider calls and diagnostics.
+/// * `spi_subscription` - Provider subscription that owns queued tokens.
+/// * `message` - Settlement or task-completion message from the owner queue.
+///
+/// # Returns
+///
+/// `true` when the message is complete and may be discarded; `false` when its
+/// settlement must remain queued for a later retry.
 pub(in crate::facade) fn apply_queued_settlement(
     inner: &EventBusInner,
     spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,

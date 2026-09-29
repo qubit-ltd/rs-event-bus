@@ -7,7 +7,12 @@
 // =============================================================================
 //! Event bus subscribing operations.
 
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::thread;
+
+use qubit_id::Id;
 
 use super::internal::close_spi_subscription;
 use crate::CapabilityError;
@@ -18,14 +23,10 @@ use crate::SpiError;
 use crate::SubscribeError;
 use crate::SubscriberId;
 use crate::Subscription;
+use crate::codec::resolve_codec;
+use crate::error::SubscriptionCloseFailure;
 use crate::facade::SubscriptionControl;
-use crate::facade::event_bus::Arc;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::Id;
-use crate::facade::event_bus::Mutex;
-use crate::facade::event_bus::Ordering;
-use crate::facade::event_bus::SubscriptionCloseFailure;
-use crate::facade::event_bus::resolve_codec;
 use crate::facade::event_bus::worker::run_subscription_worker;
 use crate::facade::internal::BusContextGuard;
 use crate::model::Delivery;
@@ -41,6 +42,18 @@ impl EventBus {
     /// The handler is invoked outside facade locks. The returned handle does
     /// not cancel the worker when dropped; call `cancel` or shut down the
     /// bus.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type received by the handler.
+    /// - `H`: synchronous handler callback type.
+    /// - `R`: handler return type accepted by [`IntoHandlerResult`].
+    ///
+    /// # Parameters
+    /// - `request`: validated subscriber, topic, and processing options.
+    /// - `handler`: callback invoked for each accepted delivery.
+    ///
+    /// # Returns
+    /// A handle that controls the started provider subscription.
     ///
     /// # Errors
     /// Returns `Closed` after shutdown begins, `Capability` for unsupported
@@ -191,6 +204,12 @@ impl EventBus {
     }
 
     /// Allocates one monotonically increasing, bus-local subscription ID.
+    ///
+    /// # Returns
+    /// The next available subscription ID.
+    ///
+    /// # Errors
+    /// Returns a configuration error when the ID space is exhausted.
     fn next_subscription_id(&self) -> Result<Id, SubscribeError> {
         self.inner
             .next_subscription_id
@@ -206,6 +225,16 @@ impl EventBus {
 }
 
 /// Closes a provider receiver when its facade worker could not be spawned.
+///
+/// # Parameters
+/// - `inner`: bus state used to record cleanup failures.
+/// - `subscriber_id`: logical identity associated with the receiver.
+/// - `spi_subscription`: provider receiver to close, when one was created.
+/// - `spawn_error`: worker thread creation failure.
+///
+/// # Returns
+/// A public subscription error containing the worker spawn failure and any
+/// retained close failure.
 pub(in crate::facade) fn cleanup_failed_worker_spawn(
     inner: &EventBusInner,
     subscriber_id: &SubscriberId,

@@ -19,10 +19,23 @@ pub(crate) type GlobalPublisherInterceptorFn =
 
 /// One global interceptor restricted to portable metadata.
 #[derive(Clone)]
-pub(crate) struct GlobalPublisherInterceptor(Arc<GlobalPublisherInterceptorFn>);
+pub(crate) struct GlobalPublisherInterceptor(
+    /// Shared callback invoked by each publication admitted to the pipeline.
+    Arc<GlobalPublisherInterceptorFn>,
+);
 
 impl GlobalPublisherInterceptor {
     /// Wraps a global metadata interceptor.
+    ///
+    /// # Type Parameters
+    /// - `F`: Callback type stored behind the shared trait object.
+    ///
+    /// # Parameters
+    /// - `callback`: Function that edits portable metadata or rejects
+    ///   publication.
+    ///
+    /// # Returns
+    /// A cloneable interceptor wrapper.
     pub(crate) fn new<F>(callback: F) -> Self
     where
         F: Fn(&mut PublishMetadata) -> Result<bool, PublishError> + Send + Sync + 'static,
@@ -31,6 +44,17 @@ impl GlobalPublisherInterceptor {
     }
 
     /// Applies this interceptor and converts panic into a structured failure.
+    ///
+    /// # Parameters
+    /// - `metadata`: Portable publication metadata the callback may edit.
+    ///
+    /// # Returns
+    /// `Ok(true)` to continue, `Ok(false)` to drop, or an error on failure or
+    /// panic.
+    ///
+    /// # Errors
+    /// Preserves a callback's publication error, or returns
+    /// [`PublishError::InterceptorPanicked`] with global scope after an unwind.
     pub(crate) fn apply(&self, metadata: &mut PublishMetadata) -> Result<bool, PublishError> {
         match std::panic::catch_unwind(AssertUnwindSafe(|| (self.0)(metadata))) {
             Ok(result) => result,
@@ -43,6 +67,12 @@ impl GlobalPublisherInterceptor {
 }
 
 /// Converts a panic payload into stable diagnostic text.
+///
+/// # Parameters
+/// - `payload`: Panic payload caught from an interceptor.
+///
+/// # Returns
+/// A string payload when available, or a fixed fallback message.
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     payload
         .downcast_ref::<&'static str>()
@@ -57,7 +87,7 @@ mod tests {
     use crate::model::PublishMetadata;
 
     #[test]
-    fn interceptor_converts_string_panic_to_structured_error() {
+    fn test_interceptor_converts_string_panic_to_structured_error() {
         let interceptor =
             GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, crate::error::PublishError> {
                 panic!("publisher middleware failed")
@@ -75,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn interceptor_handles_non_string_panic_payload() {
+    fn test_interceptor_handles_non_string_panic_payload() {
         let interceptor =
             GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, crate::error::PublishError> {
                 std::panic::panic_any(17_u8)

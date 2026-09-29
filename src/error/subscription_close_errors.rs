@@ -29,6 +29,7 @@ use super::SubscriptionCloseFailure;
 /// }
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct SubscriptionCloseErrors {
     /// Shared close-failure records captured by the bus lifecycle ledger.
     failures: Vec<Arc<SubscriptionCloseFailure>>,
@@ -59,6 +60,8 @@ impl SubscriptionCloseErrors {
     ///
     /// # Returns
     /// A borrowing iterator in the order failures were recorded.
+    #[must_use = "Use the returned iter."]
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
         self.failures.iter().map(Arc::as_ref)
     }
@@ -89,6 +92,7 @@ impl fmt::Display for SubscriptionCloseErrors {
 impl Error for SubscriptionCloseErrors {
     /// Exposes the first close failure while callers can inspect all via
     /// [`Self::iter`].
+    #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.failures
             .first()
@@ -108,7 +112,7 @@ mod tests {
     use crate::model::SubscriberId;
 
     #[test]
-    fn close_error_snapshot_exposes_each_failure_and_its_source() {
+    fn test_close_error_snapshot_exposes_each_failure_and_its_source() {
         let empty = SubscriptionCloseErrors::from_failures(Vec::new());
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);

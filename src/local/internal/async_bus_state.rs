@@ -14,11 +14,12 @@ use std::sync::Arc;
 
 use qubit_id::Id;
 
-use super::AsyncMailbox;
 use super::MailboxKey;
+use super::async_mailbox::AsyncMailbox;
 use crate::spi::ShutdownOutcome;
 use crate::spi::TopicAddress;
 
+/// Registry and lifecycle state shared by asynchronous local bus calls.
 #[derive(Default)]
 pub(in crate::local) struct AsyncBusState {
     /// Rejects new subscriptions and publications after shutdown starts.
@@ -27,7 +28,7 @@ pub(in crate::local) struct AsyncBusState {
     pub(in crate::local) outcome: Option<ShutdownOutcome>,
     /// Mailboxes keyed by their bus-local subscription IDs.
     pub(in crate::local) mailboxes: HashMap<MailboxKey, Arc<AsyncMailbox>>,
-    /// Per-topic ordered subscription IDs used for publication routing.
+    /// Subscription IDs grouped by topic in deterministic order for routing.
     topic_members: HashMap<TopicAddress, BTreeSet<Id>>,
     /// Native payload type bound to each active topic.
     pub(in crate::local) payload_types: HashMap<TopicAddress, TypeId>,
@@ -42,6 +43,10 @@ impl AsyncBusState {
     ///
     /// # Returns
     /// `true` when inserted, or `false` if the key already exists.
+    ///
+    /// # Panics
+    /// Panics in debug builds if the subscription ID is already present in the
+    /// topic index or the inserted mailbox is indexed under another topic.
     pub(in crate::local) fn insert_mailbox(&mut self, key: MailboxKey, mailbox: Arc<AsyncMailbox>) -> bool {
         if self.mailboxes.contains_key(&key) {
             return false;
@@ -62,6 +67,9 @@ impl AsyncBusState {
     ///
     /// # Returns
     /// Strong mailbox references for active subscriptions on the topic.
+    ///
+    /// # Panics
+    /// Panics in debug builds if an indexed mailbox belongs to another topic.
     pub(in crate::local) fn mailboxes_for_topic(&self, topic: &TopicAddress) -> Vec<Arc<AsyncMailbox>> {
         let mailboxes = self
             .topic_members
@@ -81,6 +89,8 @@ impl AsyncBusState {
     ///
     /// # Returns
     /// `true` when at least one subscription ID is indexed.
+    #[must_use = "Use the returned query result."]
+    #[inline]
     pub(in crate::local) fn has_topic(&self, topic: &TopicAddress) -> bool {
         self.topic_members.get(topic).is_some_and(|members| !members.is_empty())
     }
@@ -93,6 +103,10 @@ impl AsyncBusState {
     ///
     /// # Returns
     /// `true` when the mailbox was current and removed.
+    ///
+    /// # Panics
+    /// Panics in debug builds if the primary mailbox entry has no matching
+    /// topic-index entry.
     pub(in crate::local) fn remove_mailbox_if_same(&mut self, key: MailboxKey, mailbox: &Arc<AsyncMailbox>) -> bool {
         let is_current = self
             .mailboxes

@@ -22,7 +22,10 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
-pub struct ConsumerGroup(Box<str>);
+pub struct ConsumerGroup(
+    /// Owned group name validated to exclude blank values and controls.
+    Box<str>,
+);
 
 impl ConsumerGroup {
     /// Creates a nonblank group name without surrounding whitespace.

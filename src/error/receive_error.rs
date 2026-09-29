@@ -25,6 +25,7 @@ use crate::model::EventId;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum ReceiveError {
     /// The backend could not receive an event.
     #[error(transparent)]

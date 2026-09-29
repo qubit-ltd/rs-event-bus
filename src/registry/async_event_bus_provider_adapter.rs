@@ -36,6 +36,16 @@ pub(crate) struct AsyncEventBusProviderAdapter {
 
 impl AsyncEventBusProviderAdapter {
     /// Captures the provider descriptor once and validates its facade identity.
+    ///
+    /// # Parameters
+    /// - `provider`: asynchronous factory whose metadata and SPI are adapted.
+    ///
+    /// # Returns
+    /// An adapter with a stable descriptor and facade provider ID.
+    ///
+    /// # Panics
+    /// Panics if the provider descriptor callback panics or its provider ID
+    /// violates the facade's validated provider-ID invariants.
     pub(crate) fn new(provider: Arc<AsyncEventBusProvider>) -> Self {
         let descriptor = provider.descriptor();
         let provider_id =
@@ -49,12 +59,27 @@ impl AsyncEventBusProviderAdapter {
 }
 
 impl ProviderMetadata for AsyncEventBusProviderAdapter {
+    /// Returns the provider metadata captured when the adapter was created.
+    ///
+    /// # Returns
+    /// A clone of the immutable descriptor snapshot used for registry identity.
     fn descriptor(&self) -> ProviderDescriptor {
         self.descriptor.clone()
     }
 }
 
 impl AsyncServiceProvider<EventBusSpec> for AsyncEventBusProviderAdapter {
+    /// Creates an asynchronous SPI and validates its declared capabilities.
+    ///
+    /// # Parameters
+    /// - `config`: facade configuration and required provider capabilities.
+    ///
+    /// # Returns
+    /// A future resolving to the identity-tagged SPI after capability checks.
+    ///
+    /// # Errors
+    /// Returns the provider's creation failure, a capability-query failure, or
+    /// an unsupported-capability failure when the SPI cannot meet `config`.
     fn create_configured<'a>(
         &'a self,
         config: &'a EventBusConfig,

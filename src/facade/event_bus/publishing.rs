@@ -7,12 +7,13 @@
 // =============================================================================
 //! Event bus publishing operations.
 
+use std::sync::Arc;
+
 use crate::ConfigurationError;
 use crate::EventBus;
 use crate::EventBusError;
 use crate::PublishError;
 use crate::PublishMetricsSnapshot;
-use crate::facade::event_bus::Arc;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::internal::BusContextGuard;
 use crate::model::BatchPublishResult;
@@ -22,6 +23,15 @@ use crate::model::PublishRequest;
 impl EventBus {
     /// Publishes one typed request through publisher interceptors, retry, and
     /// SPI.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type carried by the request.
+    ///
+    /// # Parameters
+    /// - `request`: validated request to publish.
+    ///
+    /// # Returns
+    /// The provider receipt when publication succeeds.
     ///
     /// # Errors
     /// Returns the structured publication failure from request validation,
@@ -56,6 +66,9 @@ impl EventBus {
     }
 
     /// Returns the shared publication counters for this facade and its clones.
+    ///
+    /// # Returns
+    /// A point-in-time snapshot of publication counters.
     #[must_use]
     pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
         self.inner.publish_metrics.snapshot()
@@ -64,6 +77,16 @@ impl EventBus {
     /// Publishes requests independently in input order and retains each result.
     ///
     /// Later requests are still attempted after an earlier request fails.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type shared by all requests.
+    /// - `I`: iterator yielding publish requests.
+    ///
+    /// # Parameters
+    /// - `requests`: requests to publish in input order.
+    ///
+    /// # Returns
+    /// One independent result per request, preserving input order.
     pub fn publish_all<T, I>(&self, requests: I) -> BatchPublishResult
     where
         T: Send + Sync + 'static,
@@ -75,6 +98,12 @@ impl EventBus {
 }
 
 /// Converts a publisher pipeline failure into its operation-level error type.
+///
+/// # Parameters
+/// - `failure`: pipeline stage and underlying event bus error.
+///
+/// # Returns
+/// The matching public publish error variant.
 pub(in crate::facade) fn publish_pipeline_error(failure: crate::pipeline::PipelineFailure) -> PublishError {
     match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),
@@ -89,6 +118,19 @@ pub(in crate::facade) fn publish_pipeline_error(failure: crate::pipeline::Pipeli
 }
 
 /// Publishes an internally constructed record during graceful shutdown drain.
+///
+/// # Type Parameters
+/// - `T`: payload type carried by the internal request.
+///
+/// # Parameters
+/// - `inner`: provider and publication pipeline state.
+/// - `request`: internal event to publish.
+///
+/// # Returns
+/// The provider receipt for the internal event.
+///
+/// # Errors
+/// Returns the publication pipeline or provider failure.
 pub(in crate::facade) fn publish_internal<T: Send + Sync + 'static>(
     inner: &EventBusInner,
     request: PublishRequest<T>,

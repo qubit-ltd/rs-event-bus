@@ -7,17 +7,20 @@
 // =============================================================================
 //! Runtime-neutral async deadline and signal waits.
 
+use std::future::Future;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::task::Poll;
+use std::time::Duration;
+
+use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
+
 use crate::LifecycleError;
 use crate::WaitOutcome;
 use crate::facade::async_event_bus::AsyncSignal;
-use crate::facade::async_event_bus::AtomicBool;
-use crate::facade::async_event_bus::Duration;
-use crate::facade::async_event_bus::Ordering;
-use crate::facade::async_event_bus::Poll;
 use crate::facade::async_event_bus::ShutdownWait;
 use crate::facade::async_event_bus::SignalRegistration;
-use crate::facade::async_event_bus::Timer;
-use crate::facade::async_event_bus::TimerFuture;
 
 /// Waits for a predicate or an optional relative timeout.
 ///
@@ -116,7 +119,6 @@ pub(in crate::facade) async fn await_shutdown_or_immediate<F: Future>(
 }
 
 /// Awaits a future until it completes or the shared optional deadline expires.
-/// Awaits a future until it completes or the shared optional deadline expires.
 ///
 /// # Type Parameters
 /// - `F`: future type being awaited.
@@ -151,7 +153,6 @@ pub(in crate::facade) async fn await_until_deadline<F: Future>(
     .await
 }
 
-/// Waits for a signal predicate while polling a caller-owned absolute deadline.
 /// Waits for a predicate while polling a caller-owned absolute deadline.
 ///
 /// # Parameters

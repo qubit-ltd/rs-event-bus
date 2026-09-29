@@ -18,6 +18,7 @@
 /// assert!(matches!(case, ConformanceCase::Passed { .. }));
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
 pub enum ConformanceCase {
     /// The check completed successfully.
     Passed {

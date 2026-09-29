@@ -44,17 +44,10 @@ impl BatchPublishResult {
     ///
     /// # Returns
     /// The ordered result slice.
+    #[must_use = "Use the returned items."]
     #[inline]
     pub fn items(&self) -> &[Result<PublishReceipt, PublishError>] {
         &self.items
-    }
-    /// Consumes the batch and returns its ordered results.
-    ///
-    /// # Returns
-    /// The owned result vector in input order.
-    #[must_use]
-    pub fn into_items(self) -> Vec<Result<PublishReceipt, PublishError>> {
-        self.items
     }
     /// Returns the number of input requests.
     ///
@@ -117,5 +110,14 @@ impl BatchPublishResult {
                 },
             })
             .count()
+    }
+
+    /// Consumes the batch and returns its ordered results.
+    ///
+    /// # Returns
+    /// The owned result vector in input order.
+    #[must_use]
+    pub fn into_items(self) -> Vec<Result<PublishReceipt, PublishError>> {
+        self.items
     }
 }

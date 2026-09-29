@@ -18,6 +18,7 @@
 /// assert!(reason.to_string().contains("replay"));
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
 #[non_exhaustive]
 pub enum ConformanceSkipReason {
     /// The provider explicitly lacks a capability required only by an optional
@@ -40,6 +41,16 @@ pub enum ConformanceSkipReason {
 }
 
 impl std::fmt::Display for ConformanceSkipReason {
+    /// Formats this reason as a concise explanation.
+    ///
+    /// # Parameters
+    /// - `formatter`: Destination receiving the formatted reason.
+    ///
+    /// # Returns
+    /// `Ok(())` after the reason has been written.
+    ///
+    /// # Errors
+    /// Returns a formatting error when the destination rejects the text.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedCapability { capability } => {
@@ -56,7 +67,7 @@ mod tests {
     use super::ConformanceSkipReason;
 
     #[test]
-    fn skip_reasons_format_each_explanation_without_losing_context() {
+    fn test_skip_reasons_format_each_explanation_without_losing_context() {
         assert_eq!(
             ConformanceSkipReason::UnsupportedCapability { capability: "replay" }.to_string(),
             "unsupported capability: replay"

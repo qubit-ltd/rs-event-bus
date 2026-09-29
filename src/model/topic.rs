@@ -46,21 +46,22 @@ pub struct Topic<T: 'static> {
 impl<T: 'static> Topic<T> {
     /// Creates a native topic from a static name without allocating.
     ///
-    /// # Panics
-    /// Panics during constant evaluation, or at runtime, when the name is
-    /// empty, longer than 255 UTF-8 bytes, has surrounding Unicode
-    /// whitespace, or contains a control character.
-    ///
     /// # Parameters
     /// - `name`: the static topic name to validate and borrow.
     ///
     /// # Returns
     /// A topic that borrows `name` and uses native payloads without a codec.
     ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, when the name is
+    /// empty, longer than 255 UTF-8 bytes, has surrounding Unicode
+    /// whitespace, or contains a control character.
+    ///
     /// ```compile_fail
     /// use qubit_event_bus::model::Topic;
     /// const INVALID_TOPIC: Topic<String> = Topic::new_static(" orders.created");
     /// ```
+    #[must_use]
     pub const fn new_static(name: &'static str) -> Self {
         assert!(is_valid_topic_name(name), "invalid topic name");
         Self {

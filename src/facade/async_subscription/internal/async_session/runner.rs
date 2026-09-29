@@ -5,23 +5,26 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Async session receive loop and caller-driven runner.
 
-use super::super::super::waiting::await_or_stop;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
+
 use super::super::AsyncSubscriptionControl;
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::ReceiveError;
 use crate::facade::async_event_bus::catch_spi_future;
-use crate::facade::async_subscription::Arc;
 use crate::facade::async_subscription::AsyncRunnerGuard;
 use crate::facade::async_subscription::AsyncSession;
-use crate::facade::async_subscription::Duration;
-use crate::facade::async_subscription::Pin;
-use crate::facade::async_subscription::Poll;
 use crate::facade::async_subscription::SETTLEMENT_RETRY_BASE_DELAY;
 use crate::facade::async_subscription::SETTLEMENT_RETRY_MAX_DELAY;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::SignalRegistration;
+use crate::facade::async_subscription::await_or_stop;
 use crate::facade::async_subscription::internal::admission_wait_event::AdmissionWaitEvent;
 use crate::facade::async_subscription::internal::async_runner_event::AsyncRunnerEvent;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
@@ -40,10 +43,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// received messages. Bus shutdown can also take over and drain a paused
     /// session. The SPI contract requires a cancelled receive future to
     /// preserve any message already received from the provider.
+    ///
     /// The runner polls middleware and handler futures inside a bus-scoped
     /// context so direct shutdown awaits on this bus can be rejected; context
     /// does not propagate to application-spawned child tasks.
-    /// Runs admitted delivery futures until receive closes or the bus stops.
     ///
     /// # Type Parameters
     /// - `H`: handler factory callable type.

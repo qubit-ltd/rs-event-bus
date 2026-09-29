@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Outcomes of waiting for provider shutdown.
+//! Outcomes observed while awaiting asynchronous provider shutdown.
 
 /// Result of waiting for provider shutdown, a timeout, or mode escalation.
 ///
@@ -13,7 +13,10 @@
 /// - `T`: output produced by the provider shutdown future.
 pub(in crate::facade) enum ShutdownWait<T> {
     /// The provider future completed with this output.
-    Complete(T),
+    Complete(
+        /// Value returned by the completed provider shutdown future.
+        T,
+    ),
     /// The caller's deadline elapsed.
     TimedOut,
     /// A caller requested immediate shutdown.

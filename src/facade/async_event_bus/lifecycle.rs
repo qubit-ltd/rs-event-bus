@@ -7,15 +7,16 @@
 // =============================================================================
 //! Asynchronous event bus lifecycle operations.
 
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use crate::AsyncEventBus;
 use crate::LifecycleError;
 use crate::ShutdownError;
 use crate::ShutdownReport;
 use crate::WaitOutcome;
-use crate::facade::async_event_bus::Arc;
 use crate::facade::async_event_bus::BusState;
-use crate::facade::async_event_bus::Duration;
-use crate::facade::async_event_bus::Ordering;
 use crate::facade::async_event_bus::ShutdownLeaderGuard;
 use crate::facade::async_event_bus::ShutdownWait;
 use crate::facade::async_event_bus::catch_spi_future;
@@ -152,7 +153,7 @@ impl AsyncEventBus {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                let _leader = ShutdownLeaderGuard(self.inner.clone());
+                let _leader = ShutdownLeaderGuard::new(self.inner.clone());
                 *self
                     .inner
                     .state
@@ -253,7 +254,6 @@ impl AsyncEventBus {
     }
 
     /// Returns the strongest shutdown mode requested by any caller so far.
-    /// Computes the strongest shutdown mode requested so far.
     ///
     /// # Parameters
     /// - `requested`: mode requested by the current caller.

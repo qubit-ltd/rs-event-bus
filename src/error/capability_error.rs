@@ -19,6 +19,7 @@
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum CapabilityError {
     /// The backend requires an encoded payload, but the topic has no codec.
     #[error("a codec is required for this topic")]

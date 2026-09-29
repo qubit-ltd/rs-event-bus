@@ -33,8 +33,11 @@ use crate::model::SchemaId;
 #[derive(Clone)]
 #[must_use]
 pub struct EncodedPayload {
+    /// Encoded bytes shared across clones and provider publication attempts.
     bytes: Arc<[u8]>,
+    /// Media type describing how the byte allocation is encoded.
     content_type: ContentType,
+    /// Optional schema identifier required by a compatible decoder.
     schema_id: Option<SchemaId>,
 }
 
@@ -79,8 +82,8 @@ impl EncodedPayload {
     ///
     /// # Returns
     /// `Some` with the schema ID when set, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned schema id."]
     pub fn schema_id(&self) -> Option<&SchemaId> {
         self.schema_id.as_ref()
     }

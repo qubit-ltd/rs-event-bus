@@ -15,4 +15,16 @@ use std::pin::Pin;
 /// # Type Parameters
 /// - `'a`: lifetime of data borrowed by the operation.
 /// - `T`: value produced when the operation completes.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::SpiFuture;
+///
+/// fn ready_value<'a>() -> SpiFuture<'a, usize> {
+///     Box::pin(async { 42 })
+/// }
+///
+/// let _future = ready_value();
+/// ```
 pub type SpiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

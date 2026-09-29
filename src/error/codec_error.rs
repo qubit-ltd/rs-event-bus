@@ -21,6 +21,7 @@ use std::error::Error;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum CodecError {
     /// Encoded payload exceeds the facade's configured byte limit.
     #[error("encoded event payload is {actual} bytes, exceeding the {limit}-byte limit")]

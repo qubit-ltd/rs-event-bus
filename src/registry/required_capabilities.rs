@@ -21,21 +21,53 @@ use crate::spi::SettlementCapabilities;
 ///
 /// Requirements are checked once, after SPI creation and before a facade is
 /// returned. They do not cause failover for errors from later operations.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use qubit_event_bus::registry::EventBusConfig;
+/// use qubit_event_bus::registry::EventBusRegistry;
+/// use qubit_event_bus::registry::RequiredCapabilities;
+/// use qubit_event_bus::spi::PayloadModes;
+/// use qubit_event_bus::spi::ShutdownMode;
+///
+/// let requirements = RequiredCapabilities::new().with_payload(PayloadModes::Native);
+/// let config = EventBusConfig::default().with_required_capabilities(requirements);
+/// let registry = EventBusRegistry::with_local()?;
+/// let bus = registry.create(&config)?;
+/// bus.shutdown(ShutdownMode::Immediate)?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RequiredCapabilities {
+    /// Required payload representations, or `None` to accept any declaration.
     payload: Option<PayloadModes>,
+    /// Minimum settlement operations, or `None` when unconstrained.
     settlement: Option<SettlementCapabilities>,
+    /// Required ordering scope, or `None` when ordering is unconstrained.
     ordering: Option<OrderingCapability>,
+    /// Native delay requirement, or `None` to accept any delay behavior.
     delayed_delivery: Option<DelayedDeliveryCapability>,
+    /// Minimum retention behavior, or `None` when persistence is unconstrained.
     durability: Option<DurabilityCapability>,
+    /// Whether provider-managed consumer groups are mandatory.
     consumer_groups: bool,
+    /// Required replay positions, or `None` when replay is unconstrained.
     replay: Option<ReplayCapability>,
+    /// Minimum successful publication guarantee, or `None` when unconstrained.
     publish_guarantee: Option<PublishGuarantee>,
+    /// Destination admission visibility requirement, or `None` when
+    /// unconstrained.
     publish_visibility: Option<PublishVisibility>,
 }
 
 impl RequiredCapabilities {
     /// Creates a requirement set that accepts any provider capabilities.
+    ///
+    /// # Returns
+    /// An empty requirement set.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -52,6 +84,9 @@ impl RequiredCapabilities {
     }
 
     /// Requires a provider to support durable message retention.
+    ///
+    /// # Returns
+    /// The updated requirements with durable retention enabled.
     #[must_use]
     pub const fn durable(mut self) -> Self {
         self.durability = Some(DurabilityCapability::Durable);
@@ -59,6 +94,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the payload mode that the selected SPI must accept.
+    ///
+    /// # Parameters
+    /// - `payload`: required payload mode.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_payload(mut self, payload: PayloadModes) -> Self {
         self.payload = Some(payload);
@@ -66,6 +107,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the minimum settlement operations required from the SPI.
+    ///
+    /// # Parameters
+    /// - `settlement`: minimum settlement capability.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_settlement(mut self, settlement: SettlementCapabilities) -> Self {
         self.settlement = Some(settlement);
@@ -73,6 +120,12 @@ impl RequiredCapabilities {
     }
 
     /// Requires the selected SPI to provide the named ordering guarantee.
+    ///
+    /// # Parameters
+    /// - `ordering`: ordering behavior the SPI must support.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_ordering(mut self, ordering: OrderingCapability) -> Self {
         self.ordering = Some(ordering);
@@ -80,6 +133,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets whether native delayed delivery is required.
+    ///
+    /// # Parameters
+    /// - `delayed`: delayed-delivery capability required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_delayed_delivery(mut self, delayed: DelayedDeliveryCapability) -> Self {
         self.delayed_delivery = Some(delayed);
@@ -87,6 +146,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the minimum durability behavior required of a provider.
+    ///
+    /// # Parameters
+    /// - `durability`: persistence behavior required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_durability(mut self, durability: DurabilityCapability) -> Self {
         self.durability = Some(durability);
@@ -94,6 +159,12 @@ impl RequiredCapabilities {
     }
 
     /// Requires provider support for consumer groups when set to `true`.
+    ///
+    /// # Parameters
+    /// - `required`: whether consumer-group support is mandatory.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_consumer_groups(mut self, required: bool) -> Self {
         self.consumer_groups = required;
@@ -101,6 +172,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the historical replay mode required from the provider.
+    ///
+    /// # Parameters
+    /// - `replay`: replay capability required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_replay(mut self, replay: ReplayCapability) -> Self {
         self.replay = Some(replay);
@@ -108,6 +185,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the minimum publish acknowledgement guarantee required.
+    ///
+    /// # Parameters
+    /// - `guarantee`: minimum publish guarantee required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_publish_guarantee(mut self, guarantee: PublishGuarantee) -> Self {
         self.publish_guarantee = Some(guarantee);
@@ -115,6 +198,12 @@ impl RequiredCapabilities {
     }
 
     /// Sets the per-destination publish visibility requirement.
+    ///
+    /// # Parameters
+    /// - `visibility`: publication visibility required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
     #[must_use]
     pub const fn with_publish_visibility(mut self, visibility: PublishVisibility) -> Self {
         self.publish_visibility = Some(visibility);
@@ -122,6 +211,12 @@ impl RequiredCapabilities {
     }
 
     /// Requires the requested provider behavior and returns missing labels.
+    ///
+    /// # Parameters
+    /// - `capabilities`: actual capabilities reported by the provider SPI.
+    ///
+    /// # Returns
+    /// Stable labels for requirements the provider does not satisfy.
     pub(crate) fn missing_from(self, capabilities: EventBusCapabilities) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if let Some(required) = self.payload
@@ -180,6 +275,14 @@ impl RequiredCapabilities {
     }
 }
 
+/// Reports whether the actual payload mode includes the requested mode.
+///
+/// # Parameters
+/// - `actual`: payload modes supported by the provider.
+/// - `required`: payload mode requested by the caller.
+///
+/// # Returns
+/// `true` when `actual` includes every behavior required by `required`.
 fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
     match required {
         PayloadModes::Native => matches!(actual, PayloadModes::Native | PayloadModes::NativeAndEncoded),
@@ -188,6 +291,14 @@ fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
     }
 }
 
+/// Reports whether the actual settlement operations include the requested set.
+///
+/// # Parameters
+/// - `actual`: settlement operations supported by the provider.
+/// - `required`: minimum operations requested by the caller.
+///
+/// # Returns
+/// `true` when `actual` supports the requested settlement operations.
 fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapabilities) -> bool {
     match required {
         SettlementCapabilities::None => true,
@@ -199,6 +310,14 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
     }
 }
 
+/// Reports whether the actual replay capability includes the requested mode.
+///
+/// # Parameters
+/// - `actual`: replay behavior supported by the provider.
+/// - `required`: replay behavior requested by the caller.
+///
+/// # Returns
+/// `true` when `actual` supports the requested replay behavior.
 fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> bool {
     match required {
         ReplayCapability::None => true,
@@ -207,6 +326,14 @@ fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> boo
     }
 }
 
+/// Compares publication guarantees by their increasing strength.
+///
+/// # Parameters
+/// - `actual`: guarantee provided by the SPI.
+/// - `required`: minimum guarantee requested by the caller.
+///
+/// # Returns
+/// `true` when the actual guarantee is at least as strong as required.
 fn publish_guarantee_satisfies(actual: PublishGuarantee, required: PublishGuarantee) -> bool {
     let rank = |value| match value {
         PublishGuarantee::FireAndForget => 0,

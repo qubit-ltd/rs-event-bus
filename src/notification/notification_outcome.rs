@@ -15,13 +15,33 @@ use crate::model::PublishReceipt;
 ///
 /// A `Published` receipt reports provider admission only. It does not imply
 /// that a subscriber handler completed.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::NotificationOutcome;
+/// use qubit_event_bus::error::PublishError;
+///
+/// let outcome = NotificationOutcome::PublishFailed(PublishError::Closed);
+/// assert!(matches!(outcome, NotificationOutcome::PublishFailed(_)));
+/// ```
 #[non_exhaustive]
 #[derive(Debug)]
+#[must_use]
 pub enum NotificationOutcome {
     /// The provider returned an admission receipt.
-    Published(PublishReceipt),
+    Published(
+        /// Provider admission result, without a handler completion guarantee.
+        PublishReceipt,
+    ),
     /// The facade or provider rejected the publication.
-    PublishFailed(PublishError),
+    PublishFailed(
+        /// Facade or provider failure encountered while publishing the request.
+        PublishError,
+    ),
     /// A request could not be built because event identity generation failed.
-    RequestFailed(EventIdGenerationError),
+    RequestFailed(
+        /// Recoverable failure from the event identifier generator.
+        EventIdGenerationError,
+    ),
 }

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Completion flag observed by publisher close callers.
 
+/// Completion state protected by the notification publisher's worker mutex.
 pub(in crate::notification) struct WorkerState {
+    /// Whether the background worker has exited and drained its queue.
     pub(in crate::notification) finished: bool,
 }

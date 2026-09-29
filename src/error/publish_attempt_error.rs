@@ -22,6 +22,7 @@ use std::error::Error;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum PublishAttemptError {
     /// The publish attempt failed with a stable kind and original source.
     #[error("publish attempt failed ({kind}): {source}")]
@@ -46,7 +47,6 @@ impl PublishAttemptError {
     ///
     /// # Returns
     /// A classified publish-attempt error.
-    #[must_use]
     pub fn new(kind: &'static str, retryable: Option<bool>, source: impl Error + Send + Sync + 'static) -> Self {
         Self::Failure {
             kind,
@@ -54,6 +54,7 @@ impl PublishAttemptError {
             source: Box::new(source),
         }
     }
+
     /// Returns the stable failure classification.
     ///
     /// # Returns
@@ -65,13 +66,14 @@ impl PublishAttemptError {
             Self::Failure { kind, .. } => kind,
         }
     }
+
     /// Returns an explicit retry override, or `None` for default
     /// classification.
     ///
     /// # Returns
     /// The configured override, or `None` to use the default classification.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned query result."]
     pub fn retryable(&self) -> Option<bool> {
         match self {
             Self::Failure { retryable, .. } => *retryable,

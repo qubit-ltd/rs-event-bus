@@ -7,10 +7,11 @@
 // =============================================================================
 //! Event bus diagnostics operations.
 
+use std::sync::Arc;
+
 use crate::Diagnostic;
 use crate::DiagnosticObserverHandle;
 use crate::EventBus;
-use crate::facade::event_bus::Arc;
 use crate::facade::observer_entry::ObserverEntry;
 
 impl EventBus {
@@ -18,6 +19,16 @@ impl EventBus {
     ///
     /// Observers run synchronously in registration order and outside facade
     /// locks. Panics are contained and do not recursively emit diagnostics.
+    ///
+    /// # Type Parameters
+    /// - `F`: thread-safe callback type.
+    ///
+    /// # Parameters
+    /// - `observer`: callback invoked for each emitted diagnostic.
+    ///
+    /// # Returns
+    /// A handle that unregisters the observer when dropped.
+    #[must_use]
     pub fn observe_diagnostics<F>(&self, observer: F) -> DiagnosticObserverHandle
     where
         F: Fn(&Diagnostic) + Send + Sync + 'static,

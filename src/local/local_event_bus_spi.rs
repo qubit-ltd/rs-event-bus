@@ -16,11 +16,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::LocalEventBusConfig;
-use super::internal::LocalEvent;
-use super::internal::LocalQueue;
-use super::internal::LocalQueueState;
-use super::internal::LocalSharedState;
 use super::local_event_subscription::LocalEventSubscription;
+use super::state::LocalEvent;
+use super::state::LocalQueue;
+use super::state::LocalQueueState;
+use super::state::LocalSharedState;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
@@ -44,6 +44,23 @@ use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
 
 /// Synchronous local backend with one bounded queue per subscription.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::registry::EventBusConfig;
+/// use qubit_event_bus::registry::EventBusRegistry;
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::Topic;
+/// use qubit_event_bus::spi::ShutdownMode;
+///
+/// let registry = EventBusRegistry::with_local().unwrap();
+/// let bus = registry.create(&EventBusConfig::default()).unwrap();
+/// let topic = Topic::<u32>::new("orders.created").unwrap();
+/// let receipt = bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
+/// assert!(!receipt.acknowledgement().is_dropped());
+/// bus.shutdown(ShutdownMode::Immediate).unwrap();
+/// ```
 pub struct LocalEventBusSpi {
     /// Queues and provider-wide shutdown state shared by local SPI handles.
     pub(super) shared: Arc<LocalSharedState>,
@@ -70,6 +87,16 @@ impl LocalEventBusSpi {
 }
 
 impl EventBusSpi for LocalEventBusSpi {
+    /// Blocks until this topic has no queued or unsettled local deliveries.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose live subscription queues are observed.
+    /// - `timeout`: total wait budget, or `None` to wait without a deadline.
+    ///
+    /// # Returns
+    /// `Ok(Some(true))` when idle, or `Ok(Some(false))` after the timeout.
+    /// This local implementation always supports the wait and never returns
+    /// `None` or a provider error.
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         let started = Instant::now();
         loop {
@@ -111,6 +138,12 @@ impl EventBusSpi for LocalEventBusSpi {
         }
     }
 
+    /// Declares native, ephemeral delivery with per-key ordering and
+    /// settlement.
+    ///
+    /// # Returns
+    /// The local provider's fixed capability declaration.
+    #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,
@@ -126,6 +159,18 @@ impl EventBusSpi for LocalEventBusSpi {
         )
     }
 
+    /// Shares a native event with each matching bounded subscription queue.
+    ///
+    /// # Parameters
+    /// - `message`: event to validate and enqueue without copying its payload.
+    ///
+    /// # Returns
+    /// Per-destination admission outcomes; a full queue rejects only its
+    /// target.
+    ///
+    /// # Errors
+    /// Returns a non-retryable operation error for an encoded payload, an
+    /// overflowing delay deadline, a closed provider, or a topic type conflict.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let topic = message.topic().clone();
         validate_message(&message, &topic)?;
@@ -176,6 +221,20 @@ impl EventBusSpi for LocalEventBusSpi {
         Ok(PublishAcknowledgement::DestinationAdmissions(admissions))
     }
 
+    /// Registers an empty, ephemeral native queue for an independent
+    /// subscriber.
+    ///
+    /// # Parameters
+    /// - `request`: receiver identity, topic, payload type, and transport
+    ///   options.
+    ///
+    /// # Returns
+    /// The single-owner receiver for the newly registered queue.
+    ///
+    /// # Errors
+    /// Returns an operation error for a closed provider, unsupported
+    /// durability, group or start position, a topic type conflict, or a
+    /// duplicate live ID.
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         let id = request.subscription_id();
         let queue = Arc::new(LocalQueue {
@@ -242,6 +301,20 @@ impl EventBusSpi for LocalEventBusSpi {
         Ok(Box::new(LocalEventSubscription::new(self.shared.clone(), queue)))
     }
 
+    /// Closes admission and discards remaining queues after the drain period.
+    ///
+    /// Calls serialize on the shutdown gate and reuse the first completed
+    /// outcome. Waiting for an earlier caller's gate is outside this caller's
+    /// graceful timeout budget. Closing wakes synchronous and async receivers.
+    ///
+    /// # Parameters
+    /// - `mode`: immediate close, or a bounded wait for queued and unsettled
+    ///   work.
+    ///
+    /// # Returns
+    /// `Ok(Complete)` after draining or immediate close, or `Ok(TimedOut)`
+    /// after an incomplete graceful drain. This implementation returns no
+    /// SPI error.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         let _gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(outcome) = self
@@ -347,6 +420,10 @@ fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress)
 ///
 /// # Returns
 /// The concrete native payload `TypeId`.
+///
+/// # Panics
+/// Panics if the payload is encoded, which indicates that local payload-mode
+/// validation was skipped.
 fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
     match payload {
         TransportPayload::Native(value) => value.as_ref().type_id(),

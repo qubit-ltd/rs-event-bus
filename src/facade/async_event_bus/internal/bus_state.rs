@@ -5,9 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Lifecycle states accepted by the asynchronous event-bus facade.
+//! Lifecycle values used to admit or reject asynchronous facade work.
 
-/// Current lifecycle phase shared by all asynchronous facade clones.
+/// Lifecycle states accepted by the asynchronous facade.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::facade) enum BusState {
     /// Publishes and subscriptions may start.

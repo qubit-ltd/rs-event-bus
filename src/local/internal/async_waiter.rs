@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::Waker;
 
+/// Guard that unregisters one task waker when its wait is canceled or ends.
 pub(in crate::local) struct AsyncWaiter {
     /// Registration ID removed when this guard is dropped.
     id: u64,
