@@ -7,6 +7,8 @@
 // =============================================================================
 //! Contract tests for the built-in synchronous local SPI provider.
 
+mod support;
+
 use std::any::TypeId;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -59,8 +61,6 @@ use qubit_spi::ProviderMetadata;
 use qubit_spi::ProviderSelection;
 use qubit_spi::ProviderSelector;
 use qubit_spi::ServiceProvider;
-
-mod support;
 
 fn provider() -> LocalEventBusProvider {
     LocalEventBusProvider
@@ -117,7 +117,7 @@ fn create(config: &LocalEventBusConfig) -> Arc<dyn EventBusSpi> {
 }
 
 #[test]
-fn provider_registers_local_identity_and_supported_aliases() {
+fn test_provider_registers_local_identity_and_supported_aliases() {
     let descriptor = provider().descriptor();
 
     assert_eq!("local", descriptor.id().as_str());
@@ -133,7 +133,7 @@ fn provider_registers_local_identity_and_supported_aliases() {
 }
 
 #[test]
-fn facade_and_registry_local_entries_share_the_registered_provider_path() {
+fn test_facade_and_registry_local_entries_share_the_registered_provider_path() {
     let local = EventBus::local(LocalEventBusConfig::new().queue_capacity(8)).unwrap();
     let local_receipt = local
         .publish(PublishRequest::new(Topic::<u32>::new("local.events").unwrap(), 1).unwrap())
@@ -152,7 +152,7 @@ fn facade_and_registry_local_entries_share_the_registered_provider_path() {
 }
 
 #[test]
-fn local_facade_delivers_owned_string_payload_without_a_clone_bound() {
+fn test_local_facade_delivers_owned_string_payload_without_a_clone_bound() {
     let bus = EventBus::local(LocalEventBusConfig::default()).unwrap();
     let topic = Topic::<String>::new("local.strings").unwrap();
     let (delivered_tx, delivered_rx) = mpsc::channel();
@@ -174,7 +174,7 @@ fn local_facade_delivers_owned_string_payload_without_a_clone_bound() {
 }
 
 #[test]
-fn local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
+fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
     let facade =
         EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
     let registry = EventBusRegistry::with_local().unwrap();
@@ -233,7 +233,7 @@ fn local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
 }
 
 #[test]
-fn local_provider_admits_only_matching_topic_subscriptions_and_reports_capacity_rejection() {
+fn test_local_provider_admits_only_matching_topic_subscriptions_and_reports_capacity_rejection() {
     let config = LocalEventBusConfig::new().queue_capacity(1);
     let spi = create(&config);
     let mut first = spi.subscribe(request(1, "orders.created")).unwrap();
@@ -383,7 +383,7 @@ fn test_dropped_subscription_id_can_be_reused_across_topics() {
 }
 
 #[test]
-fn topic_type_conflict_publish_is_atomic() {
+fn test_topic_type_conflict_publish_is_atomic() {
     let spi = create(&LocalEventBusConfig::default());
     let mut first = spi.subscribe(request(111, "typed.publish")).unwrap();
     let mut second = spi.subscribe(request(112, "typed.publish")).unwrap();
@@ -416,7 +416,7 @@ fn topic_type_conflict_publish_is_atomic() {
 }
 
 #[test]
-fn capacity_counts_in_flight() {
+fn test_capacity_counts_in_flight() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
     let mut subscription = spi.subscribe(request(121, "capacity.inflight")).unwrap();
     let PublishAcknowledgement::DestinationAdmissions(accepted) =
@@ -448,7 +448,7 @@ fn capacity_counts_in_flight() {
 }
 
 #[test]
-fn capacity_retry_preserves_reservation() {
+fn test_capacity_retry_preserves_reservation() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
     let mut subscription = spi.subscribe(request(122, "capacity.retry")).unwrap();
     spi.publish(outbound("capacity.retry", 1)).unwrap();
@@ -470,7 +470,7 @@ fn capacity_retry_preserves_reservation() {
 }
 
 #[test]
-fn idle_wait_includes_delayed_queued_message() {
+fn test_idle_wait_includes_delayed_queued_message() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(2)).unwrap();
     let topic = Topic::<u32>::new("idle.delayed").unwrap();
     let subscription = bus
@@ -496,7 +496,7 @@ fn idle_wait_includes_delayed_queued_message() {
 }
 
 #[test]
-fn idle_wait_includes_in_flight_message() {
+fn test_idle_wait_includes_in_flight_message() {
     let spi = create(&LocalEventBusConfig::default());
     let mut receiver = spi.subscribe(request(131, "idle.inflight")).unwrap();
     let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -520,7 +520,7 @@ fn idle_wait_includes_in_flight_message() {
 }
 
 #[test]
-fn idle_wait_wakes_when_subscription_closes() {
+fn test_idle_wait_wakes_when_subscription_closes() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut receiver = spi.subscribe(request(132, "idle.close")).unwrap();
     let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -548,7 +548,7 @@ fn idle_wait_wakes_when_subscription_closes() {
 }
 
 #[test]
-fn idle_wait_is_unsupported_for_generic_provider() {
+fn test_idle_wait_is_unsupported_for_generic_provider() {
     let spi = Arc::new(support::fake_spi::FakeEventBusSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.unsupported").unwrap();
@@ -562,7 +562,7 @@ fn idle_wait_is_unsupported_for_generic_provider() {
 /// Verifies that the local facade serializes deliveries with a shared key in
 /// enqueue order.
 #[test]
-fn local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() {
+fn test_local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(8)).unwrap();
     let topic = Topic::<u32>::new("local.ordered").unwrap();
     let observed = Arc::new(Mutex::new(Vec::new()));
@@ -622,7 +622,7 @@ fn local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() {
 }
 
 #[test]
-fn local_facade_allows_a_different_ordering_key_to_progress_while_one_handler_is_blocked() {
+fn test_local_facade_allows_a_different_ordering_key_to_progress_while_one_handler_is_blocked() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(4)).unwrap();
     let topic = Topic::<u32>::new("local.cross-key").unwrap();
     let (started_tx, started_rx) = mpsc::channel();
@@ -674,7 +674,7 @@ fn local_facade_allows_a_different_ordering_key_to_progress_while_one_handler_is
 }
 
 #[test]
-fn local_facade_delayed_message_does_not_block_immediate_message_on_another_key() {
+fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another_key() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(2)).unwrap();
     let topic = Topic::<u32>::new("local.delay-cross-key").unwrap();
     let (done_tx, done_rx) = mpsc::channel();
@@ -719,7 +719,7 @@ fn local_facade_delayed_message_does_not_block_immediate_message_on_another_key(
 }
 
 #[test]
-fn local_subscription_redelivers_retry_and_settlement_is_idempotent() {
+fn test_local_subscription_redelivers_retry_and_settlement_is_idempotent() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(11, "events")).unwrap();
     spi.publish(outbound("events", 7)).unwrap();
@@ -758,7 +758,7 @@ fn local_subscription_redelivers_retry_and_settlement_is_idempotent() {
 }
 
 #[test]
-fn local_subscription_retry_preserves_same_key_order_at_capacity() {
+fn test_local_subscription_retry_preserves_same_key_order_at_capacity() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut subscription = spi.subscribe(request(41, "events")).unwrap();
     spi.publish(outbound_with_key_and_delay("events", 1, "orders", None))
@@ -838,7 +838,7 @@ fn test_local_subscription_retry_preserves_key_fifo_while_other_key_progresses()
 }
 
 #[test]
-fn local_native_delay_hides_the_message_until_its_deadline() {
+fn test_local_native_delay_hides_the_message_until_its_deadline() {
     let spi = create(&LocalEventBusConfig::default());
     assert_eq!(DelayedDeliveryCapability::Native, spi.capabilities().delayed_delivery());
     let mut subscription = spi.subscribe(request(16, "events")).unwrap();
@@ -859,7 +859,7 @@ fn local_native_delay_hides_the_message_until_its_deadline() {
 }
 
 #[test]
-fn local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_order() {
+fn test_local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_order() {
     let spi = create(&LocalEventBusConfig::default());
     assert_eq!(OrderingCapability::PerKey, spi.capabilities().ordering());
     let mut subscription = spi.subscribe(request(17, "events")).unwrap();
@@ -892,7 +892,7 @@ fn local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_order(
 }
 
 #[test]
-fn local_subscription_timeout_close_and_bus_shutdown_are_stable() {
+fn test_local_subscription_timeout_close_and_bus_shutdown_are_stable() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(21, "events")).unwrap();
     assert!(matches!(
@@ -921,7 +921,7 @@ fn local_subscription_timeout_close_and_bus_shutdown_are_stable() {
 }
 
 #[test]
-fn immediate_shutdown_discards_pending_messages_and_closes_receivers() {
+fn test_immediate_shutdown_discards_pending_messages_and_closes_receivers() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(24, "events")).unwrap();
     spi.publish(outbound("events", 4)).unwrap();
@@ -944,7 +944,7 @@ fn immediate_shutdown_discards_pending_messages_and_closes_receivers() {
 }
 
 #[test]
-fn graceful_shutdown_reports_when_queued_delivery_cannot_be_drained() {
+fn test_graceful_shutdown_reports_when_queued_delivery_cannot_be_drained() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(26, "events")).unwrap();
     spi.publish(outbound("events", 2)).unwrap();
@@ -963,7 +963,7 @@ fn graceful_shutdown_reports_when_queued_delivery_cannot_be_drained() {
 }
 
 #[test]
-fn graceful_shutdown_waits_for_in_flight_settlement() {
+fn test_graceful_shutdown_waits_for_in_flight_settlement() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(27, "events")).unwrap();
     spi.publish(outbound("events", 3)).unwrap();
@@ -984,7 +984,7 @@ fn graceful_shutdown_waits_for_in_flight_settlement() {
 }
 
 #[test]
-fn local_config_rejects_zero_capacity_and_provider_options() {
+fn test_local_config_rejects_zero_capacity_and_provider_options() {
     assert!(LocalEventBusConfig::new().queue_capacity(0).validate().is_err());
 
     let invalid =
@@ -993,7 +993,7 @@ fn local_config_rejects_zero_capacity_and_provider_options() {
 }
 
 #[test]
-fn local_config_total_outstanding_round_trips_and_rejects_invalid_values() {
+fn test_local_config_total_outstanding_round_trips_and_rejects_invalid_values() {
     let default_config = LocalEventBusConfig::default();
     assert_eq!(65_536, default_config.get_max_total_outstanding());
 
@@ -1021,7 +1021,7 @@ fn local_config_total_outstanding_round_trips_and_rejects_invalid_values() {
 }
 
 #[test]
-fn provider_total_capacity_counts_in_flight_until_terminal_settlement() {
+fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
     let mut first = spi.subscribe(request(701, "capacity.first")).unwrap();
     let mut second = spi.subscribe(request(702, "capacity.second")).unwrap();
@@ -1084,7 +1084,7 @@ fn provider_total_capacity_counts_in_flight_until_terminal_settlement() {
 }
 
 #[test]
-fn provider_total_capacity_preserves_partial_destination_admissions() {
+fn test_provider_total_capacity_preserves_partial_destination_admissions() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
     let _first = spi.subscribe(request(711, "capacity.partial")).unwrap();
     let _second = spi.subscribe(request(712, "capacity.partial")).unwrap();
@@ -1112,7 +1112,7 @@ fn provider_total_capacity_preserves_partial_destination_admissions() {
 }
 
 #[test]
-fn settlement_rejects_token_from_another_subscription() {
+fn test_settlement_rejects_token_from_another_subscription() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(31, "events")).unwrap();
     let foreign = SettlementToken::new(Id::new(32), "event-x".to_owned());
@@ -1121,7 +1121,7 @@ fn settlement_rejects_token_from_another_subscription() {
 }
 
 #[test]
-fn settlement_rejects_forged_provider_state_without_losing_real_token() {
+fn test_settlement_rejects_forged_provider_state_without_losing_real_token() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(42, "events")).unwrap();
     spi.publish(outbound("events", 9)).unwrap();

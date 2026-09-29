@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Runtime-neutral asynchronous example using the built-in local provider.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -23,18 +24,34 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 
-struct ThreadWake(thread::Thread);
+/// Wakes the thread that drives the example future.
+struct ThreadWake(
+    /// Thread parked until this waker is invoked.
+    thread::Thread,
+);
 
 impl Wake for ThreadWake {
+    /// Unparks the thread that owns this waker.
     fn wake(self: Arc<Self>) {
         self.0.unpark();
     }
 
+    /// Unparks the thread without consuming this shared waker.
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.unpark();
     }
 }
 
+/// Drives a future to completion without depending on an async runtime.
+///
+/// # Type Parameters
+/// - `F`: Future to poll.
+///
+/// # Parameters
+/// - `future`: Operation driven until it returns `Ready`.
+///
+/// # Returns
+/// The future's output.
 fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut context = Context::from_waker(&waker);

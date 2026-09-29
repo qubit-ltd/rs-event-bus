@@ -5,7 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -44,7 +43,7 @@ use crate::spi::SpiSubscriptionRequest;
 struct EmptySpi;
 
 #[test]
-fn provider_panic_error_has_stable_operation_context() {
+fn test_provider_panic_error_has_stable_operation_context() {
     let provider_id = ProviderId::new("panic-test").expect("valid provider ID");
     let error = crate::spi::panic_boundary::provider_panic(
         provider_id.as_str(),
@@ -133,7 +132,7 @@ impl EventSubscriptionSpi for CloseCounter {
 }
 
 #[test]
-fn failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
+fn test_failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
     let bus = EventBus::from_spi(
         ProviderId::new("spawn-test").expect("valid provider ID"),
         Arc::new(EmptySpi),
@@ -182,7 +181,7 @@ impl EventBusSpi for SpawnFailureSpi {
 }
 
 #[test]
-fn scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() {
+fn test_scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_errors() {
     let close_calls = Arc::new(AtomicUsize::new(0));
     let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(
         SyncDeliverySchedulerConfig::new(2, 1)

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -16,11 +17,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
-
-use qubit_event_bus::spi::SubscriptionModes;
-
-type SyncQueue = Arc<(Mutex<QueueState>, Condvar)>;
-type AsyncQueue = Arc<Mutex<QueueState>>;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -58,9 +54,13 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
+
+type SyncQueue = Arc<(Mutex<QueueState>, Condvar)>;
+type AsyncQueue = Arc<Mutex<QueueState>>;
 
 #[derive(Default)]
 struct QueueState {
@@ -890,4 +890,3 @@ impl Future for ReceiveFuture {
         }
     }
 }
-use std::future::Future;

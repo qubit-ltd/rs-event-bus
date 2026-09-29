@@ -5,8 +5,10 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 #![cfg(feature = "discovery")]
+
+mod support;
+
 use std::sync::Arc;
 
 use qubit_event_bus::AsyncEventBusRegistry;
@@ -27,11 +29,11 @@ use qubit_spi::error::ProviderCreationError;
 use qubit_spi::error::ProviderFailure;
 use qubit_spi::error::ProviderFailureKind;
 use qubit_spi::submit_async_provider;
-use support::fake_spi::FakeAsyncEventBusSpi;
-use support::manual_async::block_on;
 
-mod support;
+use crate::support::fake_spi::FakeAsyncEventBusSpi;
+use crate::support::manual_async::block_on;
 
+/// Test provider submitted to async provider inventory.
 struct DiscoveredAsyncProvider;
 
 impl ProviderMetadata for DiscoveredAsyncProvider {
@@ -56,7 +58,7 @@ submit_async_provider! {
 }
 
 #[test]
-fn discovered_async_provider_is_creatable() {
+fn test_discovered_async_provider_is_creatable() {
     let registry = AsyncEventBusRegistry::discover().unwrap();
     assert!(
         registry
@@ -69,7 +71,7 @@ fn discovered_async_provider_is_creatable() {
 }
 
 #[test]
-fn discovered_async_provider_rejects_missing_capability() {
+fn test_discovered_async_provider_rejects_missing_capability() {
     let registry = AsyncEventBusRegistry::discover().unwrap();
     let config = EventBusConfig::default()
         .with_selection(ProviderSelection::named("test-async-discovered").unwrap())

@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+mod support;
 
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::ProviderOptions;
@@ -31,8 +32,6 @@ use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_id::Id;
 
-mod support;
-
 fn assert_sync_object_safe(_: Option<&dyn EventBusSpi>) {}
 fn assert_async_object_safe(_: Option<&dyn AsyncEventBusSpi>) {}
 
@@ -43,7 +42,7 @@ fn test_spi_traits_are_object_safe() {
 }
 
 #[test]
-fn cloning_encoded_payload_shares_its_byte_allocation() {
+fn test_cloning_encoded_payload_shares_its_byte_allocation() {
     let original = EncodedPayload::new(
         std::sync::Arc::from(b"shared payload".as_slice()),
         ContentType::new("application/octet-stream").expect("valid content type"),
@@ -55,10 +54,8 @@ fn cloning_encoded_payload_shares_its_byte_allocation() {
 }
 
 #[test]
-fn spi_idle_wait_defaults_to_unsupported() {
+fn test_spi_idle_wait_defaults_to_unsupported() {
     use std::time::Duration;
-
-    use qubit_event_bus::spi::EventBusSpi;
 
     let provider = support::fake_spi::FakeEventBusSpi::new();
     let topic = TopicAddress::new("contract.idle").expect("valid topic");
@@ -70,7 +67,7 @@ fn spi_idle_wait_defaults_to_unsupported() {
 }
 
 #[test]
-fn spi_subscription_request_preserves_payload_type_identity() {
+fn test_spi_subscription_request_preserves_payload_type_identity() {
     use std::any::TypeId;
 
     let request = SpiSubscriptionRequest::new(
@@ -118,7 +115,7 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
 }
 
 #[test]
-fn subscription_modes_can_declare_both_modes_independently_of_durability() {
+fn test_subscription_modes_can_declare_both_modes_independently_of_durability() {
     let capabilities = EventBusCapabilities::new(
         PayloadModes::Native,
         SettlementCapabilities::AcceptRetryReject,

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Backend-neutral SPI conformance checks shared by provider implementations.
 
+mod support;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,18 +27,34 @@ use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EncodedPayload;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::PayloadModes;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::PublishGuarantee;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::PublishVisibility;
 use qubit_event_bus::spi::ReceiveOutcome;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 #[cfg(feature = "conformance")]
@@ -50,6 +68,8 @@ use qubit_event_bus::spi::conformance::ConformanceHooks;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::ConformanceProfile;
 #[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::ConformanceSkipReason;
+#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_async;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_sync;
@@ -60,11 +80,139 @@ use qubit_spi::ServiceProvider;
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
 
-mod support;
+#[cfg(feature = "conformance")]
+#[test]
+fn test_durable_only_conformance_does_not_invoke_ephemeral_cleanup_hooks() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Durable,
+        SubscriptionModes::DURABLE,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let sync_hooks = ConformanceHooks {
+        ephemeral_cleanup: Some(Arc::new(|| panic!("durable-only provider has no ephemeral cleanup"))),
+        durable_recovery: Some(Arc::new(|| Ok(()))),
+        ..ConformanceHooks::default()
+    };
+    let async_hooks = AsyncConformanceHooks {
+        ephemeral_cleanup: Some(Arc::new(|| {
+            Box::pin(async { panic!("durable-only provider has no ephemeral cleanup") })
+        })),
+        durable_recovery: Some(Arc::new(|| Box::pin(async { Err("recovery fixture failed".into()) }))),
+        ..AsyncConformanceHooks::default()
+    };
+    let sync_report = run_sync(
+        || Arc::new(FakeEventBusSpi::with_capabilities(capabilities)),
+        &sync_hooks,
+    );
+    let async_report = crate::support::manual_async::block_on(run_async(
+        || async { Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities)) as Arc<dyn AsyncEventBusSpi> },
+        &async_hooks,
+    ));
+    assert!(sync_report.all_passed(), "{sync_report:?}");
+    assert!(!async_report.all_passed());
+    for report in [&sync_report, &async_report] {
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::UnsupportedCapability { capability: "ephemeral-subscription" } }
+                if case_id == "ephemeral-cleanup"
+        )));
+    }
+    assert!(async_report.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Failed { case_id, detail }
+            if case_id == "durable-unsettled-recovery" && detail == "recovery fixture failed"
+    )));
+}
 
 #[cfg(feature = "conformance")]
 #[test]
-fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
+fn test_conformance_publish_failures_skip_receive_and_still_close_providers() {
+    let sync_report = run_sync(
+        || {
+            let spi = Arc::new(FakeEventBusSpi::new());
+            spi.fail_next_publish();
+            spi
+        },
+        &ConformanceHooks::default(),
+    );
+    let async_report = crate::support::manual_async::block_on(run_async(
+        || async {
+            let spi = Arc::new(FakeAsyncEventBusSpi::new());
+            spi.fail_next_publish();
+            spi as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+
+    for report in [sync_report, async_report] {
+        assert!(!report.all_passed());
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Failed { case_id, .. } if case_id == "declared-native-publish"
+        )));
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::MissingFixture { detail } }
+                if case_id == "receive-payload" && detail == "publish failed"
+        )));
+        for expected in ["close", "close-idempotence", "shutdown", "shutdown-idempotence"] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Passed { case_id } if case_id == expected
+                )),
+                "cleanup case {expected} must run after publish failure"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_conformance_without_settlement_skips_hooks_even_when_supplied() {
+    let sync_hooks = ConformanceHooks {
+        settlement: Some(Arc::new(|| panic!("unsupported settlement hook must not run"))),
+        ..ConformanceHooks::default()
+    };
+    let async_hooks = AsyncConformanceHooks {
+        settlement: Some(Arc::new(|| {
+            Box::pin(async { panic!("unsupported settlement hook must not run") })
+        })),
+        settlement_cancellation: Some(Arc::new(|| {
+            Box::pin(async { panic!("unsupported settlement cancellation must not run") })
+        })),
+        ..AsyncConformanceHooks::default()
+    };
+    let sync_report = run_sync(
+        || {
+            Arc::new(FakeEventBusSpi::with_capabilities(
+                crate::support::fake_spi::native_no_settlement_capabilities(),
+            ))
+        },
+        &sync_hooks,
+    );
+    let async_report = crate::support::manual_async::block_on(run_async(
+        || async {
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                crate::support::fake_spi::native_no_settlement_capabilities(),
+            )) as Arc<dyn AsyncEventBusSpi>
+        },
+        &async_hooks,
+    ));
+    for report in [sync_report, async_report] {
+        assert!(report.all_passed(), "{report:?}");
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::UnsupportedCapability { capability: "settlement" } }
+                if case_id == "provider-settlement-idempotence"
+        )));
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_public_conformance_runner_preserves_failed_and_skipped_case_results() {
     let hooks = ConformanceHooks {
         settlement: Some(Arc::new(|| Err("repeated settlement changed result".into()))),
         receive_cancellation: None,
@@ -82,7 +230,7 @@ fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
     );
     assert!(!report.all_passed());
     assert!(report.cases().iter().any(|case| matches!(case,
-        ConformanceCase::Skipped { case_id, reason: qubit_event_bus::spi::conformance::ConformanceSkipReason::NotApplicable { .. } }
+        ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::NotApplicable { .. } }
         if case_id == "close-cancellation"
     )));
     assert!(
@@ -107,7 +255,7 @@ fn public_conformance_runner_preserves_failed_and_skipped_case_results() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn public_conformance_runner_probes_encoded_only_providers() {
+fn test_public_conformance_runner_probes_encoded_only_providers() {
     let report = run_sync(
         || {
             Arc::new(FakeEventBusSpi::with_capabilities(
@@ -127,7 +275,7 @@ fn public_conformance_runner_probes_encoded_only_providers() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_conformance_promotes_missing_required_fixtures_to_failures() {
+fn test_strict_conformance_promotes_missing_required_fixtures_to_failures() {
     let report = run_sync_with_profile(
         || {
             Arc::new(FakeEventBusSpi::with_capabilities(
@@ -148,7 +296,7 @@ fn strict_conformance_promotes_missing_required_fixtures_to_failures() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn public_conformance_runner_executes_each_provider_supplied_hook() {
+fn test_public_conformance_runner_executes_each_provider_supplied_hook() {
     let successful_check: Arc<dyn Fn() -> Result<(), String> + Send + Sync> = Arc::new(|| Ok(()));
     let hooks = ConformanceHooks {
         settlement: Some(successful_check.clone()),
@@ -178,7 +326,7 @@ fn public_conformance_runner_executes_each_provider_supplied_hook() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn public_async_conformance_runner_executes_provider_hooks() {
+fn test_public_async_conformance_runner_executes_provider_hooks() {
     let successful_check: AsyncConformanceCheck = Arc::new(|| Box::pin(async { Ok(()) }));
     let hooks = AsyncConformanceHooks {
         settlement: Some(successful_check.clone()),
@@ -207,7 +355,7 @@ fn public_async_conformance_runner_executes_provider_hooks() {
 }
 
 #[test]
-fn sync_conformance_accepts_provider_supplied_trait_object_factory_and_gates_cases() {
+fn test_sync_conformance_accepts_provider_supplied_trait_object_factory_and_gates_cases() {
     let full = FakeEventBusSpi::with_capabilities(crate::support::fake_spi::full_capabilities());
     let full_cases = run_sync_conformance(
         &full,
@@ -263,7 +411,7 @@ fn sync_conformance_accepts_provider_supplied_trait_object_factory_and_gates_cas
 }
 
 #[test]
-fn local_sync_provider_passes_supported_spi_conformance_cases() {
+fn test_local_sync_provider_passes_supported_spi_conformance_cases() {
     let local_config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
     let local = LocalEventBusProvider
         .create_configured(&local_config)
@@ -276,7 +424,7 @@ fn local_sync_provider_passes_supported_spi_conformance_cases() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn sync_local_passes_public_spi_conformance_publish_cases() {
+fn test_sync_local_passes_public_spi_conformance_publish_cases() {
     use qubit_event_bus::spi::conformance::ConformanceHooks;
     use qubit_event_bus::spi::conformance::run_sync;
 
@@ -294,7 +442,7 @@ fn sync_local_passes_public_spi_conformance_publish_cases() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
+fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
     use qubit_event_bus::spi::conformance::ConformanceProfile;
     use qubit_event_bus::spi::conformance::run_sync_with_profile;
 
@@ -350,7 +498,7 @@ fn strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
+fn test_bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
     let report = run_sync(crate::support::flume_spi::create, &ConformanceHooks::default());
     report.assert_all_passed();
     assert!(report.cases().iter().any(
@@ -360,7 +508,7 @@ fn bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_conformance_fails_when_required_provider_hooks_are_missing() {
+fn test_strict_conformance_fails_when_required_provider_hooks_are_missing() {
     use qubit_event_bus::spi::conformance::ConformanceProfile;
     use qubit_event_bus::spi::conformance::ConformanceSkipReason;
     use qubit_event_bus::spi::conformance::run_sync_with_profile;
@@ -393,7 +541,7 @@ fn strict_conformance_fails_when_required_provider_hooks_are_missing() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_conformance_requires_each_advertised_durability_cleanup() {
+fn test_strict_conformance_requires_each_advertised_durability_cleanup() {
     use qubit_event_bus::spi::conformance::ConformanceProfile;
     use qubit_event_bus::spi::conformance::ConformanceSkipReason;
     use qubit_event_bus::spi::conformance::run_sync_with_profile;
@@ -417,7 +565,7 @@ fn strict_conformance_requires_each_advertised_durability_cleanup() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_conformance_reports_a_provider_durable_recovery_check() {
+fn test_strict_conformance_reports_a_provider_durable_recovery_check() {
     use qubit_event_bus::spi::conformance::ConformanceProfile;
     use qubit_event_bus::spi::conformance::run_sync_with_profile;
 
@@ -446,7 +594,7 @@ fn strict_conformance_reports_a_provider_durable_recovery_check() {
 
 #[cfg(feature = "conformance")]
 #[test]
-fn strict_async_conformance_awaits_a_provider_durable_recovery_check() {
+fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
     use qubit_event_bus::spi::conformance::AsyncConformanceCheck;
     use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
     use qubit_event_bus::spi::conformance::ConformanceProfile;
@@ -477,8 +625,9 @@ fn strict_async_conformance_awaits_a_provider_durable_recovery_check() {
     );
 }
 
+/// Declares both durability modes so strict checks require both cleanup hooks.
 #[cfg(feature = "conformance")]
-fn durable_test_capabilities() -> qubit_event_bus::spi::EventBusCapabilities {
+fn durable_test_capabilities() -> EventBusCapabilities {
     use qubit_event_bus::spi::DelayedDeliveryCapability;
     use qubit_event_bus::spi::DurabilityCapability;
     use qubit_event_bus::spi::EventBusCapabilities;
@@ -504,7 +653,7 @@ fn durable_test_capabilities() -> qubit_event_bus::spi::EventBusCapabilities {
 }
 
 #[test]
-fn bounded_channel_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
+fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
     let spi = crate::support::flume_spi::create();
     let request = crate::support::fake_spi::subscription_request();
     let mut receiver = spi.subscribe(request).unwrap();
@@ -548,6 +697,7 @@ fn bounded_channel_fixture_reports_bounded_admission_and_supports_typed_facade_d
     bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
+/// Exercises synchronous provider behavior and records unsupported cases.
 fn run_sync_conformance(
     bus: &dyn EventBusSpi,
     subscribe: impl Fn(SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>,
@@ -647,7 +797,7 @@ fn run_sync_conformance(
 }
 
 #[test]
-fn async_conformance_uses_manual_time_and_preserves_in_flight_message_on_cancel() {
+fn test_async_conformance_uses_manual_time_and_preserves_in_flight_message_on_cancel() {
     let full = FakeAsyncEventBusSpi::with_capabilities(crate::support::fake_spi::full_capabilities());
     let full_cases = run_async_conformance(&full, || full.inject_gap(), |by| full.advance_time(by));
     assert!(full_cases.contains(&"native-publish-receive"));
@@ -665,7 +815,7 @@ fn async_conformance_uses_manual_time_and_preserves_in_flight_message_on_cancel(
 }
 
 #[test]
-fn sync_finite_timeout_rechecks_after_spurious_wake() {
+fn test_sync_finite_timeout_rechecks_after_spurious_wake() {
     let bus = FakeEventBusSpi::new();
     let mut subscription = bus.subscribe(crate::support::fake_spi::subscription_request()).unwrap();
     let receive = std::thread::spawn(move || subscription.receive(Duration::from_secs(2)));
@@ -678,6 +828,7 @@ fn sync_finite_timeout_rechecks_after_spurious_wake() {
     assert!(matches!(receive.join().unwrap().unwrap(), ReceiveOutcome::Message(_)));
 }
 
+/// Drives cancellation and timeout cases without relying on a runtime.
 fn run_async_conformance(
     bus: &dyn AsyncEventBusSpi,
     inject_gap: impl Fn(),
@@ -769,10 +920,12 @@ fn run_async_conformance(
     cases
 }
 
+/// Creates the native message used by each provider fixture.
 fn outbound_native() -> OutboundMessage {
     crate::support::fake_spi::outbound_message()
 }
 
+/// Creates an encoded message with content type and schema metadata.
 fn outbound_encoded() -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new("test.topic").unwrap(),
@@ -790,7 +943,7 @@ fn outbound_encoded() -> OutboundMessage {
 }
 
 #[test]
-fn sync_fake_supports_injected_structured_provider_failures() {
+fn test_sync_fake_supports_injected_structured_provider_failures() {
     let bus = FakeEventBusSpi::new();
     bus.fail_next_publish();
     let error = bus.publish(crate::support::fake_spi::outbound_message()).unwrap_err();
@@ -799,7 +952,7 @@ fn sync_fake_supports_injected_structured_provider_failures() {
 }
 
 #[test]
-fn async_fake_supports_injected_structured_provider_failures() {
+fn test_async_fake_supports_injected_structured_provider_failures() {
     let bus = FakeAsyncEventBusSpi::new();
     bus.fail_next_publish();
     crate::support::manual_async::block_on(async {

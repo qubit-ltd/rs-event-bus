@@ -93,6 +93,7 @@ fn provider_error(operation: &'static str) -> SpiError {
     }
 }
 
+/// Sends one event through a facade and returns the configured provider result.
 fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([acknowledgement])),
@@ -341,7 +342,7 @@ fn test_admission_summary_ignores_destination_order() {
 }
 
 #[test]
-fn publish_receipt_preserves_empty_destination_snapshot() {
+fn test_publish_receipt_preserves_empty_destination_snapshot() {
     assert_eq!(
         PublishAcknowledgement::DestinationAdmissions(Vec::new()),
         publish(PublishAcknowledgement::DestinationAdmissions(Vec::new()))
@@ -349,7 +350,7 @@ fn publish_receipt_preserves_empty_destination_snapshot() {
 }
 
 #[test]
-fn publish_receipt_preserves_partial_destination_admission() {
+fn test_publish_receipt_preserves_partial_destination_admission() {
     let accepted_id = SubscriberId::new("accepted-subscriber").expect("valid subscriber ID");
     let rejected_id = SubscriberId::new("full-subscriber").expect("valid subscriber ID");
     let acknowledgement = publish(PublishAcknowledgement::DestinationAdmissions(vec![
@@ -374,7 +375,7 @@ fn publish_receipt_preserves_partial_destination_admission() {
 }
 
 #[test]
-fn publish_receipt_is_successful_when_every_destination_rejects_admission() {
+fn test_publish_receipt_is_successful_when_every_destination_rejects_admission() {
     let acknowledgement = publish(PublishAcknowledgement::DestinationAdmissions(vec![
         DestinationAdmission::new(
             Id::new(3),

@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Synchronous facade contracts with controllable provider and handler races.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -92,10 +93,11 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
 
+/// Shares a provider mailbox and its receive notification.
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
 
 #[test]
-fn sync_facade_capability_panic_is_a_terminal_spi_error() {
+fn test_sync_facade_capability_panic_is_a_terminal_spi_error() {
     let backend = Arc::new(TestBackend::new());
     backend.capabilities_panics.store(true, Ordering::Release);
     let result = EventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), backend.clone());
@@ -113,7 +115,7 @@ fn sync_facade_capability_panic_is_a_terminal_spi_error() {
 }
 
 #[test]
-fn sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
+fn test_sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
     let (bus, backend) = create_bus();
     let request = SubscribeRequest::new("durable-request", topic())
         .expect("valid request")
@@ -135,7 +137,7 @@ fn sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
 }
 
 #[test]
-fn sync_subscription_worker_limit_is_released_after_cancel() {
+fn test_sync_subscription_worker_limit_is_released_after_cancel() {
     let backend = Arc::new(TestBackend::new());
     let scheduler = SyncDeliverySchedulerConfig::new(1, 8)
         .expect("valid handler scheduler")
@@ -175,7 +177,7 @@ fn sync_subscription_worker_limit_is_released_after_cancel() {
 }
 
 #[test]
-fn sync_spi_call_panics_are_returned_as_structured_errors() {
+fn test_sync_spi_call_panics_are_returned_as_structured_errors() {
     let (bus, backend) = create_bus();
     backend.subscribe_panics.store(true, Ordering::Release);
     let result = bus.subscribe(
@@ -205,7 +207,7 @@ fn sync_spi_call_panics_are_returned_as_structured_errors() {
 }
 
 #[test]
-fn sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever() {
+fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever() {
     let (bus, backend) = create_bus();
     backend.receive_panics.store(true, Ordering::Release);
     let subscription = bus
@@ -243,22 +245,26 @@ fn sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever() {
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 }
 
+/// Pauses receive after removal so shutdown can race with message handoff.
 struct ReceiveGate {
     entered: mpsc::Sender<()>,
     release: mpsc::Receiver<()>,
 }
 
+/// Signals entry into an SPI operation and waits for the test to release it.
 struct SpiCallGate {
     entered: mpsc::Sender<()>,
     release: mpsc::Receiver<()>,
 }
 
+/// Tracks buffered messages and receiver closure for the fake provider.
 #[derive(Default)]
 struct QueueState {
     messages: VecDeque<InboundMessage>,
     closed: bool,
 }
 
+/// Records provider operations and settlement outcomes shared by receivers.
 #[derive(Default)]
 struct TestBackendState {
     queues: Vec<(Id, SharedQueue)>,
@@ -273,6 +279,7 @@ struct TestBackendState {
     attempted_event_ids: Vec<EventId>,
 }
 
+/// Provides controllable capabilities, failures, and blocking SPI gates.
 struct TestBackend {
     state: Arc<Mutex<TestBackendState>>,
     capabilities_panics: AtomicBool,
@@ -480,6 +487,7 @@ impl TestBackend {
         (entered_rx, release_tx)
     }
 
+    /// Drops the gate mutex before notifying entry and waiting for release.
     fn wait_at_gate(gate: &Mutex<Option<SpiCallGate>>, name: &str) {
         let gate = gate.lock().expect("SPI call gate lock").take();
         if let Some(gate) = gate {
@@ -740,6 +748,7 @@ impl EventBusSpi for TestBackend {
     }
 }
 
+/// Clones native test payloads and rejects unsupported transport modes.
 fn clone_transport_payload(payload: &TransportPayload) -> TransportPayload {
     match payload {
         TransportPayload::Native(value) => TransportPayload::Native(value.clone()),
@@ -748,6 +757,7 @@ fn clone_transport_payload(payload: &TransportPayload) -> TransportPayload {
     }
 }
 
+/// Receives from a shared mailbox and records settlement and close outcomes.
 struct TestSubscription {
     id: Id,
     queue: SharedQueue,
@@ -845,6 +855,7 @@ fn create_bus() -> (EventBus, Arc<TestBackend>) {
     create_bus_configured(|_| {})
 }
 
+/// Configures the provider before the facade takes its capability snapshot.
 fn create_bus_configured(configure: impl FnOnce(&TestBackend)) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
     configure(&backend);
@@ -856,6 +867,7 @@ fn create_bus_configured(configure: impl FnOnce(&TestBackend)) -> (EventBus, Arc
     (bus, backend)
 }
 
+/// Builds a facade with explicit in-flight and handler queue limits.
 fn create_bus_with_scheduler(max_in_flight: usize, handler_queue_capacity: usize) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
     let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(
@@ -887,6 +899,7 @@ fn request_with_key(payload: &str, ordering_key: &str) -> PublishRequest<String>
         .expect("valid keyed publish request")
 }
 
+/// Keeps an active handler blocked until the test releases it.
 #[derive(Default)]
 struct HandlerGate {
     released: Mutex<bool>,
@@ -908,7 +921,7 @@ impl HandlerGate {
 }
 
 #[test]
-fn sync_per_key_capability_is_checked_before_spi_subscribe() {
+fn test_sync_per_key_capability_is_checked_before_spi_subscribe() {
     for (capability, accepted) in [
         (OrderingCapability::None, false),
         (OrderingCapability::PerPartition, false),
@@ -952,7 +965,7 @@ fn sync_per_key_capability_is_checked_before_spi_subscribe() {
 }
 
 #[test]
-fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
+fn test_sync_subscription_capabilities_are_checked_before_spi_subscribe() {
     let options = [
         (
             SubscribeOptions::<String>::builder()
@@ -1028,7 +1041,7 @@ fn sync_subscription_capabilities_are_checked_before_spi_subscribe() {
 }
 
 #[test]
-fn publish_and_best_effort_batch_use_the_provider_spi_in_input_order() {
+fn test_publish_and_best_effort_batch_use_the_provider_spi_in_input_order() {
     let (bus, backend) = create_bus();
     let one = bus.publish(request("one".into())).expect("first publish");
     assert_eq!(one.provider_id().as_str(), "sync-test");
@@ -1041,7 +1054,7 @@ fn publish_and_best_effort_batch_use_the_provider_spi_in_input_order() {
 }
 
 #[test]
-fn shutdown_waits_for_a_publish_admitted_before_shutdown() {
+fn test_shutdown_waits_for_a_publish_admitted_before_shutdown() {
     let (bus, backend) = create_bus();
     let (publish_entered, release_publish) = backend.gate_next_publish();
     let publish_bus = bus.clone();
@@ -1084,7 +1097,7 @@ fn shutdown_waits_for_a_publish_admitted_before_shutdown() {
 }
 
 #[test]
-fn graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
+fn test_graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
     let (bus, backend) = create_bus();
     let (publish_entered, release_publish) = backend.gate_next_publish();
     let publish_bus = bus.clone();
@@ -1125,7 +1138,7 @@ fn graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
 }
 
 #[test]
-fn graceful_shutdown_deadline_includes_provider_shutdown() {
+fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
     let (bus, backend) = create_bus();
     let (shutdown_entered, release_shutdown) = backend.gate_next_shutdown();
     let shutdown_bus = bus.clone();
@@ -1160,7 +1173,7 @@ fn graceful_shutdown_deadline_includes_provider_shutdown() {
 }
 
 #[test]
-fn graceful_shutdown_deadline_includes_subscription_close() {
+fn test_graceful_shutdown_deadline_includes_subscription_close() {
     let (bus, backend) = create_bus();
     let (close_entered, release_close) = backend.gate_next_close();
     let _subscription = bus
@@ -1201,7 +1214,7 @@ fn graceful_shutdown_deadline_includes_subscription_close() {
 }
 
 #[test]
-fn immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
+fn test_immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
     let (bus, backend) = create_bus();
     let (started_tx, started_rx) = mpsc::channel();
     let handler_gate = Arc::new(HandlerGate::default());
@@ -1252,7 +1265,7 @@ fn immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
 }
 
 #[test]
-fn shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_waiting_for_its_permit() {
+fn test_shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_waiting_for_its_permit() {
     let (bus, backend) = create_bus();
     let callback_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
@@ -1295,7 +1308,7 @@ fn shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_waiting_f
 }
 
 #[test]
-fn shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() {
+fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() {
     let (bus, backend) = create_bus();
     let (subscribe_entered, release_subscribe) = backend.gate_next_subscribe();
     let subscribe_bus = bus.clone();
@@ -1342,7 +1355,7 @@ fn shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() {
 }
 
 #[test]
-fn terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
+fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     let (bus, backend) = create_bus();
     backend.fail_publish_call(1);
     let options = PublishOptions::<String>::builder()
@@ -1382,7 +1395,7 @@ fn terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
 }
 
 #[test]
-fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
+fn test_panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
     let (bus, backend) = create_bus();
     let panic_was_observed = Arc::new(AtomicBool::new(false));
     let observed = panic_was_observed.clone();
@@ -1422,7 +1435,7 @@ fn panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
 }
 
 #[test]
-fn panicking_codec_encode_fails_before_the_provider_publish_call() {
+fn test_panicking_codec_encode_fails_before_the_provider_publish_call() {
     struct PanicEncodeCodec(ContentType);
     impl EventCodec<String> for PanicEncodeCodec {
         fn content_type(&self) -> &ContentType {
@@ -1458,7 +1471,7 @@ fn panicking_codec_encode_fails_before_the_provider_publish_call() {
 }
 
 #[test]
-fn subscription_resolves_encoded_payload_codec_from_facade_registry() {
+fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
@@ -1498,7 +1511,7 @@ fn subscription_resolves_encoded_payload_codec_from_facade_registry() {
 }
 
 #[test]
-fn encoded_subscription_without_a_resolved_codec_fails_before_spi_subscribe() {
+fn test_encoded_subscription_without_a_resolved_codec_fails_before_spi_subscribe() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let bus = EventBus::from_spi(
@@ -1524,7 +1537,7 @@ fn encoded_subscription_without_a_resolved_codec_fails_before_spi_subscribe() {
 }
 
 #[test]
-fn subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
+fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
@@ -1557,6 +1570,7 @@ fn subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
+/// Adds a registry marker on decode to detect codec precedence.
 struct PrefixCodec(ContentType);
 
 impl EventCodec<String> for PrefixCodec {
@@ -1578,6 +1592,7 @@ impl EventCodec<String> for PrefixCodec {
     }
 }
 
+/// Encodes and decodes the unmodified UTF-8 payload.
 struct Utf8Codec(ContentType);
 
 impl EventCodec<String> for Utf8Codec {
@@ -1601,7 +1616,7 @@ impl EventCodec<String> for Utf8Codec {
 }
 
 #[test]
-fn panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
+fn test_panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     let (bus, backend) = create_bus();
     let options = SubscribeOptions::builder()
         .retry_policy(
@@ -1640,6 +1655,7 @@ fn panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
+/// Panics on decode to exercise message recovery at the facade boundary.
 struct PanickingCodec {
     content_type: ContentType,
 }
@@ -1660,7 +1676,7 @@ impl EventCodec<String> for PanickingCodec {
 }
 
 #[test]
-fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions() {
+fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions() {
     let (bus, backend) = create_bus();
     let token = RetryCancellationToken::new();
     let (first_failed_tx, first_failed_rx) = mpsc::channel();
@@ -1770,7 +1786,7 @@ fn cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscr
 }
 
 #[test]
-fn synchronous_facade_rejects_async_subscriber_interceptors_before_provider_subscription() {
+fn test_synchronous_facade_rejects_async_subscriber_interceptors_before_provider_subscription() {
     let (bus, backend) = create_bus();
     let options = SubscribeOptions::<String>::builder()
         .async_interceptor(|_, _| Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>)
@@ -1793,7 +1809,7 @@ fn synchronous_facade_rejects_async_subscriber_interceptors_before_provider_subs
 }
 
 #[test]
-fn subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
+fn test_subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
     let (bus, backend) = create_bus();
     let (handled_tx, handled_rx) = mpsc::channel();
     let subscription = bus
@@ -1825,7 +1841,7 @@ fn subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
 }
 
 #[test]
-fn sync_settlement_failure_retries_same_token_without_rerunning_handler() {
+fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
     let (bus, backend) = create_bus();
     let handled = Arc::new(AtomicUsize::new(0));
     let handled_by_callback = handled.clone();
@@ -1862,7 +1878,7 @@ fn sync_settlement_failure_retries_same_token_without_rerunning_handler() {
 }
 
 #[test]
-fn sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver() {
+fn test_sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver() {
     let (bus, backend) = create_bus();
     let handled = Arc::new(AtomicUsize::new(0));
     let handled_by_callback = handled.clone();
@@ -1891,7 +1907,7 @@ fn sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver() {
 }
 
 #[test]
-fn per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
+fn test_per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
     let (bus, backend) = create_bus_with_scheduler(3, 8);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -1959,7 +1975,7 @@ fn per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
 }
 
 #[test]
-fn global_max_in_flight_includes_queued_deliveries_before_admission() {
+fn test_global_max_in_flight_includes_queued_deliveries_before_admission() {
     let (bus, backend) = create_bus_with_scheduler(2, 1);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2040,7 +2056,7 @@ fn global_max_in_flight_includes_queued_deliveries_before_admission() {
 }
 
 #[test]
-fn saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
+fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
     let (bus, backend) = create_bus_with_scheduler(3, 1);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2110,7 +2126,7 @@ fn saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
 }
 
 #[test]
-fn zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() {
+fn test_zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() {
     let (bus, backend) = create_bus_with_scheduler(2, 0);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2178,7 +2194,7 @@ fn zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() 
 }
 
 #[test]
-fn cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler() {
+fn test_cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler() {
     let (bus, backend) = create_bus_with_scheduler(2, 2);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2245,7 +2261,7 @@ fn cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler() {
 }
 
 #[test]
-fn graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff() {
+fn test_graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff() {
     let (bus, backend) = create_bus_with_scheduler(2, 1);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2330,7 +2346,7 @@ fn graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff() {
 }
 
 #[test]
-fn immediate_shutdown_requeues_queued_deliveries_without_starting_handlers() {
+fn test_immediate_shutdown_requeues_queued_deliveries_without_starting_handlers() {
     let (bus, backend) = create_bus_with_scheduler(3, 2);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -2406,7 +2422,7 @@ fn immediate_shutdown_requeues_queued_deliveries_without_starting_handlers() {
 
 /// Verifies manual mode accepts only explicit positive acknowledgements.
 #[test]
-fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
+fn test_manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     let (bus, backend) = create_bus();
     let options = SubscribeOptions::<String>::builder().ack_mode(AckMode::Manual).build();
     let (handled_tx, handled_rx) = mpsc::channel();
@@ -2474,7 +2490,7 @@ fn manual_acknowledgement_accepts_only_explicit_acknowledgements() {
 /// Verifies subscriber middleware and error callbacks surround every retry
 /// attempt.
 #[test]
-fn subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
+fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     let (bus, backend) = create_bus();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let before = calls.clone();
@@ -2557,7 +2573,7 @@ fn subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
 }
 
 #[test]
-fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both() {
+fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both() {
     let backend = Arc::new(TestBackend::new());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let global_calls = calls.clone();
@@ -2655,7 +2671,7 @@ fn facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both(
 }
 
 #[test]
-fn sync_facade_rejects_async_global_subscriber_middleware() {
+fn test_sync_facade_rejects_async_global_subscriber_middleware() {
     let config = EventBusFacadeConfig::new().async_subscriber_interceptor(
         |_delivery: Delivery<String>, _next: AsyncSubscriberNext<String>| {
             Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>
@@ -2685,7 +2701,7 @@ fn create_bus_with_config(config: EventBusFacadeConfig) -> (EventBus, Arc<TestBa
 }
 
 #[test]
-fn concurrent_cancel_callers_both_wait_for_worker_close() {
+fn test_concurrent_cancel_callers_both_wait_for_worker_close() {
     let (bus, backend) = create_bus();
     backend.set_close_delay(Duration::from_millis(200));
     let subscription = Arc::new(
@@ -2730,7 +2746,7 @@ fn concurrent_cancel_callers_both_wait_for_worker_close() {
 }
 
 #[test]
-fn close_panic_still_notifies_concurrent_cancel_waiters() {
+fn test_close_panic_still_notifies_concurrent_cancel_waiters() {
     let (bus, backend) = create_bus();
     backend.set_close_panics(true);
     let subscription = Arc::new(
@@ -2765,7 +2781,7 @@ fn close_panic_still_notifies_concurrent_cancel_waiters() {
 }
 
 #[test]
-fn one_bus_worker_can_request_cancel_for_a_different_subscription_without_joining() {
+fn test_one_bus_worker_can_request_cancel_for_a_different_subscription_without_joining() {
     let (bus, _) = create_bus();
     let handlers_started = Arc::new(Barrier::new(2));
     let (release_b_tx, release_b_rx) = mpsc::channel();
@@ -2828,7 +2844,7 @@ fn one_bus_worker_can_request_cancel_for_a_different_subscription_without_joinin
 }
 
 #[test]
-fn workers_canceling_each_other_do_not_form_a_join_cycle() {
+fn test_workers_canceling_each_other_do_not_form_a_join_cycle() {
     let (bus, _) = create_bus();
     let a_handle = Arc::new(Mutex::new(None::<Subscription>));
     let b_handle = Arc::new(Mutex::new(None::<Subscription>));
@@ -2900,7 +2916,7 @@ fn workers_canceling_each_other_do_not_form_a_join_cycle() {
 }
 
 #[test]
-fn handler_can_reenter_publish_without_a_facade_lock_deadlock() {
+fn test_handler_can_reenter_publish_without_a_facade_lock_deadlock() {
     let (bus, _) = create_bus();
     let nested_bus = bus.clone();
     let (done_tx, done_rx) = mpsc::channel();
@@ -2926,7 +2942,7 @@ fn handler_can_reenter_publish_without_a_facade_lock_deadlock() {
 }
 
 #[test]
-fn blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
+fn test_blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
     let (bus, _) = create_bus();
     let idle_bus = bus.clone();
     let shutdown_bus = bus.clone();
@@ -2978,7 +2994,7 @@ fn blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
 }
 
 #[test]
-fn immediate_shutdown_waits_for_active_delivery_and_settlement_before_provider_close() {
+fn test_immediate_shutdown_waits_for_active_delivery_and_settlement_before_provider_close() {
     let (bus, backend) = create_bus();
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -3059,7 +3075,7 @@ fn immediate_shutdown_waits_for_active_delivery_and_settlement_before_provider_c
 }
 
 #[test]
-fn immediate_shutdown_returns_subscription_close_error_after_shutting_down_provider() {
+fn test_immediate_shutdown_returns_subscription_close_error_after_shutting_down_provider() {
     let (bus, backend) = create_bus();
     backend.set_close_fails(true);
     let _subscription = bus
@@ -3078,7 +3094,7 @@ fn immediate_shutdown_returns_subscription_close_error_after_shutting_down_provi
 }
 
 #[test]
-fn shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_terminal_error() {
+fn test_shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_terminal_error() {
     let (bus, backend) = create_bus();
     backend.set_close_fails(true);
     let _subscription = bus
@@ -3112,7 +3128,7 @@ fn shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_termina
 }
 
 #[test]
-fn natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_scheduler_slots() {
+fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_scheduler_slots() {
     let (bus, backend) = create_bus_with_scheduler(2, 2);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -3172,7 +3188,7 @@ fn natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_schedule
 }
 
 #[test]
-fn concurrent_cancel_and_shutdown_both_observe_subscription_close_failure() {
+fn test_concurrent_cancel_and_shutdown_both_observe_subscription_close_failure() {
     let (bus, backend) = create_bus();
     backend.set_close_fails(true);
     backend.set_close_delay(Duration::from_millis(200));
@@ -3215,7 +3231,7 @@ fn concurrent_cancel_and_shutdown_both_observe_subscription_close_failure() {
 }
 
 #[test]
-fn shutdown_aggregates_close_failures_from_all_subscriptions() {
+fn test_shutdown_aggregates_close_failures_from_all_subscriptions() {
     let (bus, backend) = create_bus();
     backend.set_close_fails(true);
     let _first = bus
@@ -3239,6 +3255,7 @@ fn shutdown_aggregates_close_failures_from_all_subscriptions() {
     assert_eq!(backend.shutdown_calls(), 1);
 }
 
+/// Checks aggregated close failures and their retained provider error sources.
 fn assert_close_failures(error: &ShutdownError, expected: &[&str]) {
     let ShutdownError::SubscriptionClose(errors) = error else {
         panic!("expected aggregated subscription close error, got {error:?}");
@@ -3257,6 +3274,7 @@ fn assert_close_failures(error: &ShutdownError, expected: &[&str]) {
     assert_eq!(errors.len(), expected.len());
 }
 
+/// Checks the lifecycle variant of aggregated subscription close failures.
 fn assert_lifecycle_close_failures(error: &LifecycleError, expected: &[&str]) {
     let LifecycleError::SubscriptionClose(errors) = error else {
         panic!("expected aggregated subscription close error, got {error:?}");
@@ -3271,6 +3289,7 @@ fn assert_lifecycle_close_failures(error: &LifecycleError, expected: &[&str]) {
     );
 }
 
+/// Pauses a received message at cancellation and returns cleanup observations.
 fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<DeliveryDisposition>, usize, bool, u64) {
     let (bus, backend) = create_bus_configured(|backend| backend.set_settlement_capability(capability));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -3364,7 +3383,7 @@ fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<D
 }
 
 #[test]
-fn immediate_shutdown_requeues_message_received_at_cancellation_boundary() {
+fn test_immediate_shutdown_requeues_message_received_at_cancellation_boundary() {
     let (dispositions, close_calls, unavailable_diagnostic, abandoned) =
         immediate_shutdown_receive_race(SettlementCapabilities::AcceptRetryReject);
     assert_eq!(abandoned, 0);
@@ -3388,7 +3407,7 @@ fn immediate_shutdown_requeues_message_received_at_cancellation_boundary() {
 }
 
 #[test]
-fn immediate_shutdown_reports_unsettleable_message_received_at_cancellation_boundary() {
+fn test_immediate_shutdown_reports_unsettleable_message_received_at_cancellation_boundary() {
     let (dispositions, close_calls, unavailable_diagnostic, abandoned) =
         immediate_shutdown_receive_race(SettlementCapabilities::None);
     assert_eq!(abandoned, 1);
@@ -3398,7 +3417,7 @@ fn immediate_shutdown_reports_unsettleable_message_received_at_cancellation_boun
 }
 
 #[test]
-fn shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdown() {
+fn test_shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdown() {
     let (bus, backend) = create_bus();
     let subscription = bus
         .subscribe(
@@ -3426,7 +3445,7 @@ fn shutdown_stops_admission_closes_subscriptions_and_propagates_provider_shutdow
 }
 
 #[test]
-fn drop_does_not_implicitly_cancel_subscription() {
+fn test_drop_does_not_implicitly_cancel_subscription() {
     let (bus, backend) = create_bus();
     let subscription = bus
         .subscribe(
@@ -3444,7 +3463,7 @@ fn drop_does_not_implicitly_cancel_subscription() {
 }
 
 #[test]
-fn diagnostic_observers_receive_terminal_delivery_failures_and_isolate_panics() {
+fn test_diagnostic_observers_receive_terminal_delivery_failures_and_isolate_panics() {
     let (bus, _) = create_bus();
     let observed = Arc::new(AtomicUsize::new(0));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -3480,7 +3499,7 @@ fn diagnostic_observers_receive_terminal_delivery_failures_and_isolate_panics() 
 }
 
 #[test]
-fn dropping_diagnostic_observer_releases_its_callback_capture() {
+fn test_dropping_diagnostic_observer_releases_its_callback_capture() {
     let (bus, _) = create_bus();
     let captured = Arc::new(());
     let weak = Arc::downgrade(&captured);
@@ -3494,7 +3513,7 @@ fn dropping_diagnostic_observer_releases_its_callback_capture() {
 }
 
 #[test]
-fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden() {
+fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden() {
     let (bus, backend) = create_bus();
     let attempts = Arc::new(AtomicUsize::new(0));
     let error_callbacks = Arc::new(AtomicUsize::new(0));
@@ -3589,7 +3608,7 @@ fn retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden(
 }
 
 #[test]
-fn dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admission() {
+fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admission() {
     let (bus, backend) = create_bus();
     backend.fail_publish_call(2);
     let options = SubscribeOptions::builder()
@@ -3640,7 +3659,7 @@ fn dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admission() {
 }
 
 #[test]
-fn partial_dead_letter_admission_is_not_republished() {
+fn test_partial_dead_letter_admission_is_not_republished() {
     let (bus, backend) = create_bus();
     backend.partial_publish_call(2);
     let observed_partial = Arc::new(AtomicBool::new(false));
@@ -3699,7 +3718,7 @@ fn partial_dead_letter_admission_is_not_republished() {
 }
 
 #[test]
-fn dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
+fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let (bus, backend) = create_bus();
     backend.fail_publish_call(2);
     let options = SubscribeOptions::builder()
@@ -3746,41 +3765,7 @@ fn dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
 }
 
 #[test]
-fn dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_subscription() {
-    let (bus, backend) = create_bus();
-    let options = SubscribeOptions::builder()
-        .error_handler(|_, _| FailureDirective::DeadLetter)
-        .build();
-    let (handler_tx, handler_rx) = mpsc::channel();
-    let _subscription = bus
-        .subscribe(
-            SubscribeRequest::new("dead-letter-without-topic", topic())
-                .expect("valid ID")
-                .with_options(options),
-            move |_| {
-                let _ = handler_tx.send(());
-                Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
-                })
-            },
-        )
-        .expect("subscription starts");
-    bus.publish(request("dead-letter-without-topic".into()))
-        .expect("original publish succeeds");
-    handler_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("the failing handler runs");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
-        .expect("the failed delivery reaches terminal handling");
-    let report = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("shutdown closes the stopped subscription");
-    assert!(backend.settlement_dispositions().is_empty());
-    assert_eq!(report.known_abandoned_deliveries, 1);
-}
-
-#[test]
-fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
+fn test_inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
     let (bus, backend) = create_bus();
     let observed = Arc::new(AtomicBool::new(false));
     let observed_by_handler = observed.clone();
@@ -3817,7 +3802,7 @@ fn inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish() {
 }
 
 #[test]
-fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() {
+fn test_unsupported_failure_settlement_is_reported_without_calling_provider_settle() {
     let (bus, backend) =
         create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -3853,7 +3838,7 @@ fn unsupported_failure_settlement_is_reported_without_calling_provider_settle() 
 }
 
 #[test]
-fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
+fn test_unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
     let (bus, backend) =
         create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::None));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -3895,7 +3880,7 @@ fn unsupported_reject_settlement_is_reported_without_calling_provider_settle() {
 }
 
 #[test]
-fn undecodable_message_respects_settlement_capability_and_reports_unavailable_reject() {
+fn test_undecodable_message_respects_settlement_capability_and_reports_unavailable_reject() {
     let (bus, backend) =
         create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
@@ -3933,7 +3918,7 @@ fn undecodable_message_respects_settlement_capability_and_reports_unavailable_re
 }
 
 #[test]
-fn subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata() {
+fn test_subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata() {
     let (bus, _) = create_bus();
     let (done_tx, done_rx) = mpsc::channel();
     let subscription = bus
@@ -3962,7 +3947,7 @@ fn subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata() {
 }
 
 #[test]
-fn facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop() {
+fn test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop() {
     use PublishOptions;
     use qubit_event_bus::model::PublishMetadata;
 
@@ -3995,4 +3980,38 @@ fn facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop() {
     assert_eq!(*order.lock().unwrap(), ["typed", "global"]);
     assert_eq!(backend.publish_calls(), 0);
     bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn test_dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_subscription() {
+    let (bus, backend) = create_bus();
+    let options = SubscribeOptions::builder()
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .build();
+    let (handler_tx, handler_rx) = mpsc::channel();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("dead-letter-without-topic", topic())
+                .expect("valid ID")
+                .with_options(options),
+            move |_| {
+                let _ = handler_tx.send(());
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+    bus.publish(request("dead-letter-without-topic".into()))
+        .expect("original publish succeeds");
+    handler_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the failing handler runs");
+    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+        .expect("the failed delivery reaches terminal handling");
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("shutdown closes the stopped subscription");
+    assert!(backend.settlement_dispositions().is_empty());
+    assert_eq!(report.known_abandoned_deliveries, 1);
 }

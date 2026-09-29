@@ -46,6 +46,7 @@ use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 
+/// One subscribed topic and its bounded delivery channel.
 struct ChannelEndpoint {
     topic: TopicAddress,
     sender: SyncSender<InboundMessage>,
@@ -60,10 +61,18 @@ pub(crate) struct ChannelShapedEventBusSpi {
 }
 
 impl ChannelShapedEventBusSpi {
+    /// Creates a provider with no subscriptions and open admission.
+    ///
+    /// # Returns
+    /// A fresh channel-shaped provider double.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
+    /// Signals a single receive gap to every current subscription.
+    ///
+    /// # Side Effects
+    /// Sets each endpoint's gap flag so its next receive reports lag.
     pub(crate) fn inject_gap(&self) {
         for endpoint in self.endpoints.lock().unwrap().iter() {
             endpoint.gap.store(true, Ordering::Release);
@@ -147,6 +156,7 @@ impl EventBusSpi for ChannelShapedEventBusSpi {
     }
 }
 
+/// Synchronous subscription endpoint backed by a bounded channel.
 struct ChannelSubscription {
     receiver: Receiver<InboundMessage>,
     gap: Arc<AtomicBool>,
@@ -189,6 +199,9 @@ impl EventSubscriptionSpi for ChannelSubscription {
 
 /// Capability profile for an encoded broker whose opaque tokens represent
 /// commits.
+///
+/// # Returns
+/// A capability value with encoded payloads and full settlement support.
 pub(crate) fn encoded_settlement_capabilities() -> EventBusCapabilities {
     EventBusCapabilities::new(
         PayloadModes::Encoded,
@@ -204,6 +217,14 @@ pub(crate) fn encoded_settlement_capabilities() -> EventBusCapabilities {
     )
 }
 
+/// Creates a non-retryable SPI error for a simulated provider operation.
+///
+/// # Parameters
+/// - `operation`: SPI operation associated with the failure.
+/// - `kind`: Stable provider failure classification.
+///
+/// # Returns
+/// An operation error identifying this test provider and failure kind.
 fn provider_error(operation: &'static str, kind: &'static str) -> SpiError {
     SpiError::Operation {
         provider_id: "channel-shaped".into(),

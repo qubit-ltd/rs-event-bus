@@ -5,10 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-
-
-
+//! Local provider wrapper used to verify cross-crate inventory discovery.
 
 use std::sync::Arc;
 

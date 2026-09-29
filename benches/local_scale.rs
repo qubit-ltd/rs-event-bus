@@ -8,12 +8,17 @@
 //! Repeatable local SPI hot-path measurements without benchmark dependencies.
 
 use std::any::TypeId;
+use std::env;
 use std::hint::black_box;
+use std::num::NonZeroUsize;
+use std::process;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
@@ -43,14 +48,27 @@ const SAMPLES: usize = 7;
 const DELAY: Duration = Duration::from_secs(3600);
 
 /// Creates a fresh SPI with bounded queues; setup is outside every timed call.
+///
+/// # Parameters
+/// - `capacity`: Per-subscription queue capacity for this sample.
+///
+/// # Returns
+/// A provider SPI configured with the requested queue capacity.
 fn create(capacity: usize) -> Arc<dyn EventBusSpi> {
-    let config = qubit_event_bus::EventBusConfig::default()
+    let config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().queue_capacity(capacity).provider_options());
     LocalEventBusProvider.create_configured(&config).unwrap()
 }
 
 /// Creates a fixed, typed subscription request without starting a facade
 /// worker.
+///
+/// # Parameters
+/// - `id`: Stable identity used to distinguish subscriptions in the sample.
+/// - `topic`: Destination topic name.
+///
+/// # Returns
+/// A valid SPI subscription request for a `u32` payload.
 fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(id),
@@ -65,6 +83,15 @@ fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
 }
 
 /// Builds one deterministic transport message outside the measured call.
+///
+/// # Parameters
+/// - `topic`: Destination topic name.
+/// - `id`: Event sequence number.
+/// - `key`: Optional ordering key.
+/// - `delay`: Optional provider delivery delay.
+///
+/// # Returns
+/// A native-payload transport message for the sample.
 fn outbound(topic: &str, id: usize, key: Option<&str>, delay: Option<Duration>) -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new(topic).unwrap(),
@@ -79,6 +106,10 @@ fn outbound(topic: &str, id: usize, key: Option<&str>, delay: Option<Duration>) 
 
 /// Checks all destinations to fail the run if capacity or routing distorts a
 /// sample.
+///
+/// # Parameters
+/// - `result`: Acknowledgement returned by the local provider.
+/// - `expected`: Number of matching subscriptions expected for the topic.
 fn assert_accepted(result: PublishAcknowledgement, expected: usize) {
     let PublishAcknowledgement::DestinationAdmissions(admissions) = result else {
         panic!("local provider returned an unexpected acknowledgement");
@@ -93,6 +124,9 @@ fn assert_accepted(result: PublishAcknowledgement, expected: usize) {
 }
 
 /// Receives and accepts one queued event outside a publish measurement.
+///
+/// # Parameters
+/// - `receiver`: Provider subscription whose next queued event is consumed.
 fn consume(receiver: &mut dyn EventSubscriptionSpi) {
     let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
         panic!("expected a ready message");
@@ -102,6 +136,12 @@ fn consume(receiver: &mut dyn EventSubscriptionSpi) {
 }
 
 /// Reduces independent operation timings to sum and nearest-rank p95.
+///
+/// # Parameters
+/// - `durations`: Nanosecond timings to aggregate.
+///
+/// # Returns
+/// Total nanoseconds and the nearest-rank 95th percentile.
 fn summarize(mut durations: Vec<u64>) -> (u128, u64) {
     let total = durations.iter().map(|duration| u128::from(*duration)).sum();
     durations.sort_unstable();
@@ -110,6 +150,14 @@ fn summarize(mut durations: Vec<u64>) -> (u128, u64) {
 }
 
 /// Publishes prebuilt messages, timing only each SPI publish call.
+///
+/// # Parameters
+/// - `topics`: Number of topics registered with the provider.
+/// - `subscribers`: Subscriptions registered per topic.
+/// - `target`: Topic whose publication is measured.
+///
+/// # Returns
+/// Total elapsed nanoseconds and publish-call p95 nanoseconds.
 fn publish_sample(topics: usize, subscribers: usize, target: usize) -> (u128, u64) {
     let bus = create(1);
     let mut receivers = Vec::with_capacity(topics * subscribers);
@@ -146,6 +194,14 @@ fn publish_sample(topics: usize, subscribers: usize, target: usize) -> (u128, u6
 }
 
 /// Times receive alone at a stable queue depth, then settles and refills.
+///
+/// # Parameters
+/// - `depth`: Number of messages kept queued for each measured receive.
+/// - `ready_keys`: Number of independently receivable ordering keys at the
+///   queue tail.
+///
+/// # Returns
+/// Total elapsed nanoseconds and receive-call p95 nanoseconds.
 fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
     let bus = create(depth.max(1));
     let mut receiver = bus.subscribe(request(1, "receive-topic")).unwrap();
@@ -206,6 +262,9 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
 
 /// Times a full publish, receive, and settlement cycle as a diagnostic
 /// scenario.
+///
+/// # Returns
+/// Total elapsed nanoseconds and per-operation p95 nanoseconds.
 fn end_to_end_sample() -> (u128, u64) {
     let bus = create(1);
     let mut receiver = bus.subscribe(request(1, "end-to-end")).unwrap();
@@ -215,16 +274,34 @@ fn end_to_end_sample() -> (u128, u64) {
     let mut timings = Vec::with_capacity(EVENTS);
     for message in messages {
         let started = Instant::now();
-        let result = bus.publish(black_box(message)).unwrap();
-        assert_accepted(result, 1);
-        consume(receiver.as_mut());
-        timings.push(started.elapsed().as_nanos() as u64);
+        let result = bus.publish(black_box(message));
+        let mut elapsed = started.elapsed();
+        assert_accepted(result.unwrap(), 1);
+
+        let started = Instant::now();
+        let outcome = receiver.receive(Duration::ZERO);
+        elapsed += started.elapsed();
+        let ReceiveOutcome::Message(mut message) = outcome.unwrap() else {
+            panic!("expected a ready message");
+        };
+        let token = message.take_settlement().expect("local message has a settlement token");
+
+        let started = Instant::now();
+        let settlement = receiver.settle(&token, DeliveryDisposition::Accept);
+        elapsed += started.elapsed();
+        settlement.unwrap();
+        timings.push(elapsed.as_nanos() as u64);
     }
     bus.shutdown(ShutdownMode::Immediate).unwrap();
     summarize(timings)
 }
 
 /// Runs warmups and seven fresh-bus samples, writing only CSV data to stdout.
+///
+/// # Parameters
+/// - `name`: Scenario label written in the CSV output.
+/// - `sample`: Function that returns total and p95 nanoseconds for one
+///   iteration.
 fn run(name: &str, mut sample: impl FnMut() -> (u128, u64)) {
     for _ in 0..WARMUPS {
         black_box(sample());
@@ -237,15 +314,15 @@ fn run(name: &str, mut sample: impl FnMut() -> (u128, u64)) {
 
 /// Selects publish, receive, or all scenarios; invalid input exits with usage.
 fn main() {
-    let mut args = std::env::args().skip(1).filter(|arg| arg != "--bench");
+    let mut args = env::args().skip(1).filter(|arg| arg != "--bench");
     let selection = args.next().unwrap_or_else(|| "all".to_owned());
     if !matches!(selection.as_str(), "publish" | "receive" | "all") || args.next().is_some() {
         eprintln!("usage: local_scale [publish|receive|all]");
-        std::process::exit(2);
+        process::exit(2);
     }
     eprintln!(
         "available_parallelism={}",
-        std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get)
+        thread::available_parallelism().map_or(0, NonZeroUsize::get)
     );
     println!("scenario,iteration,events,elapsed_ns,p95_ns");
     if selection == "publish" || selection == "all" {

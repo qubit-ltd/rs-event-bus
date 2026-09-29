@@ -5,7 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -19,10 +18,12 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
+/// Payload deliberately lacking `Clone` to verify shared event ownership.
 struct NonClonePayload(String);
 
 const STATIC_TOPIC: Topic<NonClonePayload> = Topic::new_static("events.static");
 
+/// Hashes a topic with the standard default hasher for equality contracts.
 fn topic_hash<T: 'static>(topic: &Topic<T>) -> u64 {
     let mut hasher = DefaultHasher::new();
     topic.hash(&mut hasher);
@@ -30,7 +31,7 @@ fn topic_hash<T: 'static>(topic: &Topic<T>) -> u64 {
 }
 
 #[test]
-fn static_topic_constants_preserve_typed_topic_identity() -> Result<(), Box<dyn std::error::Error>> {
+fn test_static_topic_constants_preserve_typed_topic_identity() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_static_topic = Topic::<NonClonePayload>::new_static("events.static");
     let runtime_topic = Topic::<NonClonePayload>::new("events.static")?;
     assert_eq!(STATIC_TOPIC.name(), "events.static");
@@ -50,7 +51,7 @@ fn static_topic_constants_preserve_typed_topic_identity() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn subscribe_request_new_validates_string_id_and_takes_topic_by_value() -> Result<(), Box<dyn std::error::Error>> {
+fn test_subscribe_request_new_validates_string_id_and_takes_topic_by_value() -> Result<(), Box<dyn std::error::Error>> {
     let request = SubscribeRequest::new("audit-log", STATIC_TOPIC)?;
     assert_eq!(request.subscriber_id().as_str(), "audit-log");
     assert_eq!(request.topic(), &STATIC_TOPIC);
@@ -64,7 +65,7 @@ fn subscribe_request_new_validates_string_id_and_takes_topic_by_value() -> Resul
 }
 
 #[test]
-fn generated_event_ids_are_uuid_v4_values() -> Result<(), Box<dyn std::error::Error>> {
+fn test_generated_event_ids_are_uuid_v4_values() -> Result<(), Box<dyn std::error::Error>> {
     let envelope = EventEnvelope::new(Topic::<String>::new("orders.created")?, "payload".to_owned())?;
     let id = envelope.id().as_str();
     assert_eq!(id.len(), 36);
@@ -78,7 +79,8 @@ fn generated_event_ids_are_uuid_v4_values() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn custom_event_ids_keep_validation_and_do_not_require_random_generation() -> Result<(), Box<dyn std::error::Error>> {
+fn test_custom_event_ids_keep_validation_and_do_not_require_random_generation() -> Result<(), Box<dyn std::error::Error>>
+{
     assert!(EventId::new("").is_err());
     assert!(EventId::new(" invalid").is_err());
     assert_eq!(EventId::new("caller-event-1")?.as_str(), "caller-event-1");
@@ -86,7 +88,7 @@ fn custom_event_ids_keep_validation_and_do_not_require_random_generation() -> Re
 }
 
 #[test]
-fn caller_cannot_forge_reserved_dead_letter_header() -> Result<(), Box<dyn std::error::Error>> {
+fn test_caller_cannot_forge_reserved_dead_letter_header() -> Result<(), Box<dyn std::error::Error>> {
     let mut envelope = EventEnvelope::new(Topic::<String>::new("events.header")?, "payload".to_owned())?;
     assert!(envelope.set_header("X-Qubit-Event-Bus-Dead-Letter", "v1").is_err());
     assert!(envelope.remove_header("X-Qubit-Event-Bus-Dead-Letter").is_err());
@@ -102,7 +104,7 @@ fn caller_cannot_forge_reserved_dead_letter_header() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn subscriber_id_enforces_portable_syntax() {
+fn test_subscriber_id_enforces_portable_syntax() {
     assert!(SubscriberId::new("audit-1:primary").is_ok());
     assert!(SubscriberId::new("").is_err());
     assert!(SubscriberId::new(" audit").is_err());
@@ -112,7 +114,7 @@ fn subscriber_id_enforces_portable_syntax() {
 }
 
 #[test]
-fn shared_event_payload_preserves_arc_identity_without_clone_bounds() -> Result<(), Box<dyn std::error::Error>> {
+fn test_shared_event_payload_preserves_arc_identity_without_clone_bounds() -> Result<(), Box<dyn std::error::Error>> {
     let payload = Arc::new(NonClonePayload("shared".into()));
     let event = EventEnvelope::from_shared_payload(Topic::<NonClonePayload>::new("events.shared")?, payload.clone())?;
     assert_eq!(event.payload().0, "shared");

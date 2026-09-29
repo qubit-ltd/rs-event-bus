@@ -16,7 +16,7 @@ use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryFallback;
 
 #[test]
-fn publish_error_handler_panic_preserves_source_chain() {
+fn test_publish_error_handler_panic_preserves_source_chain() {
     let error = PublishError::ErrorHandlerPanicked {
         message: "observer failed".into(),
         source: Box::new(std::io::Error::other("transport failed")),
@@ -28,7 +28,7 @@ fn publish_error_handler_panic_preserves_source_chain() {
 }
 
 #[test]
-fn retry_error_converts_to_publish_error_without_losing_terminal_reason() {
+fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
     let config = RetryConfig::<PublishAttemptError>::builder()
         .max_attempts(1)
         .fallback(RetryFallback::Retry)

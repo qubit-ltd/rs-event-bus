@@ -7,6 +7,8 @@
 // =============================================================================
 //! Runtime-neutral asynchronous facade contract tests.
 
+mod support;
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -82,14 +84,13 @@ use qubit_retry::RetryPolicy;
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::manual_async::block_on;
 
-mod support;
-
+/// Creates the common typed topic used by asynchronous facade contracts.
 fn topic() -> Topic<u32> {
     Topic::new("test.topic").unwrap()
 }
 
 #[test]
-fn async_facade_capability_panic_is_a_terminal_spi_error() {
+fn test_async_facade_capability_panic_is_a_terminal_spi_error() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.panic_on_capabilities();
     let result = AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
@@ -106,6 +107,7 @@ fn async_facade_capability_panic_is_a_terminal_spi_error() {
     assert_eq!(1, spi.capabilities_calls());
 }
 
+/// Signals a channel whenever an idle-wait future is woken.
 struct WakeOnSignal(std::sync::mpsc::Sender<()>);
 
 impl std::task::Wake for WakeOnSignal {
@@ -117,6 +119,7 @@ impl std::task::Wake for WakeOnSignal {
     }
 }
 
+/// Selects provider capabilities and counts subscriptions that reach the SPI.
 struct OrderingTestSpi {
     inner: FakeAsyncEventBusSpi,
     capabilities: EventBusCapabilities,
@@ -176,7 +179,7 @@ impl AsyncEventBusSpi for OrderingTestSpi {
 }
 
 #[test]
-fn async_per_key_capability_is_checked_before_spi_subscribe() {
+fn test_async_per_key_capability_is_checked_before_spi_subscribe() {
     for (capability, accepted) in [
         (OrderingCapability::None, false),
         (OrderingCapability::PerPartition, false),
@@ -222,7 +225,7 @@ fn async_per_key_capability_is_checked_before_spi_subscribe() {
 }
 
 #[test]
-fn async_subscription_capabilities_are_checked_before_spi_subscribe() {
+fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
     let requests = [
         (
             SubscribeOptions::<u32>::builder()
@@ -308,7 +311,7 @@ fn async_subscription_capabilities_are_checked_before_spi_subscribe() {
 }
 
 #[test]
-fn async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() {
+fn test_async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -365,7 +368,7 @@ fn async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() 
 }
 
 #[test]
-fn async_facade_publisher_interceptor_can_drop_without_spi_publish() {
+fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
     use qubit_event_bus::facade::EventBusFacadeConfig;
     use qubit_event_bus::model::PublishMetadata;
 
@@ -403,7 +406,7 @@ fn async_facade_publisher_interceptor_can_drop_without_spi_publish() {
 }
 
 #[test]
-fn async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
+fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     use qubit_event_bus::error::PublishError;
     use qubit_event_bus::model::PublishOptions;
     use qubit_retry::AttemptFailure;
@@ -446,7 +449,7 @@ fn async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
 }
 
 #[test]
-fn async_subscription_is_created_without_spawning_until_run_is_driven() {
+fn test_async_subscription_is_created_without_spawning_until_run_is_driven() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -462,7 +465,7 @@ fn async_subscription_is_created_without_spawning_until_run_is_driven() {
 }
 
 #[test]
-fn async_facade_bounds_in_flight_deliveries_across_subscriptions() {
+fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
     use std::task::Waker;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -564,7 +567,7 @@ fn async_facade_bounds_in_flight_deliveries_across_subscriptions() {
 }
 
 #[test]
-fn async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_released() {
+fn test_async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_released() {
     use std::task::Waker;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -635,7 +638,7 @@ fn async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_released(
 }
 
 #[test]
-fn idle_async_subscription_does_not_consume_delivery_admission() {
+fn test_idle_async_subscription_does_not_consume_delivery_admission() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
@@ -679,7 +682,7 @@ fn idle_async_subscription_does_not_consume_delivery_admission() {
 }
 
 #[test]
-fn async_received_wait_includes_deliveries_queued_for_admission() {
+fn test_async_received_wait_includes_deliveries_queued_for_admission() {
     use std::sync::atomic::AtomicBool;
     use std::task::Poll;
     use std::time::Duration;
@@ -751,7 +754,7 @@ fn async_received_wait_includes_deliveries_queued_for_admission() {
 }
 
 #[test]
-fn async_subscription_runs_different_ordering_keys_concurrently() {
+fn test_async_subscription_runs_different_ordering_keys_concurrently() {
     use std::task::Waker;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -820,7 +823,7 @@ fn async_subscription_runs_different_ordering_keys_concurrently() {
 }
 
 #[test]
-fn async_subscription_preserves_order_for_the_same_ordering_key() {
+fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
     use std::task::Waker;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -888,7 +891,7 @@ fn async_subscription_preserves_order_for_the_same_ordering_key() {
 }
 
 #[test]
-fn immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler() {
+fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler() {
     use std::task::Waker;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -966,7 +969,7 @@ fn immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler()
 }
 
 #[test]
-fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
+fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
     use std::task::Poll;
     use std::task::Waker;
 
@@ -1056,7 +1059,7 @@ fn immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
 }
 
 #[test]
-fn shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
+fn test_shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1074,7 +1077,7 @@ fn shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
 }
 
 #[test]
-fn cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() {
+fn test_cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() {
     use std::task::Poll;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -1104,7 +1107,7 @@ fn cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() 
 }
 
 #[test]
-fn graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
+fn test_graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_close();
     let bus =
@@ -1131,7 +1134,7 @@ fn graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
 }
 
 #[test]
-fn shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
+fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();
     let bus =
@@ -1192,7 +1195,7 @@ fn shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
 }
 
 #[test]
-fn cancelling_pending_subscribe_releases_admission_for_shutdown() {
+fn test_cancelling_pending_subscribe_releases_admission_for_shutdown() {
     use std::task::Poll;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -1221,7 +1224,7 @@ fn cancelling_pending_subscribe_releases_admission_for_shutdown() {
 }
 
 #[test]
-fn asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subscription() {
+fn test_asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subscription() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1246,7 +1249,7 @@ fn asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subs
 }
 
 #[test]
-fn async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
+fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
     use std::future::Future;
     use std::task::Poll;
 
@@ -1304,7 +1307,7 @@ fn async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
 }
 
 #[test]
-fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
+fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
     use std::future::Future;
     use std::task::Context;
     use std::task::Poll;
@@ -1379,7 +1382,7 @@ fn async_idle_wait_timeout_wakes_without_other_bus_activity() {
 }
 
 #[test]
-fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
+fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
     use std::future::Future;
     use std::task::Context;
     use std::task::Poll;
@@ -1473,7 +1476,7 @@ fn injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
 }
 
 #[test]
-fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() {
+fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
@@ -1527,7 +1530,7 @@ fn async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() 
 }
 
 #[test]
-fn async_dropping_diagnostic_observer_releases_its_callback_capture() {
+fn test_async_dropping_diagnostic_observer_releases_its_callback_capture() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let captured = Arc::new(());
@@ -1542,7 +1545,7 @@ fn async_dropping_diagnostic_observer_releases_its_callback_capture() {
 }
 
 #[test]
-fn async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
+fn test_async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
@@ -1592,7 +1595,7 @@ fn async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
 }
 
 #[test]
-fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
+fn test_inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1649,7 +1652,7 @@ fn inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
 }
 
 #[test]
-fn async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_receive() {
+fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_receive() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1688,7 +1691,7 @@ fn async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_r
 }
 
 #[test]
-fn async_middleware_wraps_the_handler_in_registration_order() {
+fn test_async_middleware_wraps_the_handler_in_registration_order() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1735,7 +1738,7 @@ fn async_middleware_wraps_the_handler_in_registration_order() {
 }
 
 #[test]
-fn async_facade_global_middleware_wraps_typed_middleware_and_handler() {
+fn test_async_facade_global_middleware_wraps_typed_middleware_and_handler() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let global_calls = calls.clone();
@@ -1807,7 +1810,7 @@ fn async_facade_global_middleware_wraps_typed_middleware_and_handler() {
 }
 
 #[test]
-fn async_facade_rejects_sync_global_subscriber_middleware() {
+fn test_async_facade_rejects_sync_global_subscriber_middleware() {
     let config = EventBusFacadeConfig::new()
         .subscriber_interceptor(|_delivery: Delivery<u32>, _next: SubscriberNext<u32>| Ok(()));
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -1830,7 +1833,7 @@ fn async_facade_rejects_sync_global_subscriber_middleware() {
 }
 
 #[test]
-fn async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
+fn test_async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let failed = Arc::new(AtomicBool::new(false));
@@ -1847,8 +1850,6 @@ fn async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
         let runner = std::thread::spawn(move || {
             block_on(subscription.run(|_| async move {
                 panic!("handler future panic");
-                #[allow(unreachable_code)]
-                Ok(())
             }))
         });
         bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
@@ -1865,7 +1866,7 @@ fn async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
 }
 
 #[test]
-fn async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy() {
+fn test_async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -1910,7 +1911,7 @@ fn async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy(
 /// Verifies asynchronous manual mode accepts only explicit positive
 /// acknowledgements.
 #[test]
-fn async_manual_acknowledgement_requires_an_explicit_ack() {
+fn test_async_manual_acknowledgement_requires_an_explicit_ack() {
     for (subscriber, action, expected) in [
         ("async-manual-ack", 1, DeliveryDisposition::Accept),
         ("async-manual-nack", 2, DeliveryDisposition::Retry),
@@ -1969,7 +1970,7 @@ fn async_manual_acknowledgement_requires_an_explicit_ack() {
 /// Verifies asynchronous middleware and error callbacks surround every retry
 /// attempt.
 #[test]
-fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
+fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     use qubit_retry::AttemptFailure;
     use qubit_retry::RetryContext;
     use qubit_retry::RetryDecision;
@@ -2052,7 +2053,9 @@ fn async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
 /// Verifies failed asynchronous deliveries map directives to provider
 /// settlement outcomes.
 #[test]
-fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
+fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
+    /// Runs a failing delivery and returns settlement outcomes and provider
+    /// calls.
     fn run_case(
         directive: FailureDirective,
         fail_dead_letter_publish: bool,
@@ -2135,7 +2138,7 @@ fn async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes() {
 }
 
 #[test]
-fn async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
+fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2176,7 +2179,7 @@ fn async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
 }
 
 #[test]
-fn cancelling_the_run_future_preserves_an_already_received_delivery_for_resume() {
+fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_resume() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2250,7 +2253,7 @@ fn cancelling_the_run_future_preserves_an_already_received_delivery_for_resume()
 }
 
 #[test]
-fn dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery() {
+fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2295,7 +2298,7 @@ fn dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery
 }
 
 #[test]
-fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() {
+fn test_dropping_subscription_during_shutdown_takeover_releases_the_active_session() {
     use std::task::Poll;
     use std::task::Waker;
 
@@ -2369,7 +2372,7 @@ fn dropping_subscription_during_shutdown_takeover_releases_the_active_session() 
 }
 
 #[test]
-fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
+fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
     struct Utf8Codec(ContentType);
 
     impl EventCodec<String> for Utf8Codec {
@@ -2443,7 +2446,7 @@ fn async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 }
 
 #[test]
-fn async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
+fn test_async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
     struct PanicOnceCodec {
         content_type: ContentType,
         panicked: Arc<AtomicBool>,
@@ -2573,7 +2576,7 @@ fn async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
 }
 
 #[test]
-fn async_subscription_resolves_encoded_payload_codec_from_facade_registry() {
+fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry() {
     struct Utf8Codec(ContentType);
 
     impl EventCodec<String> for Utf8Codec {
@@ -2660,7 +2663,7 @@ fn async_subscription_resolves_encoded_payload_codec_from_facade_registry() {
 }
 
 #[test]
-fn async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
+fn test_async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
     let capabilities = EventBusCapabilities::new(
         PayloadModes::Encoded,
         SettlementCapabilities::AcceptOnly,
@@ -2700,7 +2703,7 @@ fn async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
 }
 
 #[test]
-fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
+fn test_shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2761,7 +2764,7 @@ fn shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
 }
 
 #[test]
-fn async_success_settles_the_provider_token_after_handler_completion() {
+fn test_async_success_settles_the_provider_token_after_handler_completion() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2787,7 +2790,7 @@ fn async_success_settles_the_provider_token_after_handler_completion() {
 }
 
 #[test]
-fn cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
+fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
     use std::future::Future;
     use std::task::Poll;
 
@@ -2848,7 +2851,7 @@ fn cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
 }
 
 #[test]
-fn dropping_idle_wait_unregisters_signal_waker() {
+fn test_dropping_idle_wait_unregisters_signal_waker() {
     use std::future::Future;
     use std::task::Context;
     use std::task::Poll;
@@ -2927,7 +2930,7 @@ fn dropping_idle_wait_unregisters_signal_waker() {
 }
 
 #[test]
-fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
+fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2995,7 +2998,7 @@ fn async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
 }
 
 #[test]
-fn cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() {
+fn test_cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() {
     use std::task::Poll;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -3031,7 +3034,7 @@ fn cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() 
 }
 
 #[test]
-fn async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
+fn test_async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3064,7 +3067,7 @@ fn async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
 }
 
 #[test]
-fn async_settlement_call_panic_is_reported_once_and_does_not_retry() {
+fn test_async_settlement_call_panic_is_reported_once_and_does_not_retry() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3100,7 +3103,7 @@ fn async_settlement_call_panic_is_reported_once_and_does_not_retry() {
 }
 
 #[test]
-fn permanent_settlement_failure_yields_to_same_executor_shutdown() {
+fn test_permanent_settlement_failure_yields_to_same_executor_shutdown() {
     use std::task::Poll;
 
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
@@ -3149,7 +3152,7 @@ fn permanent_settlement_failure_yields_to_same_executor_shutdown() {
 }
 
 #[test]
-fn async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_event() {
+fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_event() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3187,7 +3190,7 @@ fn async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_eve
 }
 
 #[test]
-fn async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() {
+fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3204,7 +3207,7 @@ fn async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() 
 }
 
 #[test]
-fn async_spi_operation_call_panics_are_returned_as_structured_errors() {
+fn test_async_spi_operation_call_panics_are_returned_as_structured_errors() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3223,7 +3226,7 @@ fn async_spi_operation_call_panics_are_returned_as_structured_errors() {
 }
 
 #[test]
-fn async_receiver_close_call_panic_is_reported_during_shutdown() {
+fn test_async_receiver_close_call_panic_is_reported_during_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3240,7 +3243,7 @@ fn async_receiver_close_call_panic_is_reported_during_shutdown() {
 }
 
 #[test]
-fn concurrent_async_shutdown_calls_close_the_provider_once() {
+fn test_concurrent_async_shutdown_calls_close_the_provider_once() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3262,7 +3265,7 @@ fn concurrent_async_shutdown_calls_close_the_provider_once() {
 }
 
 #[test]
-fn immediate_shutdown_waits_for_runner_settlement_and_close_before_provider_shutdown() {
+fn test_immediate_shutdown_waits_for_runner_settlement_and_close_before_provider_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");

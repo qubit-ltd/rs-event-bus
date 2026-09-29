@@ -21,7 +21,9 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use qubit_event_bus::codec::CodecRegistry;
+use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::ConfigurationError;
+use qubit_event_bus::error::DeliveryError;
 use qubit_event_bus::error::LifecycleError;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::ShutdownError;
@@ -44,20 +46,6 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
-use qubit_event_bus::spi::SubscriptionModes;
-
-#[test]
-fn facade_config_keeps_the_caller_supplied_codec_registry() {
-    let codecs = Arc::new(CodecRegistry::new());
-    let config = EventBusFacadeConfig::new().with_codec_registry(Arc::clone(&codecs));
-
-    assert!(Arc::ptr_eq(config.codec_registry(), &codecs));
-}
-
-#[test]
-fn unit_handler_result_is_treated_as_success() {
-    assert!(().into_handler_result().is_ok());
-}
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::DurabilityCapability;
@@ -77,8 +65,10 @@ use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+
 const PROVIDER_ID: &str = "sync-coverage";
 const TOPIC_NAME: &str = "sync.coverage";
 
@@ -323,7 +313,19 @@ fn keyed_options() -> SubscribeOptions<String> {
 }
 
 #[test]
-fn scheduler_config_rejects_zero_global_admission_capacity() {
+fn test_facade_config_keeps_the_caller_supplied_codec_registry() {
+    let codecs = Arc::new(CodecRegistry::new());
+    let config = EventBusFacadeConfig::new().with_codec_registry(Arc::clone(&codecs));
+
+    assert!(Arc::ptr_eq(config.codec_registry(), &codecs));
+}
+
+#[test]
+fn test_unit_handler_result_is_treated_as_success() {
+    assert!(().into_handler_result().is_ok());
+}
+#[test]
+fn test_scheduler_config_rejects_zero_global_admission_capacity() {
     let error = SyncDeliverySchedulerConfig::new(0, 0).expect_err("zero in-flight capacity is invalid");
     assert!(matches!(
         error,
@@ -335,7 +337,7 @@ fn scheduler_config_rejects_zero_global_admission_capacity() {
 }
 
 #[test]
-fn per_key_ordering_is_rejected_when_provider_declares_no_ordering_support() {
+fn test_per_key_ordering_is_rejected_when_provider_declares_no_ordering_support() {
     let (spi, _close_rx) = CoverageSpi::new_with_ordering(false, OrderingCapability::None);
     let bus = EventBus::from_spi(ProviderId::new(PROVIDER_ID).unwrap(), Arc::new(spi))
         .expect("provider capabilities are structurally valid");
@@ -344,17 +346,15 @@ fn per_key_ordering_is_rejected_when_provider_declares_no_ordering_support() {
         .with_options(keyed_options());
 
     assert!(matches!(
-        bus.subscribe(request, |_| Ok::<(), qubit_event_bus::error::DeliveryError>(())),
-        Err(SubscribeError::Capability(
-            qubit_event_bus::error::CapabilityError::Unsupported {
-                capability: "ordering.per_key"
-            }
-        ))
+        bus.subscribe(request, |_| Ok::<(), DeliveryError>(())),
+        Err(SubscribeError::Capability(CapabilityError::Unsupported {
+            capability: "ordering.per_key"
+        }))
     ));
 }
 
 #[test]
-fn known_destination_dead_letter_policy_is_rejected_for_opaque_publish_results() {
+fn test_known_destination_dead_letter_policy_is_rejected_for_opaque_publish_results() {
     let (bus, _, _) = create_bus(1, 1);
     let request = SubscribeRequest::new("known-dead-letter", topic())
         .unwrap()
@@ -371,17 +371,15 @@ fn known_destination_dead_letter_policy_is_rejected_for_opaque_publish_results()
         );
 
     assert!(matches!(
-        bus.subscribe(request, |_| Ok::<(), qubit_event_bus::error::DeliveryError>(())),
-        Err(SubscribeError::Capability(
-            qubit_event_bus::error::CapabilityError::Unsupported {
-                capability: "dead_letter.known_destination_admission"
-            }
-        ))
+        bus.subscribe(request, |_| Ok::<(), DeliveryError>(())),
+        Err(SubscribeError::Capability(CapabilityError::Unsupported {
+            capability: "dead_letter.known_destination_admission"
+        }))
     ));
 }
 
 #[test]
-fn publish_all_keeps_later_results_after_a_provider_failure() {
+fn test_publish_all_keeps_later_results_after_a_provider_failure() {
     let (bus, spi, _) = create_bus(1, 1);
     spi.fail_next_publish();
 
@@ -404,7 +402,7 @@ fn publish_all_keeps_later_results_after_a_provider_failure() {
 }
 
 #[test]
-fn provider_subscribe_failure_does_not_poison_later_subscription() {
+fn test_provider_subscribe_failure_does_not_poison_later_subscription() {
     let (bus, spi, _) = create_bus(1, 1);
     spi.fail_next_subscribe();
     let failed_request = SubscribeRequest::new("provider-subscribe-failure", topic()).expect("valid subscriber ID");
@@ -432,7 +430,7 @@ fn provider_subscribe_failure_does_not_poison_later_subscription() {
 }
 
 #[test]
-fn shutdown_provider_error_is_retryable_and_closes_public_admission() {
+fn test_shutdown_provider_error_is_retryable_and_closes_public_admission() {
     let (bus, spi, _) = create_bus(1, 1);
     spi.fail_next_shutdown();
 
@@ -467,7 +465,7 @@ fn shutdown_provider_error_is_retryable_and_closes_public_admission() {
 }
 
 #[test]
-fn shutdown_is_idempotent_and_caches_the_provider_outcome() {
+fn test_shutdown_is_idempotent_and_caches_the_provider_outcome() {
     let (bus, spi, _) = create_bus(1, 1);
 
     assert_eq!(
@@ -488,7 +486,7 @@ fn shutdown_is_idempotent_and_caches_the_provider_outcome() {
 }
 
 #[test]
-fn subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
+fn test_subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
     let (bus, _, _) = create_bus(1, 1);
     let expected_id = SubscriberId::new("handle-contract").expect("valid subscriber ID");
     let subscription = bus
@@ -510,7 +508,7 @@ fn subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
 }
 
 #[test]
-fn callback_reentrant_wait_and_shutdown_return_would_deadlock() {
+fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     let (bus, _, _) = create_bus(1, 1);
     let callback_bus = bus.clone();
     let (result_tx, result_rx) = mpsc::channel();
@@ -550,7 +548,7 @@ fn callback_reentrant_wait_and_shutdown_return_would_deadlock() {
 }
 
 #[test]
-fn dropping_diagnostic_handle_stops_future_close_failure_notifications() {
+fn test_dropping_diagnostic_handle_stops_future_close_failure_notifications() {
     let (bus, _, _close_rx) = create_bus_with_close_mode(1, 1, true);
     let observed = Arc::new(AtomicUsize::new(0));
     let observed_by_callback = observed.clone();
@@ -585,7 +583,7 @@ fn dropping_diagnostic_handle_stops_future_close_failure_notifications() {
 }
 
 #[test]
-fn same_ordering_key_is_independent_between_subscriptions() {
+fn test_same_ordering_key_is_independent_between_subscriptions() {
     let (bus, _, _) = create_bus(2, 4);
     let (first_started_tx, first_started_rx) = mpsc::channel();
     let (second_started_tx, second_started_rx) = mpsc::channel();
@@ -637,7 +635,7 @@ fn same_ordering_key_is_independent_between_subscriptions() {
 }
 
 #[test]
-fn same_ordering_key_is_independent_between_topics() {
+fn test_same_ordering_key_is_independent_between_topics() {
     let (bus, _, _) = create_bus(2, 4);
     let (first_started_tx, first_started_rx) = mpsc::channel();
     let (second_started_tx, second_started_rx) = mpsc::channel();
@@ -700,7 +698,7 @@ fn same_ordering_key_is_independent_between_topics() {
 }
 
 #[test]
-fn max_in_flight_capacity_is_shared_across_subscriptions() {
+fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
     let (bus, _, _) = create_bus(1, 4);
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -762,7 +760,7 @@ fn max_in_flight_capacity_is_shared_across_subscriptions() {
 }
 
 #[test]
-fn graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() {
+fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() {
     let (bus, spi, close_rx) = create_bus_with_close_mode(2, 4, true);
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();

@@ -5,4 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Consumer fixture that verifies the documented provider service surface.
+
 pub mod provider_spec;

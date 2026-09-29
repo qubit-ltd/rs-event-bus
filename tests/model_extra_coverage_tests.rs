@@ -36,7 +36,7 @@ fn identifier_hash<T: Hash>(value: &T) -> u64 {
 }
 
 #[test]
-fn static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn std::error::Error>> {
+fn test_static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(SubscriberId::new_static("audit-static"), STATIC_SUBSCRIBER_ID);
     assert_eq!(ProviderId::new_static("local-static"), STATIC_PROVIDER_ID);
     assert_eq!(SchemaId::new_static("schema-static-v1"), STATIC_SCHEMA_ID);
@@ -62,7 +62,7 @@ fn static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn
 }
 
 #[test]
-fn static_content_type_matches_runtime_value_and_predefined_constants() -> Result<(), Box<dyn std::error::Error>> {
+fn test_static_content_type_matches_runtime_value_and_predefined_constants() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(ContentType::new_static("application/json"), STATIC_CONTENT_TYPE);
     assert_eq!(STATIC_CONTENT_TYPE.as_str(), "application/json");
     let runtime_content_type = ContentType::new("application/json")?;
@@ -89,7 +89,7 @@ fn static_content_type_matches_runtime_value_and_predefined_constants() -> Resul
 
 #[test]
 #[should_panic(expected = "invalid content type")]
-fn content_type_new_static_rejects_invalid_value() {
+fn test_content_type_new_static_rejects_invalid_value() {
     let _ = ContentType::new_static("text/");
 }
 
@@ -119,7 +119,7 @@ impl EventCodec<String> for StringCodec {
 }
 
 #[test]
-fn topic_codec_metadata_and_publish_options_are_accessible() {
+fn test_topic_codec_metadata_and_publish_options_are_accessible() {
     let codec = StringCodec {
         content_type: ContentType::new("text/plain").expect("valid MIME type"),
         schema_id: SchemaId::new("string-v1").expect("valid schema ID"),
@@ -150,7 +150,7 @@ fn topic_codec_metadata_and_publish_options_are_accessible() {
 }
 
 #[test]
-fn publish_receipts_and_batches_report_admission_outcomes() {
+fn test_publish_receipts_and_batches_report_admission_outcomes() {
     let provider_id = ProviderId::new("local").expect("valid provider ID");
     let receipt = PublishReceipt::new(
         EventId::new("input").expect("valid event ID"),

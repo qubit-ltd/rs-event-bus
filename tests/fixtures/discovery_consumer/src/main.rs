@@ -5,9 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-
-
-
+//! Checks discovery and selection of a provider linked from another crate.
 
 use discovery_provider_fixture as _;
 use qubit_event_bus::EventBusConfig;

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Publicly observable subscriber pipeline branch tests.
 
+mod support;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -37,8 +39,6 @@ use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
 
-mod support;
-
 fn topic<T: 'static>(name: &str) -> Topic<T> {
     Topic::new(name).unwrap()
 }
@@ -50,7 +50,7 @@ fn handler_error(message: &'static str) -> DeliveryError {
 }
 
 #[test]
-fn retry_runs_interceptor_and_handler_again() {
+fn test_retry_runs_interceptor_and_handler_again() {
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("pipeline-retry").unwrap(), backend.clone())
         .expect("valid provider capabilities");
@@ -95,7 +95,7 @@ fn retry_runs_interceptor_and_handler_again() {
 }
 
 #[test]
-fn exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic() {
+fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(8)).unwrap();
     let dead_letter_topic = topic::<DeadLetterEvent<String>>("pipeline.dead");
     let (dead_letter_tx, dead_letter_rx) = mpsc::channel();
@@ -152,7 +152,7 @@ fn exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagnostic
 }
 
 #[test]
-fn interceptor_error_retries_and_scheduler_backpressure_preserves_pending_deliveries() {
+fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_deliveries() {
     let facade_config =
         EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
