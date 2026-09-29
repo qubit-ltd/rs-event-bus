@@ -69,6 +69,8 @@ Third-party implementations, codecs, and extension interfaces come after the bas
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
 use std::sync::mpsc;
@@ -85,12 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).unwrap();
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).unwrap();
+    })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     bus.shutdown(ShutdownMode::Graceful {
@@ -134,8 +133,12 @@ impl OrderCreated {
 ```rust
 // src/audit.rs
 use std::sync::Arc;
+
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
 use crate::orders::events::OrderCreated;
 
 pub trait AuditStore: Send + Sync {
@@ -156,8 +159,12 @@ pub fn subscribe(
 ```rust
 // src/customer_view.rs
 use std::sync::Arc;
+
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
 use crate::orders::events::OrderCreated;
 
 pub trait CustomerViewStore: Send + Sync {
@@ -193,8 +200,10 @@ let order_bus = bus.clone(); // inject into the order service; keep bus and both
 
 ```rust
 // src/orders/service.rs
-use qubit_event_bus::model::{PublishReceipt, PublishRequest};
 use qubit_event_bus::EventBus;
+use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::PublishRequest;
+
 use super::events::OrderCreated;
 
 pub struct CreateOrder {
@@ -274,7 +283,9 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 In the order example, both the audit and customer-view subscriptions already exist. After the order transaction commits, one `OrderCreated` is published. A normal receipt looks like this:
 
 ```rust
-use qubit_event_bus::model::{AdmissionOutcome, PublishAcknowledgement, PublishRequest};
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 
 let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
 // The built-in local provider id is "local".
@@ -310,7 +321,8 @@ When one order event goes to both audit and the customer view, the two condition
 After publishing, the order service checks the stricter condition and branches on the failure:
 
 ```rust
-use qubit_event_bus::model::{AdmissionCheckError, AdmissionRequirement};
+use qubit_event_bus::model::AdmissionCheckError;
+use qubit_event_bus::model::AdmissionRequirement;
 
 let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
 match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected) {
@@ -342,7 +354,8 @@ Some transports report only that the message was accepted, without listing subsc
 To see who rejected the message, walk the per-subscriber status on the receipt:
 
 ```rust
-use qubit_event_bus::model::{AdmissionStatus, PublishAcknowledgement};
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::PublishAcknowledgement;
 
 if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
     for destination in destinations {
@@ -364,7 +377,8 @@ The basic order integration ends here. The following sections are optional: extr
 `PublishRequest::new(topic, payload)?` is enough to publish, and it generates an event id. Use the request builder when you need to choose the id, attach a request id for log correlation, or control processing order for one customer:
 
 ```rust
-use qubit_event_bus::model::{EventId, PublishRequest};
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::PublishRequest;
 
 let request = PublishRequest::builder()
     .topic(OrderCreated::TOPIC)
@@ -402,7 +416,9 @@ bus.publish(request)?;
 **Subscriber: request per-key order.** Set `ordering_policy` to `PerKey`:
 
 ```rust
-use qubit_event_bus::model::{OrderingPolicy, SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::OrderingPolicy;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::builder()
     .ordering_policy(OrderingPolicy::PerKey)
@@ -448,8 +464,11 @@ When the customer-view write occasionally times out, let the crate retry. Retry 
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
-use qubit_retry::{BackoffPolicy, RetryPolicy};
+
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_retry::BackoffPolicy;
+use qubit_retry::RetryPolicy;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .retry_policy(
@@ -470,8 +489,10 @@ When the handler returns `Err`, the crate calls it again after 200 milliseconds,
 By default, a handler that returns normally is acknowledged (ACK). If the audit module should acknowledge only after the row is stored, set `ack_mode` to `Manual` and call `ack()` after the write:
 
 ```rust
-use qubit_event_bus::model::{AckMode, SubscribeOptions, SubscribeRequest};
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::model::AckMode;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .ack_mode(AckMode::Manual)
@@ -494,9 +515,12 @@ In manual mode, `Ok` without `ack()` is still a failed attempt. `nack()` is an e
 If a failed customer-view write should be kept for a later repair instead of discarded, configure a dead-letter topic. The failing subscriber returns `FailureDirective::DeadLetter` from `error_handler` and names the topic with `dead_letter`. The reader subscribes to that topic. Its payload type is `DeadLetterEvent<OrderCreated>`, not `OrderCreated`:
 
 ```rust
-use qubit_event_bus::model::{
-    DeadLetterEvent, DeadLetterPolicy, FailureDirective, SubscribeOptions, SubscribeRequest, Topic,
-};
+use qubit_event_bus::model::DeadLetterEvent;
+use qubit_event_bus::model::DeadLetterPolicy;
+use qubit_event_bus::model::FailureDirective;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 
 // The dead-letter topic carries DeadLetterEvent<OrderCreated>, not OrderCreated.
 let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
@@ -537,7 +561,8 @@ On a subscriber, the bus runs `filter` first. A filter that returns `true` conti
 The customer-view subscriber can ignore an order whose total is zero:
 
 ```rust
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .filter(|event| event.payload().total_cents > 0)
@@ -553,7 +578,8 @@ A zero-total order never reaches `upsert_order`. On the built-in local provider 
 The audit subscriber logs the order id and then calls the handler through `next`:
 
 ```rust
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .interceptor(|delivery, next| {
@@ -570,8 +596,9 @@ let subscription = bus.subscribe(request, move |delivery| store.append_order_cre
 The same synchronous callback can wrap every `OrderCreated` subscription on one bus. It runs outside the per-subscription interceptor, and only after that subscription's filter returns `true`. Install it while building the bus settings, then pass those settings through `EventBusConfig`. `EventBus::local` does not accept this configuration:
 
 ```rust
-use qubit_event_bus::model::{Delivery, SubscriberNext};
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::SubscriberNext;
 
 let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
     |delivery: Delivery<OrderCreated>, next: SubscriberNext<OrderCreated>| next(delivery),
@@ -581,9 +608,11 @@ let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
 An async subscription awaits its own `next`. The callback's return type is `SpiFuture`:
 
 ```rust
-use qubit_event_bus::model::{AsyncSubscriberNext, Delivery, SubscribeOptions};
-use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::spi::SpiFuture;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .async_interceptor(|delivery: Delivery<OrderCreated>, next: AsyncSubscriberNext<OrderCreated>| {
@@ -622,9 +651,11 @@ let receipt = bus.publish(request)?;
 `EventBusFacadeConfig::publisher_interceptor` runs for every message sent through that bus object, after a request interceptor that returned an envelope. It may edit headers. It cannot change the payload or the event id. `Ok(false)` stops publication; `Ok(true)` continues:
 
 ```rust
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishMetadata;
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
 
 let local = LocalEventBusConfig::default();
 let bus_settings = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
@@ -663,7 +694,9 @@ let bus = EventBus::local(local)?;
 Besides the local outstanding limits, the bus object limits how many messages it takes on at once. A sync bus takes at most 4 by default, counting messages in progress and messages waiting to run. The handler wait queue has a separate capacity of 32, but the number that can actually wait is still bounded by that limit of 4. An async bus handles at most 4 messages at once by default. Change these through `EventBusFacadeConfig`. `Facade` in that type name is the API name; in this guide it means the bus-wide settings. This example raises the sync intake limit to 8 and the wait-queue capacity to 64:
 
 ```rust
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
@@ -685,8 +718,10 @@ For encoded transports, `EventBusFacadeConfig::with_max_encoded_payload_bytes(So
 The async bus uses `LocalEventBusConfig` as well. This example allows 8 messages in progress at once:
 
 ```rust
-use qubit_event_bus::{AsyncEventBusRegistry, DeliveryAdmissionConfig};
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
+use qubit_event_bus::AsyncEventBusRegistry;
+use qubit_event_bus::DeliveryAdmissionConfig;
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
 let local = LocalEventBusConfig::new().queue_capacity(2_048);
@@ -726,7 +761,8 @@ qubit-spi = "0.13"
 
 ```rust
 use provider_crate as _; // replace with the real crate name so its provider definition is linked
-use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_spi::ProviderSelection;
 
 let registry = EventBusRegistry::discover()?;
@@ -755,9 +791,15 @@ The skeleton below is the registration surface a sync implementation offers to t
 
 ```rust
 use std::sync::Arc;
-use qubit_event_bus::{EventBusConfig, EventBusProviderError, EventBusSpec};
+
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusProviderError;
+use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::spi::EventBusSpi;
-use qubit_spi::{ProviderDescriptor, ProviderId, ProviderMetadata, ServiceProvider};
+use qubit_spi::ProviderDescriptor;
+use qubit_spi::ProviderId;
+use qubit_spi::ProviderMetadata;
+use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
 struct MyProvider;
@@ -809,9 +851,10 @@ Codec callbacks run behind a panic boundary. A returned encode error or an encod
 ```rust
 use std::sync::Arc;
 
-use qubit_event_bus::codec::EventCodec;
-use qubit_event_bus::model::{ContentType, SchemaId};
 use qubit_event_bus::CodecError;
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::SchemaId;
 
 struct OrderCreatedCodec(ContentType);
 
@@ -856,7 +899,10 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
 `encode` returns shared bytes and a content type. `decode` rebuilds `OrderCreated` or returns `CodecError::Decode`. Attach this codec to the topic both sides use. The constant `OrderCreated::TOPIC` has no codec; an encoded provider will not use it for bytes:
 
 ```rust
-use qubit_event_bus::model::{ContentType, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 
 let topic = Topic::new_with_codec(
     "orders.created",
@@ -876,9 +922,10 @@ To share one codec across topics of the same payload type, register it on the bu
 ```rust
 use std::sync::Arc;
 
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
 
 let mut codecs = CodecRegistry::new();
 codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
@@ -892,6 +939,15 @@ Pass `config` to the registry `create` for the encoded provider, the same way th
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Asynchronous local delivery example compiled by the user-guide checks.
+
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -965,8 +1021,10 @@ Back in the order scenario: the request thread of the order service wants to han
 
 ```rust
 use std::num::NonZeroUsize;
+
+use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::model::AdmissionRequirement;
-use qubit_event_bus::{NotificationOutcome, NotificationPublisher};
 
 // `bus` is the EventBus that already holds the audit-log and customer-view subscriptions.
 // Pass NotificationPublisher::<OrderCreated>::default_capacity() as the third argument
@@ -1064,8 +1122,10 @@ This is the shutdown path of the order service on the sync bus. `bus`, `audit_su
 
 ```rust
 use std::time::Duration;
+
+use qubit_event_bus::ShutdownError;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::{ShutdownError, WaitOutcome};
 
 // 1. Stop accepting new order requests first (the HTTP listener and similar are the application's job).
 // 2. Close the message sources: drain the notification queue, see the previous section.
@@ -1113,7 +1173,9 @@ To finish the order events still queued inside local before shutdown, not only t
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::{LifecycleError, WaitOutcome};
+
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::WaitOutcome;
 
 let timeout = Some(Duration::from_secs(10));
 let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
@@ -1136,8 +1198,9 @@ The async bus follows the same steps, with `.await` on the waits and the shutdow
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::spi::ShutdownMode;
+
 use qubit_event_bus::WaitOutcome;
+use qubit_event_bus::spi::ShutdownMode;
 
 // 1. Stop accepting new order requests.
 // 2. Wait for OrderCreated deliveries the bus has already taken.

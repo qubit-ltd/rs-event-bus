@@ -28,6 +28,8 @@ qubit-event-bus = "0.16"
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
 use std::sync::mpsc;
@@ -44,12 +46,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).unwrap();
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).unwrap();
+    })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     bus.shutdown(ShutdownMode::Graceful {
@@ -87,8 +86,10 @@ impl OrderCreated {
 
 ```rust
 // src/orders/service.rs
-use qubit_event_bus::model::{AdmissionOutcome, PublishReceipt, PublishRequest};
 use qubit_event_bus::EventBus;
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::PublishRequest;
 
 use super::events::OrderCreated;
 
@@ -146,8 +147,10 @@ pub fn create_order(
 // src/audit.rs
 use std::sync::Arc;
 
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
 
 use crate::orders::events::OrderCreated;
 
@@ -171,8 +174,10 @@ pub fn subscribe(bus: &EventBus, store: Arc<dyn AuditStore>)
 // src/customer_view.rs
 use std::sync::Arc;
 
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
 
 use crate::orders::events::OrderCreated;
 
@@ -197,7 +202,8 @@ pub fn subscribe(bus: &EventBus, store: Arc<dyn CustomerViewStore>)
 为 `qubit-event-bus` 启用 `discovery` feature，并直接依赖 `qubit-spi = "0.13"` 以使用 `ProviderSelection`。内置 `local` 会自动登记到同步目录。`AsyncEventBusRegistry::discover()` 不包含异步 local provider；使用异步总线时，需要通过 `AsyncEventBusRegistry::with_local()` 显式登记。下面的启动装配代码选择同步 provider，再创建总线并把克隆句柄交给服务：
 
 ```rust
-use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_spi::ProviderSelection;
 
 let registry = EventBusRegistry::discover()?;
@@ -254,7 +260,7 @@ Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
 ## 贡献
 
 欢迎贡献。请遵循 Rust API 指南，及时更新公共 API 文档与测试，并在提交
-Pull Request 前运行 `./align-ci.sh`格式化代码，运行`./ci-check.sh`对齐CI要求。
+Pull Request 前运行 `./align-ci.sh` 格式化代码，运行 `./ci-check.sh` 对齐 CI 要求。
 
 ## 作者
 

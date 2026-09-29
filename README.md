@@ -28,6 +28,8 @@ qubit-event-bus = "0.16"
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
 use std::sync::mpsc;
@@ -44,12 +46,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).unwrap();
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).unwrap();
+    })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     bus.shutdown(ShutdownMode::Graceful {
@@ -68,10 +67,14 @@ subscription ownership, publication, and explicit shutdown.
 ```rust
 use std::sync::Arc;
 
-use qubit_event_bus::model::{
-    AdmissionOutcome, PublishReceipt, PublishRequest, SubscribeRequest, Topic,
-};
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 
 // Published after the order transaction commits.
 struct OrderCreated {
@@ -149,7 +152,8 @@ At startup, call both subscription functions and keep their `Subscription` handl
 Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is automatically submitted to the synchronous catalog. `AsyncEventBusRegistry::discover()` does not include the async local provider; register it explicitly with `AsyncEventBusRegistry::with_local()`. In the application's startup wiring, select the sync provider before creating one bus and pass cloned handles to services:
 
 ```rust
-use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_spi::ProviderSelection;
 
 let registry = EventBusRegistry::discover()?;

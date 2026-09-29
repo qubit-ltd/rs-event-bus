@@ -84,8 +84,9 @@ provider 通过 `EventBusCapabilities` 如实报告自己能做什么。facade �
 `AsyncSubscription::run`。两条路径共享 model、pipeline、registry 与错误模型。
 
 **(P6) 发布回执、应用确认、传输 settlement 是三件不同的事。**
-`PublishReceipt` 只表示 provider 已接受消息（其语义由 `PublishGuarantee`
-决定），不代表任何订阅者处理完成；`Acknowledgement` 是 handler 层面的
+`PublishReceipt` 记录 provider 调用的结果，可报告接纳、部分接纳、无目的地、丢弃或不透明确认；
+它不代表任何订阅者处理完成。`PublishGuarantee` 描述 provider 接纳所承诺的保证。
+`Acknowledgement` 是 handler 层面的
 业务决定（`AckMode::Auto/Manual`）；`SettlementToken` + `DeliveryDisposition`
 是 facade 与 provider 之间的传输层确认。三者解耦，避免"发布返回了 = 处理完了"
 这类误解。
@@ -762,9 +763,10 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
 - **`DeliveryFailureAction`** 是 directive 与能力结合后的终态：
   - `DeadLetter`：有 `DeadLetterPolicy` 且消息**不是**死信 → 通过内部 publish 发布
     `DeadLetterEvent<T>`（**不经过**全局发布拦截器，避免死信被再次改写/丢弃），
-    成功后 `Reject`；发布失败且 provider 支持 `Retry` → `Retry`，否则 `Reject`；
-    未配置死信策略 → 退化为 `Requeue`。若消息本身已经是死信（保留头存在）→
-    不再发布，直接 `Reject`。
+    成功后 `Reject`。构造或转发失败会发出内部诊断、停止该订阅，并让源 token 保持
+    未结算，以便 receiver 关闭后的 provider recovery 处理；Ephemeral provider 可能丢弃，
+    且 facade 会统计可识别的放弃。未配置死信策略也按此失败处理。若消息本身已经是
+    死信（保留头存在）→ 不再发布，直接 `Reject`。
   - `Requeue`：settlement 为 `AcceptRetryReject` → `Retry`。
   - `Discard`/本地重试耗尽：`AcceptRetryReject` → `Reject`。
   - settlement 能力为 `None` 或 `AcceptOnly` 时，**任何失败都不 settle**
@@ -772,7 +774,8 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
     发 `Diagnostic::SettlementUnavailable { requested }` 说明 facade 本想做什么。
     `AcceptOnly` 语义下未 settle 的消息是否重投由 provider 决定。
   - 死信构造/发布过程中的内部错误（策略缺失、envelope 构造失败、发布失败）都以
-    `Diagnostic::InternalFailure` 记录，然后按 `Requeue` 处理。
+    `Diagnostic::InternalFailure` 记录，并停止当前订阅；源 token 保持未结算，留给
+    receiver 关闭后的 provider recovery 处理。
 - 每次终态失败都会发 `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }`。
 
 ### 7.6 死信递归防护
@@ -856,7 +859,7 @@ loop {
      Gap(g)      → Diagnostic::ReceiveGap
      TimedOut    → continue
      Closed      → break
-     Err(e)      → Diagnostic::InternalFailure，短暂 sleep 后继续
+     Err(e)      → Diagnostic::InternalFailure，关闭 receiver 并标记 stopped
   }
 }
 drain 剩余 settlement → receiver.close() → 标记 stopped
@@ -1411,6 +1414,15 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Provider service aliases and subscription calls compiled by documentation checks.
+
 use std::time::Duration;
 
 use qubit_event_bus::EventBusSpec;
