@@ -60,12 +60,12 @@ impl OutstandingBudget {
 
     /// Releases slots for deliveries already removed from their queues.
     ///
+    /// # Parameters
+    /// - `count`: number of reserved slots released by queue removal.
+    ///
     /// # Panics
     /// Panics if `count` exceeds the number of currently reserved slots,
     /// indicating an internal accounting error.
-    ///
-    /// # Parameters
-    /// - `count`: number of reserved slots released by queue removal.
     pub(super) fn release(&self, count: usize) {
         if count == 0 {
             return;

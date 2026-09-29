@@ -60,6 +60,9 @@ pub(in crate::facade) struct AsyncSession<T: 'static> {
     pub(in crate::facade) admission_waiter: Option<AsyncAdmissionFuture>,
 }
 
+// Closes and disposes the provider receiver.
 mod close;
+// Creates and completes owned delivery tasks.
 mod delivery;
+// Drives the caller-owned subscription run loop.
 mod runner;

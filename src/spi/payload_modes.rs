@@ -8,6 +8,15 @@
 //! Payload representations accepted by a provider.
 
 /// Payload representations a provider can send and receive.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::PayloadModes;
+///
+/// let modes = PayloadModes::NativeAndEncoded;
+/// assert_eq!(modes, PayloadModes::NativeAndEncoded);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PayloadModes {

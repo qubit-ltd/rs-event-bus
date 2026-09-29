@@ -8,6 +8,15 @@
 //! Provider message settlement capabilities.
 
 /// Settlement operations supported by a provider.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::SettlementCapabilities;
+///
+/// let settlement = SettlementCapabilities::AcceptRetryReject;
+/// assert_eq!(settlement, SettlementCapabilities::AcceptRetryReject);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SettlementCapabilities {

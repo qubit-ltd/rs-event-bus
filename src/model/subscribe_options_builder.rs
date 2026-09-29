@@ -38,7 +38,8 @@ use crate::spi::SpiFuture;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::model::{AckMode, SubscribeOptions};
+/// use qubit_event_bus::model::AckMode;
+/// use qubit_event_bus::model::SubscribeOptions;
 ///
 /// let options = SubscribeOptions::<String>::builder()
 ///     .ack_mode(AckMode::Manual)
@@ -69,6 +70,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned ack mode."]
     pub fn ack_mode(mut self, value: AckMode) -> Self {
         self.options.ack_mode = value;
         self
@@ -210,6 +212,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned ordering policy."]
     pub fn ordering_policy(mut self, value: OrderingPolicy) -> Self {
         self.options.ordering_policy = value;
         self
@@ -234,6 +237,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned durability."]
     pub fn durability(mut self, value: SubscriptionDurability) -> Self {
         self.options.durability = value;
         self
@@ -246,6 +250,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned start position."]
     pub fn start_position(mut self, value: StartPosition) -> Self {
         self.options.start_position = value;
         self

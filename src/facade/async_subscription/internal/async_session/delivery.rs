@@ -5,21 +5,24 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Async session delivery creation, decoding, and settlement.
 
 #![allow(clippy::too_many_arguments)]
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use crate::Diagnostic;
 use crate::SubscriberId;
 use crate::facade::async_event_bus::catch_spi_future;
-use crate::facade::async_subscription::Arc;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::AsyncSession;
-use crate::facade::async_subscription::AtomicBool;
 use crate::facade::async_subscription::Id;
 use crate::facade::async_subscription::SessionSignals;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
-use crate::facade::async_subscription::internal::async_session::VecDeque;
 use crate::facade::async_subscription::internal::delivery_task_context::DeliveryTaskContext;
 use crate::model::EventEnvelope;
 use crate::model::SubscribeOptions;

@@ -1,19 +1,23 @@
 // =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
+//    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Internal asynchronous subscription state.
 
-use crate::facade::async_subscription::AsyncSession;
+use super::AsyncSession;
 
 /// Temporarily leased subscription session state.
-pub(in crate::facade) struct SessionSlot<T: 'static> {
+///
+/// # Type Parameters
+/// - `T`: payload type retained by the subscription session.
+pub(in crate::facade::async_subscription) struct SessionSlot<T: 'static> {
     /// Session available to the active runner or shutdown caller.
-    pub(super) session: Option<AsyncSession<T>>,
+    pub(in crate::facade::async_subscription) session: Option<AsyncSession<T>>,
     /// Whether a caller currently owns the session lease.
-    pub(super) active: bool,
+    pub(in crate::facade::async_subscription) active: bool,
     /// Whether the public subscription handle was dropped.
-    pub(super) disposed: bool,
+    pub(in crate::facade::async_subscription) disposed: bool,
 }

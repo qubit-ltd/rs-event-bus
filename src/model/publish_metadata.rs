@@ -41,6 +41,7 @@ impl PublishMetadata {
     ///
     /// # Returns
     /// Metadata initialized with the supplied headers.
+    #[must_use]
     pub(crate) fn from_headers(headers: BTreeMap<String, String>) -> Self {
         Self { headers }
     }
@@ -119,6 +120,7 @@ impl PublishMetadata {
     ///
     /// # Returns
     /// The owned deterministic header map.
+    #[must_use]
     pub(crate) fn into_headers(self) -> BTreeMap<String, String> {
         self.headers
     }

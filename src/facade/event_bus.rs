@@ -6,53 +6,35 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
-// qubit-style: allow multiple-public-types
 //! Synchronous type-safe event-bus facade over an object-safe provider SPI.
 
-use std::any::Any;
-use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
-use std::sync::Weak;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::mpsc;
-use std::time::Duration;
-use std::time::Instant;
 
 pub(in crate::facade) use internal::CoordinatorMessage;
 pub(in crate::facade) use internal::EventBusInner;
-use internal::OperationGate;
-use internal::OwnerSettlementRouter;
-use internal::ShutdownState;
-use internal::SubscriptionWorkerBudget;
-use qubit_id::Id;
-use qubit_retry::AttemptFailure;
-use qubit_retry::Retry;
-use qubit_retry::RetryCancellationToken;
-use qubit_retry::RetryConfig;
-use qubit_retry::RetryContext;
-use qubit_retry::RetryDecision;
-use qubit_retry::RetryFallback;
-use qubit_retry::RetryPolicy;
 
-use crate::codec::resolve_codec;
-use crate::error::DeliveryAttemptError;
-use crate::error::SubscriptionCloseErrors;
-use crate::error::SubscriptionCloseFailure;
-use crate::pipeline::terminal_directive as choose_terminal_directive;
+use self::internal::OperationGate;
+use self::internal::OwnerSettlementRouter;
+use self::internal::ShutdownState;
+use self::internal::SubscriptionWorkerBudget;
 
+// Implements local-provider construction and facade configuration.
 mod construction;
+// Decodes messages and runs subscriber handlers.
 mod delivery;
+// Registers and emits bus diagnostics.
 mod diagnostics;
+// Applies terminal delivery failure actions.
 mod failure;
+// Owns shared provider, operation, and worker state.
 mod internal;
+// Implements wait and shutdown lifecycle operations.
 mod lifecycle;
+// Implements publish operations.
 mod publishing;
+// Implements subscription operations.
 mod subscribing;
+// Owns and runs provider coordinator workers.
 mod worker;
 #[cfg(test)]
 pub(in crate::facade) use subscribing::cleanup_failed_worker_spawn;
@@ -65,8 +47,11 @@ pub(in crate::facade) use subscribing::cleanup_failed_worker_spawn;
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use qubit_event_bus::local::LocalEventBusConfig;
-/// use qubit_event_bus::model::{PublishRequest, SubscribeRequest, Topic};
-/// use qubit_event_bus::{DeliveryError, EventBus};
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
+/// use qubit_event_bus::DeliveryError;
+/// use qubit_event_bus::EventBus;
 ///
 /// let bus = EventBus::local(LocalEventBusConfig::default())?;
 /// let topic = Topic::<String>::new("orders.created")?;

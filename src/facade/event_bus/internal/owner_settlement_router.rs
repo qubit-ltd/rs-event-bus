@@ -5,22 +5,35 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal sync facade state owner.
+//! Synchronous requests routed to the provider receiver's owner thread.
 
-use crate::EventId;
-use crate::SubscriberId;
-use crate::facade::event_bus::CoordinatorMessage;
-use crate::facade::event_bus::Id;
-use crate::facade::event_bus::mpsc;
+use std::sync::mpsc;
+
+use qubit_id::Id;
+
+use super::coordinator_message::CoordinatorMessage;
+use crate::model::EventId;
+use crate::model::SubscriberId;
 use crate::spi::DeliveryDisposition;
 use crate::spi::SettlementToken;
 
+/// Routes handler settlement requests to the receiver-owning worker.
 #[derive(Clone)]
 pub(in crate::facade) struct OwnerSettlementRouter {
+    /// Message channel to the receiver-owning worker.
     pub(in crate::facade) sender: mpsc::Sender<CoordinatorMessage>,
 }
 
 impl OwnerSettlementRouter {
+    /// Sends a settlement to the receiver owner and waits for its response.
+    ///
+    /// # Parameters
+    /// - `token`: provider token to settle, or `None` when unavailable.
+    /// - `disposition`: terminal action requested for the event.
+    /// - `event_id`: event identity used for tracking.
+    /// - `topic`: destination used for diagnostics.
+    /// - `subscription_id`: receiver identity bound to the token.
+    /// - `subscriber_id`: logical subscriber identity.
     pub(in crate::facade) fn settle(
         &self,
         token: Option<SettlementToken>,

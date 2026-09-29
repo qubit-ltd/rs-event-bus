@@ -67,6 +67,60 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
         ))
     }
 
+    /// Starts a builder for complete subscriber configuration.
+    ///
+    /// # Returns
+    /// An empty request builder requiring an identity and topic.
+    #[inline]
+    pub fn builder() -> SubscribeRequestBuilder<T> {
+        SubscribeRequestBuilder::new()
+    }
+    /// Returns the logical subscriber ID.
+    ///
+    /// # Returns
+    /// The validated logical identity for this subscription.
+    #[must_use = "the subscriber ID identifies the logical consumer"]
+    #[inline]
+    pub fn subscriber_id(&self) -> &SubscriberId {
+        &self.subscriber_id
+    }
+    /// Returns the typed topic.
+    ///
+    /// # Returns
+    /// The source topic borrowed from this request.
+    #[must_use = "Use the returned topic."]
+    #[inline]
+    pub fn topic(&self) -> &Topic<T> {
+        &self.topic
+    }
+    /// Returns subscription options.
+    ///
+    /// # Returns
+    /// The handler, retry, and provider policy for the registration.
+    #[must_use]
+    #[inline]
+    pub fn options(&self) -> &SubscribeOptions<T> {
+        &self.options
+    }
+    /// Replaces all subscription options with reusable options.
+    ///
+    /// # Parameters
+    /// - `options`: complete policy to apply to this request.
+    ///
+    /// # Returns
+    /// The request with the supplied options.
+    pub fn with_options(mut self, options: SubscribeOptions<T>) -> Self {
+        self.options = options;
+        self
+    }
+    /// Consumes the request into its identity, topic, and options.
+    ///
+    /// # Returns
+    /// The validated identity, typed topic, and options as owned values.
+    pub fn into_parts(self) -> (SubscriberId, Topic<T>, SubscribeOptions<T>) {
+        (self.subscriber_id, self.topic, self.options)
+    }
+
     /// Creates a request from an already validated identity, topic, and
     /// options.
     ///
@@ -87,58 +141,5 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
             topic,
             options,
         }
-    }
-    /// Starts a builder for complete subscriber configuration.
-    ///
-    /// # Returns
-    /// An empty request builder requiring an identity and topic.
-    #[inline]
-    pub fn builder() -> SubscribeRequestBuilder<T> {
-        SubscribeRequestBuilder::new()
-    }
-    /// Replaces all subscription options with reusable options.
-    ///
-    /// # Parameters
-    /// - `options`: complete policy to apply to this request.
-    ///
-    /// # Returns
-    /// The request with the supplied options.
-    pub fn with_options(mut self, options: SubscribeOptions<T>) -> Self {
-        self.options = options;
-        self
-    }
-    /// Returns the logical subscriber ID.
-    ///
-    /// # Returns
-    /// The validated logical identity for this subscription.
-    #[must_use = "the subscriber ID identifies the logical consumer"]
-    #[inline]
-    pub fn subscriber_id(&self) -> &SubscriberId {
-        &self.subscriber_id
-    }
-    /// Returns the typed topic.
-    ///
-    /// # Returns
-    /// The source topic borrowed from this request.
-    #[must_use]
-    #[inline]
-    pub fn topic(&self) -> &Topic<T> {
-        &self.topic
-    }
-    /// Returns subscription options.
-    ///
-    /// # Returns
-    /// The handler, retry, and provider policy for the registration.
-    #[must_use]
-    #[inline]
-    pub fn options(&self) -> &SubscribeOptions<T> {
-        &self.options
-    }
-    /// Consumes the request into its identity, topic, and options.
-    ///
-    /// # Returns
-    /// The validated identity, typed topic, and options as owned values.
-    pub fn into_parts(self) -> (SubscriberId, Topic<T>, SubscribeOptions<T>) {
-        (self.subscriber_id, self.topic, self.options)
     }
 }

@@ -7,11 +7,12 @@
 // =============================================================================
 //! Asynchronous event bus diagnostics operations.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use crate::AsyncEventBus;
 use crate::Diagnostic;
 use crate::DiagnosticObserverHandle;
-use crate::facade::async_event_bus::Arc;
-use crate::facade::async_event_bus::AtomicBool;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::pipeline::DiagnosticObserver;
 
@@ -46,6 +47,11 @@ impl AsyncEventBus {
         DiagnosticObserverHandle::new(entry)
     }
 
+    /// Returns the live diagnostic callbacks registered with this bus.
+    ///
+    /// # Returns
+    /// Strong references to observers that are still registered.
+    #[must_use]
     pub(super) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
         self.inner.observer_snapshot()
     }

@@ -19,11 +19,11 @@ use super::LocalEventBusConfig;
 use super::async_local_event_subscription::AsyncLocalEventSubscription;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
-use super::internal::LocalEvent;
-use super::internal::LocalQueue;
-use super::internal::LocalQueueState;
 use super::internal::MailboxKey;
 use super::local_event_bus_spi::operation_error;
+use super::state::LocalEvent;
+use super::state::LocalQueue;
+use super::state::LocalQueueState;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
@@ -52,7 +52,8 @@ use crate::spi::TransportPayload;
 ///
 /// ```
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::registry::{AsyncEventBusRegistry, EventBusConfig};
+/// use qubit_event_bus::registry::AsyncEventBusRegistry;
+/// use qubit_event_bus::registry::EventBusConfig;
 ///
 /// let registry = AsyncEventBusRegistry::with_local()?;
 /// let bus = registry.create(&EventBusConfig::default()).await?;
@@ -73,6 +74,10 @@ impl AsyncLocalEventBusSpi {
     ///
     /// # Returns
     /// An async local SPI using the standard timer.
+    ///
+    /// # Errors
+    /// Returns `ConfigurationError::InvalidField` if either configured
+    /// capacity is zero.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
         Self::with_timer(config, Arc::new(StdTimer::new()))
     }
@@ -80,16 +85,16 @@ impl AsyncLocalEventBusSpi {
     /// Creates an async local SPI with an injected timer for deterministic
     /// tests.
     ///
-    /// # Errors
-    /// Returns `ConfigurationError::InvalidField` when either configured
-    /// capacity is zero.
-    ///
     /// # Parameters
     /// - `config`: local provider queue limits.
     /// - `timer`: runtime-neutral timer used for graceful shutdown.
     ///
     /// # Returns
     /// An async local SPI using the supplied timer.
+    ///
+    /// # Errors
+    /// Returns `ConfigurationError::InvalidField` when either configured
+    /// capacity is zero.
     pub fn with_timer(
         config: &LocalEventBusConfig,
         timer: Arc<dyn Timer>,
@@ -106,6 +111,11 @@ impl AsyncLocalEventBusSpi {
 }
 
 impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
+    /// Reports the local provider's native, ephemeral, per-key capabilities.
+    ///
+    /// # Returns
+    /// An immutable capability set matching the in-process mailbox behavior.
+    #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,
@@ -121,6 +131,18 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
         )
     }
 
+    /// Broadcasts a native event to every currently indexed topic mailbox.
+    ///
+    /// # Parameters
+    /// - `message`: validated transport event to enqueue.
+    ///
+    /// # Returns
+    /// Per-subscription admission results, including an empty list when no
+    /// mailbox is subscribed.
+    ///
+    /// # Errors
+    /// Returns an SPI error for encoded payloads, closed state, type conflicts,
+    /// or an unrepresentable delay deadline.
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let topic = message.topic().clone();
@@ -181,6 +203,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
         })
     }
 
+    /// Creates an ephemeral mailbox for one supported subscription request.
+    ///
+    /// # Parameters
+    /// - `request`: provider-facing subscription identity, topic, and options.
+    ///
+    /// # Returns
+    /// A single-owner asynchronous receiver backed by the new mailbox.
+    ///
+    /// # Errors
+    /// Returns an SPI error for unsupported subscription options, closed state,
+    /// topic payload type conflicts, or duplicate subscription IDs.
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
@@ -243,6 +276,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
         })
     }
 
+    /// Closes admission, waits according to the requested mode, and drains all
+    /// registered mailboxes.
+    ///
+    /// # Parameters
+    /// - `mode`: immediate close or graceful wait deadline.
+    ///
+    /// # Returns
+    /// The provider shutdown outcome, cached across repeated calls.
+    ///
+    /// # Errors
+    /// Returns an SPI error if the injected timer fails during graceful wait.
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async move {
             {

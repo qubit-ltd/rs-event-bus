@@ -5,38 +5,39 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Operations needed to stop and close an asynchronous subscription.
+//! Internal contract for stopping and closing an asynchronous subscription.
 
-use crate::facade::async_event_bus::Arc;
-use crate::facade::async_event_bus::Pin;
-use crate::facade::async_event_bus::SubscriptionCloseFailure;
-use crate::spi::ShutdownMode;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
-/// Operations needed by the asynchronous facade to stop and close a
-/// subscription.
+use crate::error::SubscriptionCloseFailure;
+
+/// Operations needed to stop and close an asynchronous subscription.
 pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// Requests the subscription runner to stop receiving.
     ///
     /// # Parameters
     /// - `mode`: shutdown policy to apply to the runner.
-    fn stop(&self, mode: ShutdownMode);
+    fn stop(&self, mode: crate::spi::ShutdownMode);
 
-    /// Returns the receiver close failure, if one has been recorded.
+    /// Returns the canonical receiver close failure, if one has been recorded.
     ///
     /// # Returns
-    /// `Some` with the canonical close failure, or `None` before a failure.
+    /// Some with the retained failure, or None before a failure is recorded.
+    #[must_use = "Use the returned query result."]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>>;
 
     /// Stores and returns the canonical receiver close failure.
     ///
     /// # Parameters
-    /// - `failure`: failure returned by the provider close operation.
+    /// - `failure`: provider close failure to retain.
     ///
     /// # Returns
     /// The failure retained for subsequent callers.
     fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure>;
 
-    /// Closes the provider receiver using the selected mode.
+    /// Closes the provider receiver using the selected shutdown policy.
     ///
     /// # Parameters
     /// - `mode`: graceful or immediate receiver shutdown policy.
@@ -45,9 +46,9 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// A future resolving to success or the canonical close failure.
     ///
     /// # Errors
-    /// Resolves with the provider receiver close failure, if close fails.
+    /// Resolves with the provider receiver close failure if close fails.
     fn shutdown<'a>(
         &'a self,
-        mode: ShutdownMode,
+        mode: crate::spi::ShutdownMode,
     ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>>;
 }

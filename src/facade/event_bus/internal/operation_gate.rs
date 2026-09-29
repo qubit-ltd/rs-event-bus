@@ -5,23 +5,29 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal sync facade state owner.
+//! Gate for new public calls while admitted SPI operations drain.
 
-use crate::facade::event_bus::Condvar;
-use crate::facade::event_bus::Mutex;
-use crate::facade::event_bus::internal::OperationGateState;
-use crate::facade::event_bus::internal::OperationPermit;
+use std::sync::Condvar;
+use std::sync::Mutex;
 
-/// Linearizes new public publish/subscribe calls against provider shutdown.
+use super::operation_gate_state::OperationGateState;
+use super::operation_permit::OperationPermit;
 
+/// Linearizes new public publish and subscribe calls against provider shutdown.
 #[derive(Default)]
 pub(in crate::facade) struct OperationGate {
-    pub(in crate::facade) state: Mutex<OperationGateState>,
-    pub(in crate::facade) changed: Condvar,
+    /// Admission state protected against shutdown races.
+    state: Mutex<OperationGateState>,
+    /// Wakes callers waiting for admitted operations to finish.
+    changed: Condvar,
 }
 
 impl OperationGate {
     /// Admits a facade operation unless shutdown has closed admission.
+    ///
+    /// # Returns
+    /// A permit when admission is open, otherwise None.
+    #[must_use]
     pub(in crate::facade) fn enter(&self) -> Option<OperationPermit<'_>> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.closing {
@@ -47,5 +53,24 @@ impl OperationGate {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+    }
+
+    /// Releases one admitted operation and wakes shutdown when the gate drains.
+    ///
+    /// # Parameters
+    /// - `state`: gate state whose active operation count is decremented.
+    pub(super) fn release(&self, state: &mut OperationGateState) {
+        state.active = state.active.saturating_sub(1);
+        if state.active == 0 {
+            self.changed.notify_all();
+        }
+    }
+
+    /// Locks the gate state while recovering from internal mutex poison.
+    ///
+    /// # Returns
+    /// A guard for the current operation admission state.
+    pub(super) fn lock_state(&self) -> std::sync::MutexGuard<'_, OperationGateState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

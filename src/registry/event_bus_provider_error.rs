@@ -16,8 +16,18 @@ use std::fmt;
 /// failures; the registry additionally uses it to classify capability mismatch
 /// as an unsupported candidate, which allows `qubit-spi` fallback policy to
 /// act.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::registry::EventBusProviderError;
+///
+/// let error = EventBusProviderError::provider(std::io::Error::other("offline"));
+/// assert!(std::error::Error::source(&error).is_some());
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
+#[must_use]
 pub enum EventBusProviderError {
     /// The created SPI does not satisfy one or more configured requirements.
     UnsupportedCapabilities {
@@ -25,10 +35,20 @@ pub enum EventBusProviderError {
         missing: Vec<&'static str>,
     },
     /// Provider-specific construction failed.
-    Provider(Box<dyn Error + Send + Sync>),
+    Provider(
+        /// Source error returned by the provider implementation.
+        Box<dyn Error + Send + Sync>,
+    ),
 }
 
 impl fmt::Display for EventBusProviderError {
+    /// Formats the provider classification and any retained source.
+    ///
+    /// # Parameters
+    /// - `formatter`: output formatter receiving the error text.
+    ///
+    /// # Returns
+    /// The formatter result, including any output error.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedCapabilities { missing } => {
@@ -44,6 +64,11 @@ impl fmt::Display for EventBusProviderError {
 }
 
 impl Error for EventBusProviderError {
+    /// Returns the wrapped provider error when this value has one.
+    ///
+    /// # Returns
+    /// The provider source for `Provider`, or `None` for a capability mismatch.
+    #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::UnsupportedCapabilities { .. } => None,
@@ -54,6 +79,15 @@ impl Error for EventBusProviderError {
 
 impl EventBusProviderError {
     /// Wraps a provider-specific error without changing its source chain.
+    ///
+    /// # Type Parameters
+    /// - `E`: concrete error type supplied by the provider.
+    ///
+    /// # Parameters
+    /// - `source`: provider error retained as the source of this value.
+    ///
+    /// # Returns
+    /// A provider error that preserves `source` for error-chain inspection.
     pub fn provider<E>(source: E) -> Self
     where
         E: Error + Send + Sync + 'static,

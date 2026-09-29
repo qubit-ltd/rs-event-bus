@@ -6,18 +6,13 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
-// qubit-style: allow multiple-public-types
-// qubit-style: allow type-file-name
-
 //! Publish-specific adapters for the `qubit-retry` execution API.
 
-use std::future::Future;
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
 
+mod catch_unwind_future;
+
+use catch_unwind_future::CatchUnwindFuture;
 use qubit_clock::Timer;
 use qubit_retry::AsyncRetry;
 use qubit_retry::AttemptFailure;
@@ -40,6 +35,24 @@ use crate::spi::OutboundMessage;
 use crate::spi::SpiFuture;
 
 /// Invokes the provider once or through the configured same-thread retry.
+///
+/// # Type Parameters
+/// - `F`: Factory that builds a fresh outbound message for each attempt.
+///
+/// # Parameters
+/// - `spi`: Synchronous provider called for each attempt.
+/// - `provider_id`: Provider identity used to classify SPI errors.
+/// - `make_message`: Factory for the outbound message.
+/// - `policy`: Optional retry budget and backoff policy.
+/// - `rule`: Optional user retry decision rule.
+/// - `cancellation`: Optional signal that cancels retry delays.
+///
+/// # Returns
+/// The provider acknowledgement after success.
+///
+/// # Errors
+/// Returns provider failure, retry exhaustion/cancellation, or invalid retry
+/// configuration.
 pub(crate) fn publish_sync<F>(
     spi: &dyn EventBusSpi,
     provider_id: &str,
@@ -69,6 +82,27 @@ where
 }
 
 /// Invokes an async provider using runtime-neutral retry.
+///
+/// # Type Parameters
+/// - `'a`: Lifetime shared by the provider, message factory, and attempt
+///   futures.
+/// - `F`: Factory that builds a fresh outbound message for each attempt.
+///
+/// # Parameters
+/// - `spi`: Asynchronous provider called for each attempt.
+/// - `provider_id`: Provider identity used to classify SPI errors.
+/// - `make_message`: Factory for the outbound message.
+/// - `policy`: Optional retry budget and backoff policy.
+/// - `rule`: Optional user retry decision rule.
+/// - `cancellation`: Optional signal that cancels retry delays.
+/// - `timer`: Clock used for retry delays.
+///
+/// # Returns
+/// The provider acknowledgement after success.
+///
+/// # Errors
+/// Returns provider failure, retry exhaustion/cancellation, or invalid retry
+/// configuration.
 pub(crate) async fn publish_async<'a, F>(
     spi: &'a dyn AsyncEventBusSpi,
     provider_id: &'a str,
@@ -110,6 +144,18 @@ where
         .map_err(|error| PublishError::Retry(Box::new(error)))
 }
 
+/// Invokes one asynchronous provider operation behind SPI panic boundaries.
+///
+/// # Parameters
+/// - `spi`: Provider implementation receiving the message.
+/// - `provider_id`: Provider identity used in operation errors.
+/// - `message`: Outbound message submitted to the provider.
+///
+/// # Returns
+/// The provider acknowledgement.
+///
+/// # Errors
+/// Returns synchronous or asynchronous SPI operation failure.
 async fn spi_publish(
     spi: &dyn AsyncEventBusSpi,
     provider_id: &str,
@@ -129,6 +175,18 @@ async fn spi_publish(
     }
 }
 
+/// Invokes one synchronous provider operation behind the SPI panic boundary.
+///
+/// # Parameters
+/// - `spi`: Provider implementation receiving the message.
+/// - `provider_id`: Provider identity used in operation errors.
+/// - `message`: Outbound message submitted to the provider.
+///
+/// # Returns
+/// The provider acknowledgement.
+///
+/// # Errors
+/// Returns provider operation failure or a caught provider panic.
 fn spi_publish_sync(
     spi: &dyn EventBusSpi,
     provider_id: &str,
@@ -139,6 +197,17 @@ fn spi_publish_sync(
         .and_then(std::convert::identity)
 }
 
+/// Builds an abort-on-exhaustion retry configuration for publication attempts.
+///
+/// # Parameters
+/// - `policy`: Retry budget and backoff settings.
+/// - `rule`: Optional shared retry rule supplied by the caller.
+///
+/// # Returns
+/// A configured retry policy for publish attempts.
+///
+/// # Errors
+/// Returns a configuration error when the retry policy is invalid.
 fn retry_config(
     policy: &RetryPolicy,
     rule: Option<&Arc<dyn RetryRule<PublishAttemptError>>>,
@@ -165,30 +234,4 @@ fn retry_config(
             message: source.to_string().into(),
         })
     })
-}
-
-/// Future adapter that catches a panic raised while polling the SPI future.
-struct CatchUnwindFuture<F: Future> {
-    future: Pin<Box<F>>,
-}
-
-impl<F: Future> CatchUnwindFuture<F> {
-    fn new(future: F) -> Self {
-        Self {
-            future: Box::pin(future),
-        }
-    }
-}
-
-impl<F: Future> Future for CatchUnwindFuture<F> {
-    type Output = Result<F::Output, Box<dyn std::any::Any + Send>>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        match std::panic::catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(context))) {
-            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
-            Ok(Poll::Pending) => Poll::Pending,
-            Err(payload) => Poll::Ready(Err(payload)),
-        }
-    }
 }

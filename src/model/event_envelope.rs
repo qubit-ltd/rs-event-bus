@@ -149,6 +149,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The validated identifier retained by the envelope.
+    #[must_use = "Use the returned id."]
     #[inline]
     pub fn id(&self) -> &EventId {
         &self.id
@@ -157,7 +158,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The typed destination borrowed from the envelope.
-    #[must_use]
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
@@ -166,7 +167,7 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The payload borrowed from its shared allocation.
-    #[must_use]
+    #[must_use = "Use the returned payload."]
     #[inline]
     pub fn payload(&self) -> &T {
         self.payload.as_ref()
@@ -187,7 +188,6 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The header value when present, otherwise `None`.
-    #[must_use]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
@@ -257,20 +257,12 @@ impl<T: 'static> EventEnvelope<T> {
         Ok(self.headers.remove(key))
     }
 
-    /// Sets a facade-owned header after public caller validation is bypassed.
-    ///
-    /// # Parameters
-    /// - `key`: system header name.
-    /// - `value`: system header value.
-    pub(crate) fn set_system_header(&mut self, key: &str, value: &str) {
-        self.headers.insert(key.into(), value.into());
-    }
     /// Returns the ordering key, or `None` when delivery is unordered.
     ///
     /// # Returns
     /// The requested ordering key, or `None` when no key was set.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
     }
@@ -287,8 +279,8 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The requested delivery delay, or `None` when delivery is immediate.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned delay."]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }
@@ -299,6 +291,15 @@ impl<T: 'static> EventEnvelope<T> {
     #[must_use]
     pub fn into_payload(self) -> Arc<T> {
         self.payload
+    }
+
+    /// Sets a facade-owned header after public caller validation is bypassed.
+    ///
+    /// # Parameters
+    /// - `key`: system header name.
+    /// - `value`: system header value.
+    pub(crate) fn set_system_header(&mut self, key: &str, value: &str) {
+        self.headers.insert(key.into(), value.into());
     }
 }
 

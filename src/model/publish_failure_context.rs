@@ -89,7 +89,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The original payload borrowed from its shared owner.
-    #[must_use]
+    #[must_use = "Use the returned payload."]
     #[inline]
     pub fn payload(&self) -> &T {
         self.payload.as_ref()
@@ -108,6 +108,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The event identifier retained in this context.
+    #[must_use = "Use the returned event id."]
     #[inline]
     pub fn event_id(&self) -> &EventId {
         &self.event_id
@@ -117,7 +118,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The typed destination borrowed from this context.
-    #[must_use]
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &Topic<T> {
         &self.topic
@@ -140,7 +141,6 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
-    #[must_use]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
@@ -150,8 +150,8 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The ordering key borrowed from the event, or `None` when absent.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
     }
@@ -170,8 +170,8 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The requested delay, or `None` when the event has no delay.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned delay."]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }

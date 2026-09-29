@@ -37,11 +37,17 @@ use crate::model::ProviderId as FacadeProviderId;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use qubit_event_bus::EventBusRegistry;
+/// use qubit_event_bus::registry::EventBusConfig;
+/// use qubit_event_bus::spi::ShutdownMode;
 ///
-/// let registry = EventBusRegistry::new();
-/// assert!(registry.provider_ids().is_empty());
+/// let registry = EventBusRegistry::with_local()?;
+/// let bus = registry.create(&EventBusConfig::default())?;
+/// bus.shutdown(ShutdownMode::Immediate)?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct EventBusRegistry {
     /// Typed synchronous provider catalog.
@@ -50,6 +56,9 @@ pub struct EventBusRegistry {
 
 impl EventBusRegistry {
     /// Creates an empty registry with automatic provider selection.
+    ///
+    /// # Returns
+    /// An empty mutable registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -62,8 +71,10 @@ impl EventBusRegistry {
     /// Each submitted provider uses the same adapter as
     /// [`Self::register_shared`].
     ///
-    /// # Errors
+    /// # Returns
+    /// A registry populated from linked provider submissions.
     ///
+    /// # Errors
     /// Returns an error containing the submission source when a provider cannot
     /// be registered, including duplicate selectors.
     ///
@@ -81,6 +92,9 @@ impl EventBusRegistry {
 
     /// Creates a registry preloaded with the built-in local provider.
     ///
+    /// # Returns
+    /// A registry containing the local provider.
+    ///
     /// # Errors
     /// Returns an error if the local provider cannot be registered.
     pub fn with_local() -> Result<Self, RegistryMutationError> {
@@ -90,6 +104,19 @@ impl EventBusRegistry {
     }
 
     /// Registers an owned synchronous provider.
+    ///
+    /// # Type Parameters
+    /// - `P`: provider factory implementing the typed provider definition.
+    ///
+    /// # Parameters
+    /// - `provider`: factory retained by the registry.
+    ///
+    /// # Returns
+    /// `Ok(())` when registration succeeds.
+    ///
+    /// # Errors
+    /// Returns a registry mutation error if registration is sealed or the
+    /// provider selector conflicts with an existing entry.
     pub fn register<P>(&self, provider: P) -> Result<(), RegistryMutationError>
     where
         P: ProviderDefinition<EventBusSpec>,
@@ -99,46 +126,92 @@ impl EventBusRegistry {
     }
 
     /// Registers a shared synchronous provider.
+    ///
+    /// # Parameters
+    /// - `provider`: shared factory retained by the registry.
+    ///
+    /// # Returns
+    /// `Ok(())` when registration succeeds.
+    ///
+    /// # Errors
+    /// Returns a registry mutation error if registration is sealed or the
+    /// provider selector conflicts with an existing entry.
     pub fn register_shared(&self, provider: Arc<EventBusProvider>) -> Result<(), RegistryMutationError> {
         let adapter: Arc<dyn ProviderDefinition<EventBusSpec>> = Arc::new(EventBusProviderAdapter::new(provider));
         self.providers.register_shared(adapter)
     }
 
     /// Returns provider descriptors in registration order.
+    ///
+    /// # Returns
+    /// A snapshot of registered descriptors.
     #[must_use]
     pub fn descriptors(&self) -> Vec<ProviderDescriptor> {
         self.providers.descriptors()
     }
 
+    /// Reports whether the registry rejects further configuration mutations.
+    ///
+    /// # Returns
+    /// `true` if the registry has been sealed.
+    #[must_use]
+    #[inline]
+    pub fn is_sealed(&self) -> bool {
+        self.providers.is_sealed()
+    }
+
     /// Returns registered canonical provider IDs in registration order.
+    ///
+    /// # Returns
+    /// A snapshot of canonical provider IDs.
     #[must_use]
     pub fn provider_ids(&self) -> Vec<ProviderId> {
         self.providers.provider_ids()
     }
 
     /// Returns the default selection used when configuration has no override.
+    ///
+    /// # Returns
+    /// The current registry selection policy.
     #[must_use]
     pub fn default_selection(&self) -> ProviderSelection {
         self.providers.default_selection()
     }
 
     /// Replaces the registry's default provider selection.
+    ///
+    /// # Parameters
+    /// - `selection`: new default provider selection.
+    ///
+    /// # Returns
+    /// `Ok(())` when the selection is updated.
+    ///
+    /// # Errors
+    /// Returns a registry mutation error when the registry has been sealed.
     pub fn set_default_selection(&self, selection: ProviderSelection) -> Result<(), RegistryMutationError> {
         self.providers.set_default_selection(selection)
     }
 
     /// Prevents further provider registration and default-selection changes.
+    ///
+    /// # Side Effects
+    /// Mutates the registry so later configuration mutations are rejected.
     pub fn seal(&self) {
         self.providers.seal();
     }
 
-    /// Reports whether the registry rejects further configuration mutations.
-    #[must_use]
-    pub fn is_sealed(&self) -> bool {
-        self.providers.is_sealed()
-    }
-
     /// Resolves the configuration's selection or current default selection.
+    ///
+    /// # Parameters
+    /// - `config`: provider selection, capability requirements, and facade
+    ///   settings for this instance.
+    ///
+    /// # Returns
+    /// A facade backed by the selected provider.
+    ///
+    /// # Errors
+    /// Returns a resolution or provider creation error when no candidate can
+    /// create an SPI satisfying the configuration.
     pub fn create(&self, config: &EventBusConfig) -> Result<EventBus, ProviderError> {
         if let Some(selection) = config.selection() {
             return self.create_selected(selection, config);
@@ -149,6 +222,17 @@ impl EventBusRegistry {
     }
 
     /// Creates a facade using a validated explicit provider selection.
+    ///
+    /// # Parameters
+    /// - `selection`: provider selector to resolve.
+    /// - `config`: capability requirements and facade settings.
+    ///
+    /// # Returns
+    /// A facade backed by the selected provider.
+    ///
+    /// # Errors
+    /// Returns a resolution or provider creation error when the selection
+    /// cannot create a compatible SPI.
     pub fn create_selected(
         &self,
         selection: &ProviderSelection,
@@ -164,11 +248,27 @@ impl EventBusRegistry {
 }
 
 impl Default for EventBusRegistry {
+    /// Creates an empty registry with automatic provider selection.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Wraps a validated provider SPI with the configured facade settings.
+///
+/// # Parameters
+/// - `spi`: provider SPI carrying a canonical provider ID.
+/// - `config`: facade settings to install.
+///
+/// # Returns
+/// A configured event bus, or a creation error if facade setup fails.
+///
+/// # Errors
+/// Returns a provider creation error if the facade configuration is invalid.
+///
+/// # Panics
+/// Panics if a provider adapter violates its invariant and omits the canonical
+/// provider ID.
 fn facade(spi: Arc<dyn crate::spi::EventBusSpi>, config: &EventBusConfig) -> Result<EventBus, ProviderError> {
     let provider_id: FacadeProviderId = spi
         .provider_id()
@@ -178,12 +278,26 @@ fn facade(spi: Arc<dyn crate::spi::EventBusSpi>, config: &EventBusConfig) -> Res
     })
 }
 
+/// Converts a provider catalog resolution failure to the facade error type.
+///
+/// # Parameters
+/// - `error`: provider resolution failure to retain as the source.
+///
+/// # Returns
+/// A provider resolution error with the original source attached.
 fn provider_resolution_error(error: ProviderResolutionError) -> ProviderError {
     ProviderError::Resolution {
         source: Box::new(error),
     }
 }
 
+/// Converts a provider creation failure to the facade error type.
+///
+/// # Parameters
+/// - `error`: provider creation failure to retain as the source.
+///
+/// # Returns
+/// A provider creation error with the original source attached.
 fn provider_creation_error(error: ProviderCreationError<EventBusProviderError>) -> ProviderError {
     ProviderError::Creation {
         source: Box::new(error),

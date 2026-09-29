@@ -5,10 +5,12 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal sync facade state owner.
+//! Cached report shared by concurrent synchronous shutdown callers.
 
-use crate::ShutdownReport;
+use crate::facade::ShutdownReport;
 
+/// State protected by the facade shutdown report mutex.
 pub(in crate::facade) struct ShutdownState {
+    /// Report from the completed provider shutdown, if available.
     pub(in crate::facade) report: Option<ShutdownReport>,
 }

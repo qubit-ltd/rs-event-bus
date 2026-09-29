@@ -5,13 +5,10 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-// qubit-style: allow multiple-public-types
-
 //! Shared bounded dispatcher for synchronous subscription deliveries.
 
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
+mod internal;
+
 use std::io;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -25,114 +22,43 @@ use std::thread::JoinHandle;
 
 use qubit_id::Id;
 
+use self::internal::ScheduledJob;
+use self::internal::SchedulerReservation;
+use self::internal::SchedulerState;
 use crate::facade::SyncDeliverySchedulerConfig;
-use crate::pipeline::AdmissionPermit;
 use crate::pipeline::AdmissionTracker;
 use crate::pipeline::OrderingLaneKey;
 
-/// One accepted handler task; its permit remains held until `run` returns.
-pub(super) struct ScheduledJob {
-    subscription_id: Id,
-    ordering_key: Option<OrderingLaneKey>,
-    run: Box<dyn FnOnce(bool) + Send + 'static>,
-    permit: Option<AdmissionPermit>,
-}
-
-/// Reserves both global admission and one bounded queue slot before a job is
-/// built.
-pub(super) struct SchedulerReservation {
-    scheduler: Arc<SyncDeliveryScheduler>,
-    subscription_id: Id,
-    ordering_key: Option<OrderingLaneKey>,
-    permit: Option<AdmissionPermit>,
-    committed: bool,
-}
-
-impl SchedulerReservation {
-    /// Commits a reserved delivery to the shared dispatcher.
-    pub(super) fn submit<F>(mut self, run: F)
-    where
-        F: FnOnce(bool) + Send + 'static,
-    {
-        let mut state = self
-            .scheduler
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.reserved_queue = state.reserved_queue.saturating_sub(1);
-        if state.stopping_immediate || state.cancelled_subscriptions.contains(&self.subscription_id) {
-            state.cancelled_jobs.push_back(ScheduledJob {
-                subscription_id: self.subscription_id,
-                ordering_key: None,
-                run: Box::new(run),
-                permit: self.permit.take(),
-            });
-            self.committed = true;
-            self.scheduler.changed.notify_all();
-            return;
-        }
-        let job = ScheduledJob {
-            subscription_id: self.subscription_id,
-            ordering_key: self.ordering_key.clone(),
-            run: Box::new(run),
-            permit: self.permit.take(),
-        };
-        let subscription_id = job.subscription_id;
-        let queue_is_empty = state.queues.get(&subscription_id).is_none_or(VecDeque::is_empty);
-        if queue_is_empty {
-            state.round_robin.push_back(job.subscription_id);
-        }
-        state.queues.entry(subscription_id).or_default().push_back(job);
-        state.queued += 1;
-        self.committed = true;
-        self.scheduler.changed.notify_all();
-    }
-}
-
-impl Drop for SchedulerReservation {
-    fn drop(&mut self) {
-        if !self.committed {
-            let mut state = self
-                .scheduler
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.reserved_queue = state.reserved_queue.saturating_sub(1);
-            self.scheduler.changed.notify_all();
-        }
-    }
-}
-
 /// Bus-wide dispatcher with bounded admission and fair per-subscription queues.
 pub(super) struct SyncDeliveryScheduler {
+    /// Immutable queue and worker limits.
     config: SyncDeliverySchedulerConfig,
+    /// Shared bound for queued and active handler tasks.
     admission: AdmissionTracker,
+    /// Queues, fairness order, and dispatcher lifecycle state.
     state: Mutex<SchedulerState>,
+    /// Wakes workers after reservations, cancellation, or shutdown changes.
     changed: Condvar,
+    /// Handles for the fixed handler worker set.
     workers: Mutex<Vec<JoinHandle<()>>>,
+    /// Worker index where tests inject a spawn failure.
     #[cfg(test)]
     fail_spawn_at: AtomicUsize,
-}
-
-#[derive(Default)]
-struct SchedulerState {
-    queues: HashMap<Id, VecDeque<ScheduledJob>>,
-    cancelled_jobs: VecDeque<ScheduledJob>,
-    round_robin: VecDeque<Id>,
-    active_keys: HashSet<OrderingLaneKey>,
-    cancelled_subscriptions: HashSet<Id>,
-    queued: usize,
-    reserved_queue: usize,
-    idle_workers: usize,
-    started: bool,
-    accepting: bool,
-    stopping_immediate: bool,
-    stopped: bool,
 }
 
 impl SyncDeliveryScheduler {
     /// Creates an idle scheduler; worker threads are started lazily by
     /// subscribe.
+    ///
+    /// # Parameters
+    /// - `config`: validated admission, worker, and handler queue limits.
+    ///
+    /// # Returns
+    /// A shared scheduler with empty queues and no started workers.
+    ///
+    /// # Panics
+    /// Panics if `config.max_in_flight()` is zero, violating the validated
+    /// scheduler configuration invariant.
     pub(super) fn new(config: SyncDeliverySchedulerConfig) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -150,6 +76,12 @@ impl SyncDeliveryScheduler {
 
     /// Starts the fixed worker set once, returning a spawn failure to
     /// subscribe.
+    ///
+    /// # Returns
+    /// Success after all workers start, or the first worker spawn error.
+    ///
+    /// # Errors
+    /// Returns the operating-system error when a handler worker cannot start.
     pub(super) fn start(self: &Arc<Self>) -> io::Result<()> {
         let mut handles = self.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -195,12 +127,24 @@ impl SyncDeliveryScheduler {
         Ok(())
     }
 
+    /// Configures a synthetic thread-spawn failure for scheduler tests.
+    ///
+    /// # Parameters
+    /// - `worker_index`: zero-based worker index that fails to spawn.
     #[cfg(test)]
     pub(super) fn fail_spawn_at(&self, worker_index: usize) {
         self.fail_spawn_at.store(worker_index, Ordering::Release);
     }
 
     /// Attempts admission without blocking the subscription coordinator.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: subscription whose task requests admission.
+    /// - `ordering_key`: optional exclusive per-key lane for the task.
+    ///
+    /// # Returns
+    /// A queue and admission reservation, or `None` when capacity is
+    /// unavailable.
     pub(super) fn try_reserve(
         self: &Arc<Self>,
         subscription_id: Id,
@@ -228,6 +172,10 @@ impl SyncDeliveryScheduler {
     }
 
     /// Stops future admission and optionally returns queued jobs for retry.
+    ///
+    /// # Parameters
+    /// - `immediate`: whether queued jobs should be canceled for provider
+    ///   retry.
     pub(super) fn stop_admission(&self, immediate: bool) {
         let canceled = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -251,6 +199,9 @@ impl SyncDeliveryScheduler {
     }
 
     /// Requeues queued work owned by a canceled subscription.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: subscription whose queued jobs are canceled.
     pub(super) fn cancel_subscription(&self, subscription_id: Id) {
         let canceled = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -270,6 +221,9 @@ impl SyncDeliveryScheduler {
 
     /// Removes a completed subscription from the cancellation registry after
     /// its coordinator drains.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: completed subscription whose tombstone is removed.
     pub(super) fn finish_subscription(&self, subscription_id: Id) {
         self.state
             .lock()
@@ -293,6 +247,9 @@ impl SyncDeliveryScheduler {
 
     /// Returns the number of cancellation tombstones retained for active
     /// subscriptions.
+    ///
+    /// # Returns
+    /// The number of canceled subscriptions still registered.
     #[cfg(test)]
     pub(super) fn cancelled_subscription_count(&self) -> usize {
         self.state
@@ -303,6 +260,13 @@ impl SyncDeliveryScheduler {
     }
 
     /// Selects an eligible task using round-robin subscription fairness.
+    ///
+    /// # Parameters
+    /// - `state`: mutable queue state selected while holding the scheduler
+    ///   lock.
+    ///
+    /// # Returns
+    /// The next eligible job, or `None` when no queued job can run.
     fn take_ready(&self, state: &mut SchedulerState) -> Option<ScheduledJob> {
         let rounds = state.round_robin.len();
         for _ in 0..rounds {

@@ -13,6 +13,19 @@ use std::sync::Arc;
 ///
 /// Each populated callback is invoked once by the runner. Missing callbacks
 /// become skipped cases, or failures under the strict conformance profile.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use qubit_event_bus::spi::conformance::ConformanceHooks;
+///
+/// let hooks = ConformanceHooks {
+///     settlement: Some(Arc::new(|| Ok(()))),
+///     ..ConformanceHooks::default()
+/// };
+/// assert!(hooks.settlement.is_some());
+/// ```
 #[derive(Default)]
 pub struct ConformanceHooks {
     /// Checks repeat-settlement idempotence and conflicting dispositions.

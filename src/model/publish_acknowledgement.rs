@@ -73,6 +73,7 @@ impl PublishAcknowledgement {
     ///
     /// # Returns
     /// The provider's admission result without implying handler completion.
+    #[must_use = "Use the returned admission outcome."]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         match self {
             Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,

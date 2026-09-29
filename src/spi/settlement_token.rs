@@ -30,7 +30,9 @@ use qubit_id::Id;
 /// ```
 #[must_use]
 pub struct SettlementToken {
+    /// Identity of the receiver authorized to apply this token.
     subscription_id: Id,
+    /// Opaque, non-cloneable state interpreted only by the issuing provider.
     state: Box<dyn Any + Send>,
 }
 

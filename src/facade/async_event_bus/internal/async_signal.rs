@@ -15,7 +15,9 @@ use std::sync::atomic::Ordering;
 /// Wakes tasks waiting for asynchronous facade state changes.
 #[derive(Default)]
 pub(in crate::facade) struct AsyncSignal {
+    /// Current waker for each registered waiter ID.
     wakers: Mutex<HashMap<u64, std::task::Waker>>,
+    /// Generates unique waiter IDs for signal registrations.
     next_waiter: AtomicU64,
 }
 
@@ -29,6 +31,10 @@ impl AsyncSignal {
     }
 
     /// Registers or replaces a waiter's current waker.
+    ///
+    /// # Parameters
+    /// - `id`: waiter ID allocated by this signal.
+    /// - `waker`: task waker to notify after a state change.
     pub(in crate::facade) fn register_waiter(&self, id: u64, waker: &std::task::Waker) {
         let owned_waker = waker.clone();
         let replaced = {
@@ -39,6 +45,9 @@ impl AsyncSignal {
     }
 
     /// Removes a waiter's registration when its future completes or is dropped.
+    ///
+    /// # Parameters
+    /// - `id`: waiter ID to remove.
     pub(in crate::facade) fn unregister(&self, id: u64) {
         let removed = {
             let mut wakers = self.wakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -48,6 +57,9 @@ impl AsyncSignal {
     }
 
     /// Allocates a unique identifier for a new wait registration.
+    ///
+    /// # Returns
+    /// An ID not previously allocated by this signal instance.
     pub(in crate::facade) fn next_waiter_id(&self) -> u64 {
         self.next_waiter.fetch_add(1, Ordering::Relaxed)
     }
@@ -106,7 +118,7 @@ mod tests {
     static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[test]
-    fn waker_clone_and_drop_are_outside_the_registry_lock() {
+    fn test_waker_clone_and_drop_are_outside_the_registry_lock() {
         let signal = Arc::new(AsyncSignal::default());
         let probe = Arc::new(CloneDropProbe {
             signal: Arc::downgrade(&signal),

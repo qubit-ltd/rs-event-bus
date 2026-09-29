@@ -23,8 +23,11 @@ use crate::model::Headers;
 /// ```
 /// use std::collections::BTreeMap;
 /// use std::time::SystemTime;
+///
 /// use qubit_event_bus::model::EventId;
-/// use qubit_event_bus::spi::{OutboundMessage, TopicAddress, TransportPayload};
+/// use qubit_event_bus::spi::OutboundMessage;
+/// use qubit_event_bus::spi::TopicAddress;
+/// use qubit_event_bus::spi::TransportPayload;
 ///
 /// let message = OutboundMessage::new(
 ///     TopicAddress::new("orders.created").unwrap(),
@@ -39,12 +42,19 @@ use crate::model::Headers;
 /// ```
 #[must_use]
 pub struct OutboundMessage {
+    /// Validated destination address used for provider routing.
     topic: TopicAddress,
+    /// Stable event identity retained across publication attempts.
     id: EventId,
+    /// Event creation time preserved in delivered messages.
     timestamp: SystemTime,
+    /// Portable event headers forwarded to matching subscriptions.
     headers: Headers,
+    /// Optional key requesting ordered delivery within its partition.
     ordering_key: Option<OrderingKey>,
+    /// Requested delivery delay, or `None` for immediate eligibility.
     delay: Option<Duration>,
+    /// Shared native allocation or encoded bytes to publish.
     payload: TransportPayload,
 }
 
@@ -85,6 +95,7 @@ impl OutboundMessage {
     ///
     /// # Returns
     /// The validated destination address.
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &TopicAddress {
         &self.topic
@@ -93,6 +104,7 @@ impl OutboundMessage {
     ///
     /// # Returns
     /// The stable event identifier.
+    #[must_use = "Use the returned id."]
     #[inline]
     pub fn id(&self) -> &EventId {
         &self.id
@@ -119,8 +131,8 @@ impl OutboundMessage {
     ///
     /// # Returns
     /// `Some` with the ordering key when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&OrderingKey> {
         self.ordering_key.as_ref()
     }
@@ -129,8 +141,8 @@ impl OutboundMessage {
     /// # Returns
     /// `Some` with the requested delay, otherwise `None` for immediate
     /// delivery.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned delay."]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }
@@ -138,6 +150,7 @@ impl OutboundMessage {
     ///
     /// # Returns
     /// The native or encoded payload representation.
+    #[must_use = "Use the returned payload."]
     #[inline]
     pub fn payload(&self) -> &TransportPayload {
         &self.payload

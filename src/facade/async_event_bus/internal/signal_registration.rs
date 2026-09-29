@@ -5,12 +5,11 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Removes one asynchronous signal waiter when its wait completes or is
-//! dropped.
+//! Registers one task waker and removes it when the waiting future is dropped.
 
-use crate::facade::async_event_bus::AsyncSignal;
+use super::AsyncSignal;
 
-/// Registration that removes one task waker from its signal on drop.
+/// Waiter registration that unregisters itself when its owner is dropped.
 pub(in crate::facade) struct SignalRegistration<'a> {
     /// Signal whose waiter list contains this registration.
     signal: &'a AsyncSignal,
@@ -22,7 +21,7 @@ impl SignalRegistration<'_> {
     /// Registers a waiter for the supplied signal.
     ///
     /// # Parameters
-    /// - `signal`: signal to observe until this registration is dropped.
+    /// - signal: signal to observe until this registration is dropped.
     ///
     /// # Returns
     /// A registration that unregisters itself on drop.
@@ -36,7 +35,7 @@ impl SignalRegistration<'_> {
     /// Updates this waiter's registered waker.
     ///
     /// # Parameters
-    /// - `waker`: task waker to use when the signal changes.
+    /// - waker: task waker to use when the signal changes.
     pub(in crate::facade) fn register(&self, waker: &std::task::Waker) {
         self.signal.register_waiter(self.id, waker);
     }

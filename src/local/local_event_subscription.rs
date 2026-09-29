@@ -12,14 +12,12 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::internal::LocalInFlight;
-use super::internal::LocalQueue;
-use super::internal::LocalSettlementHandle;
-use super::internal::LocalSettlementState;
-use super::internal::LocalSharedState;
 use super::local_event_bus_spi::invalid_token_error;
 use super::local_event_bus_spi::operation_error;
 use super::local_event_bus_spi::signal_changed;
+use super::state::LocalQueue;
+use super::state::LocalSettlementState;
+use super::state::LocalSharedState;
 use crate::error::SpiError;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventSubscriptionSpi;
@@ -49,6 +47,18 @@ impl LocalEventSubscription {
 }
 
 impl EventSubscriptionSpi for LocalEventSubscription {
+    /// Receives the next eligible queue head and retains its capacity until
+    /// settled.
+    ///
+    /// # Parameters
+    /// - `timeout`: maximum blocking wait; zero polls without waiting.
+    ///
+    /// # Returns
+    /// A message with its token, `TimedOut` when no event becomes eligible
+    /// within the budget, or `Closed` after this queue closes.
+    ///
+    /// # Errors
+    /// Returns an operation error if the delivery token sequence is exhausted.
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
         let started = Instant::now();
         let mut state = self.queue.lock();
@@ -69,7 +79,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 }));
                 state.in_flight.insert(
                     token,
-                    LocalInFlight {
+                    super::state::LocalInFlight {
                         event: event.clone(),
                         settlement: settlement.clone(),
                     },
@@ -106,6 +116,21 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         }
     }
 
+    /// Applies an idempotent settlement decision to an authentic local token.
+    ///
+    /// Accept and reject release capacity; retry requeues the original event
+    /// at its lane's head while retaining its reservation and waking receivers.
+    ///
+    /// # Parameters
+    /// - `token`: token issued by this receiver for an in-flight event.
+    /// - `disposition`: accept, reject, or retry action to apply.
+    ///
+    /// # Returns
+    /// `Ok(())` after the action or an identical repeated settlement.
+    ///
+    /// # Errors
+    /// Returns an invalid-token error for a foreign, unknown, forged, or
+    /// already settled token with a conflicting disposition.
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         if !token.belongs_to(self.queue.id) {
             return Err(invalid_token_error(
@@ -114,7 +139,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             ));
         }
         let settlement = token
-            .downcast_ref::<LocalSettlementHandle>()
+            .downcast_ref::<super::state::LocalSettlementHandle>()
             .ok_or_else(|| invalid_token_error(Some(self.queue.topic.as_str()), "unknown_token"))?
             .clone();
         let mut state = self.queue.lock();
@@ -156,6 +181,13 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         Ok(())
     }
 
+    /// Unregisters this receiver and discards queued and unsettled events.
+    ///
+    /// Releases their capacity reservations and wakes lifecycle waiters.
+    /// Repeated calls preserve the closed state without releasing twice.
+    ///
+    /// # Returns
+    /// `Ok(())`; this local close operation reports no SPI errors.
     fn close(&mut self) -> Result<(), SpiError> {
         {
             let mut state = self.queue.lock();

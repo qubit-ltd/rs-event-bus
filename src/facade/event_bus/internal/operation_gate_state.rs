@@ -5,12 +5,13 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal sync facade state owner.
+//! Admission state linearized against synchronous facade shutdown.
 
-/// Counts calls that entered the facade while it was still accepting
-/// operations.
+/// Counts calls admitted before shutdown closed operation admission.
 #[derive(Default)]
-pub(in crate::facade) struct OperationGateState {
-    pub(in crate::facade) closing: bool,
-    pub(in crate::facade) active: usize,
+pub(super) struct OperationGateState {
+    /// Whether new facade operations are rejected.
+    pub(super) closing: bool,
+    /// Number of publish and subscribe calls admitted so far.
+    pub(super) active: usize,
 }

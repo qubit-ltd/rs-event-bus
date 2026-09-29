@@ -29,6 +29,7 @@ use crate::error::SpiError;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum DeliveryError {
     /// The application handler returned an error.
     #[error("event handler failed: {source}")]
@@ -39,11 +40,23 @@ pub enum DeliveryError {
     },
     /// The inbound payload could not be decoded.
     #[error(transparent)]
-    Codec(#[from] CodecError),
+    Codec(
+        /// Failure returned by the event payload codec.
+        #[from]
+        CodecError,
+    ),
     /// The backend failed while processing the delivery.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Failure returned by the provider SPI.
+        #[from]
+        SpiError,
+    ),
     /// The configured `qubit-retry` policy ended without a successful attempt.
     #[error("delivery retry policy terminated: {0}")]
-    Retry(#[source] Box<RetryError<DeliveryAttemptError>>),
+    Retry(
+        /// Retry report, including the failed attempts and terminal reason.
+        #[source]
+        Box<RetryError<DeliveryAttemptError>>,
+    ),
 }

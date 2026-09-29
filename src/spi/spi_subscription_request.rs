@@ -25,8 +25,13 @@ use crate::model::SubscriptionDurability;
 ///
 /// ```
 /// use std::any::TypeId;
-/// use qubit_event_bus::model::{ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability};
-/// use qubit_event_bus::spi::{SpiSubscriptionRequest, TopicAddress};
+///
+/// use qubit_event_bus::model::ProviderOptions;
+/// use qubit_event_bus::model::StartPosition;
+/// use qubit_event_bus::model::SubscriberId;
+/// use qubit_event_bus::model::SubscriptionDurability;
+/// use qubit_event_bus::spi::SpiSubscriptionRequest;
+/// use qubit_event_bus::spi::TopicAddress;
 /// use qubit_id::Id;
 ///
 /// let request = SpiSubscriptionRequest::new(
@@ -39,13 +44,21 @@ use crate::model::SubscriptionDurability;
 /// ```
 #[must_use]
 pub struct SpiSubscriptionRequest {
+    /// Bus-local receiver identity to bind to provider settlement tokens.
     subscription_id: Id,
+    /// Validated destination address on which to receive events.
     topic: TopicAddress,
+    /// Logical application subscriber identity supplied by the caller.
     subscriber_id: SubscriberId,
+    /// Shared consumer group, or `None` for an independent subscription.
     group: Option<ConsumerGroup>,
+    /// Requested subscription persistence mode.
     durability: SubscriptionDurability,
+    /// Requested initial position in the provider's event stream.
     start_position: StartPosition,
+    /// Non-sensitive namespaced options interpreted by the backend.
     provider_options: ProviderOptions,
+    /// In-process Rust payload identity used by native routing providers.
     payload_type_id: TypeId,
 }
 
@@ -90,6 +103,7 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// The identity used to associate receiver settlement tokens.
+    #[must_use = "Use the returned subscription id."]
     #[inline]
     pub fn subscription_id(&self) -> Id {
         self.subscription_id
@@ -98,6 +112,7 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// The validated provider destination.
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &TopicAddress {
         &self.topic
@@ -106,6 +121,7 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// The validated logical subscriber identity.
+    #[must_use = "Use the returned subscriber id."]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
@@ -114,8 +130,8 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// `Some` with the shared group when set, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned group."]
     pub fn group(&self) -> Option<&ConsumerGroup> {
         self.group.as_ref()
     }
@@ -123,6 +139,7 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// The subscription persistence mode.
+    #[must_use = "Use the returned durability."]
     #[inline]
     pub fn durability(&self) -> SubscriptionDurability {
         self.durability
@@ -131,6 +148,7 @@ impl SpiSubscriptionRequest {
     ///
     /// # Returns
     /// The provider offset or cursor request.
+    #[must_use = "Use the returned start position."]
     #[inline]
     pub fn start_position(&self) -> &StartPosition {
         &self.start_position

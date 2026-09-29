@@ -23,42 +23,84 @@ use crate::error::SubscribeError;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::error::{ConfigurationError, EventBusError};
+/// use qubit_event_bus::error::ConfigurationError;
+/// use qubit_event_bus::error::EventBusError;
 ///
 /// let error = EventBusError::Configuration(ConfigurationError::MissingField { field: "topic" });
 /// assert!(matches!(error, EventBusError::Configuration(_)));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum EventBusError {
     /// Invalid caller configuration.
     #[error(transparent)]
-    Configuration(#[from] ConfigurationError),
+    Configuration(
+        /// Validation failure in a caller-supplied setting.
+        #[from]
+        ConfigurationError,
+    ),
     /// Required provider capability is missing.
     #[error(transparent)]
-    Capability(#[from] CapabilityError),
+    Capability(
+        /// Capability the selected provider does not support.
+        #[from]
+        CapabilityError,
+    ),
     /// A payload codec failed.
     #[error(transparent)]
-    Codec(#[from] CodecError),
+    Codec(
+        /// Failure while encoding or decoding an event payload.
+        #[from]
+        CodecError,
+    ),
     /// Publishing failed.
     #[error(transparent)]
-    Publish(#[from] PublishError),
+    Publish(
+        /// Failure reported by a publish operation.
+        #[from]
+        PublishError,
+    ),
     /// Subscription creation failed.
     #[error(transparent)]
-    Subscribe(#[from] SubscribeError),
+    Subscribe(
+        /// Failure reported while creating a subscription.
+        #[from]
+        SubscribeError,
+    ),
     /// Receiving failed.
     #[error(transparent)]
-    Receive(#[from] ReceiveError),
+    Receive(
+        /// Failure reported while receiving a delivery.
+        #[from]
+        ReceiveError,
+    ),
     /// Delivery processing failed.
     #[error(transparent)]
-    Delivery(#[from] DeliveryError),
+    Delivery(
+        /// Handler, codec, or delivery processing failure.
+        #[from]
+        DeliveryError,
+    ),
     /// Delivery settlement failed.
     #[error(transparent)]
-    Settlement(#[from] SettlementError),
+    Settlement(
+        /// Failure while applying an accept, retry, or reject decision.
+        #[from]
+        SettlementError,
+    ),
     /// A lifecycle operation failed.
     #[error(transparent)]
-    Lifecycle(#[from] LifecycleError),
+    Lifecycle(
+        /// Failure while waiting, closing, or shutting down the bus.
+        #[from]
+        LifecycleError,
+    ),
     /// Provider selection or creation failed.
     #[error(transparent)]
-    Provider(#[from] ProviderError),
+    Provider(
+        /// Failure resolving or constructing the selected provider.
+        #[from]
+        ProviderError,
+    ),
 }

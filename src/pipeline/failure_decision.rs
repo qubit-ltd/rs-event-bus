@@ -11,6 +11,14 @@ use crate::model::FailureDirective;
 
 /// Combines callback decisions while applying the same retry and panic rules
 /// to synchronous and asynchronous subscribers.
+///
+/// # Parameters
+/// - `retry_enabled`: whether the subscriber has a retry policy.
+/// - `directives`: callback outcomes in subscriber registration order; an error
+///   represents a callback panic.
+///
+/// # Returns
+/// The first terminal directive, a permitted retry request, or `Discard`.
 pub(crate) fn choose_failure_directive(
     retry_enabled: bool,
     directives: impl IntoIterator<Item = Result<FailureDirective, ()>>,

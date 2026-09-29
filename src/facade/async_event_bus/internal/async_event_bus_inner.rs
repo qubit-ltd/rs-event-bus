@@ -5,50 +5,50 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Shared asynchronous provider, facade, and lifecycle state.
+//! Shared asynchronous facade state and its admission and diagnostic methods.
 
-use crate::Diagnostic;
-use crate::EventBusFacadeConfig;
-use crate::ShutdownReport;
-use crate::facade::PublishMetrics;
-use crate::facade::async_event_bus::Arc;
-use crate::facade::async_event_bus::AsyncAdmission;
-use crate::facade::async_event_bus::AsyncShutdownDriver;
-use crate::facade::async_event_bus::AsyncSignal;
-use crate::facade::async_event_bus::AsyncTracker;
-use crate::facade::async_event_bus::AtomicBool;
-use crate::facade::async_event_bus::AtomicU64;
-use crate::facade::async_event_bus::BusState;
-use crate::facade::async_event_bus::HashMap;
-use crate::facade::async_event_bus::Id;
-use crate::facade::async_event_bus::Mutex;
-use crate::facade::async_event_bus::Ordering;
-use crate::facade::async_event_bus::SubscriptionCloseErrors;
-use crate::facade::async_event_bus::SubscriptionCloseFailure;
-use crate::facade::async_event_bus::Timer;
-use crate::facade::async_event_bus::Weak;
-use crate::facade::async_event_bus::internal::AsyncPublishGuard;
-use crate::facade::async_event_bus::internal::AsyncSubscribeGuard;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use qubit_clock::Timer;
+use qubit_id::Id;
+
+use super::AsyncSignal;
+use super::AsyncTracker;
+use super::async_shutdown_driver::AsyncShutdownDriver;
+use super::bus_state::BusState;
+use crate::error::SubscriptionCloseErrors;
+use crate::error::SubscriptionCloseFailure;
+use crate::facade::async_admission::AsyncAdmission;
+use crate::facade::event_bus_facade_config::EventBusFacadeConfig;
 use crate::facade::observer_entry::ObserverEntry;
+use crate::facade::publish_metrics::PublishMetrics;
+use crate::facade::shutdown_report::ShutdownReport;
 use crate::model::ProviderId;
 use crate::pipeline::AsyncOrderingLanes;
+use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::AsyncEventBusSpi;
 
-/// State shared by every clone of an asynchronous event-bus facade.
+/// Shared provider, lifecycle, and pipeline state used by every facade clone.
 pub(in crate::facade) struct AsyncEventBusInner {
-    /// Provider implementation used for SPI operations.
+    /// Provider implementation used for asynchronous SPI operations.
     pub(in crate::facade) spi: Arc<dyn AsyncEventBusSpi>,
     /// Stable identifier used in diagnostics and provider errors.
     pub(in crate::facade) provider_id: ProviderId,
     /// Capabilities reported by the provider at construction.
     pub(in crate::facade) capabilities: crate::spi::EventBusCapabilities,
-    /// Publisher middleware and retry pipeline.
+    /// Publisher middleware and retry pipeline shared by facade clones.
     pub(in crate::facade) publisher: PublisherPipeline,
-    /// Immutable facade middleware and codec configuration.
+    /// Immutable middleware, codec, and delivery configuration.
     pub(in crate::facade) facade_config: EventBusFacadeConfig,
-    /// Current lifecycle state.
+    /// Lifecycle state guarding new facade operations.
     pub(in crate::facade) state: Mutex<BusState>,
     /// Whether a shutdown caller currently owns shutdown work.
     pub(in crate::facade) shutdown_active: AtomicBool,
@@ -58,7 +58,7 @@ pub(in crate::facade) struct AsyncEventBusInner {
     pub(in crate::facade) shutdown_signal: AsyncSignal,
     /// Wakes provider shutdown when a caller requests immediate mode.
     pub(in crate::facade) shutdown_mode_signal: AsyncSignal,
-    /// Cached report returned to callers after successful shutdown.
+    /// Cached report returned after provider shutdown succeeds.
     pub(in crate::facade) shutdown_report: Mutex<Option<ShutdownReport>>,
     /// Count of facade-known deliveries abandoned during shutdown.
     pub(in crate::facade) abandoned_deliveries: AtomicU64,
@@ -80,31 +80,41 @@ pub(in crate::facade) struct AsyncEventBusInner {
     pub(in crate::facade) admission: Arc<AsyncAdmission>,
     /// Runtime-neutral timer used for deadlines and delays.
     pub(in crate::facade) timer: Arc<dyn Timer>,
-    /// Counters shared by facade clones.
+    /// Publication counters shared by facade clones.
     pub(in crate::facade) publish_metrics: PublishMetrics,
 }
 
 impl AsyncEventBusInner {
     /// Starts a publish operation while the facade is running.
-    pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<AsyncPublishGuard> {
+    ///
+    /// # Returns
+    /// A guard that releases the publish counter, or None after shutdown
+    /// starts.
+    pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<super::AsyncPublishGuard> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
         self.tracker.publish_started();
         drop(state);
-        Some(AsyncPublishGuard::after_start(self.tracker.clone()))
+        Some(super::AsyncPublishGuard::after_start(self.tracker.clone()))
     }
+
     /// Starts a subscribe operation while the facade is running.
-    pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<AsyncSubscribeGuard> {
+    ///
+    /// # Returns
+    /// A guard that releases the subscribe counter, or None after shutdown
+    /// starts.
+    pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<super::AsyncSubscribeGuard> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
         self.tracker.subscribe_started();
         drop(state);
-        Some(AsyncSubscribeGuard::after_start(self.tracker.clone()))
+        Some(super::AsyncSubscribeGuard::after_start(self.tracker.clone()))
     }
+
     /// Returns the currently active diagnostic observer callbacks.
     ///
     /// # Returns
@@ -119,10 +129,11 @@ impl AsyncEventBusInner {
             .map(|entry| entry.callback.clone())
             .collect()
     }
-    /// Sends a diagnostic to the currently registered observers.
+
+    /// Sends a diagnostic to currently registered observers.
     ///
     /// # Parameters
-    /// - `diagnostic`: event delivered to active observers.
+    /// - diagnostic: event delivered to active observers.
     pub(in crate::facade) fn emit(&self, diagnostic: &Diagnostic) {
         crate::pipeline::emit_diagnostic(&self.observer_snapshot(), diagnostic);
     }
@@ -130,9 +141,9 @@ impl AsyncEventBusInner {
     /// Records the first close failure for a subscription control.
     ///
     /// # Parameters
-    /// - `control`: subscription retaining the canonical failure.
-    /// - `subscriber_id`: identity associated with the provider receiver.
-    /// - `error`: provider error reported while closing the receiver.
+    /// - control: subscription retaining the canonical failure.
+    /// - subscriber_id: identity associated with the provider receiver.
+    /// - error: provider error reported while closing the receiver.
     ///
     /// # Returns
     /// The canonical failure retained by the subscription and bus.
@@ -161,7 +172,7 @@ impl AsyncEventBusInner {
     /// Adds a close failure reported by an unstarted subscription.
     ///
     /// # Parameters
-    /// - `failure`: close failure to include in the bus aggregate.
+    /// - failure: close failure to include in the bus aggregate.
     pub(in crate::facade) fn record_close_failure(&self, failure: Arc<SubscriptionCloseFailure>) {
         self.close_errors
             .lock()
@@ -174,6 +185,10 @@ impl AsyncEventBusInner {
     }
 
     /// Returns a cached aggregate of recorded close failures, if any exist.
+    ///
+    /// # Returns
+    /// Some with all close failures recorded so far, or None when there are
+    /// none.
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
         let failures = self
             .close_errors

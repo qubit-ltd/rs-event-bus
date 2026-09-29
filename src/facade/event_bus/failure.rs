@@ -8,18 +8,21 @@
 //! Terminal failure policy, settlement, and dead-letter forwarding.
 
 #![allow(clippy::too_many_arguments)]
+
+use std::any::Any;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use qubit_id::Id;
+use qubit_retry::Retry;
+use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryPolicy;
+
 use crate::Diagnostic;
 use crate::SubscriberId;
 use crate::error::DeliveryError;
-use crate::facade::event_bus::Any;
-use crate::facade::event_bus::Arc;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::Id;
-use crate::facade::event_bus::Ordering;
 use crate::facade::event_bus::OwnerSettlementRouter;
-use crate::facade::event_bus::Retry;
-use crate::facade::event_bus::RetryCancellationToken;
-use crate::facade::event_bus::RetryPolicy;
 use crate::facade::event_bus::publishing::publish_internal;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
@@ -37,6 +40,26 @@ use crate::pipeline::dead_letter_retry_config;
 use crate::spi::DeliveryDisposition;
 use crate::spi::SettlementToken;
 
+/// Applies the terminal failure directive and records its diagnostics.
+///
+/// # Type Parameters
+/// - `T`: event payload type retained by the failed delivery.
+///
+/// # Parameters
+/// - `inner`: bus state used for publication, diagnostics, and recovery counts.
+/// - `settler`: owner that serializes provider settlement calls.
+/// - `token`: provider token for the failed delivery, when available.
+/// - `event`: failed event and its portable metadata.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+/// - `options`: retry and dead-letter policy for the subscription.
+/// - `error`: terminal handler or middleware failure.
+/// - `attempts`: number of handler attempts made.
+/// - `directive`: action selected by the subscriber error policy.
+///
+/// # Side Effects
+/// May publish a dead-letter event, settle the provider token, update
+/// abandonment counts, stop a subscription, and emit diagnostics.
 pub(in crate::facade) fn finish_failed_delivery<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -171,6 +194,22 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
 }
 
 /// Settles one provider-issued token and emits a structured failure on error.
+///
+/// # Type Parameters
+/// - `T`: event payload type associated with the settlement.
+///
+/// # Parameters
+/// - `inner`: bus state used to emit settlement diagnostics.
+/// - `settler`: owner that serializes provider settlement calls.
+/// - `token`: provider token to settle, when available.
+/// - `disposition`: terminal provider action to apply.
+/// - `event`: event whose identity and topic label the operation.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+///
+/// # Side Effects
+/// Dispatches settlement through the owning receiver and emits diagnostics
+/// for invalid or unavailable tokens.
 pub(in crate::facade) fn settle_token<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -200,6 +239,20 @@ pub(in crate::facade) fn settle_token<T>(
     );
 }
 
+/// Settles a rejected message when possible and reports its decode failure.
+///
+/// # Parameters
+/// - `inner`: bus state used for diagnostics and settlement capabilities.
+/// - `settler`: owner that serializes provider settlement calls.
+/// - `token`: provider token associated with the rejected message.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+/// - `event_id`: stable identity of the rejected event.
+/// - `topic`: provider topic associated with the event.
+/// - `error`: decode or configuration failure that rejected the message.
+///
+/// # Side Effects
+/// May settle the token and emits settlement and delivery-failure diagnostics.
 pub(in crate::facade) fn settle_rejected(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -249,6 +302,22 @@ pub(in crate::facade) fn settle_rejected(
 
 /// Publishes one stable dead-letter envelope within the subscription retry
 /// budget.
+///
+/// # Type Parameters
+/// - `T`: original event payload type.
+///
+/// # Parameters
+/// - `inner`: bus and provider state used by the publisher pipeline.
+/// - `envelope`: dead-letter event to publish on each attempt.
+/// - `retry_policy`: optional retry budget and backoff policy.
+/// - `cancellation`: optional signal that cancels retry delays.
+/// - `admission_policy`: provider admission evidence required for success.
+///
+/// # Returns
+/// The receipt when forwarding is considered accepted.
+///
+/// # Errors
+/// Returns publication, admission, or retry failure details.
 pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
     inner: &EventBusInner,
     envelope: &EventEnvelope<DeadLetterEvent<T>>,
@@ -282,6 +351,13 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
 /// Stops receiving after forwarding exhausts its budget, retaining the source
 /// token for durable recovery and counting a known loss for ephemeral
 /// providers.
+///
+/// # Parameters
+/// - `inner`: bus state used to update recovery information and find controls.
+/// - `subscription_id`: subscription that failed dead-letter forwarding.
+///
+/// # Side Effects
+/// Counts known ephemeral loss and requests that the subscription stop.
 pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, subscription_id: Id) {
     if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
@@ -296,6 +372,12 @@ pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, s
 }
 
 /// Formats panic payloads without exposing arbitrary panic internals.
+///
+/// # Parameters
+/// - `payload`: panic object captured by the unwind boundary.
+///
+/// # Returns
+/// A stable message that reveals whether the panic payload was string-like.
 pub(in crate::facade) fn panic_message(payload: &(dyn Any + Send)) -> &'static str {
     if payload.is::<&'static str>() || payload.is::<String>() {
         "user or provider callback panicked"

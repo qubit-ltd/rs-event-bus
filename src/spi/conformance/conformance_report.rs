@@ -30,8 +30,20 @@ use crate::model::SubscriptionDurability;
 use crate::spi::SpiSubscriptionRequest;
 
 /// Results collected from one provider conformance run.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::conformance::ConformanceReport;
+///
+/// let report = ConformanceReport::default();
+/// assert!(report.all_passed());
+/// assert!(report.cases().is_empty());
+/// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[must_use]
 pub struct ConformanceReport {
+    /// Pass, failure, and skip outcomes in their execution order.
     cases: Vec<ConformanceCase>,
 }
 
@@ -40,7 +52,8 @@ impl ConformanceReport {
     ///
     /// # Returns
     /// The case results in the order the runner produced them.
-    #[must_use]
+    #[must_use = "Use the returned cases."]
+    #[inline]
     pub fn cases(&self) -> &[ConformanceCase] {
         &self.cases
     }
@@ -81,7 +94,11 @@ impl ConformanceReport {
         self.cases.push(case);
     }
 
-    /// Records a check that does not apply to the selected API or capability.
+    /// Records a check outside the selected API or capability contract.
+    ///
+    /// # Parameters
+    /// - `case_id`: stable identifier of the inapplicable check.
+    /// - `reason`: explanation of why the check is outside this contract.
     pub(super) fn not_applicable(&mut self, case_id: &str, reason: &'static str) {
         self.push(ConformanceCase::Skipped {
             case_id: case_id.into(),

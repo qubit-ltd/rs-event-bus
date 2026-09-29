@@ -8,6 +8,15 @@
 //! Provider publish acknowledgement guarantees.
 
 /// Strongest guarantee represented by successful provider publication.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::PublishGuarantee;
+///
+/// let guarantee = PublishGuarantee::Accepted;
+/// assert_eq!(guarantee, PublishGuarantee::Accepted);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PublishGuarantee {

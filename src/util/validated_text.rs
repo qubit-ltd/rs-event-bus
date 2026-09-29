@@ -18,6 +18,7 @@
 /// # Returns
 /// `true` when `value` is nonempty, has no control characters, and has no
 /// whitespace at either boundary.
+#[must_use = "Use the returned query result."]
 pub(crate) const fn is_nonblank_without_controls(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {
@@ -48,6 +49,7 @@ pub(crate) const fn is_nonblank_without_controls(value: &str) -> bool {
 /// # Returns
 /// `true` when the name is 1 to 255 UTF-8 bytes and passes
 /// [`is_nonblank_without_controls`].
+#[must_use = "Use the returned query result."]
 pub(crate) const fn is_valid_topic_name(value: &str) -> bool {
     let length = value.len();
     length >= 1 && length <= 255 && is_nonblank_without_controls(value)
@@ -98,6 +100,8 @@ const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
 ///
 /// # Returns
 /// `true` when the value is in Unicode's `White_Space` set.
+#[must_use = "Use the returned query result."]
+#[inline]
 const fn is_unicode_whitespace(code_point: u32) -> bool {
     matches!(
         code_point,
@@ -113,6 +117,8 @@ const fn is_unicode_whitespace(code_point: u32) -> bool {
 ///
 /// # Returns
 /// `true` when the value is a C0 or C1 control character.
+#[must_use = "Use the returned query result."]
+#[inline]
 const fn is_unicode_control(code_point: u32) -> bool {
     matches!(code_point, 0x0000..=0x001F | 0x007F..=0x009F)
 }

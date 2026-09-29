@@ -57,10 +57,15 @@ use crate::model::Topic;
 /// # Ok(())
 /// # }
 /// ```
+#[must_use]
 pub struct NotificationPublisher<T: Send + Sync + 'static> {
+    /// Admission sender; `None` means close has stopped new queue entries.
     sender: Mutex<Option<SyncSender<T>>>,
+    /// Worker handle, taken exactly once by the first closer that joins it.
     worker: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Worker completion flag and condition variable shared with close callers.
     state: Arc<(Mutex<WorkerState>, Condvar)>,
+    /// Atomic counters exposed through [`Self::stats`].
     stats: Arc<NotificationStats>,
 }
 
@@ -71,6 +76,21 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// should return promptly. The observer receives provider admission
     /// outcomes, not handler completion. Returns an I/O error if the worker
     /// thread cannot be started.
+    ///
+    /// # Type Parameters
+    /// - `F`: observer callback type.
+    ///
+    /// # Parameters
+    /// - `bus`: event bus used by the worker to publish queued payloads.
+    /// - `topic`: topic assigned to every queued payload.
+    /// - `capacity`: maximum number of queued payloads awaiting publication.
+    /// - `observer`: callback invoked on the worker after each publish result.
+    ///
+    /// # Returns
+    /// A publisher handle that performs nonblocking queue admission.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the worker thread cannot be started.
     pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize, observer: F) -> io::Result<Self>
     where
         F: Fn(NotificationOutcome) + Send + Sync + 'static,
@@ -128,7 +148,14 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     }
 
     /// Returns the default queue capacity used by applications that select it.
+    ///
+    /// # Returns
+    /// The nonzero default queue capacity.
+    ///
+    /// # Panics
+    /// Panics if the crate's configured default queue capacity is zero.
     #[must_use]
+    #[inline]
     pub const fn default_capacity() -> NonZeroUsize {
         match NonZeroUsize::new(DEFAULT_QUEUE_CAPACITY) {
             Some(capacity) => capacity,
@@ -136,10 +163,30 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         }
     }
 
+    /// Returns a monotonic snapshot of queue and worker outcomes.
+    ///
+    /// # Returns
+    /// A best-effort snapshot whose counters are loaded independently.
+    #[must_use]
+    pub fn stats(&self) -> NotificationStatsSnapshot {
+        self.stats.snapshot()
+    }
+
     /// Attempts to queue one payload without waiting for provider work.
     ///
     /// Returns `Full(payload)` when all configured queue slots are occupied or
     /// `Closed(payload)` after close has stopped admission.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue without blocking.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or an error containing the original payload when
+    /// admission fails.
+    ///
+    /// # Errors
+    /// Returns `Full` when the bounded queue has no free slot and `Closed`
+    /// when admission has stopped or the worker has disconnected.
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>> {
         let sender = self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(sender) = sender.as_ref() else {
@@ -162,18 +209,15 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         }
     }
 
-    /// Returns a monotonic snapshot of queue and worker outcomes.
-    #[must_use]
-    pub fn stats(&self) -> NotificationStatsSnapshot {
-        self.stats.snapshot()
-    }
-
     /// Stops admission, drains the queue, and waits for the worker to finish.
     ///
     /// Multiple callers may close concurrently; each waits for the same worker
     /// completion and only one caller joins its thread handle. Returns an I/O
     /// error if called from the worker thread or if the worker panicked outside
     /// contained observer panics.
+    ///
+    /// # Returns
+    /// `Ok(())` after all queued payloads are processed and the worker exits.
     ///
     /// # Errors
     /// Returns an error when called from the worker thread or when the worker
@@ -190,6 +234,12 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// return `Closed` after this method begins. A synchronous provider call
     /// cannot be forcibly interrupted.
     ///
+    /// # Parameters
+    /// - `timeout`: maximum time allowed for draining and worker shutdown.
+    ///
+    /// # Returns
+    /// `Ok(())` after the worker exits and is joined.
+    ///
     /// # Errors
     /// Returns `TimedOut` when the worker has not exited before the deadline,
     /// `Other` when called from the worker thread or when the worker panics.
@@ -199,6 +249,16 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 
     /// Closes admission and waits for worker completion under the requested
     /// deadline.
+    ///
+    /// # Parameters
+    /// - `timeout`: maximum wait, or `None` to wait without a deadline.
+    ///
+    /// # Returns
+    /// `Ok(())` after the worker exits and is joined.
+    ///
+    /// # Errors
+    /// Returns an I/O error when called from the worker thread, when the
+    /// deadline expires, or when the worker panics.
     fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.reject_worker_thread()?;
         let started = Instant::now();
@@ -225,6 +285,12 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     }
 
     /// Rejects a blocking close request made by the worker it would join.
+    ///
+    /// # Returns
+    /// `Ok(())` when the caller is not the worker thread.
+    ///
+    /// # Errors
+    /// Returns `Other` when called from the worker thread.
     fn reject_worker_thread(&self) -> io::Result<()> {
         let called_from_worker = self
             .worker
@@ -241,6 +307,17 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     }
 
     /// Joins the worker only after the operating system reports it exited.
+    ///
+    /// # Parameters
+    /// - `timeout`: maximum total wait, or `None` to wait without a deadline.
+    /// - `started`: instant at which the enclosing close operation began.
+    ///
+    /// # Returns
+    /// `Ok(())` after joining the worker.
+    ///
+    /// # Errors
+    /// Returns `TimedOut` when the deadline expires or `Other` when the worker
+    /// panicked.
     fn finish_join(&self, timeout: Option<Duration>, started: Instant) -> io::Result<()> {
         loop {
             let worker_finished = self
@@ -275,6 +352,16 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 }
 
 /// Returns the remaining close time, or a timeout error after the deadline.
+///
+/// # Parameters
+/// - `limit`: total time allowed for the close operation.
+/// - `started`: instant at which that operation began.
+///
+/// # Returns
+/// The unelapsed portion of `limit`.
+///
+/// # Errors
+/// Returns `TimedOut` when the deadline has elapsed.
 fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> {
     limit
         .checked_sub(started.elapsed())
@@ -282,6 +369,7 @@ fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> 
 }
 
 impl<T: Send + Sync + 'static> Drop for NotificationPublisher<T> {
+    /// Closes queue admission without waiting for worker completion.
     fn drop(&mut self) {
         self.sender
             .get_mut()

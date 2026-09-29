@@ -92,8 +92,8 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The dispatched identifier, or `None` when publication was dropped.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned dispatched event id."]
     pub fn dispatched_event_id(&self) -> Option<&EventId> {
         self.dispatched_event_id.as_ref()
     }
@@ -127,6 +127,7 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The admission outcome reported by the provider or publisher interceptor.
+    #[must_use = "Use the returned admission outcome."]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         self.acknowledgement.admission_outcome()
     }
@@ -140,7 +141,7 @@ impl PublishReceipt {
     /// # Returns
     /// Counts for reported destinations, including zero counts for an empty
     /// snapshot, or `None` when destination admission is not visible.
-    #[must_use]
+    #[must_use = "Use the returned query result."]
     pub fn admission_summary(&self) -> Option<AdmissionSummary> {
         match self.admission_outcome() {
             AdmissionOutcome::Accepted(summary)

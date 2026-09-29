@@ -18,12 +18,17 @@ use crate::spi::ShutdownOutcome;
 
 /// Serializes shutdown attempts and lets graceful callers leave at a deadline.
 pub(crate) struct ShutdownCoordinator {
+    /// Active shutdown generation, requested mode, and results for its waiters.
     state: Mutex<ShutdownCoordinatorState>,
+    /// Wakes callers when a shutdown attempt completes or fails to start.
     changed: Condvar,
 }
 
 impl ShutdownCoordinator {
     /// Creates a coordinator that has not started a shutdown attempt.
+    ///
+    /// # Returns
+    /// A coordinator with no active generation or waiting callers.
     pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(ShutdownCoordinatorState::new()),
@@ -32,6 +37,12 @@ impl ShutdownCoordinator {
     }
 
     /// Starts an attempt or joins the active attempt, strengthening its mode.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown policy requested by this caller.
+    ///
+    /// # Returns
+    /// Whether this caller should start the worker and the generation to join.
     pub(crate) fn begin(&self, mode: ShutdownMode) -> (bool, u64) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.active {
@@ -51,6 +62,12 @@ impl ShutdownCoordinator {
     }
 
     /// Returns the strongest shutdown mode requested for this active attempt.
+    ///
+    /// # Parameters
+    /// - `generation`: shutdown attempt whose mode is requested.
+    ///
+    /// # Returns
+    /// The strongest mode, or `Immediate` if the generation is stale.
     pub(crate) fn mode(&self, generation: u64) -> ShutdownMode {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.generation == generation {
@@ -61,6 +78,10 @@ impl ShutdownCoordinator {
     }
 
     /// Publishes an attempt result and wakes every caller waiting on it.
+    ///
+    /// # Parameters
+    /// - `generation`: shutdown attempt that produced the result.
+    /// - `result`: provider shutdown outcome or error to share with waiters.
     pub(crate) fn finish(&self, generation: u64, result: Result<ShutdownOutcome, SpiError>) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.generation == generation {
@@ -73,6 +94,9 @@ impl ShutdownCoordinator {
     }
 
     /// Releases callers when a coordinator thread could not be created.
+    ///
+    /// # Parameters
+    /// - `generation`: failed shutdown attempt to make available for retry.
     pub(crate) fn abort_start(&self, generation: u64) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.generation == generation {
@@ -83,6 +107,15 @@ impl ShutdownCoordinator {
     }
 
     /// Waits for one generation, returning whether its caller deadline elapsed.
+    ///
+    /// # Parameters
+    /// - `generation`: shutdown attempt joined by this caller.
+    /// - `deadline`: optional absolute caller deadline.
+    ///
+    /// # Returns
+    /// Whether the deadline elapsed and the shared result. `Some` retains the
+    /// completed provider outcome or error; `None` indicates a caller timeout
+    /// or an attempt that ended without a recorded result.
     pub(crate) fn wait(
         &self,
         generation: u64,
@@ -118,6 +151,10 @@ impl ShutdownCoordinator {
     }
 
     /// Removes one caller and discards a result after its last waiter leaves.
+    ///
+    /// # Parameters
+    /// - `state`: coordinator state protected by its mutex.
+    /// - `generation`: attempt whose caller is leaving.
     fn release_waiter(&self, state: &mut ShutdownCoordinatorState, generation: u64) {
         if let Some(waiters) = state.waiters.get_mut(&generation) {
             *waiters = waiters.saturating_sub(1);
@@ -138,7 +175,7 @@ mod tests {
     use crate::spi::ShutdownMode;
 
     #[test]
-    fn immediate_request_strengthens_active_attempt() {
+    fn test_immediate_request_strengthens_active_attempt() {
         let coordinator = ShutdownCoordinator::new();
         let graceful = ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),
@@ -150,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_uses_immediate_mode_and_cannot_finish_current_attempt() {
+    fn test_stale_generation_uses_immediate_mode_and_cannot_finish_current_attempt() {
         let coordinator = ShutdownCoordinator::new();
         let (leader, generation) = coordinator.begin(ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),
@@ -168,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_start_releases_waiter_and_allows_retry() {
+    fn test_failed_start_releases_waiter_and_allows_retry() {
         let coordinator = ShutdownCoordinator::new();
         let (_, generation) = coordinator.begin(ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),
@@ -181,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_deadline_releases_waiter_while_attempt_continues() {
+    fn test_expired_deadline_releases_waiter_while_attempt_continues() {
         let coordinator = ShutdownCoordinator::new();
         let (_, generation) = coordinator.begin(ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),

@@ -8,24 +8,26 @@
 //! Event decoding and handler execution.
 
 #![allow(clippy::too_many_arguments)]
+
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+
+use qubit_id::Id;
+use qubit_retry::AttemptFailure;
+use qubit_retry::Retry;
+use qubit_retry::RetryConfig;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
+use qubit_retry::RetryFallback;
+
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::EventId;
 use crate::SubscriberId;
-use crate::facade::event_bus::Arc;
-use crate::facade::event_bus::AttemptFailure;
-use crate::facade::event_bus::DeliveryAttemptError;
+use crate::error::DeliveryAttemptError;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::Id;
-use crate::facade::event_bus::Mutex;
-use crate::facade::event_bus::Ordering;
 use crate::facade::event_bus::OwnerSettlementRouter;
-use crate::facade::event_bus::Retry;
-use crate::facade::event_bus::RetryConfig;
-use crate::facade::event_bus::RetryContext;
-use crate::facade::event_bus::RetryDecision;
-use crate::facade::event_bus::RetryFallback;
-use crate::facade::event_bus::choose_terminal_directive;
 use crate::facade::event_bus::failure::finish_failed_delivery;
 use crate::facade::event_bus::failure::panic_message;
 use crate::facade::event_bus::failure::settle_rejected;
@@ -38,12 +40,28 @@ use crate::model::Topic;
 use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::is_retry_rule_failure;
+use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
 use crate::spi::SettlementToken;
 use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
 
+/// Processes one provider message and contains panics from delivery work.
+///
+/// # Type Parameters
+/// - `T`: typed payload expected by the subscription.
+///
+/// # Parameters
+/// - `inner`: bus and provider state shared with this delivery.
+/// - `settler`: owner that serializes provider settlement calls.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+/// - `topic`: typed event topic.
+/// - `codec`: codec used for encoded payloads, when configured.
+/// - `options`: subscriber middleware, retry, and settlement policy.
+/// - `handler`: terminal application callback.
+/// - `message`: provider message to decode and process.
 pub(in crate::facade) fn process_inbound<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -108,6 +126,32 @@ pub(in crate::facade) fn process_inbound<T>(
     }
 }
 
+/// Decodes a provider message and applies filtering and handler policy.
+///
+/// # Type Parameters
+/// - `T`: typed payload expected by the subscription.
+///
+/// # Parameters
+/// - `inner`: bus state used for diagnostics and policy.
+/// - `settler`: owner that serializes provider settlement calls.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+/// - `topic`: typed event topic.
+/// - `codec`: codec used for encoded payloads, when configured.
+/// - `options`: subscriber middleware, retry, and settlement policy.
+/// - `handler`: terminal application callback.
+/// - `address`: provider topic address from the message.
+/// - `event_id`: stable identity from the message.
+/// - `timestamp`: creation time from the message.
+/// - `headers`: portable headers from the message.
+/// - `ordering_key`: optional provider ordering key.
+/// - `payload`: native or encoded payload representation.
+/// - `settlement`: provider token retained until terminal handling completes.
+/// - `provider_metadata`: non-sensitive provider metadata.
+///
+/// # Side Effects
+/// May invoke the subscriber handler, emit diagnostics, and settle the
+/// provider message.
 pub(in crate::facade) fn process_inbound_parts<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -263,9 +307,24 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     }
 }
 
-/// Creates a typed event from a provider message using native downcast or topic
-/// codec.
 /// Applies configured retry to middleware and one handler attempt.
+///
+/// # Type Parameters
+/// - `T`: typed payload expected by the subscription.
+///
+/// # Parameters
+/// - `inner`: bus state used for policies and diagnostics.
+/// - `options`: subscriber retry and error-handler settings.
+/// - `delivery`: decoded delivery to process.
+/// - `handler`: application callback.
+/// - `global_interceptors`: bus-wide middleware callbacks.
+///
+/// # Returns
+/// `Ok(())` after a successful middleware and handler attempt.
+///
+/// # Errors
+/// Returns the terminal delivery error, attempt count, and selected failure
+/// directive when processing or retry configuration fails.
 pub(in crate::facade) fn run_delivery_with_retry<T>(
     inner: &EventBusInner,
     options: &crate::model::SubscribeOptions<T>,
@@ -372,6 +431,19 @@ where
 
 /// Runs each terminal action callback in registration order and chooses a safe
 /// directive.
+///
+/// # Type Parameters
+/// - `T`: event payload type associated with the failed delivery.
+///
+/// # Parameters
+/// - `inner`: bus state used to emit diagnostics for callback panics.
+/// - `options`: registered error callbacks and retry policy.
+/// - `event`: failed event supplied to callbacks.
+/// - `error`: terminal handler or middleware failure.
+/// - `retry_enabled`: whether this failure can be retried.
+///
+/// # Returns
+/// The selected retry, requeue, dead-letter, or discard directive.
 pub(in crate::facade) fn notify_error_handlers<T>(
     inner: &EventBusInner,
     options: &crate::model::SubscribeOptions<T>,
@@ -400,6 +472,19 @@ pub(in crate::facade) fn notify_error_handlers<T>(
 }
 
 /// Invokes one handler attempt through global and typed synchronous middleware.
+///
+/// # Type Parameters
+/// - `T`: typed payload expected by the subscription.
+///
+/// # Parameters
+/// - `options`: subscriber acknowledgement and middleware settings.
+/// - `delivery`: delivery supplied to the middleware chain.
+/// - `handler`: terminal application callback.
+/// - `_attempt`: one-based attempt number retained for the shared call shape.
+/// - `global_interceptors`: bus-wide middleware callbacks.
+///
+/// # Returns
+/// The successful outcome or handler/middleware failure.
 pub(in crate::facade) fn run_delivery_attempt<T>(
     options: &crate::model::SubscribeOptions<T>,
     delivery: Delivery<T>,

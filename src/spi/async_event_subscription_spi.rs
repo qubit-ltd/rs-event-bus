@@ -24,10 +24,10 @@ use crate::error::SpiError;
 /// after ownership transfers to the runner, the runner closes it on completion.
 /// Facades cannot await cleanup from `Drop`, so implementations must still
 /// safely release or detach resources if the receiver is dropped without close.
-/// For durable subscriptions, accepted deliveries without a terminal
-/// disposition must remain recoverable after receiver close or drop. Ephemeral
-/// subscriptions may discard unsettled deliveries when destroyed. Cleanup
-/// must never implicitly acknowledge an unsettled delivery.
+/// Any delivery whose [`SettlementToken`] has not reached a terminal
+/// disposition must remain recoverable by the provider after receiver close or
+/// drop (for example, by broker redelivery or returning it to a local queue).
+/// Receiver cleanup must never implicitly acknowledge an unsettled delivery.
 ///
 /// # Examples
 ///

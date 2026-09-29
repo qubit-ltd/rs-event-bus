@@ -21,12 +21,20 @@ pub(in crate::facade) struct AsyncDeliveryGuard {
 
 impl AsyncDeliveryGuard {
     /// Creates a guard after the caller increments the matching topic count.
+    ///
+    /// # Parameters
+    /// - `tracker`: tracker that owns the topic delivery count.
+    /// - `topic`: topic whose in-flight count this guard releases.
+    ///
+    /// # Returns
+    /// A guard that decrements the topic count when dropped.
     pub(super) fn new(tracker: Arc<AsyncTracker>, topic: Box<str>) -> Self {
         Self { tracker, topic }
     }
 }
 
 impl Drop for AsyncDeliveryGuard {
+    /// Decrements the topic count and wakes lifecycle waiters.
     fn drop(&mut self) {
         let mut state = self
             .tracker

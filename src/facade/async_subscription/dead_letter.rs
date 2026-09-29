@@ -5,12 +5,15 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Asynchronous dead-letter publishing and retry handling.
 
-use crate::facade::async_subscription::Arc;
+use std::sync::Arc;
+
+use qubit_retry::AsyncRetry;
+use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryPolicy;
+
 use crate::facade::async_subscription::AsyncEventBusInner;
-use crate::facade::async_subscription::AsyncRetry;
-use crate::facade::async_subscription::RetryCancellationToken;
-use crate::facade::async_subscription::RetryPolicy;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::EventEnvelope;
@@ -43,7 +46,6 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
     cancellation: Option<&RetryCancellationToken>,
     admission_policy: DeadLetterAdmissionPolicy,
 ) -> Result<PublishReceipt, String> {
-    /// Performs one dead-letter publish attempt and checks its admission.
     /// Publishes one dead-letter envelope and validates destination admission.
     ///
     /// # Type Parameters

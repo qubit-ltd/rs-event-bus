@@ -40,40 +40,15 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// A handle whose shared state is [`AcknowledgementState::Pending`].
-    #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self::default()
-    }
-    /// Acknowledges once; repeated ACK succeeds and NACK after ACK conflicts.
-    ///
-    /// # Returns
-    /// `Ok(())` when this handle was already acknowledged or ACK wins the
-    /// completion race.
-    ///
-    /// # Errors
-    /// Returns [`AcknowledgementError::AlreadyCompleted`] if a NACK completed
-    /// the handle first.
-    pub fn ack(&self) -> Result<(), AcknowledgementError> {
-        self.complete(ACKED)
-    }
-    /// Negatively acknowledges once; repeated NACK succeeds and ACK after NACK
-    /// conflicts.
-    ///
-    /// # Returns
-    /// `Ok(())` when this handle was already negatively acknowledged or NACK
-    /// wins the completion race.
-    ///
-    /// # Errors
-    /// Returns [`AcknowledgementError::AlreadyCompleted`] if an ACK completed
-    /// the handle first.
-    pub fn nack(&self) -> Result<(), AcknowledgementError> {
-        self.complete(NACKED)
     }
     /// Returns the current state from the atomic handle.
     ///
     /// # Returns
     /// The latest observed terminal state, using acquire ordering.
+    #[must_use = "Use the returned state."]
     #[inline]
     pub fn state(&self) -> AcknowledgementState {
         match self.state.load(Ordering::Acquire) {
@@ -109,6 +84,33 @@ impl Acknowledgement {
     #[inline]
     pub fn is_completed(&self) -> bool {
         self.state() != AcknowledgementState::Pending
+    }
+
+    /// Acknowledges once; repeated ACK succeeds and NACK after ACK conflicts.
+    ///
+    /// # Returns
+    /// `Ok(())` when this handle was already acknowledged or ACK wins the
+    /// completion race.
+    ///
+    /// # Errors
+    /// Returns [`AcknowledgementError::AlreadyCompleted`] if a NACK completed
+    /// the handle first.
+    pub fn ack(&self) -> Result<(), AcknowledgementError> {
+        self.complete(ACKED)
+    }
+
+    /// Negatively acknowledges once; repeated NACK succeeds and ACK after NACK
+    /// conflicts.
+    ///
+    /// # Returns
+    /// `Ok(())` when this handle was already negatively acknowledged or NACK
+    /// wins the completion race.
+    ///
+    /// # Errors
+    /// Returns [`AcknowledgementError::AlreadyCompleted`] if an ACK completed
+    /// the handle first.
+    pub fn nack(&self) -> Result<(), AcknowledgementError> {
+        self.complete(NACKED)
     }
 
     /// Atomically completes a pending handle with `decision`.

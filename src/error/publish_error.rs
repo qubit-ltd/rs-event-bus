@@ -30,6 +30,7 @@ use crate::error::SpiError;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum PublishError {
     /// Publication metadata was changed to an invalid value by an interceptor.
     #[error(transparent)]

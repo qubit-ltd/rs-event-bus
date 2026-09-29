@@ -88,7 +88,6 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// A new value equivalent to [`Self::default`].
-    #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -105,8 +104,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The retry schedule when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry policy."]
     pub fn retry_policy(&self) -> Option<&RetryPolicy> {
         self.retry_policy.as_ref()
     }
@@ -115,8 +114,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The custom retry rule when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry rule."]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<PublishAttemptError>>> {
         self.retry_rule.as_ref()
     }
@@ -124,8 +123,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The shared cancellation token when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned retry cancellation token."]
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }

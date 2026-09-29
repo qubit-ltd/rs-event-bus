@@ -33,7 +33,8 @@ use crate::spi::EventBusSpi;
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::registry::{EventBusConfig, EventBusRegistry};
+/// use qubit_event_bus::registry::EventBusConfig;
+/// use qubit_event_bus::registry::EventBusRegistry;
 ///
 /// let registry = EventBusRegistry::with_local()?;
 /// let bus = registry.create(&EventBusConfig::default())?;
@@ -45,6 +46,10 @@ use crate::spi::EventBusSpi;
 pub struct LocalEventBusProvider;
 
 impl ProviderMetadata for LocalEventBusProvider {
+    /// Returns the local provider's stable ID and supported aliases.
+    ///
+    /// # Returns
+    /// A descriptor selected as `local`, `memory`, or `in-process`.
     fn descriptor(&self) -> ProviderDescriptor {
         ProviderDescriptor::new(SpiProviderId::new("local").expect("static provider ID is valid"))
             .with_aliases(["memory", "in-process"])
@@ -53,6 +58,17 @@ impl ProviderMetadata for LocalEventBusProvider {
 }
 
 impl ServiceProvider<EventBusSpec> for LocalEventBusProvider {
+    /// Builds the synchronous local SPI from registry provider options.
+    ///
+    /// # Parameters
+    /// - `config`: facade and provider configuration supplied by the registry.
+    ///
+    /// # Returns
+    /// The constructed synchronous provider SPI.
+    ///
+    /// # Errors
+    /// Returns an invalid-configuration provider failure when local options
+    /// cannot be parsed or validated.
     fn create_configured(
         &self,
         config: &EventBusConfig,
@@ -83,6 +99,7 @@ mod tests {
     use crate::spi::PayloadModes;
     use crate::spi::ShutdownMode;
 
+    /// Verifies default configuration constructs a native local SPI.
     #[test]
     fn test_default_configuration_creates_a_native_local_spi() {
         assert_eq!("local", LocalEventBusProvider.descriptor().id().as_str());

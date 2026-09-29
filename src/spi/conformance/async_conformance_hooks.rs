@@ -22,6 +22,19 @@ pub type AsyncConformanceCheck =
 ///
 /// Each populated callback is invoked once by the runner. Missing callbacks
 /// become skipped cases, or failures under the strict conformance profile.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
+///
+/// let hooks = AsyncConformanceHooks {
+///     settlement: Some(Arc::new(|| Box::pin(async { Ok::<(), String>(()) }))),
+///     ..AsyncConformanceHooks::default()
+/// };
+/// assert!(hooks.settlement.is_some());
+/// ```
 #[derive(Default)]
 pub struct AsyncConformanceHooks {
     /// Checks repeat-settlement idempotence and conflicting dispositions.

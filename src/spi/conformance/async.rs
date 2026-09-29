@@ -28,6 +28,8 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
 /// Runs common structural checks against a fresh asynchronous provider.
+/// The factory is called again for each payload mode so one case cannot
+/// contaminate later cases through shared provider state.
 ///
 /// # Type Parameters
 /// - `F`: asynchronous provider factory type.
@@ -39,6 +41,9 @@ use crate::spi::ShutdownOutcome;
 ///
 /// # Returns
 /// A report containing each conformance check result.
+///
+/// # Panics
+/// Panics if the provider factory or an SPI method unwinds.
 pub async fn run_async<F, Fut>(factory: F, hooks: &AsyncConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Fut,
@@ -61,6 +66,9 @@ where
 ///
 /// # Returns
 /// A report containing each conformance check result.
+///
+/// # Panics
+/// Panics if the provider factory or an SPI method unwinds.
 pub async fn run_async_with_profile<F, Fut>(
     factory: F,
     hooks: &AsyncConformanceHooks,
@@ -327,7 +335,7 @@ where
 }
 
 /// Runs an optional provider-specific asynchronous check and records its
-/// result. Runs an optional asynchronous fixture and appends its outcome.
+/// result.
 ///
 /// # Parameters
 /// - `report`: report receiving the result.

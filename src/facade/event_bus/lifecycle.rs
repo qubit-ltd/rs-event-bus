@@ -7,16 +7,16 @@
 // =============================================================================
 //! Event bus lifecycle operations.
 
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::EventBus;
 use crate::LifecycleError;
 use crate::ShutdownError;
 use crate::ShutdownReport;
 use crate::WaitOutcome;
-use crate::facade::event_bus::Arc;
-use crate::facade::event_bus::Duration;
-use crate::facade::event_bus::Instant;
 use crate::facade::event_bus::internal::clone_spi_error;
 use crate::facade::internal::LifecycleState;
 use crate::facade::internal::is_current_bus_context;
@@ -33,6 +33,14 @@ impl EventBus {
     /// or other consumers are globally idle. A call from one of this bus's
     /// synchronous callbacks or workers returns `WouldDeadlock` rather than
     /// waiting for work that depends on the current call to finish.
+    ///
+    /// # Parameters
+    /// - `topic`: typed destination whose provider queue is checked.
+    /// - `timeout`: optional maximum wait duration.
+    ///
+    /// # Returns
+    /// `Idle` when the provider reports no work, or `TimedOut` when the wait
+    /// expires.
     ///
     /// # Errors
     /// Returns `WouldDeadlock` when called within a synchronous callback or
@@ -64,6 +72,18 @@ impl EventBus {
     ///
     /// This is local to this facade and does not establish that a remote broker
     /// or other consumers are globally idle.
+    ///
+    /// # Parameters
+    /// - `topic`: typed destination whose facade-received work is checked.
+    /// - `timeout`: optional maximum wait duration.
+    ///
+    /// # Returns
+    /// `Idle` when no matching delivery remains, or `TimedOut` when the wait
+    /// expires.
+    ///
+    /// # Errors
+    /// Returns `WouldDeadlock` when called within a synchronous callback or
+    /// worker owned by this bus.
     pub fn wait_for_received_deliveries<T: 'static>(
         &self,
         topic: &Topic<T>,
@@ -102,14 +122,17 @@ impl EventBus {
     /// bus returns `WouldDeadlock` instead of waiting for the current
     /// operation permit.
     ///
+    /// # Parameters
+    /// - `mode`: graceful or immediate shutdown policy.
+    ///
+    /// # Returns
+    /// The cached provider outcome and facade-known abandoned-delivery count.
+    ///
     /// # Errors
     /// Returns `WouldDeadlock` for a call from a bus callback or worker,
     /// `TimedOut` when the full graceful close has not completed by its
     /// deadline, a coordinator thread could not start, and provider/close
     /// failures without suppressing their source errors.
-    ///
-    /// # Returns
-    /// The cached provider outcome and facade-known abandoned-delivery count.
     pub fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let identity = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_context(identity) {
@@ -181,6 +204,9 @@ impl EventBus {
     }
 
     /// Locks the lifecycle state while recovering from internal poison.
+    ///
+    /// # Returns
+    /// The lifecycle mutex guard for this bus.
     pub(in crate::facade) fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, LifecycleState> {
         self.inner
             .lifecycle

@@ -12,16 +12,26 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Releases one counted close operation when its caller exits or is cancelled.
-pub(in crate::facade) struct AsyncCloseGuard(Arc<AsyncTracker>);
+pub(in crate::facade) struct AsyncCloseGuard(
+    /// Tracker whose active close count this guard owns.
+    Arc<AsyncTracker>,
+);
 
 impl AsyncCloseGuard {
     /// Associates the guard with a close operation counted by the tracker.
+    ///
+    /// # Parameters
+    /// - `tracker`: tracker with one active close operation already counted.
+    ///
+    /// # Returns
+    /// A guard that releases the close count when dropped.
     pub(in crate::facade) fn new(tracker: Arc<AsyncTracker>) -> Self {
         Self(tracker)
     }
 }
 
 impl Drop for AsyncCloseGuard {
+    /// Releases the close operation count.
     fn drop(&mut self) {
         self.0.close_finished();
     }

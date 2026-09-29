@@ -8,6 +8,15 @@
 //! Provider message durability capabilities.
 
 /// Whether messages survive subscriber downtime.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::DurabilityCapability;
+///
+/// let durability = DurabilityCapability::Durable;
+/// assert_eq!(durability, DurabilityCapability::Durable);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum DurabilityCapability {

@@ -12,16 +12,27 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Releases one already-counted subscribe operation when the call completes.
-pub(in crate::facade) struct AsyncSubscribeGuard(Arc<AsyncTracker>);
+pub(in crate::facade) struct AsyncSubscribeGuard(
+    /// Tracker whose active subscribe count this guard owns.
+    Arc<AsyncTracker>,
+);
 
 impl AsyncSubscribeGuard {
     /// Wraps a subscribe already incremented by the operation admission path.
+    ///
+    /// # Parameters
+    /// - `tracker`: tracker with one active subscribe operation already
+    ///   counted.
+    ///
+    /// # Returns
+    /// A guard that releases the subscribe count when dropped.
     pub(in crate::facade) fn after_start(tracker: Arc<AsyncTracker>) -> Self {
         Self(tracker)
     }
 }
 
 impl Drop for AsyncSubscribeGuard {
+    /// Releases the counted subscribe operation.
     fn drop(&mut self) {
         self.0.subscribe_finished();
     }

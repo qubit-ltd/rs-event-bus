@@ -26,44 +26,13 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
-pub struct EventId(Box<str>);
+pub struct EventId(
+    /// Owned portable identifier validated at construction or generated as a
+    /// UUID.
+    Box<str>,
+);
 
 impl EventId {
-    /// Generates a globally portable UUID v4 event identifier.
-    ///
-    /// # Returns
-    /// A validated identifier generated from the operating-system random
-    /// source.
-    ///
-    /// # Errors
-    /// Returns [`EventIdGenerationError`] if the operating-system random source
-    /// cannot provide the bytes needed by the UUID generator.
-    pub fn generate() -> Result<Self, EventIdGenerationError> {
-        Self::generate_with(|| UuidV4Generator::new().generate().map(|uuid| uuid.to_string()))
-    }
-
-    /// Adapts a fallible identifier source to the validated event ID type.
-    ///
-    /// # Type Parameters
-    /// - `F`: one-shot callable type for producing the encoded identifier.
-    ///
-    /// # Parameters
-    /// - `generator`: source that creates the UUID string.
-    ///
-    /// # Returns
-    /// A validated identifier or a wrapper around the generator failure.
-    ///
-    /// # Errors
-    /// Returns [`EventIdGenerationError`] when `generator` fails.
-    fn generate_with<F>(generator: F) -> Result<Self, EventIdGenerationError>
-    where
-        F: FnOnce() -> Result<String, IdGenerationError>,
-    {
-        let value = generator().map_err(EventIdGenerationError::new)?;
-        // UUID v4 has a fixed, valid representation under EventId's portable rules.
-        Ok(Self(value.into_boxed_str()))
-    }
-
     /// Validates and owns an event identifier.
     ///
     /// Empty identifiers, leading or trailing whitespace, control characters,
@@ -87,6 +56,19 @@ impl EventId {
         Ok(Self(value.into()))
     }
 
+    /// Generates a globally portable UUID v4 event identifier.
+    ///
+    /// # Returns
+    /// A validated identifier generated from the operating-system random
+    /// source.
+    ///
+    /// # Errors
+    /// Returns [`EventIdGenerationError`] if the operating-system random source
+    /// cannot provide the bytes needed by the UUID generator.
+    pub fn generate() -> Result<Self, EventIdGenerationError> {
+        Self::generate_with(|| UuidV4Generator::new().generate().map(|uuid| uuid.to_string()))
+    }
+
     /// Returns the original event identifier.
     ///
     /// # Returns
@@ -95,6 +77,28 @@ impl EventId {
     #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Adapts a fallible identifier source to the validated event ID type.
+    ///
+    /// # Type Parameters
+    /// - `F`: one-shot callable type for producing the encoded identifier.
+    ///
+    /// # Parameters
+    /// - `generator`: source that creates the UUID string.
+    ///
+    /// # Returns
+    /// A validated identifier or a wrapper around the generator failure.
+    ///
+    /// # Errors
+    /// Returns [`EventIdGenerationError`] when `generator` fails.
+    fn generate_with<F>(generator: F) -> Result<Self, EventIdGenerationError>
+    where
+        F: FnOnce() -> Result<String, IdGenerationError>,
+    {
+        let value = generator().map_err(EventIdGenerationError::new)?;
+        // UUID v4 has a fixed, valid representation under EventId's portable rules.
+        Ok(Self(value.into_boxed_str()))
     }
 }
 

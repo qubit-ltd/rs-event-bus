@@ -35,9 +35,12 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// # Type Parameters
 /// - `T`: payload type stored in the request.
 ///
+/// # Examples
+///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use qubit_event_bus::model::{PublishRequest, Topic};
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::Topic;
 /// let request = PublishRequest::builder()
 ///     .topic(Topic::<String>::new("orders.old")?)
 ///     .topic(Topic::<String>::new("orders.created")?)
@@ -60,8 +63,12 @@ use crate::util::validated_text::is_nonblank_without_controls;
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use std::sync::{Arc, Mutex};
-/// use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
+/// use std::sync::Arc;
+/// use std::sync::Mutex;
+///
+/// use qubit_event_bus::model::PublishOptions;
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::Topic;
 /// let calls = Arc::new(Mutex::new(Vec::new()));
 /// let first = calls.clone();
 /// let second = calls.clone();
@@ -142,6 +149,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned topic."]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
         self
@@ -153,6 +161,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned payload."]
     pub fn payload(mut self, value: T) -> Self {
         self.payload = Some(value);
         self
@@ -164,6 +173,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned event id."]
     pub fn event_id(mut self, value: EventId) -> Self {
         self.event_id = Some(value);
         self
@@ -331,6 +341,9 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// timestamp when neither was supplied. Existing headers are merged by
     /// key; a later `options` call replaces earlier policy callbacks.
     ///
+    /// # Returns
+    /// The validated publication request.
+    ///
     /// # Errors
     /// Returns `MissingField` without a topic or payload, `InvalidHeader` for
     /// malformed header metadata, `InvalidOrderingKey` for a blank or control
@@ -339,9 +352,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// when no explicit ID was supplied and UUID generation failed; its source
     /// retains the underlying generator error. `Duration` is nonnegative, so
     /// zero delay is accepted.
-    ///
-    /// # Returns
-    /// The validated publication request.
     pub fn build(self) -> Result<PublishRequest<T>, PublishRequestBuildError> {
         self.build_with_event_id_generator(EventId::generate)
     }
@@ -409,6 +419,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
 }
 
 impl<T: Send + Sync + 'static> Default for PublishRequestBuilder<T> {
+    /// Creates an empty builder with no topic or payload.
     fn default() -> Self {
         Self::new()
     }

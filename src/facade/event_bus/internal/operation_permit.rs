@@ -5,28 +5,21 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal sync facade state owner.
+//! Drop-based release of one operation admission.
 
-use crate::facade::event_bus::OperationGate;
+use super::operation_gate::OperationGate;
 
-/// Releases one operation admission when its complete SPI call sequence
-/// returns.
+/// Releases one operation admission after its provider call sequence returns.
 pub(in crate::facade) struct OperationPermit<'a> {
-    pub(in crate::facade) gate: &'a OperationGate,
+    /// Gate whose active operation count this permit owns.
+    pub(in crate::facade::event_bus) gate: &'a OperationGate,
 }
 
 impl Drop for OperationPermit<'_> {
-    /// Releases one in-progress operation and wakes shutdown when admission
+    /// Releases one admitted operation and wakes shutdown when admission
     /// drains.
     fn drop(&mut self) {
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active = state.active.saturating_sub(1);
-        if state.active == 0 {
-            self.gate.changed.notify_all();
-        }
+        let mut state = self.gate.lock_state();
+        self.gate.release(&mut state);
     }
 }

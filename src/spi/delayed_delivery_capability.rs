@@ -8,6 +8,15 @@
 //! Provider delayed-delivery capabilities.
 
 /// Whether the provider natively delays message visibility.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::DelayedDeliveryCapability;
+///
+/// let capability = DelayedDeliveryCapability::Native;
+/// assert_eq!(capability, DelayedDeliveryCapability::Native);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum DelayedDeliveryCapability {

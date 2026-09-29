@@ -8,6 +8,15 @@
 //! Provider ordering capabilities.
 
 /// Strongest message ordering scope guaranteed by a provider.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::OrderingCapability;
+///
+/// let capability = OrderingCapability::PerKey;
+/// assert!(capability.supports_per_key());
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OrderingCapability {
@@ -28,6 +37,7 @@ impl OrderingCapability {
     /// # Returns
     /// `true` for per-key and per-subscription ordering guarantees.
     #[must_use]
+    #[inline]
     pub const fn supports_per_key(self) -> bool {
         matches!(self, Self::PerKey | Self::PerSubscription)
     }

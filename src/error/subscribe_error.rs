@@ -22,6 +22,7 @@ use crate::error::SpiError;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum SubscribeError {
     /// Subscriber configuration is invalid.
     #[error(transparent)]

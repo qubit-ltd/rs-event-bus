@@ -12,11 +12,20 @@ use crate::error::EventIdGenerationError;
 
 /// Failure while validating or creating the standard dead-letter event.
 #[derive(Debug, thiserror::Error)]
+#[must_use]
 pub(crate) enum DeadLetterBuildError {
     /// The configured dead-letter topic is invalid.
     #[error(transparent)]
-    Configuration(#[from] ConfigurationError),
+    Configuration(
+        /// Validation failure returned by the topic constructor.
+        #[from]
+        ConfigurationError,
+    ),
     /// A new event identifier could not be generated.
     #[error(transparent)]
-    EventId(#[from] EventIdGenerationError),
+    EventId(
+        /// UUID generation failure retained for diagnostics.
+        #[from]
+        EventIdGenerationError,
+    ),
 }

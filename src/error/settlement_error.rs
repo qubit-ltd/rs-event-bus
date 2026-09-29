@@ -20,6 +20,7 @@ use crate::error::SpiError;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum SettlementError {
     /// The delivery has already received its first terminal decision.
     #[error("delivery has already been settled")]

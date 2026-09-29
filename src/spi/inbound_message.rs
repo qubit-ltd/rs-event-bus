@@ -24,8 +24,12 @@ use crate::model::ProviderMessageMetadata;
 /// ```
 /// use std::collections::BTreeMap;
 /// use std::time::SystemTime;
-/// use qubit_event_bus::model::{EventId, ProviderMessageMetadata};
-/// use qubit_event_bus::spi::{InboundMessage, TopicAddress, TransportPayload};
+///
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::ProviderMessageMetadata;
+/// use qubit_event_bus::spi::InboundMessage;
+/// use qubit_event_bus::spi::TopicAddress;
+/// use qubit_event_bus::spi::TransportPayload;
 ///
 /// let message = InboundMessage::new(
 ///     TopicAddress::new("orders.created").unwrap(),
@@ -40,13 +44,21 @@ use crate::model::ProviderMessageMetadata;
 /// ```
 #[must_use]
 pub struct InboundMessage {
+    /// Validated source topic address supplied by the provider.
     topic: TopicAddress,
+    /// Stable event identity retained across redelivery attempts.
     id: EventId,
+    /// Original event creation time supplied by the publisher.
     timestamp: SystemTime,
+    /// Portable event headers preserved across the transport boundary.
     headers: Headers,
+    /// Optional key selecting a provider or facade ordering lane.
     ordering_key: Option<OrderingKey>,
+    /// Native allocation or encoded representation delivered to the facade.
     payload: TransportPayload,
+    /// Single-owner token, or `None` for transports without settlement support.
     settlement: Option<SettlementToken>,
+    /// Non-sensitive transport metadata associated with this delivery.
     provider_metadata: ProviderMessageMetadata,
 }
 
@@ -91,6 +103,7 @@ impl InboundMessage {
     ///
     /// # Returns
     /// The validated source address.
+    #[must_use = "Use the returned topic."]
     #[inline]
     pub fn topic(&self) -> &TopicAddress {
         &self.topic
@@ -99,6 +112,7 @@ impl InboundMessage {
     ///
     /// # Returns
     /// The stable event identifier.
+    #[must_use = "Use the returned id."]
     #[inline]
     pub fn id(&self) -> &EventId {
         &self.id
@@ -125,8 +139,8 @@ impl InboundMessage {
     ///
     /// # Returns
     /// `Some` with the key when configured, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&OrderingKey> {
         self.ordering_key.as_ref()
     }
@@ -134,6 +148,7 @@ impl InboundMessage {
     ///
     /// # Returns
     /// The native or encoded payload representation.
+    #[must_use = "Use the returned payload."]
     #[inline]
     pub fn payload(&self) -> &TransportPayload {
         &self.payload
@@ -142,16 +157,25 @@ impl InboundMessage {
     ///
     /// # Returns
     /// `Some` when a provider settlement token is available, otherwise `None`.
-    #[must_use]
     #[inline]
+    #[must_use = "Use the returned settlement."]
     pub fn settlement(&self) -> Option<&SettlementToken> {
         self.settlement.as_ref()
     }
+    /// Returns non-sensitive provider metadata.
+    ///
+    /// # Returns
+    /// The provider metadata map without cloning it.
+    #[must_use]
+    #[inline]
+    pub fn provider_metadata(&self) -> &ProviderMessageMetadata {
+        &self.provider_metadata
+    }
+
     /// Takes the provider settlement token, if present.
     ///
     /// # Returns
     /// The token when present; a later call returns `None` after it is taken.
-    #[must_use]
     pub fn take_settlement(&mut self) -> Option<SettlementToken> {
         self.settlement.take()
     }
@@ -188,15 +212,5 @@ impl InboundMessage {
             self.settlement,
             self.provider_metadata,
         )
-    }
-
-    /// Returns non-sensitive provider metadata.
-    ///
-    /// # Returns
-    /// The provider metadata map without cloning it.
-    #[must_use]
-    #[inline]
-    pub fn provider_metadata(&self) -> &ProviderMessageMetadata {
-        &self.provider_metadata
     }
 }

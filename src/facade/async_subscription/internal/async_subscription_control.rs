@@ -1,41 +1,48 @@
 // =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
+//    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Internal asynchronous subscription state.
 
-use crate::Diagnostic;
-use crate::facade::async_subscription::Arc;
-use crate::facade::async_subscription::AsyncEventBusInner;
-use crate::facade::async_subscription::AsyncSession;
-use crate::facade::async_subscription::AsyncShutdownDriver;
-use crate::facade::async_subscription::AsyncSignal;
-use crate::facade::async_subscription::Id;
-use crate::facade::async_subscription::Mutex;
-use crate::facade::async_subscription::Pin;
-use crate::facade::async_subscription::SessionSignals;
-use crate::facade::async_subscription::SignalRegistration;
-use crate::facade::async_subscription::Weak;
-use crate::facade::async_subscription::internal::session_lease::SessionLease;
-use crate::facade::async_subscription::internal::session_slot::SessionSlot;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Weak;
+
+use qubit_id::Id;
+
+use super::super::AsyncEventBusInner;
+use super::super::AsyncShutdownDriver;
+use super::super::SignalRegistration;
+use super::AsyncSession;
+use super::SessionLease;
+use super::SessionSignals;
+use super::SessionSlot;
+use crate::facade::async_event_bus::AsyncSignal;
+use crate::pipeline::Diagnostic;
 use crate::spi::ShutdownMode;
 
 /// Coordinates exclusive access to one paused or running session.
+///
+/// # Type Parameters
+/// - `T`: payload type handled by this subscription.
 pub(in crate::facade) struct AsyncSubscriptionControl<T: 'static> {
     /// Shared stop state observed by the session.
     pub(in crate::facade::async_subscription) signals: Arc<SessionSignals>,
     /// Session lease and disposal state.
-    pub(super) slot: Mutex<SessionSlot<T>>,
+    pub(in crate::facade::async_subscription) slot: Mutex<SessionSlot<T>>,
     /// Wakes callers waiting for the session lease.
-    pub(super) available: AsyncSignal,
+    pub(in crate::facade::async_subscription) available: AsyncSignal,
     /// Canonical provider receiver close failure.
-    pub(super) close_error: Mutex<Option<Arc<crate::error::SubscriptionCloseFailure>>>,
+    pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<crate::error::SubscriptionCloseFailure>>>,
     /// Weak owner used to unregister this control from the bus.
     pub(in crate::facade::async_subscription) bus: Weak<AsyncEventBusInner>,
     /// Bus-local subscription identity.
-    pub(super) id: Id,
+    pub(in crate::facade::async_subscription) id: Id,
 }
 
 impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
@@ -99,7 +106,8 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// Stops the subscription and relinquishes its receiver on handle drop.
     ///
     /// This synchronous disposal cannot await provider close; bus shutdown or
-    /// explicit [`AsyncSubscription::close`] performs asynchronous cleanup.
+    /// explicit [`crate::facade::AsyncSubscription::close`] performs
+    /// asynchronous cleanup.
     pub(in crate::facade::async_subscription) fn dispose(&self) {
         self.signals.stop(ShutdownMode::Immediate);
         let session = {
@@ -120,11 +128,17 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
 
 impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<T> {
     /// Stops the active or future runner.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown policy applied to this subscription.
     fn stop(&self, mode: ShutdownMode) {
         self.signals.stop(mode);
     }
 
     /// Returns the canonical receiver close failure, when one exists.
+    ///
+    /// # Returns
+    /// The stored close failure, or `None` before a close failure occurs.
     fn close_error(&self) -> Option<Arc<crate::error::SubscriptionCloseFailure>> {
         self.close_error
             .lock()
@@ -152,6 +166,15 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
 
     /// Stops the session, resumes its runner if needed, and closes its
     /// receiver.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown mode requested by the bus.
+    ///
+    /// # Returns
+    /// A future that completes after session and receiver cleanup.
+    ///
+    /// # Errors
+    /// The future resolves with the canonical provider receiver close failure.
     fn shutdown<'a>(
         &'a self,
         mode: ShutdownMode,

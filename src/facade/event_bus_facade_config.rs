@@ -293,6 +293,7 @@ impl EventBusFacadeConfig {
     ///
     /// # Returns
     /// The registered callbacks in append order, or an empty vector.
+    #[must_use = "Use the returned synchronous middleware chain."]
     pub(crate) fn subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<SubscriberInterceptor<T>>> {
         self.sync_subscriber_interceptors
             .get(&TypeId::of::<T>())
@@ -309,6 +310,7 @@ impl EventBusFacadeConfig {
     ///
     /// # Returns
     /// The registered callbacks in append order, or an empty vector.
+    #[must_use = "Use the returned asynchronous middleware chain."]
     pub(crate) fn async_subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
         self.async_subscriber_interceptors
             .get(&TypeId::of::<T>())
@@ -324,6 +326,8 @@ impl EventBusFacadeConfig {
     ///
     /// # Returns
     /// `true` when this configuration contains a synchronous middleware chain.
+    #[must_use]
+    #[inline]
     pub(crate) fn has_sync_subscriber_interceptors<T: 'static>(&self) -> bool {
         self.sync_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }
@@ -336,6 +340,8 @@ impl EventBusFacadeConfig {
     /// # Returns
     /// `true` when this configuration contains an asynchronous middleware
     /// chain.
+    #[must_use]
+    #[inline]
     pub(crate) fn has_async_subscriber_interceptors<T: 'static>(&self) -> bool {
         self.async_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }

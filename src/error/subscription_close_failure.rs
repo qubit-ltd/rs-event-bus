@@ -29,6 +29,7 @@ use crate::model::SubscriberId;
 /// }
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct SubscriptionCloseFailure {
     /// Logical subscriber whose provider-side subscription failed to close.
     subscriber_id: SubscriberId,
@@ -54,6 +55,7 @@ impl SubscriptionCloseFailure {
     ///
     /// # Returns
     /// The subscriber ID borrowed from this failure record.
+    #[must_use = "Use the returned subscriber id."]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
@@ -63,7 +65,7 @@ impl SubscriptionCloseFailure {
     ///
     /// # Returns
     /// The provider error borrowed from this failure record.
-    #[must_use]
+    #[must_use = "Use the returned error."]
     #[inline]
     pub fn error(&self) -> &SpiError {
         &self.error
@@ -84,6 +86,7 @@ impl fmt::Display for SubscriptionCloseFailure {
 
 impl Error for SubscriptionCloseFailure {
     /// Exposes the original provider close error as the source.
+    #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.error)
     }

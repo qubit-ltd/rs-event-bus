@@ -7,12 +7,13 @@
 // =============================================================================
 //! Drop guard for a poll-scoped bus identity.
 
-use crate::facade::async_subscription::internal::bus_context_future::ACTIVE_BUS_POLLS;
+use super::ACTIVE_BUS_POLLS;
 
 /// Removes the poll-scoped identity when polling returns or unwinds.
 pub(super) struct BusPollScope;
 
 impl Drop for BusPollScope {
+    /// Removes the current poll's facade identity from the thread-local stack.
     fn drop(&mut self) {
         ACTIVE_BUS_POLLS.with(|active| {
             active.borrow_mut().pop();

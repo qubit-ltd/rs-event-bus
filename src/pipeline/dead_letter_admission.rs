@@ -19,6 +19,16 @@ use crate::spi::PublishGuarantee;
 /// Opaque acceptance counts only when the provider promises at least an
 /// accepted result. Empty destination reports, dropped publication, and
 /// destination reports with no acceptance remain failures.
+///
+/// # Parameters
+///
+/// - `receipt`: Publication result whose admission outcome is evaluated.
+/// - `capabilities`: Provider guarantees used to interpret opaque acceptance.
+/// - `policy`: Admission evidence required by the facade.
+///
+/// # Returns
+///
+/// `true` when the configured policy considers the dead-letter event forwarded.
 pub(crate) fn was_accepted(
     receipt: &PublishReceipt,
     capabilities: EventBusCapabilities,
@@ -62,6 +72,7 @@ mod tests {
     use crate::spi::SettlementCapabilities;
     use crate::spi::SubscriptionModes;
 
+    /// Builds a capability set with the supplied publish guarantee.
     fn capabilities(guarantee: PublishGuarantee) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,
@@ -77,6 +88,7 @@ mod tests {
         )
     }
 
+    /// Creates a receipt for the supplied test acknowledgement.
     fn receipt(acknowledgement: PublishAcknowledgement) -> PublishReceipt {
         PublishReceipt::new(
             EventId::new("dead-letter-event").unwrap(),

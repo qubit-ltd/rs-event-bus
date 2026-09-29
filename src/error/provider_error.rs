@@ -24,9 +24,15 @@ use crate::error::SpiError;
 /// fn is_resolution_failure(error: &ProviderError) -> bool {
 ///     matches!(error, ProviderError::Resolution { .. })
 /// }
+///
+/// let error = ProviderError::Resolution {
+///     source: Box::new(std::io::Error::other("no matching provider")),
+/// };
+/// assert!(is_resolution_failure(&error));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum ProviderError {
     /// Provider resolution failed before SPI creation.
     #[error("event bus provider resolution failed: {source}")]

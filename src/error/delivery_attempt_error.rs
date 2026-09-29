@@ -22,6 +22,7 @@ use std::error::Error;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum DeliveryAttemptError {
     /// The delivery attempt failed with a stable kind and original source.
     #[error("delivery attempt failed ({kind}): {source}")]
@@ -54,6 +55,7 @@ impl DeliveryAttemptError {
             source: Box::new(source),
         }
     }
+
     /// Returns the stable failure classification.
     ///
     /// # Returns
@@ -65,6 +67,7 @@ impl DeliveryAttemptError {
             Self::Failure { kind, .. } => kind,
         }
     }
+
     /// Returns an explicit retry override, or `None` for default
     /// classification.
     ///

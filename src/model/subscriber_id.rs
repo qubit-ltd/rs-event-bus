@@ -33,15 +33,15 @@ pub struct SubscriberId(
 impl SubscriberId {
     /// Creates a subscriber identifier from a static string without allocating.
     ///
-    /// # Panics
-    /// Panics during constant evaluation, or at runtime, if the value does not
-    /// follow the portable subscriber-name syntax.
-    ///
     /// # Parameters
     /// - `value`: a static subscriber name that satisfies the portable syntax.
     ///
     /// # Returns
     /// An identifier that borrows `value` without allocating.
+    ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, if the value does not
+    /// follow the portable subscriber-name syntax.
     ///
     /// ```compile_fail
     /// use qubit_event_bus::SubscriberId;
@@ -76,6 +76,16 @@ impl SubscriberId {
         Ok(Self(Cow::Owned(value.into())))
     }
 
+    /// Returns the original, case-sensitive subscriber name.
+    ///
+    /// # Returns
+    /// The validated name, borrowed from this identifier.
+    #[must_use]
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+
     /// Checks the portable subscriber-name syntax using const-compatible byte
     /// operations.
     ///
@@ -84,6 +94,7 @@ impl SubscriberId {
     ///
     /// # Returns
     /// `true` when `value` follows the portable subscriber-name syntax.
+    #[must_use = "Use the returned query result."]
     const fn is_valid(value: &str) -> bool {
         let bytes = value.as_bytes();
         if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
@@ -98,14 +109,5 @@ impl SubscriberId {
             index += 1;
         }
         true
-    }
-
-    /// Returns the original, case-sensitive subscriber name.
-    ///
-    /// # Returns
-    /// The validated name, borrowed from this identifier.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_ref()
     }
 }

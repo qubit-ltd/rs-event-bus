@@ -25,6 +25,17 @@ pub(in crate::facade) struct OwnedDeliveryTask<T: 'static> {
 }
 
 /// Drops queued handlers that have not started, counting ephemeral deliveries.
+///
+/// # Parameters
+///
+/// - `tasks`: Queued handler tasks to filter in place.
+/// - `abandoned`: Counter incremented for discarded ephemeral deliveries.
+/// - `ephemeral`: Whether discarded deliveries should contribute to the
+///   counter.
+///
+/// # Side Effects
+///
+/// Removes unstarted tasks from `tasks` and may increment `abandoned`.
 pub(in crate::facade) fn discard_unstarted_tasks<T: 'static>(
     tasks: &mut Vec<OwnedDeliveryTask<T>>,
     abandoned: &AtomicU64,

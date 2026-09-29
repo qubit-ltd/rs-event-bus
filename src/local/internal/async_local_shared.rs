@@ -12,10 +12,11 @@ use std::sync::Mutex;
 
 use qubit_clock::Timer;
 
+use super::super::async_signal::AsyncSignal;
+use super::super::outstanding_budget::OutstandingBudget;
 use super::AsyncBusState;
-use crate::local::async_signal::AsyncSignal;
-use crate::local::outstanding_budget::OutstandingBudget;
 
+/// Capacity, registry, notification, and timer state shared by the async bus.
 pub(in crate::local) struct AsyncLocalShared {
     /// Queue capacity copied into each mailbox.
     capacity: usize,
@@ -39,6 +40,9 @@ impl AsyncLocalShared {
     ///
     /// # Returns
     /// Shared state with an empty mailbox registry.
+    ///
+    /// # Panics
+    /// Panics if `max_total_outstanding` is zero.
     pub(in crate::local) fn new(capacity: usize, max_total_outstanding: usize, timer: Arc<dyn Timer>) -> Self {
         Self {
             capacity,

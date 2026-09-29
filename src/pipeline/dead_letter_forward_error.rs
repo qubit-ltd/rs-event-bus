@@ -12,14 +12,25 @@ use crate::model::AdmissionOutcome;
 
 /// Failure that may be retried without settling the original delivery.
 #[derive(Debug, thiserror::Error)]
+#[must_use]
 pub(crate) enum DeadLetterForwardError {
     /// The provider or publish pipeline failed before a receipt was returned.
     #[error(transparent)]
-    Publish(#[from] PublishError),
+    Publish(
+        /// Provider or facade error retained for retry classification.
+        #[from]
+        PublishError,
+    ),
     /// A non-publish pipeline stage failed before provider admission.
     #[error("dead-letter pipeline failed: {0}")]
-    Pipeline(Box<str>),
+    Pipeline(
+        /// Description of the stage failure that prevented publication.
+        Box<str>,
+    ),
     /// A receipt reported no admission allowed by the configured policy.
     #[error("dead-letter event was not admitted: {0:?}")]
-    NotAdmitted(AdmissionOutcome),
+    NotAdmitted(
+        /// Admission evidence reported by the provider or interceptor.
+        AdmissionOutcome,
+    ),
 }

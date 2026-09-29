@@ -8,6 +8,15 @@
 //! Provider replay capabilities.
 
 /// Historical positions from which a provider can replay messages.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::spi::ReplayCapability;
+///
+/// let replay = ReplayCapability::Position;
+/// assert_eq!(replay, ReplayCapability::Position);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ReplayCapability {

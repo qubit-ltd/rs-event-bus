@@ -26,10 +26,15 @@ use crate::error::SubscriptionCloseErrors;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[must_use]
 pub enum LifecycleError {
     /// The injected timer failed while registering or completing a deadline.
     #[error("event bus timer failed: {0}")]
-    Timer(#[from] TimeError),
+    Timer(
+        /// Failure returned by the injected timer.
+        #[from]
+        TimeError,
+    ),
     /// Waiting from a synchronous callback or worker owned by the bus would
     /// deadlock.
     #[error("{operation} would deadlock in this event bus execution context")]
@@ -45,8 +50,15 @@ pub enum LifecycleError {
     IdleWaitUnsupported,
     /// The backend lifecycle operation failed.
     #[error(transparent)]
-    Spi(#[from] SpiError),
+    Spi(
+        /// Provider failure returned during the lifecycle operation.
+        #[from]
+        SpiError,
+    ),
     /// One or more provider subscriptions failed to close.
     #[error(transparent)]
-    SubscriptionClose(Arc<SubscriptionCloseErrors>),
+    SubscriptionClose(
+        /// Snapshot containing each failed provider receiver close.
+        Arc<SubscriptionCloseErrors>,
+    ),
 }

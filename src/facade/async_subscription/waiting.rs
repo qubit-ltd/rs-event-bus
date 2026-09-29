@@ -5,11 +5,22 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Async subscription waits that observe the runner stop signal.
 
 use crate::facade::async_subscription::SessionSignals;
 use crate::facade::async_subscription::SignalRegistration;
 
 /// Waits for an operation unless the subscription stop signal wins first.
+///
+/// # Type Parameters
+/// - `F`: Future being raced against the stop signal.
+///
+/// # Parameters
+/// - `future`: Operation to await while the subscription remains active.
+/// - `control`: Session signals that report whether the runner has stopped.
+///
+/// # Returns
+/// `Some(output)` when the operation completes, or `None` when stopping wins.
 pub(in crate::facade::async_subscription) async fn await_or_stop<F>(
     future: F,
     control: &SessionSignals,

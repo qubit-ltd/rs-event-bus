@@ -22,6 +22,8 @@ use crate::model::FailureDirective;
 ///
 /// `true` only for a failed retry rule callback; observer failures and all
 /// other terminal reasons return `false`.
+#[must_use]
+#[inline]
 pub(crate) fn is_retry_rule_failure(reason: &RetryErrorReason) -> bool {
     matches!(reason, RetryErrorReason::CallbackFailed { callback }
         if callback.callback() == RetryCallbackKind::Rule)
@@ -61,7 +63,7 @@ mod tests {
     use crate::model::FailureDirective;
 
     #[test]
-    fn terminal_directive_preserves_non_retry_requests_across_terminal_reasons() {
+    fn test_terminal_directive_preserves_non_retry_requests_across_terminal_reasons() {
         let reasons = [
             RetryErrorReason::Aborted,
             RetryErrorReason::Exhausted {
@@ -82,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_local_retry_is_discarded_after_each_non_rule_terminal_reason() {
+    fn test_terminal_local_retry_is_discarded_after_each_non_rule_terminal_reason() {
         let reasons = [
             RetryErrorReason::Aborted,
             RetryErrorReason::Exhausted {

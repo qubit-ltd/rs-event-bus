@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use qubit_id::Id;
 
-use super::super::super::async_event_bus::AsyncEventBusInner;
+use super::super::AsyncEventBusInner;
 use super::super::SharedAsyncHandler;
 use super::BusContextFuture;
 use super::PendingDelivery;
@@ -37,17 +37,38 @@ use crate::spi::DeliveryDisposition;
 ///
 /// This type deliberately has no provider receiver or session task queues.
 pub(in crate::facade::async_subscription) struct DeliveryTaskContext<T: 'static> {
+    /// Shared provider identity, admission state, and diagnostic observers.
     pub(in crate::facade::async_subscription) inner: Arc<AsyncEventBusInner>,
+    /// Bus-local identity used to select this subscription's ordering lane.
     pub(in crate::facade::async_subscription) id: Id,
+    /// Logical subscriber identity included in delivery and failure metadata.
     pub(in crate::facade::async_subscription) subscriber_id: SubscriberId,
+    /// Typed topic used to interpret the decoded payload and ordering key.
     pub(in crate::facade::async_subscription) topic: Topic<T>,
+    /// Filtering, middleware, retry, and terminal failure policies.
     pub(in crate::facade::async_subscription) options: SubscribeOptions<T>,
+    /// Shared cancellation, shutdown, and dead-letter failure signals.
     pub(in crate::facade::async_subscription) signals: Arc<SessionSignals>,
+    /// Delivery owned by this task, or `None` after ownership is returned.
     pub(in crate::facade::async_subscription) pending: Option<PendingDelivery<T>>,
+    /// Optional start marker coordinated with subscription cancellation.
     pub(in crate::facade::async_subscription) started: Option<Arc<AtomicBool>>,
 }
 
 impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
+    /// Processes the current delivery, including filtering, handler retries,
+    /// and settlement.
+    ///
+    /// # Parameters
+    ///
+    /// - `handler`: Subscriber callback invoked for a decoded and accepted
+    ///   event.
+    ///
+    /// # Side Effects
+    ///
+    /// May invoke user callbacks, emit diagnostics, publish a dead-letter
+    /// event, and record settlement or failure state on the pending
+    /// delivery.
     pub(in crate::facade::async_subscription) async fn process_pending(&mut self, handler: SharedAsyncHandler<T>) {
         let Some(pending) = self.pending.as_ref() else {
             return;
@@ -136,6 +157,17 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         }
     }
 
+    /// Builds delivery metadata for the current pending event.
+    ///
+    /// # Parameters
+    ///
+    /// - `can_settle`: Whether the provider supplied a settlement token.
+    /// - `metadata`: Metadata supplied by the provider.
+    /// - `event`: Event whose dead-letter marker is inspected.
+    ///
+    /// # Returns
+    ///
+    /// A delivery context tied to this subscription and provider.
     fn context(
         &self,
         can_settle: bool,
@@ -152,6 +184,19 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         }
     }
 
+    /// Records a failed handler result and applies its failure directive.
+    ///
+    /// # Parameters
+    ///
+    /// - `delivery`: Event and context associated with the failed attempt.
+    /// - `error`: Handler or processing error to record.
+    /// - `attempts`: Number of handler attempts made.
+    /// - `directive`: Action selected by the failure policy.
+    ///
+    /// # Side Effects
+    ///
+    /// May emit diagnostics, forward a dead-letter event, update pending
+    /// failure state, or settle the delivery.
     async fn finish_failure(
         &mut self,
         delivery: Delivery<T>,
@@ -228,12 +273,34 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         }
     }
 
+    /// Stores the settlement decision for the session owner to apply.
+    ///
+    /// # Parameters
+    ///
+    /// - `disposition`: Provider settlement action selected for this delivery.
+    /// - `_event`: Event associated with the decision, retained for call-site
+    ///   context.
+    ///
+    /// # Side Effects
+    ///
+    /// Updates the pending delivery's settlement intent when a delivery is
+    /// pending.
     async fn settle_pending(&mut self, disposition: DeliveryDisposition, _event: Option<&EventEnvelope<T>>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.settlement_intent = Some(disposition);
         }
     }
 
+    /// Stores the handler failure details for the session owner to report.
+    ///
+    /// # Parameters
+    ///
+    /// - `attempts`: Number of attempts made before failure.
+    /// - `error`: Human-readable failure message.
+    ///
+    /// # Side Effects
+    ///
+    /// Updates the pending delivery's failure diagnostic when one is pending.
     fn record_failure_diagnostic(&mut self, attempts: u32, error: Box<str>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.failure_diagnostic = Some((attempts, error));

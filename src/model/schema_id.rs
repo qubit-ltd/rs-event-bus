@@ -31,20 +31,21 @@ pub struct SchemaId(
 impl SchemaId {
     /// Creates a schema identifier from a static string without allocating.
     ///
-    /// # Panics
-    /// Panics during constant evaluation, or at runtime, if the value is empty,
-    /// has surrounding Unicode whitespace, or contains a control character.
-    ///
     /// # Parameters
     /// - `value`: the static schema identifier to validate and borrow.
     ///
     /// # Returns
     /// A schema identifier borrowing `value` without allocating.
     ///
+    /// # Panics
+    /// Panics during constant evaluation, or at runtime, if the value is empty,
+    /// has surrounding Unicode whitespace, or contains a control character.
+    ///
     /// ```compile_fail
     /// use qubit_event_bus::model::SchemaId;
     /// const INVALID_SCHEMA: SchemaId = SchemaId::new_static("schema-v1\n");
     /// ```
+    #[must_use]
     pub const fn new_static(value: &'static str) -> Self {
         assert!(is_nonblank_without_controls(value), "invalid schema ID");
         Self(Cow::Borrowed(value))

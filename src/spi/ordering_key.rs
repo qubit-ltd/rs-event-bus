@@ -21,7 +21,11 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[must_use]
-pub struct OrderingKey(Box<str>);
+pub struct OrderingKey(
+    /// Owned partition key validated to exclude surrounding whitespace and
+    /// controls.
+    Box<str>,
+);
 
 impl OrderingKey {
     /// Creates a nonblank ordering key, or returns `None` for blank values,

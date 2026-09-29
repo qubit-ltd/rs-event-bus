@@ -43,16 +43,26 @@ use crate::model::PublishAcknowledgement;
 /// transport and subscription receiver:
 ///
 /// ```
+/// use std::sync::Arc;
+///
 /// use qubit_event_bus::error::SpiError;
 /// use qubit_event_bus::model::PublishAcknowledgement;
-/// use qubit_event_bus::spi::{
-///     DelayedDeliveryCapability, DurabilityCapability, EventBusCapabilities,
-///     EventBusSpi, EventSubscriptionSpi, OrderingCapability, OutboundMessage,
-///     PayloadModes, PublishGuarantee, PublishVisibility, ReplayCapability,
-///     SettlementCapabilities, ShutdownMode, ShutdownOutcome, SpiSubscriptionRequest,
-///     SubscriptionModes,
-/// };
-/// use std::sync::Arc;
+/// use qubit_event_bus::spi::DelayedDeliveryCapability;
+/// use qubit_event_bus::spi::DurabilityCapability;
+/// use qubit_event_bus::spi::EventBusCapabilities;
+/// use qubit_event_bus::spi::EventBusSpi;
+/// use qubit_event_bus::spi::EventSubscriptionSpi;
+/// use qubit_event_bus::spi::OrderingCapability;
+/// use qubit_event_bus::spi::OutboundMessage;
+/// use qubit_event_bus::spi::PayloadModes;
+/// use qubit_event_bus::spi::PublishGuarantee;
+/// use qubit_event_bus::spi::PublishVisibility;
+/// use qubit_event_bus::spi::ReplayCapability;
+/// use qubit_event_bus::spi::SettlementCapabilities;
+/// use qubit_event_bus::spi::ShutdownMode;
+/// use qubit_event_bus::spi::ShutdownOutcome;
+/// use qubit_event_bus::spi::SpiSubscriptionRequest;
+/// use qubit_event_bus::spi::SubscriptionModes;
 ///
 /// struct RejectingExample;
 ///
@@ -110,6 +120,8 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// The attached provider identity, or `None` when no registry identity is
     /// attached.
     #[doc(hidden)]
+    #[must_use = "Use the returned query result."]
+    #[inline]
     fn provider_id(&self) -> Option<ProviderId> {
         None
     }
@@ -121,6 +133,7 @@ pub trait EventBusSpi: Send + Sync + 'static {
     ///
     /// # Returns
     /// The immutable capabilities supported by this provider instance.
+    #[must_use = "Use the returned query result."]
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one type-erased transport message.

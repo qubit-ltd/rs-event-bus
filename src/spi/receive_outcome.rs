@@ -21,11 +21,18 @@ use super::InboundMessage;
 /// assert!(matches!(outcome, ReceiveOutcome::TimedOut));
 /// ```
 #[non_exhaustive]
+#[must_use]
 pub enum ReceiveOutcome {
     /// A message was received.
-    Message(InboundMessage),
+    Message(
+        /// Provider message and its transport metadata.
+        InboundMessage,
+    ),
     /// One or more messages may have been missed; receiving may continue.
-    Gap(DeliveryGap),
+    Gap(
+        /// Provider explanation and optional count of missed messages.
+        DeliveryGap,
+    ),
     /// No message arrived before the requested timeout.
     TimedOut,
     /// The receiver has closed permanently.
