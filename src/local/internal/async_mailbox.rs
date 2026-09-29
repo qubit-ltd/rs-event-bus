@@ -9,8 +9,9 @@
 
 use std::sync::Arc;
 
-use super::super::state::LocalQueue;
+use super::LocalQueue;
 
 pub(in crate::local) struct AsyncMailbox {
+    /// Queue and wake signals for this subscription.
     pub(in crate::local) queue: Arc<LocalQueue>,
 }

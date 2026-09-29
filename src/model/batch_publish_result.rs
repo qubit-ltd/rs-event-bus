@@ -23,24 +23,45 @@ use crate::error::PublishError;
 /// assert_eq!(batch.total_count(), 0);
 /// assert!(batch.items().is_empty());
 /// ```
+#[must_use]
 pub struct BatchPublishResult {
+    /// Individual outcomes in the same order as their input requests.
     items: Vec<Result<PublishReceipt, PublishError>>,
 }
 
 impl BatchPublishResult {
     /// Preserves the exact input order of publication results.
+    ///
+    /// # Parameters
+    /// - `items`: ordered result for each submitted request.
+    ///
+    /// # Returns
+    /// A batch retaining the supplied result order.
     pub fn new(items: Vec<Result<PublishReceipt, PublishError>>) -> Self {
         Self { items }
     }
     /// Returns all per-request results in input order.
+    ///
+    /// # Returns
+    /// The ordered result slice.
+    #[inline]
     pub fn items(&self) -> &[Result<PublishReceipt, PublishError>] {
         &self.items
     }
     /// Consumes the batch and returns its ordered results.
+    ///
+    /// # Returns
+    /// The owned result vector in input order.
+    #[must_use]
     pub fn into_items(self) -> Vec<Result<PublishReceipt, PublishError>> {
         self.items
     }
     /// Returns the number of input requests.
+    ///
+    /// # Returns
+    /// The number of stored publication outcomes.
+    #[must_use]
+    #[inline]
     pub fn total_count(&self) -> usize {
         self.items.len()
     }
@@ -48,6 +69,10 @@ impl BatchPublishResult {
     /// one accepted destination. Empty, filtered-only, and rejected-only
     /// destination lists contribute zero; this does not count handler
     /// completion.
+    ///
+    /// # Returns
+    /// The number of results with at least one accepted destination.
+    #[must_use]
     pub fn accepted_count(&self) -> usize {
         self.items
             .iter()
@@ -64,12 +89,21 @@ impl BatchPublishResult {
             .count()
     }
     /// Counts events intentionally dropped by a publisher interceptor.
+    ///
+    /// # Returns
+    /// The number of receipts dropped before provider dispatch.
+    #[must_use]
+    #[inline]
     pub fn dropped_count(&self) -> usize {
         self.items.iter().filter(|item| matches!(item, Ok(receipt) if matches!(receipt.acknowledgement(), PublishAcknowledgement::DroppedByInterceptor))).count()
     }
     /// Counts failed publications and local receipts with at least one rejected
     /// destination. A mixed local receipt contributes to both accepted and
     /// failure counts; neither count describes handler completion.
+    ///
+    /// # Returns
+    /// The number of failed requests or receipts with rejected destinations.
+    #[must_use]
     pub fn failure_count(&self) -> usize {
         self.items
             .iter()

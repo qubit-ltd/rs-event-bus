@@ -10,6 +10,9 @@
 use std::sync::Arc;
 
 /// Optional provider-specific checks for injected failures and cancellation.
+///
+/// Each populated callback is invoked once by the runner. Missing callbacks
+/// become skipped cases, or failures under the strict conformance profile.
 #[derive(Default)]
 pub struct ConformanceHooks {
     /// Checks repeat-settlement idempotence and conflicting dispositions.
@@ -19,6 +22,8 @@ pub struct ConformanceHooks {
     /// Checks that closing with an unsettled durable delivery leaves it
     /// available after reconnecting the same logical subscription.
     pub durable_recovery: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    /// Checks that closing an ephemeral subscription releases unsettled work.
+    pub ephemeral_cleanup: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
     /// Checks cancellation after a settlement operation has taken effect.
     pub settlement_cancellation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
     /// Checks cancellation safety while closing a provider subscription.

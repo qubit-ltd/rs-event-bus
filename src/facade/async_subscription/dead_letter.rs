@@ -1,0 +1,100 @@
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+
+use crate::facade::async_subscription::Arc;
+use crate::facade::async_subscription::AsyncEventBusInner;
+use crate::facade::async_subscription::AsyncRetry;
+use crate::facade::async_subscription::RetryCancellationToken;
+use crate::facade::async_subscription::RetryPolicy;
+use crate::model::DeadLetterAdmissionPolicy;
+use crate::model::DeadLetterEvent;
+use crate::model::EventEnvelope;
+use crate::model::PublishReceipt;
+use crate::pipeline::DeadLetterForwardError;
+use crate::pipeline::dead_letter_retry_config;
+
+/// Publishes a dead-letter event with the configured retry policy.
+///
+/// # Type Parameters
+/// - `T`: original event payload type.
+///
+/// # Parameters
+/// - `inner`: bus state and provider pipeline.
+/// - `envelope`: typed dead-letter event to publish.
+/// - `retry_policy`: optional retry policy for dead-letter forwarding.
+/// - `cancellation`: optional cancellation signal for retry waits.
+/// - `admission_policy`: condition required for a forwarded event to count as
+///   accepted.
+///
+/// # Returns
+/// The publish receipt when forwarding is accepted.
+///
+/// # Errors
+/// Returns a string describing pipeline, admission, or retry failure.
+pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'static>(
+    inner: &Arc<AsyncEventBusInner>,
+    envelope: &EventEnvelope<DeadLetterEvent<T>>,
+    retry_policy: Option<&RetryPolicy>,
+    cancellation: Option<&RetryCancellationToken>,
+    admission_policy: DeadLetterAdmissionPolicy,
+) -> Result<PublishReceipt, String> {
+    /// Performs one dead-letter publish attempt and checks its admission.
+    /// Publishes one dead-letter envelope and validates destination admission.
+    ///
+    /// # Type Parameters
+    /// - `T`: original event payload type.
+    ///
+    /// # Parameters
+    /// - `inner`: bus state and provider pipeline.
+    /// - `envelope`: dead-letter event to publish.
+    /// - `admission_policy`: required provider admission result.
+    ///
+    /// # Returns
+    /// The receipt when the provider admitted the dead-letter event.
+    ///
+    /// # Errors
+    /// Returns the pipeline or not-admitted failure.
+    pub(in crate::facade) async fn attempt<T: Send + Sync + 'static>(
+        inner: &Arc<AsyncEventBusInner>,
+        envelope: EventEnvelope<DeadLetterEvent<T>>,
+        admission_policy: DeadLetterAdmissionPolicy,
+    ) -> Result<PublishReceipt, DeadLetterForwardError> {
+        let receipt = inner
+            .publisher
+            .publish_async(
+                inner.spi.as_ref(),
+                crate::model::PublishRequest::from_envelope(envelope),
+                &[],
+                &inner.observer_snapshot(),
+                inner.timer.clone(),
+            )
+            .await
+            .map_err(|failure| DeadLetterForwardError::Pipeline(failure.to_string().into()))?;
+        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+            Ok(receipt)
+        } else {
+            Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
+        }
+    }
+
+    let Some(policy) = retry_policy else {
+        return attempt(inner, envelope.clone(), admission_policy)
+            .await
+            .map_err(|error| error.to_string());
+    };
+    let config = dead_letter_retry_config(policy).map_err(|error| error.to_string())?;
+    let mut retry = AsyncRetry::new(&config).timer(inner.timer.clone());
+    if let Some(cancellation) = cancellation {
+        retry = retry.cancellation_token(cancellation.clone());
+    }
+    retry
+        .run(|| attempt(inner, envelope.clone(), admission_policy))
+        .await
+        .map(|success| success.value().clone())
+        .map_err(|error| error.to_string())
+}

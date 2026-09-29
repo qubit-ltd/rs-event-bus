@@ -19,6 +19,7 @@ use super::conformance_report::payload_probes;
 use super::conformance_report::probe_message;
 use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
+use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::ReceiveOutcome;
@@ -27,6 +28,17 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
 /// Runs common structural checks against a fresh asynchronous provider.
+///
+/// # Type Parameters
+/// - `F`: asynchronous provider factory type.
+/// - `Fut`: future returned by the provider factory.
+///
+/// # Parameters
+/// - `factory`: asynchronously creates a fresh provider instance.
+/// - `hooks`: optional provider-specific checks and fixtures.
+///
+/// # Returns
+/// A report containing each conformance check result.
 pub async fn run_async<F, Fut>(factory: F, hooks: &AsyncConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Fut,
@@ -37,6 +49,18 @@ where
 
 /// Runs asynchronous checks with explicit treatment of missing provider
 /// fixtures.
+///
+/// # Type Parameters
+/// - `F`: asynchronous provider factory type.
+/// - `Fut`: future returned by the provider factory.
+///
+/// # Parameters
+/// - `factory`: asynchronously creates a fresh provider instance.
+/// - `hooks`: optional provider-specific checks and fixtures.
+/// - `profile`: policy for missing required fixtures.
+///
+/// # Returns
+/// A report containing each conformance check result.
 pub async fn run_async_with_profile<F, Fut>(
     factory: F,
     hooks: &AsyncConformanceHooks,
@@ -228,19 +252,38 @@ where
             },
         });
     }
-    push_async_hook(
-        &mut report,
-        "provider-settlement-idempotence",
-        hooks.settlement.as_ref(),
-    )
-    .await;
+    let capabilities = capability_spi.capabilities();
+    if capabilities.settlement() == SettlementCapabilities::None {
+        report.push(ConformanceCase::Skipped {
+            case_id: "provider-settlement-idempotence".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "settlement",
+            },
+        });
+    } else {
+        push_async_hook(
+            &mut report,
+            "provider-settlement-idempotence",
+            hooks.settlement.as_ref(),
+        )
+        .await;
+    }
     push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
-    push_async_hook(
-        &mut report,
-        "settlement-cancellation",
-        hooks.settlement_cancellation.as_ref(),
-    )
-    .await;
+    if capabilities.settlement() == SettlementCapabilities::None {
+        report.push(ConformanceCase::Skipped {
+            case_id: "settlement-cancellation".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "settlement",
+            },
+        });
+    } else {
+        push_async_hook(
+            &mut report,
+            "settlement-cancellation",
+            hooks.settlement_cancellation.as_ref(),
+        )
+        .await;
+    }
     push_async_hook(&mut report, "close-cancellation", hooks.close_cancellation.as_ref()).await;
     push_async_hook(
         &mut report,
@@ -248,16 +291,48 @@ where
         hooks.shutdown_cancellation.as_ref(),
     )
     .await;
-    push_async_hook(
-        &mut report,
-        "durable-unsettled-recovery",
-        hooks.durable_recovery.as_ref(),
-    )
-    .await;
+    if capabilities
+        .subscription_modes()
+        .supports(SubscriptionDurability::Ephemeral)
+    {
+        push_async_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref()).await;
+    } else {
+        report.push(ConformanceCase::Skipped {
+            case_id: "ephemeral-cleanup".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "ephemeral-subscription",
+            },
+        });
+    }
+    if capabilities
+        .subscription_modes()
+        .supports(SubscriptionDurability::Durable)
+    {
+        push_async_hook(
+            &mut report,
+            "durable-unsettled-recovery",
+            hooks.durable_recovery.as_ref(),
+        )
+        .await;
+    } else {
+        report.push(ConformanceCase::Skipped {
+            case_id: "durable-unsettled-recovery".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "durable-subscription",
+            },
+        });
+    }
     report.apply_profile(profile);
     report
 }
 
+/// Runs an optional provider-specific asynchronous check and records its
+/// result. Runs an optional asynchronous fixture and appends its outcome.
+///
+/// # Parameters
+/// - `report`: report receiving the result.
+/// - `case_id`: stable case identifier.
+/// - `hook`: optional provider-specific check.
 async fn push_async_hook(
     report: &mut ConformanceReport,
     case_id: &str,

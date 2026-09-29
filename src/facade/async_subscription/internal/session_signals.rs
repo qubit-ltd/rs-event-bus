@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use super::super::super::async_event_bus::AsyncSignal;
 use crate::error::ReceiveError;
-use crate::facade::async_event_bus::AsyncSignal;
 use crate::spi::ShutdownMode;
 
 /// Coordinates cancellation and stop escalation for one subscription session.

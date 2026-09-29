@@ -44,14 +44,28 @@ use super::PublishAcknowledgement;
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishReceipt {
+    /// Event identifier supplied by the original caller.
     input_event_id: EventId,
+    /// Event identifier after interception, absent when dropped.
     dispatched_event_id: Option<EventId>,
+    /// Provider that returned the admission result.
     provider_id: ProviderId,
+    /// Provider or interceptor admission outcome.
     acknowledgement: PublishAcknowledgement,
 }
 
 impl PublishReceipt {
     /// Creates a receipt after interception and provider admission.
+    ///
+    /// # Parameters
+    /// - `input_event_id`: original caller-provided event identifier.
+    /// - `dispatched_event_id`: identifier sent to the provider, or `None` if
+    ///   interception dropped the event.
+    /// - `provider_id`: provider that handled the publication.
+    /// - `acknowledgement`: admission information returned by the publish path.
+    ///
+    /// # Returns
+    /// A receipt preserving input and dispatched identity separately.
     pub fn new(
         input_event_id: EventId,
         dispatched_event_id: Option<EventId>,
@@ -66,18 +80,27 @@ impl PublishReceipt {
         }
     }
     /// Returns the original event ID before publisher interception.
+    ///
+    /// # Returns
+    /// The identifier supplied by the caller before interceptors ran.
     #[must_use = "the input event ID identifies the original publication"]
     #[inline]
     pub fn input_event_id(&self) -> &EventId {
         &self.input_event_id
     }
     /// Returns the dispatched event ID, or `None` when interception dropped it.
+    ///
+    /// # Returns
+    /// The dispatched identifier, or `None` when publication was dropped.
     #[must_use]
     #[inline]
     pub fn dispatched_event_id(&self) -> Option<&EventId> {
         self.dispatched_event_id.as_ref()
     }
     /// Returns the provider that produced the admission result.
+    ///
+    /// # Returns
+    /// The identifier of the provider that handled the publication.
     #[must_use]
     #[inline]
     pub fn provider_id(&self) -> &ProviderId {
@@ -88,6 +111,9 @@ impl PublishReceipt {
     /// `DestinationAdmissions([])` means no destinations were reported. It
     /// does not prove that handler work completed or that a remote consumer
     /// was globally idle.
+    ///
+    /// # Returns
+    /// The provider or interceptor's admission report.
     #[must_use]
     #[inline]
     pub fn acknowledgement(&self) -> &PublishAcknowledgement {
@@ -101,7 +127,6 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The admission outcome reported by the provider or publisher interceptor.
-    #[must_use]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         self.acknowledgement.admission_outcome()
     }
@@ -111,6 +136,10 @@ impl PublishReceipt {
     /// Returns `Some` for per-destination results, including an empty list.
     /// Returns `None` when the provider hides destinations or interception
     /// dropped the publication before dispatch.
+    ///
+    /// # Returns
+    /// Counts for reported destinations, including zero counts for an empty
+    /// snapshot, or `None` when destination admission is not visible.
     #[must_use]
     pub fn admission_summary(&self) -> Option<AdmissionSummary> {
         match self.admission_outcome() {
@@ -132,6 +161,20 @@ impl PublishReceipt {
     /// The stricter requirement returns
     /// [`AdmissionCheckError::RejectedDestinations`] if any reported
     /// destination rejected admission after at least one accepted.
+    ///
+    /// # Parameters
+    /// - `requirement`: minimum admission condition to enforce.
+    ///
+    /// # Returns
+    /// `Ok(())` when the visible admission result satisfies `requirement`.
+    ///
+    /// # Errors
+    /// Returns [`AdmissionCheckError::Dropped`] if interception stopped
+    /// dispatch, [`AdmissionCheckError::VisibilityUnavailable`] if the
+    /// provider hid destination details,
+    /// [`AdmissionCheckError::NoAcceptedDestination`] if none accepted, or
+    /// [`AdmissionCheckError::RejectedDestinations`] when the strict
+    /// requirement observes any rejection.
     pub fn check_admission(&self, requirement: AdmissionRequirement) -> Result<(), AdmissionCheckError> {
         match self.admission_outcome() {
             AdmissionOutcome::OpaqueAccepted => Err(AdmissionCheckError::VisibilityUnavailable),

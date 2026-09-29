@@ -12,12 +12,23 @@ use std::sync::atomic::Ordering;
 
 /// Counts accepted deliveries that are queued or have not reached settlement.
 pub(super) struct OutstandingBudget {
+    /// Maximum number of outstanding delivery slots.
     limit: usize,
+    /// Current number of reserved slots.
     used: AtomicUsize,
 }
 
 impl OutstandingBudget {
     /// Creates a positive delivery budget.
+    ///
+    /// # Parameters
+    /// - `limit`: maximum number of simultaneously reserved delivery slots.
+    ///
+    /// # Returns
+    /// A budget with no slots currently reserved.
+    ///
+    /// # Panics
+    /// Panics when `limit` is zero.
     pub(super) fn new(limit: usize) -> Self {
         assert!(limit > 0, "outstanding budget must be positive");
         Self {
@@ -27,6 +38,10 @@ impl OutstandingBudget {
     }
 
     /// Reserves one delivery slot, returning false when the limit is reached.
+    ///
+    /// # Returns
+    /// `true` when a slot was reserved, otherwise `false` at capacity.
+    #[must_use]
     pub(super) fn try_acquire(&self) -> bool {
         let mut current = self.used.load(Ordering::Acquire);
         loop {
@@ -48,6 +63,9 @@ impl OutstandingBudget {
     /// # Panics
     /// Panics if `count` exceeds the number of currently reserved slots,
     /// indicating an internal accounting error.
+    ///
+    /// # Parameters
+    /// - `count`: number of reserved slots released by queue removal.
     pub(super) fn release(&self, count: usize) {
         if count == 0 {
             return;

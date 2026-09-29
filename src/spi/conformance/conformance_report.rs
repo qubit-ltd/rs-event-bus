@@ -37,12 +37,18 @@ pub struct ConformanceReport {
 
 impl ConformanceReport {
     /// Returns all case results in execution order.
+    ///
+    /// # Returns
+    /// The case results in the order the runner produced them.
     #[must_use]
     pub fn cases(&self) -> &[ConformanceCase] {
         &self.cases
     }
 
     /// Returns whether every executed case passed; skipped cases are allowed.
+    ///
+    /// # Returns
+    /// `true` unless at least one case failed.
     #[must_use]
     pub fn all_passed(&self) -> bool {
         self.cases
@@ -51,6 +57,10 @@ impl ConformanceReport {
     }
 
     /// Panics with failed case details when any check failed.
+    ///
+    /// # Panics
+    /// Panics when one or more conformance cases failed, including their IDs
+    /// and details in the panic message.
     pub fn assert_all_passed(&self) {
         let failures = self
             .cases
@@ -63,10 +73,26 @@ impl ConformanceReport {
         assert!(failures.is_empty(), "SPI conformance failures: {}", failures.join("; "));
     }
 
+    /// Appends a case result after previously recorded cases.
+    ///
+    /// # Parameters
+    /// - `case`: conformance outcome to append.
     pub(super) fn push(&mut self, case: ConformanceCase) {
         self.cases.push(case);
     }
 
+    /// Records a check that does not apply to the selected API or capability.
+    pub(super) fn not_applicable(&mut self, case_id: &str, reason: &'static str) {
+        self.push(ConformanceCase::Skipped {
+            case_id: case_id.into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::NotApplicable { reason },
+        });
+    }
+
+    /// Converts missing-fixture skips to failures under the strict profile.
+    ///
+    /// # Parameters
+    /// - `profile`: policy applied to skipped checks.
     pub(super) fn apply_profile(&mut self, profile: super::conformance_profile::ConformanceProfile) {
         if profile == super::conformance_profile::ConformanceProfile::Strict {
             for case in &mut self.cases {
@@ -84,6 +110,13 @@ impl ConformanceReport {
     }
 }
 
+/// Builds the outbound payload probes required by a provider's declaration.
+///
+/// # Parameters
+/// - `mode`: payload modes declared by the provider.
+///
+/// # Returns
+/// Named native and/or encoded probe payloads.
 pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, TransportPayload)> {
     match mode {
         PayloadModes::Native => vec![("declared-native-publish", TransportPayload::Native(Arc::new(0_u8)))],
@@ -95,6 +128,10 @@ pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, Transport
     }
 }
 
+/// Creates the standard encoded conformance payload.
+///
+/// # Returns
+/// A transport payload containing fixed probe bytes.
 pub(super) fn encoded_probe() -> TransportPayload {
     TransportPayload::Encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"spi-conformance"[..]),
@@ -103,6 +140,13 @@ pub(super) fn encoded_probe() -> TransportPayload {
     ))
 }
 
+/// Creates the standard outbound probe message.
+///
+/// # Parameters
+/// - `payload`: representation under test.
+///
+/// # Returns
+/// A message addressed to the conformance probe topic.
 pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
@@ -115,6 +159,14 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
     )
 }
 
+/// Creates the standard subscription request for a provider probe.
+///
+/// # Parameters
+/// - `subscription_id`: unique bus-local ID for this case.
+/// - `durability`: provider durability used to select a compatible mode.
+///
+/// # Returns
+/// A request subscribed to the conformance probe topic.
 pub(super) fn probe_request(
     subscription_id: u64,
     durability: crate::spi::DurabilityCapability,
@@ -134,6 +186,14 @@ pub(super) fn probe_request(
     )
 }
 
+/// Checks whether a received transport payload matches the named probe.
+///
+/// # Parameters
+/// - `payload`: payload returned by the provider.
+/// - `expected`: probe identifier selected before publication.
+///
+/// # Returns
+/// `true` when the received representation and native type match.
 pub(super) fn payload_matches(payload: &TransportPayload, expected: &str) -> bool {
     matches!(
         (expected, payload),
@@ -144,6 +204,15 @@ pub(super) fn payload_matches(payload: &TransportPayload, expected: &str) -> boo
     )
 }
 
+/// Produces a conformance result for settlement capability consistency.
+///
+/// # Parameters
+/// - `settlement`: settlement capability declared by the provider.
+/// - `token`: token returned with the received delivery, if any.
+/// - `settle`: operation that applies an idempotent accept decision.
+///
+/// # Returns
+/// A pass, failure, or unsupported-capability skip case.
 pub(super) fn settlement_case(
     settlement: SettlementCapabilities,
     token: Option<&super::super::SettlementToken>,
@@ -176,6 +245,15 @@ pub(super) fn settlement_case(
     }
 }
 
+/// Converts a publish result into a named conformance case.
+///
+/// # Parameters
+/// - `case_id`: stable identifier for the payload probe.
+/// - `result`: provider publish result.
+/// - `model`: sync/async label included in failure details.
+///
+/// # Returns
+/// A passed or failed conformance case.
 pub(super) fn publish_case(case_id: &str, result: Result<(), crate::error::SpiError>, model: &str) -> ConformanceCase {
     match result {
         Ok(()) => ConformanceCase::Passed {
@@ -188,6 +266,12 @@ pub(super) fn publish_case(case_id: &str, result: Result<(), crate::error::SpiEr
     }
 }
 
+/// Runs an optional synchronous fixture and appends its outcome.
+///
+/// # Parameters
+/// - `report`: report receiving the result.
+/// - `case_id`: stable case identifier.
+/// - `hook`: optional provider-specific check.
 pub(super) fn push_hook(
     report: &mut ConformanceReport,
     case_id: &str,

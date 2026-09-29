@@ -105,6 +105,10 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// Provider implementations should leave the default unchanged. Registry
     /// adapters override this hidden metadata hook on a transparent proxy so
     /// the facade can report the exact provider that succeeded after fallback.
+    ///
+    /// # Returns
+    /// The attached provider identity, or `None` when no registry identity is
+    /// attached.
     #[doc(hidden)]
     fn provider_id(&self) -> Option<ProviderId> {
         None
@@ -114,12 +118,33 @@ pub trait EventBusSpi: Send + Sync + 'static {
     ///
     /// Implementations must keep the returned value stable for the lifetime
     /// of the SPI instance; a facade snapshots it during construction.
+    ///
+    /// # Returns
+    /// The immutable capabilities supported by this provider instance.
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one type-erased transport message.
+    ///
+    /// # Parameters
+    /// - `message`: validated outbound message to send.
+    ///
+    /// # Returns
+    /// The provider's admission acknowledgement.
+    ///
+    /// # Errors
+    /// Returns a structured provider operation failure.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError>;
 
     /// Creates one single-owner subscription receiver.
+    ///
+    /// # Parameters
+    /// - `request`: provider subscription identity, topic, and policies.
+    ///
+    /// # Returns
+    /// A receiver owned by the caller.
+    ///
+    /// # Errors
+    /// Returns a structured provider operation failure.
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>;
 
     /// Waits until this provider has no outstanding delivery for `topic`.
@@ -128,6 +153,18 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// returned `true` means all queued and unsettled deliveries are gone;
     /// `false` means the timeout elapsed first. This does not report whether a
     /// handler succeeded.
+    ///
+    /// # Parameters
+    /// - `topic`: provider destination whose outstanding deliveries are
+    ///   checked.
+    /// - `timeout`: maximum wait, or `None` to wait without a deadline.
+    ///
+    /// # Returns
+    /// `Some(true)` when idle, `Some(false)` on timeout, or `None` when the
+    /// provider cannot make this guarantee.
+    ///
+    /// # Errors
+    /// Returns a structured provider operation failure.
     fn wait_for_topic_idle(&self, _topic: &TopicAddress, _timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         Ok(None)
     }
@@ -139,5 +176,14 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// the backend has already closed must succeed and report a stable outcome.
     /// A later `Immediate` call may strengthen a previously requested
     /// `Graceful` shutdown.
+    ///
+    /// # Parameters
+    /// - `mode`: requested graceful or immediate shutdown behavior.
+    ///
+    /// # Returns
+    /// The provider shutdown outcome.
+    ///
+    /// # Errors
+    /// Returns a structured provider operation failure.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError>;
 }

@@ -31,6 +31,10 @@ pub struct EventId(Box<str>);
 impl EventId {
     /// Generates a globally portable UUID v4 event identifier.
     ///
+    /// # Returns
+    /// A validated identifier generated from the operating-system random
+    /// source.
+    ///
     /// # Errors
     /// Returns [`EventIdGenerationError`] if the operating-system random source
     /// cannot provide the bytes needed by the UUID generator.
@@ -39,6 +43,18 @@ impl EventId {
     }
 
     /// Adapts a fallible identifier source to the validated event ID type.
+    ///
+    /// # Type Parameters
+    /// - `F`: one-shot callable type for producing the encoded identifier.
+    ///
+    /// # Parameters
+    /// - `generator`: source that creates the UUID string.
+    ///
+    /// # Returns
+    /// A validated identifier or a wrapper around the generator failure.
+    ///
+    /// # Errors
+    /// Returns [`EventIdGenerationError`] when `generator` fails.
     fn generate_with<F>(generator: F) -> Result<Self, EventIdGenerationError>
     where
         F: FnOnce() -> Result<String, IdGenerationError>,
@@ -53,6 +69,16 @@ impl EventId {
     /// Empty identifiers, leading or trailing whitespace, control characters,
     /// and identifiers longer than 128 UTF-8 bytes return
     /// [`ConfigurationError::InvalidEventId`].
+    ///
+    /// # Parameters
+    /// - `value`: text to validate and retain as the event identifier.
+    ///
+    /// # Returns
+    /// An owned event identifier when `value` meets the portable rules.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidEventId`] for empty, oversized,
+    /// whitespace-padded, or control-containing values.
     pub fn new(value: impl AsRef<str>) -> Result<Self, ConfigurationError> {
         let value = value.as_ref();
         if !(1..=128).contains(&value.len()) || !is_nonblank_without_controls(value) {
@@ -62,6 +88,9 @@ impl EventId {
     }
 
     /// Returns the original event identifier.
+    ///
+    /// # Returns
+    /// The validated identifier borrowed for the lifetime of `self`.
     #[must_use]
     #[inline]
     pub fn as_str(&self) -> &str {

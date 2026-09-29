@@ -24,10 +24,10 @@ use crate::error::SpiError;
 /// after ownership transfers to the runner, the runner closes it on completion.
 /// Facades cannot await cleanup from `Drop`, so implementations must still
 /// safely release or detach resources if the receiver is dropped without close.
-/// Any delivery whose [`SettlementToken`] has not reached a terminal
-/// disposition must remain recoverable by the provider after receiver close or
-/// drop (for example, by broker redelivery or returning it to a local queue).
-/// Receiver cleanup must never implicitly acknowledge an unsettled delivery.
+/// For durable subscriptions, accepted deliveries without a terminal
+/// disposition must remain recoverable after receiver close or drop. Ephemeral
+/// subscriptions may discard unsettled deliveries when destroyed. Cleanup
+/// must never implicitly acknowledge an unsettled delivery.
 ///
 /// # Examples
 ///
@@ -49,6 +49,15 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// inherently cancellation-safe must continuously consume in an
     /// internal task and buffer messages, placing the cancellable boundary
     /// at the buffer read.
+    ///
+    /// # Parameters
+    /// - `timeout`: maximum receive wait duration.
+    ///
+    /// # Returns
+    /// A future resolving to one receive outcome.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider receive failure.
     fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>>;
 
     /// Applies a terminal disposition to a provider-issued token.
@@ -61,6 +70,16 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// make both in-progress and completed settlement attempts idempotent.
     /// Providers must synchronously derive any owned operation state before
     /// returning the future; the future must not borrow the token.
+    ///
+    /// # Parameters
+    /// - `token`: provider-issued token for the delivery being settled.
+    /// - `disposition`: terminal action to apply to that delivery.
+    ///
+    /// # Returns
+    /// A future resolving after the provider records the terminal disposition.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider settlement failure.
     fn settle<'a>(
         &'a mut self,
         token: &SettlementToken,
@@ -78,5 +97,11 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// safe and converge to the closed state; closing an already-closed
     /// receiver must succeed. This lets a facade retry after timeout or future
     /// cancellation without losing ownership of the receiver.
+    ///
+    /// # Returns
+    /// A future resolving after receiver resources have been released.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider close failure.
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>>;
 }
