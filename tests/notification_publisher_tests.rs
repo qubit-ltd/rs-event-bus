@@ -41,6 +41,10 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TransportPayload;
 
+mod support;
+
+use support::isolated_process;
+
 #[test]
 fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {
     let spi = Arc::new(GatedSpi::new());
@@ -354,6 +358,167 @@ fn test_notification_observer_cannot_close_its_own_worker() {
         .expect("worker-thread close attempts must leave admission open");
     publisher.close().expect("external close drains queued notifications");
     assert_eq!(vec!["first", "second", "third"], *spi.published.lock().unwrap());
+}
+
+/// Regression for a destructor panic after an idle worker drains its queue.
+#[test]
+fn test_notification_observer_drop_panic_releases_all_close_callers() {
+    let test_name = "test_notification_observer_drop_panic_releases_all_close_callers";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
+        isolated_process::run_case_with_timeout(test_name, test_name, Duration::from_secs(5));
+        return;
+    }
+    let bus = EventBus::local(Default::default()).expect("local bus starts");
+    let captured = PanicOnDrop;
+    let publisher = Arc::new(
+        NotificationPublisher::new(
+            bus,
+            Topic::<String>::new_static("notification.drop-panic"),
+            std::num::NonZeroUsize::new(1).expect("nonzero capacity"),
+            move |_| {
+                std::hint::black_box(&captured);
+            },
+        )
+        .expect("publisher starts"),
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let closers = (0..2)
+        .map(|_| {
+            let publisher = Arc::clone(&publisher);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                publisher
+                    .close_with_timeout(Duration::from_secs(1))
+                    .map_err(|error| (error.kind(), error.to_string()))
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for closer in closers {
+        assert_eq!(
+            Err((
+                std::io::ErrorKind::Other,
+                "notification publisher worker panicked".into()
+            )),
+            closer.join().expect("close caller returns"),
+        );
+    }
+    assert_eq!(1, publisher.stats().worker_panicked());
+    assert_eq!(0, publisher.stats().observer_panicked());
+    assert_eq!(
+        std::io::ErrorKind::Other,
+        publisher
+            .close()
+            .expect_err("repeated close preserves panic outcome")
+            .kind()
+    );
+    assert_eq!(
+        std::io::ErrorKind::Other,
+        publisher
+            .close_with_timeout(Duration::ZERO)
+            .expect_err("finished panic beats zero timeout")
+            .kind()
+    );
+}
+
+/// Cleanup remains in flight until its destructor returns or panics.
+#[test]
+fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
+    let test_name = "test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
+        isolated_process::run_case_with_timeout(test_name, test_name, Duration::from_secs(5));
+        return;
+    }
+    let publisher_ref = Arc::new(OnceLock::<Weak<NotificationPublisher<String>>>::new());
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let captured = GatedPanicOnDrop {
+        publisher: Arc::clone(&publisher_ref),
+        entered: entered_sender,
+        release: Mutex::new(release_receiver),
+    };
+    let bus = EventBus::local(Default::default()).expect("local bus starts");
+    let publisher = Arc::new(
+        NotificationPublisher::new(
+            bus,
+            Topic::<String>::new_static("notification.cleanup-timeout"),
+            std::num::NonZeroUsize::new(1).expect("nonzero capacity"),
+            move |_| {
+                std::hint::black_box(&captured);
+            },
+        )
+        .expect("publisher starts"),
+    );
+    assert!(publisher_ref.set(Arc::downgrade(&publisher)).is_ok());
+    assert_eq!(
+        std::io::ErrorKind::TimedOut,
+        publisher
+            .close_with_timeout(Duration::ZERO)
+            .expect_err("cleanup has not finished")
+            .kind()
+    );
+    let self_close_error = entered_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observer destructor entered");
+    assert_eq!(std::io::ErrorKind::Other, self_close_error);
+    assert_eq!(0, publisher.stats().worker_panicked());
+    assert_eq!(
+        std::io::ErrorKind::TimedOut,
+        publisher
+            .close_with_timeout(Duration::ZERO)
+            .expect_err("blocked destructor keeps completion pending")
+            .kind()
+    );
+    release_sender.send(()).expect("release observer destructor");
+    assert_eq!(
+        std::io::ErrorKind::Other,
+        publisher
+            .close_with_timeout(Duration::from_secs(1))
+            .expect_err("cleanup panic is preserved after timeout")
+            .kind()
+    );
+    assert_eq!(1, publisher.stats().worker_panicked());
+    assert_eq!(
+        std::io::ErrorKind::Other,
+        publisher.close().expect_err("all retries retain panic outcome").kind()
+    );
+}
+
+/// Holds cleanup until the test releases it, then panics after reentrant close.
+struct GatedPanicOnDrop {
+    publisher: Arc<OnceLock<Weak<NotificationPublisher<String>>>>,
+    entered: mpsc::Sender<std::io::ErrorKind>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Drop for GatedPanicOnDrop {
+    fn drop(&mut self) {
+        let publisher = self
+            .publisher
+            .get()
+            .and_then(Weak::upgrade)
+            .expect("publisher lives while destructor runs");
+        let error = publisher
+            .close_with_timeout(Duration::ZERO)
+            .expect_err("cleanup cannot close its own worker");
+        self.entered.send(error.kind()).expect("test observes cleanup");
+        self.release
+            .lock()
+            .expect("cleanup release mutex")
+            .recv()
+            .expect("test releases cleanup");
+        panic!("gated observer destructor panic");
+    }
+}
+
+/// Panics when the observer's captured resource is released on worker exit.
+struct PanicOnDrop;
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        panic!("observer destructor panic");
+    }
 }
 
 /// Blocks only the first publication until the test releases the worker.

@@ -196,6 +196,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
         F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
     {
+        if let Some(reason) = self.terminal_failure() {
+            return Err(ReceiveError::Stopped(reason));
+        }
         let mut lease = self.control.lease().await.ok_or(ReceiveError::Closed)?;
         lease
             .session
@@ -203,6 +206,13 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
             .expect("session lease owns its session")
             .run(handler, &self.control)
             .await
+    }
+
+    /// Returns the first terminal receive cause, or None before a failure.
+    /// The Arc is retained across runner cancellation and receiver close.
+    #[must_use]
+    pub fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+        self.control.signals.terminal_failure()
     }
 
     /// Stops this session and closes its provider receiver.

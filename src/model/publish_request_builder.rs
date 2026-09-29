@@ -25,6 +25,8 @@ use super::Topic;
 use crate::error::EventIdGenerationError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
+use crate::error::PublishFailure;
+use crate::model::DuplicateRiskPolicy;
 use crate::util::validated_text::is_nonblank_without_controls;
 
 /// Builds one publication request. Scalars use their last value, headers merge
@@ -142,6 +144,18 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
             options: PublishOptions::default(),
         }
     }
+    /// Sets whether configured retries may duplicate uncertain admission.
+    ///
+    /// # Parameters
+    /// - `value`: whether configured retries may repeat uncertain admission.
+    ///
+    /// # Returns
+    /// The updated builder; `Forbid` remains the default.
+    pub fn duplicate_risk_policy(mut self, value: DuplicateRiskPolicy) -> Self {
+        self.options.duplicate_risk_policy = value;
+        self
+    }
+
     /// Replaces the typed topic.
     ///
     /// # Parameters
@@ -303,7 +317,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// The updated builder.
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&super::PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
+        F: Fn(&super::PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static,
     {
         self.options.error_handlers.push(Arc::new(handler));
         self

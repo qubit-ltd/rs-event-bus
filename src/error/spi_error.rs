@@ -9,6 +9,8 @@
 
 use std::error::Error;
 
+use crate::model::PublishEffect;
+
 /// An error returned across the provider SPI boundary.
 ///
 /// # Examples
@@ -30,6 +32,23 @@ use std::error::Error;
 #[non_exhaustive]
 #[must_use]
 pub enum SpiError {
+    /// A publish operation failed with explicit admission evidence.
+    #[error("provider {provider_id} failed publish ({kind}, {effect:?}): {source}")]
+    Publish {
+        /// Provider that produced the failure.
+        provider_id: Box<str>,
+        /// Topic context, when available.
+        resource: Option<Box<str>>,
+        /// Stable classification without secret provider data.
+        kind: &'static str,
+        /// Whether another attempt is known to be appropriate.
+        retryable: Option<bool>,
+        /// External admission evidence for this attempt.
+        effect: PublishEffect,
+        /// Original provider failure.
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
     /// A provider operation failed and retained its original error.
     #[error("provider {provider_id} failed {operation} ({kind}): {source}")]
     Operation {
@@ -67,6 +86,18 @@ pub enum SpiError {
 }
 
 impl SpiError {
+    /// Returns explicit publish evidence or conservative uncertainty for
+    /// generic failures. A generic Operation cannot prove that publishing
+    /// had no external effect.
+    #[must_use]
+    #[inline]
+    pub fn publish_effect(&self) -> PublishEffect {
+        match self {
+            Self::Publish { effect, .. } => *effect,
+            _ => PublishEffect::MayHaveBeenAccepted,
+        }
+    }
+
     /// Returns the provider ID retained by this SPI failure.
     ///
     /// # Returns
@@ -75,7 +106,9 @@ impl SpiError {
     #[inline]
     pub fn provider_id(&self) -> &str {
         match self {
-            Self::Operation { provider_id, .. } | Self::InvalidSettlementToken { provider_id, .. } => provider_id,
+            Self::Publish { provider_id, .. }
+            | Self::Operation { provider_id, .. }
+            | Self::InvalidSettlementToken { provider_id, .. } => provider_id,
         }
     }
 
@@ -87,6 +120,7 @@ impl SpiError {
     #[inline]
     pub fn operation(&self) -> &'static str {
         match self {
+            Self::Publish { .. } => "publish",
             Self::Operation { operation, .. } | Self::InvalidSettlementToken { operation, .. } => operation,
         }
     }
@@ -99,7 +133,9 @@ impl SpiError {
     #[inline]
     pub fn resource(&self) -> Option<&str> {
         match self {
-            Self::Operation { resource, .. } | Self::InvalidSettlementToken { resource, .. } => resource.as_deref(),
+            Self::Publish { resource, .. }
+            | Self::Operation { resource, .. }
+            | Self::InvalidSettlementToken { resource, .. } => resource.as_deref(),
         }
     }
 
@@ -111,7 +147,7 @@ impl SpiError {
     #[inline]
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Operation { kind, .. } => kind,
+            Self::Publish { kind, .. } | Self::Operation { kind, .. } => kind,
             Self::InvalidSettlementToken { .. } => "invalid_settlement_token",
         }
     }
@@ -125,7 +161,9 @@ impl SpiError {
     #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {
-            Self::Operation { retryable, .. } | Self::InvalidSettlementToken { retryable, .. } => *retryable,
+            Self::Publish { retryable, .. }
+            | Self::Operation { retryable, .. }
+            | Self::InvalidSettlementToken { retryable, .. } => *retryable,
         }
     }
 }

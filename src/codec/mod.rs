@@ -18,3 +18,8 @@ mod codec_registry;
 mod decode_payload;
 mod event_codec;
 mod resolve_codec;
+
+#[path = "internal/receive_failure_action.rs"]
+mod receive_failure_action;
+pub(crate) use receive_failure_action::ReceiveFailureAction;
+pub(crate) use receive_failure_action::receive_failure_action;

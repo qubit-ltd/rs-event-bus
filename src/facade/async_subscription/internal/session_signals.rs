@@ -24,6 +24,8 @@ pub(in crate::facade) struct SessionSignals {
     stop_mode: Mutex<Option<ShutdownMode>>,
     /// Terminal asynchronous runner error to return after cleanup.
     terminal_error: Mutex<Option<ReceiveError>>,
+    /// Immutable first receive failure, separate from consumable runner errors.
+    terminal_failure: Mutex<Option<Arc<crate::model::SubscriptionStopReason>>>,
     /// Serializes user-work admission against an Immediate stop.
     start_gate: Mutex<()>,
     /// Wakes receive, admission and session waiters after state changes.
@@ -41,6 +43,7 @@ impl SessionSignals {
             stopped: false.into(),
             stop_mode: Mutex::new(None),
             terminal_error: Mutex::new(None),
+            terminal_failure: Mutex::new(None),
             start_gate: Mutex::new(()),
             signal: AsyncSignal::default(),
         })
@@ -70,6 +73,36 @@ impl SessionSignals {
         self.signal.notify();
     }
 
+    /// Returns the first receive cause, or None while receiving is healthy.
+    pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+        self.terminal_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Caches the first receive failure and stops unstarted user work.
+    /// Returns true only when the cause was first recorded.
+    pub(in crate::facade) fn fail_receive(&self, reason: crate::model::SubscriptionStopReason) -> bool {
+        let _start_gate = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stored = self
+            .terminal_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first = stored.is_none();
+        if first {
+            *stored = Some(Arc::new(reason));
+        }
+        drop(stored);
+        *self.stop_mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ShutdownMode::Immediate);
+        self.stopped.store(true, Ordering::Release);
+        self.signal.notify();
+        first
+    }
+
     /// Stores a forwarding failure and requests immediate stop of this source.
     ///
     /// # Parameters
@@ -90,13 +123,16 @@ impl SessionSignals {
         self.stop(ShutdownMode::Immediate);
     }
 
-    /// Takes the terminal error exactly once after the run loop exits.
+    /// Returns the retained receive cause, or takes a one-shot delivery error.
     ///
     /// # Returns
     ///
-    /// The stored terminal error, or `None` if no error was recorded or it was
-    /// already taken.
+    /// Receive stops return the same Arc on every call. Other terminal errors
+    /// are taken once; None means no cause remains to report.
     pub(in crate::facade) fn take_terminal_error(&self) -> Option<ReceiveError> {
+        if let Some(reason) = self.terminal_failure() {
+            return Some(ReceiveError::Stopped(reason));
+        }
         self.terminal_error
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

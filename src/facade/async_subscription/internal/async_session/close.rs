@@ -47,6 +47,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         self.signals.stop(ShutdownMode::Immediate);
         if let Some(handler) = self.handler.clone()
             && let Err(error) = self.run_loop(handler).await
+            && !matches!(error, crate::error::ReceiveError::Stopped(_))
         {
             self.inner.emit(&Diagnostic::InternalFailure {
                 origin: "close_resume".into(),

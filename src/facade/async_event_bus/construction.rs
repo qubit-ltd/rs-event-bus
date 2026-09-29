@@ -151,7 +151,7 @@ impl AsyncEventBus {
                     provider_id,
                     config.codec_registry().clone(),
                     capabilities,
-                    config.max_encoded_payload_bytes(),
+                    config.payload_limits().max_publish_bytes(),
                 ),
                 facade_config: config,
                 state: Mutex::new(BusState::Running),

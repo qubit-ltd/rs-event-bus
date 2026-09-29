@@ -23,6 +23,7 @@ use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::EncodedPayload;
 
 const STATIC_SUBSCRIBER_ID: SubscriberId = SubscriberId::new_static("audit-static");
 const STATIC_PROVIDER_ID: ProviderId = ProviderId::new_static("local-static");
@@ -111,7 +112,8 @@ impl EventCodec<String> for StringCodec {
         Ok(Arc::from(value.as_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|error| CodecError::Encode {
             source: Box::new(error),
         })

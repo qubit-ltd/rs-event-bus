@@ -66,6 +66,7 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
         envelope: EventEnvelope<DeadLetterEvent<T>>,
         admission_policy: DeadLetterAdmissionPolicy,
     ) -> Result<PublishReceipt, DeadLetterForwardError> {
+        let event_id = envelope.id().clone();
         let receipt = inner
             .publisher
             .publish_async(
@@ -76,7 +77,11 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
                 inner.timer.clone(),
             )
             .await
-            .map_err(|failure| DeadLetterForwardError::Pipeline(failure.to_string().into()))?;
+            .map_err(|failure| {
+                DeadLetterForwardError::Publish(crate::facade::async_event_bus::publishing::publish_pipeline_error(
+                    event_id, failure,
+                ))
+            })?;
         if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
             Ok(receipt)
         } else {

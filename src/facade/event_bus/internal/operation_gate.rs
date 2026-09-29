@@ -7,11 +7,11 @@
 // =============================================================================
 //! Gate for new public calls while admitted SPI operations drain.
 
-use std::sync::Condvar;
-use std::sync::Mutex;
-
 use super::operation_gate_state::OperationGateState;
 use super::operation_permit::OperationPermit;
+use crate::internal::sync::Condvar;
+use crate::internal::sync::Mutex;
+use crate::internal::sync::MutexGuard;
 
 /// Linearizes new public publish and subscribe calls against provider shutdown.
 #[derive(Default)]
@@ -70,7 +70,82 @@ impl OperationGate {
     ///
     /// # Returns
     /// A guard for the current operation admission state.
-    pub(super) fn lock_state(&self) -> std::sync::MutexGuard<'_, OperationGateState> {
+    pub(super) fn lock_state(&self) -> MutexGuard<'_, OperationGateState> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(all(test, loom))]
+mod tests {
+    use loom::model::Builder;
+    use loom::sync::Arc;
+    use loom::sync::mpsc;
+    use loom::thread;
+
+    use super::OperationGate;
+
+    /// Exhausts schedules with three threads and at most two preemptions.
+    fn check_model(model: impl Fn() + Send + Sync + 'static) {
+        let mut builder = Builder::new();
+        builder.max_threads = 3;
+        builder.preemption_bound = Some(2);
+        builder.max_branches = 1_000;
+        builder.check(model);
+    }
+
+    /// Checks admission and close share the real gate's linearization lock.
+    #[test]
+    fn test_loom_production_gate_close_races_admission() {
+        check_model(|| {
+            let gate = Arc::new(OperationGate::default());
+            let admitted_gate = Arc::clone(&gate);
+            let admitted = thread::spawn(move || {
+                if let Some(permit) = admitted_gate.enter() {
+                    assert_eq!(admitted_gate.lock_state().active, 1);
+                    thread::yield_now();
+                    drop(permit);
+                }
+            });
+            let closing_gate = Arc::clone(&gate);
+            let closing = thread::spawn(move || {
+                closing_gate.close_admission();
+                assert!(closing_gate.enter().is_none());
+                closing_gate.wait_for_idle();
+                assert_eq!(closing_gate.lock_state().active, 0);
+            });
+            admitted.join().expect("admission thread completes");
+            closing.join().expect("shutdown waiter completes");
+            let state = gate.lock_state();
+            assert!(state.closing);
+            assert_eq!(state.active, 0);
+        });
+    }
+
+    /// Checks each real permit Drop releases once and the last wakes idle.
+    #[test]
+    fn test_loom_production_permit_drop_wakes_idle() {
+        check_model(|| {
+            let gate = Arc::new(OperationGate::default());
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let owned_gate = Arc::clone(&gate);
+            let owner = thread::spawn(move || {
+                let first = owned_gate.enter().expect("first admission is open");
+                let second = owned_gate.enter().expect("second admission is open");
+                assert_eq!(owned_gate.lock_state().active, 2);
+                ready_tx.send(()).expect("waiter receives admission signal");
+                thread::yield_now();
+                drop(first);
+                assert_eq!(owned_gate.lock_state().active, 1);
+                thread::yield_now();
+                drop(second);
+                assert_eq!(owned_gate.lock_state().active, 0);
+            });
+            ready_rx.recv().expect("owner admits before shutdown");
+            gate.close_admission();
+            gate.wait_for_idle();
+            assert!(gate.enter().is_none());
+            owner.join().expect("permit owner completes");
+            assert_eq!(gate.lock_state().active, 0);
+        });
     }
 }

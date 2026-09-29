@@ -389,12 +389,12 @@ fn test_publish_all_keeps_later_results_after_a_provider_failure() {
     assert_eq!(1, result.accepted_count());
     assert_eq!(1, result.failure_count());
     assert!(matches!(
-        &result.items()[0],
-        Err(PublishError::Spi(SpiError::Operation {
+        result.items()[0].as_ref().expect_err("first publication fails").cause(),
+        PublishError::Spi(SpiError::Operation {
             operation: "publish",
             kind: "configured_failure",
             ..
-        }))
+        })
     ));
     assert!(result.items()[1].is_ok());
     bus.shutdown(ShutdownMode::Immediate)
@@ -454,7 +454,9 @@ fn test_shutdown_provider_error_is_retryable_and_closes_public_admission() {
             .outcome
     );
     assert_eq!(2, spi.shutdown_calls());
-    assert!(matches!(bus.publish(request("after-close")), Err(PublishError::Closed)));
+    assert!(
+        matches!(bus.publish(request("after-close")), Err(failure) if matches!(failure.cause(), PublishError::Closed))
+    );
     assert!(matches!(
         bus.subscribe(
             SubscribeRequest::new("after-close", topic()).expect("valid subscriber ID"),

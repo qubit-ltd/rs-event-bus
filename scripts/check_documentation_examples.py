@@ -6,11 +6,12 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCAL = "examples/local_delivery.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
+CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }

@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 qubit-event-bus = { path = ".." }
+qubit-clock = "0.13"
+qubit-id = { version = "0.6", features = ["uuid"] }
 
 [[bin]]
 name = "transport_envelope"
@@ -21,6 +23,13 @@ bench = false
 [[bin]]
 name = "provider_options"
 path = "fuzz_targets/provider_options.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "local_state_machine"
+path = "fuzz_targets/local_state_machine.rs"
 test = false
 doc = false
 bench = false

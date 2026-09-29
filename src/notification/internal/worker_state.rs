@@ -5,10 +5,12 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Completion flag observed by publisher close callers.
+//! Terminal worker state observed by publisher close callers.
 
-/// Completion state protected by the notification publisher's worker mutex.
+use super::worker_exit::WorkerExit;
+
+/// Completion state protected by the notification publisher's state mutex.
 pub(in crate::notification) struct WorkerState {
-    /// Whether the background worker has exited and drained its queue.
-    pub(in crate::notification) finished: bool,
+    /// Immutable terminal outcome, or `None` while cleanup remains in progress.
+    pub(in crate::notification) exit: Option<WorkerExit>,
 }

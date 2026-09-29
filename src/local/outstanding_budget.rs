@@ -7,8 +7,8 @@
 // =============================================================================
 //! Atomic provider-wide admission budget shared by local queues.
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use crate::internal::sync::AtomicUsize;
+use crate::internal::sync::Ordering;
 
 /// Counts accepted deliveries that are queued or have not reached settlement.
 pub(super) struct OutstandingBudget {
@@ -75,7 +75,7 @@ impl OutstandingBudget {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use std::sync::Arc;
     use std::sync::Barrier;
@@ -121,5 +121,88 @@ mod tests {
 
         let acquired = usize::from(u8::from(first.join().unwrap())) + usize::from(u8::from(second.join().unwrap()));
         assert_eq!(1, acquired);
+    }
+}
+
+#[cfg(all(test, loom))]
+mod tests {
+    use loom::model::Builder;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    use super::OutstandingBudget;
+    use crate::internal::sync::Ordering;
+
+    /// Exhausts schedules with three threads and at most two preemptions.
+    fn check_model(model: impl Fn() + Send + Sync + 'static) {
+        let mut builder = Builder::new();
+        builder.max_threads = 3;
+        builder.preemption_bound = Some(2);
+        builder.max_branches = 1_000;
+        builder.check(model);
+    }
+
+    /// Checks real atomic admission cannot overbook the sole delivery slot.
+    #[test]
+    fn test_loom_production_budget_racing_admission() {
+        check_model(|| {
+            let budget = Arc::new(OutstandingBudget::new(1));
+            let first_budget = Arc::clone(&budget);
+            let first = thread::spawn(move || first_budget.try_acquire());
+            let second_budget = Arc::clone(&budget);
+            let second = thread::spawn(move || second_budget.try_acquire());
+            let acquired = usize::from(first.join().expect("first admission completes"))
+                + usize::from(second.join().expect("second admission completes"));
+            assert_eq!(acquired, 1);
+            assert_eq!(budget.used.load(Ordering::Acquire), 1);
+            assert!(!budget.try_acquire());
+            budget.release(acquired);
+            assert_eq!(budget.used.load(Ordering::Acquire), 0);
+        });
+    }
+
+    /// Checks a release racing reuse never underflows or exceeds capacity.
+    #[test]
+    fn test_loom_production_budget_release_races_reuse() {
+        check_model(|| {
+            let budget = Arc::new(OutstandingBudget::new(1));
+            assert!(budget.try_acquire());
+            let releasing_budget = Arc::clone(&budget);
+            let releasing = thread::spawn(move || releasing_budget.release(1));
+            let acquiring_budget = Arc::clone(&budget);
+            let acquiring = thread::spawn(move || {
+                if acquiring_budget.try_acquire() {
+                    assert_eq!(acquiring_budget.used.load(Ordering::Acquire), 1);
+                    acquiring_budget.release(1);
+                }
+            });
+            releasing.join().expect("original owner releases");
+            acquiring.join().expect("new owner completes");
+            assert_eq!(budget.used.load(Ordering::Acquire), 0);
+            assert!(budget.try_acquire());
+            assert!(!budget.try_acquire());
+            budget.release(1);
+        });
+    }
+
+    /// Checks distinct delivery owners release their slots exactly once.
+    #[test]
+    fn test_loom_production_budget_competing_owner_release() {
+        check_model(|| {
+            let budget = Arc::new(OutstandingBudget::new(2));
+            assert!(budget.try_acquire());
+            assert!(budget.try_acquire());
+            let first_budget = Arc::clone(&budget);
+            let first = thread::spawn(move || first_budget.release(1));
+            let second_budget = Arc::clone(&budget);
+            let second = thread::spawn(move || second_budget.release(1));
+            first.join().expect("first owner releases");
+            second.join().expect("second owner releases");
+            assert_eq!(budget.used.load(Ordering::Acquire), 0);
+            assert!(budget.try_acquire());
+            assert!(budget.try_acquire());
+            assert!(!budget.try_acquire());
+            budget.release(2);
+        });
     }
 }

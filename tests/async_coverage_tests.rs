@@ -57,6 +57,7 @@ use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::InboundMessage;
 use qubit_event_bus::spi::OrderingCapability;
@@ -160,12 +161,12 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
             if pending {
                 std::future::pending::<Result<PublishAcknowledgement, SpiError>>().await
             } else if should_fail {
-                Err(SpiError::Operation {
+                Err(SpiError::Publish {
                     provider_id: "async-publisher-coverage".into(),
-                    operation: "publish",
                     resource: None,
                     kind: "injected_publish_failure",
                     retryable: Some(attempt < self.retryable_failures),
+                    effect: qubit_event_bus::model::PublishEffect::NotAccepted,
                     source: Box::new(std::io::Error::other("injected async provider failure")),
                 })
             } else {
@@ -213,7 +214,8 @@ impl EventCodec<String> for StringCodec {
         }
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -260,7 +262,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
 
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     let closed = block_on(bus.publish(PublishRequest::builder().topic(topic()).payload(3_u32).build().unwrap()));
-    assert!(matches!(closed, Err(PublishError::Closed)));
+    assert!(matches!(closed, Err(failure) if matches!(failure.cause(), PublishError::Closed)));
     assert_eq!(clone.publish_metrics().attempts, 3);
     assert_eq!(clone.publish_metrics().errors, 1);
 
@@ -520,7 +522,7 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     .unwrap();
     let error = block_on(failing_bus.publish(PublishRequest::new(failing_topic, "cannot encode".to_owned()).unwrap()))
         .unwrap_err();
-    assert!(matches!(error, PublishError::Codec(CodecError::Encode { .. })));
+    assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
     assert_eq!(failing_spi.attempts.load(Ordering::Acquire), 0);
     block_on(failing_bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
@@ -556,7 +558,7 @@ fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_meta
 
     let error = block_on(bus.publish(request)).unwrap_err();
     assert!(
-        matches!(error, PublishError::Retry(_)),
+        matches!(error.cause(), PublishError::Retry(_)),
         "unexpected publish error: {error:?}"
     );
     assert_eq!(
@@ -758,7 +760,7 @@ fn test_publish_and_subscribe_are_rejected_after_async_shutdown() {
     block_on(async {
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         let publish_error = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap_err();
-        assert!(matches!(publish_error, PublishError::Closed));
+        assert!(matches!(publish_error.cause(), PublishError::Closed));
         let subscribe_result = bus
             .subscribe(SubscribeRequest::new("after-shutdown", topic()).expect("valid subscriber ID"))
             .await;

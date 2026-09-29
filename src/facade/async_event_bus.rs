@@ -32,7 +32,7 @@ mod diagnostics;
 // Implements async wait and shutdown lifecycle operations.
 mod lifecycle;
 // Implements async publish operations.
-mod publishing;
+pub(in crate::facade) mod publishing;
 // Implements async subscription creation.
 mod subscribing;
 // Implements waits for deliveries received by the facade.

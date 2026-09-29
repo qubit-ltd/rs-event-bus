@@ -42,6 +42,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscribeRequestBuildError;
 use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_id::Id;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
@@ -241,7 +242,15 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> 
         },
     );
     let dropped = PublishReceipt::new(id_2, None, provider, PublishAcknowledgement::DroppedByInterceptor);
-    let batch = BatchPublishResult::new(vec![Ok(accepted), Ok(dropped), Err(PublishError::Closed)]);
+    let batch = BatchPublishResult::new(vec![
+        Ok(accepted),
+        Ok(dropped),
+        Err(qubit_event_bus::PublishFailure::new(
+            EventId::new("failed")?,
+            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishError::Closed,
+        )),
+    ]);
     assert_eq!(batch.total_count(), 3);
     assert_eq!(batch.accepted_count(), 1);
     assert_eq!(batch.dropped_count(), 1);
@@ -316,7 +325,11 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
             provider,
             PublishAcknowledgement::DroppedByInterceptor,
         )),
-        Err(PublishError::Closed),
+        Err(qubit_event_bus::PublishFailure::new(
+            EventId::new("failed")?,
+            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishError::Closed,
+        )),
     ]);
     assert_eq!(batch.total_count(), 8);
     assert_eq!(batch.accepted_count(), 3);
@@ -343,7 +356,8 @@ fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error
         fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }
@@ -412,7 +426,12 @@ fn test_delivery_context_preserves_transport_and_attempt_metadata() -> Result<()
 fn test_attempt_errors_keep_classification_and_source() {
     use std::error::Error;
 
-    let publish = PublishAttemptError::new("transient", Some(true), std::io::Error::other("offline"));
+    let publish = PublishAttemptError::new(
+        "transient",
+        Some(true),
+        qubit_event_bus::model::PublishEffect::NotAccepted,
+        std::io::Error::other("offline"),
+    );
     let delivery = DeliveryAttemptError::new("handler", Some(false), std::io::Error::other("bad record"));
     assert_eq!(publish.kind(), "transient");
     assert_eq!(publish.retryable(), Some(true));
@@ -475,14 +494,22 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
         fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }
     let mut registry = CodecRegistry::new();
     registry.register::<String>(Arc::new(TextCodec(ContentType::new("text/plain")?)));
     let codec = registry.get::<String>().unwrap();
-    assert_eq!(codec.decode(&codec.encode(&"payload".to_owned())?)?, "payload");
+    assert_eq!(
+        codec.decode(&EncodedPayload::new(
+            codec.encode(&"payload".to_owned())?,
+            codec.content_type().clone(),
+            codec.schema_id().cloned()
+        ))?,
+        "payload"
+    );
     let topic = Topic::<String>::new_with_shared_codec("orders.created", codec)?;
     assert!(topic.codec().is_some());
     assert!(registry.get::<u32>().is_none());

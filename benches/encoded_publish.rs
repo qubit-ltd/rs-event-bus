@@ -28,6 +28,7 @@ use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
@@ -87,15 +88,15 @@ impl EventCodec<Vec<u8>> for BenchCodec {
     /// Copies encoded bytes back into a benchmark payload.
     ///
     /// # Parameters
-    /// - `bytes`: encoded payload bytes.
+    /// - `payload`: encoded bytes and codec metadata.
     ///
     /// # Returns
-    /// An owned vector containing `bytes`.
+    /// An owned vector containing the payload bytes.
     ///
     /// # Errors
     /// This implementation does not fail while copying bytes.
-    fn decode(&self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
-        Ok(bytes.to_vec())
+    fn decode(&self, payload: &EncodedPayload) -> Result<Vec<u8>, CodecError> {
+        Ok(payload.bytes().to_vec())
     }
 }
 
@@ -138,12 +139,12 @@ impl EventBusSpi for BenchSpi {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
             .is_ok()
         {
-            return Err(SpiError::Operation {
+            return Err(SpiError::Publish {
                 provider_id: "bench".into(),
-                operation: "publish",
                 resource: None,
                 kind: "transient",
                 retryable: Some(true),
+                effect: qubit_event_bus::model::PublishEffect::NotAccepted,
                 source: Box::new(std::io::Error::other("synthetic retry")),
             });
         }

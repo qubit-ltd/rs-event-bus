@@ -9,6 +9,10 @@
 
 use std::error::Error;
 
+use crate::model::ContentType;
+use crate::model::PayloadDirection;
+use crate::model::SchemaId;
+
 /// A registered codec failed to convert an event payload.
 ///
 /// # Examples
@@ -16,21 +20,40 @@ use std::error::Error;
 /// ```
 /// use qubit_event_bus::error::CodecError;
 ///
-/// let error = CodecError::PayloadTooLarge { actual: 128, limit: 64 };
-/// assert!(matches!(error, CodecError::PayloadTooLarge { actual: 128, limit: 64 }));
+/// let error = CodecError::PayloadTooLarge { direction: qubit_event_bus::model::PayloadDirection::Publish, actual: 128, limit: 64 };
+/// assert!(matches!(error, CodecError::PayloadTooLarge { actual: 128, limit: 64, .. }));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 #[must_use]
 pub enum CodecError {
     /// Encoded payload exceeds the facade's configured byte limit.
-    #[error("encoded event payload is {actual} bytes, exceeding the {limit}-byte limit")]
+    #[error("{direction:?} encoded event payload is {actual} bytes, exceeding the {limit}-byte limit")]
     PayloadTooLarge {
+        /// Boundary whose positive byte limit was exceeded.
+        direction: PayloadDirection,
         /// Number of bytes produced by the codec.
         actual: usize,
         /// Maximum number of encoded bytes allowed.
         limit: usize,
     },
+    /// Received metadata is outside the codec's declared compatibility set.
+    #[error(
+        "encoded metadata mismatch: expected {expected_content_type:?}/{expected_schema_id:?}, received {actual_content_type:?}/{actual_schema_id:?}"
+    )]
+    MetadataMismatch {
+        /// Required MIME text, preserving case.
+        expected_content_type: ContentType,
+        /// Received MIME text.
+        actual_content_type: ContentType,
+        /// Required schema, including explicit absence.
+        expected_schema_id: Option<SchemaId>,
+        /// Received schema, including explicit absence.
+        actual_schema_id: Option<SchemaId>,
+    },
+    /// A native payload violated the subscribed Rust type contract.
+    #[error("native payload type does not match subscribed topic")]
+    NativeTypeMismatch,
     /// Encoding failed; the codec error remains available through `source()`.
     #[error("failed to encode event payload: {source}")]
     Encode {

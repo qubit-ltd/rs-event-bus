@@ -44,3 +44,6 @@ mod spi_error;
 mod subscribe_error;
 mod subscription_close_errors;
 mod subscription_close_failure;
+
+mod publish_failure;
+pub use publish_failure::PublishFailure;

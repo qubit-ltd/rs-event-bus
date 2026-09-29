@@ -9,10 +9,10 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use super::DeliveryAdmissionConfig;
+use super::PayloadLimits;
 use super::SyncDeliverySchedulerConfig;
 use super::internal::ErasedMiddlewareList;
 use crate::codec::CodecRegistry;
@@ -40,7 +40,7 @@ use crate::spi::SpiFuture;
 /// use qubit_event_bus::EventBusFacadeConfig;
 ///
 /// let config = EventBusFacadeConfig::new();
-/// assert_eq!(config.max_encoded_payload_bytes(), None);
+/// assert_eq!(config.payload_limits().max_publish_bytes().get(), 1_048_576);
 /// ```
 #[derive(Clone)]
 pub struct EventBusFacadeConfig {
@@ -56,8 +56,8 @@ pub struct EventBusFacadeConfig {
     sync_delivery_scheduler: SyncDeliverySchedulerConfig,
     /// Shared facade-wide limit for asynchronous deliveries.
     delivery_admission: DeliveryAdmissionConfig,
-    /// Optional encoded payload limit applied before provider publication.
-    max_encoded_payload_bytes: Option<NonZeroUsize>,
+    /// Independent positive byte limits for encoded publication and receiving.
+    payload_limits: PayloadLimits,
 }
 
 impl Default for EventBusFacadeConfig {
@@ -70,7 +70,7 @@ impl Default for EventBusFacadeConfig {
             global_publisher_interceptors: Vec::new(),
             sync_delivery_scheduler: SyncDeliverySchedulerConfig::default(),
             delivery_admission: DeliveryAdmissionConfig::default(),
-            max_encoded_payload_bytes: None,
+            payload_limits: PayloadLimits::default(),
         }
     }
 }
@@ -79,8 +79,8 @@ impl EventBusFacadeConfig {
     /// Creates facade configuration with an empty codec registry.
     ///
     /// # Returns
-    /// A configuration with no middleware, default delivery limits, and no
-    /// encoded-payload size limit.
+    /// A configuration with no middleware, default delivery limits, and finite
+    /// encoded-payload limits.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -132,29 +132,18 @@ impl EventBusFacadeConfig {
         self.delivery_admission
     }
 
-    /// Sets the maximum encoded payload size; `None` disables the limit.
-    ///
-    /// # Parameters
-    /// - `limit`: the maximum number of bytes accepted from an encoder, or
-    ///   `None` to disable the byte limit.
-    ///
-    /// # Returns
-    /// This configuration with the requested encoded-payload limit.
+    /// Replaces both positive encoded byte limits for newly-created facades.
+    /// Exactly the supplied limit is accepted in each direction.
     #[must_use]
-    pub fn with_max_encoded_payload_bytes(mut self, limit: Option<NonZeroUsize>) -> Self {
-        self.max_encoded_payload_bytes = limit;
+    pub fn with_payload_limits(mut self, limits: PayloadLimits) -> Self {
+        self.payload_limits = limits;
         self
     }
 
-    /// Returns the optional maximum encoded payload size.
-    ///
-    /// # Returns
-    /// The configured nonzero byte limit, or `None` when encoded output is
-    /// unbounded by this facade.
+    /// Returns independent positive publishing and receiving byte limits.
     #[must_use]
-    #[inline]
-    pub const fn max_encoded_payload_bytes(&self) -> Option<NonZeroUsize> {
-        self.max_encoded_payload_bytes
+    pub const fn payload_limits(&self) -> PayloadLimits {
+        self.payload_limits
     }
 
     /// Installs an application-prepared shared codec registry.

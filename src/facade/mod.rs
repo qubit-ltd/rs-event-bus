@@ -46,3 +46,6 @@ pub use subscription::Subscription;
 pub(crate) use subscription::SubscriptionControl;
 pub use sync_delivery_scheduler_config::SyncDeliverySchedulerConfig;
 pub use wait_outcome::WaitOutcome;
+
+mod payload_limits;
+pub use payload_limits::PayloadLimits;

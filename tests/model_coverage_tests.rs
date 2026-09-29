@@ -57,6 +57,7 @@ use qubit_event_bus::model::SubscribeRequestBuilder;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
@@ -513,7 +514,8 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
         fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             Ok(String::from_utf8_lossy(bytes).into_owned())
         }
     }
@@ -551,7 +553,14 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
         shared.codec().expect("configured codec").content_type().as_str(),
         "text/plain"
     );
-    assert_eq!(shared.codec().expect("configured codec").decode(b"example")?, "example");
+    assert_eq!(
+        shared.codec().expect("configured codec").decode(&EncodedPayload::new(
+            Arc::from(b"example".as_slice()),
+            ContentType::new("text/plain")?,
+            Some(SchemaId::new("order-v1")?)
+        ))?,
+        "example"
+    );
 
     let cloned = shared.clone();
     assert!(Arc::ptr_eq(cloned.codec().expect("cloned codec"), &shared_codec));

@@ -7,6 +7,10 @@
 // =============================================================================
 //! Private state shared by notification publisher modules.
 
+pub(in crate::notification) use worker_completion_guard::WorkerCompletionGuard;
+pub(in crate::notification) use worker_exit::WorkerExit;
 pub(in crate::notification) use worker_state::WorkerState;
 
+mod worker_completion_guard;
+mod worker_exit;
 mod worker_state;

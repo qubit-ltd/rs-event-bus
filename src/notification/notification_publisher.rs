@@ -19,6 +19,8 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::internal::WorkerCompletionGuard;
+use super::internal::WorkerExit;
 use super::internal::WorkerState;
 use super::notification_config::DEFAULT_QUEUE_CAPACITY;
 use super::notification_outcome::NotificationOutcome;
@@ -63,7 +65,9 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> {
     sender: Mutex<Option<SyncSender<T>>>,
     /// Worker handle, taken exactly once by the first closer that joins it.
     worker: Mutex<Option<thread::JoinHandle<()>>>,
-    /// Worker completion flag and condition variable shared with close callers.
+    /// Worker identity retained independently of the join handle.
+    worker_thread_id: thread::ThreadId,
+    /// Worker terminal state and condition variable shared with close callers.
     state: Arc<(Mutex<WorkerState>, Condvar)>,
     /// Atomic counters exposed through [`Self::stats`].
     stats: Arc<NotificationStats>,
@@ -98,13 +102,16 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         let (sender, receiver) = sync_channel(capacity.get());
         let stats = Arc::new(NotificationStats::default());
         let worker_stats = stats.clone();
-        let state = Arc::new((Mutex::new(WorkerState { finished: false }), Condvar::new()));
+        let state = Arc::new((Mutex::new(WorkerState { exit: None }), Condvar::new()));
         let worker_state = state.clone();
         let observer = Arc::new(observer);
         let worker = thread::Builder::new()
             .name("event-notification-publisher".into())
             .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut completion = WorkerCompletionGuard::new(worker_state, worker_stats.clone());
+                // The move closure owns every user-controlled resource so both
+                // normal cleanup and unwind cleanup remain inside this boundary.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                     while let Ok(payload) = receiver.recv() {
                         let outcome = match PublishRequest::new(topic.clone(), payload) {
                             Ok(request) => match bus.publish(request) {
@@ -126,21 +133,18 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                             NotificationStats::increment(&worker_stats.observer_panicked);
                         }
                     }
+                    drop(receiver);
+                    drop(topic);
+                    drop(bus);
+                    drop(observer);
                 }));
-                if result.is_err() {
-                    NotificationStats::increment(&worker_stats.worker_panicked);
+                if result.is_ok() {
+                    completion.mark_drained();
                 }
-                drop(receiver);
-                drop(topic);
-                drop(bus);
-                drop(observer);
-                drop(worker_stats);
-                let (lock, changed) = &*worker_state;
-                lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finished = true;
-                changed.notify_all();
             })?;
         Ok(Self {
             sender: Mutex::new(Some(sender)),
+            worker_thread_id: worker.thread().id(),
             worker: Mutex::new(Some(worker)),
             state,
             stats,
@@ -262,26 +266,33 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.reject_worker_thread()?;
         let started = Instant::now();
-        self.sender
+        let sender = self
+            .sender
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        drop(sender);
         let (lock, changed) = &*self.state;
         let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !state.finished {
+        while state.exit.is_none() {
             state = match timeout {
                 None => changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner),
                 Some(limit) => {
                     let remaining = remaining_timeout(limit, started)?;
-                    changed
+                    let (next_state, _) = changed
                         .wait_timeout(state, remaining)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .0
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    next_state
                 }
             };
         }
+        let exit = state.exit;
         drop(state);
-        self.finish_join(timeout, started)
+        self.finish_join(timeout, started)?;
+        match exit {
+            Some(WorkerExit::Drained) => Ok(()),
+            Some(WorkerExit::Panicked) | None => Err(io::Error::other("notification publisher worker panicked")),
+        }
     }
 
     /// Rejects a blocking close request made by the worker it would join.
@@ -292,13 +303,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// # Errors
     /// Returns `Other` when called from the worker thread.
     fn reject_worker_thread(&self) -> io::Result<()> {
-        let called_from_worker = self
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|worker| worker.thread().id() == thread::current().id());
-        if called_from_worker {
+        if self.worker_thread_id == thread::current().id() {
             return Err(io::Error::other(
                 "notification publisher cannot close from its worker thread",
             ));
@@ -343,9 +348,6 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             worker
                 .join()
                 .map_err(|_| io::Error::other("notification publisher worker panicked"))?;
-        }
-        if self.stats.worker_panicked.load(std::sync::atomic::Ordering::Acquire) > 0 {
-            return Err(io::Error::other("notification publisher worker panicked"));
         }
         Ok(())
     }

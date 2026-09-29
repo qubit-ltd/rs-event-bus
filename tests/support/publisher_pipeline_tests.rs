@@ -89,9 +89,9 @@ impl EventBusSpi for FakeBus {
         state.published_headers.push(message.headers().get("typed").cloned());
         state.payload_was_encoded = Some(matches!(message.payload(), TransportPayload::Encoded(_)));
         if state.calls <= state.fail_count {
-            return Err(SpiError::Operation {
+            return Err(SpiError::Publish {
                 provider_id: "fake".into(),
-                operation: "publish",
+                effect: crate::model::PublishEffect::NotAccepted,
                 resource: Some(message.topic().as_str().into()),
                 kind: "transient",
                 retryable: Some(true),
@@ -163,7 +163,7 @@ fn make_pipeline(_bus: &Arc<FakeBus>) -> PublisherPipeline {
         ProviderId::new("fake").unwrap(),
         Arc::default(),
         EventBusSpi::capabilities(_bus.as_ref()),
-        None,
+        std::num::NonZeroUsize::new(1_048_576).unwrap(),
     )
 }
 
@@ -212,8 +212,8 @@ impl EventCodec<String> for StringCodec {
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::from(value.as_bytes()))
     }
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
-        String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
+    fn decode(&self, payload: &crate::spi::EncodedPayload) -> Result<String, CodecError> {
+        String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
     }
@@ -499,7 +499,9 @@ fn test_publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
         panic!("expected structured publish observer panic, got {:?}", failure.error());
     };
     assert!(matches!(
-        source.downcast_ref::<PublishError>(),
+        source
+            .downcast_ref::<crate::error::PublishFailure>()
+            .map(crate::error::PublishFailure::cause),
         Some(PublishError::Retry(_))
     ));
     assert!(std::error::Error::source(source.as_ref()).is_some());

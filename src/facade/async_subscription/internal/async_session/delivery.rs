@@ -114,16 +114,36 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let tracking = self.inner.tracker.track(self.topic.name());
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
-        let payload = match crate::codec::decode_payload(self.codec.as_ref(), transport_payload).map_err(Into::into) {
+        let payload = match crate::codec::decode_payload(
+            self.codec.as_ref(),
+            &transport_payload,
+            self.inner.facade_config.payload_limits().max_receive_bytes(),
+        ) {
             Ok(payload) => payload,
             Err(error) => {
+                if crate::codec::receive_failure_action(&error) == crate::codec::ReceiveFailureAction::StopUnsettled {
+                    let message = error.to_string();
+                    self.record_abandoned_delivery();
+                    if self.signals.fail_receive(crate::model::SubscriptionStopReason::Codec {
+                        event_id,
+                        error: Arc::new(error),
+                    }) {
+                        self.inner.emit(&Diagnostic::InternalFailure {
+                            origin: "receive_boundary".into(),
+                            message: message.into(),
+                        });
+                    }
+                    // Receiver owns recovery. No settlement callback observes this token.
+                    drop(token);
+                    return;
+                }
                 self.pending = Some(PendingDelivery {
                     _tracking: tracking,
                     event_id,
                     event: None,
                     token,
                     metadata: provider_metadata,
-                    decode_error: Some(error),
+                    decode_error: Some(error.into()),
                     settlement_intent: None,
                     settlement_failures: 0,
                     failure_diagnostic: None,

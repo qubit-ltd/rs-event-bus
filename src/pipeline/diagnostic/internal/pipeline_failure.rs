@@ -9,6 +9,7 @@
 
 use super::pipeline_failure_origin::PipelineFailureOrigin;
 use crate::error::EventBusError;
+use crate::model::PublishEffect;
 
 /// Failure carrying its origin without inspecting or cloning the error.
 #[derive(Debug, thiserror::Error)]
@@ -16,12 +17,24 @@ use crate::error::EventBusError;
 pub(crate) struct PipelineFailure {
     /// Stage that produced the pipeline failure.
     origin: PipelineFailureOrigin,
+    /// Admission evidence from the publication pipeline.
+    effect: PublishEffect,
     /// Original operation error retained as the source.
     #[source]
     error: Box<EventBusError>,
 }
 
 impl PipelineFailure {
+    /// Attaches admission evidence without inspecting or replacing the source.
+    pub(crate) fn with_publish_effect(mut self, effect: PublishEffect) -> Self {
+        self.effect = effect;
+        self
+    }
+    /// Returns admission evidence carried from the terminal attempt boundary.
+    pub(crate) fn publish_effect(&self) -> PublishEffect {
+        self.effect
+    }
+
     /// Creates a failure with explicit publisher pipeline provenance.
     ///
     /// # Parameters
@@ -33,6 +46,7 @@ impl PipelineFailure {
     pub(crate) fn new(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> Self {
         Self {
             origin,
+            effect: PublishEffect::NotAccepted,
             error: Box::new(error.into()),
         }
     }

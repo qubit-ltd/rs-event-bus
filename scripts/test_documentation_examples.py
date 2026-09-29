@@ -9,11 +9,12 @@ CHECKER = ROOT / "scripts/check_documentation_examples.py"
 LOCAL = "examples/local_delivery.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
+CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }
@@ -24,7 +25,7 @@ def run_case(mutator):
         root = Path(directory)
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, ASYNC, SPEC):
+        for source in (LOCAL, ASYNC, SPEC, CODEC):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"fn example() {{ /* {source} */ }}\n", encoding="utf-8")

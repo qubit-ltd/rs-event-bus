@@ -42,6 +42,14 @@ use crate::spi::InboundMessage;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 
+/// One receiver-owned message, its decoded result, and its tracking permit.
+type PendingInbound<'tracking, T> = (
+    usize,
+    InboundMessage,
+    Result<Arc<T>, crate::error::CodecError>,
+    DeliveryTrackerGuard<'tracking>,
+);
+
 /// Runs the receive owner for one subscription until it has fully stopped.
 ///
 /// The owner serializes provider receives and settlements while dispatching
@@ -83,7 +91,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     let _worker_context = BusContextGuard::enter(bus_identity);
     let worker_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let (message_tx, message_rx) = mpsc::channel();
-        let mut pending: Option<(usize, InboundMessage, DeliveryTrackerGuard<'_>)> = None;
+        let mut pending: Option<PendingInbound<'_, T>> = None;
         let mut pending_settlements = VecDeque::new();
         let mut active: HashMap<usize, DeliveryTrackerGuard<'_>> = HashMap::new();
         let mut next_task = 1usize;
@@ -103,8 +111,18 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             let stopping = control.is_cancelled();
             if stopping {
                 receive_closed = true;
-                if let Some((_, message, _guard)) = pending.take() {
-                    requeue_unstarted_message(&inner, &mut pending_settlements, control.id, &subscriber_id, message);
+                if let Some((_, message, _decoded, _guard)) = pending.take() {
+                    if control.terminal_failure().is_some() {
+                        abandon_stopped_message(&inner, message);
+                    } else {
+                        requeue_unstarted_message(
+                            &inner,
+                            &mut pending_settlements,
+                            control.id,
+                            &subscriber_id,
+                            message,
+                        );
+                    }
                 }
             }
 
@@ -122,7 +140,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                 }
             }
 
-            if let Some((task_id, message, guard)) = pending.take() {
+            if let Some((task_id, message, decoded, guard)) = pending.take() {
                 let ordering_key = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
                     Some(OrderingLaneKey::new(
                         topic.name(),
@@ -135,8 +153,8 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                 if let Some(reservation) = inner.scheduler.try_reserve(control.id, ordering_key) {
                     let task_subscription_id = control.id;
                     let task_inner = inner.clone();
+                    let task_control = control.clone();
                     let task_topic = topic.clone();
-                    let task_codec = codec.clone();
                     let task_options = options.clone();
                     let task_handler = handler.clone();
                     let task_subscriber_id = subscriber_id.clone();
@@ -145,7 +163,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     reservation.submit(move |cancelled| {
                         let _task_context = BusContextGuard::enter(bus_identity);
                         let task_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            if cancelled {
+                            if !task_control.try_start() {
+                                abandon_stopped_message(&task_inner, message);
+                            } else if cancelled {
                                 requeue_unstarted_message_via_owner(
                                     &task_inner,
                                     &OwnerSettlementRouter {
@@ -164,10 +184,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                     task_subscription_id,
                                     &task_subscriber_id,
                                     &task_topic,
-                                    task_codec.as_ref(),
                                     &task_options,
                                     &task_handler,
                                     message,
+                                    decoded,
                                 );
                             }
                         }));
@@ -178,7 +198,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     });
                     active.insert(task_id, guard);
                 } else {
-                    pending = Some((task_id, message, guard));
+                    pending = Some((task_id, message, decoded, guard));
                 }
             }
 
@@ -220,14 +240,63 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             );
                             receive_closed = true;
                         } else {
+                            // Decode on the receiver owner before dispatch so a permanent
+                            // codec failure cannot race another receive or retry itself.
+                            let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
+                                message.into_parts();
+                            let decoded = crate::codec::decode_payload(
+                                codec.as_ref(),
+                                &payload,
+                                inner.facade_config.payload_limits().max_receive_bytes(),
+                            );
+                            let decoded = match decoded {
+                                Err(error)
+                                    if crate::codec::receive_failure_action(&error)
+                                        == crate::codec::ReceiveFailureAction::StopUnsettled =>
+                                {
+                                    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+                                        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+                                    }
+                                    let message = error.to_string();
+                                    if control.fail_receive(crate::model::SubscriptionStopReason::Codec {
+                                        event_id,
+                                        error: Arc::new(error),
+                                    }) {
+                                        inner.scheduler.cancel_subscription(control.id);
+                                        inner.emit_internal("receive_boundary", message);
+                                    }
+                                    // No disposition is submitted. Closing this owner leaves
+                                    // durable recovery to the provider's receiver contract.
+                                    drop(token);
+                                    receive_closed = true;
+                                    continue;
+                                }
+                                decoded => decoded,
+                            };
+                            let message = InboundMessage::new(
+                                address,
+                                event_id,
+                                timestamp,
+                                headers,
+                                ordering_key,
+                                payload,
+                                token,
+                                metadata,
+                            );
                             let task_id = next_task;
                             next_task = next_task.wrapping_add(1).max(1);
                             let guard = inner.tracker.track_delivery(topic.name());
-                            pending = Some((task_id, message, guard));
+                            pending = Some((task_id, message, decoded, guard));
                         }
                     }
                     Err(error) => {
-                        inner.emit_internal("receive", error.to_string());
+                        let message = error.to_string();
+                        if control
+                            .fail_receive(crate::model::SubscriptionStopReason::Provider { error: Arc::new(error) })
+                        {
+                            inner.scheduler.cancel_subscription(control.id);
+                            inner.emit_internal("receive", message);
+                        }
                         receive_closed = true;
                     }
                 }
@@ -400,6 +469,15 @@ pub(in crate::facade) fn release_settlement_waiter(message: &CoordinatorMessage)
     {
         let _ = settled.send(());
     }
+}
+
+/// Releases unstarted work after a terminal receive stop without settlement.
+/// Durable state remains provider-owned; ephemeral loss is counted once.
+fn abandon_stopped_message(inner: &EventBusInner, message: InboundMessage) {
+    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+    }
+    drop(message);
 }
 
 /// Requeues a delivery canceled before its handler starts through the SPI
