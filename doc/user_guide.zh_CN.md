@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.17.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.18.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -39,6 +39,7 @@
   - [停机时排空队列](#停机时排空队列)
 - [生命周期、等待与停机](#生命周期等待与停机)
   - [同步总线的停机流程](#同步总线的停机流程)
+  - [请求关闭并异步观察](#请求关闭并异步观察)
   - [等待某个主题空闲](#等待某个主题空闲)
   - [异步总线的停机流程](#异步总线的停机流程)
 - [错误、诊断与排障](#错误诊断与排障)
@@ -100,12 +101,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 
-在依赖中加入：
+0.18.0 尚未发布。若应用目录与 `rs-event-bus` 检出目录并列，
+在应用的 `Cargo.toml` 中同时设置直接依赖和传递依赖的本地解析：
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.17"
+qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus" }
+
+[patch.crates-io]
+qubit-event-bus = { path = "../rs-event-bus" }
 ```
+
+按实际目录调整路径。只有 0.18 发布后，才能移除 path/patch 并从注册表使用
+`qubit-event-bus = "0.18"`。详见[0.18 迁移说明](migration.zh_CN.md#从-017-升级到-018)。
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
 
@@ -761,10 +769,11 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 
 假设有人提供了连接消息服务器的实现，你的应用先把它的 crate 加进依赖，再让总线知道“要用这个实现”。一个做法是显式注册：建立 `EventBusRegistry::new()`，调用 `register(那个实现)`，再调用 `create(&config)` 创建总线。同步实现放在 `EventBusRegistry`，异步实现放在 `AsyncEventBusRegistry`；异步创建要 `.await`。可以用 `provider_ids()` 查看已注册实现的 ID，再用 `EventBusConfig::with_selection` 指定其中一个。
 
-有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
+有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接。尚未发布时，
+仍须保留上面的本地 path 和 `[patch.crates-io]`：
 
 ```toml
-qubit-event-bus = { version = "0.17", features = ["discovery"] }
+qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -1188,7 +1197,8 @@ match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) 
         // 总线仍在后台清理，并且已经拒绝新操作。再调一次 shutdown 可等到最终报告；
         // 改用 Immediate 会把仍在排队的消息退回，但同样要等正在运行的处理函数返回。
         eprintln!("平稳关闭在 {timeout:?} 内未完成");
-        let report = bus.shutdown(ShutdownMode::Immediate)?;
+        let ticket = bus.request_shutdown(ShutdownMode::Immediate)?;
+        let report = ticket.wait(Some(Duration::from_secs(30)))?;
         eprintln!("最终报告：{report:?}");
     }
     Err(error) => return Err(error.into()),
@@ -1198,6 +1208,58 @@ match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) 
 订单示例正常停机时，`report.outcome` 为 `ShutdownOutcome::Complete`，`known_abandoned_deliveries` 为 0。`provider_may_have_abandoned_deliveries` 在内置 local 上总是 `true`：local 是非持久实现，无法证明进程内没有消息随关闭丢失，这个标志只是提醒，不是错误。`known_abandoned_deliveries` 大于 0，说明有已经接纳但没来得及处理的消息被放弃了；这些订单的审计记录和客户视图需要由应用的补偿机制补齐。
 
 `ShutdownMode::Graceful { timeout }` 会停止接收新工作，并尽量完成已经接收的工作。调用方 deadline 到期会返回 `ShutdownError::TimedOut`，不表示 bus 已关闭；同步 bus 仍可能在后台清理，后续再次调用 `shutdown` 可观察最终 `ShutdownReport`。`Immediate` 无法强制终止已经运行的业务代码。不要在同一 bus 的 handler 中调用可能等待该 bus 自身工作的 `shutdown`、`wait_for_idle` 或 `wait_for_received_deliveries`；这些调用会返回 `WouldDeadlock`。应从程序最外层的关闭流程发起停机。
+
+### 请求关闭并异步观察
+
+异步应用如果使用同步 `EventBus`，可以先发起短暂的关闭请求，再异步观察完成。
+这组 API 属于 `EventBus`；`AsyncEventBus` 仍通过自身的关闭 future 驱动清理。
+
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::{EventBus, EventBusShutdown, ShutdownError, ShutdownReport};
+use qubit_event_bus::spi::ShutdownMode;
+
+fn request_graceful(bus: &EventBus) -> Result<EventBusShutdown, ShutdownError> {
+    bus.request_shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    })
+}
+
+async fn observe(ticket: &EventBusShutdown) -> Result<ShutdownReport, ShutdownError> {
+    ticket.wait_async().await
+}
+```
+
+把 ticket 保留在可取消的观察 future 外。`request_graceful` 关闭接纳入口，启动
+或加入后台协调器，不等待 handler、worker 或 provider。`observe` 只借用 ticket：
+取消时移除自己的 waker 登记；之后再调用 `observe(&ticket)` 就能继续观察，
+无须重发关闭请求。`wait_async` 不阻塞线程，也不创建辅助线程。应用应在自身
+executor 上驱动它，并明确设置外层观察期限；上面 30 秒的 mode timeout 传给
+provider，不限制 `wait_async`。
+
+同步观察可调用 `ticket.wait(Some(Duration::from_secs(30)))`。观察超时不会消费
+ticket，也不停止后台关闭。宽限期结束后，可调用
+`bus.request_shutdown(ShutdownMode::Immediate)` 加强当前关闭，并继续观察原
+ticket；不需要的新 ticket 可以直接丢弃。每个 ticket 绑定确切的关闭代次，后来
+启动重试产生新代时，原 ticket 仍保留原代的结果。对已关闭 bus 发起请求会立即
+返回缓存结果。丢弃 ticket 只释放观察登记，丢弃 bus 句柄不会自动发起关闭。
+
+`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用；同步
+`shutdown` 和 `ticket.wait` 在这种上下文里返回 `WouldDeadlock`。异步回调也不能
+等待包含自身工作的关闭完成。普通调用方执行同步 `shutdown(Immediate)` 时，
+仍会等待正在运行的 handler、协调线程 join 和 provider 关闭，且没有调用方期限。
+取消、回滚和 Drop 集成应使用请求加有界观察；期限和 Immediate 都不能杀死阻塞
+的同步代码。
+
+IoC 0.3 适配器在 graceful 回调中保存 ticket，abort 回调请求 Immediate；它拥有
+的资源 wait 取出原 ticket，释放槽锁后再调用 `wait_async`。
+`WaitPolicy::bounded` 为宽限和终止阶段提供预算。取消外层
+`ShutdownHandle::wait` 会保留已有资源 wait，恢复观察不会重复请求。
+终止超时通过 `incomplete` 报告，并允许继续关闭依赖；这不表示资源已被强行
+终止，也不能继续保证未结束消费者的依赖可用。构建失败时应检查
+`BuildFailure::cause`，取出 cleanup handle，再显式观察 Immediate 清理报告。
+迁移细节见 [0.18 迁移说明](migration.zh_CN.md#从-017-升级到-018)。
 
 ### 等待某个主题空闲
 
@@ -1289,4 +1351,6 @@ println!("provider 关闭结果 {:?}", report.outcome);
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.17；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.18；缺失输入会明确失败。本轮 IoC/EventBus/消费者的三仓更新不升级 rs-task 与
+rs-event-bus-redis 的 0.17 依赖，完整五仓门禁须待它们另行迁移到 0.18 后
+才能通过。metadata 检查补充各项目 CI，不能单独证明投递行为。

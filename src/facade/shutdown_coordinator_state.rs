@@ -8,11 +8,10 @@
 //! State shared by callers and the synchronous shutdown coordinator.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::task::Waker;
 
-use crate::error::SpiError;
+use super::shutdown_coordinator::ShutdownResult;
 use crate::spi::ShutdownMode;
-use crate::spi::ShutdownOutcome;
 
 /// One shutdown attempt and its result shared by concurrent callers.
 pub(super) struct ShutdownCoordinatorState {
@@ -22,10 +21,14 @@ pub(super) struct ShutdownCoordinatorState {
     pub(super) generation: u64,
     /// Strongest shutdown mode requested for the active generation.
     pub(super) mode: ShutdownMode,
-    /// Number of callers currently waiting for each generation.
+    /// Number of live observation tickets retaining each generation.
     pub(super) waiters: HashMap<u64, usize>,
-    /// Completed results retained until every generation waiter leaves.
-    pub(super) results: HashMap<u64, Result<ShutdownOutcome, Arc<SpiError>>>,
+    /// Monotonic identity for independent asynchronous registrations.
+    pub(super) next_registration: u64,
+    /// Independent asynchronous observers indexed by generation and token.
+    pub(super) wakers: HashMap<u64, HashMap<u64, Waker>>,
+    /// Completed results retained until every generation ticket leaves.
+    pub(super) results: HashMap<u64, ShutdownResult>,
 }
 
 impl ShutdownCoordinatorState {
@@ -40,6 +43,8 @@ impl ShutdownCoordinatorState {
             mode: ShutdownMode::Immediate,
             waiters: HashMap::new(),
             results: HashMap::new(),
+            next_registration: 0,
+            wakers: HashMap::new(),
         }
     }
 }

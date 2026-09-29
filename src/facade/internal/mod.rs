@@ -15,3 +15,6 @@ pub(super) use lifecycle_state::LifecycleState;
 mod bus_context_guard;
 mod erased_middleware_list;
 mod lifecycle_state;
+
+mod shutdown_registration;
+pub(super) use shutdown_registration::ShutdownRegistration;

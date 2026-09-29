@@ -133,6 +133,23 @@ impl EventBusInner {
             .collect()
     }
 
+    /// Applies the facade's cancellation signal to borrowed subscription
+    /// controls. The callback must only update control atomics, never call
+    /// provider/user code or acquire another facade lock. Used by
+    /// nonblocking request setup.
+    pub(in crate::facade) fn signal_subscriptions<F>(&self, mut signal: F)
+    where
+        F: FnMut(&SubscriptionControl),
+    {
+        let subscriptions = self
+            .subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for control in subscriptions.values() {
+            signal(control);
+        }
+    }
+
     /// Returns a stable aggregate snapshot of every worker close failure so
     /// far.
     ///
@@ -258,22 +275,265 @@ impl EventBusInner {
     /// # Errors
     /// Returns a structured provider shutdown error.
     fn shutdown_provider_once(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        let mut state = self
+        // Only perform_shutdown on the single active coordinator generation
+        // calls this method. The coordinator owns provider-call serialization;
+        // this mutex protects only the cached report, never provider code.
+        let cached = self
             .shutdown_gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(report) = state.report {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .report;
+        if let Some(report) = cached {
             return Ok(report.outcome);
         }
         let outcome = crate::spi::panic_boundary::catch_spi_call(self.provider_id.as_str(), "shutdown", None, || {
             self.spi.shutdown(mode)
         })??;
-        state.report = Some(ShutdownReport::new(
+        self.shutdown_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .report = Some(ShutdownReport::new(
             outcome,
             self.abandoned_deliveries.load(Ordering::Acquire),
             self.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral
                 || outcome == ShutdownOutcome::TimedOut,
         ));
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use crate::EventBus;
+    use crate::error::SpiError;
+    use crate::facade::internal::LifecycleState;
+    use crate::local::LocalEventBusConfig;
+    use crate::model::ProviderId;
+    use crate::model::PublishAcknowledgement;
+    use crate::spi::EventBusCapabilities;
+    use crate::spi::EventBusSpi;
+    use crate::spi::EventSubscriptionSpi;
+    use crate::spi::OutboundMessage;
+    use crate::spi::ShutdownMode;
+    use crate::spi::ShutdownOutcome;
+    use crate::spi::SpiSubscriptionRequest;
+
+    /// Delegates transport to a real local provider and gates its shutdown
+    /// call.
+    struct GatedShutdownProvider {
+        delegate: Arc<dyn EventBusSpi>,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl EventBusSpi for GatedShutdownProvider {
+        fn capabilities(&self) -> EventBusCapabilities {
+            self.delegate.capabilities()
+        }
+        fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+            self.delegate.publish(message)
+        }
+        fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+            self.delegate.subscribe(request)
+        }
+        fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+            self.entered.send(()).expect("provider entered observer");
+            self.release
+                .lock()
+                .expect("provider release channel")
+                .recv()
+                .expect("release provider shutdown");
+            self.delegate.shutdown(mode)
+        }
+    }
+
+    #[test]
+    fn test_shutdown_request_returns_while_provider_and_worker_cleanup_overlap() {
+        let local = EventBus::local(LocalEventBusConfig::default()).expect("local provider");
+        let (provider_entered_tx, provider_entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let provider = GatedShutdownProvider {
+            delegate: local.inner.spi.clone(),
+            entered: provider_entered_tx,
+            release: Mutex::new(release_rx),
+        };
+        let bus = EventBus::from_spi(
+            ProviderId::new("shutdown-lock-probe").expect("provider ID"),
+            Arc::new(provider),
+        )
+        .expect("facade");
+        let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("first ticket");
+        provider_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("provider shutdown entered");
+        // Reproduce the private worker tail after tracker.worker_finished and
+        // subscriptions.remove: its cleanup takes lifecycle before report.
+        // No production-only scheduling hooks or extra public API are needed.
+        let (cleanup_entered_tx, cleanup_entered_rx) = mpsc::channel();
+        let cleanup_inner = bus.inner.clone();
+        let cleanup = std::thread::spawn(move || {
+            let mut lifecycle = cleanup_inner.lifecycle.lock().expect("worker lifecycle");
+            cleanup_entered_tx.send(()).expect("cleanup observer");
+            let report = cleanup_inner.shutdown_gate.lock().expect("worker report").report;
+            if *lifecycle == LifecycleState::Closing && cleanup_inner.tracker.workers_are_idle() && report.is_some() {
+                *lifecycle = LifecycleState::Closed;
+            }
+        });
+        cleanup_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cleanup owns lifecycle");
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            returned_tx
+                .send(bus.request_shutdown(ShutdownMode::Immediate))
+                .expect("second request observer")
+        });
+        let returned_before_provider_release = returned_rx.recv_timeout(Duration::from_millis(250));
+        release_tx.send(()).expect("release provider before any assertion");
+        cleanup.join().expect("worker cleanup joins");
+        caller.join().expect("request caller joins");
+        ticket
+            .wait(Some(Duration::from_secs(5)))
+            .expect("first shutdown finishes");
+        assert!(
+            returned_before_provider_release.is_ok(),
+            "request must return before provider shutdown release despite worker lifecycle cleanup"
+        );
+        returned_before_provider_release
+            .expect("request returned")
+            .expect("joined ticket")
+            .wait(Some(Duration::from_secs(5)))
+            .expect("joined generation completes");
+    }
+    #[test]
+    fn test_shutdown_request_does_not_own_terminal_error_destruction() {
+        use std::fmt;
+
+        use qubit_id::Id;
+
+        use crate::facade::SubscriptionControl;
+        use crate::model::SubscriberId;
+        use crate::model::SubscriptionStopReason;
+
+        #[derive(Debug)]
+        struct BlockingErrorDrop {
+            entered: mpsc::Sender<std::thread::ThreadId>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl fmt::Display for BlockingErrorDrop {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("terminal receive error")
+            }
+        }
+        impl std::error::Error for BlockingErrorDrop {}
+        impl Drop for BlockingErrorDrop {
+            fn drop(&mut self) {
+                self.entered
+                    .send(std::thread::current().id())
+                    .expect("error-drop observer");
+                self.release
+                    .lock()
+                    .expect("error-drop release")
+                    .recv()
+                    .expect("release error Drop");
+            }
+        }
+
+        let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
+        let id = Id::new(999);
+        let control = SubscriptionControl::new(id, SubscriberId::new("terminal-error-drop").expect("subscriber ID"));
+        let (drop_entered_tx, drop_entered_rx) = mpsc::channel();
+        let (drop_release_tx, drop_release_rx) = mpsc::channel();
+        control.fail_receive(SubscriptionStopReason::Provider {
+            error: Arc::new(SpiError::Operation {
+                provider_id: "local".into(),
+                operation: "receive",
+                resource: None,
+                kind: "terminal",
+                retryable: Some(false),
+                source: Box::new(BlockingErrorDrop {
+                    entered: drop_entered_tx,
+                    release: Mutex::new(drop_release_rx),
+                }),
+            }),
+        });
+        // The registry is the only remaining control owner, as after a public
+        // handle and worker ownership have left. No test keeps an extra Arc.
+        bus.inner.subscriptions.lock().expect("registry").insert(id, control);
+        let (signal_entered_tx, signal_entered_rx) = mpsc::channel();
+        let (signal_release_tx, signal_release_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let request_bus = bus.clone();
+        let requester = std::thread::spawn(move || {
+            // Pause the exact production borrow/signal operation after the
+            // atomic store to deterministically model thread preemption.
+            request_bus.inner.signal_subscriptions(|control| {
+                control.request_cancel();
+                signal_entered_tx.send(()).expect("signal observer");
+                signal_release_rx.recv().expect("resume cancellation signal");
+            });
+            returned_tx
+                .send(request_bus.request_shutdown(ShutdownMode::Immediate))
+                .expect("request observer");
+        });
+        signal_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("request cancellation entered");
+        let borrowed_under_registry_guard = bus.inner.subscriptions.try_lock().is_err();
+        let cleanup_inner = bus.inner.clone();
+        let (removed_tx, removed_rx) = mpsc::channel();
+        let cleanup = std::thread::spawn(move || {
+            let removed = cleanup_inner
+                .subscriptions
+                .lock()
+                .expect("registry cleanup")
+                .remove(&id);
+            removed_tx.send(()).expect("removed observer");
+            drop(removed);
+        });
+        let cleanup_thread = cleanup.thread().id();
+        // On the RED snapshot path the registry can be removed before the
+        // request resumes, making its snapshot the exact last strong owner.
+        // On the borrowed path removal must wait for the signal to return.
+        if !borrowed_under_registry_guard {
+            removed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("remove old snapshot registry owner");
+        }
+        signal_release_tx.send(()).expect("resume request");
+        let destructor_thread = drop_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("terminal error Drop entered");
+        let returned_before_drop_release = returned_rx.recv_timeout(Duration::from_millis(250));
+        drop_release_tx.send(()).expect("release custom Drop before assertions");
+        cleanup.join().expect("cleanup joins");
+        requester.join().expect("request joins");
+        let returned_before_release = returned_before_drop_release.is_ok();
+        let ticket = match returned_before_drop_release {
+            Ok(ticket) => ticket,
+            Err(_) => returned_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("request after cleanup release"),
+        }
+        .expect("shutdown ticket");
+        ticket
+            .wait(Some(Duration::from_secs(5)))
+            .expect("coordinator completes");
+        assert_eq!(
+            destructor_thread, cleanup_thread,
+            "provider error Drop must remain on the cleanup thread"
+        );
+        assert!(
+            borrowed_under_registry_guard,
+            "request must borrow controls while registry ownership is protected"
+        );
+        assert!(
+            returned_before_release,
+            "request must return before releasing the terminal provider-error destructor"
+        );
     }
 }

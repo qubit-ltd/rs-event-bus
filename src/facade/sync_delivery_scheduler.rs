@@ -180,7 +180,7 @@ impl SyncDeliveryScheduler {
         let canceled = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.accepting = false;
-            state.stopping_immediate = immediate;
+            state.stopping_immediate |= immediate;
             if immediate {
                 state.queued = 0;
                 state.round_robin.clear();
@@ -194,6 +194,22 @@ impl SyncDeliveryScheduler {
             let ScheduledJob { run, permit, .. } = job;
             let _permit = permit;
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(true)));
+        }
+        self.changed.notify_all();
+    }
+
+    /// Stops admission and transfers queued cancellation to scheduler workers.
+    /// Never executes queued callbacks, settlements or provider code on the
+    /// caller's thread. Immediate requests monotonically strengthen shutdown.
+    pub(super) fn request_stop(&self, immediate: bool) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.accepting = false;
+        state.stopping_immediate |= immediate;
+        if state.stopping_immediate {
+            state.queued = 0;
+            state.round_robin.clear();
+            let canceled: Vec<_> = state.queues.drain().flat_map(|(_, jobs)| jobs).collect();
+            state.cancelled_jobs.extend(canceled);
         }
         self.changed.notify_all();
     }
@@ -362,3 +378,36 @@ impl SyncDeliveryScheduler {
 #[cfg(test)]
 #[path = "../../tests/support/scheduler_race_tests.rs"]
 mod scheduler_race_tests;
+
+#[cfg(test)]
+mod shutdown_request_tests {
+    use std::sync::mpsc;
+
+    use qubit_id::Id;
+
+    use super::SyncDeliveryScheduler;
+    use crate::facade::SyncDeliverySchedulerConfig;
+
+    #[test]
+    fn test_shutdown_request_never_runs_queued_cancellation_on_caller() {
+        let scheduler = SyncDeliveryScheduler::new(SyncDeliverySchedulerConfig::new(1, 1).expect("config"));
+        let reservation = scheduler.try_reserve(Id::new(1), None).expect("queued capacity");
+        let (tx, rx) = mpsc::channel();
+        reservation.submit(move |cancelled| {
+            tx.send((cancelled, std::thread::current().id()))
+                .expect("callback result")
+        });
+        let caller = std::thread::current().id();
+        scheduler.request_stop(true);
+        assert!(rx.try_recv().is_err(), "request cannot execute a queued callback");
+        assert!(scheduler.try_reserve(Id::new(1), None).is_none());
+        let worker = scheduler.clone();
+        let handle = std::thread::spawn(move || worker.worker_loop());
+        let (cancelled, callback_thread) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker cancels");
+        assert!(cancelled);
+        assert_ne!(caller, callback_thread);
+        handle.join().expect("worker exits");
+    }
+}

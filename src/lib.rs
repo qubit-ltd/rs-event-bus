@@ -29,6 +29,7 @@ pub use facade::DeliveryAdmissionConfig;
 pub use facade::DiagnosticObserverHandle;
 pub use facade::EventBus;
 pub use facade::EventBusFacadeConfig;
+pub use facade::EventBusShutdown;
 pub use facade::IntoHandlerResult;
 pub use facade::PayloadLimits;
 pub use facade::PublishMetricsSnapshot;

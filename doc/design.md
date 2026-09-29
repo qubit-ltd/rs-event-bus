@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.17)
+# Qubit Event Bus Design (0.18)
 
-> This document describes `qubit-event-bus` 0.17.0 as implemented.
+> This document describes `qubit-event-bus` 0.18.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -124,7 +124,9 @@ Time comes from `qubit-clock` (`Timer`). Provider catalogs and discovery come fr
 crate they actually use, which keeps versions from being coupled through this crate.
 
 **(P10) Lifecycle is explicit and idempotent.**
-`shutdown(ShutdownMode)` is the only shutdown entry point, and calling it again is safe.
+`EventBus::request_shutdown(ShutdownMode)` starts or joins shutdown and returns an
+`EventBusShutdown` ticket. `shutdown` remains a blocking convenience method; repeated
+requests and observations are safe.
 After shutdown, APIs return `Closed`. `Immediate` can strengthen a `Graceful` shutdown
 that is already in progress. Dropping a subscription handle does not cancel it on the
 synchronous facade, and it does dispose it on the asynchronous facade. Both behaviors
@@ -201,7 +203,7 @@ are defined.
 | `spi` | Provider contract | `EventBusSpi`, `EventSubscriptionSpi`, `AsyncEventBusSpi`, `AsyncEventSubscriptionSpi`, `SpiFuture`, `OutboundMessage`, `InboundMessage`, `TransportPayload`, `ReceiveOutcome`, `SettlementToken`, `DeliveryDisposition`, `SpiSubscriptionRequest`, `EventBusCapabilities` and the capability enums, `ShutdownOutcome`, `DeliveryGap`, `conformance` |
 | `registry` | Provider catalog and assembly | `EventBusSpec`, `EventBusProvider` / `AsyncEventBusProvider` (aliases of `qubit-spi` definition traits), `EventBusRegistry`, `AsyncEventBusRegistry`, `EventBusConfig`, `RequiredCapabilities`, `EventBusProviderError`, internal `EventBusProviderAdapter` / `IdentifiedEventBusSpi`, `sync_provider_inventory` / `async_provider_inventory` (discovery) |
 | `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `AdmissionTracker`, `OrderingLanes`, `DeadLetter*`, retry adapters, `Diagnostic` |
-| `facade` | User-facing bus | `EventBus`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `SyncDeliverySchedulerConfig`, `DeliveryAdmissionConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
+| `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `SyncDeliverySchedulerConfig`, `DeliveryAdmissionConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
 | `local` | Built-in in-process provider | `LocalEventBusConfig`, `LocalEventBusProvider`, `AsyncLocalEventBusProvider`, `LocalEventBusSpi`, `AsyncLocalEventBusSpi`, `LocalQueue`, `OutstandingBudget` |
 | `notification` | A bounded, never-blocking publish queue in front of `EventBus` | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
 | `error` | Layered error types | `EventBusError`, `PublishError`, `SubscribeError`, `DeliveryError`, `LifecycleError`, `ShutdownError`, `ProviderError`, `SpiError`, `CapabilityError`, `CodecError`, `ConfigurationError` |
@@ -212,7 +214,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.17.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.18.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -488,10 +490,10 @@ pub struct SettlementToken {
 
 ### 4.6 Shutdown contract
 
-`shutdown(ShutdownMode)`:
+`shutdown(ShutdownMode)` and, on the synchronous facade, `request_shutdown(ShutdownMode)`:
 
-- `ShutdownMode::Graceful { timeout }` sets a caller deadline for the facade shutdown. A caller timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
-- `ShutdownMode::Immediate` closes every subscription immediately and drops or retains unprocessed messages according to the provider.
+- `ShutdownMode::Graceful { timeout }` passes its duration to the provider. The synchronous `shutdown` convenience method also uses it as its own observer deadline; a separate `request_shutdown` ticket can instead be observed with its own `wait` timeout or `wait_async`. Observer timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
+- `ShutdownMode::Immediate` requests cancellation, returns queued facade work as `Retry`, and waits for active work before provider cleanup. Unprocessed provider messages are dropped or retained according to that provider.
 - The call is idempotent. After shutdown, `publish` and `subscribe` return `SpiError::Operation` whose `kind` is closed.
 
 The facade permits at most one provider shutdown call in flight. A failed or
@@ -975,37 +977,60 @@ Coordinator and handler threads install a thread-local `BusContextGuard` before
 entering user code. From that context, an operation that would block waiting for
 itself (`shutdown` waiting synchronously, `cancel()` joining, `wait_for_*`) returns
 `LifecycleError::WouldDeadlock { operation }` (wrapped in `ShutdownError::Lifecycle`
-for shutdown) instead of deadlocking. Shutdown can still be **started** from bus
-context, because it moves onto a background thread. It cannot be waited for there.
+for shutdown) instead of deadlocking. `shutdown` checks this context before issuing
+a request. `request_shutdown` can start background shutdown from that context;
+synchronous `EventBusShutdown::wait` rejects waiting there.
 
 ### 8.7 Shutdown: `ShutdownCoordinator`
 
 ```
-shutdown(mode: ShutdownMode)
-  ├─ lifecycle: Running → Closing (already Closing/Closed joins the shutdown in progress)
-  ├─ OperationGate::close_admission()          new publish/subscribe returns Closed immediately
-  ├─ coordinator.begin(mode) → generation       Immediate can strengthen an in-progress Graceful
-  ├─ scheduler.stop_admission(immediate); every subscription request_cancel()
-  ├─ spawn `event-bus-shutdown` to run perform_shutdown:
-  │     wait for OperationGate to reach zero → wait for or clear scheduler tasks → join every coordinator
-  │     → scheduler.join() → spi.shutdown(mode) (at most one in flight) → lifecycle Closed
-  └─ caller outside bus context → wait until its deadline and return ShutdownReport
-     caller inside bus context → return ShutdownError::Lifecycle(WouldDeadlock) immediately
-                                 (shutdown continues in the background)
+request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
+  ├─ Closed → ready ticket reading the cached report
+  ├─ lifecycle: Running → Closing; OperationGate::close_admission()
+  ├─ coordinator.begin(mode) → exact generation; Immediate strengthens active Graceful
+  ├─ scheduler.request_stop(immediate); borrowed subscription controls request_cancel()
+  ├─ start one `event-bus-shutdown` thread when this generation needs a leader
+  │     start failure → Err(ShutdownError::CoordinatorStart); joined tickets retain this error
+  │     wait for OperationGate → drain/cancel queued tasks → wait/join workers
+  │     → scheduler.join() → spi.shutdown(mode) → cache report and mark Closed on success
+  └─ return Ok(generation ticket) without waiting for handlers, joins, or SPI completion
+
+EventBusShutdown::wait(Some(timeout)) → blocking, bounded observation
+EventBusShutdown::wait_async()         → runtime-neutral Waker observation
+shutdown(mode)                        → request_shutdown(mode) + ticket.wait(mode timeout)
 ```
 
-- A generation lets concurrent `shutdown()` calls all wait for the **same** shutdown.
-  An arriving `Immediate` upgrades a `Graceful` generation. Tasks still queued are returned as `Retry`.
-- A caller deadline returns `ShutdownError::TimedOut`; it does not claim the bus is
-  closed. The sync coordinator continues cleanup in the background. An SPI
-  `ShutdownOutcome::TimedOut` reports provider completion after its own grace period.
+- Requests only close admission, strengthen stop signals, queue cancellation for
+  background processing, and start the coordinator. They never run queued
+  settlement or diagnostic callbacks, wait for handlers/provider, or join threads
+  on the request path. They are safe from bus-owned callbacks.
+- Each ticket retains one generation's result until ticket Drop. Multiple tickets
+  can join one active generation. Immediate strengthens that attempt, returning
+  queued tasks as `Retry` while active handlers finish. A coordinator start failure
+  is published to joined tickets before a later request can retry; an old ticket
+  never observes the retry generation's result.
+- `wait_async` checks completion and registers its waker under the same state
+  mutex. Waker clone/drop/wake run outside that mutex. Cancelling a wait removes
+  only its registration; the ticket still retains the result and can be observed
+  again without resending a request or creating another thread.
+- `wait(Some(timeout))` limits only the observer. `shutdown(Graceful { timeout })`
+  uses that same timeout for its blocking observer and passes the mode to the
+  provider. `shutdown(Immediate)` has no observer deadline and still waits.
+  A timeout returns `ShutdownError::TimedOut` while background cleanup continues;
+  SPI `ShutdownOutcome::TimedOut` instead reports completed provider cleanup after
+  its grace period. Neither mode can kill blocked synchronous code.
 - The report includes facade-known abandoned ephemeral deliveries and whether
-  provider-owned work may also have been abandoned without an exact count.
-- The background shutdown thread runs inside `catch_unwind`. If it panics, the facade
-  emits `Diagnostic::InternalFailure` and advances the state to `Closed`, so the caller is not left waiting forever.
-- `EventBus` is a `Clone` of an `Arc` handle and has **no `Drop` shutdown**. Coordinator
-  threads hold `Arc<EventBusInner>`, so dropping the last caller handle does not stop them.
-  The caller must call `shutdown`.
+  the provider may have abandoned work it cannot count. Provider calls are
+  serialized by the active coordinator; the report-cache mutex is not held across
+  the SPI shutdown call, so a later request can still strengthen the attempt.
+- The background thread contains unwind panics as a generation failure and emits
+  `Diagnostic::InternalFailure`. Observers receive that failure; it is not a
+  successful shutdown report.
+- `EventBus` is a `Clone` of an `Arc` handle and has **no Drop shutdown**.
+  Background workers can retain `Arc<EventBusInner>`. The caller must explicitly
+  request shutdown and observe completion. Dropping a ticket only releases
+  observation and does not cancel background shutdown.
+
 
 ---
 
@@ -1344,7 +1369,7 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 | `SubscribeError` | `subscribe` | `Configuration`, `Capability`, `Spi`, `Closed` (a missing codec is `Capability`) |
 | `DeliveryError` | handler return / pipeline | `Handler { source }`, `Codec`, `Spi`, `Retry(Box<RetryError<DeliveryAttemptError>>)` |
 | `LifecycleError` | `wait_for_*`, `cancel`, shutdown internals | `Timer(TimeError)`, `WouldDeadlock { operation }`, `Closed`, `IdleWaitUnsupported`, `Spi`, `SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
-| `ShutdownError` | `shutdown` | `TimedOut { .. }`, `CoordinatorStart(io::Error)`, `Lifecycle(LifecycleError)` (including `WouldDeadlock`), `Spi`, `SubscriptionClose` |
+| `ShutdownError` | `request_shutdown`, ticket waits, `shutdown` | `TimedOut { .. }`, `CoordinatorStart(io::Error)`, `Lifecycle(LifecycleError)` (including `WouldDeadlock`), `Spi`, `SubscriptionClose` |
 | `ProviderError` | registry | `Resolution` (provider not found, or an illegal selection), `Creation` (provider construction failed, or `RequiredCapabilities` are missing) |
 | `EventBusProviderError` | provider authors | The error wrapper a provider `create` returns, aggregated by `qubit-spi` |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`, `Operation { provider_id, operation, resource, kind, retryable, source }`, `InvalidSettlementToken { .. }` |
@@ -1535,7 +1560,7 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.17.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.18.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
 
 ## Provider specification compile probe
 
@@ -1588,6 +1613,9 @@ For a coordinated migration, run `./project-ci-check.sh --ecosystem-root <repos-
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.17. Missing
-inputs fail explicitly; this metadata check supplements each project's CI and
-does not prove delivery behavior by itself.
+metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
+inputs fail explicitly. This update coordinates the EventBus, IoC, and
+execution-services consumer; rs-task and rs-event-bus-redis still require their
+own 0.18 dependency migration before the five-repository gate can pass. The
+metadata check supplements each project's CI and does not prove delivery
+behavior by itself.

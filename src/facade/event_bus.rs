@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 pub(in crate::facade) use internal::CoordinatorMessage;
 pub(in crate::facade) use internal::EventBusInner;
+pub(in crate::facade) use internal::clone_spi_error;
 
 use self::internal::OperationGate;
 use self::internal::OwnerSettlementRouter;
