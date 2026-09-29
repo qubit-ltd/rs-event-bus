@@ -41,6 +41,7 @@ use super::PublishAcknowledgement;
 ///     },
 /// );
 /// assert_eq!(receipt.provider_id().as_str(), "local");
+/// assert!(!receipt.duplicate_possible());
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishReceipt {
@@ -52,6 +53,8 @@ pub struct PublishReceipt {
     provider_id: ProviderId,
     /// Provider or interceptor admission outcome.
     acknowledgement: PublishAcknowledgement,
+    /// Whether an earlier failed attempt may also have admitted this event.
+    duplicate_possible: bool,
 }
 
 impl PublishReceipt {
@@ -77,8 +80,33 @@ impl PublishReceipt {
             dispatched_event_id,
             provider_id,
             acknowledgement,
+            duplicate_possible: false,
         }
     }
+    /// Returns whether an earlier failed attempt may also have admitted this
+    /// event.
+    ///
+    /// # Returns
+    /// `true` when prior failed attempts left admission uncertain, otherwise
+    /// `false`.
+    #[must_use]
+    #[inline]
+    pub fn duplicate_possible(&self) -> bool {
+        self.duplicate_possible
+    }
+    /// Attaches retry evidence without changing provider admission information.
+    ///
+    /// # Parameters
+    /// - `value`: whether an earlier failed attempt had uncertain admission.
+    ///
+    /// # Returns
+    /// This receipt with the supplied duplicate possibility.
+    #[must_use]
+    pub fn with_duplicate_possible(mut self, value: bool) -> Self {
+        self.duplicate_possible = value;
+        self
+    }
+
     /// Returns the original event ID before publisher interception.
     ///
     /// # Returns

@@ -109,6 +109,13 @@ impl Subscription {
         self.control.is_cancelled()
     }
 
+    /// Returns the canonical receive failure, or None before a terminal stop.
+    /// The same Arc remains available after cancellation and provider close.
+    #[must_use]
+    pub fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+        self.control.terminal_failure()
+    }
+
     /// Stops receiving and waits for the worker to finish when called
     /// externally. Any worker owned by the same bus only requests
     /// cancellation and does not join, preventing cross-subscription join

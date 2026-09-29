@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::error::CodecError;
 use crate::model::ContentType;
 use crate::model::SchemaId;
+use crate::spi::EncodedPayload;
 
 /// Encodes and decodes payloads of type `T` without choosing a wire format
 /// globally.
@@ -26,7 +27,9 @@ use crate::model::SchemaId;
 ///
 /// fn round_trip<T: Send + Sync + 'static>(codec: &dyn EventCodec<T>, value: &T) {
 ///     let bytes = codec.encode(value).expect("encoding succeeds");
-///     let _decoded = codec.decode(&bytes).expect("decoding succeeds");
+///     let payload = qubit_event_bus::spi::EncodedPayload::new(bytes, codec.content_type().clone(), codec.schema_id().cloned());
+///     codec.validate_metadata(&payload).expect("compatible metadata");
+///     let _decoded = codec.decode(&payload).expect("decoding succeeds");
 /// }
 /// ```
 pub trait EventCodec<T>: Send + Sync + 'static {
@@ -56,10 +59,28 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     /// Returns [`CodecError`] when the value cannot be represented by this
     /// codec; the underlying codec failure remains available as the source.
     fn encode(&self, value: &T) -> Result<Arc<[u8]>, CodecError>;
-    /// Decodes bytes produced by this codec into an application value.
+    /// Validates received content type and optional schema before decoding.
+    ///
+    /// Exact text and Option equality is the default. Override this method to
+    /// permit a documented set of compatible MIME texts or schema versions.
+    /// Returns MetadataMismatch on incompatibility without inspecting bytes.
+    fn validate_metadata(&self, payload: &EncodedPayload) -> Result<(), CodecError> {
+        if self.content_type() == payload.content_type() && self.schema_id() == payload.schema_id() {
+            Ok(())
+        } else {
+            Err(CodecError::MetadataMismatch {
+                expected_content_type: self.content_type().clone(),
+                actual_content_type: payload.content_type().clone(),
+                expected_schema_id: self.schema_id().cloned(),
+                actual_schema_id: payload.schema_id().cloned(),
+            })
+        }
+    }
+    /// Decodes a complete payload with content type and schema metadata.
     ///
     /// # Parameters
-    /// * `bytes` — encoded payload to decode without taking ownership.
+    /// * `payload` — encoded bytes and metadata to decode without taking
+    ///   ownership.
     ///
     /// # Returns
     /// The decoded payload value.
@@ -67,5 +88,5 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     /// # Errors
     /// Returns [`CodecError`] when the bytes are invalid or cannot be
     /// interpreted by this codec; the underlying failure remains the source.
-    fn decode(&self, bytes: &[u8]) -> Result<T, CodecError>;
+    fn decode(&self, payload: &EncodedPayload) -> Result<T, CodecError>;
 }

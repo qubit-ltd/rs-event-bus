@@ -293,7 +293,22 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     continue;
                 }
                 AsyncRunnerEvent::Stopped => continue,
-                AsyncRunnerEvent::Receive(result) => result?,
+                AsyncRunnerEvent::Receive(result) => match result {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        let message = error.to_string();
+                        if self
+                            .signals
+                            .fail_receive(crate::model::SubscriptionStopReason::Provider { error: Arc::new(error) })
+                        {
+                            self.inner.emit(&Diagnostic::InternalFailure {
+                                origin: "receive".into(),
+                                message: message.into(),
+                            });
+                        }
+                        continue;
+                    }
+                },
             };
             match outcome {
                 ReceiveOutcome::Message(message) => {

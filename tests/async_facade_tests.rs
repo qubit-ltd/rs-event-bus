@@ -427,7 +427,7 @@ fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source
             .publish(PublishRequest::new(topic(), 91).unwrap().with_options(options))
             .await
             .unwrap_err();
-        let PublishError::Retry(retry) = error else {
+        let PublishError::Retry(retry) = error.into_cause() else {
             panic!("typed RetryError must reach async facade caller");
         };
         assert!(matches!(retry.reason(), RetryErrorReason::Exhausted { .. }));
@@ -2388,7 +2388,8 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
             Ok(Arc::from(value.as_bytes()))
         }
 
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
                 source: Box::new(source),
             })
@@ -2446,7 +2447,14 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 }
 
 #[test]
-fn test_async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
+fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("async-codec-fail-stop") {
+        crate::support::isolated_process::run_case(
+            "test_async_codec_decode_panic_is_contained_and_stops_without_settlement",
+            "async-codec-fail-stop",
+        );
+        return;
+    }
     struct PanicOnceCodec {
         content_type: ContentType,
         panicked: Arc<AtomicBool>,
@@ -2461,7 +2469,8 @@ fn test_async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
         fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
             Ok(Arc::from(value.as_bytes()))
         }
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             if !self.panicked.swap(true, Ordering::AcqRel) {
                 panic!("synthetic decode panic");
             }
@@ -2484,7 +2493,7 @@ fn test_async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
     let diagnostic_seen = Arc::new(AtomicBool::new(false));
     let observed = diagnostic_seen.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "codec_decode") {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "receive_boundary") {
             observed.store(true, Ordering::Release);
         }
     });
@@ -2518,61 +2527,68 @@ fn test_async_codec_decode_panic_is_contained_and_retries_the_owned_message() {
             }
         }))
     });
-    for _ in 0..100 {
-        if spi.settlement_dispositions() == [DeliveryDisposition::Retry] {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Retry]);
+    let result = runner.join().expect("codec panic runner exits");
+    let qubit_event_bus::ReceiveError::Stopped(reason) = result.expect_err("codec panic stops receive") else {
+        panic!("codec panic must retain a structured stop reason");
+    };
+    assert!(
+        matches!(reason.as_ref(), qubit_event_bus::model::SubscriptionStopReason::Codec { event_id, error } if event_id.as_str() == "panic-codec-event" && matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
+    );
     assert!(diagnostic_seen.load(Ordering::Acquire));
-    spi.enqueue(enqueue("after-panic-event", "after-panic-token"));
+    assert_eq!(handled.load(Ordering::Acquire), 0);
+    assert!(
+        spi.settlement_dispositions().is_empty(),
+        "codec panic must not accept, reject or retry the source token"
+    );
+    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert!(spi.settlement_dispositions().is_empty());
+
+    // Recovery uses a new subscription after the codec is repaired. This probe
+    // panics only once, so its shared topic codec now successfully decodes.
+    let recovered_spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let recovered_bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), recovered_spi.clone()).unwrap();
+    let mut recovered =
+        block_on(recovered_bus.subscribe(SubscribeRequest::new("recovered-codec", topic).unwrap())).unwrap();
+    for (id, bytes) in [
+        ("recovered-event", b"ok".as_slice()),
+        ("invalid-codec-event", &[0xff_u8][..]),
+    ] {
+        recovered_spi.enqueue(InboundMessage::new(
+            TopicAddress::new("async.panic-codec").unwrap(),
+            EventId::new(id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(bytes),
+                ContentType::new("text/plain").unwrap(),
+                None,
+            )),
+            Some(SettlementToken::new(recovered.id(), id)),
+            Default::default(),
+        ));
+    }
+    let recovered_handler = handled.clone();
+    let recovered_runner = std::thread::spawn(move || {
+        block_on(recovered.run(move |_| {
+            recovered_handler.fetch_add(1, Ordering::AcqRel);
+            async { Ok(()) }
+        }))
+    });
     for _ in 0..100 {
-        if handled.load(Ordering::Acquire) == 1 {
+        if recovered_spi.settlement_dispositions().len() == 2 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(handled.load(Ordering::Acquire), 1);
-    spi.enqueue(InboundMessage::new(
-        TopicAddress::new("async.panic-codec").unwrap(),
-        EventId::new("invalid-codec-event").unwrap(),
-        SystemTime::UNIX_EPOCH,
-        Headers::new(),
-        None,
-        TransportPayload::Encoded(EncodedPayload::new(
-            Arc::from([0xff_u8]),
-            ContentType::new("text/plain").unwrap(),
-            None,
-        )),
-        Some(SettlementToken::new(subscription_id, "invalid-codec-token")),
-        Default::default(),
-    ));
-    for _ in 0..100 {
-        if spi.settlement_dispositions().len() == 3 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
     assert_eq!(
-        spi.settlement_dispositions(),
-        [
-            DeliveryDisposition::Retry,
-            DeliveryDisposition::Accept,
-            DeliveryDisposition::Reject
-        ],
-        "ordinary decode errors reject while codec panics retry",
+        recovered_spi.settlement_dispositions(),
+        [DeliveryDisposition::Accept, DeliveryDisposition::Reject],
+        "repaired codec accepts valid bytes and ordinary decode errors reject"
     );
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
-    runner.join().unwrap().unwrap();
-    assert_eq!(
-        spi.settlement_dispositions(),
-        [
-            DeliveryDisposition::Retry,
-            DeliveryDisposition::Accept,
-            DeliveryDisposition::Reject
-        ]
-    );
+    block_on(recovered_bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    recovered_runner.join().unwrap().unwrap();
 }
 
 #[test]
@@ -2592,7 +2608,8 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
             Ok(Arc::from(value.as_bytes()))
         }
 
-        fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            let bytes = payload.bytes();
             String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
                 source: Box::new(source),
             })
@@ -3163,16 +3180,45 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
             *observed_by_callback.lock().unwrap() = Some((event_id.as_str().to_owned(), topic.to_string()));
         }
     });
-    let string_topic = Topic::<String>::new("test.topic").unwrap();
+    struct InvalidUtf8Codec(ContentType);
+    impl EventCodec<String> for InvalidUtf8Codec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+        }
+    }
+    let string_topic =
+        Topic::<String>::new_with_codec("test.topic", InvalidUtf8Codec(ContentType::new("text/plain").unwrap()))
+            .unwrap();
     let request = SubscribeRequest::new("decode-settle-failure", string_topic).expect("valid subscriber ID");
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.fail_next_settle();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
-            subscription.id(),
-            "decode-fail",
-        ))));
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("test.topic").unwrap(),
+            EventId::new("event-test").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from([0xff_u8]),
+                ContentType::new("text/plain").unwrap(),
+                None,
+            )),
+            Some(SettlementToken::new(subscription.id(), "decode-fail")),
+            Default::default(),
+        ));
         let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
         for _ in 0..100 {
             if observed.lock().unwrap().is_some() {
@@ -3200,7 +3246,38 @@ fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_clos
         let mut subscription = bus.subscribe(request).await.unwrap();
         spi.panic_next_receive();
         let error = subscription.run(|_| async { Ok(()) }).await.unwrap_err();
-        assert!(matches!(error, ReceiveError::Spi(error) if error.kind() == "provider_panicked"));
+        let ReceiveError::Stopped(reason) = error else {
+            panic!("provider receive panic must cache a structured stop reason");
+        };
+        let qubit_event_bus::model::SubscriptionStopReason::Provider { error } = reason.as_ref() else {
+            panic!("provider panic must remain a provider cause");
+        };
+        assert_eq!(error.kind(), "provider_panicked");
+        assert_eq!(error.operation(), "receive");
+        assert!(
+            std::error::Error::source(error.as_ref()).is_some(),
+            "provider panic source chain is retained"
+        );
+        assert!(Arc::ptr_eq(
+            &reason,
+            &subscription.terminal_failure().expect("cached provider failure")
+        ));
+        let ReceiveError::Stopped(repeated) = subscription
+            .run(|_| async { Ok(()) })
+            .await
+            .expect_err("stopped subscription cannot receive again")
+        else {
+            panic!("repeated run must return cached stop reason");
+        };
+        assert!(Arc::ptr_eq(&reason, &repeated));
+        assert_eq!(
+            spi.operation_log()
+                .iter()
+                .filter(|operation| **operation == "receive")
+                .count(),
+            1,
+            "repeated run does not poll the provider again"
+        );
         assert!(spi.operation_log().contains(&"close"));
         bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });

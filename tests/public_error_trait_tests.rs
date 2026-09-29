@@ -39,6 +39,7 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
                 Some(false),
+                qubit_event_bus::model::PublishEffect::NotAccepted,
                 std::io::Error::other("provider unavailable"),
             ))
         })

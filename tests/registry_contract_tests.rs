@@ -39,6 +39,7 @@ use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
@@ -662,7 +663,8 @@ impl EventCodec<u32> for U32Codec {
         Ok(Arc::from(value.to_be_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<u32, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<u32, CodecError> {
+        let bytes = payload.bytes();
         let array: [u8; 4] = bytes.try_into().map_err(|error| CodecError::Decode {
             source: Box::new(error),
         })?;

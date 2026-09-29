@@ -43,6 +43,7 @@ use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
@@ -90,7 +91,8 @@ impl EventCodec<String> for SuccessfulStringCodec {
         Ok(Arc::from(value.as_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -112,7 +114,8 @@ impl EventCodec<String> for FailingStringCodec {
         })
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -259,7 +262,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
     sync_bus.shutdown(ShutdownMode::Immediate).unwrap();
     assert!(matches!(
         sync_bus.publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 3_u32).unwrap()),
-        Err(PublishError::Closed)
+        Err(failure) if matches!(failure.cause(), PublishError::Closed)
     ));
     assert_eq!(clone.publish_metrics().attempts, 3);
     assert_eq!(clone.publish_metrics().errors, 1);
@@ -378,12 +381,12 @@ impl EventBusSpi for ScriptedFailureSpi {
     fn publish(&self, _message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let attempt = self.publish_calls.fetch_add(1, Ordering::AcqRel) + 1;
         if attempt <= self.failures_before_success {
-            return Err(SpiError::Operation {
+            return Err(SpiError::Publish {
                 provider_id: "scripted".into(),
-                operation: "publish",
                 resource: None,
                 kind: "scripted_failure",
                 retryable: self.retryable,
+                effect: qubit_event_bus::model::PublishEffect::NotAccepted,
                 source: Box::new(std::io::Error::other("scripted provider failure")),
             });
         }
@@ -561,7 +564,7 @@ fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let request = PublishRequest::new(topic, "payload".to_owned()).unwrap();
 
     let error = bus.publish(request).unwrap_err();
-    assert!(matches!(error, PublishError::Codec(CodecError::Encode { .. })));
+    assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
     assert!(std::error::Error::source(&error).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
     bus.shutdown(ShutdownMode::Immediate).unwrap();
@@ -569,8 +572,10 @@ fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
 
 #[test]
 fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
-    let config =
-        EventBusFacadeConfig::new().with_max_encoded_payload_bytes(Some(NonZeroUsize::new(4).expect("positive limit")));
+    let config = EventBusFacadeConfig::new().with_payload_limits(qubit_event_bus::facade::PayloadLimits::new(
+        NonZeroUsize::new(4).expect("positive publish limit"),
+        NonZeroUsize::new(4).expect("positive receive limit"),
+    ));
     let topic = || {
         Topic::new_with_codec(
             "codec.limit",
@@ -594,8 +599,12 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         .publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap())
         .unwrap_err();
     assert!(matches!(
-        error,
-        PublishError::Codec(CodecError::PayloadTooLarge { actual: 9, limit: 4 })
+        error.cause(),
+        PublishError::Codec(CodecError::PayloadTooLarge {
+            direction: qubit_event_bus::model::PayloadDirection::Publish,
+            actual: 9,
+            limit: 4
+        })
     ));
     assert_eq!(sync_spi.publish_calls.load(Ordering::Acquire), 1);
     sync_bus.shutdown(ShutdownMode::Immediate).unwrap();
@@ -609,8 +618,12 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
     .unwrap();
     let error = block_on(async_bus.publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap())).unwrap_err();
     assert!(matches!(
-        error,
-        PublishError::Codec(CodecError::PayloadTooLarge { actual: 9, limit: 4 })
+        error.cause(),
+        PublishError::Codec(CodecError::PayloadTooLarge {
+            direction: qubit_event_bus::model::PayloadDirection::Publish,
+            actual: 9,
+            limit: 4
+        })
     ));
     assert_eq!(async_spi.0.load(Ordering::Acquire), 0);
     block_on(async_bus.shutdown(ShutdownMode::Immediate)).unwrap();
@@ -622,7 +635,7 @@ fn test_sync_spi_publish_panic_becomes_source_preserving_publish_error() {
     let request = PublishRequest::new(Topic::new("sync.panic").unwrap(), 11_u32).unwrap();
 
     let error = bus.publish(request).unwrap_err();
-    let PublishError::Spi(source) = error else {
+    let PublishError::Spi(source) = error.cause() else {
         panic!("sync SPI panic should be converted to a provider error, got {error:?}");
     };
     assert!(matches!(
@@ -749,7 +762,7 @@ fn test_typed_metadata_mutation_error_is_returned_before_provider_publish() {
         .with_options(options);
 
     let error = bus.publish(request).unwrap_err();
-    assert!(matches!(error, PublishError::Configuration(_)));
+    assert!(matches!(error.cause(), PublishError::Configuration(_)));
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
     bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
@@ -767,7 +780,7 @@ fn test_retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
         .with_options(options);
 
     let error = bus.publish(request).unwrap_err();
-    let PublishError::Retry(retry) = error else {
+    let PublishError::Retry(retry) = error.cause() else {
         panic!("retry policy failure should retain RetryError, got {error:?}");
     };
     assert!(matches!(retry.reason(), RetryErrorReason::Aborted));
@@ -789,13 +802,14 @@ fn test_direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() 
     let request = PublishRequest::new(Topic::new("retry.disabled").unwrap(), 4_u32).unwrap();
 
     let error = bus.publish(request).unwrap_err();
-    let PublishError::Spi(source) = error else {
+    let PublishError::Spi(source) = error.cause() else {
         panic!("without a retry policy, the direct SPI error should be returned, got {error:?}");
     };
     assert!(matches!(
         source,
-        SpiError::Operation {
+        SpiError::Publish {
             kind: "scripted_failure",
+            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
             ..
         }
     ));
@@ -890,10 +904,10 @@ fn test_typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
 
     let error = bus.publish(request).unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         PublishError::InterceptorPanicked {
             scope: "typed",
-            ref message,
+            message,
         } if message.contains("typed publisher middleware panic")
     ));
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
@@ -910,7 +924,7 @@ fn test_async_spi_future_panic_becomes_source_preserving_publish_error() {
     let request = PublishRequest::new(Topic::new("async.panic").unwrap(), 11_u32).unwrap();
 
     let error = block_on(bus.publish(request)).unwrap_err();
-    let PublishError::Spi(source) = error else {
+    let PublishError::Spi(source) = error.cause() else {
         panic!("async SPI panic should be converted to a provider error, got {error:?}");
     };
     assert!(matches!(
@@ -935,7 +949,7 @@ fn test_async_spi_future_construction_panic_becomes_source_preserving_publish_er
     let request = PublishRequest::new(Topic::new("async.construction.panic").unwrap(), 11_u32).unwrap();
 
     let error = block_on(bus.publish(request)).unwrap_err();
-    let PublishError::Spi(source) = error else {
+    let PublishError::Spi(source) = error.cause() else {
         panic!("async SPI construction panic should be converted to a provider error, got {error:?}");
     };
     assert!(matches!(
@@ -1038,7 +1052,7 @@ fn test_diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observ
         )
         .unwrap_err();
     assert!(matches!(
-        preflight_error,
+        preflight_error.cause(),
         PublishError::Capability(CapabilityError::Unsupported {
             capability: "delayed_delivery"
         })

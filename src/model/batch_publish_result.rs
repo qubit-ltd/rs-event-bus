@@ -10,7 +10,7 @@
 use super::AdmissionStatus;
 use super::PublishAcknowledgement;
 use super::PublishReceipt;
-use crate::error::PublishError;
+use crate::error::PublishFailure;
 
 /// Each result corresponds to the request at the same input position.
 ///
@@ -26,7 +26,7 @@ use crate::error::PublishError;
 #[must_use]
 pub struct BatchPublishResult {
     /// Individual outcomes in the same order as their input requests.
-    items: Vec<Result<PublishReceipt, PublishError>>,
+    items: Vec<Result<PublishReceipt, PublishFailure>>,
 }
 
 impl BatchPublishResult {
@@ -37,7 +37,7 @@ impl BatchPublishResult {
     ///
     /// # Returns
     /// A batch retaining the supplied result order.
-    pub fn new(items: Vec<Result<PublishReceipt, PublishError>>) -> Self {
+    pub fn new(items: Vec<Result<PublishReceipt, PublishFailure>>) -> Self {
         Self { items }
     }
     /// Returns all per-request results in input order.
@@ -46,7 +46,7 @@ impl BatchPublishResult {
     /// The ordered result slice.
     #[must_use = "Use the returned items."]
     #[inline]
-    pub fn items(&self) -> &[Result<PublishReceipt, PublishError>] {
+    pub fn items(&self) -> &[Result<PublishReceipt, PublishFailure>] {
         &self.items
     }
     /// Returns the number of input requests.
@@ -117,7 +117,7 @@ impl BatchPublishResult {
     /// # Returns
     /// The owned result vector in input order.
     #[must_use]
-    pub fn into_items(self) -> Vec<Result<PublishReceipt, PublishError>> {
+    pub fn into_items(self) -> Vec<Result<PublishReceipt, PublishFailure>> {
         self.items
     }
 }

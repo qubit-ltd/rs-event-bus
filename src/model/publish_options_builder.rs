@@ -18,6 +18,8 @@ use super::PublishFailureContext;
 use super::PublishOptions;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
+use crate::error::PublishFailure;
+use crate::model::DuplicateRiskPolicy;
 
 /// Builds reusable publication policy independently of an individual request.
 ///
@@ -47,6 +49,17 @@ impl<T: 'static> PublishOptionsBuilder<T> {
         Self {
             options: PublishOptions::default(),
         }
+    }
+    /// Sets whether configured retries may duplicate uncertain admission.
+    ///
+    /// # Parameters
+    /// - `value`: whether configured retries may repeat uncertain admission.
+    ///
+    /// # Returns
+    /// The updated builder; `Forbid` remains the default.
+    pub fn duplicate_risk_policy(mut self, value: DuplicateRiskPolicy) -> Self {
+        self.options.duplicate_risk_policy = value;
+        self
     }
 
     /// Replaces the retry policy from `qubit-retry`.
@@ -108,7 +121,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     /// The updated builder.
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
+        F: Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static,
     {
         self.options.error_handlers.push(Arc::new(handler));
         self

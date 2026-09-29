@@ -189,6 +189,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
             };
             if let Some(handler) = session.handler.clone()
                 && let Err(error) = session.run_loop(handler).await
+                && !matches!(error, crate::error::ReceiveError::Stopped(_))
             {
                 session.inner.emit(&Diagnostic::InternalFailure {
                     origin: "shutdown_resume".into(),

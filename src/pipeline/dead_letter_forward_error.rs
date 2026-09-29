@@ -7,7 +7,7 @@
 // =============================================================================
 //! Failures from forwarding a dead-letter event.
 
-use crate::error::PublishError;
+use crate::error::PublishFailure;
 use crate::model::AdmissionOutcome;
 
 /// Failure that may be retried without settling the original delivery.
@@ -19,13 +19,7 @@ pub(crate) enum DeadLetterForwardError {
     Publish(
         /// Provider or facade error retained for retry classification.
         #[from]
-        PublishError,
-    ),
-    /// A non-publish pipeline stage failed before provider admission.
-    #[error("dead-letter pipeline failed: {0}")]
-    Pipeline(
-        /// Description of the stage failure that prevented publication.
-        Box<str>,
+        PublishFailure,
     ),
     /// A receipt reported no admission allowed by the configured policy.
     #[error("dead-letter event was not admitted: {0:?}")]

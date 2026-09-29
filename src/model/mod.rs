@@ -105,3 +105,15 @@ pub use subscribe_request_builder::SubscribeRequestBuilder;
 pub use subscriber_id::SubscriberId;
 pub use subscription_durability::SubscriptionDurability;
 pub use topic::Topic;
+
+mod payload_direction;
+pub use payload_direction::PayloadDirection;
+
+mod publish_effect;
+pub use publish_effect::PublishEffect;
+
+mod duplicate_risk_policy;
+pub use duplicate_risk_policy::DuplicateRiskPolicy;
+
+mod subscription_stop_reason;
+pub use subscription_stop_reason::SubscriptionStopReason;

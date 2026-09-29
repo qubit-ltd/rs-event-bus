@@ -96,3 +96,22 @@ impl From<RetryError<PublishAttemptError>> for PublishError {
         Self::Retry(Box::new(error))
     }
 }
+
+impl PublishError {
+    /// Classifies the terminal attempt while retaining structured source
+    /// errors. Whole-publication aggregation is supplied by the retry
+    /// pipeline.
+    pub(crate) fn publish_effect(&self) -> crate::model::PublishEffect {
+        match self {
+            Self::Spi(error) => error.publish_effect(),
+            Self::Retry(error) => error
+                .last_error()
+                .map_or(crate::model::PublishEffect::NotAccepted, PublishAttemptError::effect),
+            Self::ErrorHandlerPanicked { source, .. } => source.downcast_ref::<crate::error::PublishFailure>().map_or(
+                crate::model::PublishEffect::MayHaveBeenAccepted,
+                crate::error::PublishFailure::effect,
+            ),
+            _ => crate::model::PublishEffect::NotAccepted,
+        }
+    }
+}

@@ -64,6 +64,7 @@ type AsyncQueue = Arc<Mutex<QueueState>>;
 
 #[derive(Default)]
 struct QueueState {
+    topic: Option<TopicAddress>,
     messages: VecDeque<InboundMessage>,
     in_flight: Option<InboundMessage>,
     unsettled: usize,
@@ -113,6 +114,16 @@ pub(crate) fn native_no_settlement_capabilities() -> EventBusCapabilities {
 }
 
 fn spi_error(operation: &'static str) -> SpiError {
+    if operation == "publish" {
+        return SpiError::Publish {
+            provider_id: "fake".into(),
+            resource: None,
+            kind: "fake_failure",
+            retryable: Some(false),
+            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+            source: Box::new(std::io::Error::other("injected fake SPI failure before admission")),
+        };
+    }
     SpiError::Operation {
         provider_id: "fake".into(),
         operation,
@@ -308,7 +319,11 @@ impl EventBusSpi for FakeEventBusSpi {
         let queues = self.queues.lock().unwrap().clone();
         for (subscription_id, queue) in queues {
             let (lock, ready) = &*queue;
-            lock.lock().unwrap().messages.push_back(inbound_from_outbound(
+            let mut state = lock.lock().unwrap();
+            if state.topic.as_ref() != Some(message.topic()) {
+                continue;
+            }
+            state.messages.push_back(inbound_from_outbound(
                 &message,
                 subscription_id,
                 self.capabilities.settlement(),
@@ -323,7 +338,13 @@ impl EventBusSpi for FakeEventBusSpi {
 
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.calls.lock().unwrap().push("subscribe");
-        let queue = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
+        let queue = Arc::new((
+            Mutex::new(QueueState {
+                topic: Some(request.topic().clone()),
+                ..QueueState::default()
+            }),
+            Condvar::new(),
+        ));
         self.queues
             .lock()
             .unwrap()
@@ -624,6 +645,9 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         }
         for (subscription_id, queue) in self.queues.lock().unwrap().clone() {
             let mut state = queue.lock().unwrap();
+            if state.topic.as_ref() != Some(message.topic()) {
+                continue;
+            }
             state.messages.push_back(inbound_from_outbound(
                 &message,
                 subscription_id,
@@ -662,7 +686,10 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 std::task::Poll::Pending
             })
             .await;
-            let queue = Arc::new(Mutex::new(QueueState::default()));
+            let queue = Arc::new(Mutex::new(QueueState {
+                topic: Some(request.topic().clone()),
+                ..QueueState::default()
+            }));
             self.queues
                 .lock()
                 .unwrap()

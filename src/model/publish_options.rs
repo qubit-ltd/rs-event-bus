@@ -18,12 +18,14 @@ use super::PublishFailureContext;
 use super::PublishOptionsBuilder;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
+use crate::error::PublishFailure;
+use crate::model::DuplicateRiskPolicy;
 
 /// A terminal publish failure observer; callbacks run in registration order.
 ///
 /// # Type Parameters
 /// - `T`: payload type attached to the failed event.
-pub type PublishErrorHandler<T> = dyn Fn(&PublishFailureContext<T>, &PublishError) + Send + Sync + 'static;
+pub type PublishErrorHandler<T> = dyn Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static;
 /// A typed publisher interceptor that may transform or drop an envelope.
 ///
 /// # Type Parameters
@@ -45,6 +47,8 @@ pub type PublisherInterceptor<T> =
 /// assert!(options.retry_policy().is_none());
 /// ```
 pub struct PublishOptions<T: 'static> {
+    /// Whether retry may repeat uncertain provider admission.
+    pub(crate) duplicate_risk_policy: DuplicateRiskPolicy,
     /// Retry schedule, absent when application retries are disabled.
     pub(crate) retry_policy: Option<RetryPolicy>,
     /// Optional custom rule for classifying attempt failures.
@@ -61,6 +65,7 @@ impl<T: 'static> Default for PublishOptions<T> {
     /// Creates options without retry policies or callbacks.
     fn default() -> Self {
         Self {
+            duplicate_risk_policy: DuplicateRiskPolicy::Forbid,
             retry_policy: None,
             retry_rule: None,
             retry_cancellation_token: None,
@@ -74,6 +79,7 @@ impl<T: 'static> Clone for PublishOptions<T> {
     /// Clones policy values and shares callback allocations.
     fn clone(&self) -> Self {
         Self {
+            duplicate_risk_policy: self.duplicate_risk_policy,
             retry_policy: self.retry_policy.clone(),
             retry_rule: self.retry_rule.clone(),
             retry_cancellation_token: self.retry_cancellation_token.clone(),
@@ -100,6 +106,17 @@ impl<T: 'static> PublishOptions<T> {
     pub fn builder() -> PublishOptionsBuilder<T> {
         PublishOptionsBuilder::new()
     }
+    /// Returns whether uncertain admission may enter configured automatic
+    /// retries.
+    ///
+    /// # Returns
+    /// The duplicate risk policy; `Forbid` is the default.
+    #[must_use]
+    #[inline]
+    pub fn duplicate_risk_policy(&self) -> DuplicateRiskPolicy {
+        self.duplicate_risk_policy
+    }
+
     /// Returns retry policy, or `None` when retry is disabled.
     ///
     /// # Returns

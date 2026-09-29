@@ -7,11 +7,14 @@
 // =============================================================================
 //! Receiving failures.
 
+use std::sync::Arc;
+
 use qubit_clock::TimeError;
 
 use crate::error::CodecError;
 use crate::error::SpiError;
 use crate::model::EventId;
+use crate::model::SubscriptionStopReason;
 
 /// A subscription could not receive or decode its next delivery.
 ///
@@ -48,6 +51,9 @@ pub enum ReceiveError {
         #[from]
         TimeError,
     ),
+    /// New receives stopped with a stable cause retained for recovery.
+    #[error("{0}")]
+    Stopped(#[source] Arc<SubscriptionStopReason>),
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,

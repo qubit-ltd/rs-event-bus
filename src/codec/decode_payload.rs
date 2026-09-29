@@ -18,7 +18,7 @@ use crate::spi::TransportPayload;
 ///
 /// Native payloads are downcast to the subscribed type. Encoded payloads use
 /// the resolved topic codec, and codec panics are converted at the callback
-/// boundary. The provider payload is consumed in either case.
+/// boundary. The receiver owner retains the transport payload and its token.
 ///
 /// # Type Parameters
 /// - `T`: the subscribed application payload type.
@@ -26,7 +26,8 @@ use crate::spi::TransportPayload;
 /// # Parameters
 /// - `codec`: the codec resolved for the topic, if encoded payloads are
 ///   supported.
-/// - `payload`: the provider payload to decode or downcast.
+/// - `payload`: borrowed provider payload to decode or downcast.
+/// - `max_receive_bytes`: positive limit checked before any codec callback.
 ///
 /// # Returns
 /// A shared owner of the decoded application value.
@@ -36,15 +37,26 @@ use crate::spi::TransportPayload;
 /// bytes have no codec, decoding fails, or the codec callback panics.
 pub(crate) fn decode_payload<T: Send + Sync + 'static>(
     codec: Option<&Arc<dyn EventCodec<T>>>,
-    payload: TransportPayload,
+    payload: &TransportPayload,
+    max_receive_bytes: std::num::NonZeroUsize,
 ) -> Result<Arc<T>, CodecError> {
     match payload {
         TransportPayload::Native(value) => {
-            Arc::downcast::<T>(value).map_err(|_| decode_error("native payload type does not match subscribed topic"))
+            Arc::downcast::<T>(value.clone()).map_err(|_| CodecError::NativeTypeMismatch)
         }
         TransportPayload::Encoded(encoded) => {
+            let actual = encoded.bytes().len();
+            let limit = max_receive_bytes.get();
+            if actual > limit {
+                return Err(CodecError::PayloadTooLarge {
+                    direction: crate::model::PayloadDirection::Receive,
+                    actual,
+                    limit,
+                });
+            }
             let codec = codec.ok_or_else(|| decode_error("encoded payload has no resolved codec"))?;
-            call_codec("decode", || codec.decode(encoded.bytes())).map(Arc::new)
+            call_codec("validate_metadata", || codec.validate_metadata(encoded))?;
+            call_codec("decode", || codec.decode(encoded)).map(Arc::new)
         }
     }
 }

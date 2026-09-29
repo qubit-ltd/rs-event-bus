@@ -79,19 +79,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             return;
         }
         if let Some(error) = pending.decode_error.as_ref() {
-            let panicked = matches!(error, DeliveryError::Codec(crate::error::CodecError::Panicked { .. }));
-            if panicked {
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "codec_decode".into(),
-                    message: error.to_string().into(),
-                });
-            }
             self.record_failure_diagnostic(0, error.to_string().into());
-            if panicked {
-                self.settle_pending(DeliveryDisposition::Retry, None).await;
-            } else {
-                self.settle_pending(DeliveryDisposition::Reject, None).await;
-            }
+            self.settle_pending(DeliveryDisposition::Reject, None).await;
             return;
         }
         let Some(event) = pending.event.as_ref().cloned() else {

@@ -9,8 +9,10 @@
 
 use crate::AsyncEventBus;
 use crate::PublishError;
+use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
 use crate::model::BatchPublishResult;
+use crate::model::PublishEffect;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
 use crate::pipeline::PipelineFailure;
@@ -34,13 +36,18 @@ impl AsyncEventBus {
     pub async fn publish<T: Send + Sync + 'static>(
         &self,
         request: PublishRequest<T>,
-    ) -> Result<PublishReceipt, PublishError> {
+    ) -> Result<PublishReceipt, PublishFailure> {
         // This body begins on the first poll, so a cancelled in-flight future
         // still contributes an attempt without recording a fabricated outcome.
+        let event_id = request.envelope().id().clone();
         self.inner.publish_metrics.record_attempt();
         let Some(_publish) = self.inner.begin_publish() else {
             self.inner.publish_metrics.record_error();
-            return Err(PublishError::Closed);
+            return Err(PublishFailure::new(
+                event_id,
+                PublishEffect::NotAccepted,
+                PublishError::Closed,
+            ));
         };
         let observers = self.observer_snapshot();
         self.inner
@@ -55,7 +62,7 @@ impl AsyncEventBus {
             .await
             .map_err(|failure| {
                 self.inner.publish_metrics.record_error();
-                publish_pipeline_error(failure)
+                publish_pipeline_error(event_id, failure)
             })
             .inspect(|receipt| {
                 self.inner.publish_metrics.record_receipt(receipt);
@@ -102,8 +109,12 @@ impl AsyncEventBus {
 ///
 /// # Returns
 /// The corresponding public publish error.
-pub(in crate::facade) fn publish_pipeline_error(failure: PipelineFailure) -> PublishError {
-    match failure.into_error() {
+pub(in crate::facade) fn publish_pipeline_error(
+    event_id: crate::model::EventId,
+    failure: PipelineFailure,
+) -> PublishFailure {
+    let effect = failure.publish_effect();
+    let cause = match failure.into_error() {
         crate::error::EventBusError::Configuration(error) => PublishError::Configuration(error),
         crate::error::EventBusError::Capability(error) => PublishError::Capability(error),
         crate::error::EventBusError::Codec(error) => PublishError::Codec(error),
@@ -112,5 +123,6 @@ pub(in crate::facade) fn publish_pipeline_error(failure: PipelineFailure) -> Pub
             field: "publish_pipeline",
             message: other.to_string().into(),
         }),
-    }
+    };
+    PublishFailure::new(event_id, effect, cause)
 }

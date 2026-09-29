@@ -15,6 +15,7 @@ mod operation_gate;
 mod operation_gate_state;
 mod operation_permit;
 mod owner_settlement_router;
+mod shared_spi_error;
 mod shutdown_state;
 mod spi_error_clone;
 mod subscription_worker_budget;

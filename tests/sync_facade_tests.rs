@@ -841,6 +841,16 @@ impl EventSubscriptionSpi for TestSubscription {
 }
 
 fn test_spi_error(operation: &'static str) -> SpiError {
+    if operation == "publish" {
+        return SpiError::Publish {
+            provider_id: "sync-test".into(),
+            resource: None,
+            kind: "test_error",
+            retryable: Some(false),
+            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+            source: Box::new(std::io::Error::other("test SPI error")),
+        };
+    }
     SpiError::Operation {
         provider_id: "sync-test".into(),
         operation,
@@ -1370,7 +1380,7 @@ fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
         .unwrap();
 
     let error = bus.publish(request).unwrap_err();
-    let PublishError::Retry(retry) = error else {
+    let PublishError::Retry(retry) = error.into_cause() else {
         panic!("terminal retry state must remain typed at the facade boundary");
     };
     assert!(matches!(retry.reason(), RetryErrorReason::Exhausted { .. }));
@@ -1395,12 +1405,12 @@ fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
 }
 
 #[test]
-fn test_panicking_codec_requeues_the_provider_message_instead_of_losing_its_token() {
+fn test_panicking_codec_stops_without_settling_the_provider_message() {
     let (bus, backend) = create_bus();
     let panic_was_observed = Arc::new(AtomicBool::new(false));
     let observed = panic_was_observed.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "codec_decode") {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "receive_boundary") {
             observed.store(true, Ordering::Release);
         }
     });
@@ -1428,8 +1438,17 @@ fn test_panicking_codec_requeues_the_provider_message_instead_of_losing_its_toke
         "codec panic should be diagnosed"
     );
     bus.wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
-        .expect("panic path settles");
-    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
+        .expect("panic path completes its owned delivery");
+    assert!(
+        backend.settlement_dispositions().is_empty(),
+        "codec panic never settles the source token"
+    );
+    let failure = subscription
+        .terminal_failure()
+        .expect("codec panic stops the subscription");
+    assert!(
+        matches!(failure.as_ref(), qubit_event_bus::model::SubscriptionStopReason::Codec { error, .. } if matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
+    );
     subscription.cancel().expect("cancel subscription");
     bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
@@ -1447,7 +1466,7 @@ fn test_panicking_codec_encode_fails_before_the_provider_publish_call() {
         fn encode(&self, _: &String) -> Result<Arc<[u8]>, CodecError> {
             panic!("synthetic encode panic")
         }
-        fn decode(&self, _: &[u8]) -> Result<String, CodecError> {
+        fn decode(&self, _: &EncodedPayload) -> Result<String, CodecError> {
             unreachable!("this test only exercises encoding")
         }
     }
@@ -1461,7 +1480,7 @@ fn test_panicking_codec_encode_fails_before_the_provider_publish_call() {
         .publish(PublishRequest::new(topic, "payload".to_owned()).expect("valid publish request"))
         .expect_err("codec panic is returned as an error");
     assert!(matches!(
-        error,
+        error.cause(),
         PublishError::Codec(CodecError::Panicked {
             operation: "encode",
             ..
@@ -1583,7 +1602,8 @@ impl EventCodec<String> for PrefixCodec {
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::from(value.as_bytes()))
     }
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec())
             .map(|value| format!("registry:{value}"))
             .map_err(|source| CodecError::Decode {
@@ -1608,7 +1628,8 @@ impl EventCodec<String> for Utf8Codec {
         Ok(Arc::from(value.as_bytes()))
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -1670,7 +1691,7 @@ impl EventCodec<String> for PanickingCodec {
     fn encode(&self, _: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::<[u8]>::from([]))
     }
-    fn decode(&self, _: &[u8]) -> Result<String, CodecError> {
+    fn decode(&self, _: &EncodedPayload) -> Result<String, CodecError> {
         panic!("synthetic codec panic")
     }
 }
@@ -3433,7 +3454,9 @@ fn test_shutdown_stops_admission_closes_subscriptions_and_propagates_provider_sh
     assert_eq!(outcome.outcome, ShutdownOutcome::Complete);
     assert_eq!(backend.shutdown_calls(), 1);
     assert_eq!(backend.close_calls(), 1);
-    assert!(matches!(bus.publish(request("late".into())), Err(PublishError::Closed)));
+    assert!(
+        matches!(bus.publish(request("late".into())), Err(failure) if matches!(failure.cause(), PublishError::Closed))
+    );
     assert!(matches!(
         bus.subscribe(
             SubscribeRequest::new("late-subscriber", topic()).expect("valid ID"),
@@ -3898,15 +3921,17 @@ fn test_undecodable_message_respects_settlement_capability_and_reports_unavailab
     let (handler_tx, handler_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("decode-failure", topic()).expect("valid ID"),
+            SubscribeRequest::new(
+                "decode-failure",
+                Topic::new_with_codec("sync.events", Utf8Codec(ContentType::TEXT_PLAIN)).expect("valid codec topic"),
+            )
+            .expect("valid ID"),
             move |_| {
                 let _ = handler_tx.send(());
             },
         )
         .expect("subscription starts");
-    let wrong_topic = Topic::new("sync.events").expect("valid topic");
-    bus.publish(PublishRequest::new(wrong_topic, 42_i32).expect("valid request"))
-        .expect("malformed payload reaches provider");
+    backend.enqueue_encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None));
 
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))

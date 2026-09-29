@@ -27,6 +27,10 @@ pub(crate) struct SubscriptionControl {
     pub(in crate::facade) subscriber_id: SubscriberId,
     /// Cancellation flag observed by the worker loop.
     cancelled: AtomicBool,
+    /// First terminal receive cause, retained independently of close failures.
+    terminal_failure: Mutex<Option<Arc<crate::model::SubscriptionStopReason>>>,
+    /// Linearizes new delivery work against terminal receive failure.
+    start_gate: Mutex<()>,
     /// Worker thread handle retained until one caller joins it.
     pub(in crate::facade) worker: Mutex<Option<JoinHandle<()>>>,
     /// Canonical provider receiver close failure.
@@ -51,11 +55,51 @@ impl SubscriptionControl {
             id,
             subscriber_id,
             cancelled: AtomicBool::new(false),
+            terminal_failure: Mutex::new(None),
+            start_gate: Mutex::new(()),
             worker: Mutex::new(None),
             close_error: Mutex::new(None),
             finished: Mutex::new(false),
             finished_changed: Condvar::new(),
         })
+    }
+
+    /// Returns the first terminal receive cause, or None while healthy.
+    pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+        self.terminal_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Caches a receive failure once and prevents subsequent receives.
+    /// Returns true only for the first cause, so callers emit one diagnostic.
+    pub(in crate::facade) fn fail_receive(&self, reason: crate::model::SubscriptionStopReason) -> bool {
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stored = self
+            .terminal_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first = stored.is_none();
+        if first {
+            *stored = Some(Arc::new(reason));
+        }
+        self.request_cancel();
+        first
+    }
+
+    /// Linearizes the start of owned delivery work against a receive stop.
+    /// Returns false after a terminal failure; admitted work completes
+    /// normally.
+    pub(in crate::facade) fn try_start(&self) -> bool {
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.terminal_failure().is_none()
     }
 
     /// Publishes the worker join handle after a successful thread spawn.

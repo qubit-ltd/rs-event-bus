@@ -9,6 +9,8 @@
 
 use std::error::Error;
 
+use crate::model::PublishEffect;
+
 /// A failure supplied to `qubit-retry` for one publish attempt.
 ///
 /// # Examples
@@ -16,9 +18,10 @@ use std::error::Error;
 /// ```
 /// use qubit_event_bus::error::PublishAttemptError;
 ///
-/// let failure = PublishAttemptError::new("unavailable", Some(true), std::io::Error::other("offline"));
+/// let failure = PublishAttemptError::new("unavailable", Some(true), qubit_event_bus::model::PublishEffect::NotAccepted, std::io::Error::other("offline"));
 /// assert_eq!(failure.kind(), "unavailable");
 /// assert_eq!(failure.retryable(), Some(true));
+/// assert_eq!(failure.effect(), qubit_event_bus::model::PublishEffect::NotAccepted);
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -31,6 +34,8 @@ pub enum PublishAttemptError {
         kind: &'static str,
         /// Optional application override of default retry classification.
         retryable: Option<bool>,
+        /// Admission evidence from this failed attempt.
+        effect: PublishEffect,
         /// Original failure preserved for diagnostics.
         #[source]
         source: Box<dyn Error + Send + Sync>,
@@ -43,15 +48,34 @@ impl PublishAttemptError {
     /// # Parameters
     /// - `kind`: stable failure classification.
     /// - `retryable`: optional override of the default retry decision.
+    /// - `effect`: whether provider admission can be ruled out.
     /// - `source`: underlying failure to retain in the error chain.
     ///
     /// # Returns
     /// A classified publish-attempt error.
-    pub fn new(kind: &'static str, retryable: Option<bool>, source: impl Error + Send + Sync + 'static) -> Self {
+    pub fn new(
+        kind: &'static str,
+        retryable: Option<bool>,
+        effect: PublishEffect,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
         Self::Failure {
             kind,
             retryable,
+            effect,
             source: Box::new(source),
+        }
+    }
+    /// Returns the external admission evidence recorded for this failed
+    /// attempt.
+    ///
+    /// # Returns
+    /// Whether this individual failed attempt can be proven not admitted.
+    #[must_use]
+    #[inline]
+    pub fn effect(&self) -> PublishEffect {
+        match self {
+            Self::Failure { effect, .. } => *effect,
         }
     }
 

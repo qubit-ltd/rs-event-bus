@@ -14,6 +14,7 @@ use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::spi::EncodedPayload;
 
 /// Encodes and decodes UTF-8 strings with the `text/plain` content type.
 struct Utf8Codec(
@@ -49,14 +50,15 @@ impl EventCodec<String> for Utf8Codec {
     /// Decodes UTF-8 bytes into a string.
     ///
     /// # Parameters
-    /// - `bytes`: encoded UTF-8 payload.
+    /// - `payload`: encoded UTF-8 bytes and codec metadata.
     ///
     /// # Returns
     /// The decoded string.
     ///
     /// # Errors
-    /// Returns a decode error when `bytes` is not valid UTF-8.
-    fn decode(&self, bytes: &[u8]) -> Result<String, CodecError> {
+    /// Returns a decode error when the payload bytes are not valid UTF-8.
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        let bytes = payload.bytes();
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -67,7 +69,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let codec = Utf8Codec(ContentType::new("text/plain")?);
     let original = String::from("order-created");
     let encoded = codec.encode(&original)?;
-    let decoded = codec.decode(&encoded)?;
+    let payload = EncodedPayload::new(encoded, codec.content_type().clone(), None);
+    codec.validate_metadata(&payload)?;
+    let decoded = codec.decode(&payload)?;
     assert_eq!(decoded, original);
     Ok(())
 }

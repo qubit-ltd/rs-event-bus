@@ -45,7 +45,6 @@ use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
 use crate::spi::SettlementToken;
 use crate::spi::TopicAddress;
-use crate::spi::TransportPayload;
 
 /// Processes one provider message and contains panics from delivery work.
 ///
@@ -58,24 +57,25 @@ use crate::spi::TransportPayload;
 /// - `subscription_id`: bus-local subscription identity.
 /// - `subscriber_id`: logical subscriber identity.
 /// - `topic`: typed event topic.
-/// - `codec`: codec used for encoded payloads, when configured.
 /// - `options`: subscriber middleware, retry, and settlement policy.
 /// - `handler`: terminal application callback.
-/// - `message`: provider message to decode and process.
+/// - `message`: provider metadata and token to process.
+/// - `decoded`: receive-owner result; permanent boundary errors never reach
+///   scheduling.
 pub(in crate::facade) fn process_inbound<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
-    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     options: &crate::model::SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     message: InboundMessage,
+    decoded: Result<Arc<T>, crate::error::CodecError>,
 ) where
     T: Send + Sync + 'static,
 {
-    let (address, event_id, timestamp, headers, ordering_key, payload, mut settlement, provider_metadata) =
+    let (address, event_id, timestamp, headers, ordering_key, _payload, mut settlement, provider_metadata) =
         message.into_parts();
     let fallback_event_id = event_id.clone();
     let fallback_topic = address.as_str().to_owned();
@@ -86,7 +86,6 @@ pub(in crate::facade) fn process_inbound<T>(
             subscription_id,
             subscriber_id,
             topic,
-            codec,
             options,
             handler,
             address,
@@ -94,7 +93,7 @@ pub(in crate::facade) fn process_inbound<T>(
             timestamp,
             headers,
             ordering_key,
-            payload,
+            decoded,
             &mut settlement,
             provider_metadata,
         );
@@ -137,7 +136,6 @@ pub(in crate::facade) fn process_inbound<T>(
 /// - `subscription_id`: bus-local subscription identity.
 /// - `subscriber_id`: logical subscriber identity.
 /// - `topic`: typed event topic.
-/// - `codec`: codec used for encoded payloads, when configured.
 /// - `options`: subscriber middleware, retry, and settlement policy.
 /// - `handler`: terminal application callback.
 /// - `address`: provider topic address from the message.
@@ -145,7 +143,7 @@ pub(in crate::facade) fn process_inbound<T>(
 /// - `timestamp`: creation time from the message.
 /// - `headers`: portable headers from the message.
 /// - `ordering_key`: optional provider ordering key.
-/// - `payload`: native or encoded payload representation.
+/// - `decoded`: payload or ordinary decode failure prepared by receiver owner.
 /// - `settlement`: provider token retained until terminal handling completes.
 /// - `provider_metadata`: non-sensitive provider metadata.
 ///
@@ -158,7 +156,6 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
-    codec: Option<&Arc<dyn crate::codec::EventCodec<T>>>,
     options: &crate::model::SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     address: TopicAddress,
@@ -166,55 +163,15 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     timestamp: std::time::SystemTime,
     headers: crate::model::Headers,
     ordering_key: Option<crate::spi::OrderingKey>,
-    payload: TransportPayload,
+    decoded: Result<Arc<T>, crate::error::CodecError>,
     settlement: &mut Option<SettlementToken>,
     provider_metadata: crate::model::ProviderMessageMetadata,
 ) where
     T: Send + Sync + 'static,
 {
-    let payload = match crate::codec::decode_payload(codec, payload).map_err(Into::into) {
+    let payload = match decoded.map_err(Into::into) {
         Ok(payload) => payload,
         Err(error) => {
-            if matches!(
-                error,
-                DeliveryError::Codec(crate::error::CodecError::Panicked {
-                    operation: "decode",
-                    ..
-                })
-            ) {
-                inner.emit_internal("codec_decode", error.to_string());
-                if let Some(token) = settlement.take() {
-                    if token.belongs_to(subscription_id)
-                        && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
-                    {
-                        settler.settle(
-                            Some(token),
-                            DeliveryDisposition::Retry,
-                            event_id.clone(),
-                            address.as_str(),
-                            subscription_id,
-                            subscriber_id,
-                        );
-                    } else if token.belongs_to(subscription_id) {
-                        inner.emit(Diagnostic::SettlementUnavailable {
-                            event_id: event_id.clone(),
-                            topic: address.as_str().into(),
-                            subscription_id,
-                            subscriber_id: subscriber_id.clone(),
-                            requested: DeliveryDisposition::Retry,
-                        });
-                    }
-                }
-                inner.emit(Diagnostic::DeliveryFailed {
-                    event_id,
-                    topic: address.as_str().into(),
-                    subscription_id,
-                    subscriber_id: subscriber_id.clone(),
-                    attempts: 0,
-                    error: error.to_string().into(),
-                });
-                return;
-            }
             settle_rejected(
                 inner,
                 settler,
