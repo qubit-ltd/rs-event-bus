@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
+use super::super::super::async_admission::AsyncAdmissionPermit;
+use crate::EventId;
 use crate::error::DeliveryError;
-use crate::facade::async_admission::AsyncAdmissionPermit;
 use crate::facade::async_event_bus::AsyncDeliveryGuard;
 use crate::model::EventEnvelope;
-use crate::model::EventId;
 use crate::model::ProviderMessageMetadata;
 use crate::pipeline::AsyncOrderingGuard;
 use crate::spi::DeliveryDisposition;

@@ -11,4 +11,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 /// A sendable boxed future without a dependency on a particular executor.
+///
+/// # Type Parameters
+/// - `'a`: lifetime of data borrowed by the operation.
+/// - `T`: value produced when the operation completes.
 pub type SpiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

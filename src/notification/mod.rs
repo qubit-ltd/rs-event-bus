@@ -7,6 +7,11 @@
 // =============================================================================
 //! Bounded, nonblocking publication for best-effort notifications.
 
+pub use notification_outcome::NotificationOutcome;
+pub use notification_publisher::NotificationPublisher;
+pub use notification_stats_snapshot::NotificationStatsSnapshot;
+pub use try_publish_error::TryPublishError;
+
 mod internal;
 mod notification_config;
 mod notification_outcome;
@@ -14,8 +19,3 @@ mod notification_publisher;
 mod notification_stats;
 mod notification_stats_snapshot;
 mod try_publish_error;
-
-pub use notification_outcome::NotificationOutcome;
-pub use notification_publisher::NotificationPublisher;
-pub use notification_stats_snapshot::NotificationStatsSnapshot;
-pub use try_publish_error::TryPublishError;

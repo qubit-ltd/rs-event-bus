@@ -18,20 +18,32 @@ use super::internal::AsyncWaiter;
 
 #[derive(Default)]
 pub(super) struct AsyncSignal {
+    /// Generates unique waiter registration IDs.
     next_id: AtomicU64,
+    /// Registered wakers removed by notification or waiter drop.
     waiters: Arc<Mutex<HashMap<u64, Waker>>>,
 }
 
 impl AsyncSignal {
+    /// Adds or replaces a waiter registration for one poll.
+    ///
+    /// # Parameters
+    /// - `waker`: task to wake when the signal changes.
+    ///
+    /// # Returns
+    /// A guard that unregisters this waiter when dropped.
     pub(super) fn register(&self, waker: &Waker) -> AsyncWaiter {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, waker.clone());
+        let owned_waker = waker.clone();
+        let replaced = {
+            let mut waiters = self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            waiters.insert(id, owned_waker)
+        };
+        drop(replaced);
         AsyncWaiter::new(id, Arc::clone(&self.waiters))
     }
 
+    /// Removes all registered waiters and wakes them outside the registry lock.
     pub(super) fn notify_all(&self) {
         let waiters = self
             .waiters
@@ -45,6 +57,8 @@ impl AsyncSignal {
         }
     }
 
+    /// Returns the number of registered waiters for unit tests.
+    #[must_use]
     #[cfg(test)]
     fn waiter_count(&self) -> usize {
         self.waiters
@@ -57,10 +71,55 @@ impl AsyncSignal {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::TryLockError;
+    use std::sync::Weak;
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
     use std::task::Wake;
     use std::task::Waker;
 
     use super::AsyncSignal;
+
+    struct CloneDropProbe {
+        signal: Weak<AsyncSignal>,
+    }
+
+    fn assert_registry_unlocked(probe: &CloneDropProbe) {
+        if let Some(signal) = probe.signal.upgrade() {
+            match signal.waiters.try_lock() {
+                Ok(_) | Err(TryLockError::Poisoned(_)) => {}
+                Err(TryLockError::WouldBlock) => panic!("external waker code called under registry lock"),
+            }
+        }
+    }
+
+    unsafe fn clone_probe(pointer: *const ()) -> RawWaker {
+        // SAFETY: Every vtable pointer originates from an Arc<CloneDropProbe>.
+        let probe = unsafe { &*pointer.cast::<CloneDropProbe>() };
+        assert_registry_unlocked(probe);
+        // SAFETY: Cloning the raw waker adds exactly one owned strong reference.
+        unsafe { Arc::<CloneDropProbe>::increment_strong_count(pointer.cast()) };
+        RawWaker::new(pointer, &PROBE_VTABLE)
+    }
+
+    unsafe fn drop_probe(pointer: *const ()) {
+        // SAFETY: Each owned raw waker consumes its one Arc reference exactly once.
+        let probe = unsafe { Arc::<CloneDropProbe>::from_raw(pointer.cast()) };
+        assert_registry_unlocked(&probe);
+    }
+
+    unsafe fn wake_probe(pointer: *const ()) {
+        // SAFETY: wake consumes the same owned reference as the drop callback.
+        unsafe { drop_probe(pointer) };
+    }
+
+    unsafe fn wake_probe_by_ref(pointer: *const ()) {
+        // SAFETY: wake_by_ref borrows the live reference without consuming it.
+        let probe = unsafe { &*pointer.cast::<CloneDropProbe>() };
+        assert_registry_unlocked(probe);
+    }
+
+    static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[derive(Default)]
     struct CountWake(std::sync::atomic::AtomicUsize);
@@ -102,5 +161,20 @@ mod tests {
         let _registration = signal.register(&waker);
         waker.wake_by_ref();
         assert_eq!(1, counter.0.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn waker_clone_and_drop_are_outside_the_registry_lock() {
+        let signal = Arc::new(AsyncSignal::default());
+        let probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+        });
+        let pointer = Arc::into_raw(probe).cast();
+        // SAFETY: The vtable preserves owned Arc references and shared access.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
+        let registration = signal.register(&waker);
+        drop(registration);
+        assert_eq!(0, signal.waiter_count());
+        drop(waker);
     }
 }

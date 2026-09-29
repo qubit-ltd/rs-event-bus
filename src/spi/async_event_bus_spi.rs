@@ -39,6 +39,10 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// Provider implementations should leave the default unchanged. Registry
     /// adapters override this hidden metadata hook on a transparent proxy so
     /// the facade can report the exact provider that succeeded after fallback.
+    ///
+    /// # Returns
+    /// The attached provider identity, or `None` when no registry identity is
+    /// attached.
     #[doc(hidden)]
     fn provider_id(&self) -> Option<ProviderId> {
         None
@@ -48,9 +52,21 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     ///
     /// Implementations must keep the returned value stable for the lifetime
     /// of the SPI instance; a facade snapshots it during construction.
+    ///
+    /// # Returns
+    /// The immutable capabilities supported by this provider instance.
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one transport message.
+    ///
+    /// # Parameters
+    /// - `message`: validated outbound message to send.
+    ///
+    /// # Returns
+    /// A future resolving to the provider's admission acknowledgement.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider operation failure.
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
 
     /// Creates one asynchronous single-owner subscription receiver.
@@ -64,6 +80,15 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// resource commitment until completion or use cancellation-safe RAII so
     /// dropping the future synchronously aborts or detaches the partial setup.
     /// The provider must not require a hidden runtime task to finish cleanup.
+    ///
+    /// # Parameters
+    /// - `request`: provider subscription identity, topic, and policies.
+    ///
+    /// # Returns
+    /// A future resolving to a receiver owned by the caller.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider operation failure.
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
@@ -77,5 +102,14 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// backend has already closed must succeed and report a stable outcome.
     /// A later `Immediate` call may strengthen a previously requested
     /// `Graceful` shutdown.
+    ///
+    /// # Parameters
+    /// - `mode`: requested graceful or immediate shutdown behavior.
+    ///
+    /// # Returns
+    /// A future resolving to the provider shutdown outcome.
+    ///
+    /// # Errors
+    /// The future resolves with a structured provider operation failure.
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
 }

@@ -11,11 +11,17 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// A provider-specific async conformance check.
+/// A sendable future-producing provider conformance callback.
+///
+/// The callback's future must complete with `Ok(())` when the contract holds;
+/// returning `Err` records the supplied detail as a failed case.
 pub type AsyncConformanceCheck =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 /// Optional provider-specific checks that require asynchronous fixtures.
+///
+/// Each populated callback is invoked once by the runner. Missing callbacks
+/// become skipped cases, or failures under the strict conformance profile.
 #[derive(Default)]
 pub struct AsyncConformanceHooks {
     /// Checks repeat-settlement idempotence and conflicting dispositions.
@@ -25,6 +31,8 @@ pub struct AsyncConformanceHooks {
     /// Checks that closing with an unsettled durable delivery leaves it
     /// available after reconnecting the same logical subscription.
     pub durable_recovery: Option<AsyncConformanceCheck>,
+    /// Checks that closing an ephemeral subscription releases unsettled work.
+    pub ephemeral_cleanup: Option<AsyncConformanceCheck>,
     /// Checks cancellation after a settlement operation has taken effect.
     pub settlement_cancellation: Option<AsyncConformanceCheck>,
     /// Checks cancellation safety while closing a provider subscription.

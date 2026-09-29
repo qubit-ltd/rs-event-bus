@@ -7,6 +7,6 @@
 // =============================================================================
 //! Private state shared by notification publisher modules.
 
-mod worker_state;
-
 pub(in crate::notification) use worker_state::WorkerState;
+
+mod worker_state;

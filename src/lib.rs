@@ -8,18 +8,6 @@
 //! Type-safe event bus facade and provider SPI.
 
 #![deny(missing_docs)]
-
-pub mod codec;
-pub mod error;
-pub mod facade;
-pub mod local;
-pub mod model;
-pub mod notification;
-pub mod pipeline;
-pub mod registry;
-pub mod spi;
-mod util;
-
 pub use error::CapabilityError;
 pub use error::CodecError;
 pub use error::ConfigurationError;
@@ -60,3 +48,14 @@ pub use registry::EventBusProviderError;
 pub use registry::EventBusRegistry;
 pub use registry::EventBusSpec;
 pub use registry::RequiredCapabilities;
+
+pub mod codec;
+pub mod error;
+pub mod facade;
+pub mod local;
+pub mod model;
+pub mod notification;
+pub mod pipeline;
+pub mod registry;
+pub mod spi;
+mod util;

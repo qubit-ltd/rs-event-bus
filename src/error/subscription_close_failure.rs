@@ -54,7 +54,6 @@ impl SubscriptionCloseFailure {
     ///
     /// # Returns
     /// The subscriber ID borrowed from this failure record.
-    #[must_use]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id

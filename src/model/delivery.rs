@@ -88,7 +88,6 @@ impl<T: 'static> Delivery<T> {
     ///
     /// # Returns
     /// The envelope containing the event metadata and payload.
-    #[must_use]
     #[inline]
     pub fn event(&self) -> &EventEnvelope<T> {
         &self.event

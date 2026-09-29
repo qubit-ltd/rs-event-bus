@@ -123,7 +123,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// A builder with no topic or payload and default publish options.
-    #[must_use]
     pub fn new() -> Self {
         Self {
             topic: None,
@@ -143,7 +142,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
         self
@@ -155,7 +153,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn payload(mut self, value: T) -> Self {
         self.payload = Some(value);
         self
@@ -167,7 +164,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn event_id(mut self, value: EventId) -> Self {
         self.event_id = Some(value);
         self
@@ -181,7 +177,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
@@ -198,7 +193,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn headers<I, K, V>(mut self, values: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -216,7 +210,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn ordering_key(mut self, value: impl Into<String>) -> Self {
         self.ordering_key = Some(value.into());
         self
@@ -228,7 +221,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn timestamp(mut self, value: SystemTime) -> Self {
         self.timestamp = Some(value);
         self
@@ -240,7 +232,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn delay(mut self, value: Duration) -> Self {
         self.delay = Some(value);
         self
@@ -252,7 +243,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
         self
@@ -267,7 +257,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn retry_rule<R>(mut self, value: R) -> Self
     where
         R: RetryRule<PublishAttemptError>,
@@ -282,7 +271,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
         self
@@ -303,7 +291,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&super::PublishFailureContext<T>, &PublishError) + Send + Sync + 'static,
@@ -321,7 +308,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
         F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
@@ -336,7 +322,6 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use]
     pub fn options(mut self, value: PublishOptions<T>) -> Self {
         self.options = value;
         self

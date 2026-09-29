@@ -7,11 +7,11 @@
 // =============================================================================
 //! Private state and execution guards used by facade operations.
 
-mod bus_context_guard;
-mod erased_middleware_list;
-mod lifecycle_state;
-
 pub(super) use bus_context_guard::BusContextGuard;
 pub(super) use bus_context_guard::is_current_bus_context;
 pub(super) use erased_middleware_list::ErasedMiddlewareList;
 pub(super) use lifecycle_state::LifecycleState;
+
+mod bus_context_guard;
+mod erased_middleware_list;
+mod lifecycle_state;

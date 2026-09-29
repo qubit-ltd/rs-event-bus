@@ -12,12 +12,14 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::internal::LocalInFlight;
+use super::internal::LocalQueue;
+use super::internal::LocalSettlementHandle;
+use super::internal::LocalSettlementState;
+use super::internal::LocalSharedState;
 use super::local_event_bus_spi::invalid_token_error;
 use super::local_event_bus_spi::operation_error;
 use super::local_event_bus_spi::signal_changed;
-use super::state::LocalQueue;
-use super::state::LocalSettlementState;
-use super::state::LocalSharedState;
 use crate::error::SpiError;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventSubscriptionSpi;
@@ -34,6 +36,13 @@ pub(super) struct LocalEventSubscription {
 
 impl LocalEventSubscription {
     /// Creates a receiver bound to a registered local subscription queue.
+    ///
+    /// # Parameters
+    /// - `shared`: local bus state shared by provider operations.
+    /// - `queue`: registered queue consumed by this receiver.
+    ///
+    /// # Returns
+    /// A single-owner subscription receiver.
     pub(super) fn new(shared: Arc<LocalSharedState>, queue: Arc<LocalQueue>) -> Self {
         Self { shared, queue }
     }
@@ -60,7 +69,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 }));
                 state.in_flight.insert(
                     token,
-                    super::state::LocalInFlight {
+                    LocalInFlight {
                         event: event.clone(),
                         settlement: settlement.clone(),
                     },
@@ -105,7 +114,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             ));
         }
         let settlement = token
-            .downcast_ref::<super::state::LocalSettlementHandle>()
+            .downcast_ref::<LocalSettlementHandle>()
             .ok_or_else(|| invalid_token_error(Some(self.queue.topic.as_str()), "unknown_token"))?
             .clone();
         let mut state = self.queue.lock();
@@ -153,10 +162,11 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             if !state.closed {
                 state.closed = true;
                 let released = state.pending_count() + state.in_flight.len();
-                state.clear_pending();
-                state.in_flight.clear();
+                let discarded = state.clear_pending();
                 self.shared.outstanding.release(released);
                 self.queue.ready.notify_all();
+                drop(state);
+                drop(discarded);
             }
         }
         self.queue.async_ready.notify_all();
@@ -179,6 +189,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
 }
 
 impl Drop for LocalEventSubscription {
+    /// Closes the receiver and releases any unsettled local deliveries.
     fn drop(&mut self) {
         let _ = self.close();
     }

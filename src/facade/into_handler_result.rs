@@ -30,7 +30,6 @@ pub trait IntoHandlerResult {
     /// # Returns
     /// `Ok(())` for successful completion, or a [`DeliveryError`] retaining
     /// the handler failure as its source.
-    #[must_use]
     fn into_handler_result(self) -> Result<(), DeliveryError>;
 }
 
