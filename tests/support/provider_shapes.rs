@@ -45,6 +45,7 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+
 struct ChannelEndpoint {
     topic: TopicAddress,
     sender: SyncSender<InboundMessage>,

@@ -62,6 +62,14 @@ jobs:
         run: ./ci-check.sh --only=clippy
       - name: Install legacy CI build toolchain
         run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Verify documentation examples and consumers
+        run: |
+          python3 scripts/check_documentation_examples.py
+          python3 scripts/test_documentation_examples.py
+          cargo +1.94.0 run --locked --example local_delivery
+          cargo +1.94.0 test --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml
+          cargo +1.94.0 run --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml --bin async_local
+          cargo +1.94.0 run --locked --manifest-path tests/fixtures/discovery_consumer/Cargo.toml
       - name: Run documentation tests
         run: cargo +1.94.0 test --doc --verbose
       - name: Run README dependency-version check

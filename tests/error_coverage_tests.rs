@@ -7,8 +7,6 @@
 // =============================================================================
 //! Public error and synchronous SPI model contracts.
 
-mod support;
-
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +34,8 @@ use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+
+mod support;
 
 struct CloseFailureProvider;
 

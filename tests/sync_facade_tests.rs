@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -3741,6 +3742,40 @@ fn dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let report = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("shutdown closes the stopped subscription");
+    assert_eq!(report.known_abandoned_deliveries, 1);
+}
+
+#[test]
+fn dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_subscription() {
+    let (bus, backend) = create_bus();
+    let options = SubscribeOptions::builder()
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .build();
+    let (handler_tx, handler_rx) = mpsc::channel();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("dead-letter-without-topic", topic())
+                .expect("valid ID")
+                .with_options(options),
+            move |_| {
+                let _ = handler_tx.send(());
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+    bus.publish(request("dead-letter-without-topic".into()))
+        .expect("original publish succeeds");
+    handler_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the failing handler runs");
+    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+        .expect("the failed delivery reaches terminal handling");
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("shutdown closes the stopped subscription");
+    assert!(backend.settlement_dispositions().is_empty());
     assert_eq!(report.known_abandoned_deliveries, 1);
 }
 
