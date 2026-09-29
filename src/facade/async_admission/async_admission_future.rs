@@ -27,6 +27,13 @@ pub(in crate::facade) struct AsyncAdmissionFuture {
 
 impl AsyncAdmissionFuture {
     /// Creates an unqueued waiter with an identity assigned by the gate.
+    ///
+    /// # Parameters
+    /// - `admission`: shared gate whose FIFO queue this waiter will use.
+    /// - `waiter_id`: unique queue identity assigned by the gate.
+    ///
+    /// # Returns
+    /// A future that has not yet registered its waker or queue position.
     pub(super) fn new(admission: Arc<AsyncAdmission>, waiter_id: u64) -> Self {
         Self {
             admission,
@@ -39,6 +46,16 @@ impl AsyncAdmissionFuture {
 impl Future for AsyncAdmissionFuture {
     type Output = AsyncAdmissionPermit;
 
+    /// Registers or refreshes this waiter's waker and admits it when it is the
+    /// queue head and a slot is available.
+    ///
+    /// # Parameters
+    /// - `self`: pinned mutable future state.
+    /// - `context`: task context supplying the current waker.
+    ///
+    /// # Returns
+    /// `Poll::Ready` with an owned permit when admitted, otherwise
+    /// `Poll::Pending`.
     fn poll(mut self: std::pin::Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
         let (admitted, next_waker) = {
@@ -80,6 +97,7 @@ impl Future for AsyncAdmissionFuture {
 }
 
 impl Drop for AsyncAdmissionFuture {
+    /// Removes a queued waiter and wakes the next eligible future if needed.
     fn drop(&mut self) {
         if self.queued {
             let waker = {

@@ -7,7 +7,17 @@
 // =============================================================================
 //! Const-compatible validation helpers for portable text values.
 
-/// Checks nonempty text without surrounding Unicode whitespace or controls.
+/// Checks for nonempty text without surrounding Unicode whitespace or controls.
+///
+/// Control characters are rejected anywhere; whitespace is permitted only
+/// between the first and last code points.
+///
+/// # Parameters
+/// - `value`: UTF-8 text to validate.
+///
+/// # Returns
+/// `true` when `value` is nonempty, has no control characters, and has no
+/// whitespace at either boundary.
 pub(crate) const fn is_nonblank_without_controls(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {
@@ -31,12 +41,28 @@ pub(crate) const fn is_nonblank_without_controls(value: &str) -> bool {
 }
 
 /// Checks topic-name byte bounds and the topic's portable text rules.
+///
+/// # Parameters
+/// - `value`: topic name to validate.
+///
+/// # Returns
+/// `true` when the name is 1 to 255 UTF-8 bytes and passes
+/// [`is_nonblank_without_controls`].
 pub(crate) const fn is_valid_topic_name(value: &str) -> bool {
     let length = value.len();
     length >= 1 && length <= 255 && is_nonblank_without_controls(value)
 }
 
-/// Decodes one code point from a valid UTF-8 string at `index`.
+/// Decodes one code point from a valid UTF-8 byte sequence at `index`.
+///
+/// `index` must identify the leading byte of a code point in `bytes`.
+///
+/// # Parameters
+/// - `bytes`: bytes of a valid UTF-8 string.
+/// - `index`: byte offset of a code point's leading byte.
+///
+/// # Returns
+/// The decoded Unicode scalar value and the number of consumed bytes.
 const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
     let first = bytes[index];
     if first < 0x80 {
@@ -66,6 +92,12 @@ const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
 }
 
 /// Matches the Unicode White_Space code points used by `str::trim`.
+///
+/// # Parameters
+/// - `code_point`: Unicode scalar value to classify.
+///
+/// # Returns
+/// `true` when the value is in Unicode's `White_Space` set.
 const fn is_unicode_whitespace(code_point: u32) -> bool {
     matches!(
         code_point,
@@ -75,6 +107,12 @@ const fn is_unicode_whitespace(code_point: u32) -> bool {
 }
 
 /// Matches Unicode general category Cc control code points.
+///
+/// # Parameters
+/// - `code_point`: Unicode scalar value to classify.
+///
+/// # Returns
+/// `true` when the value is a C0 or C1 control character.
 const fn is_unicode_control(code_point: u32) -> bool {
     matches!(code_point, 0x0000..=0x001F | 0x007F..=0x009F)
 }

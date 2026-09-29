@@ -59,7 +59,6 @@ impl DestinationAdmission {
     ///
     /// # Returns
     /// The identifier assigned to the subscription by its bus.
-    #[must_use]
     #[inline]
     pub fn subscription_id(&self) -> Id {
         self.subscription_id
@@ -68,7 +67,6 @@ impl DestinationAdmission {
     ///
     /// # Returns
     /// The stable identifier for the logical consumer.
-    #[must_use]
     #[inline]
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
@@ -77,7 +75,6 @@ impl DestinationAdmission {
     ///
     /// # Returns
     /// The provider's decision for this destination.
-    #[must_use]
     #[inline]
     pub fn status(&self) -> &AdmissionStatus {
         &self.status

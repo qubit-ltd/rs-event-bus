@@ -32,6 +32,8 @@ use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::IntoHandlerResult;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::facade::WaitOutcome;
+use qubit_event_bus::model::DeadLetterAdmissionPolicy;
+use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::ProviderMessageMetadata;
@@ -88,6 +90,7 @@ struct CoverageState {
     fail_next_subscribe: AtomicBool,
     fail_next_shutdown: AtomicBool,
     close_fails: bool,
+    ordering: OrderingCapability,
 }
 
 #[derive(Clone)]
@@ -105,6 +108,10 @@ struct CoverageSubscription {
 
 impl CoverageSpi {
     fn new(close_fails: bool) -> (Self, Receiver<String>) {
+        Self::new_with_ordering(close_fails, OrderingCapability::PerKey)
+    }
+
+    fn new_with_ordering(close_fails: bool, ordering: OrderingCapability) -> (Self, Receiver<String>) {
         let (close_attempts, close_rx) = mpsc::channel();
         (
             Self {
@@ -116,6 +123,7 @@ impl CoverageSpi {
                     fail_next_subscribe: AtomicBool::new(false),
                     fail_next_shutdown: AtomicBool::new(false),
                     close_fails,
+                    ordering,
                 }),
             },
             close_rx,
@@ -144,7 +152,7 @@ impl EventBusSpi for CoverageSpi {
         EventBusCapabilities::new(
             PayloadModes::Native,
             SettlementCapabilities::None,
-            OrderingCapability::PerKey,
+            self.state.ordering,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
             SubscriptionModes::EPHEMERAL,
@@ -323,6 +331,52 @@ fn scheduler_config_rejects_zero_global_admission_capacity() {
             field: "max_in_flight",
             ..
         }
+    ));
+}
+
+#[test]
+fn per_key_ordering_is_rejected_when_provider_declares_no_ordering_support() {
+    let (spi, _close_rx) = CoverageSpi::new_with_ordering(false, OrderingCapability::None);
+    let bus = EventBus::from_spi(ProviderId::new(PROVIDER_ID).unwrap(), Arc::new(spi))
+        .expect("provider capabilities are structurally valid");
+    let request = SubscribeRequest::new("ordered", topic())
+        .unwrap()
+        .with_options(keyed_options());
+
+    assert!(matches!(
+        bus.subscribe(request, |_| Ok::<(), qubit_event_bus::error::DeliveryError>(())),
+        Err(SubscribeError::Capability(
+            qubit_event_bus::error::CapabilityError::Unsupported {
+                capability: "ordering.per_key"
+            }
+        ))
+    ));
+}
+
+#[test]
+fn known_destination_dead_letter_policy_is_rejected_for_opaque_publish_results() {
+    let (bus, _, _) = create_bus(1, 1);
+    let request = SubscribeRequest::new("known-dead-letter", topic())
+        .unwrap()
+        .with_options(
+            SubscribeOptions::builder()
+                .dead_letter(
+                    DeadLetterPolicy::with_admission(
+                        "sync.coverage.dead-letter",
+                        DeadLetterAdmissionPolicy::KnownDestination,
+                    )
+                    .unwrap(),
+                )
+                .build(),
+        );
+
+    assert!(matches!(
+        bus.subscribe(request, |_| Ok::<(), qubit_event_bus::error::DeliveryError>(())),
+        Err(SubscribeError::Capability(
+            qubit_event_bus::error::CapabilityError::Unsupported {
+                capability: "dead_letter.known_destination_admission"
+            }
+        ))
     ));
 }
 

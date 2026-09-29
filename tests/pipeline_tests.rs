@@ -7,8 +7,6 @@
 // =============================================================================
 //! Public contracts for shared event-processing pipelines.
 
-mod support;
-
 use std::sync::Arc;
 
 use qubit_event_bus::AsyncEventBus;
@@ -27,6 +25,8 @@ use qubit_retry::RetryPolicy;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::manual_async::block_on;
 use support::manual_async::poll_once;
+
+mod support;
 
 /// Confirms that an asynchronous retry-rule panic requeues the original token.
 #[test]

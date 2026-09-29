@@ -21,6 +21,7 @@ use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
 use super::conformance_report::push_hook;
 use super::conformance_report::settlement_case;
+use crate::model::SubscriptionDurability;
 use crate::spi::EventBusSpi;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementCapabilities;
@@ -31,6 +32,16 @@ use crate::spi::ShutdownOutcome;
 ///
 /// The factory is called once for each case so one check cannot contaminate
 /// the next by shutting down shared provider state.
+///
+/// # Type Parameters
+/// - `F`: provider factory type.
+///
+/// # Parameters
+/// - `factory`: creates a fresh synchronous provider instance.
+/// - `hooks`: optional provider-specific checks and fixtures.
+///
+/// # Returns
+/// Results for each conformance check that ran or was skipped.
 pub fn run_sync<F>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
@@ -40,6 +51,17 @@ where
 
 /// Runs synchronous checks with explicit treatment of missing provider
 /// fixtures.
+///
+/// # Type Parameters
+/// - `F`: provider factory type.
+///
+/// # Parameters
+/// - `factory`: creates a fresh synchronous provider instance.
+/// - `hooks`: optional provider-specific checks and fixtures.
+/// - `profile`: policy for missing required fixtures.
+///
+/// # Returns
+/// Results for each conformance check that ran or was skipped.
 pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: ConformanceProfile) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
@@ -195,28 +217,61 @@ where
             },
         });
     }
-    push_hook(
-        &mut report,
-        "provider-settlement-idempotence",
-        hooks.settlement.as_ref(),
-    );
-    push_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref());
-    push_hook(
-        &mut report,
+    let capabilities = capability_spi.capabilities();
+    if capabilities.settlement() == SettlementCapabilities::None {
+        report.push(ConformanceCase::Skipped {
+            case_id: "provider-settlement-idempotence".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "settlement",
+            },
+        });
+    } else {
+        push_hook(
+            &mut report,
+            "provider-settlement-idempotence",
+            hooks.settlement.as_ref(),
+        );
+    }
+    report.not_applicable("receive-cancellation", "synchronous receive has no cancellable future");
+    report.not_applicable(
         "settlement-cancellation",
-        hooks.settlement_cancellation.as_ref(),
+        "synchronous settlement has no cancellable future",
     );
-    push_hook(&mut report, "close-cancellation", hooks.close_cancellation.as_ref());
-    push_hook(
-        &mut report,
+    report.not_applicable("close-cancellation", "synchronous close has no cancellable future");
+    report.not_applicable(
         "shutdown-cancellation",
-        hooks.shutdown_cancellation.as_ref(),
+        "synchronous shutdown has no cancellable future",
     );
-    push_hook(
-        &mut report,
-        "durable-unsettled-recovery",
-        hooks.durable_recovery.as_ref(),
-    );
+    if capabilities
+        .subscription_modes()
+        .supports(SubscriptionDurability::Ephemeral)
+    {
+        push_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref());
+    } else {
+        report.push(ConformanceCase::Skipped {
+            case_id: "ephemeral-cleanup".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "ephemeral-subscription",
+            },
+        });
+    }
+    if capabilities
+        .subscription_modes()
+        .supports(SubscriptionDurability::Durable)
+    {
+        push_hook(
+            &mut report,
+            "durable-unsettled-recovery",
+            hooks.durable_recovery.as_ref(),
+        );
+    } else {
+        report.push(ConformanceCase::Skipped {
+            case_id: "durable-unsettled-recovery".into(),
+            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                capability: "durable-subscription",
+            },
+        });
+    }
     report.apply_profile(profile);
     report
 }

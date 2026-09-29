@@ -17,10 +17,48 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.15"
+qubit-event-bus = "0.16"
 ```
 
 ## Quick start
+
+<!-- event-bus-source: examples/local_delivery.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+// =============================================================================
+
+use std::sync::mpsc;
+use std::time::Duration;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bus = EventBus::local(LocalEventBusConfig::new())?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).unwrap();
+        },
+    )?;
+    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
+    bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    Ok(())
+}
+```
+
 
 The complete, runnable sync and runtime-neutral async applications live in
 [`examples/local_minimal.rs`](examples/local_minimal.rs) and
@@ -141,8 +179,10 @@ Both local providers bound queued and unsettled events per subscription (default
 ## Learn more
 
 - [User guide](doc/user_guide.md)
+- [Migration guide](doc/migration.md)
 - [Architecture](doc/design.md) · [SPI design](doc/design.md#4-provider-spi)
 - [API reference](https://docs.rs/qubit-event-bus)
+- [中文 README](README.zh_CN.md) · [中文用户手册](doc/user_guide.zh_CN.md)
 
 ## Testing
 

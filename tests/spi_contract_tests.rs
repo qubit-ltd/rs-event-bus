@@ -5,7 +5,6 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-mod support;
 
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::ProviderOptions;
@@ -31,6 +30,8 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_id::Id;
+
+mod support;
 
 fn assert_sync_object_safe(_: Option<&dyn EventBusSpi>) {}
 fn assert_async_object_safe(_: Option<&dyn AsyncEventBusSpi>) {}

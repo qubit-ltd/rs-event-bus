@@ -7,8 +7,6 @@
 // =============================================================================
 //! Contract tests for the built-in synchronous local SPI provider.
 
-mod support;
-
 use std::any::TypeId;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -61,6 +59,8 @@ use qubit_spi::ProviderMetadata;
 use qubit_spi::ProviderSelection;
 use qubit_spi::ProviderSelector;
 use qubit_spi::ServiceProvider;
+
+mod support;
 
 fn provider() -> LocalEventBusProvider {
     LocalEventBusProvider

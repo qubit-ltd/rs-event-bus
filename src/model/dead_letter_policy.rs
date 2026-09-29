@@ -168,7 +168,6 @@ impl DeadLetterPolicy {
     /// # Returns
     /// A copy of the configured [`DeadLetterAdmissionPolicy`]; the enum is
     /// `Copy`, so no allocation or borrow is involved.
-    #[must_use]
     pub fn admission_policy(&self) -> DeadLetterAdmissionPolicy {
         self.admission
     }

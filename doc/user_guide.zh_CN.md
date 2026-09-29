@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.15.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.16.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -63,11 +63,49 @@
 
 ## 接入订单服务
 
+<!-- event-bus-source: examples/local_delivery.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+// =============================================================================
+
+use std::sync::mpsc;
+use std::time::Duration;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bus = EventBus::local(LocalEventBusConfig::new())?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).unwrap();
+        },
+    )?;
+    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
+    bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    Ok(())
+}
+```
+
+
 在依赖中加入：
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.15"
+qubit-event-bus = "0.16"
 ```
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
@@ -679,7 +717,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.15", features = ["discovery"] }
+qubit-event-bus = { version = "0.16", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -849,6 +887,50 @@ let config = EventBusConfig::default().with_facade_config(bus_settings);
 把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new_with_shared_codec` 挂到主题上。
 
 ## 异步总线与订阅
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let mut subscription = bus
+        .subscribe(SubscribeRequest::new("audit", topic.clone())?)
+        .await?;
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let runner = tokio::spawn(async move {
+        subscription
+            .run(move |delivery| {
+                let sender = sender.clone();
+                async move {
+                    sender.send(delivery.payload().clone()).unwrap();
+                    Ok(())
+                }
+            })
+            .await
+    });
+    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
+        .await?;
+    let delivered = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await?;
+    assert_eq!(delivered.as_deref(), Some("order-42"));
+    bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })
+    .await?;
+    runner.await??;
+    Ok(())
+}
+```
+
 
 如果应用本身用异步 Rust，可选择 `AsyncEventBus`。它不依赖某个固定运行时，但应用仍需有 Tokio 等任务执行环境来运行异步代码。`publish`、`subscribe`、`publish_all`、`shutdown` 都需要 `.await`。与同步版不同，异步 `subscribe` 只创建订阅；应用还必须启动一个长期运行的任务去执行 `subscription.run(...)`，消息才会交给处理函数：
 
@@ -1095,4 +1177,4 @@ println!("provider 关闭结果 {:?}", report.outcome);
 
 ## 延伸阅读
 
-- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+- [中文 README](../README.zh_CN.md) · [迁移指南](migration.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)

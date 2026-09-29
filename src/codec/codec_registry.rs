@@ -35,6 +35,7 @@ impl CodecRegistry {
     ///
     /// # Returns
     /// An empty registry that can be populated with [`Self::register`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

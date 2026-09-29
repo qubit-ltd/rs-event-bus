@@ -7,8 +7,6 @@
 // =============================================================================
 //! Contract checks for the runtime-neutral async local provider.
 
-mod support;
-
 use std::any::TypeId;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -42,12 +40,14 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 #[cfg(feature = "conformance")]
-#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_async;
 use qubit_id::Id;
 use support::manual_async::block_on;
 use support::manual_async::poll_once;
 
+mod support;
+
+#[cfg(feature = "conformance")]
 #[test]
 fn async_local_delivers_and_settles_without_a_runtime_dependency() {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(2))).unwrap();
@@ -469,9 +469,15 @@ fn async_local_drop_discards_pending_messages_for_the_same_subscriber() {
 }
 
 #[test]
-fn async_local_subscription_count_does_not_create_receiver_threads() {
+#[cfg(target_os = "linux")]
+fn test_async_local_subscription_count_does_not_create_receiver_threads() {
+    let name = "test_async_local_subscription_count_does_not_create_receiver_threads";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("thread-count") {
+        support::isolated_process::run_case(name, "thread-count");
+        return;
+    }
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
-    let before = process_thread_count();
+    let before = std::fs::read_dir("/proc/self/task").unwrap().count();
     let topic = Topic::<u32>::new("async.local.scale").unwrap();
     let subscriptions = block_on(async {
         let mut subscriptions = Vec::new();
@@ -484,16 +490,16 @@ fn async_local_subscription_count_does_not_create_receiver_threads() {
         }
         subscriptions
     });
-    let after = process_thread_count();
-    if let (Some(before), Some(after)) = (before, after) {
-        assert!(
-            after <= before + 3,
-            "async local created receiver threads: {before} -> {after}"
-        );
-    }
+    let after = std::fs::read_dir("/proc/self/task").unwrap().count();
+    assert_eq!(before, after, "subscription creation must not spawn a receiver thread");
     drop(subscriptions);
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
+
+#[cfg(all(test, not(target_os = "linux")))]
+#[test]
+#[ignore = "receiver thread-count probe requires Linux /proc/self/task"]
+fn test_async_local_subscription_count_does_not_create_receiver_threads() {}
 
 #[test]
 fn async_local_receive_cancellation_keeps_the_message_available() {
@@ -724,17 +730,6 @@ fn spi_request_with_type(id: u64, subscriber: &str, topic: &str, payload_type_id
         ProviderOptions::default(),
         payload_type_id,
     )
-}
-
-fn process_thread_count() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        Some(std::fs::read_dir("/proc/self/task").ok()?.count())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
 }
 
 #[cfg(feature = "conformance")]

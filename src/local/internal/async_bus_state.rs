@@ -14,21 +14,34 @@ use std::sync::Arc;
 
 use qubit_id::Id;
 
+use super::AsyncMailbox;
 use super::MailboxKey;
-use super::async_mailbox::AsyncMailbox;
 use crate::spi::ShutdownOutcome;
 use crate::spi::TopicAddress;
 
 #[derive(Default)]
 pub(in crate::local) struct AsyncBusState {
+    /// Rejects new subscriptions and publications after shutdown starts.
     pub(in crate::local) closed: bool,
+    /// Stable outcome returned after provider shutdown completes.
     pub(in crate::local) outcome: Option<ShutdownOutcome>,
+    /// Mailboxes keyed by their bus-local subscription IDs.
     pub(in crate::local) mailboxes: HashMap<MailboxKey, Arc<AsyncMailbox>>,
+    /// Per-topic ordered subscription IDs used for publication routing.
     topic_members: HashMap<TopicAddress, BTreeSet<Id>>,
+    /// Native payload type bound to each active topic.
     pub(in crate::local) payload_types: HashMap<TopicAddress, TypeId>,
 }
 
 impl AsyncBusState {
+    /// Inserts a mailbox and indexes it under its topic.
+    ///
+    /// # Parameters
+    /// - `key`: unique provider mailbox identity.
+    /// - `mailbox`: queue and wake state to register.
+    ///
+    /// # Returns
+    /// `true` when inserted, or `false` if the key already exists.
     pub(in crate::local) fn insert_mailbox(&mut self, key: MailboxKey, mailbox: Arc<AsyncMailbox>) -> bool {
         if self.mailboxes.contains_key(&key) {
             return false;
@@ -42,6 +55,13 @@ impl AsyncBusState {
         true
     }
 
+    /// Returns live mailboxes for a topic in subscription-ID order.
+    ///
+    /// # Parameters
+    /// - `topic`: destination to look up.
+    ///
+    /// # Returns
+    /// Strong mailbox references for active subscriptions on the topic.
     pub(in crate::local) fn mailboxes_for_topic(&self, topic: &TopicAddress) -> Vec<Arc<AsyncMailbox>> {
         let mailboxes = self
             .topic_members
@@ -54,10 +74,25 @@ impl AsyncBusState {
         mailboxes
     }
 
+    /// Returns whether a topic has any indexed subscribers.
+    ///
+    /// # Parameters
+    /// - `topic`: destination to check.
+    ///
+    /// # Returns
+    /// `true` when at least one subscription ID is indexed.
     pub(in crate::local) fn has_topic(&self, topic: &TopicAddress) -> bool {
         self.topic_members.get(topic).is_some_and(|members| !members.is_empty())
     }
 
+    /// Removes a mailbox only when the indexed `Arc` still matches.
+    ///
+    /// # Parameters
+    /// - `key`: mailbox identity to remove.
+    /// - `mailbox`: expected mailbox allocation.
+    ///
+    /// # Returns
+    /// `true` when the mailbox was current and removed.
     pub(in crate::local) fn remove_mailbox_if_same(&mut self, key: MailboxKey, mailbox: &Arc<AsyncMailbox>) -> bool {
         let is_current = self
             .mailboxes
@@ -78,6 +113,10 @@ impl AsyncBusState {
         true
     }
 
+    /// Removes all mailboxes and clears the topic index.
+    ///
+    /// # Returns
+    /// Strong owners of every previously registered mailbox.
     pub(in crate::local) fn drain_mailboxes(&mut self) -> Vec<Arc<AsyncMailbox>> {
         self.topic_members.clear();
         std::mem::take(&mut self.mailboxes).into_values().collect()

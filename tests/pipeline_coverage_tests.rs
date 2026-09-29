@@ -7,8 +7,6 @@
 // =============================================================================
 //! Publicly observable subscriber pipeline branch tests.
 
-mod support;
-
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -38,6 +36,8 @@ use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
+
+mod support;
 
 fn topic<T: 'static>(name: &str) -> Topic<T> {
     Topic::new(name).unwrap()

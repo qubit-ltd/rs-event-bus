@@ -13,21 +13,33 @@ use std::sync::Mutex;
 use std::task::Waker;
 
 pub(in crate::local) struct AsyncWaiter {
+    /// Registration ID removed when this guard is dropped.
     id: u64,
+    /// Waker registry containing this waiter's registration.
     waiters: Arc<Mutex<HashMap<u64, Waker>>>,
 }
 
 impl AsyncWaiter {
+    /// Creates a guard for a previously inserted waker.
+    ///
+    /// # Parameters
+    /// - `id`: waiter registration ID.
+    /// - `waiters`: shared registry containing the registration.
+    ///
+    /// # Returns
+    /// A guard that removes the registration on drop.
     pub(in crate::local) fn new(id: u64, waiters: Arc<Mutex<HashMap<u64, Waker>>>) -> Self {
         Self { id, waiters }
     }
 }
 
 impl Drop for AsyncWaiter {
+    /// Removes this registration from the shared waiter registry.
     fn drop(&mut self) {
-        self.waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.id);
+        let removed = {
+            let mut waiters = self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            waiters.remove(&self.id)
+        };
+        drop(removed);
     }
 }

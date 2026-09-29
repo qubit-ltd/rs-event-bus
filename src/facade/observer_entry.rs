@@ -12,7 +12,10 @@ use std::sync::atomic::AtomicBool;
 
 use crate::pipeline::DiagnosticObserver;
 
+/// Shared liveness and callback storage for a diagnostic observer.
 pub(super) struct ObserverEntry {
+    /// Whether dispatch should continue invoking the callback.
     pub(super) active: AtomicBool,
+    /// Thread-safe diagnostic callback shared by facade clones.
     pub(super) callback: Arc<DiagnosticObserver>,
 }

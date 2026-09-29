@@ -25,6 +25,19 @@ use crate::registry::EventBusSpec;
 use crate::spi::AsyncEventBusSpi;
 
 /// Built-in runtime-neutral asynchronous in-process event-bus provider.
+///
+/// # Examples
+///
+/// ```
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use qubit_event_bus::registry::{AsyncEventBusRegistry, EventBusConfig};
+///
+/// let registry = AsyncEventBusRegistry::with_local()?;
+/// let bus = registry.create(&EventBusConfig::default()).await?;
+/// bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AsyncLocalEventBusProvider;
 

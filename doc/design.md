@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.15)
+# Qubit Event Bus Design (0.16)
 
-> This document describes `qubit-event-bus` 0.15.0 as implemented.
+> This document describes `qubit-event-bus` 0.16.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -212,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.15.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.16.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -1434,6 +1434,17 @@ Checks the public runner does not cover, which a provider author supplies:
 - errors carry provider context and a traceable `source`;
 - `Debug` output does not leak sensitive provider options.
 
+Strict recovery checks follow the provider's declared subscription modes. A
+durable mode requires a durable-recovery fixture; an ephemeral mode requires an
+ephemeral-cleanup fixture. Unsupported modes are reported with a typed skip,
+and a missing required fixture fails the report. Synchronous cancellation cases
+are `NotApplicable` because synchronous methods return no cancellable future.
+Cancelling an asynchronous receive future is distinct from destroying its
+receiver: a message already consumed by the provider must remain available to a
+later receive or recovery attempt. Closing or dropping a durable receiver must
+preserve accepted, unsettled deliveries; ephemeral providers may discard them.
+Neither close nor drop implicitly acknowledges an unsettled delivery.
+
 ### 15.4 Documentation checks
 
 Public traits and the main types have runnable rustdoc examples. The README and the
@@ -1474,4 +1485,38 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.15.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.16.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+
+## Provider specification compile probe
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
+```rust
+use std::time::Duration;
+
+use qubit_event_bus::EventBusSpec;
+use qubit_event_bus::error::SpiError;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_spi::AsyncServiceSpec;
+use qubit_spi::ServiceSpec;
+use qubit_spi::SyncServiceSpec;
+
+pub type ProviderConfig = <EventBusSpec as ServiceSpec>::Config;
+pub type SyncOutput = <EventBusSpec as SyncServiceSpec>::Output;
+pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
+
+pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOutcome, SpiError> {
+    receiver.receive(Duration::ZERO)
+}
+
+pub fn settle_without_borrowing_token<'a>(
+    receiver: &'a mut dyn AsyncEventSubscriptionSpi,
+    token: &SettlementToken,
+) -> SpiFuture<'a, Result<(), SpiError>> {
+    receiver.settle(token, DeliveryDisposition::Accept)
+}
+```
