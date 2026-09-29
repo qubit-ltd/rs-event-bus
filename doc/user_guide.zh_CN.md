@@ -69,6 +69,8 @@
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
 use std::sync::mpsc;
@@ -85,12 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).unwrap();
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).unwrap();
+    })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     bus.shutdown(ShutdownMode::Graceful {
@@ -134,8 +133,12 @@ impl OrderCreated {
 ```rust
 // src/audit.rs
 use std::sync::Arc;
+
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
 use crate::orders::events::OrderCreated;
 
 pub trait AuditStore: Send + Sync {
@@ -156,8 +159,12 @@ pub fn subscribe(
 ```rust
 // src/customer_view.rs
 use std::sync::Arc;
+
+use qubit_event_bus::DeliveryError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::{DeliveryError, EventBus, Subscription};
+
 use crate::orders::events::OrderCreated;
 
 pub trait CustomerViewStore: Send + Sync {
@@ -193,8 +200,10 @@ let order_bus = bus.clone(); // 注入订单服务；应用保留 bus 与订阅�
 
 ```rust
 // src/orders/service.rs
-use qubit_event_bus::model::{PublishReceipt, PublishRequest};
 use qubit_event_bus::EventBus;
+use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::PublishRequest;
+
 use super::events::OrderCreated;
 
 pub struct CreateOrder {
@@ -274,7 +283,9 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 在订单示例中，审计和客户视图两个订阅都已建立，订单事务提交后发布一条 `OrderCreated`，正常情况下回执如下：
 
 ```rust
-use qubit_event_bus::model::{AdmissionOutcome, PublishAcknowledgement, PublishRequest};
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 
 let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
 // 内置 local 的 provider ID 是 "local"
@@ -310,7 +321,8 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 订单服务在发布后按较严的条件检查，并按失败原因决定怎么处理：
 
 ```rust
-use qubit_event_bus::model::{AdmissionCheckError, AdmissionRequirement};
+use qubit_event_bus::model::AdmissionCheckError;
+use qubit_event_bus::model::AdmissionRequirement;
 
 let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
 match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected) {
@@ -340,7 +352,8 @@ match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejec
 要知道是谁拒绝的，遍历回执里每个订阅者的状态：
 
 ```rust
-use qubit_event_bus::model::{AdmissionStatus, PublishAcknowledgement};
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::PublishAcknowledgement;
 
 if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
     for destination in destinations {
@@ -362,7 +375,8 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 前面的 `PublishRequest::new(topic, payload)?` 已能完成发布，并会为事件生成 ID。需要自己指定 ID，或附上用于串联日志的请求编号、控制同一客户的处理顺序时，使用请求构造器（builder）：
 
 ```rust
-use qubit_event_bus::model::{EventId, PublishRequest};
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::PublishRequest;
 
 let request = PublishRequest::builder()
     .topic(OrderCreated::TOPIC)
@@ -400,7 +414,9 @@ bus.publish(request)?;
 **订阅方：请求按键保序。** 在订阅选项中把 `ordering_policy` 设为 `PerKey`：
 
 ```rust
-use qubit_event_bus::model::{OrderingPolicy, SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::OrderingPolicy;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::builder()
     .ordering_policy(OrderingPolicy::PerKey)
@@ -446,8 +462,11 @@ let subscription = bus.subscribe(request, handler)?;
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
-use qubit_retry::{BackoffPolicy, RetryPolicy};
+
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_retry::BackoffPolicy;
+use qubit_retry::RetryPolicy;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .retry_policy(
@@ -468,8 +487,10 @@ let subscription = bus.subscribe(request, move |delivery| store.upsert_order(del
 默认情况下，处理函数正常返回就算确认（ACK）。如果审计模块希望只在记录真正落库后才确认，把 `ack_mode` 设为 `Manual`，并在写入成功后调用 `ack()`：
 
 ```rust
-use qubit_event_bus::model::{AckMode, SubscribeOptions, SubscribeRequest};
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::model::AckMode;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .ack_mode(AckMode::Manual)
@@ -492,9 +513,12 @@ let subscription = bus.subscribe(request, move |delivery| {
 如果客户视图写入失败后不想丢弃事件，而是留下来事后补处理，配置死信（dead letter）主题。失败方通过 `error_handler` 返回 `FailureDirective::DeadLetter`，并用 `dead_letter` 指定主题；读取方订阅这个主题，收到的载荷类型是 `DeadLetterEvent<OrderCreated>`，不是原来的 `OrderCreated`：
 
 ```rust
-use qubit_event_bus::model::{
-    DeadLetterEvent, DeadLetterPolicy, FailureDirective, SubscribeOptions, SubscribeRequest, Topic,
-};
+use qubit_event_bus::model::DeadLetterEvent;
+use qubit_event_bus::model::DeadLetterPolicy;
+use qubit_event_bus::model::FailureDirective;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 
 // 死信主题的载荷类型是 DeadLetterEvent<OrderCreated>，不是 OrderCreated。
 let dead_letter_topic = Topic::<DeadLetterEvent<OrderCreated>>::new("orders.created.dead")?;
@@ -535,7 +559,8 @@ let dead_letter_subscription = bus.subscribe(
 客户视图可以不保存金额为零的订单：
 
 ```rust
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .filter(|event| event.payload().total_cents > 0)
@@ -551,7 +576,8 @@ let subscription = bus.subscribe(request, move |delivery| store.upsert_order(del
 审计订阅可以先记下订单号，再通过 `next` 进入处理函数：
 
 ```rust
-use qubit_event_bus::model::{SubscribeOptions, SubscribeRequest};
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .interceptor(|delivery, next| {
@@ -568,8 +594,9 @@ let subscription = bus.subscribe(request, move |delivery| store.append_order_cre
 同一段同步回调也可以包住这条总线上所有 `OrderCreated` 订阅。它位于该订阅自己的拦截器外侧，而且只在这条订阅的 `filter` 返回 `true` 之后运行。它要在组装总线配置时登记；`EventBus::local` 接不了这份配置：
 
 ```rust
-use qubit_event_bus::model::{Delivery, SubscriberNext};
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::SubscriberNext;
 
 let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
     |delivery: Delivery<OrderCreated>, next: SubscriberNext<OrderCreated>| next(delivery),
@@ -579,9 +606,11 @@ let bus_settings = EventBusFacadeConfig::new().subscriber_interceptor(
 异步订阅要 `await` 自己的 `next`，返回类型是 `SpiFuture`：
 
 ```rust
-use qubit_event_bus::model::{AsyncSubscriberNext, Delivery, SubscribeOptions};
-use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::spi::SpiFuture;
 
 let options = SubscribeOptions::<OrderCreated>::builder()
     .async_interceptor(|delivery: Delivery<OrderCreated>, next: AsyncSubscriberNext<OrderCreated>| {
@@ -620,9 +649,11 @@ let receipt = bus.publish(request)?;
 `EventBusFacadeConfig::publisher_interceptor` 作用于通过该总线对象发出的每条消息，并且排在“已经返回信封”的请求级拦截器之后。它可以修改 header，不能修改载荷或事件 ID。`Ok(false)` 停止发布，`Ok(true)` 继续：
 
 ```rust
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishMetadata;
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
 
 let local = LocalEventBusConfig::default();
 let bus_settings = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
@@ -661,7 +692,9 @@ let bus = EventBus::local(local)?;
 除 local 的积压上限外，事件总线对象还限制自己同时接手多少条消息。同步总线默认最多接手 4 条（包括正在处理和等待处理的消息），处理函数等待队列另有容量 32；实际能排队多少仍受前面的 4 条上限约束。异步总线默认最多同时处理 4 条。需要修改这些值时，用 `EventBusFacadeConfig`。这个类型名中的 `Facade` 是 API 名称；在本文把它理解成“总线的通用设置”即可。例如把同步总线接手消息的上限设为 8、等待队列容量设为 64：
 
 ```rust
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
@@ -683,8 +716,10 @@ let bus = EventBusRegistry::with_local()?.create(&config)?;
 异步总线也使用 `LocalEventBusConfig`。例如把同时处理的消息数设为 8：
 
 ```rust
-use qubit_event_bus::{AsyncEventBusRegistry, DeliveryAdmissionConfig};
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
+use qubit_event_bus::AsyncEventBusRegistry;
+use qubit_event_bus::DeliveryAdmissionConfig;
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
 let local = LocalEventBusConfig::new().queue_capacity(2_048);
@@ -724,7 +759,8 @@ qubit-spi = "0.13"
 
 ```rust
 use provider_crate as _; // 用实际 crate 名替换，确保 provider 定义链接进可执行程序
-use qubit_event_bus::{EventBusConfig, EventBusRegistry};
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusRegistry;
 use qubit_spi::ProviderSelection;
 
 let registry = EventBusRegistry::discover()?;
@@ -753,9 +789,15 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 ```rust
 use std::sync::Arc;
-use qubit_event_bus::{EventBusConfig, EventBusProviderError, EventBusSpec};
+
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusProviderError;
+use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::spi::EventBusSpi;
-use qubit_spi::{ProviderDescriptor, ProviderId, ProviderMetadata, ServiceProvider};
+use qubit_spi::ProviderDescriptor;
+use qubit_spi::ProviderId;
+use qubit_spi::ProviderMetadata;
+use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
 struct MyProvider;
@@ -807,9 +849,10 @@ Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回
 ```rust
 use std::sync::Arc;
 
-use qubit_event_bus::codec::EventCodec;
-use qubit_event_bus::model::{ContentType, SchemaId};
 use qubit_event_bus::CodecError;
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::SchemaId;
 
 struct OrderCreatedCodec(ContentType);
 
@@ -854,7 +897,10 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
 `encode` 交出共享字节和内容类型；`decode` 还原 `OrderCreated`，无法还原时返回 `CodecError::Decode`。发布方和订阅方使用同一份带编码器的主题。常量 `OrderCreated::TOPIC` 没有编码器，编码型 provider 不会用它来转换字节：
 
 ```rust
-use qubit_event_bus::model::{ContentType, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 
 let topic = Topic::new_with_codec(
     "orders.created",
@@ -874,9 +920,10 @@ let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
 ```rust
 use std::sync::Arc;
 
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
-use qubit_event_bus::{EventBusConfig, EventBusFacadeConfig};
 
 let mut codecs = CodecRegistry::new();
 codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
@@ -890,6 +937,15 @@ let config = EventBusConfig::default().with_facade_config(bus_settings);
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Asynchronous local delivery example compiled by the user-guide checks.
+
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -963,8 +1019,10 @@ subscription.run(move |delivery| {
 
 ```rust
 use std::num::NonZeroUsize;
+
+use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::model::AdmissionRequirement;
-use qubit_event_bus::{NotificationOutcome, NotificationPublisher};
 
 // bus 是已经建立好 audit-log 和 customer-view 订阅的 EventBus。
 // 不想自定义容量时，第三个参数可以传 NotificationPublisher::<OrderCreated>::default_capacity()。
@@ -1060,8 +1118,10 @@ match notifier.close_with_timeout(Duration::from_secs(30)) {
 
 ```rust
 use std::time::Duration;
+
+use qubit_event_bus::ShutdownError;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::{ShutdownError, WaitOutcome};
 
 // 1. 应用先停止接收新的下单请求（HTTP 监听器等由应用自己控制）。
 // 2. 关闭消息来源：排空通知队列，见上一节。
@@ -1108,7 +1168,9 @@ match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) 
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::{LifecycleError, WaitOutcome};
+
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::WaitOutcome;
 
 let timeout = Some(Duration::from_secs(10));
 let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
@@ -1131,8 +1193,9 @@ if outcome == WaitOutcome::TimedOut {
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::spi::ShutdownMode;
+
 use qubit_event_bus::WaitOutcome;
+use qubit_event_bus::spi::ShutdownMode;
 
 // 1. 停止接收新的下单请求。
 // 2. 等待总线已取到的 OrderCreated 处理完。

@@ -96,8 +96,8 @@ the model, pipeline, registry, and error types.
 **(P6) A publish receipt, an application acknowledgement, and transport settlement are three different things.**
 `PublishReceipt` records the result of a successful provider call; it may describe
 acceptance, partial admission, no destinations, drop, or opaque acknowledgement.
-`PublishGuarantee` describes what provider acceptance promises. No receipt means a
-subscriber finished handling the message.
+`PublishGuarantee` describes what provider acceptance promises. A receipt does not
+mean a subscriber finished handling the message.
 `Acknowledgement` is the handler's business decision (`AckMode::Auto` or `Manual`).
 `SettlementToken` plus `DeliveryDisposition` is the transport-level confirmation
 between the facade and the provider. Keeping them apart avoids reading
@@ -797,10 +797,11 @@ Details:
   - `DeadLetter`: when a `DeadLetterPolicy` exists and the message is **not** already
     a dead-letter, an internal publish sends `DeadLetterEvent<T>`. That publish
     **skips** global publish interceptors, so a dead-letter record is not rewritten
-    or dropped by them. Success then `Reject`s. If publishing fails and the provider
-    supports `Retry`, the disposition is `Retry`; otherwise `Reject`. With no
-    dead-letter policy the action degrades to `Requeue`. A message that already
-    carries the reserved header is not published again; it is `Reject`ed.
+    or dropped by them. Success then `Reject`s. If forwarding fails or no
+    dead-letter policy is configured, the subscription stops and the source token
+    remains unsettled so receiver close can apply the provider's recovery contract.
+    A message that already carries the reserved header is not published again; it
+    is `Reject`ed.
   - `Requeue`: settlement `AcceptRetryReject` becomes `Retry`.
   - `Discard`, or local retry exhausted: `AcceptRetryReject` becomes `Reject`.
   - When settlement is `None` or `AcceptOnly`, **no failure is settled**
@@ -810,7 +811,8 @@ Details:
     redelivered is the provider's decision.
   - Internal failures while building or publishing a dead-letter (missing policy,
     envelope construction failure, publish failure) are recorded as
-    `Diagnostic::InternalFailure` and then handled as `Requeue`.
+    `Diagnostic::InternalFailure` and stop the subscription. Ephemeral loss is
+    counted where the facade can identify it.
 - Every terminal failure emits `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }`.
 
 ### 7.6 Dead-letter recursion
@@ -900,7 +902,7 @@ loop {
      Gap(g)      → Diagnostic::ReceiveGap
      TimedOut    → continue
      Closed      → break
-     Err(e)      → Diagnostic::InternalFailure, brief sleep, continue
+     Err(e)      → Diagnostic::InternalFailure, close the receiver, mark stopped
   }
 }
 drain remaining settlements → receiver.close() → mark stopped
@@ -1408,10 +1410,11 @@ a strict documentation build with
 
 `qubit_event_bus::spi::conformance::{run_sync, run_async}` takes a provider factory
 (`Fn() -> Arc<dyn EventBusSpi>`, or an async factory that returns a future; each case
-builds a fresh instance so cases do not contaminate each other) and `ConformanceHooks`
-(optional settlement, receive/settlement/close/shutdown cancellation, and durable-recovery hooks; strict runs turn missing required
-hooks into failures while typed skips remain for unsupported capabilities. Async hooks are
-awaited by the runner and do not block its executor. It returns a `ConformanceReport`
+builds a fresh instance so cases do not contaminate each other) and `ConformanceHooks`.
+The hooks cover optional settlement, receive/settlement/close/shutdown cancellation,
+and durable recovery. Strict runs turn missing required hooks into failures while
+typed skips remain available for unsupported capabilities. Async hooks are awaited by
+the runner and do not block its executor. It returns a `ConformanceReport`
 (`Vec<ConformanceCase::{Passed, Failed, Skipped}>`). Current cases cover capability and
 payload-mode consistency, `subscribe`, `publish`, `receive-payload`, settlement
 idempotence and conflicts, and `shutdown`. A provider that does not support a case
@@ -1491,6 +1494,15 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Provider service aliases and subscription calls compiled by documentation checks.
+
 use std::time::Duration;
 
 use qubit_event_bus::EventBusSpec;
