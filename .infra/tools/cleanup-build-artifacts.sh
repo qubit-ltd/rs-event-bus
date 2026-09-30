@@ -13,6 +13,8 @@ cleanup_build_artifacts() {
         "$project_root/target/release" \
         "$project_root/target/llvm-cov-target" \
         "$project_root/target/rs-ci-feature-matrix" \
+        "$project_root/target/infra-feature-matrix" \
+        "$project_root/target/infra/coverage" \
         "$project_root/target/tmp" \
         "$project_root/fuzz/target"; do
         if [ -d "$path" ]; then
@@ -43,4 +45,9 @@ cleanup_build_artifacts() {
     echo "Build artifact cleanup completed"
 }
 
-trap cleanup_build_artifacts EXIT
+# Only the outermost infra command owns cleanup; nested commands may leave
+# intermediate outputs for their caller to consume.
+if [ -z "${RS_INFRA_CLEANUP_OWNER_PID:-}" ]; then
+    export RS_INFRA_CLEANUP_OWNER_PID=$$
+    trap cleanup_build_artifacts EXIT
+fi
