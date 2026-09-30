@@ -170,8 +170,8 @@ The library cannot recover `panic=abort` or forcibly stop blocked destructors.
 
 ### Validate the rollout
 
-Use `./project-ci-check.sh` for standalone core metadata validation. For the
-coordinated migration, use `./project-ci-check.sh --ecosystem-root <repos-dir>`;
+Use `./scripts/project-ci-check.sh` for standalone core metadata validation. For the
+coordinated migration, use `./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`;
 the five repository roots and seven declared consumer fixtures are mandatory.
 The gate resolves locked all-feature metadata and rejects mixed event-bus
 minor generations. It does not replace each project's alignment, CI,
