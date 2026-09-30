@@ -15,6 +15,7 @@
 use std::any::TypeId;
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -111,7 +112,7 @@ impl Subscription {
 
 /// Polls an immediate public SPI operation once; Pending is a contract failure.
 fn ready<F: Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
+    let mut future = pin!(future);
     match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("bounded operation must complete without a runtime or wait"),
@@ -238,12 +239,14 @@ pub(crate) fn run(input: &[u8]) {
                     let receiver = subscription.receiver.as_mut().expect("receiver retained");
                     let timeout = if opcode == 7 { Duration::MAX } else { Duration::ZERO };
                     let result = {
-                        let mut future = std::pin::pin!(receiver.receive(timeout));
+                        let mut future = pin!(receiver.receive(timeout));
                         future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
                     };
                     match result {
                         Poll::Ready(Ok(ReceiveOutcome::Message(message))) => subscription.received(message),
-                        Poll::Ready(Ok(ReceiveOutcome::TimedOut)) => assert!(subscription.pending.is_empty()),
+                        Poll::Ready(Ok(ReceiveOutcome::TimedOut)) => {
+                            assert!(subscription.pending.is_empty())
+                        }
                         Poll::Ready(Ok(ReceiveOutcome::Closed)) => assert!(subscription.closed),
                         Poll::Pending => {
                             assert_eq!(opcode, 7);

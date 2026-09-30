@@ -8,6 +8,7 @@
 //! Public error and synchronous SPI model contracts.
 
 use std::error::Error;
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,7 +83,7 @@ impl EventSubscriptionSpi for CloseFailureSubscription {
             resource: Some(self.subscriber_id.clone().into()),
             kind: "close_failed",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other(format!("cannot close {}", self.subscriber_id))),
+            source: Box::new(IoError::other(format!("cannot close {}", self.subscriber_id))),
         })
     }
 }

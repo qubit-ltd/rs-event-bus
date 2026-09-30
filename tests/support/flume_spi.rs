@@ -9,6 +9,7 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
@@ -223,6 +224,6 @@ fn operation_error(operation: &'static str, kind: &'static str) -> SpiError {
         resource: None,
         kind,
         retryable: Some(false),
-        source: Box::new(std::io::Error::other(kind)),
+        source: Box::new(Error::other(kind)),
     }
 }

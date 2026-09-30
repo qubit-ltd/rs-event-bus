@@ -7,7 +7,10 @@
 // =============================================================================
 //! Contract tests for event-bus provider registration and creation.
 
+mod registry;
+
 use std::future::Future;
+use std::io::Error;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -92,7 +95,7 @@ impl ServiceProvider<EventBusSpec> for StubProvider {
         self.creates.fetch_add(1, Ordering::SeqCst);
         if self.create_unavailable {
             return Err(ProviderFailure::unavailable(EventBusProviderError::provider(
-                std::io::Error::other("backend unavailable"),
+                Error::other("backend unavailable"),
             )));
         }
         Ok(Arc::new(StubSpi {
@@ -121,7 +124,7 @@ impl EventBusSpi for StubSpi {
                 resource: None,
                 kind: "injected_failure",
                 retryable: Some(false),
-                source: Box::new(std::io::Error::other("publish failed")),
+                source: Box::new(Error::other("publish failed")),
             });
         }
         Ok(PublishAcknowledgement::Accepted {
@@ -137,7 +140,7 @@ impl EventBusSpi for StubSpi {
             resource: None,
             kind: "unused",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other("unused")),
+            source: Box::new(Error::other("unused")),
         })
     }
 
@@ -524,7 +527,7 @@ impl AsyncEventBusSpi for StubAsyncSpi {
                 resource: None,
                 kind: "unused",
                 retryable: Some(false),
-                source: Box::new(std::io::Error::other("unused")),
+                source: Box::new(Error::other("unused")),
             })
         })
     }

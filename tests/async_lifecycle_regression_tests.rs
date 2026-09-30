@@ -8,8 +8,11 @@
 //! Public regression tests for asynchronous event bus lifecycle contracts.
 
 use std::future::Future;
+use std::future::poll_fn;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -21,7 +24,7 @@ use std::task::Waker;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
-use qubit_event_bus::facade::DeliveryAdmissionConfig;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::model::ProviderId;
@@ -34,6 +37,9 @@ fn poll_once<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
 }
 
+/// Polls a local future once and returns its ready output.
+///
+/// Panics when the operation unexpectedly remains pending on its first poll.
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
     match poll_once(future.as_mut(), Waker::noop()) {
@@ -77,7 +83,7 @@ fn test_close_drains_all_started_handlers() {
             let finished = finished.clone();
             async move {
                 started.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gates[*delivery.payload()].load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -102,7 +108,7 @@ fn test_close_drains_all_started_handlers() {
     gates[1].store(true, Ordering::SeqCst);
     assert!(poll_once(close.as_mut(), Waker::noop()).is_ready());
     assert_eq!(2, finished.load(Ordering::SeqCst));
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
 }
 
 #[test]
@@ -113,7 +119,7 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
         .expect("subscription");
     ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
 
-    let observed = Arc::new(std::sync::Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
     let mut run = {
         let bus = bus.clone();
         let topic = topic.clone();
@@ -137,14 +143,21 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
     ));
     drop(run);
     ready(subscription.close()).expect("subscription close");
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
 }
 
 #[test]
 fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
-    let config =
-        EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(2).expect("admission limit"));
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(2).expect("limit"),
+            NonZeroUsize::new(256).expect("limit"),
+            NonZeroUsize::new(32).expect("limit"),
+            NonZeroUsize::new(256).expect("limit"),
+        )
+        .expect("scheduling"),
+    );
     let bus =
         AsyncEventBus::with_config(ProviderId::new("local").expect("provider ID"), provider, config).expect("facade");
     let topic_a = Topic::<usize>::new("regression.admission.a").expect("topic A");
@@ -166,7 +179,7 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
         Box::pin(sub_a.run(move |_| {
             let gate_a = gate_a.clone();
             async move {
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_a.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -190,7 +203,7 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
             let started_b = started_b.clone();
             async move {
                 started_b.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_b.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -210,7 +223,7 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
             let started_c = started_c.clone();
             async move {
                 started_c.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_c.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -241,5 +254,5 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     drop(run_a);
     drop(run_b);
     drop(run_c);
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
 }

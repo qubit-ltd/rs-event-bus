@@ -20,18 +20,25 @@ use std::time::SystemTime;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::CodecError;
+use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ReceiveError;
+use qubit_event_bus::ShutdownError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::error::SubscriptionCloseErrors;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::PayloadLimits;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::PayloadDirection;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -57,6 +64,7 @@ use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
+use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use support::manual_async;
 
@@ -229,7 +237,7 @@ impl Receiver {
             ))
         };
         ReceiveOutcome::Message(InboundMessage::new(
-            qubit_event_bus::spi::TopicAddress::new("boundary").expect("topic"),
+            TopicAddress::new("boundary").expect("topic"),
             EventId::new(if good { "healthy-record" } else { "source-record" }).expect("id"),
             SystemTime::UNIX_EPOCH,
             Headers::new(),
@@ -354,13 +362,12 @@ fn verify_boundary(
         let result = manual_async::block_on(subscription.run(|_| async { Ok(()) }));
         if expected_decode == 0 {
             let reason = subscription.terminal_failure().expect("cached receive cause");
-            let qubit_event_bus::ReceiveError::Stopped(returned) = result.expect_err("boundary stops") else {
+            let ReceiveError::Stopped(returned) = result.expect_err("boundary stops") else {
                 panic!("structured stop")
             };
             assert!(Arc::ptr_eq(&reason, &returned));
-            let qubit_event_bus::ReceiveError::Stopped(repeated) =
-                manual_async::block_on(subscription.run(|_| async { Ok(()) }))
-                    .expect_err("same handle remains stopped")
+            let ReceiveError::Stopped(repeated) = manual_async::block_on(subscription.run(|_| async { Ok(()) }))
+                .expect_err("same handle remains stopped")
             else {
                 panic!("structured stop")
             };
@@ -368,7 +375,7 @@ fn verify_boundary(
         } else {
             result.expect("healthy run");
         }
-        manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     } else {
         let bus =
             EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
@@ -384,7 +391,7 @@ fn verify_boundary(
             assert!(subscription.terminal_failure().is_some());
         }
         subscription.cancel().expect("cancel");
-        bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     }
     assert_eq!(
         probe.validate.load(Ordering::SeqCst),
@@ -458,7 +465,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
         .expect("subscription");
         assert!(matches!(
             manual_async::block_on(stopped.run(|_| async { Ok(()) })),
-            Err(qubit_event_bus::ReceiveError::Stopped(_))
+            Err(ReceiveError::Stopped(_))
         ));
         assert_eq!(probe.validate.load(Ordering::SeqCst), 1);
         assert_eq!(probe.decode.load(Ordering::SeqCst), usize::from(mode == 2));
@@ -486,7 +493,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
         .expect("new subscription recovers durable source");
         assert_eq!(handled.load(Ordering::SeqCst), 1);
         assert_eq!(source.settled.load(Ordering::SeqCst), 1);
-        manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     }
 }
 #[test]
@@ -515,8 +522,7 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
     assert!(manual_async::poll_once(close.as_mut()).is_pending());
     drop(close);
     source.close_paused.store(false, Ordering::SeqCst);
-    let report =
-        manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus driver resumes provider close");
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus driver resumes provider close");
     assert_eq!(source.closed.load(Ordering::SeqCst), 1);
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
@@ -527,7 +533,6 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
         &reason,
         &subscription.terminal_failure().expect("cause remains")
     ));
-    let _ = report;
 }
 #[test]
 fn test_receive_stop_finishes_already_started_handler() {
@@ -548,13 +553,17 @@ fn test_receive_stop_finishes_already_started_handler() {
     .expect("subscription");
     let release = Arc::new(AtomicBool::new(false));
     let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
     let handler_release = release.clone();
     let handler_started = started.clone();
+    let handler_finished = finished.clone();
     let mut run = Box::pin(subscription.run(move |_| {
         handler_started.fetch_add(1, Ordering::SeqCst);
         let release = handler_release.clone();
+        let handler_finished = handler_finished.clone();
         std::future::poll_fn(move |_| {
             if release.load(Ordering::SeqCst) {
+                handler_finished.fetch_add(1, Ordering::SeqCst);
                 std::task::Poll::Ready(Ok(()))
             } else {
                 std::task::Poll::Pending
@@ -564,16 +573,19 @@ fn test_receive_stop_finishes_already_started_handler() {
     assert!(manual_async::poll_once(run.as_mut()).is_pending());
     assert_eq!(started.load(Ordering::SeqCst), 1);
     release.store(true, Ordering::SeqCst);
-    assert!(matches!(
-        manual_async::block_on(run),
-        Err(qubit_event_bus::ReceiveError::Stopped(_))
-    ));
+    assert!(matches!(manual_async::block_on(run), Err(ReceiveError::Stopped(_))));
+    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
-        1,
-        "already started handler still accepts its healthy message"
+        0,
+        "terminal receive stop leaves the healthy started message unsettled"
     );
-    manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    assert_eq!(
+        source.closed.load(Ordering::SeqCst),
+        1,
+        "receiver closes after the handler completes"
+    );
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 #[test]
 fn test_regular_decode_failure_rejects_without_terminal_stop() {
@@ -589,7 +601,7 @@ fn test_regular_decode_failure_rejects_without_terminal_stop() {
             manual_async::block_on(subscription.run(|_| async { panic!("no decoded delivery") }))
                 .expect("ordinary bad message rejected");
             assert!(subscription.terminal_failure().is_none());
-            manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         } else {
             let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
@@ -605,7 +617,7 @@ fn test_regular_decode_failure_rejects_without_terminal_stop() {
             }
             subscription.cancel().expect("cancel");
             assert!(subscription.terminal_failure().is_none());
-            bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+            let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
         }
         assert_eq!(source.settled.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -640,10 +652,10 @@ fn test_content_native_and_ephemeral_stop_contracts() {
             .expect("subscription");
             assert!(matches!(
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler on mismatch") })),
-                Err(qubit_event_bus::ReceiveError::Stopped(_))
+                Err(ReceiveError::Stopped(_))
             ));
             let reason = subscription.terminal_failure().expect("canonical failure");
-            let qubit_event_bus::model::SubscriptionStopReason::Codec { error, .. } = reason.as_ref() else {
+            let SubscriptionStopReason::Codec { error, .. } = reason.as_ref() else {
                 panic!("codec cause")
             };
             if native {
@@ -699,7 +711,7 @@ fn test_sync_permanent_panic_is_once_and_cached() {
             source.dispositions.lock().expect("settlement log").is_empty(),
             "fail-stop must never settle with any disposition"
         );
-        bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     }
 }
 
@@ -723,7 +735,7 @@ fn test_explicit_legacy_schema_override_can_decode() {
     assert_eq!(probe.validate.load(Ordering::SeqCst), 1);
     assert_eq!(probe.decode.load(Ordering::SeqCst), 1);
     assert!(subscription.terminal_failure().is_none());
-    manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 
 #[test]
@@ -737,6 +749,8 @@ fn test_sync_receive_stop_drains_started_handler() {
     let (release, wait) = std::sync::mpsc::channel();
     let wait = Arc::new(Mutex::new(wait));
     let handler_source = source.clone();
+    let finished = Arc::new(AtomicUsize::new(0));
+    let handler_finished = finished.clone();
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(
@@ -750,6 +764,7 @@ fn test_sync_receive_stop_drains_started_handler() {
                     .expect("handler gate")
                     .recv()
                     .expect("release started handler");
+                handler_finished.fetch_add(1, Ordering::SeqCst);
             },
         )
         .expect("subscription");
@@ -765,13 +780,14 @@ fn test_sync_receive_stop_drains_started_handler() {
     );
     release.send(()).expect("release handler");
     subscription.cancel().expect("cancel drains handler");
+    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
-        1,
-        "healthy started message accepts once"
+        0,
+        "terminal receive stop leaves the healthy started message unsettled"
     );
     assert_eq!(source.closed.load(Ordering::SeqCst), 1);
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 #[test]
 fn test_schema_stop_recovers_after_explicit_compatibility_change() {
@@ -790,7 +806,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     .expect("subscription");
     assert!(matches!(
         manual_async::block_on(stopped.run(|_| async { Ok(()) })),
-        Err(qubit_event_bus::ReceiveError::Stopped(_))
+        Err(ReceiveError::Stopped(_))
     ));
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
@@ -810,7 +826,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     manual_async::block_on(restored.run(|_| async { Ok(()) })).expect("same durable record recovers");
     assert_eq!(source.settled.load(Ordering::SeqCst), 1);
     assert_eq!(source.closed.load(Ordering::SeqCst), 2);
-    manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 
 #[test]
@@ -830,7 +846,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    qubit_event_bus::Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
                     _ => "other_diagnostic".to_owned(),
                 });
                 panic!("observer fails while reporting the terminal boundary");
@@ -838,7 +854,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             let mut subscription =
                 manual_async::block_on(bus.subscribe(SubscribeRequest::new("observer", topic).expect("request")))
                     .expect("subscription");
-            let qubit_event_bus::ReceiveError::Stopped(returned) =
+            let ReceiveError::Stopped(returned) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("boundary stops despite observer panic")
             else {
@@ -849,7 +865,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
                 .expect("observer panic must not prevent cause caching");
             assert!(Arc::ptr_eq(&cause, &returned));
             for _ in 0..2 {
-                let qubit_event_bus::ReceiveError::Stopped(repeated) =
+                let ReceiveError::Stopped(repeated) =
                     manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                         .expect_err("repeat stopped")
                 else {
@@ -873,7 +889,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    qubit_event_bus::Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
                     _ => "other_diagnostic".to_owned(),
                 });
                 panic!("observer fails while reporting the terminal boundary");
@@ -916,7 +932,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
 }
 
 /// Checks the close error independently of the canonical codec stop reason.
-fn assert_independent_close_errors(errors: &qubit_event_bus::error::SubscriptionCloseErrors) {
+fn assert_independent_close_errors(errors: &SubscriptionCloseErrors) {
     assert_eq!(errors.len(), 1, "one canonical close failure");
     let failure = errors.iter().next().expect("close failure");
     assert_eq!(failure.error().kind(), "injected_close_failure");
@@ -939,30 +955,29 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             let mut subscription =
                 manual_async::block_on(bus.subscribe(SubscribeRequest::new("close-error", topic).expect("request")))
                     .expect("subscription");
-            let qubit_event_bus::ReceiveError::Spi(close_error) =
+            let ReceiveError::Stopped(run_cause) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
-                    .expect_err("close failure must not be hidden by codec stop")
+                    .expect_err("run returns the first codec stop cause")
             else {
-                panic!("independent close SPI failure")
+                panic!("codec stop cause")
             };
-            assert_eq!(close_error.kind(), "injected_close_failure");
-            assert_eq!(close_error.operation(), "close");
             cause = subscription.terminal_failure().expect("codec cause still available");
-            let qubit_event_bus::ReceiveError::Stopped(repeated) =
+            assert!(Arc::ptr_eq(&cause, &run_cause));
+            let ReceiveError::Stopped(repeated) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("same terminal cause")
             else {
                 panic!("stop cause")
             };
             assert!(Arc::ptr_eq(&cause, &repeated));
-            let qubit_event_bus::LifecycleError::SubscriptionClose(close_errors) =
+            let LifecycleError::SubscriptionClose(close_errors) =
                 manual_async::block_on(subscription.close()).expect_err("provider close remains independently failed")
             else {
                 panic!("close failure snapshot")
             };
             assert_independent_close_errors(&close_errors);
             source.close_failed.store(false, Ordering::SeqCst);
-            let qubit_event_bus::ShutdownError::SubscriptionClose(shutdown_errors) =
+            let ShutdownError::SubscriptionClose(shutdown_errors) =
                 manual_async::block_on(bus.shutdown(ShutdownMode::Immediate))
                     .expect_err("shutdown retains canonical prior close failure")
             else {
@@ -987,7 +1002,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::yield_now();
             }
-            let qubit_event_bus::LifecycleError::SubscriptionClose(close_errors) = subscription
+            let LifecycleError::SubscriptionClose(close_errors) = subscription
                 .cancel()
                 .expect_err("provider close failure remains observable")
             else {
@@ -997,7 +1012,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             cause = subscription
                 .terminal_failure()
                 .expect("codec cause independently available");
-            let qubit_event_bus::ShutdownError::SubscriptionClose(shutdown_errors) = bus
+            let ShutdownError::SubscriptionClose(shutdown_errors) = bus
                 .shutdown(ShutdownMode::Immediate)
                 .expect_err("shutdown must retain close failure")
             else {
@@ -1009,14 +1024,14 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
                 &subscription.terminal_failure().expect("codec cause remains")
             ));
         }
-        let qubit_event_bus::model::SubscriptionStopReason::Codec { event_id, error } = cause.as_ref() else {
+        let SubscriptionStopReason::Codec { event_id, error } = cause.as_ref() else {
             panic!("structured codec cause")
         };
         assert_eq!(event_id.as_str(), "source-record");
         assert!(matches!(
             error.as_ref(),
             CodecError::PayloadTooLarge {
-                direction: qubit_event_bus::model::PayloadDirection::Receive,
+                direction: PayloadDirection::Receive,
                 actual: 5,
                 limit: 4
             }

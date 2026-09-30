@@ -5,25 +5,11 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Consumer fixture that verifies the documented provider service surface.
+//! Compiled examples from the bilingual user guides.
 
-pub mod provider_spec;
-
-/// Codec from the user guides.
+pub mod bounded_shutdown;
 pub mod order_created_codec;
-
-/// Application domain used by the user-guide codec example.
-pub mod orders {
-    /// Events emitted after the order transaction commits.
-    pub mod events {
-        /// Order fields carried by the user-guide wire format.
-        pub struct OrderCreated {
-            /// Committed order identifier.
-            pub order_id: String,
-            /// Customer owning the order.
-            pub customer_id: String,
-            /// Order total in cents.
-            pub total_cents: u64,
-        }
-    }
-}
+pub mod orders;
+pub mod provider_spec;
+pub mod receipt_safety;
+pub mod republish_action;

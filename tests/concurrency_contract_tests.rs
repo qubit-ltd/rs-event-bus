@@ -137,7 +137,7 @@ mod local_spi_contract {
                 publisher.publish(outbound("race.target", &format!("shutdown-race-{iteration}")))
             });
             barrier.wait();
-            shutdown_spi.shutdown(ShutdownMode::Immediate).unwrap();
+            let _ = shutdown_spi.shutdown(ShutdownMode::Immediate).unwrap();
             assert_race_result(publish.join().unwrap(), expected_id);
             let error = shutdown_spi
                 .publish(outbound("race.target", "after-shutdown"))

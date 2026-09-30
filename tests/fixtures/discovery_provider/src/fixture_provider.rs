@@ -20,6 +20,7 @@ use qubit_spi::ProviderMetadata;
 use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
+/// Local provider used by integration tests to verify cross-crate discovery.
 pub struct FixtureProvider;
 
 impl ProviderMetadata for FixtureProvider {

@@ -5,11 +5,13 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Public error source-chain behavior tests.
 
 use std::error::Error;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::PublishEffect;
 use qubit_retry::Retry;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryErrorReason;
@@ -39,7 +41,7 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
                 Some(false),
-                qubit_event_bus::model::PublishEffect::NotAccepted,
+                PublishEffect::NotAccepted,
                 std::io::Error::other("provider unavailable"),
             ))
         })
