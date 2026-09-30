@@ -7,18 +7,35 @@
 // =============================================================================
 mod support;
 
+use std::any::Any;
+use std::any::TypeId;
+use std::future::pending;
+use std::io::Error as IoError;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::task::Poll;
+use std::time::Duration;
+use std::time::SystemTime;
+
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::ProviderMessageMetadata;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
+use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::DeliveryGap;
 use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::InboundMessage;
 use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::PayloadModes;
 use qubit_event_bus::spi::PublishGuarantee;
@@ -27,9 +44,11 @@ use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
+use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
 
 fn assert_sync_object_safe(_: Option<&dyn EventBusSpi>) {}
@@ -44,7 +63,7 @@ fn test_spi_traits_are_object_safe() {
 #[test]
 fn test_cloning_encoded_payload_shares_its_byte_allocation() {
     let original = EncodedPayload::new(
-        std::sync::Arc::from(b"shared payload".as_slice()),
+        Arc::from(b"shared payload".as_slice()),
         ContentType::new("application/octet-stream").expect("valid content type"),
         None,
     );
@@ -55,8 +74,6 @@ fn test_cloning_encoded_payload_shares_its_byte_allocation() {
 
 #[test]
 fn test_spi_idle_wait_defaults_to_unsupported() {
-    use std::time::Duration;
-
     let provider = support::fake_spi::FakeEventBusSpi::new();
     let topic = TopicAddress::new("contract.idle").expect("valid topic");
 
@@ -68,8 +85,6 @@ fn test_spi_idle_wait_defaults_to_unsupported() {
 
 #[test]
 fn test_spi_subscription_request_preserves_payload_type_identity() {
-    use std::any::TypeId;
-
     let request = SpiSubscriptionRequest::new(
         Id::new(42),
         TopicAddress::new("contract.typed").expect("valid topic"),
@@ -85,19 +100,105 @@ fn test_spi_subscription_request_preserves_payload_type_identity() {
 }
 
 #[test]
+fn test_spi_subscription_request_builder_configures_all_fields() {
+    let request = SpiSubscriptionRequest::builder()
+        .subscription_id(Id::new(43))
+        .topic(TopicAddress::new("contract.builder").expect("valid topic"))
+        .subscriber_id(SubscriberId::new("builder-subscriber").expect("valid subscriber ID"))
+        .group(None)
+        .durability(SubscriptionDurability::Durable)
+        .start_position(StartPosition::New)
+        .provider_options(ProviderOptions::new())
+        .payload_type_id(TypeId::of::<String>())
+        .build()
+        .expect("all request fields are configured");
+
+    assert_eq!(request.subscription_id(), Id::new(43));
+    assert_eq!(request.topic().as_str(), "contract.builder");
+    assert_eq!(request.subscriber_id().as_str(), "builder-subscriber");
+    assert_eq!(request.group(), None);
+    assert_eq!(request.durability(), SubscriptionDurability::Durable);
+    assert_eq!(request.start_position(), &StartPosition::New);
+    assert_eq!(request.payload_type_id(), TypeId::of::<String>());
+}
+
+#[test]
+fn test_spi_subscription_request_builder_reports_first_missing_field_in_order() {
+    let cases = [
+        (
+            "subscription_id",
+            "missing subscription request field `subscription_id`",
+            0,
+        ),
+        ("topic", "missing subscription request field `topic`", 1),
+        ("subscriber_id", "missing subscription request field `subscriber_id`", 2),
+        ("group", "missing subscription request field `group`", 3),
+        ("durability", "missing subscription request field `durability`", 4),
+        (
+            "start_position",
+            "missing subscription request field `start_position`",
+            5,
+        ),
+        (
+            "provider_options",
+            "missing subscription request field `provider_options`",
+            6,
+        ),
+        (
+            "payload_type_id",
+            "missing subscription request field `payload_type_id`",
+            7,
+        ),
+    ];
+
+    for (expected_field, expected_display, configured_fields) in cases {
+        let mut builder = SpiSubscriptionRequest::builder();
+        if configured_fields > 0 {
+            builder = builder.subscription_id(Id::new(43));
+        }
+        if configured_fields > 1 {
+            builder = builder.topic(TopicAddress::new("contract.builder").expect("valid topic"));
+        }
+        if configured_fields > 2 {
+            builder = builder.subscriber_id(SubscriberId::new("builder-subscriber").expect("valid subscriber ID"));
+        }
+        if configured_fields > 3 {
+            builder = builder.group(None);
+        }
+        if configured_fields > 4 {
+            builder = builder.durability(SubscriptionDurability::Durable);
+        }
+        if configured_fields > 5 {
+            builder = builder.start_position(StartPosition::New);
+        }
+        if configured_fields > 6 {
+            builder = builder.provider_options(ProviderOptions::new());
+        }
+
+        let error = match builder.build() {
+            Ok(_) => panic!("builder must report missing field `{expected_field}`"),
+            Err(error) => error,
+        };
+        assert_eq!(error.missing_field(), expected_field);
+        assert_eq!(error.to_string(), expected_display);
+    }
+}
+
+#[test]
 fn test_backend_capabilities_preserve_declared_dimensions() {
-    let capabilities = EventBusCapabilities::new(
-        PayloadModes::NativeAndEncoded,
-        SettlementCapabilities::AcceptRetryReject,
-        OrderingCapability::PerKey,
-        DelayedDeliveryCapability::Native,
-        DurabilityCapability::Durable,
-        SubscriptionModes::DURABLE,
-        true,
-        ReplayCapability::Timestamp,
-        PublishGuarantee::DurablyStored,
-        PublishVisibility::DestinationAdmissions,
-    );
+    let capabilities = EventBusCapabilities::builder()
+        .payload_modes(PayloadModes::NativeAndEncoded)
+        .settlement(SettlementCapabilities::AcceptRetryReject)
+        .ordering(OrderingCapability::PerKey)
+        .delayed_delivery(DelayedDeliveryCapability::Native)
+        .durability(DurabilityCapability::Durable)
+        .subscription_modes(SubscriptionModes::DURABLE)
+        .consumer_groups(true)
+        .replay(ReplayCapability::Timestamp)
+        .publish_guarantee(PublishGuarantee::DurablyStored)
+        .publish_visibility(PublishVisibility::DestinationAdmissions)
+        .build()
+        .expect("all provider capabilities are configured");
 
     assert_eq!(capabilities.payload_modes(), PayloadModes::NativeAndEncoded);
     assert_eq!(capabilities.settlement(), SettlementCapabilities::AcceptRetryReject);
@@ -112,6 +213,60 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
         capabilities.publish_visibility(),
         PublishVisibility::DestinationAdmissions
     );
+}
+
+#[test]
+fn test_event_bus_capabilities_builder_reports_first_missing_field_in_order() {
+    let cases = [
+        ("payload_modes", "missing capability field `payload_modes`", 0),
+        ("settlement", "missing capability field `settlement`", 1),
+        ("ordering", "missing capability field `ordering`", 2),
+        ("delayed_delivery", "missing capability field `delayed_delivery`", 3),
+        ("durability", "missing capability field `durability`", 4),
+        ("subscription_modes", "missing capability field `subscription_modes`", 5),
+        ("consumer_groups", "missing capability field `consumer_groups`", 6),
+        ("replay", "missing capability field `replay`", 7),
+        ("publish_guarantee", "missing capability field `publish_guarantee`", 8),
+        ("publish_visibility", "missing capability field `publish_visibility`", 9),
+    ];
+
+    for (expected_field, expected_display, configured_fields) in cases {
+        let mut builder = EventBusCapabilities::builder();
+        if configured_fields > 0 {
+            builder = builder.payload_modes(PayloadModes::Native);
+        }
+        if configured_fields > 1 {
+            builder = builder.settlement(SettlementCapabilities::AcceptRetryReject);
+        }
+        if configured_fields > 2 {
+            builder = builder.ordering(OrderingCapability::PerKey);
+        }
+        if configured_fields > 3 {
+            builder = builder.delayed_delivery(DelayedDeliveryCapability::Native);
+        }
+        if configured_fields > 4 {
+            builder = builder.durability(DurabilityCapability::Durable);
+        }
+        if configured_fields > 5 {
+            builder = builder.subscription_modes(SubscriptionModes::DURABLE);
+        }
+        if configured_fields > 6 {
+            builder = builder.consumer_groups(true);
+        }
+        if configured_fields > 7 {
+            builder = builder.replay(ReplayCapability::Timestamp);
+        }
+        if configured_fields > 8 {
+            builder = builder.publish_guarantee(PublishGuarantee::Accepted);
+        }
+
+        let error = match builder.build() {
+            Ok(_) => panic!("builder must report missing field `{expected_field}`"),
+            Err(error) => error,
+        };
+        assert_eq!(error.missing_field(), expected_field);
+        assert_eq!(error.to_string(), expected_display);
+    }
 }
 
 #[test]
@@ -165,18 +320,8 @@ fn test_external_provider_can_construct_a_gap_receive_outcome() {
 
 #[test]
 fn test_inbound_message_can_transfer_native_payload_and_settlement_to_facade() {
-    use std::sync::Arc;
-    use std::time::SystemTime;
-
-    use qubit_event_bus::model::EventId;
-    use qubit_event_bus::model::Headers;
-    use qubit_event_bus::model::ProviderMessageMetadata;
-    use qubit_event_bus::spi::InboundMessage;
-    use qubit_event_bus::spi::TopicAddress;
-    use qubit_event_bus::spi::TransportPayload;
-
     let subscription_id = Id::new(29);
-    let native: Arc<dyn std::any::Any + Send + Sync> = Arc::new(String::from("non-clone payload"));
+    let native: Arc<dyn Any + Send + Sync> = Arc::new(String::from("non-clone payload"));
     let message = InboundMessage::new(
         TopicAddress::new("events.transfer").expect("valid topic address"),
         EventId::new("event-transfer").expect("valid event ID"),
@@ -204,23 +349,12 @@ fn test_inbound_message_can_transfer_native_payload_and_settlement_to_facade() {
 
 #[test]
 fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::task::Poll;
-
-    use qubit_event_bus::error::SpiError;
-    use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
-    use qubit_event_bus::spi::DeliveryDisposition;
-    use qubit_event_bus::spi::ReceiveOutcome;
-    use qubit_event_bus::spi::SettlementToken;
-    use qubit_event_bus::spi::SpiFuture;
-
     struct Provider {
         state: Arc<Mutex<Option<DeliveryDisposition>>>,
     }
 
     impl AsyncEventSubscriptionSpi for Provider {
-        fn receive<'a>(&'a mut self, _: std::time::Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        fn receive<'a>(&'a mut self, _: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
             Box::pin(async { Ok(ReceiveOutcome::Closed) })
         }
 
@@ -241,7 +375,7 @@ fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
                             resource: None,
                             reason: "conflicting_disposition",
                             retryable: Some(false),
-                            source: Box::new(std::io::Error::other("disposition already fixed")),
+                            source: Box::new(IoError::other("disposition already fixed")),
                         })),
                         None => {
                             *state = Some(disposition);
@@ -251,7 +385,7 @@ fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
                 };
                 match terminal {
                     Some(result) => result,
-                    None => std::future::pending::<Result<(), SpiError>>().await,
+                    None => pending::<Result<(), SpiError>>().await,
                 }
             })
         }
