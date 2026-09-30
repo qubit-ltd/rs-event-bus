@@ -7,6 +7,7 @@
 // =============================================================================
 //! Asynchronous local delivery example compiled by the user-guide checks.
 
+use std::error::Error;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -15,16 +16,20 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use tokio::main;
+use tokio::spawn;
+use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::timeout;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn Error>> {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
     let topic = Topic::<String>::new("orders.created")?;
     let mut subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let runner = tokio::spawn(async move {
+    let (sender, mut receiver) = unbounded_channel();
+    let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
@@ -37,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
         .await?;
-    let delivered = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await?;
+    let delivered = timeout(Duration::from_secs(3), receiver.recv()).await?;
     assert_eq!(delivered.as_deref(), Some("order-42"));
     bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),

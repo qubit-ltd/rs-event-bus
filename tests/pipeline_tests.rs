@@ -70,5 +70,5 @@ fn test_async_retry_rule_panic_requeues_delivery() {
     );
     drop(run);
     block_on(subscription.close()).expect("subscription closes after runner cancellation");
-    block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
 }

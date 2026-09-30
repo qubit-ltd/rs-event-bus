@@ -7,7 +7,14 @@
 // =============================================================================
 //! Synchronous facade contracts with controllable provider and handler races.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::error::Error;
+use std::io::Error as IoError;
+use std::mem::take;
+use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::Condvar;
@@ -16,7 +23,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
 
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
@@ -31,10 +41,11 @@ use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::error::SubscribeError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::facade::SettlementRetryConfig;
 use qubit_event_bus::facade::Subscription;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::model::AckMode;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AsyncSubscriberNext;
@@ -49,15 +60,19 @@ use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
+use qubit_event_bus::model::PublishMetadata;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::SettlementTermination;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -69,6 +84,7 @@ use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
 use qubit_event_bus::spi::InboundMessage;
 use qubit_event_bus::spi::OrderingCapability;
+use qubit_event_bus::spi::OrderingKey;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::PayloadModes;
 use qubit_event_bus::spi::PublishGuarantee;
@@ -100,7 +116,11 @@ type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
 fn test_sync_facade_capability_panic_is_a_terminal_spi_error() {
     let backend = Arc::new(TestBackend::new());
     backend.capabilities_panics.store(true, Ordering::Release);
-    let result = EventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), backend.clone());
+    let result = EventBus::from_spi(
+        ProviderId::new("panic-capabilities")
+            .expect("test_sync_facade_capability_panic_is_a_terminal_spi_error: valid test provider identifier"),
+        backend.clone(),
+    );
     match result {
         Err(SpiError::Operation {
             operation: "capabilities",
@@ -139,27 +159,34 @@ fn test_sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
 #[test]
 fn test_sync_subscription_worker_limit_is_released_after_cancel() {
     let backend = Arc::new(TestBackend::new());
-    let scheduler = SyncDeliverySchedulerConfig::new(1, 8)
-        .expect("valid handler scheduler")
-        .with_max_subscription_workers(std::num::NonZeroUsize::new(1).unwrap());
-    let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(scheduler);
-    let bus = EventBus::with_config(ProviderId::new("subscription-budget").unwrap(), backend.clone(), config)
-        .expect("valid provider capabilities");
+    let scheduler = DeliverySchedulingConfig::new(positive(1), positive(8), positive(8), positive(1))
+        .expect("valid handler scheduler");
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(scheduler);
+    let bus = EventBus::with_config(
+        ProviderId::new("subscription-budget")
+            .expect("test_sync_subscription_worker_limit_is_released_after_cancel: valid test provider identifier"),
+        backend.clone(),
+        config,
+    )
+    .expect("valid provider capabilities");
 
     let first = bus
         .subscribe(
-            SubscribeRequest::new("first-budgeted", topic()).unwrap(),
+            SubscribeRequest::new("first-budgeted", topic()).expect(
+                "test_sync_subscription_worker_limit_is_released_after_cancel: valid test subscription request",
+            ),
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         )
         .expect("first subscription fits the budget");
     let rejected = bus.subscribe(
-        SubscribeRequest::new("second-budgeted", topic()).unwrap(),
+        SubscribeRequest::new("second-budgeted", topic())
+            .expect("test_sync_subscription_worker_limit_is_released_after_cancel: valid test subscription request"),
         |_: Delivery<String>| Ok::<(), DeliveryError>(()),
     );
     assert!(matches!(
         rejected,
         Err(SubscribeError::ResourceLimit {
-            resource: "subscription_workers",
+            resource: "subscriptions",
             limit: 1
         })
     ));
@@ -168,12 +195,16 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
     first.cancel().expect("first subscription is cancelled and joined");
     let third = bus
         .subscribe(
-            SubscribeRequest::new("third-budgeted", topic()).unwrap(),
+            SubscribeRequest::new("third-budgeted", topic()).expect(
+                "test_sync_subscription_worker_limit_is_released_after_cancel: valid test subscription request",
+            ),
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         )
         .expect("cancellation releases the subscription budget");
     third.cancel().expect("third subscription is cancelled");
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("test_sync_subscription_worker_limit_is_released_after_cancel: event bus shutdown succeeds");
 }
 
 #[test]
@@ -203,7 +234,7 @@ fn test_sync_spi_call_panics_are_returned_as_structured_errors() {
             ..
         }))
     ));
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 }
 
 #[test]
@@ -219,13 +250,13 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
     subscription
         .cancel()
         .expect("receive panic is contained and the worker closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 
     let (bus, backend) = create_bus();
     backend.settle_panics.store(true, Ordering::Release);
     let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::SettlementUnavailable { .. }) {
+        if matches!(diagnostic, Diagnostic::SettlementStopped { .. }) {
             diagnostic_tx.send(()).expect("test receiver remains alive");
         }
     });
@@ -242,7 +273,7 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
     subscription
         .cancel()
         .expect("settlement panic does not prevent cancellation");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 }
 
 /// Pauses receive after removal so shutdown can race with message handoff.
@@ -268,6 +299,7 @@ struct QueueState {
 #[derive(Default)]
 struct TestBackendState {
     queues: Vec<(Id, SharedQueue)>,
+    queue_topics: HashMap<Id, Box<str>>,
     shutdown_calls: usize,
     shutdown_modes: Vec<ShutdownMode>,
     close_calls: usize,
@@ -275,6 +307,7 @@ struct TestBackendState {
     settlement_dispositions: Vec<DeliveryDisposition>,
     fail_next_settle: bool,
     fail_settle_always: bool,
+    settlement_retryability: Option<bool>,
     published_topics: Vec<Box<str>>,
     attempted_event_ids: Vec<EventId>,
 }
@@ -290,7 +323,7 @@ struct TestBackend {
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
     partial_publish_call: AtomicUsize,
-    settlement_capability: std::sync::atomic::AtomicUsize,
+    settlement_capability: AtomicUsize,
     payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
     durability_capability: AtomicUsize,
@@ -323,7 +356,7 @@ impl TestBackend {
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
             partial_publish_call: AtomicUsize::new(0),
-            settlement_capability: std::sync::atomic::AtomicUsize::new(2),
+            settlement_capability: AtomicUsize::new(2),
             payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
             durability_capability: AtomicUsize::new(0),
@@ -530,7 +563,9 @@ impl TestBackend {
     }
 
     fn fail_all_settles(&self) {
-        self.state.lock().expect("test state lock").fail_settle_always = true;
+        let mut state = self.state.lock().expect("test state lock");
+        state.fail_settle_always = true;
+        state.settlement_retryability = Some(false);
     }
 
     fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
@@ -560,7 +595,7 @@ impl TestBackend {
         let message = InboundMessage::new(
             TopicAddress::new("sync.events").expect("valid topic"),
             EventId::new("marked-event").expect("valid event ID"),
-            std::time::SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH,
             headers,
             None,
             TransportPayload::Native(Arc::new(String::from("marked"))),
@@ -583,7 +618,7 @@ impl TestBackend {
             let message = InboundMessage::new(
                 TopicAddress::new("sync.events").expect("valid topic"),
                 EventId::new("codec-panic-event").expect("valid event ID"),
-                std::time::SystemTime::UNIX_EPOCH,
+                SystemTime::UNIX_EPOCH,
                 Headers::new(),
                 None,
                 TransportPayload::Encoded(encoded),
@@ -663,6 +698,13 @@ impl EventBusSpi for TestBackend {
             .push(message.topic().as_str().into());
         let state = self.state.lock().expect("test state lock");
         for (subscription_id, queue) in &state.queues {
+            if state
+                .queue_topics
+                .get(subscription_id)
+                .is_some_and(|topic| topic.as_ref() != message.topic().as_str())
+            {
+                continue;
+            }
             let settlement = match self.settlement_capability.load(Ordering::Acquire) {
                 0 => None,
                 _ => Some(SettlementToken::new(*subscription_id, "test-token")),
@@ -710,11 +752,13 @@ impl EventBusSpi for TestBackend {
         );
         Self::wait_at_gate(&self.subscribe_gate, "subscribe");
         let queue = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
-        self.state
-            .lock()
-            .expect("test state lock")
-            .queues
-            .push((request.subscription_id(), queue.clone()));
+        {
+            let mut state = self.state.lock().expect("test state lock");
+            state
+                .queue_topics
+                .insert(request.subscription_id(), request.topic().as_str().into());
+            state.queues.push((request.subscription_id(), queue.clone()));
+        }
         Ok(Box::new(TestSubscription {
             id: request.subscription_id(),
             queue,
@@ -813,8 +857,25 @@ impl EventSubscriptionSpi for TestSubscription {
         }
         let mut state = self.backend_state.lock().expect("test state lock");
         state.settlement_calls += 1;
-        if state.fail_settle_always || std::mem::take(&mut state.fail_next_settle) {
-            return Err(test_spi_error("settle"));
+        if state.fail_settle_always {
+            return Err(SpiError::Operation {
+                provider_id: "sync-test".into(),
+                operation: "settle",
+                resource: None,
+                kind: "settlement_failure",
+                retryable: state.settlement_retryability,
+                source: Box::new(IoError::other("original settlement source")),
+            });
+        }
+        if take(&mut state.fail_next_settle) {
+            return Err(SpiError::Operation {
+                provider_id: "sync-test".into(),
+                operation: "settle",
+                resource: None,
+                kind: "transient_settlement",
+                retryable: Some(true),
+                source: Box::new(IoError::other("retry once")),
+            });
         }
         state.settlement_dispositions.push(disposition);
         Ok(())
@@ -823,7 +884,7 @@ impl EventSubscriptionSpi for TestSubscription {
     fn close(&mut self) -> Result<(), SpiError> {
         let delay = self.close_delay_ms.load(Ordering::Acquire);
         if delay != 0 {
-            std::thread::sleep(Duration::from_millis(delay as u64));
+            thread::sleep(Duration::from_millis(delay as u64));
         }
         self.backend_state.lock().expect("test state lock").close_calls += 1;
         let (lock, ready) = &*self.queue;
@@ -847,8 +908,8 @@ fn test_spi_error(operation: &'static str) -> SpiError {
             resource: None,
             kind: "test_error",
             retryable: Some(false),
-            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
-            source: Box::new(std::io::Error::other("test SPI error")),
+            effect: PublishEffect::NotAccepted,
+            source: Box::new(IoError::other("test SPI error")),
         };
     }
     SpiError::Operation {
@@ -857,7 +918,7 @@ fn test_spi_error(operation: &'static str) -> SpiError {
         resource: None,
         kind: "test_error",
         retryable: Some(false),
-        source: Box::new(std::io::Error::other("test SPI error")),
+        source: Box::new(IoError::other("test SPI error")),
     }
 }
 
@@ -877,11 +938,22 @@ fn create_bus_configured(configure: impl FnOnce(&TestBackend)) -> (EventBus, Arc
     (bus, backend)
 }
 
-/// Builds a facade with explicit in-flight and handler queue limits.
-fn create_bus_with_scheduler(max_in_flight: usize, handler_queue_capacity: usize) -> (EventBus, Arc<TestBackend>) {
+/// Creates a positive test resource limit.
+fn positive(value: usize) -> NonZeroUsize {
+    NonZeroUsize::new(value).expect("positive test limit")
+}
+
+/// Builds a facade with independent running-handler and owned-delivery limits.
+fn create_bus_with_scheduler(max_running: usize, max_owned: usize) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
-    let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(
-        SyncDeliverySchedulerConfig::new(max_in_flight, handler_queue_capacity).expect("valid scheduler limits"),
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            positive(max_running),
+            positive(max_owned),
+            positive(max_owned),
+            positive(256),
+        )
+        .expect("valid scheduler limits"),
     );
     let bus = EventBus::with_config(
         ProviderId::new("sync-test").expect("valid provider ID"),
@@ -1069,7 +1141,7 @@ fn test_shutdown_waits_for_a_publish_admitted_before_shutdown() {
     let (publish_entered, release_publish) = backend.gate_next_publish();
     let publish_bus = bus.clone();
     let (publish_tx, publish_rx) = mpsc::channel();
-    let publish_thread = std::thread::spawn(move || {
+    let publish_thread = thread::spawn(move || {
         publish_tx
             .send(publish_bus.publish(request("gated".into())))
             .expect("publish result receiver");
@@ -1080,7 +1152,7 @@ fn test_shutdown_waits_for_a_publish_admitted_before_shutdown() {
 
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("shutdown result receiver");
@@ -1097,7 +1169,7 @@ fn test_shutdown_waits_for_a_publish_admitted_before_shutdown() {
         .recv_timeout(Duration::from_secs(2))
         .expect("publish completes")
         .expect("publish succeeds");
-    shutdown_rx
+    let _ = shutdown_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("shutdown completes")
         .expect("shutdown succeeds");
@@ -1111,7 +1183,7 @@ fn test_graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
     let (bus, backend) = create_bus();
     let (publish_entered, release_publish) = backend.gate_next_publish();
     let publish_bus = bus.clone();
-    let publish_thread = std::thread::spawn(move || publish_bus.publish(request("gated".into())));
+    let publish_thread = thread::spawn(move || publish_bus.publish(request("gated".into())));
     publish_entered
         .recv_timeout(Duration::from_secs(2))
         .expect("publish entered SPI");
@@ -1119,7 +1191,7 @@ fn test_graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
     let shutdown_bus = bus.clone();
     let grace = Duration::from_millis(30);
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Graceful { timeout: grace }))
             .expect("shutdown result receiver");
@@ -1138,7 +1210,8 @@ fn test_graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("the background shutdown can be joined after publish release");
     assert!(
         timed_out_before_release,
@@ -1154,7 +1227,7 @@ fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
     let shutdown_bus = bus.clone();
     let grace = Duration::from_millis(30);
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Graceful { timeout: grace }))
             .expect("shutdown result receiver");
@@ -1173,7 +1246,8 @@ fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("the completed coordinator outcome is observable later");
     assert!(
         timed_out_before_release,
@@ -1195,7 +1269,7 @@ fn test_graceful_shutdown_deadline_includes_subscription_close() {
     let shutdown_bus = bus.clone();
     let grace = Duration::from_millis(30);
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Graceful { timeout: grace }))
             .expect("shutdown result receiver");
@@ -1214,7 +1288,8 @@ fn test_graceful_shutdown_deadline_includes_subscription_close() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("the completed coordinator outcome is observable later");
     assert!(
         timed_out_before_release,
@@ -1246,7 +1321,7 @@ fn test_immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
     let grace_bus = bus.clone();
     let grace = Duration::from_millis(30);
     let (grace_tx, grace_rx) = mpsc::channel();
-    let grace_thread = std::thread::spawn(move || {
+    let grace_thread = thread::spawn(move || {
         grace_tx
             .send(grace_bus.shutdown(ShutdownMode::Graceful { timeout: grace }))
             .expect("graceful result receiver");
@@ -1258,14 +1333,14 @@ fn test_immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
 
     let immediate_bus = bus.clone();
     let (immediate_tx, immediate_rx) = mpsc::channel();
-    let immediate_thread = std::thread::spawn(move || {
+    let immediate_thread = thread::spawn(move || {
         immediate_tx
             .send(immediate_bus.shutdown(ShutdownMode::Immediate))
             .expect("immediate result receiver");
     });
     assert!(immediate_rx.recv_timeout(Duration::from_millis(50)).is_err());
     handler_gate.release();
-    immediate_rx
+    let _ = immediate_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("immediate shutdown completes after active handler")
         .expect("immediate shutdown succeeds");
@@ -1289,7 +1364,7 @@ fn test_shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_wait
         .build();
     let publish_bus = bus.clone();
     let (publish_tx, publish_rx) = mpsc::channel();
-    let publish_thread = std::thread::spawn(move || {
+    let publish_thread = thread::spawn(move || {
         publish_tx
             .send(publish_bus.publish(request("reentrant".into()).with_options(options)))
             .expect("publish result receiver");
@@ -1313,7 +1388,8 @@ fn test_shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_wait
         0,
         "reentrant shutdown must not close provider"
     );
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("shutdown outside callback");
 }
 
@@ -1323,7 +1399,7 @@ fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() 
     let (subscribe_entered, release_subscribe) = backend.gate_next_subscribe();
     let subscribe_bus = bus.clone();
     let (subscribe_tx, subscribe_rx) = mpsc::channel();
-    let subscribe_thread = std::thread::spawn(move || {
+    let subscribe_thread = thread::spawn(move || {
         let result = subscribe_bus.subscribe(
             SubscribeRequest::new("gated-subscribe", topic()).expect("valid ID"),
             |_| (),
@@ -1336,7 +1412,7 @@ fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() 
 
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("shutdown result receiver");
@@ -1353,7 +1429,7 @@ fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() 
         .recv_timeout(Duration::from_secs(2))
         .expect("subscribe completes")
         .expect("admitted subscribe succeeds");
-    shutdown_rx
+    let _ = shutdown_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("shutdown completes")
         .expect("shutdown succeeds");
@@ -1369,7 +1445,9 @@ fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     let (bus, backend) = create_bus();
     backend.fail_publish_call(1);
     let options = PublishOptions::<String>::builder()
-        .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
+        .retry_policy(RetryPolicy::builder().max_attempts(1).build().expect(
+            "test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source: valid test policy or options",
+        ))
         .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .build();
     let request = PublishRequest::builder()
@@ -1377,7 +1455,7 @@ fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
         .payload("terminal".to_owned())
         .options(options)
         .build()
-        .unwrap();
+        .expect("test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source: test setup succeeds");
 
     let error = bus.publish(request).unwrap_err();
     let PublishError::Retry(retry) = error.into_cause() else {
@@ -1389,7 +1467,7 @@ fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     assert_eq!(retry.context().attempts(), 1);
     let attempt_error = retry.last_error().expect("typed attempt error is retained");
     assert_eq!(attempt_error.kind(), "test_error");
-    let mut source = std::error::Error::source(attempt_error);
+    let mut source = Error::source(attempt_error);
     let mut found_spi_source = false;
     while let Some(error) = source {
         if error.to_string() == "test SPI error" {
@@ -1429,15 +1507,16 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         ContentType::new("text/plain").expect("valid MIME type"),
         None,
     ));
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !panic_was_observed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !panic_was_observed.load(Ordering::Acquire) && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert!(
         panic_was_observed.load(Ordering::Acquire),
         "codec panic should be diagnosed"
     );
-    bus.wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
         .expect("panic path completes its owned delivery");
     assert!(
         backend.settlement_dispositions().is_empty(),
@@ -1447,10 +1526,10 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         .terminal_failure()
         .expect("codec panic stops the subscription");
     assert!(
-        matches!(failure.as_ref(), qubit_event_bus::model::SubscriptionStopReason::Codec { error, .. } if matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
+        matches!(failure.as_ref(), SubscriptionStopReason::Codec { error, .. } if matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
     );
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -1526,7 +1605,7 @@ fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
             .expect("encoded payload is decoded")
     );
     subscription.cancel().expect("subscription cancels");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
@@ -1560,33 +1639,49 @@ fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").unwrap())));
+    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").expect(
+        "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test content type",
+    ))));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config)
-        .expect("valid provider capabilities");
+    let bus = EventBus::with_config(
+        ProviderId::new("sync-test").expect(
+            "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test provider identifier",
+        ),
+        backend.clone(),
+        config,
+    )
+    .expect("valid provider capabilities");
     let topic = Topic::<String>::new_with_codec(
         "sync.topic-codec-priority",
-        Utf8Codec(ContentType::new("text/plain").unwrap()),
+        Utf8Codec(ContentType::new("text/plain").expect(
+            "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test content type",
+        )),
     )
-    .unwrap();
+    .expect("test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: test setup succeeds");
     let (sender, receiver) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("topic-codec-priority", topic.clone()).unwrap(),
-            move |delivery| sender.send(delivery.payload().clone()).unwrap(),
+            SubscribeRequest::new("topic-codec-priority", topic.clone()).expect("test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test subscription request"),
+            move |delivery| sender.send(delivery.payload().clone()).expect("test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: test receiver remains connected"),
         )
-        .unwrap();
+        .expect("test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: test setup succeeds");
     backend.enqueue_encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"topic codec wins"[..]),
-        ContentType::new("text/plain").unwrap(),
+        ContentType::new("text/plain").expect(
+            "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test content type",
+        ),
         None,
     ));
     assert_eq!(
         "topic codec wins",
-        receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+        receiver.recv_timeout(Duration::from_secs(2)).expect("test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: expected test event arrives before timeout")
     );
-    subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    subscription.cancel().expect(
+        "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: subscription cleanup succeeds",
+    );
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect(
+        "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: event bus shutdown succeeds",
+    );
 }
 
 /// Adds a registry marker on decode to detect codec precedence.
@@ -1659,7 +1754,7 @@ fn test_panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
                     .send(())
                     .expect("handler entry observer remains alive");
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failure")),
+                    source: Box::new(IoError::other("handler failure")),
                 })
             },
         )
@@ -1669,11 +1764,12 @@ fn test_panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     handler_entered_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("handler starts");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry rule panic settles");
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 /// Panics on decode to exercise message recovery at the facade boundary.
@@ -1706,7 +1802,7 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
     let attempts = Arc::new(AtomicUsize::new(0));
     let failure_observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::DeliveryFailed { subscriber_id, .. } = diagnostic {
-            terminal_failure_tx.send(subscriber_id.as_str().to_owned()).unwrap();
+            terminal_failure_tx.send(subscriber_id.as_str().to_owned()).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test receiver remains connected");
         }
     });
     let attempts_by_cancelled_handler = attempts.clone();
@@ -1717,7 +1813,7 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
                 .max_attempts(4)
                 .backoff(BackoffPolicy::fixed(Duration::from_secs(60)))
                 .build()
-                .unwrap(),
+                .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds"),
         )
         .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .retry_cancellation_token(token.clone())
@@ -1735,14 +1831,14 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
                 attempts_by_cancelled_handler.fetch_add(1, Ordering::AcqRel);
                 if delivery.payload() == "first" {
                     Err(DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("retry")),
+                        source: Box::new(IoError::other("retry")),
                     })
                 } else {
                     Ok(())
                 }
             },
         )
-        .unwrap();
+        .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds");
     let attempts_by_independent_handler = Arc::new(AtomicUsize::new(0));
     let independent_attempts = attempts_by_independent_handler.clone();
     let independent_subscription = bus
@@ -1750,41 +1846,41 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
             SubscribeRequest::new("independent-subscriber", topic()).expect("valid subscriber ID"),
             move |delivery: Delivery<String>| {
                 independent_attempts.fetch_add(1, Ordering::AcqRel);
-                independent_tx.send(delivery.payload().clone()).unwrap();
+                independent_tx.send(delivery.payload().clone()).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test receiver remains connected");
             },
         )
-        .unwrap();
+        .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds");
     let publish = |value: &str| {
         PublishRequest::builder()
             .topic(topic())
             .payload(value.to_owned())
             .ordering_key("same-key")
             .build()
-            .unwrap()
+            .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds")
     };
-    bus.publish(publish("first")).unwrap();
-    first_failed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(independent_rx.recv_timeout(Duration::from_secs(2)).unwrap(), "first");
-    std::thread::sleep(Duration::from_millis(50));
+    bus.publish(publish("first")).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test event is accepted for publication");
+    first_failed_rx.recv_timeout(Duration::from_secs(2)).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: expected test event arrives before timeout");
+    assert_eq!(independent_rx.recv_timeout(Duration::from_secs(2)).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: expected test event arrives before timeout"), "first");
+    thread::sleep(Duration::from_millis(50));
     token.cancel();
     assert_eq!(
-        terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        terminal_failure_rx.recv_timeout(Duration::from_secs(2)).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: expected test event arrives before timeout"),
         "cancel-retry-lane"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+    let _ = bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds");
     assert!(
         token.is_cancelled(),
         "external cancellation must remain observable on caller-owned token"
     );
-    bus.publish(publish("second")).unwrap();
-    assert_eq!(independent_rx.recv_timeout(Duration::from_secs(2)).unwrap(), "second");
+    bus.publish(publish("second")).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test event is accepted for publication");
+    assert_eq!(independent_rx.recv_timeout(Duration::from_secs(2)).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: expected test event arrives before timeout"), "second");
     assert_eq!(
-        terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        terminal_failure_rx.recv_timeout(Duration::from_secs(2)).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: expected test event arrives before timeout"),
         "cancel-retry-lane"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+    let _ = bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: test setup succeeds");
     assert_eq!(
         attempts.load(Ordering::Acquire),
         1,
@@ -1800,9 +1896,9 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
         2,
         "the cancelled subscription terminally rejects its failed and later delivery"
     );
-    subscription.cancel().unwrap();
-    independent_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    subscription.cancel().expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: subscription cleanup succeeds");
+    independent_subscription.cancel().expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: subscription cleanup succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_subscriptions: event bus shutdown succeeds");
     drop(failure_observer);
 }
 
@@ -1852,7 +1948,8 @@ fn test_subscription_worker_processes_and_settles_spi_messages_until_cancelled()
             .expect("handler invoked"),
         "hello"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("handler and settlement complete");
     assert_eq!(backend.settlement_calls(), 1);
 
@@ -1878,9 +1975,9 @@ fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
 
     backend.fail_next_settle();
     backend.enqueue_marked(subscription.id());
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.settlement_calls() < 2 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
     }
 
     assert_eq!(
@@ -1896,10 +1993,21 @@ fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
     );
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Accept]);
     subscription.cancel().expect("cancel closes SPI subscription");
+    let metrics = subscription.delivery_metrics().metrics;
+    assert_eq!(metrics.settlement_attempts, 2);
+    assert_eq!(metrics.settlement_retries, 1);
+    assert_eq!(metrics.completed, 1);
+    assert_eq!(metrics.handler_duration_count, 1);
+    assert_eq!(metrics.settlement_duration_count, 1);
+    assert_eq!(
+        metrics.running_handlers + metrics.settling + metrics.queued + metrics.reserved_receives,
+        0
+    );
+    assert_eq!(bus.delivery_metrics().completed, 1);
 }
 
 #[test]
-fn test_sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver() {
+fn test_sync_permanent_settlement_stops_automatically_and_closes_receiver() {
     let (bus, backend) = create_bus();
     let handled = Arc::new(AtomicUsize::new(0));
     let handled_by_callback = handled.clone();
@@ -1915,14 +2023,30 @@ fn test_sync_cancellation_stops_permanent_settlement_retry_and_closes_receiver()
     backend.fail_all_settles();
     backend.enqueue_marked(subscription.id());
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.settlement_calls() == 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
     }
-    assert!(backend.settlement_calls() > 0, "delivery reaches provider settlement");
-    subscription
-        .cancel()
-        .expect("cancellation performs a final attempt, releases task, then closes receiver");
+    while subscription.terminal_failure().is_none() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let reason = subscription
+        .terminal_failure()
+        .expect("permanent settlement stops automatically");
+    assert!(matches!(
+        &*reason,
+        SubscriptionStopReason::Settlement {
+            attempts: 1,
+            termination: SettlementTermination::PermanentError,
+            ..
+        }
+    ));
+    subscription.cancel().expect("join completed owner");
+    assert_eq!(backend.settlement_calls(), 1);
+    assert!(Arc::ptr_eq(
+        &reason,
+        &subscription.terminal_failure().expect("retained first reason")
+    ));
     assert_eq!(backend.close_calls(), 1);
     assert_eq!(handled.load(Ordering::SeqCst), 1);
 }
@@ -1988,16 +2112,17 @@ fn test_per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial
     key_a_second_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("same-key task runs after prior settlement");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all keyed work completes");
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     assert_eq!(backend.settlement_calls(), 3);
 }
 
 #[test]
-fn test_global_max_in_flight_includes_queued_deliveries_before_admission() {
-    let (bus, backend) = create_bus_with_scheduler(2, 1);
+fn test_owned_same_key_queue_does_not_consume_running_handler_capacity() {
+    let (bus, backend) = create_bus_with_scheduler(2, 3);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -2043,42 +2168,39 @@ fn test_global_max_in_flight_includes_queued_deliveries_before_admission() {
         .expect("publish same-key queued delivery");
     bus.publish(request_with_key("b", "other-key"))
         .expect("publish other-key delivery");
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 3 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 3 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(
         backend.received_messages(),
         3,
-        "the third delivery occupies the bounded coordinator handoff"
+        "all three received deliveries are within the owned limit"
     );
-    assert!(
-        other_key_rx.recv_timeout(Duration::from_millis(100)).is_err(),
-        "queued work consumes an in-flight permit"
-    );
+    other_key_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("same-key waiting work leaves a running slot for another key");
 
     first_gate.release();
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("queued same-key handler starts next");
-    other_key_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("terminal first delivery releases its permit while second key-A delivery remains active");
     second_gate.release();
     for _ in 0..3 {
         done_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("each accepted delivery completes");
     }
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all admitted work settles");
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
-fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_messages() {
-    let (bus, backend) = create_bus_with_scheduler(3, 1);
+fn test_saturated_scheduler_reserves_owned_capacity_before_receive_and_loses_no_messages() {
+    let (bus, backend) = create_bus_with_scheduler(3, 3);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -2103,9 +2225,9 @@ fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_message
         .expect("subscription starts");
     bus.publish(request_with_key("active", "same-key"))
         .expect("publish active");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert_eq!(
         calls.load(Ordering::Acquire),
@@ -2116,20 +2238,20 @@ fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_message
         bus.publish(request_with_key(payload, "same-key"))
             .expect("publish under saturation");
     }
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 3 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 3 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(
         backend.received_messages(),
         3,
-        "one queued message and one pending handoff are bounded"
+        "three owned credits include running and queued messages"
     );
-    std::thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100));
     assert_eq!(
         backend.received_messages(),
         3,
-        "coordinator pauses receive while its handoff is occupied"
+        "coordinator cannot receive a fourth message beyond its owned budget"
     );
 
     gate.release();
@@ -2138,17 +2260,18 @@ fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_message
             .recv_timeout(Duration::from_secs(2))
             .expect("each provider message reaches the handler");
     }
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("all messages settle after capacity returns");
     assert_eq!(calls.load(Ordering::Acquire), 4);
     assert_eq!(backend.settlement_calls(), 4);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
-fn test_zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_lane() {
-    let (bus, backend) = create_bus_with_scheduler(2, 0);
+fn test_owned_waiting_delivery_starts_only_after_its_key_lane_is_free() {
+    let (bus, backend) = create_bus_with_scheduler(2, 2);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -2176,9 +2299,9 @@ fn test_zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_la
 
     bus.publish(request_with_key("first", "same-key"))
         .expect("publish first");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert_eq!(
         calls.load(Ordering::Acquire),
@@ -2187,31 +2310,32 @@ fn test_zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_la
     );
     bus.publish(request_with_key("second", "same-key"))
         .expect("publish second");
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 2 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 2 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(
         backend.received_messages(),
         2,
-        "the coordinator keeps one non-admitted handoff"
+        "the second received message consumes an owned credit"
     );
     assert_eq!(
         calls.load(Ordering::Acquire),
         1,
-        "zero queue capacity does not start a queued handler"
+        "same-key waiting work cannot start another handler"
     );
 
     first_gate.release();
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second handler starts after its key is free");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("both messages settle");
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 2);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -2239,28 +2363,28 @@ fn test_cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler(
     );
     bus.publish(request_with_key("active", "same-key"))
         .expect("publish active");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     bus.publish(request_with_key("queued", "same-key"))
         .expect("publish queued");
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 2 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 2 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.received_messages(), 2);
 
     let cancel_subscription = subscription.clone();
     let (cancelled_tx, cancelled_rx) = mpsc::channel();
-    let cancel_thread = std::thread::spawn(move || {
+    let cancel_thread = thread::spawn(move || {
         cancelled_tx
             .send(cancel_subscription.cancel())
             .expect("cancel result receiver remains alive");
     });
-    let settlement_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.settlement_calls() == 0 && std::time::Instant::now() < settlement_deadline {
-        std::thread::yield_now();
+    let settlement_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() == 0 && Instant::now() < settlement_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     assert_eq!(
@@ -2278,12 +2402,12 @@ fn test_cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler(
     assert_eq!(calls.load(Ordering::Acquire), 1);
     assert_eq!(backend.settlement_calls(), 2);
     subscription.cancel().expect("repeated cancel observes completion");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
-fn test_graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff() {
-    let (bus, backend) = create_bus_with_scheduler(2, 1);
+fn test_graceful_shutdown_drains_every_owned_delivery() {
+    let (bus, backend) = create_bus_with_scheduler(2, 3);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -2307,47 +2431,47 @@ fn test_graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff()
         bus.publish(request_with_key(payload, "same-key"))
             .expect("publish delivery");
         if payload == "active" {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-                std::thread::yield_now();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+                thread::yield_now();
             }
             assert_eq!(calls.load(Ordering::Acquire), 1, "first handler becomes active");
         }
     }
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 3 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 3 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(
         backend.received_messages(),
         3,
-        "one job is admitted queued; one remains coordinator-pending"
+        "all received work holds owned admission"
     );
 
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Graceful {
                 timeout: Duration::from_secs(2),
             }))
             .expect("shutdown result receiver remains alive");
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !subscription.is_cancelled() && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !subscription.is_cancelled() && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert!(subscription.is_cancelled());
     first_gate.release();
-    shutdown_rx
+    let _ = shutdown_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("shutdown completes")
         .expect("shutdown succeeds");
     shutdown_thread.join().expect("shutdown thread exits");
     assert_eq!(
         calls.load(Ordering::Acquire),
-        2,
-        "graceful mode drains both admitted handlers only"
+        3,
+        "graceful mode drains all owned handlers"
     );
     let dispositions = backend.settlement_dispositions();
     assert_eq!(
@@ -2355,20 +2479,20 @@ fn test_graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff()
             .iter()
             .filter(|item| **item == DeliveryDisposition::Accept)
             .count(),
-        2
+        3
     );
     assert_eq!(
         dispositions
             .iter()
             .filter(|item| **item == DeliveryDisposition::Retry)
             .count(),
-        1
+        0
     );
 }
 
 #[test]
 fn test_immediate_shutdown_requeues_queued_deliveries_without_starting_handlers() {
-    let (bus, backend) = create_bus_with_scheduler(3, 2);
+    let (bus, backend) = create_bus_with_scheduler(3, 3);
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -2390,35 +2514,35 @@ fn test_immediate_shutdown_requeues_queued_deliveries_without_starting_handlers(
         .expect("subscription starts");
     bus.publish(request_with_key("active", "same-key"))
         .expect("publish active");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert_eq!(calls.load(Ordering::Acquire), 1);
     bus.publish(request_with_key("queued-one", "same-key"))
         .expect("publish queued one");
     bus.publish(request_with_key("queued-two", "same-key"))
         .expect("publish queued two");
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 3 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 3 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.received_messages(), 3, "both queued jobs are accepted");
 
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("receiver remains alive");
     });
-    let shutdown_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !subscription.is_cancelled() && std::time::Instant::now() < shutdown_deadline {
-        std::thread::yield_now();
+    let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+    while !subscription.is_cancelled() && Instant::now() < shutdown_deadline {
+        thread::yield_now();
     }
     assert!(subscription.is_cancelled());
     gate.release();
-    shutdown_rx
+    let _ = shutdown_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("shutdown completes")
         .expect("shutdown succeeds");
@@ -2489,13 +2613,14 @@ fn test_manual_acknowledgement_accepts_only_explicit_acknowledgements() {
 
     bus.publish(request("manual".into())).expect("publish");
     let mut handled = [
-        handled_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-        handled_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-        handled_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        handled_rx.recv_timeout(Duration::from_secs(2)).expect("test_manual_acknowledgement_accepts_only_explicit_acknowledgements: expected test event arrives before timeout"),
+        handled_rx.recv_timeout(Duration::from_secs(2)).expect("test_manual_acknowledgement_accepts_only_explicit_acknowledgements: expected test event arrives before timeout"),
+        handled_rx.recv_timeout(Duration::from_secs(2)).expect("test_manual_acknowledgement_accepts_only_explicit_acknowledgements: expected test event arrives before timeout"),
     ];
     handled.sort_unstable();
     assert_eq!(handled, ["acked", "nacked", "pending"]);
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("manual ACKs settle");
     let dispositions = backend.settlement_dispositions();
     assert_eq!(dispositions.len(), 3);
@@ -2505,7 +2630,7 @@ fn test_manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     acknowledged.cancel().expect("cancel ACK subscription");
     unacknowledged.cancel().expect("cancel pending subscription");
     negatively_acknowledged.cancel().expect("cancel NACK subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 /// Verifies subscriber middleware and error callbacks surround every retry
@@ -2530,13 +2655,13 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
         )
         .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .interceptor(move |delivery, next| {
-            before.lock().unwrap().push("before");
+            before.lock().expect("test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt: test mutex is not poisoned").push("before");
             let result = next(delivery);
-            after.lock().unwrap().push("after");
+            after.lock().expect("test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt: test mutex is not poisoned").push("after");
             result
         })
         .error_handler(move |_, _| {
-            error.lock().unwrap().push("error");
+            error.lock().expect("test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt: test mutex is not poisoned").push("error");
             FailureDirective::Retry
         })
         .build();
@@ -2549,11 +2674,11 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
                 let attempt = handler_counter.fetch_add(1, Ordering::AcqRel);
                 handler_log
                     .lock()
-                    .unwrap()
+                    .expect("test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt: test setup succeeds")
                     .push(if attempt == 0 { "handler-1" } else { "handler-2" });
                 if attempt == 0 {
                     Err(DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("retry")),
+                        source: Box::new(IoError::other("retry")),
                     })
                 } else {
                     completed_tx.send(()).expect("test receiver remains alive");
@@ -2567,10 +2692,13 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
     completed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt completes");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry completes");
     assert_eq!(
-        *calls.lock().unwrap(),
+        *calls.lock().expect(
+            "test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt: test mutex is not poisoned"
+        ),
         ["before", "handler-1", "after", "error", "before", "handler-2", "after"]
     );
     assert_eq!(handler_calls.load(Ordering::Acquire), 2);
@@ -2590,7 +2718,7 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
         0
     );
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -2600,20 +2728,20 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
     let global_calls = calls.clone();
     let config = EventBusFacadeConfig::new().subscriber_interceptor(
         move |delivery: Delivery<String>, next: SubscriberNext<String>| {
-            global_calls.lock().unwrap().push("global-before");
+            global_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("global-before");
             let result = next(delivery);
-            global_calls.lock().unwrap().push("global-after");
+            global_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("global-after");
             result
         },
     );
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend, config)
+    let bus = EventBus::with_config(ProviderId::new("sync-test").expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: valid test provider identifier"), backend, config)
         .expect("valid provider capabilities");
     let typed_calls = calls.clone();
     let options = SubscribeOptions::<String>::builder()
         .interceptor(move |delivery, next| {
-            typed_calls.lock().unwrap().push("typed-before");
+            typed_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("typed-before");
             let result = next(delivery);
-            typed_calls.lock().unwrap().push("typed-after");
+            typed_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("typed-after");
             result
         })
         .build();
@@ -2625,17 +2753,20 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
                 .expect("valid subscriber ID")
                 .with_options(options),
             move |_| {
-                handler_calls.lock().unwrap().push("handler");
-                done_tx.send(()).unwrap();
+                handler_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("handler");
+                done_tx.send(()).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test receiver remains connected");
             },
         )
-        .unwrap();
-    bus.publish(request("ordered".into())).unwrap();
-    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+        .expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test setup succeeds");
+    bus.publish(request("ordered".into())).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test event is accepted for publication");
+    done_rx.recv_timeout(Duration::from_secs(2)).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: expected test event arrives before timeout");
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .expect(
+            "test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test setup succeeds",
+        );
     assert_eq!(
-        *calls.lock().unwrap(),
+        *calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned"),
         [
             "global-before",
             "typed-before",
@@ -2649,7 +2780,7 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
     let (filtered_tx, filtered_rx) = mpsc::channel();
     let filtered = SubscribeOptions::<String>::builder()
         .filter(move |_| {
-            filtered_tx.send(()).unwrap();
+            filtered_tx.send(()).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test receiver remains connected");
             false
         })
         .build();
@@ -2659,20 +2790,20 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
                 .expect("valid subscriber ID")
                 .with_options(filtered),
             move |_| {
-                filtered_calls.lock().unwrap().push("filtered-handler");
+                filtered_calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").push("filtered-handler");
             },
         )
-        .unwrap();
-    bus.publish(request("filtered".into())).unwrap();
-    filtered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        .expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test setup succeeds");
+    bus.publish(request("filtered".into())).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test event is accepted for publication");
+    filtered_rx.recv_timeout(Duration::from_secs(2)).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: expected test event arrives before timeout");
     for _ in 0..100 {
-        if calls.lock().unwrap().len() >= 10 {
+        if calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned").len() >= 10 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(
-        *calls.lock().unwrap(),
+        *calls.lock().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: test mutex is not poisoned"),
         [
             "global-before",
             "typed-before",
@@ -2686,9 +2817,9 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
             "global-after"
         ]
     );
-    subscription.cancel().unwrap();
-    filtered_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    subscription.cancel().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: subscription cleanup succeeds");
+    filtered_subscription.cancel().expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: subscription cleanup succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_both: event bus shutdown succeeds");
 }
 
 #[test]
@@ -2710,21 +2841,36 @@ fn test_sync_facade_rejects_async_global_subscriber_middleware() {
             ..
         }))
     ));
-    assert_eq!(backend.state.lock().unwrap().queues.len(), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(
+        backend
+            .state
+            .lock()
+            .expect("test_sync_facade_rejects_async_global_subscriber_middleware: test mutex is not poisoned")
+            .queues
+            .len(),
+        0
+    );
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("test_sync_facade_rejects_async_global_subscriber_middleware: event bus shutdown succeeds");
 }
 
 fn create_bus_with_config(config: EventBusFacadeConfig) -> (EventBus, Arc<TestBackend>) {
     let backend = Arc::new(TestBackend::new());
-    let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config)
-        .expect("valid provider capabilities");
+    let bus = EventBus::with_config(
+        ProviderId::new("sync-test")
+            .expect("test_sync_facade_rejects_async_global_subscriber_middleware: valid test provider identifier"),
+        backend.clone(),
+        config,
+    )
+    .expect("valid provider capabilities");
     (bus, backend)
 }
 
 #[test]
 fn test_concurrent_cancel_callers_both_wait_for_worker_close() {
     let (bus, backend) = create_bus();
-    backend.set_close_delay(Duration::from_millis(200));
+    let (close_entered, release_close) = backend.gate_next_close();
     let subscription = Arc::new(
         bus.subscribe(
             SubscribeRequest::new("concurrent-cancel", topic()).expect("valid ID"),
@@ -2733,22 +2879,32 @@ fn test_concurrent_cancel_callers_both_wait_for_worker_close() {
         .expect("subscription starts"),
     );
     let barrier = Arc::new(Barrier::new(3));
+    let (started_tx, started_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
     let mut callers = Vec::new();
     for _ in 0..2 {
         let subscription = subscription.clone();
         let barrier = barrier.clone();
+        let started_tx = started_tx.clone();
         let finished_tx = finished_tx.clone();
-        callers.push(std::thread::spawn(move || {
+        callers.push(thread::spawn(move || {
             barrier.wait();
-            let started = std::time::Instant::now();
+            started_tx.send(()).expect("start observer remains alive");
             let result = subscription.cancel();
-            finished_tx
-                .send((started.elapsed(), result))
-                .expect("receiver remains alive");
+            finished_tx.send(result).expect("completion receiver remains alive");
         }));
     }
     barrier.wait();
+    for _ in 0..2 {
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("both cancellation callers start");
+    }
+    close_entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker close enters the controlled gate");
+    assert!(finished_rx.try_recv().is_err(), "cancellation waits for worker close");
+    release_close.send(()).expect("release worker close");
     let first = finished_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("first cancellation completes");
@@ -2758,12 +2914,10 @@ fn test_concurrent_cancel_callers_both_wait_for_worker_close() {
     for caller in callers {
         caller.join().expect("cancel caller thread exits");
     }
-    assert!(first.0 >= Duration::from_millis(150));
-    assert!(second.0 >= Duration::from_millis(150));
-    assert!(first.1.is_ok());
-    assert!(second.1.is_ok());
+    assert!(first.is_ok());
+    assert!(second.is_ok());
     assert_eq!(backend.close_calls(), 1);
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -2781,7 +2935,7 @@ fn test_close_panic_still_notifies_concurrent_cancel_waiters() {
         let subscription = subscription.clone();
         let barrier = barrier.clone();
         let finished_tx = finished_tx.clone();
-        callers.push(std::thread::spawn(move || {
+        callers.push(thread::spawn(move || {
             barrier.wait();
             finished_tx.send(subscription.cancel()).expect("receiver remains alive");
         }));
@@ -2861,7 +3015,7 @@ fn test_one_bus_worker_can_request_cancel_for_a_different_subscription_without_j
         .cancel()
         .expect("target already joined");
     a_subscription.cancel().expect("cancel caller");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -2933,7 +3087,7 @@ fn test_workers_canceling_each_other_do_not_form_a_join_cycle() {
         .expect("B handle")
         .cancel()
         .expect("external B cancel waits");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -2959,7 +3113,7 @@ fn test_handler_can_reenter_publish_without_a_facade_lock_deadlock() {
             .expect("handler can reenter")
     );
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3011,7 +3165,7 @@ fn test_blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
         Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock { .. }))
     ));
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown outside worker");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown outside worker");
 }
 
 #[test]
@@ -3054,7 +3208,7 @@ fn test_immediate_shutdown_waits_for_active_delivery_and_settlement_before_provi
 
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_worker = std::thread::spawn(move || {
+    let shutdown_worker = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("receiver remains alive");
@@ -3125,9 +3279,9 @@ fn test_shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_te
         )
         .expect("subscription starts");
     backend.close_receivers();
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.close_calls() == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.close_calls() == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.close_calls(), 1, "worker naturally observed receiver closure");
 
@@ -3150,7 +3304,17 @@ fn test_shutdown_reports_close_error_after_worker_naturally_exits_and_repeats_te
 
 #[test]
 fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_scheduler_slots() {
-    let (bus, backend) = create_bus_with_scheduler(2, 2);
+    let backend = Arc::new(TestBackend::new());
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(positive(2), positive(2), positive(2), positive(1))
+            .expect("valid scheduler limits"),
+    );
+    let bus = EventBus::with_config(
+        ProviderId::new("sync-test").expect("valid provider ID"),
+        backend.clone(),
+        config,
+    )
+    .expect("valid provider capabilities");
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -3175,15 +3339,15 @@ fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_sch
         .expect("subscription starts");
     bus.publish(request_with_key("active", "same-key"))
         .expect("publish active");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while calls.load(Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
     }
     bus.publish(request_with_key("queued", "same-key"))
         .expect("publish queued");
-    let receive_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.received_messages() < 2 && std::time::Instant::now() < receive_deadline {
-        std::thread::yield_now();
+    let receive_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.received_messages() < 2 && Instant::now() < receive_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.received_messages(), 2);
     backend.close_receivers();
@@ -3191,16 +3355,31 @@ fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_sch
     second_done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("admitted queued handler completes");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("both admitted deliveries settle");
-    let close_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.close_calls() == 0 && std::time::Instant::now() < close_deadline {
-        std::thread::yield_now();
+    let close_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.close_calls() == 0 && Instant::now() < close_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.close_calls(), 1, "natural close waits for scheduler completion");
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 2);
-    bus.shutdown(ShutdownMode::Immediate)
+    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+    let probe_subscription = loop {
+        let request = SubscribeRequest::new("natural-close-cleanup-probe", topic()).expect("valid ID");
+        match bus.subscribe(request, |_: Delivery<String>| Ok::<(), DeliveryError>(())) {
+            Ok(subscription) => break subscription,
+            Err(SubscribeError::ResourceLimit {
+                resource: "subscriptions",
+                limit: 1,
+            }) if Instant::now() < cleanup_deadline => thread::yield_now(),
+            Err(error) => panic!("unexpected subscription cleanup probe result: {error}"),
+        }
+    };
+    probe_subscription.cancel().expect("cleanup probe subscription joins");
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("shutdown joins idle scheduler workers");
     assert!(
         !subscription.is_cancelled(),
@@ -3222,14 +3401,14 @@ fn test_concurrent_cancel_and_shutdown_both_observe_subscription_close_failure()
     );
     let shutdown_bus = bus.clone();
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("receiver remains alive");
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !subscription.is_cancelled() && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !subscription.is_cancelled() && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert!(subscription.is_cancelled(), "shutdown snapshots and stops the worker");
     let cancel_error = subscription.cancel().expect_err("cancel observes close failure");
@@ -3245,7 +3424,7 @@ fn test_concurrent_cancel_and_shutdown_both_observe_subscription_close_failure()
     else {
         unreachable!("close failure assertions validate the variants above");
     };
-    assert!(std::ptr::eq(
+    assert!(ptr::eq(
         cancel_errors.iter().next().expect("one close failure"),
         shutdown_errors.iter().next().expect("one close failure"),
     ));
@@ -3287,11 +3466,7 @@ fn assert_close_failures(error: &ShutdownError, expected: &[&str]) {
     expected.sort_unstable();
     assert_eq!(actual, expected);
     assert!(errors.iter().all(|failure| failure.error().operation() == "close"));
-    assert!(
-        errors
-            .iter()
-            .all(|failure| std::error::Error::source(failure.error()).is_some())
-    );
+    assert!(errors.iter().all(|failure| Error::source(failure.error()).is_some()));
     assert_eq!(errors.len(), expected.len());
 }
 
@@ -3303,11 +3478,7 @@ fn assert_lifecycle_close_failures(error: &LifecycleError, expected: &[&str]) {
     let actual: Vec<_> = errors.iter().map(|failure| failure.subscriber_id().as_str()).collect();
     assert_eq!(actual, expected);
     assert!(errors.iter().all(|failure| failure.error().operation() == "close"));
-    assert!(
-        errors
-            .iter()
-            .all(|failure| std::error::Error::source(failure.error()).is_some())
-    );
+    assert!(errors.iter().all(|failure| Error::source(failure.error()).is_some()));
 }
 
 /// Pauses a received message at cancellation and returns cleanup observations.
@@ -3362,14 +3533,14 @@ fn immediate_shutdown_receive_race(capability: SettlementCapabilities) -> (Vec<D
 
     let shutdown_bus = bus.clone();
     let (shutdown_done_tx, shutdown_done_rx) = mpsc::channel();
-    let shutdown_thread = std::thread::spawn(move || {
+    let shutdown_thread = thread::spawn(move || {
         shutdown_done_tx
             .send(shutdown_bus.shutdown(ShutdownMode::Immediate))
             .expect("shutdown receiver remains alive");
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !subscription.is_cancelled() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !subscription.is_cancelled() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
     }
     assert!(
         subscription.is_cancelled(),
@@ -3478,10 +3649,11 @@ fn test_drop_does_not_implicitly_cancel_subscription() {
         .expect("subscription starts");
     drop(subscription);
     assert_eq!(backend.close_calls(), 0);
-    bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(2),
-    })
-    .expect("bus owns worker lifetime");
+    let _ = bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(2),
+        })
+        .expect("bus owns worker lifetime");
     assert_eq!(backend.close_calls(), 1);
 }
 
@@ -3503,7 +3675,7 @@ fn test_diagnostic_observers_receive_terminal_delivery_failures_and_isolate_pani
             SubscribeRequest::new("diagnostic-case", topic()).expect("valid subscriber ID"),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("expected handler failure")),
+                    source: Box::new(IoError::other("expected handler failure")),
                 })
             },
         )
@@ -3513,12 +3685,13 @@ fn test_diagnostic_observers_receive_terminal_delivery_failures_and_isolate_pani
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("failed delivery reaches terminal diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("diagnosed delivery has completed");
     assert_eq!(observed.load(Ordering::Acquire), 1);
 
     drop((subscription, observer, panic_observer));
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3564,7 +3737,7 @@ fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overri
             move |_| {
                 if attempts_by_handler.fetch_add(1, Ordering::AcqRel) == 0 {
                     Err(DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("retry once")),
+                        source: Box::new(IoError::other("retry once")),
                     })
                 } else {
                     done_tx.send(()).expect("test receiver remains alive");
@@ -3578,13 +3751,14 @@ fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overri
     done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt succeeds");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("retry flow completes");
     assert_eq!(attempts.load(Ordering::Acquire), 2);
     assert_eq!(error_callbacks.load(Ordering::Acquire), 1);
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Accept]);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 
     let (bus, backend) = create_bus();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -3614,20 +3788,21 @@ fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overri
                 entered_tx.send(()).expect("test receiver remains alive");
                 attempts_by_handler.fetch_add(1, Ordering::AcqRel);
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("discard now")),
+                    source: Box::new(IoError::other("discard now")),
                 })
             },
         )
         .expect("subscription starts");
     bus.publish(request("discard".into())).expect("publish");
     entered_rx.recv_timeout(Duration::from_secs(2)).expect("handler starts");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("discard reaches terminal state");
     assert_eq!(attempts.load(Ordering::Acquire), 1);
     assert_eq!(callbacks.load(Ordering::Acquire), 1);
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3651,7 +3826,7 @@ fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admissio
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -3659,11 +3834,12 @@ fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admissio
 
     bus.publish(request("dead-letter-me".into()))
         .expect("original publish succeeds");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("dead-letter retry completes");
-    let publish_deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.settlement_dispositions().is_empty() && std::time::Instant::now() < publish_deadline {
-        std::thread::yield_now();
+    let publish_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_dispositions().is_empty() && Instant::now() < publish_deadline {
+        thread::yield_now();
     }
     assert_eq!(backend.publish_calls(), 3);
     assert_eq!(
@@ -3678,7 +3854,7 @@ fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admissio
     );
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3710,7 +3886,7 @@ fn test_partial_dead_letter_admission_is_not_republished() {
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -3718,13 +3894,13 @@ fn test_partial_dead_letter_admission_is_not_republished() {
 
     bus.publish(request("partial-dead-letter-me".into()))
         .expect("original publish succeeds");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(2);
     while (!observed_partial.load(Ordering::Acquire)
         || backend.publish_calls() < 2
         || backend.settlement_dispositions().is_empty())
-        && std::time::Instant::now() < deadline
+        && Instant::now() < deadline
     {
-        std::thread::yield_now();
+        thread::yield_now();
     }
     assert!(observed_partial.load(Ordering::Acquire));
     assert_eq!(
@@ -3737,7 +3913,7 @@ fn test_partial_dead_letter_admission_is_not_republished() {
     assert_ne!(ids[0], ids[1]);
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3761,16 +3937,16 @@ fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
         .expect("subscription starts");
     bus.publish(request("dead-letter-me".into()))
         .expect("original publish succeeds");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while backend.publish_calls() < 2 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.publish_calls() < 2 && Instant::now() < deadline {
+        thread::yield_now();
     }
     assert_eq!(
         backend.publish_calls(),
@@ -3806,7 +3982,7 @@ fn test_inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish()
                 observed_by_handler.store(delivery.context().is_dead_letter(), Ordering::SeqCst);
                 handler_tx.send(()).expect("test receiver remains alive");
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -3815,13 +3991,14 @@ fn test_inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish()
     handler_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("marked handler runs");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("marked delivery completes");
     assert!(observed.load(Ordering::SeqCst));
     assert_eq!(backend.publish_calls(), 0);
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3844,7 +4021,7 @@ fn test_unsupported_failure_settlement_is_reported_without_calling_provider_sett
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -3853,11 +4030,12 @@ fn test_unsupported_failure_settlement_is_reported_without_calling_provider_sett
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("terminal handling completes");
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3886,7 +4064,7 @@ fn test_unsupported_reject_settlement_is_reported_without_calling_provider_settl
                 .with_options(options),
             |_| {
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -3895,11 +4073,12 @@ fn test_unsupported_reject_settlement_is_reported_without_calling_provider_settl
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
         .expect("terminal handling completes");
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3938,8 +4117,19 @@ fn test_undecodable_message_respects_settlement_capability_and_reports_unavailab
         .expect("unsupported Reject diagnostic");
     assert!(handler_rx.try_recv().is_err());
     assert_eq!(backend.settlement_calls(), 0);
+    let _ = bus
+        .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+        .expect("unsupported decode recovery released");
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let metrics = subscription.delivery_metrics().metrics;
+    assert_eq!(
+        metrics.completed, 0,
+        "unsupported Reject does not complete the delivery successfully"
+    );
+    assert_eq!(metrics.abandoned_ephemeral, 1);
+    assert_eq!(metrics.settlement_attempts, 0);
+    assert_eq!(metrics.settlement_duration_count, 0);
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
@@ -3968,19 +4158,16 @@ fn test_subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata
     assert_eq!(actual_id, expected_id);
     assert_eq!(subscriber, "metadata-case");
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
 fn test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop() {
-    use PublishOptions;
-    use qubit_event_bus::model::PublishMetadata;
-
     let order = Arc::new(Mutex::new(Vec::new()));
     let typed_order = order.clone();
     let global_order = order.clone();
     let config = EventBusFacadeConfig::new().publisher_interceptor(move |metadata: &mut PublishMetadata| {
-        global_order.lock().unwrap().push("global");
+        global_order.lock().expect("test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop: test mutex is not poisoned").push("global");
         assert_eq!(metadata.header("origin"), Some("typed"));
         metadata.set_header("trace", "global")?;
         Ok(false)
@@ -3988,7 +4175,7 @@ fn test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop(
     let (bus, backend) = create_bus_with_config(config);
     let options = PublishOptions::<String>::builder()
         .interceptor(move |mut envelope| {
-            typed_order.lock().unwrap().push("typed");
+            typed_order.lock().expect("test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop: test mutex is not poisoned").push("typed");
             envelope.set_header("origin", "typed").expect("valid header");
             Ok(Some(envelope))
         })
@@ -3996,15 +4183,22 @@ fn test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop(
 
     let receipt = bus
         .publish(request("dropped".to_owned()).with_options(options))
-        .unwrap();
+        .expect("test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop: test setup succeeds");
 
     assert!(matches!(
         receipt.acknowledgement(),
         PublishAcknowledgement::DroppedByInterceptor
     ));
-    assert_eq!(*order.lock().unwrap(), ["typed", "global"]);
+    assert_eq!(
+        *order.lock().expect(
+            "test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop: test mutex is not poisoned"
+        ),
+        ["typed", "global"]
+    );
     assert_eq!(backend.publish_calls(), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect(
+        "test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop: event bus shutdown succeeds",
+    );
 }
 
 #[test]
@@ -4022,7 +4216,7 @@ fn test_dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_s
             move |_| {
                 let _ = handler_tx.send(());
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
+                    source: Box::new(IoError::other("handler failed")),
                 })
             },
         )
@@ -4032,11 +4226,558 @@ fn test_dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_s
     handler_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("the failing handler runs");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+    let _ = bus
+        .wait_for_idle(&topic(), Some(Duration::from_secs(2)))
         .expect("the failed delivery reaches terminal handling");
     let report = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("shutdown closes the stopped subscription");
     assert!(backend.settlement_dispositions().is_empty());
     assert_eq!(report.known_abandoned_deliveries, 1);
+}
+
+/// Verifies conservative unknown retryability and exhausted retry budgets
+/// retain one canonical cause.
+#[test]
+fn test_sync_settlement_terminal_classification_preserves_error_arc_and_first_reason() {
+    for (retryable, expected_attempts, termination) in [
+        (None, 1, SettlementTermination::RetryabilityUnknown),
+        (Some(false), 1, SettlementTermination::PermanentError),
+        (Some(true), 2, SettlementTermination::AttemptsExhausted),
+    ] {
+        let backend = Arc::new(TestBackend::new());
+        {
+            let mut state = backend.state.lock().expect("state lock");
+            state.fail_settle_always = true;
+            state.settlement_retryability = retryable;
+        }
+        let config = EventBusFacadeConfig::new().with_settlement_retry(
+            SettlementRetryConfig::new(
+                NonZeroU32::new(2).expect("positive attempts"),
+                Duration::from_secs(10),
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+            )
+            .expect("valid policy"),
+        );
+        let bus = EventBus::with_config(ProviderId::new("sync-test").expect("provider"), backend.clone(), config)
+            .expect("bus");
+        let (failed_tx, failed_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let _observer = bus.observe_diagnostics(move |diagnostic| match diagnostic {
+            Diagnostic::SettlementFailed { attempt, error, .. } => {
+                let _ = failed_tx.send((*attempt, error.clone()));
+            }
+            Diagnostic::SettlementStopped {
+                attempts,
+                termination,
+                error,
+                ..
+            } => {
+                let _ = stopped_tx.send((*attempts, *termination, error.clone()));
+            }
+            _ => {}
+        });
+        let subscription = bus
+            .subscribe(
+                SubscribeRequest::new("terminal-policy", topic()).expect("request"),
+                |_: Delivery<String>| {},
+            )
+            .expect("subscribe");
+        backend.enqueue_marked(subscription.id());
+        let (attempts, actual_termination, stopped_error) = stopped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("natural terminal notification");
+        assert_eq!(attempts, expected_attempts);
+        assert_eq!(actual_termination, termination);
+        let failed: Vec<_> = (0..expected_attempts)
+            .map(|_| {
+                failed_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("attempt diagnostic")
+            })
+            .collect();
+        assert_eq!(
+            failed.iter().map(|(attempt, _)| *attempt).collect::<Vec<_>>(),
+            (1..=expected_attempts).collect::<Vec<_>>()
+        );
+        assert!(Arc::ptr_eq(&failed.last().expect("last attempt").1, &stopped_error));
+        let reason = subscription.terminal_failure().expect("first terminal reason");
+        let SubscriptionStopReason::Settlement {
+            attempts,
+            termination: actual,
+            error,
+            ..
+        } = reason.as_ref()
+        else {
+            panic!("settlement reason expected")
+        };
+        assert_eq!(*attempts, expected_attempts);
+        assert_eq!(*actual, termination);
+        assert!(Arc::ptr_eq(error, &stopped_error));
+        assert_eq!(
+            Error::source(error.as_ref()).expect("original source").to_string(),
+            "original settlement source"
+        );
+        subscription.cancel().expect("join owner");
+        assert!(Arc::ptr_eq(
+            &reason,
+            &subscription.terminal_failure().expect("retained cause")
+        ));
+        assert_eq!(backend.settlement_calls(), expected_attempts as usize);
+        assert_eq!(backend.close_calls(), 1);
+        assert!(stopped_rx.try_recv().is_err(), "only one stopped diagnostic");
+        let metrics = subscription.delivery_metrics().metrics;
+        assert_eq!(metrics.settlement_attempts, u64::from(expected_attempts));
+        assert_eq!(metrics.settlement_retries, u64::from(expected_attempts - 1));
+        assert_eq!(metrics.settlement_terminal_failures, 1);
+        assert_eq!(metrics.completed, 0);
+        assert_eq!(metrics.abandoned_ephemeral, 1);
+        assert_eq!(metrics.handler_duration_count, 1);
+        assert_eq!(metrics.settlement_duration_count, 1);
+        assert_eq!(
+            metrics.running_handlers + metrics.settling + metrics.queued + metrics.reserved_receives,
+            0
+        );
+        assert_eq!(bus.delivery_metrics(), metrics);
+        drop(bus);
+        assert_eq!(
+            subscription.delivery_metrics().metrics,
+            metrics,
+            "closed handles retain counters without owning the bus"
+        );
+    }
+}
+
+/// Foreign tokens are rejected before SPI entry and do not invent a provider
+/// attempt.
+#[test]
+fn test_sync_settlement_foreign_token_stops_without_a_provider_attempt() {
+    let (bus, backend) = create_bus();
+    let (stopped_tx, stopped_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::SettlementStopped {
+            termination, attempts, ..
+        } = diagnostic
+        {
+            let _ = stopped_tx.send((*termination, *attempts));
+        }
+    });
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("foreign-token", topic()).expect("request"),
+            |_: Delivery<String>| {},
+        )
+        .expect("subscribe");
+    let queue = backend
+        .state
+        .lock()
+        .expect("state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("queue")
+        .1
+        .clone();
+    let message = InboundMessage::new(
+        TopicAddress::new("sync.events").expect("topic"),
+        EventId::new("foreign").expect("event"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(String::from("payload"))),
+        Some(SettlementToken::new(Id::new(u64::MAX), "foreign")),
+        Default::default(),
+    );
+    let (state, ready) = &*queue;
+    state.lock().expect("queue state").messages.push_back(message);
+    ready.notify_one();
+    assert_eq!(
+        stopped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("invalid token terminal"),
+        (SettlementTermination::InvalidToken, 0)
+    );
+    subscription.cancel().expect("cleanup");
+    assert_eq!(backend.settlement_calls(), 0);
+    let metrics = subscription.delivery_metrics().metrics;
+    assert_eq!(metrics.settlement_attempts, 0);
+    assert_eq!(
+        metrics.settlement_duration_count, 0,
+        "validation before SPI cannot start a settlement duration cycle"
+    );
+    assert_eq!(metrics.settlement_terminal_failures, 1);
+    assert_eq!(metrics.completed, 0);
+}
+
+/// Decode rejection is owner work even when every real handler thread is
+/// occupied.
+#[test]
+fn test_sync_decode_rejection_does_not_consume_handler_capacity() {
+    struct ReleaseOnDrop(Arc<HandlerGate>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let (bus, backend) = create_bus_with_scheduler(1, 4);
+    let gate = Arc::new(HandlerGate::default());
+    let callback_gate = gate.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let running = bus
+        .subscribe(
+            SubscribeRequest::new("running", topic()).expect("request"),
+            move |_: Delivery<String>| {
+                let _ = entered_tx.send(());
+                callback_gate.wait();
+            },
+        )
+        .expect("running subscription");
+    let _release = ReleaseOnDrop(gate.clone());
+    bus.publish(request("blocked handler".into())).expect("publish");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("only handler thread occupied");
+    let bad_topic = Topic::new_with_codec("bad.decode", Utf8Codec(ContentType::TEXT_PLAIN)).expect("codec topic");
+    let bad = bus
+        .subscribe(
+            SubscribeRequest::new("bad", bad_topic.clone()).expect("request"),
+            |_: Delivery<String>| -> Result<(), DeliveryError> {
+                panic!("undecodable message cannot reach handler");
+            },
+        )
+        .expect("bad payload subscription");
+    let (failed_tx, failed_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::DeliveryFailed { attempts: 0, .. }) {
+            let _ = failed_tx.send(());
+        }
+    });
+    let queue = backend
+        .state
+        .lock()
+        .expect("state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == bad.id())
+        .expect("bad queue")
+        .1
+        .clone();
+    let message = InboundMessage::new(
+        TopicAddress::new("bad.decode").expect("topic"),
+        EventId::new("bad-encoded").expect("id"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None)),
+        Some(SettlementToken::new(bad.id(), "bad-token")),
+        Default::default(),
+    );
+    let (state, ready) = &*queue;
+    state.lock().expect("queue state").messages.push_back(message);
+    ready.notify_one();
+    failed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("owner rejects without obtaining a handler grant");
+    let _ = bus
+        .wait_for_received_deliveries(&bad_topic, Some(Duration::from_secs(2)))
+        .expect("decode rejection settles");
+    assert_eq!(bad.delivery_metrics().metrics.handler_duration_count, 0);
+    assert_eq!(bad.delivery_metrics().metrics.settlement_attempts, 1);
+    assert_eq!(bad.delivery_metrics().metrics.completed, 1);
+    assert_eq!(running.delivery_metrics().metrics.running_handlers, 1);
+    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
+    gate.release();
+    running.cancel().expect("running cleanup");
+    bad.cancel().expect("bad cleanup");
+}
+
+/// A blocked receiver must not retain execution credit after its handler
+/// returns.
+#[test]
+fn test_sync_handler_return_releases_capacity_while_owner_receive_is_blocked() {
+    struct ReleaseOnDrop(Arc<HandlerGate>, Option<mpsc::Sender<()>>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+            if let Some(sender) = self.1.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let (bus, backend) = create_bus_with_scheduler(1, 4);
+    let gate = Arc::new(HandlerGate::default());
+    let callback_gate = gate.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let blocked = bus
+        .subscribe(
+            SubscribeRequest::new("blocked-owner", topic()).expect("request"),
+            move |_: Delivery<String>| {
+                let _ = entered_tx.send(());
+                callback_gate.wait();
+            },
+        )
+        .expect("subscription");
+    let mut release = ReleaseOnDrop(gate.clone(), None);
+    bus.publish(request("first".into())).expect("publish first");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("handler started");
+    let (receiving, release_receive) = backend.gate_next_receive();
+    release.1 = Some(release_receive);
+    bus.publish(request("second".into())).expect("publish second");
+    receiving
+        .recv_timeout(Duration::from_secs(2))
+        .expect("owner blocked in second receive");
+    let healthy_topic = Topic::<String>::new("healthy.capacity").expect("topic");
+    let (healthy_tx, healthy_rx) = mpsc::channel();
+    let healthy = bus
+        .subscribe(
+            SubscribeRequest::new("healthy-capacity", healthy_topic.clone()).expect("request"),
+            move |_: Delivery<String>| {
+                let _ = healthy_tx.send(());
+            },
+        )
+        .expect("healthy subscription");
+    bus.publish(PublishRequest::new(healthy_topic, "healthy".into()).expect("request"))
+        .expect("publish healthy");
+    gate.release();
+    let result = healthy_rx.recv_timeout(Duration::from_secs(2));
+    drop(release);
+    blocked.cancel().expect("blocked cleanup");
+    healthy.cancel().expect("healthy cleanup");
+    result.expect("returned handler capacity is available while its receiver remains blocked");
+}
+
+/// Decode rejection waits for the earlier delivery's lane through settlement.
+#[test]
+fn test_sync_decode_rejection_retains_same_key_fifo_without_handler_credit() {
+    struct ReleaseOnDrop(Arc<HandlerGate>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let (bus, backend) = create_bus_with_scheduler(2, 6);
+    let gate = Arc::new(HandlerGate::default());
+    let handler_gate = gate.clone();
+    let codec_topic = Topic::new_with_codec("decode.fifo", Utf8Codec(ContentType::TEXT_PLAIN)).expect("topic");
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("decode-fifo", codec_topic.clone())
+                .expect("request")
+                .with_options(
+                    SubscribeOptions::builder()
+                        .ordering_policy(OrderingPolicy::PerKey)
+                        .build(),
+                ),
+            move |delivery: Delivery<String>| {
+                let _ = entered_tx.send(delivery.event().payload().clone());
+                handler_gate.wait();
+            },
+        )
+        .expect("subscribe");
+    let _release = ReleaseOnDrop(gate.clone());
+    bus.publish(
+        PublishRequest::builder()
+            .topic(codec_topic)
+            .payload("first".to_owned())
+            .ordering_key("same")
+            .build()
+            .expect("request"),
+    )
+    .expect("publish");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first same-key handler owns lane");
+    let (decoded_tx, decoded_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::DeliveryFailed { attempts: 0, .. }) {
+            let _ = decoded_tx.send(());
+        }
+    });
+    let queue = backend
+        .state
+        .lock()
+        .expect("state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("queue")
+        .1
+        .clone();
+    let bad = InboundMessage::new(
+        TopicAddress::new("decode.fifo").expect("address"),
+        EventId::new("bad-fifo").expect("id"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        Some(OrderingKey::new("same").expect("key")),
+        TransportPayload::Encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None)),
+        Some(SettlementToken::new(subscription.id(), "bad-fifo")),
+        Default::default(),
+    );
+    let (state, ready) = &*queue;
+    state.lock().expect("queue").messages.push_back(bad);
+    ready.notify_one();
+    decoded_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("bad message decoded while first handler holds lane");
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while backend.settlement_calls() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let early = backend.settlement_dispositions();
+    gate.release();
+    let _ = bus
+        .wait_for_received_deliveries(
+            &Topic::<String>::new("decode.fifo").expect("topic"),
+            Some(Duration::from_secs(2)),
+        )
+        .expect("both settle");
+    subscription.cancel().expect("cleanup");
+    assert!(
+        early.is_empty(),
+        "decode rejection cannot bypass the earlier same-key delivery: {early:?}"
+    );
+    assert_eq!(
+        backend.settlement_dispositions(),
+        [DeliveryDisposition::Accept, DeliveryDisposition::Reject]
+    );
+}
+
+/// Middleware cannot swallow rejected handler admission into an Accept
+/// settlement.
+#[test]
+fn test_sync_stopped_handler_requeues_even_when_middleware_swallows_error() {
+    struct Release(Arc<HandlerGate>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let (bus, backend) = create_bus();
+    let gate = Arc::new(HandlerGate::default());
+    let callback_gate = gate.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let options = SubscribeOptions::<String>::builder()
+        .interceptor(move |delivery, next| {
+            let _ = entered_tx.send(());
+            callback_gate.wait();
+            let _ = next(delivery);
+            Ok(())
+        })
+        .build();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let subscription = Arc::new(
+        bus.subscribe(
+            SubscribeRequest::new("swallowed-stop", topic())
+                .expect("request")
+                .with_options(options),
+            move |_: Delivery<String>| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect("subscribe"),
+    );
+    let release = Release(gate);
+    bus.publish(request("stopped".into())).expect("publish");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("middleware entered");
+    let cancel_subscription = subscription.clone();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let canceller = thread::spawn(move || {
+        let result = cancel_subscription.cancel();
+        let _ = finished_tx.send(result);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !subscription.is_cancelled() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(subscription.is_cancelled());
+    drop(release);
+    finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancellation returns")
+        .expect("cancel");
+    canceller.join().expect("canceller exits");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
+    assert_eq!(subscription.delivery_metrics().metrics.handler_duration_count, 0);
+}
+
+/// Malformed payloads with foreign tokens use the same structured owner
+/// validation.
+#[test]
+fn test_sync_decode_foreign_token_stops_without_spi_or_success_counters() {
+    for capability in [
+        SettlementCapabilities::AcceptRetryReject,
+        SettlementCapabilities::AcceptOnly,
+    ] {
+        let (bus, backend) = create_bus_configured(|backend| backend.set_settlement_capability(capability));
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            if let Diagnostic::SettlementStopped { error, .. } = diagnostic {
+                let _ = stopped_tx.send(error.clone());
+            }
+        });
+        let codec_topic = Topic::new_with_codec("decode.foreign", Utf8Codec(ContentType::TEXT_PLAIN)).expect("topic");
+        let subscription = bus
+            .subscribe(
+                SubscribeRequest::new("decode-foreign", codec_topic).expect("request"),
+                |_: Delivery<String>| -> () {
+                    panic!("malformed payload cannot reach handler");
+                },
+            )
+            .expect("subscribe");
+        let queue = backend
+            .state
+            .lock()
+            .expect("state")
+            .queues
+            .iter()
+            .find(|(id, _)| *id == subscription.id())
+            .expect("queue")
+            .1
+            .clone();
+        let bad = InboundMessage::new(
+            TopicAddress::new("decode.foreign").expect("address"),
+            EventId::new("foreign-decode").expect("id"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None)),
+            Some(SettlementToken::new(Id::new(u64::MAX), "foreign")),
+            Default::default(),
+        );
+        let (state, ready) = &*queue;
+        state.lock().expect("queue").messages.push_back(bad);
+        ready.notify_one();
+        let stopped = stopped_rx.recv_timeout(Duration::from_secs(2));
+        subscription.cancel().expect("cleanup");
+        let stopped = stopped.expect("foreign decode token produces a structured terminal cause");
+        let reason = subscription.terminal_failure().expect("terminal reason");
+        let SubscriptionStopReason::Settlement {
+            error,
+            attempts,
+            termination,
+            ..
+        } = reason.as_ref()
+        else {
+            panic!("settlement reason")
+        };
+        assert!(Arc::ptr_eq(error, &stopped));
+        assert_eq!(*attempts, 0);
+        assert_eq!(*termination, SettlementTermination::InvalidToken);
+        assert_eq!(backend.settlement_calls(), 0);
+        let metrics = subscription.delivery_metrics().metrics;
+        assert_eq!(metrics.completed, 0);
+        assert_eq!(metrics.abandoned_ephemeral, 1);
+        assert_eq!(metrics.settlement_attempts, 0);
+        assert_eq!(metrics.settlement_duration_count, 0);
+        assert_eq!(metrics.settlement_terminal_failures, 1);
+        assert_eq!(metrics.handler_duration_count, 0);
+    }
 }

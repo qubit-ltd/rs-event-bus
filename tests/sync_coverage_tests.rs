@@ -9,6 +9,7 @@
 //! edges.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -29,10 +30,10 @@ use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::error::SubscribeError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::IntoHandlerResult;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::facade::WaitOutcome;
 use qubit_event_bus::model::DeadLetterAdmissionPolicy;
 use qubit_event_bus::model::DeadLetterPolicy;
@@ -43,7 +44,6 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -72,6 +72,8 @@ use qubit_event_bus::spi::TransportPayload;
 const PROVIDER_ID: &str = "sync-coverage";
 const TOPIC_NAME: &str = "sync.coverage";
 
+/// Holds the state shared by the synchronous coverage SPI and its
+/// subscriptions.
 struct CoverageState {
     receivers: Mutex<Vec<(String, TopicAddress, SyncSender<InboundMessage>)>>,
     close_attempts: mpsc::Sender<String>,
@@ -83,11 +85,13 @@ struct CoverageState {
     ordering: OrderingCapability,
 }
 
+/// Supplies controllable synchronous behavior for facade contract tests.
 #[derive(Clone)]
 struct CoverageSpi {
     state: Arc<CoverageState>,
 }
 
+/// Receives messages and reports close attempts for one test subscription.
 struct CoverageSubscription {
     subscriber_id: String,
     receiver: Receiver<InboundMessage>,
@@ -97,10 +101,12 @@ struct CoverageSubscription {
 }
 
 impl CoverageSpi {
+    /// Creates a provider with the default per-key ordering capability.
     fn new(close_fails: bool) -> (Self, Receiver<String>) {
         Self::new_with_ordering(close_fails, OrderingCapability::PerKey)
     }
 
+    /// Creates a provider with selected ordering and close-failure behavior.
     fn new_with_ordering(close_fails: bool, ordering: OrderingCapability) -> (Self, Receiver<String>) {
         let (close_attempts, close_rx) = mpsc::channel();
         (
@@ -120,24 +126,30 @@ impl CoverageSpi {
         )
     }
 
+    /// Returns how many shutdown calls reached the test provider.
     fn shutdown_calls(&self) -> usize {
         self.state.shutdown_calls.load(Ordering::Acquire)
     }
 
+    /// Makes the next publish call return a configured provider error.
     fn fail_next_publish(&self) {
         self.state.fail_next_publish.store(true, Ordering::Release);
     }
 
+    /// Makes the next subscribe call return a configured provider error.
     fn fail_next_subscribe(&self) {
         self.state.fail_next_subscribe.store(true, Ordering::Release);
     }
 
+    /// Makes the next shutdown call return a configured provider error.
     fn fail_next_shutdown(&self) {
         self.state.fail_next_shutdown.store(true, Ordering::Release);
     }
 }
 
 impl EventBusSpi for CoverageSpi {
+    /// Reports the native, ephemeral, opaque-result capabilities used by the
+    /// tests.
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,
@@ -153,6 +165,8 @@ impl EventBusSpi for CoverageSpi {
         )
     }
 
+    /// Routes native payloads to matching receivers or returns an injected
+    /// error.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         if self.state.fail_next_publish.swap(false, Ordering::AcqRel) {
             return Err(spi_error("publish", "configured_failure"));
@@ -185,6 +199,8 @@ impl EventBusSpi for CoverageSpi {
         })
     }
 
+    /// Registers a bounded receiver, unless the next subscription failure is
+    /// armed.
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         if self.state.fail_next_subscribe.swap(false, Ordering::AcqRel) {
             return Err(spi_error("subscribe", "configured_failure"));
@@ -205,6 +221,7 @@ impl EventBusSpi for CoverageSpi {
         }))
     }
 
+    /// Counts shutdown calls and optionally fails the next one.
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         self.state.shutdown_calls.fetch_add(1, Ordering::AcqRel);
         if self.state.fail_next_shutdown.swap(false, Ordering::AcqRel) {
@@ -215,6 +232,7 @@ impl EventBusSpi for CoverageSpi {
 }
 
 impl EventSubscriptionSpi for CoverageSubscription {
+    /// Receives one queued message or reports timeout and closed states.
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
         if self.closed {
             return Ok(ReceiveOutcome::Closed);
@@ -226,10 +244,12 @@ impl EventSubscriptionSpi for CoverageSubscription {
         }
     }
 
+    /// Always reports settlement as unsupported by this test provider.
     fn settle(&mut self, _: &SettlementToken, _: DeliveryDisposition) -> Result<(), SpiError> {
         Err(spi_error("settle", "unsupported"))
     }
 
+    /// Marks the receiver closed, records the attempt, and optionally fails it.
     fn close(&mut self) -> Result<(), SpiError> {
         self.closed = true;
         if self.close_attempts.send(self.subscriber_id.clone()).is_err() {
@@ -243,6 +263,8 @@ impl EventSubscriptionSpi for CoverageSubscription {
     }
 }
 
+/// Builds a non-retryable provider error tagged with the requested operation
+/// and kind.
 fn spi_error(operation: &'static str, kind: &'static str) -> SpiError {
     SpiError::Operation {
         provider_id: PROVIDER_ID.into(),
@@ -254,14 +276,17 @@ fn spi_error(operation: &'static str, kind: &'static str) -> SpiError {
     }
 }
 
+/// Returns the shared valid topic used by synchronous coverage tests.
 fn topic() -> Topic<String> {
     Topic::new(TOPIC_NAME).expect("static topic is valid")
 }
 
+/// Returns a second topic for cross-topic scheduling tests.
 fn other_topic() -> Topic<String> {
     Topic::new("sync.coverage.other").expect("static topic is valid")
 }
 
+/// Builds a publish request for the shared topic and a selected ordering key.
 fn keyed_request(payload: &str, key: &str) -> PublishRequest<String> {
     PublishRequest::builder()
         .topic(topic())
@@ -271,6 +296,7 @@ fn keyed_request(payload: &str, key: &str) -> PublishRequest<String> {
         .expect("valid event request")
 }
 
+/// Builds a publish request for an explicit topic and ordering key.
 fn keyed_request_for(topic: Topic<String>, payload: &str, key: &str) -> PublishRequest<String> {
     PublishRequest::builder()
         .topic(topic)
@@ -280,23 +306,31 @@ fn keyed_request_for(topic: Topic<String>, payload: &str, key: &str) -> PublishR
         .expect("valid event request")
 }
 
+/// Builds a plain publish request for the shared topic.
 fn request(payload: &str) -> PublishRequest<String> {
     PublishRequest::new(topic(), payload.to_owned()).expect("OS random source is available")
 }
 
-fn create_bus(max_in_flight: usize, handler_queue_capacity: usize) -> (EventBus, CoverageSpi, Receiver<String>) {
-    create_bus_with_close_mode(max_in_flight, handler_queue_capacity, false)
+/// Builds a facade with explicit running and owned delivery limits.
+fn create_bus(max_running_handlers: usize, max_owned_deliveries: usize) -> (EventBus, CoverageSpi, Receiver<String>) {
+    create_bus_with_close_mode(max_running_handlers, max_owned_deliveries, false)
 }
 
+/// Builds the facade and optionally injects provider close failures.
 fn create_bus_with_close_mode(
-    max_in_flight: usize,
-    handler_queue_capacity: usize,
+    max_running_handlers: usize,
+    max_owned_deliveries: usize,
     close_fails: bool,
 ) -> (EventBus, CoverageSpi, Receiver<String>) {
     let (spi, close_rx) = CoverageSpi::new(close_fails);
-    let scheduler = SyncDeliverySchedulerConfig::new(max_in_flight, handler_queue_capacity)
-        .expect("test scheduler limits are valid");
-    let config = EventBusFacadeConfig::default().with_sync_delivery_scheduler(scheduler);
+    let scheduler = DeliverySchedulingConfig::new(
+        NonZeroUsize::new(max_running_handlers).expect("test running-handler limit must be positive"),
+        NonZeroUsize::new(max_owned_deliveries).expect("test owned-delivery limit must be positive"),
+        NonZeroUsize::new(max_owned_deliveries).expect("test reserved-receive limit must be positive"),
+        NonZeroUsize::new(2).expect("test per-subscription limit must be positive"),
+    )
+    .expect("test scheduler limits are valid");
+    let config = EventBusFacadeConfig::default().with_delivery_scheduling(scheduler);
     let bus = EventBus::with_config(
         ProviderId::new(PROVIDER_ID).expect("static provider ID is valid"),
         Arc::new(spi.clone()),
@@ -306,6 +340,7 @@ fn create_bus_with_close_mode(
     (bus, spi, close_rx)
 }
 
+/// Returns subscription options that exercise per-key delivery ordering.
 fn keyed_options() -> SubscribeOptions<String> {
     SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
@@ -325,12 +360,18 @@ fn test_unit_handler_result_is_treated_as_success() {
     assert!(().into_handler_result().is_ok());
 }
 #[test]
-fn test_scheduler_config_rejects_zero_global_admission_capacity() {
-    let error = SyncDeliverySchedulerConfig::new(0, 0).expect_err("zero in-flight capacity is invalid");
+fn test_scheduler_config_rejects_running_capacity_above_owned_capacity() {
+    let error = DeliverySchedulingConfig::new(
+        NonZeroUsize::new(2).expect("test running-handler limit must be positive"),
+        NonZeroUsize::new(1).expect("test owned-delivery limit must be positive"),
+        NonZeroUsize::new(1).expect("test reserved-receive limit must be positive"),
+        NonZeroUsize::new(1).expect("test per-subscription limit must be positive"),
+    )
+    .expect_err("running handlers cannot exceed owned delivery capacity");
     assert!(matches!(
         error,
         ConfigurationError::InvalidField {
-            field: "max_in_flight",
+            field: "max_running_handlers",
             ..
         }
     ));
@@ -339,10 +380,13 @@ fn test_scheduler_config_rejects_zero_global_admission_capacity() {
 #[test]
 fn test_per_key_ordering_is_rejected_when_provider_declares_no_ordering_support() {
     let (spi, _close_rx) = CoverageSpi::new_with_ordering(false, OrderingCapability::None);
-    let bus = EventBus::from_spi(ProviderId::new(PROVIDER_ID).unwrap(), Arc::new(spi))
-        .expect("provider capabilities are structurally valid");
+    let bus = EventBus::from_spi(
+        ProviderId::new(PROVIDER_ID).expect("static provider ID must be valid"),
+        Arc::new(spi),
+    )
+    .expect("provider capabilities are structurally valid");
     let request = SubscribeRequest::new("ordered", topic())
-        .unwrap()
+        .expect("test subscriber ID must be valid")
         .with_options(keyed_options());
 
     assert!(matches!(
@@ -357,7 +401,7 @@ fn test_per_key_ordering_is_rejected_when_provider_declares_no_ordering_support(
 fn test_known_destination_dead_letter_policy_is_rejected_for_opaque_publish_results() {
     let (bus, _, _) = create_bus(1, 1);
     let request = SubscribeRequest::new("known-dead-letter", topic())
-        .unwrap()
+        .expect("test subscriber ID must be valid")
         .with_options(
             SubscribeOptions::builder()
                 .dead_letter(
@@ -365,7 +409,7 @@ fn test_known_destination_dead_letter_policy_is_rejected_for_opaque_publish_resu
                         "sync.coverage.dead-letter",
                         DeadLetterAdmissionPolicy::KnownDestination,
                     )
-                    .unwrap(),
+                    .expect("known-destination dead-letter policy must be valid"),
                 )
                 .build(),
         );
@@ -397,7 +441,8 @@ fn test_publish_all_keeps_later_results_after_a_provider_failure() {
         })
     ));
     assert!(result.items()[1].is_ok());
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("bus shuts down after batch publication");
 }
 
@@ -425,7 +470,8 @@ fn test_provider_subscribe_failure_does_not_poison_later_subscription() {
         )
         .expect("a failed admission leaves the facade usable");
     subscription.cancel().expect("successful receiver closes");
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("bus shuts down after subscription recovery");
 }
 
@@ -488,28 +534,6 @@ fn test_shutdown_is_idempotent_and_caches_the_provider_outcome() {
 }
 
 #[test]
-fn test_subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
-    let (bus, _, _) = create_bus(1, 1);
-    let expected_id = SubscriberId::new("handle-contract").expect("valid subscriber ID");
-    let subscription = bus
-        .subscribe(
-            SubscribeRequest::new(expected_id.as_str(), topic()).expect("validated subscriber ID"),
-            |_| {},
-        )
-        .expect("subscription starts");
-
-    let object_id = subscription.id();
-    assert_eq!(&expected_id, subscription.subscriber_id());
-    assert!(!subscription.is_cancelled());
-    subscription.cancel().expect("first cancel joins worker");
-    assert!(subscription.is_cancelled());
-    assert_eq!(object_id, subscription.id());
-    subscription.cancel().expect("repeated cancel remains idempotent");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down after explicit cancellation");
-}
-
-#[test]
 fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     let (bus, _, _) = create_bus(1, 1);
     let callback_bus = bus.clone();
@@ -545,7 +569,8 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     ));
 
     subscription.cancel().expect("external caller cancels worker");
-    bus.shutdown(ShutdownMode::Immediate)
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
         .expect("bus shuts down after callback exits");
 }
 
@@ -629,11 +654,11 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
     assert_eq!(
         WaitOutcome::Idle,
         bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-            .unwrap()
+            .expect("all deliveries for the shared topic should settle")
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
@@ -696,12 +721,12 @@ fn test_same_ordering_key_is_independent_between_topics() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
-fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
-    let (bus, _, _) = create_bus(1, 4);
+fn test_running_and_owned_capacity_are_shared_across_subscriptions() {
+    let (bus, _, _) = create_bus(1, 1);
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release_rx = Arc::new(Mutex::new(release_rx));
@@ -744,6 +769,12 @@ fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
         .recv_timeout(Duration::from_secs(2))
         .expect("one subscription obtains the sole in-flight permit");
     assert!(started_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    let metrics = bus.delivery_metrics();
+    assert_eq!(metrics.running_handlers, 1);
+    assert_eq!(
+        metrics.reserved_receives + metrics.queued + metrics.running_handlers + metrics.settling,
+        1
+    );
     release_tx.send(()).expect("active handler gate remains alive");
     let second_started = started_rx
         .recv_timeout(Duration::from_secs(2))
@@ -754,11 +785,11 @@ fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
     assert_eq!(
         WaitOutcome::Idle,
         bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-            .unwrap()
+            .expect("all deliveries for the shared topic should settle")
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]

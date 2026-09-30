@@ -7,12 +7,17 @@
 // =============================================================================
 //! Public request builders, option reuse, and acknowledgement contracts.
 
+use std::error::Error;
+use std::io::Error as IoError;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::PublishError;
+use qubit_event_bus::PublishFailure;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
@@ -31,6 +36,7 @@ use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
@@ -50,7 +56,7 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
 
 #[test]
-fn test_simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn std::error::Error>> {
+fn test_simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let simple = PublishRequest::new(topic.clone(), "one".to_owned())?;
     let built = PublishRequest::builder()
@@ -70,7 +76,7 @@ fn test_simple_and_builder_requests_are_equivalent() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn test_option_builders_replace_then_append_handlers_in_call_order() -> Result<(), Box<dyn std::error::Error>> {
+fn test_option_builders_replace_then_append_handlers_in_call_order() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let options = PublishOptions::<String>::builder().error_handler(|_, _| ()).build();
     let request = PublishRequest::builder()
@@ -94,7 +100,7 @@ fn test_option_builders_replace_then_append_handlers_in_call_order() -> Result<(
 }
 
 #[test]
-fn test_retry_policy_from_direct_dependency_reaches_both_builders() -> Result<(), Box<dyn std::error::Error>> {
+fn test_retry_policy_from_direct_dependency_reaches_both_builders() -> Result<(), Box<dyn Error>> {
     let policy = RetryPolicy::builder().max_attempts(3).build()?;
     let topic = Topic::<String>::new("orders.created")?;
     let publish = PublishRequest::builder()
@@ -133,7 +139,7 @@ fn test_retry_policy_from_direct_dependency_reaches_both_builders() -> Result<()
 }
 
 #[test]
-fn test_request_builders_validate_required_fields_and_metadata() -> Result<(), Box<dyn std::error::Error>> {
+fn test_request_builders_validate_required_fields_and_metadata() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     assert!(matches!(
         PublishRequest::<String>::builder().build(),
@@ -190,8 +196,7 @@ fn test_request_builders_validate_required_fields_and_metadata() -> Result<(), B
 }
 
 #[test]
-fn test_generated_publish_request_ids_are_uuid_v4_and_custom_ids_are_preserved()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_generated_publish_request_ids_are_uuid_v4_and_custom_ids_are_preserved() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let generated = PublishRequest::new(topic.clone(), "one".to_owned())?;
     let generated_id = generated.envelope().id().as_str();
@@ -228,7 +233,7 @@ fn test_acknowledgement_first_terminal_decision_wins() {
 }
 
 #[test]
-fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> Result<(), Box<dyn std::error::Error>> {
+fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> Result<(), Box<dyn Error>> {
     let id_1 = EventId::new("event-1")?;
     let id_2 = EventId::new("event-2")?;
     let provider = ProviderId::new("local")?;
@@ -245,9 +250,9 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> 
     let batch = BatchPublishResult::new(vec![
         Ok(accepted),
         Ok(dropped),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -261,29 +266,25 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> 
 }
 
 #[test]
-fn test_batch_counts_destination_admissions_without_claiming_handler_completion()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_batch_counts_destination_admissions_without_claiming_handler_completion() -> Result<(), Box<dyn Error>> {
     let provider = ProviderId::new("local")?;
-    let receipt =
-        |name: &str, acknowledgement: PublishAcknowledgement| -> Result<PublishReceipt, Box<dyn std::error::Error>> {
-            let id = EventId::new(name)?;
-            Ok(PublishReceipt::new(
-                id.clone(),
-                Some(id),
-                provider.clone(),
-                acknowledgement,
-            ))
-        };
-    let admission = |number: u64,
-                     subscriber: &str,
-                     status: AdmissionStatus|
-     -> Result<DestinationAdmission, Box<dyn std::error::Error>> {
-        Ok(DestinationAdmission::new(
-            Id::new(number),
-            SubscriberId::new(subscriber)?,
-            status,
+    let receipt = |name: &str, acknowledgement: PublishAcknowledgement| -> Result<PublishReceipt, Box<dyn Error>> {
+        let id = EventId::new(name)?;
+        Ok(PublishReceipt::new(
+            id.clone(),
+            Some(id),
+            provider.clone(),
+            acknowledgement,
         ))
     };
+    let admission =
+        |number: u64, subscriber: &str, status: AdmissionStatus| -> Result<DestinationAdmission, Box<dyn Error>> {
+            Ok(DestinationAdmission::new(
+                Id::new(number),
+                SubscriberId::new(subscriber)?,
+                status,
+            ))
+        };
     let batch = BatchPublishResult::new(vec![
         Ok(receipt(
             "broker",
@@ -325,9 +326,9 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
             provider,
             PublishAcknowledgement::DroppedByInterceptor,
         )),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -344,7 +345,7 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
 }
 
 #[test]
-fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error::Error>> {
+fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn Error>> {
     struct StringCodec(ContentType);
     impl EventCodec<String> for StringCodec {
         fn content_type(&self) -> &ContentType {
@@ -372,7 +373,7 @@ fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn test_request_interceptors_append_after_reused_options() -> Result<(), Box<dyn std::error::Error>> {
+fn test_request_interceptors_append_after_reused_options() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let seen = Arc::new(Mutex::new(Vec::new()));
     let first = seen.clone();
@@ -402,7 +403,7 @@ fn test_request_interceptors_append_after_reused_options() -> Result<(), Box<dyn
 }
 
 #[test]
-fn test_delivery_context_preserves_transport_and_attempt_metadata() -> Result<(), Box<dyn std::error::Error>> {
+fn test_delivery_context_preserves_transport_and_attempt_metadata() -> Result<(), Box<dyn Error>> {
     let subscriber_id = SubscriberId::new("audit")?;
     let context = DeliveryContext::new(ProviderId::new("local")?, Id::new(7), subscriber_id)
         .with_retry_attempt(2)
@@ -424,15 +425,13 @@ fn test_delivery_context_preserves_transport_and_attempt_metadata() -> Result<()
 
 #[test]
 fn test_attempt_errors_keep_classification_and_source() {
-    use std::error::Error;
-
     let publish = PublishAttemptError::new(
         "transient",
         Some(true),
-        qubit_event_bus::model::PublishEffect::NotAccepted,
-        std::io::Error::other("offline"),
+        PublishEffect::NotAccepted,
+        IoError::other("offline"),
     );
-    let delivery = DeliveryAttemptError::new("handler", Some(false), std::io::Error::other("bad record"));
+    let delivery = DeliveryAttemptError::new("handler", Some(false), IoError::other("bad record"));
     assert_eq!(publish.kind(), "transient");
     assert_eq!(publish.retryable(), Some(true));
     assert_eq!(publish.source().unwrap().to_string(), "offline");
@@ -443,9 +442,6 @@ fn test_attempt_errors_keep_classification_and_source() {
 
 #[test]
 fn test_acknowledgement_race_has_one_terminal_winner() {
-    use std::sync::Barrier;
-    use std::thread;
-
     let ack = Acknowledgement::new();
     let barrier = Arc::new(Barrier::new(3));
     let left_ack = ack.clone();
@@ -466,7 +462,7 @@ fn test_acknowledgement_race_has_one_terminal_winner() {
 }
 
 #[test]
-fn test_subscriber_interceptors_append_to_reused_options() -> Result<(), Box<dyn std::error::Error>> {
+fn test_subscriber_interceptors_append_to_reused_options() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let options = SubscribeOptions::<String>::builder()
         .interceptor(|delivery, next| next(delivery))
@@ -482,7 +478,7 @@ fn test_subscriber_interceptors_append_to_reused_options() -> Result<(), Box<dyn
 }
 
 #[test]
-fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::Error>> {
+fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn Error>> {
     struct TextCodec(ContentType);
     impl EventCodec<String> for TextCodec {
         fn content_type(&self) -> &ContentType {
@@ -517,7 +513,7 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
-fn test_non_clone_payload_can_be_published_and_delivery_cloned() -> Result<(), Box<dyn std::error::Error>> {
+fn test_non_clone_payload_can_be_published_and_delivery_cloned() -> Result<(), Box<dyn Error>> {
     struct NonClone(u32);
     let topic = Topic::<NonClone>::new("orders.created")?;
     let request = PublishRequest::new(topic, NonClone(42))?;

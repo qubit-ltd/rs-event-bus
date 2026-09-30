@@ -9,6 +9,8 @@
 
 mod support;
 
+use std::io::Error;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -19,8 +21,8 @@ use std::time::Duration;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::error::DeliveryAttemptError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::DeadLetterEvent;
 use qubit_event_bus::model::DeadLetterPolicy;
@@ -45,7 +47,7 @@ fn topic<T: 'static>(name: &str) -> Topic<T> {
 
 fn handler_error(message: &'static str) -> DeliveryError {
     DeliveryError::Handler {
-        source: Box::new(std::io::Error::other(message)),
+        source: Box::new(Error::other(message)),
     }
 }
 
@@ -91,7 +93,7 @@ fn test_retry_runs_interceptor_and_handler_again() {
     assert_eq!(attempts.load(Ordering::Acquire), 2);
     assert_eq!(intercepted.load(Ordering::Acquire), 2);
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
@@ -148,13 +150,20 @@ fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagn
 
     source_subscription.cancel().unwrap();
     dead_letter_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
 fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_deliveries() {
-    let facade_config =
-        EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
+    let facade_config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap(),
+    );
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
     let bus = EventBus::with_config(ProviderId::new("pipeline-admission").unwrap(), backend, facade_config)
         .expect("valid provider capabilities");
@@ -204,6 +213,12 @@ fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_d
         .unwrap();
     bus.publish(PublishRequest::new(event_topic.clone(), 3_u32).unwrap())
         .unwrap();
+    let metrics = bus.delivery_metrics();
+    assert_eq!(metrics.running_handlers, 1);
+    assert_eq!(
+        metrics.reserved_receives + metrics.queued + metrics.running_handlers + metrics.settling,
+        1
+    );
     release_tx.send(()).unwrap();
     for _ in 0..3 {
         completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -213,5 +228,5 @@ fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_d
     assert_eq!(handler_calls.load(Ordering::Acquire), 3);
 
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }

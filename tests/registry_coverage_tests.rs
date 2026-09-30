@@ -276,7 +276,7 @@ fn test_async_identified_spi_delegates_facade_operations_and_keeps_provider_iden
     let mut subscription = block_on(bus.subscribe(request)).expect("SPI creates receiver");
     assert_eq!(1, calls.subscribe.load(Ordering::SeqCst));
     block_on(subscription.close()).expect("receiver closes");
-    block_on(bus.shutdown(ShutdownMode::Immediate)).expect("SPI shuts down");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("SPI shuts down");
 
     assert_eq!(1, calls.capabilities.load(Ordering::SeqCst));
     assert_eq!(1, calls.shutdown.load(Ordering::SeqCst));
