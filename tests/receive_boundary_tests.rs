@@ -20,18 +20,25 @@ use std::time::SystemTime;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::CodecError;
+use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ReceiveError;
+use qubit_event_bus::ShutdownError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::error::SubscriptionCloseErrors;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::PayloadLimits;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::PayloadDirection;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -57,7 +64,9 @@ use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
+use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+use qubit_id::Id;
 use support::manual_async;
 
 struct Probe {
@@ -138,7 +147,7 @@ struct Source {
 }
 struct Receiver {
     source: Source,
-    id: qubit_id::Id,
+    id: Id,
     delivered: usize,
 }
 impl Source {
@@ -229,7 +238,7 @@ impl Receiver {
             ))
         };
         ReceiveOutcome::Message(InboundMessage::new(
-            qubit_event_bus::spi::TopicAddress::new("boundary").expect("topic"),
+            TopicAddress::new("boundary").expect("topic"),
             EventId::new(if good { "healthy-record" } else { "source-record" }).expect("id"),
             SystemTime::UNIX_EPOCH,
             Headers::new(),
@@ -344,7 +353,7 @@ fn verify_boundary(
 ) {
     let probe = Probe::new();
     let source = Arc::new(Source::new(size, schema));
-    let topic = Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic");
+    let topic = Topic::new("boundary").expect("topic").with_shared_codec(probe.clone());
     if asynchronous {
         let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
             .expect("bus");
@@ -354,13 +363,12 @@ fn verify_boundary(
         let result = manual_async::block_on(subscription.run(|_| async { Ok(()) }));
         if expected_decode == 0 {
             let reason = subscription.terminal_failure().expect("cached receive cause");
-            let qubit_event_bus::ReceiveError::Stopped(returned) = result.expect_err("boundary stops") else {
+            let ReceiveError::Stopped(returned) = result.expect_err("boundary stops") else {
                 panic!("structured stop")
             };
             assert!(Arc::ptr_eq(&reason, &returned));
-            let qubit_event_bus::ReceiveError::Stopped(repeated) =
-                manual_async::block_on(subscription.run(|_| async { Ok(()) }))
-                    .expect_err("same handle remains stopped")
+            let ReceiveError::Stopped(repeated) = manual_async::block_on(subscription.run(|_| async { Ok(()) }))
+                .expect_err("same handle remains stopped")
             else {
                 panic!("structured stop")
             };
@@ -450,7 +458,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
             bus.subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
             ),
@@ -458,7 +466,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
         .expect("subscription");
         assert!(matches!(
             manual_async::block_on(stopped.run(|_| async { Ok(()) })),
-            Err(qubit_event_bus::ReceiveError::Stopped(_))
+            Err(ReceiveError::Stopped(_))
         ));
         assert_eq!(probe.validate.load(Ordering::SeqCst), 1);
         assert_eq!(probe.decode.load(Ordering::SeqCst), usize::from(mode == 2));
@@ -471,7 +479,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
             bus.subscribe(
                 SubscribeRequest::new(
                     "healthy",
-                    Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
                 )
                 .expect("request"),
             ),
@@ -499,7 +507,7 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
         bus.subscribe(
             SubscribeRequest::new(
                 "paused-close",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -540,7 +548,7 @@ fn test_receive_stop_finishes_already_started_handler() {
         bus.subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -564,10 +572,7 @@ fn test_receive_stop_finishes_already_started_handler() {
     assert!(manual_async::poll_once(run.as_mut()).is_pending());
     assert_eq!(started.load(Ordering::SeqCst), 1);
     release.store(true, Ordering::SeqCst);
-    assert!(matches!(
-        manual_async::block_on(run),
-        Err(qubit_event_bus::ReceiveError::Stopped(_))
-    ));
+    assert!(matches!(manual_async::block_on(run), Err(ReceiveError::Stopped(_))));
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
         1,
@@ -579,7 +584,7 @@ fn test_receive_stop_finishes_already_started_handler() {
 fn test_regular_decode_failure_rejects_without_terminal_stop() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));
-        let topic = Topic::new_with_shared_codec("boundary", panic_probe(3)).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(3));
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
@@ -632,7 +637,7 @@ fn test_content_native_and_ephemeral_stop_contracts() {
                 bus.subscribe(
                     SubscribeRequest::new(
                         "contract",
-                        Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                        Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                     )
                     .expect("request"),
                 ),
@@ -640,10 +645,10 @@ fn test_content_native_and_ephemeral_stop_contracts() {
             .expect("subscription");
             assert!(matches!(
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler on mismatch") })),
-                Err(qubit_event_bus::ReceiveError::Stopped(_))
+                Err(ReceiveError::Stopped(_))
             ));
             let reason = subscription.terminal_failure().expect("canonical failure");
-            let qubit_event_bus::model::SubscriptionStopReason::Codec { error, .. } = reason.as_ref() else {
+            let SubscriptionStopReason::Codec { error, .. } = reason.as_ref() else {
                 panic!("codec cause")
             };
             if native {
@@ -675,7 +680,7 @@ fn test_sync_permanent_panic_is_once_and_cached() {
             .subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
                 |_| -> () { panic!("no handler after codec panic") },
@@ -713,7 +718,7 @@ fn test_explicit_legacy_schema_override_can_decode() {
         bus.subscribe(
             SubscribeRequest::new(
                 "legacy",
-                Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
             )
             .expect("request"),
         ),
@@ -741,7 +746,7 @@ fn test_sync_receive_stop_drains_started_handler() {
         .subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
             move |_| {
@@ -782,7 +787,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
         bus.subscribe(
             SubscribeRequest::new(
                 "strict",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -790,7 +795,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     .expect("subscription");
     assert!(matches!(
         manual_async::block_on(stopped.run(|_| async { Ok(()) })),
-        Err(qubit_event_bus::ReceiveError::Stopped(_))
+        Err(ReceiveError::Stopped(_))
     ));
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
@@ -801,7 +806,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
         bus.subscribe(
             SubscribeRequest::new(
                 "compatible",
-                Topic::new_with_shared_codec("boundary", panic_probe(4)).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(4)),
             )
             .expect("request"),
         ),
@@ -823,14 +828,14 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
         let observed = notifications.clone();
         let diagnostic_origins = Arc::new(Mutex::new(Vec::new()));
         let recorded_origins = diagnostic_origins.clone();
-        let topic = Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    qubit_event_bus::Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
                     _ => "other_diagnostic".to_owned(),
                 });
                 panic!("observer fails while reporting the terminal boundary");
@@ -838,7 +843,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             let mut subscription =
                 manual_async::block_on(bus.subscribe(SubscribeRequest::new("observer", topic).expect("request")))
                     .expect("subscription");
-            let qubit_event_bus::ReceiveError::Stopped(returned) =
+            let ReceiveError::Stopped(returned) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("boundary stops despite observer panic")
             else {
@@ -849,7 +854,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
                 .expect("observer panic must not prevent cause caching");
             assert!(Arc::ptr_eq(&cause, &returned));
             for _ in 0..2 {
-                let qubit_event_bus::ReceiveError::Stopped(repeated) =
+                let ReceiveError::Stopped(repeated) =
                     manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                         .expect_err("repeat stopped")
                 else {
@@ -873,7 +878,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    qubit_event_bus::Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
                     _ => "other_diagnostic".to_owned(),
                 });
                 panic!("observer fails while reporting the terminal boundary");
@@ -916,7 +921,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
 }
 
 /// Checks the close error independently of the canonical codec stop reason.
-fn assert_independent_close_errors(errors: &qubit_event_bus::error::SubscriptionCloseErrors) {
+fn assert_independent_close_errors(errors: &SubscriptionCloseErrors) {
     assert_eq!(errors.len(), 1, "one canonical close failure");
     let failure = errors.iter().next().expect("close failure");
     assert_eq!(failure.error().kind(), "injected_close_failure");
@@ -931,7 +936,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(5, Some(SchemaId::new("v1").expect("schema"))));
         source.close_failed.store(true, Ordering::SeqCst);
-        let topic = Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
         let cause;
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
@@ -939,7 +944,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             let mut subscription =
                 manual_async::block_on(bus.subscribe(SubscribeRequest::new("close-error", topic).expect("request")))
                     .expect("subscription");
-            let qubit_event_bus::ReceiveError::Spi(close_error) =
+            let ReceiveError::Spi(close_error) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("close failure must not be hidden by codec stop")
             else {
@@ -948,21 +953,21 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             assert_eq!(close_error.kind(), "injected_close_failure");
             assert_eq!(close_error.operation(), "close");
             cause = subscription.terminal_failure().expect("codec cause still available");
-            let qubit_event_bus::ReceiveError::Stopped(repeated) =
+            let ReceiveError::Stopped(repeated) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("same terminal cause")
             else {
                 panic!("stop cause")
             };
             assert!(Arc::ptr_eq(&cause, &repeated));
-            let qubit_event_bus::LifecycleError::SubscriptionClose(close_errors) =
+            let LifecycleError::SubscriptionClose(close_errors) =
                 manual_async::block_on(subscription.close()).expect_err("provider close remains independently failed")
             else {
                 panic!("close failure snapshot")
             };
             assert_independent_close_errors(&close_errors);
             source.close_failed.store(false, Ordering::SeqCst);
-            let qubit_event_bus::ShutdownError::SubscriptionClose(shutdown_errors) =
+            let ShutdownError::SubscriptionClose(shutdown_errors) =
                 manual_async::block_on(bus.shutdown(ShutdownMode::Immediate))
                     .expect_err("shutdown retains canonical prior close failure")
             else {
@@ -987,7 +992,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::yield_now();
             }
-            let qubit_event_bus::LifecycleError::SubscriptionClose(close_errors) = subscription
+            let LifecycleError::SubscriptionClose(close_errors) = subscription
                 .cancel()
                 .expect_err("provider close failure remains observable")
             else {
@@ -997,7 +1002,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             cause = subscription
                 .terminal_failure()
                 .expect("codec cause independently available");
-            let qubit_event_bus::ShutdownError::SubscriptionClose(shutdown_errors) = bus
+            let ShutdownError::SubscriptionClose(shutdown_errors) = bus
                 .shutdown(ShutdownMode::Immediate)
                 .expect_err("shutdown must retain close failure")
             else {
@@ -1009,14 +1014,14 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
                 &subscription.terminal_failure().expect("codec cause remains")
             ));
         }
-        let qubit_event_bus::model::SubscriptionStopReason::Codec { event_id, error } = cause.as_ref() else {
+        let SubscriptionStopReason::Codec { event_id, error } = cause.as_ref() else {
             panic!("structured codec cause")
         };
         assert_eq!(event_id.as_str(), "source-record");
         assert!(matches!(
             error.as_ref(),
             CodecError::PayloadTooLarge {
-                direction: qubit_event_bus::model::PayloadDirection::Receive,
+                direction: PayloadDirection::Receive,
                 actual: 5,
                 limit: 4
             }

@@ -47,6 +47,7 @@ use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
@@ -166,7 +167,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
                     resource: None,
                     kind: "injected_publish_failure",
                     retryable: Some(attempt < self.retryable_failures),
-                    effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+                    effect: PublishEffect::NotAccepted,
                     source: Box::new(std::io::Error::other("injected async provider failure")),
                 })
             } else {
@@ -272,7 +273,8 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
         EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
     )
     .expect("valid provider capabilities");
-    block_on(dropped_bus.publish(PublishRequest::builder().topic(topic()).payload(4_u32).build().unwrap())).unwrap();
+    let _ = block_on(dropped_bus.publish(PublishRequest::builder().topic(topic()).payload(4_u32).build().unwrap()))
+        .unwrap();
     let dropped = dropped_bus.publish_metrics();
     assert_eq!(dropped.attempts, 1);
     assert_eq!(dropped.dropped, 1);
@@ -304,7 +306,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(mixed_ack)),
     )
     .expect("valid provider capabilities");
-    block_on(destination_bus.publish(PublishRequest::builder().topic(topic()).payload(5_u32).build().unwrap()))
+    let _ = block_on(destination_bus.publish(PublishRequest::builder().topic(topic()).payload(5_u32).build().unwrap()))
         .unwrap();
     let destination_metrics = destination_bus.publish_metrics();
     assert_eq!(destination_metrics.accepted_destinations, 1);
@@ -319,7 +321,8 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
         ),
     )
     .expect("valid provider capabilities");
-    block_on(empty_bus.publish(PublishRequest::builder().topic(topic()).payload(6_u32).build().unwrap())).unwrap();
+    let _ =
+        block_on(empty_bus.publish(PublishRequest::builder().topic(topic()).payload(6_u32).build().unwrap())).unwrap();
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
 
     let failing_bus = AsyncEventBus::from_spi(
@@ -344,8 +347,10 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
         .map(|index| {
             let worker_bus = concurrent_bus.clone();
             std::thread::spawn(move || {
-                block_on(worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()))
-                    .expect("concurrent publish should be accepted");
+                let _ = block_on(
+                    worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()),
+                )
+                .expect("concurrent publish should be accepted");
             })
         })
         .collect::<Vec<_>>();
@@ -405,7 +410,7 @@ fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
         .build()
         .unwrap();
 
-    block_on(bus.publish(request)).expect("global interceptor allows publish");
+    let _ = block_on(bus.publish(request)).expect("global interceptor allows publish");
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
     block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
@@ -494,16 +499,14 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-encoded-publisher").unwrap(), spi.clone())
         .expect("valid provider capabilities");
-    let encoded_topic = Topic::new_with_codec(
-        "async.encoded",
-        StringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
+    let encoded_topic = Topic::new("async.encoded")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
             fail_encode: false,
-        },
-    )
-    .unwrap();
+        });
 
-    block_on(bus.publish(PublishRequest::new(encoded_topic, "wire payload".to_owned()).unwrap()))
+    let _ = block_on(bus.publish(PublishRequest::new(encoded_topic, "wire payload".to_owned()).unwrap()))
         .expect("codec should encode successfully");
     assert_eq!(*spi.payload_was_encoded.lock().unwrap(), [true]);
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
@@ -512,14 +515,12 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let failing_spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let failing_bus = AsyncEventBus::from_spi(ProviderId::new("async-codec-failure").unwrap(), failing_spi.clone())
         .expect("valid provider capabilities");
-    let failing_topic = Topic::new_with_codec(
-        "async.codec.failure",
-        StringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
+    let failing_topic = Topic::new("async.codec.failure")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
             fail_encode: true,
-        },
-    )
-    .unwrap();
+        });
     let error = block_on(failing_bus.publish(PublishRequest::new(failing_topic, "cannot encode".to_owned()).unwrap()))
         .unwrap_err();
     assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));

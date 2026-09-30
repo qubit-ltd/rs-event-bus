@@ -7,6 +7,7 @@
 // =============================================================================
 //! Provider-shaped adapters used to exercise transport and settlement variants.
 
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -232,6 +233,6 @@ fn provider_error(operation: &'static str, kind: &'static str) -> SpiError {
         resource: None,
         kind,
         retryable: Some(false),
-        source: Box::new(std::io::Error::other(kind)),
+        source: Box::new(Error::other(kind)),
     }
 }
