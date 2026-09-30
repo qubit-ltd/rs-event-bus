@@ -7,6 +7,7 @@
 // =============================================================================
 //! Synchronous requests routed to the provider receiver's owner thread.
 
+use std::sync::Weak;
 use std::sync::mpsc;
 
 use qubit_id::Id;
@@ -20,12 +21,29 @@ use crate::spi::SettlementToken;
 /// Routes handler settlement requests to the receiver-owning worker.
 #[derive(Clone)]
 pub(in crate::facade) struct OwnerSettlementRouter {
+    /// Lease whose immutable disposition is routed to the owner.
+    pub(in crate::facade) lease_id: u64,
+    /// Bus state used to wake the owner and report disconnection.
+    pub(in crate::facade) inner: Weak<super::EventBusInner>,
     /// Message channel to the receiver-owning worker.
     pub(in crate::facade) sender: mpsc::Sender<CoordinatorMessage>,
 }
 
 impl OwnerSettlementRouter {
-    /// Sends a settlement to the receiver owner and waits for its response.
+    /// Marks unresolved recovery without submitting a fake settlement
+    /// disposition.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: owner to wake for unresolved provider recovery.
+    pub(in crate::facade) fn abandon(&self, subscription_id: Id) {
+        let _ = self.sender.send(CoordinatorMessage::Abandoned(self.lease_id));
+        if let Some(inner) = self.inner.upgrade() {
+            inner.scheduler.notify(subscription_id);
+        }
+    }
+
+    /// Sends a settlement without blocking the handler thread.
+    /// A disconnected owner is diagnosed and provider close owns recovery.
     ///
     /// # Parameters
     /// - `token`: provider token to settle, or `None` when unavailable.
@@ -43,21 +61,23 @@ impl OwnerSettlementRouter {
         subscription_id: Id,
         subscriber_id: &SubscriberId,
     ) {
-        let (settled, wait) = mpsc::sync_channel(0);
-        if self
-            .sender
-            .send(CoordinatorMessage::Settlement {
-                token,
-                disposition,
-                event_id,
-                topic: topic.into(),
-                subscription_id,
-                subscriber_id: subscriber_id.clone(),
-                settled: Some(settled),
-            })
-            .is_ok()
-        {
-            let _ = wait.recv();
+        let result = self.sender.send(CoordinatorMessage::Settlement {
+            lease_id: self.lease_id,
+            token,
+            disposition,
+            event_id,
+            topic: topic.into(),
+            subscription_id,
+            subscriber_id: subscriber_id.clone(),
+        });
+        if let Some(inner) = self.inner.upgrade() {
+            if result.is_err() {
+                inner.emit_internal(
+                    "settlement_owner_disconnected",
+                    "receiver owner no longer accepts settlement".into(),
+                );
+            }
+            inner.scheduler.notify(subscription_id);
         }
     }
 }

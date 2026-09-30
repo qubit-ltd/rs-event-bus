@@ -9,9 +9,12 @@
 
 use std::io;
 use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::TrySendError as ChannelTrySendError;
 use std::sync::mpsc::sync_channel;
@@ -111,7 +114,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 let mut completion = WorkerCompletionGuard::new(worker_state, worker_stats.clone());
                 // The move closure owns every user-controlled resource so both
                 // normal cleanup and unwind cleanup remain inside this boundary.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let result = catch_unwind(AssertUnwindSafe(move || {
                     while let Ok(payload) = receiver.recv() {
                         let outcome = match PublishRequest::new(topic.clone(), payload) {
                             Ok(request) => match bus.publish(request) {
@@ -129,7 +132,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                                 NotificationOutcome::RequestFailed(error)
                             }
                         };
-                        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(outcome))).is_err() {
+                        if catch_unwind(AssertUnwindSafe(|| observer(outcome))).is_err() {
                             NotificationStats::increment(&worker_stats.observer_panicked);
                         }
                     }
@@ -192,7 +195,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Returns `Full` when the bounded queue has no free slot and `Closed`
     /// when admission has stopped or the worker has disconnected.
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>> {
-        let sender = self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(sender) = sender.as_ref() else {
             NotificationStats::increment(&self.stats.queue_closed);
             return Err(TryPublishError::Closed(payload));
@@ -266,22 +269,18 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.reject_worker_thread()?;
         let started = Instant::now();
-        let sender = self
-            .sender
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner).take();
         drop(sender);
         let (lock, changed) = &*self.state;
-        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
         while state.exit.is_none() {
             state = match timeout {
-                None => changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner),
+                None => changed.wait(state).unwrap_or_else(PoisonError::into_inner),
                 Some(limit) => {
                     let remaining = remaining_timeout(limit, started)?;
                     let (next_state, _) = changed
                         .wait_timeout(state, remaining)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     next_state
                 }
             };
@@ -328,7 +327,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             let worker_finished = self
                 .worker
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
                 .is_none_or(thread::JoinHandle::is_finished);
             if worker_finished {
@@ -339,12 +338,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 Some(limit) => thread::sleep(remaining_timeout(limit, started)?.min(Duration::from_millis(1))),
             }
         }
-        if let Some(worker) = self
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
+        if let Some(worker) = self.worker.lock().unwrap_or_else(PoisonError::into_inner).take() {
             worker
                 .join()
                 .map_err(|_| io::Error::other("notification publisher worker panicked"))?;
@@ -373,9 +367,6 @@ fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> 
 impl<T: Send + Sync + 'static> Drop for NotificationPublisher<T> {
     /// Closes queue admission without waiting for worker completion.
     fn drop(&mut self) {
-        self.sender
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.sender.get_mut().unwrap_or_else(PoisonError::into_inner).take();
     }
 }

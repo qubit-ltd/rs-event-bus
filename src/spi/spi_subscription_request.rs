@@ -78,6 +78,7 @@ impl SpiSubscriptionRequest {
     /// # Returns
     /// A provider request containing the supplied transport settings.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub fn new(
         subscription_id: Id,
         topic: TopicAddress,

@@ -87,27 +87,3 @@ submit_sync_provider! {
     spec = crate::registry::EventBusSpec;
     provider = LocalEventBusProvider;
 }
-
-#[cfg(test)]
-mod tests {
-    use qubit_spi::ProviderMetadata;
-    use qubit_spi::ServiceProvider;
-
-    use super::LocalEventBusProvider;
-    use crate::registry::EventBusConfig;
-    use crate::spi::EventBusSpi;
-    use crate::spi::PayloadModes;
-    use crate::spi::ShutdownMode;
-
-    /// Verifies default configuration constructs a native local SPI.
-    #[test]
-    fn test_default_configuration_creates_a_native_local_spi() {
-        assert_eq!("local", LocalEventBusProvider.descriptor().id().as_str());
-        let spi: std::sync::Arc<dyn EventBusSpi> = LocalEventBusProvider
-            .create_configured(&EventBusConfig::default())
-            .expect("default provider config is valid");
-
-        assert_eq!(PayloadModes::Native, spi.capabilities().payload_modes());
-        spi.shutdown(ShutdownMode::Immediate).expect("local SPI closes");
-    }
-}

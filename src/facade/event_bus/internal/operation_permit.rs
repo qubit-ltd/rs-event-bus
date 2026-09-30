@@ -10,6 +10,7 @@
 use super::operation_gate::OperationGate;
 
 /// Releases one operation admission after its provider call sequence returns.
+#[must_use = "the permit must remain alive until the provider call sequence completes"]
 pub(in crate::facade) struct OperationPermit<'a> {
     /// Gate whose active operation count this permit owns.
     pub(in crate::facade::event_bus) gate: &'a OperationGate,

@@ -7,11 +7,14 @@
 // =============================================================================
 //! Decodes provider payloads at the shared facade boundary.
 
+use std::io::Error;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::codec::EventCodec;
 use crate::codec::call_codec;
 use crate::error::CodecError;
+use crate::model::PayloadDirection;
 use crate::spi::TransportPayload;
 
 /// Decodes a native or codec-backed provider payload into a shared value.
@@ -38,7 +41,7 @@ use crate::spi::TransportPayload;
 pub(crate) fn decode_payload<T: Send + Sync + 'static>(
     codec: Option<&Arc<dyn EventCodec<T>>>,
     payload: &TransportPayload,
-    max_receive_bytes: std::num::NonZeroUsize,
+    max_receive_bytes: NonZeroUsize,
 ) -> Result<Arc<T>, CodecError> {
     match payload {
         TransportPayload::Native(value) => {
@@ -49,7 +52,7 @@ pub(crate) fn decode_payload<T: Send + Sync + 'static>(
             let limit = max_receive_bytes.get();
             if actual > limit {
                 return Err(CodecError::PayloadTooLarge {
-                    direction: crate::model::PayloadDirection::Receive,
+                    direction: PayloadDirection::Receive,
                     actual,
                     limit,
                 });
@@ -70,6 +73,6 @@ pub(crate) fn decode_payload<T: Send + Sync + 'static>(
 /// A [`CodecError::Decode`] carrying an I/O source with the supplied message.
 fn decode_error(message: &'static str) -> CodecError {
     CodecError::Decode {
-        source: Box::new(std::io::Error::other(message)),
+        source: Box::new(Error::other(message)),
     }
 }

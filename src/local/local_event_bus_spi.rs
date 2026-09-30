@@ -9,9 +9,11 @@
 
 use std::any::TypeId;
 use std::error::Error;
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::Weak;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -21,10 +23,13 @@ use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
 use super::state::LocalSharedState;
+use crate::error::ConfigurationError;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
+use crate::model::StartPosition;
+use crate::model::SubscriptionDurability;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
@@ -40,6 +45,7 @@ use crate::spi::SettlementCapabilities;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::SubscriptionModes;
 use crate::spi::TopicAddress;
 use crate::spi::TransportPayload;
 
@@ -76,9 +82,9 @@ impl LocalEventBusSpi {
     /// A synchronous local provider SPI with empty queues.
     ///
     /// # Errors
-    /// Returns [`crate::error::ConfigurationError::InvalidField`] if either
+    /// Returns [`ConfigurationError::InvalidField`] if either
     /// capacity is zero.
-    pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
+    pub fn new(config: &LocalEventBusConfig) -> Result<Self, ConfigurationError> {
         config.validate()?;
         Ok(Self {
             shared: LocalSharedState::new(config.get_queue_capacity(), config.get_max_total_outstanding()),
@@ -151,7 +157,7 @@ impl EventBusSpi for LocalEventBusSpi {
             OrderingCapability::PerKey,
             DelayedDeliveryCapability::Native,
             DurabilityCapability::Ephemeral,
-            crate::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -254,9 +260,9 @@ impl EventBusSpi for LocalEventBusSpi {
                 "provider_closed",
             ));
         }
-        if request.durability() != crate::model::SubscriptionDurability::Ephemeral
+        if request.durability() != SubscriptionDurability::Ephemeral
             || request.group().is_some()
-            || !matches!(request.start_position(), crate::model::StartPosition::New)
+            || !matches!(request.start_position(), StartPosition::New)
         {
             return Err(operation_error(
                 "subscribe",
@@ -265,7 +271,7 @@ impl EventBusSpi for LocalEventBusSpi {
             ));
         }
         let topic = request.topic().clone();
-        state.live_queues_for_topic(&topic);
+        let _ = state.live_queues_for_topic(&topic);
         let has_type_conflict = state
             .topics
             .get(&topic)
@@ -282,7 +288,7 @@ impl EventBusSpi for LocalEventBusSpi {
             let is_live = state
                 .topics
                 .values()
-                .find_map(|bucket| bucket.queues.get(&id).and_then(std::sync::Weak::upgrade))
+                .find_map(|bucket| bucket.queues.get(&id).and_then(Weak::upgrade))
                 .is_some();
             if is_live {
                 return Err(operation_error(
@@ -402,7 +408,7 @@ impl EventBusSpi for LocalEventBusSpi {
 ///
 /// # Errors
 /// Returns an unsupported-payload-mode SPI error for encoded payloads.
-fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress) -> Result<(), SpiError> {
+fn validate_message(message: &OutboundMessage, topic: &TopicAddress) -> Result<(), SpiError> {
     match message.payload() {
         TransportPayload::Native(_) => Ok(()),
         TransportPayload::Encoded(_) => Err(operation_error(
@@ -424,6 +430,7 @@ fn validate_message(message: &OutboundMessage, topic: &crate::spi::TopicAddress)
 /// # Panics
 /// Panics if the payload is encoded, which indicates that local payload-mode
 /// validation was skipped.
+#[must_use]
 fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
     match payload {
         TransportPayload::Native(value) => value.as_ref().type_id(),
@@ -447,7 +454,7 @@ pub(super) fn operation_error(operation: &'static str, resource: Option<&str>, k
         resource: resource.map(Into::into),
         kind,
         retryable: Some(false),
-        source: Box::new(std::io::Error::other(kind)) as Box<dyn Error + Send + Sync>,
+        source: Box::new(IoError::other(kind)) as Box<dyn Error + Send + Sync>,
     }
 }
 
@@ -466,7 +473,7 @@ pub(super) fn invalid_token_error(resource: Option<&str>, reason: &'static str) 
         resource: resource.map(Into::into),
         reason,
         retryable: Some(false),
-        source: Box::new(std::io::Error::other(reason)),
+        source: Box::new(IoError::other(reason)),
     }
 }
 

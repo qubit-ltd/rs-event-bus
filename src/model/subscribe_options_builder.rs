@@ -57,6 +57,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// A builder containing default subscription options.
+    #[inline]
     pub fn new() -> Self {
         Self {
             options: SubscribeOptions::default(),
@@ -70,7 +71,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned ack mode."]
+    #[must_use = "Use the returned builder."]
     pub fn ack_mode(mut self, value: AckMode) -> Self {
         self.options.ack_mode = value;
         self
@@ -86,6 +87,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn filter<F>(mut self, value: F) -> Self
     where
         F: Fn(&EventEnvelope<T>) -> bool + Send + Sync + 'static,
@@ -101,6 +103,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
         self
@@ -116,6 +119,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn retry_rule<R>(mut self, value: R) -> Self
     where
         R: RetryRule<DeliveryAttemptError>,
@@ -131,6 +135,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
         self
@@ -146,6 +151,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&EventEnvelope<T>, &DeliveryError) -> FailureDirective + Send + Sync + 'static,
@@ -164,6 +170,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
         F: Fn(Delivery<T>, SubscriberNext<T>) -> Result<(), DeliveryError> + Send + Sync + 'static,
@@ -182,6 +189,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn async_interceptor<F>(mut self, value: F) -> Self
     where
         F: Fn(Delivery<T>, AsyncSubscriberNext<T>) -> SpiFuture<'static, Result<(), DeliveryError>>
@@ -200,6 +208,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn dead_letter(mut self, value: DeadLetterPolicy) -> Self {
         self.options.dead_letter = Some(value);
         self
@@ -212,7 +221,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned ordering policy."]
+    #[must_use = "Use the returned builder."]
     pub fn ordering_policy(mut self, value: OrderingPolicy) -> Self {
         self.options.ordering_policy = value;
         self
@@ -225,6 +234,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn consumer_group(mut self, value: ConsumerGroup) -> Self {
         self.options.consumer_group = Some(value);
         self
@@ -237,7 +247,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned durability."]
+    #[must_use = "Use the returned builder."]
     pub fn durability(mut self, value: SubscriptionDurability) -> Self {
         self.options.durability = value;
         self
@@ -250,7 +260,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned start position."]
+    #[must_use = "Use the returned builder."]
     pub fn start_position(mut self, value: StartPosition) -> Self {
         self.options.start_position = value;
         self
@@ -264,6 +274,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn provider_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.options.provider_options.insert(key.into(), value.into());
         self
@@ -276,6 +287,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn provider_options(mut self, values: ProviderOptions) -> Self {
         self.options.provider_options.extend(values);
         self
@@ -297,6 +309,10 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
 impl<T: 'static> Default for SubscribeOptionsBuilder<T> {
     /// Creates a builder with automatic ACK, ephemeral durability, and new
     /// events.
+    ///
+    /// # Returns
+    /// A builder with the default subscription options.
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 pub(in crate::facade) struct AsyncSignal {
     /// Current waker for each registered waiter ID.
     wakers: Mutex<HashMap<u64, std::task::Waker>>,
-    /// Generates unique waiter IDs for signal registrations.
+    /// Generates waiter IDs from a wrapping `u64` sequence.
     next_waiter: AtomicU64,
 }
 
@@ -59,7 +59,9 @@ impl AsyncSignal {
     /// Allocates a unique identifier for a new wait registration.
     ///
     /// # Returns
-    /// An ID not previously allocated by this signal instance.
+    /// The next ID in the `u64` sequence; IDs repeat only after the sequence
+    /// wraps.
+    #[must_use = "waiter IDs must be retained for registration"]
     pub(in crate::facade) fn next_waiter_id(&self) -> u64 {
         self.next_waiter.fetch_add(1, Ordering::Relaxed)
     }
@@ -84,7 +86,9 @@ mod tests {
         if let Some(signal) = probe.signal.upgrade() {
             match signal.wakers.try_lock() {
                 Ok(_) | Err(TryLockError::Poisoned(_)) => {}
-                Err(TryLockError::WouldBlock) => panic!("external waker code called under registry lock"),
+                Err(TryLockError::WouldBlock) => {
+                    panic!("external waker code called under registry lock")
+                }
             }
         }
     }

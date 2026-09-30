@@ -8,6 +8,7 @@
 //! Errors returned when an event identifier cannot be generated.
 
 use qubit_id::IdGenerationError;
+use thiserror::Error;
 
 /// The operating-system random source could not provide a UUID v4.
 ///
@@ -16,13 +17,18 @@ use qubit_id::IdGenerationError;
 /// ```
 /// use std::error::Error;
 ///
+/// use qubit_event_bus::error::EventIdGenerationError;
 /// use qubit_event_bus::model::EventId;
 ///
+/// fn inspect_generation_failure(error: &EventIdGenerationError) {
+///     assert!(Error::source(error).is_some());
+/// }
+///
 /// if let Err(error) = EventId::generate() {
-///     let _generator_failure = Error::source(&error);
+///     inspect_generation_failure(&error);
 /// }
 /// ```
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 #[must_use]
 #[error("failed to generate event ID")]
 pub struct EventIdGenerationError(
@@ -40,6 +46,7 @@ impl EventIdGenerationError {
     /// # Returns
     /// An event-ID generation error that exposes `source` through its error
     /// chain.
+    #[inline]
     pub(crate) fn new(source: IdGenerationError) -> Self {
         Self(source)
     }

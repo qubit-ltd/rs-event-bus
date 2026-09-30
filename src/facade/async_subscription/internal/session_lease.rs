@@ -7,6 +7,8 @@
 // =============================================================================
 //! Internal asynchronous subscription state.
 
+use std::sync::PoisonError;
+
 use super::AsyncSession;
 use super::AsyncSubscriptionControl;
 
@@ -26,11 +28,10 @@ impl<T: 'static> Drop for SessionLease<'_, T> {
     /// Returns the session to its control and wakes the next waiter.
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
-            let mut slot = self
-                .control
-                .slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            session.inner.scheduler.set_dispatch_active(session.id, false);
+            session.inner.scheduler.cancel_receive(session.id);
+            session.inner.notify_scheduler();
+            let mut slot = self.control.slot.lock().unwrap_or_else(PoisonError::into_inner);
             if slot.disposed {
                 drop(slot);
                 drop(session);

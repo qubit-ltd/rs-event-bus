@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use qubit_id::Id;
 
-use super::super::super::async_admission::AsyncAdmissionFuture;
 use super::super::super::async_event_bus::AsyncEventBusInner;
 use super::OwnedDeliveryTask;
 use super::PendingDelivery;
@@ -25,9 +24,14 @@ use crate::spi::AsyncEventSubscriptionSpi;
 
 /// Runtime state for one typed subscription, including the receiver and all
 /// delivery futures that have been accepted by the facade.
+///
+/// # Type Parameters
+/// - `T`: message type accepted by this subscription's topic and handler.
 pub(in crate::facade) struct AsyncSession<T: 'static> {
     /// Shared bus lifecycle, tracker, provider, and pipelines.
     pub(in crate::facade) inner: Arc<AsyncEventBusInner>,
+    /// Subscription counters retained independently by the public handle.
+    pub(in crate::facade) metrics: Arc<crate::facade::internal::DeliveryMetrics>,
     /// Bus-local subscription identity.
     pub(in crate::facade) id: Id,
     /// Logical subscriber identity used in SPI diagnostics.
@@ -44,20 +48,17 @@ pub(in crate::facade) struct AsyncSession<T: 'static> {
     pub(in crate::facade) receiver_closed: bool,
     /// Stop and wake signals shared with the public handle.
     pub(in crate::facade) signals: Arc<SessionSignals>,
-    /// Current delivery waiting for handler or settlement completion.
-    pub(in crate::facade) pending: Option<PendingDelivery<T>>,
-    /// Delivery held while another delivery owns admission.
-    pub(in crate::facade) waiting_admission: Option<PendingDelivery<T>>,
-    /// Handler futures already accepted by facade admission.
+    /// Queued deliveries which have not received a handler grant.
+    pub(in crate::facade) buffered: VecDeque<PendingDelivery<T>>,
+    /// Granted tasks retained across pauses.
     pub(in crate::facade) tasks: Vec<OwnedDeliveryTask<T>>,
-    /// Completed tasks waiting for terminal settlement.
+    /// Handler-complete deliveries retaining their lanes through settlement.
     pub(in crate::facade) completed: VecDeque<PendingDelivery<T>>,
-    /// Whether handler processing is waiting for a caller's handler result.
-    pub(in crate::facade) defer_settlement: bool,
+    /// Handler completions retained even if an in-flight settlement is
+    /// cancelled.
+    pub(in crate::facade) completed_during_settlement: VecDeque<PendingDelivery<T>>,
     /// Handler used to resume tasks after the runner future is dropped.
     pub(in crate::facade) handler: Option<SharedAsyncHandler<T>>,
-    /// Pending bus-wide admission request retained across runner pauses.
-    pub(in crate::facade) admission_waiter: Option<AsyncAdmissionFuture>,
 }
 
 // Closes and disposes the provider receiver.
@@ -66,3 +67,32 @@ mod close;
 mod delivery;
 // Drives the caller-owned subscription run loop.
 mod runner;
+
+// Applies ordered settlement attempts and terminal failure cleanup.
+mod settlement;
+// Defines receiver-owner events selected by the poll loop.
+mod runner_event;
+
+impl<T: 'static> Drop for AsyncSession<T> {
+    /// Releases metadata after actual payload and future owners have been
+    /// dropped.
+    fn drop(&mut self) {
+        self.inner.scheduler.stop_subscription(self.id);
+        let abandoned =
+            self.buffered.len() + self.tasks.len() + self.completed.len() + self.completed_during_settlement.len();
+        if self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+            self.inner
+                .abandoned_deliveries
+                .fetch_add(abandoned as u64, std::sync::atomic::Ordering::AcqRel);
+            for _ in 0..abandoned {
+                self.metrics.record_abandoned_ephemeral();
+            }
+        }
+        self.buffered.clear();
+        self.tasks.clear();
+        self.completed.clear();
+        self.completed_during_settlement.clear();
+        let _ = self.inner.scheduler.unregister(self.id);
+        self.inner.notify_scheduler();
+    }
+}

@@ -5,76 +5,71 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Single-owner receive and settlement coordination.
-
+//! Single-threaded provider receive, settlement, and delivery ownership.
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::convert::identity;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::thread::park_timeout;
 use std::time::Duration;
 
 use qubit_id::Id;
 
-use super::internal::close_spi_subscription;
 use crate::DeliveryError;
 use crate::Diagnostic;
-use crate::EventId;
 use crate::SubscriberId;
+use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
-use crate::facade::DeliveryTrackerGuard;
 use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::CoordinatorMessage;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::event_bus::OwnerSettlementRouter;
 use crate::facade::event_bus::delivery::process_inbound;
 use crate::facade::event_bus::failure::panic_message;
+use crate::facade::event_bus::internal::OwnedSyncDelivery;
+use crate::facade::event_bus::internal::close_spi_subscription;
 use crate::facade::internal::BusContextGuard;
-use crate::facade::internal::LifecycleState;
+use crate::facade::internal::SettlementRetryDecision;
+use crate::facade::internal::SettlementRetryState;
 use crate::facade::lifecycle::receive_poll_interval;
 use crate::model::Delivery;
+use crate::model::SettlementTermination;
+use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::pipeline::OrderingLaneKey;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
 use crate::spi::ReceiveOutcome;
-use crate::spi::SettlementToken;
 
-/// One receiver-owned message, its decoded result, and its tracking permit.
-type PendingInbound<'tracking, T> = (
-    usize,
-    InboundMessage,
-    Result<Arc<T>, crate::error::CodecError>,
-    DeliveryTrackerGuard<'tracking>,
-);
-
-/// Runs the receive owner for one subscription until it has fully stopped.
-///
-/// The owner serializes provider receives and settlements while dispatching
-/// admitted deliveries to the scheduler.
+/// Owns a receiver on one thread until all started handlers and provider
+/// cleanup finish. Payloads move to granted jobs, while tracking, lanes and
+/// retries remain here. Provider failures are recorded on `control` and emitted
+/// through `inner`.
 ///
 /// # Type Parameters
-///
-/// * `T` - The decoded event type delivered to the subscriber.
+/// - `T`: decoded payload shared safely with handler threads.
 ///
 /// # Parameters
-///
-/// * `inner` - Shared event bus state.
-/// * `bus_identity` - Identity used to establish the worker's bus context.
-/// * `control` - Cancellation and completion state for the subscription.
-/// * `spi_subscription` - Provider subscription owned by this worker.
-/// * `topic` - Topic whose messages are received.
-/// * `codec` - Optional codec used to decode received payloads.
-/// * `subscriber_id` - Identifier used for diagnostics and provider calls.
-/// * `options` - Subscription delivery and ordering options.
-/// * `handler` - Subscriber callback invoked for each admitted delivery.
+/// - `inner`: shared bus resources and scheduling metadata.
+/// - `bus_identity`: reentrancy identity for callbacks on this bus.
+/// - `control`: cancellation, terminal-cause and completion state.
+/// - `spi_subscription`: receiver exclusively owned by this thread through
+///   close.
+/// - `topic`: typed destination used for tracking and ordering.
+/// - `codec`: optional decoder selected when subscribing.
+/// - `subscriber_id`: logical subscriber included in diagnostics.
+/// - `options`: filter, middleware, ordering and retry policy.
+/// - `handler`: actual user callback wrapper with final admission checks.
 ///
 /// # Side Effects
-///
-/// Provider receive or close failures are reported through event bus
-/// diagnostics; this worker does not return them to its caller.
+/// Blocks in provider operations and bounded parks, dispatches pool work, and
+/// closes the receiver after all started jobs finish. Claimed credits and
+/// lifecycle state are guarded across injected-clock or owner unwinding.
 pub(in crate::facade) fn run_subscription_worker<T>(
     inner: Arc<EventBusInner>,
     bus_identity: usize,
@@ -89,100 +84,166 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     T: Send + Sync + 'static,
 {
     let _worker_context = BusContextGuard::enter(bus_identity);
-    let worker_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let (message_tx, message_rx) = mpsc::channel();
-        let mut pending: Option<PendingInbound<'_, T>> = None;
-        let mut pending_settlements = VecDeque::new();
-        let mut active: HashMap<usize, DeliveryTrackerGuard<'_>> = HashMap::new();
-        let mut next_task = 1usize;
+    let _lifecycle = crate::facade::event_bus::internal::OwnerLifecycleGuard::new(inner.clone(), control.clone());
+    let mut owned: HashMap<u64, OwnedSyncDelivery<'_, T>> = HashMap::new();
+    let (sender, receiver) = mpsc::channel();
+    let worker_result = catch_unwind(AssertUnwindSafe(|| {
+        inner.scheduler.attach_owner(control.id);
         let mut receive_closed = false;
+        let mut stop_published = false;
         loop {
-            while let Ok(message) = message_rx.try_recv() {
+            while let Ok(message) = receiver.try_recv() {
                 match message {
-                    settlement @ CoordinatorMessage::Settlement { .. } => {
-                        pending_settlements.push_back(settlement);
+                    CoordinatorMessage::Abandoned(lease) => {
+                        if let Some(delivery) = owned.get_mut(&lease) {
+                            delivery.abandoned = true;
+                        }
                     }
-                    CoordinatorMessage::TaskFinished(task_id) => {
-                        active.remove(&task_id);
+                    CoordinatorMessage::HandlerFinished(lease) => {
+                        if let Some(delivery) = owned.get_mut(&lease) {
+                            delivery.handler_finished = true;
+                        }
+                    }
+                    message @ CoordinatorMessage::Settlement { lease_id, .. } => {
+                        if let Some(delivery) = owned.get_mut(&lease_id) {
+                            if let Some(previous) = delivery.settlement.as_ref() {
+                                if settlement_disposition(previous) != settlement_disposition(&message) {
+                                    fail_internal(&inner, &control, "conflicting_settlement_intent");
+                                }
+                            } else {
+                                delivery.settlement = Some(message);
+                            }
+                        } else {
+                            inner.emit_internal(
+                                "settlement_owner_disconnected",
+                                "settlement lease is no longer owned".into(),
+                            );
+                        }
                     }
                 }
             }
-
-            let stopping = control.is_cancelled();
-            if stopping {
+            let draining = inner.scheduler.should_drain(control.id);
+            let stopping = control.is_cancelled() && !draining;
+            if control.is_cancelled() {
                 receive_closed = true;
-                if let Some((_, message, _decoded, _guard)) = pending.take() {
-                    if control.terminal_failure().is_some() {
-                        abandon_stopped_message(&inner, message);
-                    } else {
-                        requeue_unstarted_message(
-                            &inner,
-                            &mut pending_settlements,
-                            control.id,
-                            &subscriber_id,
-                            message,
-                        );
+            }
+            if stopping && !stop_published {
+                receive_closed = true;
+                stop_published = true;
+                inner.scheduler.cancel_subscription(control.id);
+                for (&lease, delivery) in &mut owned {
+                    if let Some((message, _)) = delivery.inbound.take() {
+                        delivery.handler_finished = true;
+                        if control.terminal_failure().is_none() {
+                            delivery.settlement = canceled_intent(&inner, lease, control.id, &subscriber_id, message);
+                            delivery.abandoned = delivery.settlement.is_none();
+                        } else {
+                            count_abandoned(&inner, control.id);
+                        }
                     }
                 }
             }
 
-            // Keep failed settlements, including their non-cloneable provider
-            // token, until the provider accepts the same idempotent disposition.
-            // Retry only once per owner-loop iteration so receive can drain a
-            // full bounded local queue that may be blocking a Requeue.
-            if let Some(settlement) = pending_settlements.pop_front()
-                && !apply_queued_settlement(&inner, &mut *spi_subscription, &settlement)
-            {
-                if stopping {
-                    release_settlement_waiter(&settlement);
-                } else {
-                    pending_settlements.push_back(settlement);
+            let terminal = control.terminal_failure().is_some();
+            let mut completed = Vec::new();
+            let mut wait = receive_poll_interval();
+            if !terminal {
+                if !stopping {
+                    while let Some(lease) = inner.scheduler.take_settlement_ready(control.id) {
+                        if let Some(delivery) = owned.get_mut(&lease) {
+                            delivery.settlement_granted = true;
+                        }
+                    }
+                }
+                for (&lease, delivery) in &mut owned {
+                    if !delivery.handler_finished || (!delivery.settlement_granted && !stopping) {
+                        continue;
+                    }
+                    if delivery.settlement.is_none() {
+                        completed.push(lease);
+                        continue;
+                    }
+                    // Cancellation gets one best-effort call for a fresh intent;
+                    // a previously failed token remains provider-owned on close.
+                    if stopping && delivery.retry.attempts() > 0 {
+                        continue;
+                    }
+                    match attempt_settlement(&inner, &control, &mut *spi_subscription, delivery, stopping) {
+                        Some(delay) => wait = wait.min(delay),
+                        None => {
+                            if delivery.settlement.is_none() {
+                                completed.push(lease);
+                            }
+                        }
+                    }
+                    if control.terminal_failure().is_some() {
+                        break;
+                    }
                 }
             }
-
-            if let Some((task_id, message, decoded, guard)) = pending.take() {
-                let ordering_key = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
-                    Some(OrderingLaneKey::new(
-                        topic.name(),
-                        message.ordering_key().map(crate::spi::OrderingKey::as_str),
-                        control.id,
-                    ))
-                } else {
-                    None
-                };
-                if let Some(reservation) = inner.scheduler.try_reserve(control.id, ordering_key) {
-                    let task_subscription_id = control.id;
+            for lease in completed {
+                if let Some(delivery) = owned.remove(&lease)
+                    && !delivery.abandoned
+                    && !delivery.lifecycle_failed
+                {
+                    control.delivery_metrics.record_completed();
+                }
+            }
+            if control.is_cancelled() && !draining {
+                if !stop_published {
+                    continue;
+                }
+                if owned.values().all(|delivery| delivery.handler_finished) {
+                    break;
+                }
+            } else {
+                while let Some(lease) = inner.scheduler.take_ready(control.id) {
+                    let Some(delivery) = owned.get_mut(&lease) else {
+                        fail_internal(&inner, &control, "missing_owned_delivery");
+                        break;
+                    };
+                    let Some((message, decoded)) = delivery.inbound.take() else {
+                        fail_internal(&inner, &control, "missing_owned_payload");
+                        break;
+                    };
                     let task_inner = inner.clone();
                     let task_control = control.clone();
                     let task_topic = topic.clone();
                     let task_options = options.clone();
                     let task_handler = handler.clone();
-                    let task_subscriber_id = subscriber_id.clone();
-                    let task_sender = message_tx.clone();
-                    let task_id_for_job = task_id;
-                    reservation.submit(move |cancelled| {
-                        let _task_context = BusContextGuard::enter(bus_identity);
-                        let task_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let task_subscriber = subscriber_id.clone();
+                    let task_sender = sender.clone();
+                    inner.scheduler.submit(move || {
+                        let _completion = crate::facade::event_bus::internal::HandlerCompletionGuard::new(
+                            task_inner.scheduler.clone(),
+                            task_control.id,
+                            lease,
+                            task_sender.clone(),
+                        );
+                        let _context = BusContextGuard::enter(bus_identity);
+                        let router = OwnerSettlementRouter {
+                            lease_id: lease,
+                            sender: task_sender.clone(),
+                            inner: Arc::downgrade(&task_inner),
+                        };
+                        let result = catch_unwind(AssertUnwindSafe(|| {
                             if !task_control.try_start() {
-                                abandon_stopped_message(&task_inner, message);
-                            } else if cancelled {
+                                count_abandoned(&task_inner, task_control.id);
+                            } else if task_control.is_cancelled() && !task_inner.scheduler.should_drain(task_control.id)
+                            {
                                 requeue_unstarted_message_via_owner(
                                     &task_inner,
-                                    &OwnerSettlementRouter {
-                                        sender: task_sender.clone(),
-                                    },
-                                    task_subscription_id,
-                                    &task_subscriber_id,
+                                    &router,
+                                    task_control.id,
+                                    &task_subscriber,
                                     message,
                                 );
                             } else {
                                 process_inbound(
                                     &task_inner,
-                                    &OwnerSettlementRouter {
-                                        sender: task_sender.clone(),
-                                    },
-                                    task_subscription_id,
-                                    &task_subscriber_id,
+                                    &router,
+                                    task_control.id,
+                                    &task_subscriber,
                                     &task_topic,
                                     &task_options,
                                     &task_handler,
@@ -191,57 +252,33 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 );
                             }
                         }));
-                        if let Err(payload) = task_result {
+                        if let Err(payload) = result {
                             task_inner.emit_internal("delivery_worker", panic_message(payload.as_ref()).into());
                         }
-                        let _ = task_sender.send(CoordinatorMessage::TaskFinished(task_id_for_job));
                     });
-                    active.insert(task_id, guard);
-                } else {
-                    pending = Some((task_id, message, decoded, guard));
+                }
+                if receive_closed && owned.is_empty() {
+                    break;
                 }
             }
 
-            if receive_closed && active.is_empty() && pending.is_none() && pending_settlements.is_empty() {
-                break;
-            }
-
-            if pending.is_none() && !receive_closed {
-                match crate::spi::panic_boundary::catch_spi_call(
-                    inner.provider_id.as_str(),
-                    "receive",
-                    Some(subscriber_id.as_str()),
-                    || {
-                        spi_subscription.receive(if receive_closed {
-                            Duration::ZERO
-                        } else {
-                            receive_poll_interval()
-                        })
-                    },
-                )
-                .and_then(std::convert::identity)
-                {
-                    Ok(ReceiveOutcome::TimedOut) => {}
-                    Ok(ReceiveOutcome::Closed) => receive_closed = true,
-                    Ok(ReceiveOutcome::Gap(gap)) => inner.emit(Diagnostic::ReceiveGap {
-                        subscription_id: control.id,
-                        subscriber_id: subscriber_id.clone(),
-                        topic: topic.name().into(),
-                        gap,
-                    }),
-                    Ok(ReceiveOutcome::Message(message)) => {
-                        if control.is_cancelled() || receive_closed {
-                            requeue_unstarted_message(
-                                &inner,
-                                &mut pending_settlements,
-                                control.id,
-                                &subscriber_id,
-                                message,
-                            );
-                            receive_closed = true;
-                        } else {
-                            // Decode on the receiver owner before dispatch so a permanent
-                            // codec failure cannot race another receive or retry itself.
+            if !receive_closed && !control.is_cancelled() {
+                inner.scheduler.request_receive(control.id);
+                if let Some(lease) = inner.scheduler.take_receive_reservation(control.id) {
+                    let lease_guard =
+                        crate::facade::event_bus::internal::ReceiveLeaseGuard::new(inner.scheduler.clone(), lease);
+                    inner.scheduler.record_owned_start(lease, inner.clock.now());
+                    inner.scheduler.set_dispatch_active(control.id, false);
+                    let result = crate::spi::panic_boundary::catch_spi_call(
+                        inner.provider_id.as_str(),
+                        "receive",
+                        Some(subscriber_id.as_str()),
+                        || spi_subscription.receive(wait),
+                    )
+                    .and_then(identity);
+                    inner.scheduler.set_dispatch_active(control.id, true);
+                    match result {
+                        Ok(ReceiveOutcome::Message(message)) => {
                             let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
                                 message.into_parts();
                             let decoded = crate::codec::decode_payload(
@@ -249,30 +286,70 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 &payload,
                                 inner.facade_config.payload_limits().max_receive_bytes(),
                             );
-                            let decoded = match decoded {
-                                Err(error)
-                                    if crate::codec::receive_failure_action(&error)
-                                        == crate::codec::ReceiveFailureAction::StopUnsettled =>
-                                {
-                                    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
-                                        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
-                                    }
-                                    let message = error.to_string();
-                                    if control.fail_receive(crate::model::SubscriptionStopReason::Codec {
-                                        event_id,
-                                        error: Arc::new(error),
-                                    }) {
-                                        inner.scheduler.cancel_subscription(control.id);
-                                        inner.emit_internal("receive_boundary", message);
-                                    }
-                                    // No disposition is submitted. Closing this owner leaves
-                                    // durable recovery to the provider's receiver contract.
-                                    drop(token);
-                                    receive_closed = true;
-                                    continue;
+                            if let Err(error) = &decoded
+                                && crate::codec::receive_failure_action(error)
+                                    == crate::codec::ReceiveFailureAction::StopUnsettled
+                            {
+                                let error = decoded.err().expect("matched decode error");
+                                let text = error.to_string();
+                                let first = control.fail_receive(SubscriptionStopReason::Codec {
+                                    event_id,
+                                    error: Arc::new(error),
+                                });
+                                inner.scheduler.cancel_subscription(control.id);
+                                drop(token);
+                                count_abandoned(&inner, control.id);
+                                drop(lease_guard);
+                                if first {
+                                    inner.emit_internal("receive_boundary", text);
                                 }
-                                decoded => decoded,
+                                continue;
+                            }
+                            let lane = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
+                                Some(OrderingLaneKey::new(
+                                    topic.name(),
+                                    ordering_key.as_ref().map(crate::spi::OrderingKey::as_str),
+                                    control.id,
+                                ))
+                            } else {
+                                None
                             };
+                            if let Err(error) = decoded {
+                                owned.insert(
+                                    lease,
+                                    OwnedSyncDelivery {
+                                        _lease: lease_guard,
+                                        _tracker: inner.tracker.track_delivery(topic.name()),
+                                        inbound: None,
+                                        settlement: None,
+                                        handler_finished: true,
+                                        settlement_granted: false,
+                                        abandoned: false,
+                                        lifecycle_failed: false,
+                                        retry: SettlementRetryState::new(inner.facade_config.settlement_retry()),
+                                        first_attempt: None,
+                                        next_attempt: Duration::ZERO,
+                                        last_error: None,
+                                    },
+                                );
+                                let router = OwnerSettlementRouter {
+                                    lease_id: lease,
+                                    sender: sender.clone(),
+                                    inner: Arc::downgrade(&inner),
+                                };
+                                crate::facade::event_bus::failure::settle_rejected(
+                                    &inner,
+                                    &router,
+                                    token,
+                                    control.id,
+                                    &subscriber_id,
+                                    event_id,
+                                    address.as_str(),
+                                    error.into(),
+                                );
+                                inner.scheduler.enqueue_settlement(lease, lane);
+                                continue;
+                            }
                             let message = InboundMessage::new(
                                 address,
                                 event_id,
@@ -283,30 +360,90 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 token,
                                 metadata,
                             );
-                            let task_id = next_task;
-                            next_task = next_task.wrapping_add(1).max(1);
-                            let guard = inner.tracker.track_delivery(topic.name());
-                            pending = Some((task_id, message, decoded, guard));
+                            owned.insert(
+                                lease,
+                                OwnedSyncDelivery {
+                                    _lease: lease_guard,
+                                    _tracker: inner.tracker.track_delivery(topic.name()),
+                                    inbound: Some((message, decoded)),
+                                    settlement: None,
+                                    handler_finished: false,
+                                    settlement_granted: true,
+                                    abandoned: false,
+                                    lifecycle_failed: false,
+                                    retry: SettlementRetryState::new(inner.facade_config.settlement_retry()),
+                                    first_attempt: None,
+                                    next_attempt: Duration::ZERO,
+                                    last_error: None,
+                                },
+                            );
+                            inner.scheduler.enqueue(lease, lane);
                         }
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        if control
-                            .fail_receive(crate::model::SubscriptionStopReason::Provider { error: Arc::new(error) })
-                        {
+                        Ok(ReceiveOutcome::TimedOut) => drop(lease_guard),
+                        Ok(ReceiveOutcome::Closed) => {
+                            drop(lease_guard);
+                            receive_closed = true;
+                        }
+                        Ok(ReceiveOutcome::Gap(gap)) => {
+                            drop(lease_guard);
+                            inner.emit(Diagnostic::ReceiveGap {
+                                subscription_id: control.id,
+                                subscriber_id: subscriber_id.clone(),
+                                topic: topic.name().into(),
+                                gap,
+                            });
+                        }
+                        Err(error) => {
+                            drop(lease_guard);
+                            let text = error.to_string();
+                            let first =
+                                control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) });
                             inner.scheduler.cancel_subscription(control.id);
-                            inner.emit_internal("receive", message);
+                            if first {
+                                inner.emit_internal("receive", text);
+                            }
                         }
-                        receive_closed = true;
                     }
+                    continue;
                 }
-            } else if !active.is_empty() || pending.is_some() {
-                std::thread::sleep(Duration::from_millis(1));
+                if inner.scheduler.lease_ids_exhausted() {
+                    fail_internal(&inner, &control, "lease_id_exhausted");
+                    continue;
+                }
             }
+            park_timeout(wait);
         }
     }));
     if let Err(payload) = worker_result {
+        fail_internal(&inner, &control, "owner_panicked");
         inner.emit_internal("subscription_worker", panic_message(payload.as_ref()).into());
+        // Preserve payload/tracker lifetime even when an injected clock or an
+        // internal operation unwinds while pool callbacks are still running.
+        while owned
+            .values()
+            .any(|delivery| delivery.inbound.is_none() && !delivery.handler_finished)
+        {
+            match receiver.recv() {
+                Ok(CoordinatorMessage::Abandoned(lease)) => {
+                    if let Some(delivery) = owned.get_mut(&lease) {
+                        delivery.abandoned = true;
+                    }
+                }
+                Ok(CoordinatorMessage::HandlerFinished(lease)) => {
+                    if let Some(delivery) = owned.get_mut(&lease) {
+                        delivery.handler_finished = true;
+                    }
+                }
+                Ok(message @ CoordinatorMessage::Settlement { lease_id, .. }) => {
+                    if let Some(delivery) = owned.get_mut(&lease_id)
+                        && delivery.settlement.is_none()
+                    {
+                        delivery.settlement = Some(message);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
     }
     if let Err(error) = close_spi_subscription(&inner, &subscriber_id, &mut *spi_subscription) {
         inner.emit_internal("subscription_close", error.to_string());
@@ -318,117 +455,82 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(failure);
     }
-    inner.scheduler.finish_subscription(control.id);
-    inner.tracker.worker_finished();
-    inner
-        .subscriptions
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&control.id);
-    let mut lifecycle = inner
-        .lifecycle
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if *lifecycle == LifecycleState::Closing
-        && inner.tracker.workers_are_idle()
-        && inner
-            .shutdown_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .report
-            .is_some()
-    {
-        *lifecycle = LifecycleState::Closed;
-    }
-    drop(lifecycle);
-    control.mark_finished();
-}
-
-/// Applies one settlement through the subscription's provider-owned SPI.
-///
-/// # Parameters
-///
-/// * `inner` - Shared event bus state used to emit settlement diagnostics.
-/// * `spi_subscription` - Provider subscription that owns the token.
-/// * `token` - Provider-issued token identifying the delivery to settle.
-/// * `disposition` - Requested accept, retry, or reject disposition.
-/// * `event_id` - Identifier included in failure diagnostics.
-/// * `topic` - Topic included in failure diagnostics.
-/// * `subscription_id` - Subscription expected to own the token.
-/// * `subscriber_id` - Subscriber included in failure diagnostics.
-///
-/// # Returns
-///
-/// `true` when settlement completed or cannot be retried; `false` when a
-/// retryable provider error leaves the settlement pending.
-pub(in crate::facade) fn apply_owner_settlement(
-    inner: &EventBusInner,
-    spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
-    token: &SettlementToken,
-    disposition: DeliveryDisposition,
-    event_id: EventId,
-    topic: &str,
-    subscription_id: Id,
-    subscriber_id: &SubscriberId,
-) -> bool {
-    if !token.belongs_to(subscription_id) {
-        inner.emit_internal(
-            "settlement",
-            "provider settlement token belongs to another subscription".into(),
-        );
-        return true;
-    }
-    let result = crate::spi::panic_boundary::catch_spi_call(
-        inner.provider_id.as_str(),
-        "settle",
-        Some(subscriber_id.as_str()),
-        || spi_subscription.settle(token, disposition),
-    )
-    .and_then(std::convert::identity);
-    match result {
-        Ok(()) => true,
-        Err(error) => {
-            inner.emit(Diagnostic::SettlementFailed {
-                event_id: event_id.clone(),
-                topic: topic.into(),
-                subscription_id,
-                subscriber_id: subscriber_id.clone(),
-                disposition,
-                error: error.to_string().into(),
-            });
-            if error.kind() == "provider_panicked" {
-                inner.emit(Diagnostic::SettlementUnavailable {
-                    event_id,
-                    topic: topic.into(),
-                    subscription_id,
-                    subscriber_id: subscriber_id.clone(),
-                    requested: disposition,
-                });
-                true
-            } else {
-                false
-            }
+    // Provider close is the recovery boundary for every unresolved token.
+    for (_, delivery) in owned.drain() {
+        if delivery.settlement.is_some() || delivery.inbound.is_some() {
+            count_abandoned(&inner, control.id);
         }
+        drop(delivery);
     }
 }
 
-/// Applies a queued owner message and notifies its waiter when it is complete.
+/// Extracts the immutable disposition for duplicate-intent invariant checks.
 ///
 /// # Parameters
-///
-/// * `inner` - Shared event bus state used for provider calls and diagnostics.
-/// * `spi_subscription` - Provider subscription that owns queued tokens.
-/// * `message` - Settlement or task-completion message from the owner queue.
+/// - `message`: owner-channel notification to inspect.
 ///
 /// # Returns
+/// Some immutable disposition for settlement messages, otherwise None.
+#[inline]
+fn settlement_disposition(message: &CoordinatorMessage) -> Option<DeliveryDisposition> {
+    match message {
+        CoordinatorMessage::Settlement { disposition, .. } => Some(*disposition),
+        _ => None,
+    }
+}
+
+/// Publishes an internal invariant failure as a structured first terminal
+/// cause.
 ///
-/// `true` when the message is complete and may be discarded; `false` when its
-/// settlement must remain queued for a later retry.
-pub(in crate::facade) fn apply_queued_settlement(
+/// # Parameters
+/// - `inner`: bus that fences the owner and emits diagnostics.
+/// - `control`: first-cause terminal state to publish before callbacks.
+/// - `kind`: stable invariant-failure identifier.
+fn fail_internal(inner: &EventBusInner, control: &SubscriptionControl, kind: &'static str) {
+    let error = SpiError::Operation {
+        provider_id: inner.provider_id.as_str().into(),
+        operation: "delivery_owner",
+        resource: Some(control.subscriber_id.as_str().into()),
+        kind,
+        retryable: Some(false),
+        source: Box::new(std::io::Error::other(kind)),
+    };
+    let first = control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) });
+    inner.scheduler.cancel_subscription(control.id);
+    if first {
+        inner.emit_internal("delivery_owner", kind.into());
+    }
+}
+
+/// Performs at most one due provider call; returns the next bounded wait when
+/// retry remains. All calls remain on the receiver thread, and the
+/// token/disposition stay unchanged.
+///
+/// # Type Parameters
+/// - `T`: payload type retained by the owner metadata.
+///
+/// # Parameters
+/// - `inner`: provider identity, clock and observer callbacks.
+/// - `control`: terminal state and cumulative counters.
+/// - `receiver`: exclusively owned provider receiver.
+/// - `delivery`: immutable intent and finite retry state to advance.
+/// - `stopping`: permits at most one fresh best-effort cancellation settlement.
+///
+/// # Returns
+/// Some bounded delay when another attempt is due later; None after completion
+/// or stop.
+///
+/// # Side Effects
+/// May call provider settlement and observers. Failures publish structured
+/// terminal context; ownership remains until success or provider close
+/// recovery.
+fn attempt_settlement<T>(
     inner: &EventBusInner,
-    spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
-    message: &CoordinatorMessage,
-) -> bool {
+    control: &SubscriptionControl,
+    receiver: &mut dyn crate::spi::EventSubscriptionSpi,
+    delivery: &mut OwnedSyncDelivery<'_, T>,
+    stopping: bool,
+) -> Option<Duration> {
     let CoordinatorMessage::Settlement {
         token,
         disposition,
@@ -436,52 +538,354 @@ pub(in crate::facade) fn apply_queued_settlement(
         topic,
         subscription_id,
         subscriber_id,
-        settled,
-    } = message
+        ..
+    } = delivery.settlement.as_ref()?
     else {
-        return true;
+        return None;
     };
-    let complete = token.as_ref().is_none_or(|token| {
-        apply_owner_settlement(
+    let Some(token) = token.as_ref() else {
+        delivery.settlement = None;
+        return None;
+    };
+    if !token.belongs_to(*subscription_id) {
+        let error = Arc::new(SpiError::InvalidSettlementToken {
+            provider_id: inner.provider_id.as_str().into(),
+            operation: "settle",
+            resource: Some(subscriber_id.as_str().into()),
+            reason: "foreign_owner",
+            retryable: Some(false),
+            source: Box::new(std::io::Error::other("provider token belongs to another subscription")),
+        });
+        stop_settlement(
             inner,
-            spi_subscription,
-            token,
-            *disposition,
+            control,
             event_id.clone(),
             topic,
-            *subscription_id,
-            subscriber_id,
-        )
+            *disposition,
+            delivery.retry.attempts(),
+            SettlementTermination::InvalidToken,
+            error,
+        );
+        return None;
+    }
+    let now = inner.clock.now();
+    let started = *delivery.first_attempt.get_or_insert(now);
+    let elapsed = match now.duration_since(started) {
+        Ok(elapsed) => elapsed,
+        Err(error) => {
+            let error = Arc::new(SpiError::Operation {
+                provider_id: inner.provider_id.as_str().into(),
+                operation: "settlement_clock",
+                resource: Some(subscriber_id.as_str().into()),
+                kind: "invalid_monotonic_clock",
+                retryable: Some(false),
+                source: Box::new(error),
+            });
+            stop_settlement(
+                inner,
+                control,
+                event_id.clone(),
+                topic,
+                *disposition,
+                delivery.retry.attempts(),
+                SettlementTermination::InfrastructureFailure,
+                error,
+            );
+            return None;
+        }
+    };
+    if elapsed < delivery.next_attempt {
+        return Some(delivery.next_attempt - elapsed);
+    }
+    let attempt = match delivery.retry.admit_attempt(elapsed) {
+        Ok(attempt) => attempt,
+        Err(termination) => {
+            if let Some(error) = delivery.last_error.as_ref() {
+                control.delivery_metrics.record_settlement_elapsed(elapsed);
+                stop_settlement(
+                    inner,
+                    control,
+                    event_id.clone(),
+                    topic,
+                    *disposition,
+                    delivery.retry.attempts(),
+                    termination,
+                    error.clone(),
+                );
+            } else {
+                fail_internal(inner, control, "settlement_budget_before_first_attempt");
+            }
+            return None;
+        }
+    };
+    inner.scheduler.set_dispatch_active(control.id, false);
+    control.delivery_metrics.record_settlement_attempt(attempt);
+    let result = crate::spi::panic_boundary::catch_spi_call(
+        inner.provider_id.as_str(),
+        "settle",
+        Some(subscriber_id.as_str()),
+        || receiver.settle(token, *disposition),
+    )
+    .and_then(identity);
+    inner.scheduler.set_dispatch_active(control.id, true);
+    match result {
+        Ok(()) => {
+            if let Err(error) = control
+                .delivery_metrics
+                .record_settlement_duration(started, inner.clock.now())
+            {
+                // The SPI action succeeded: discard its intent below, but do
+                // not report an infrastructure-failed lifecycle as completed.
+                delivery.lifecycle_failed = true;
+                let error = Arc::new(SpiError::Operation {
+                    provider_id: inner.provider_id.as_str().into(),
+                    operation: "settlement_clock",
+                    resource: Some(subscriber_id.as_str().into()),
+                    kind: "invalid_monotonic_clock",
+                    retryable: Some(false),
+                    source: Box::new(error),
+                });
+                stop_settlement(
+                    inner,
+                    control,
+                    event_id.clone(),
+                    topic,
+                    *disposition,
+                    attempt,
+                    SettlementTermination::InfrastructureFailure,
+                    error,
+                );
+            }
+            delivery.settlement = None;
+            None
+        }
+        Err(error) => {
+            let error = Arc::new(error);
+            let failed = Diagnostic::SettlementFailed {
+                event_id: event_id.clone(),
+                topic: topic.clone(),
+                subscription_id: *subscription_id,
+                subscriber_id: subscriber_id.clone(),
+                disposition: *disposition,
+                attempt,
+                error: error.clone(),
+            };
+            let elapsed = match inner.clock.now().duration_since(started) {
+                Ok(elapsed) => elapsed,
+                Err(source) => {
+                    let clock_error = Arc::new(SpiError::Operation {
+                        provider_id: inner.provider_id.as_str().into(),
+                        operation: "settlement_clock",
+                        resource: Some(subscriber_id.as_str().into()),
+                        kind: "invalid_monotonic_clock",
+                        retryable: Some(false),
+                        source: Box::new(source),
+                    });
+                    stop_settlement_with_failure(
+                        inner,
+                        control,
+                        event_id.clone(),
+                        topic,
+                        *disposition,
+                        attempt,
+                        SettlementTermination::InfrastructureFailure,
+                        clock_error,
+                        Some(failed),
+                    );
+                    return None;
+                }
+            };
+            delivery.last_error = Some(error.clone());
+            match delivery.retry.after_error(&error, elapsed) {
+                SettlementRetryDecision::RetryAfter(delay) => {
+                    delivery.next_attempt = elapsed.saturating_add(delay);
+                    inner.emit(failed);
+                    if stopping { None } else { Some(delay) }
+                }
+                SettlementRetryDecision::Stop(termination) => {
+                    control.delivery_metrics.record_settlement_elapsed(elapsed);
+                    stop_settlement_with_failure(
+                        inner,
+                        control,
+                        event_id.clone(),
+                        topic,
+                        *disposition,
+                        attempt,
+                        termination,
+                        error,
+                        Some(failed),
+                    );
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Records only the first terminal settlement cause, sharing the original error
+/// with diagnostics.
+///
+/// # Parameters
+/// - `inner`: bus scheduler and diagnostic observers.
+/// - `control`: subscription to stop before invoking observers.
+/// - `event_id`: delivery whose settlement terminated.
+/// - `topic`: diagnostic topic name.
+/// - `disposition`: immutable intended provider action.
+/// - `attempts`: actual SPI calls already attempted.
+/// - `termination`: structured terminal classification.
+/// - `error`: canonical failure shared with terminal state and diagnostics.
+fn stop_settlement(
+    inner: &EventBusInner,
+    control: &SubscriptionControl,
+    event_id: crate::EventId,
+    topic: &str,
+    disposition: DeliveryDisposition,
+    attempts: u32,
+    termination: SettlementTermination,
+    error: Arc<SpiError>,
+) {
+    stop_settlement_with_failure(
+        inner,
+        control,
+        event_id,
+        topic,
+        disposition,
+        attempts,
+        termination,
+        error,
+        None,
+    );
+}
+
+/// Publishes terminal state before either attempt or terminal observer
+/// callbacks.
+///
+/// # Parameters
+/// - `inner`: scheduler and observer context.
+/// - `control`: subscription retaining the canonical terminal cause.
+/// - `event_id`: affected delivery identity.
+/// - `topic`: diagnostic destination.
+/// - `disposition`: unchanged provider action.
+/// - `attempts`: actual SPI attempt count.
+/// - `termination`: structured reason for stopping.
+/// - `error`: terminal source shared by reason and stopped diagnostic.
+/// - `failed`: optional actual attempt diagnostic emitted before
+///   SettlementStopped.
+///
+/// # Side Effects
+/// Fences admission before invoking callbacks, retaining Failed then Stopped
+/// order.
+fn stop_settlement_with_failure(
+    inner: &EventBusInner,
+    control: &SubscriptionControl,
+    event_id: crate::EventId,
+    topic: &str,
+    disposition: DeliveryDisposition,
+    attempts: u32,
+    termination: SettlementTermination,
+    error: Arc<SpiError>,
+    failed: Option<Diagnostic>,
+) {
+    control.delivery_metrics.record_terminal_failure();
+    let first = control.fail_receive(SubscriptionStopReason::Settlement {
+        event_id: event_id.clone(),
+        disposition,
+        attempts,
+        termination,
+        error: error.clone(),
     });
-    if complete && let Some(settled) = settled {
-        let _ = settled.send(());
+    inner.scheduler.cancel_subscription(control.id);
+    if let Some(failed) = failed {
+        inner.emit(failed);
     }
-    complete
+    if first {
+        inner.emit(Diagnostic::SettlementStopped {
+            event_id,
+            topic: topic.into(),
+            subscription_id: control.id,
+            subscriber_id: control.subscriber_id.clone(),
+            disposition,
+            attempts,
+            termination,
+            error,
+        });
+    }
 }
 
-/// Unblocks a facade worker after its final best-effort settlement attempt
-/// fails during cancellation; receiver close then owns unresolved delivery
-/// recovery according to the provider's SPI contract.
-pub(in crate::facade) fn release_settlement_waiter(message: &CoordinatorMessage) {
-    if let CoordinatorMessage::Settlement {
-        settled: Some(settled), ..
-    } = message
-    {
-        let _ = settled.send(());
-    }
-}
-
-/// Releases unstarted work after a terminal receive stop without settlement.
-/// Durable state remains provider-owned; ephemeral loss is counted once.
-fn abandon_stopped_message(inner: &EventBusInner, message: InboundMessage) {
+/// Counts an unresolved facade-known ephemeral delivery exactly at its cleanup
+/// path.
+///
+/// # Parameters
+/// - `inner`: bus whose capability determines ephemeral accounting.
+/// - `subscription_id`: active owner whose counters receive the same increment.
+pub(in crate::facade) fn count_abandoned(inner: &EventBusInner, subscription_id: Id) {
     if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+        if let Some(control) = inner
+            .subscription_snapshot()
+            .into_iter()
+            .find(|control| control.id == subscription_id)
+        {
+            control.delivery_metrics.record_abandoned_ephemeral();
+        }
     }
-    drop(message);
 }
 
-/// Requeues a delivery canceled before its handler starts through the SPI
-/// owner.
+/// Creates one retry intent for canceled queued work, or diagnoses unavailable
+/// settlement.
+///
+/// # Parameters
+/// - `inner`: capability and diagnostic context.
+/// - `lease_id`: owned lease retaining this message.
+/// - `subscription_id`: receiver that issued the token.
+/// - `subscriber_id`: logical identity used by diagnostics.
+/// - `message`: unstarted payload consumed at cancellation.
+///
+/// # Returns
+/// Some Retry intent for a capable provider token; None after unavailable
+/// recovery is diagnosed and ephemeral abandonment is counted.
+fn canceled_intent(
+    inner: &EventBusInner,
+    lease_id: u64,
+    subscription_id: Id,
+    subscriber_id: &SubscriberId,
+    message: InboundMessage,
+) -> Option<CoordinatorMessage> {
+    let (address, event_id, _, _, _, _, token, _) = message.into_parts();
+    if token.is_some() && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
+        return Some(CoordinatorMessage::Settlement {
+            lease_id,
+            token,
+            disposition: DeliveryDisposition::Retry,
+            event_id,
+            topic: address.as_str().into(),
+            subscription_id,
+            subscriber_id: subscriber_id.clone(),
+        });
+    }
+    count_abandoned(inner, subscription_id);
+    inner.emit(Diagnostic::SettlementUnavailable {
+        event_id,
+        topic: address.as_str().into(),
+        subscription_id,
+        subscriber_id: subscriber_id.clone(),
+        requested: DeliveryDisposition::Retry,
+    });
+    None
+}
+
+/// Routes canceled granted work to its owner without blocking the actual pool
+/// worker.
+///
+/// # Parameters
+/// - `inner`: bus capabilities and counters.
+/// - `router`: nonblocking channel to the original receiver.
+/// - `subscription_id`: receiver that issued the token.
+/// - `subscriber_id`: subscriber identity for diagnostics.
+/// - `message`: granted payload stopped before pipeline execution.
+///
+/// # Side Effects
+/// Sends Retry or explicit abandonment; never calls the provider from the pool.
 pub(in crate::facade) fn requeue_unstarted_message_via_owner(
     inner: &EventBusInner,
     router: &OwnerSettlementRouter,
@@ -489,194 +893,16 @@ pub(in crate::facade) fn requeue_unstarted_message_via_owner(
     subscriber_id: &SubscriberId,
     message: InboundMessage,
 ) {
-    let (address, event_id, _, _, _, _, token, _) = message.into_parts();
-    let capability = inner.capabilities.settlement();
-    if let Some(token) = token {
-        if !token.belongs_to(subscription_id) {
-            inner.emit_internal(
-                "settlement",
-                "provider settlement token belongs to another subscription".into(),
-            );
-            return;
-        }
-        if capability == crate::spi::SettlementCapabilities::AcceptRetryReject {
-            router.settle(
-                Some(token),
-                DeliveryDisposition::Retry,
-                event_id,
-                address.as_str(),
-                subscription_id,
-                subscriber_id,
-            );
-            return;
-        }
-    }
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
-        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
-    }
-    inner.emit(Diagnostic::SettlementUnavailable {
+    if let Some(CoordinatorMessage::Settlement {
+        token,
+        disposition,
         event_id,
-        topic: address.as_str().into(),
-        subscription_id,
-        subscriber_id: subscriber_id.clone(),
-        requested: DeliveryDisposition::Retry,
-    });
-}
-
-/// Retains a message received at the cancellation boundary for provider
-/// requeue without invoking the subscriber handler.
-pub(in crate::facade) fn requeue_unstarted_message(
-    inner: &Arc<EventBusInner>,
-    pending_settlements: &mut VecDeque<CoordinatorMessage>,
-    subscription_id: Id,
-    subscriber_id: &SubscriberId,
-    message: InboundMessage,
-) {
-    let (address, event_id, _, _, _, _, token, _) = message.into_parts();
-    let capability = inner.capabilities.settlement();
-    if let Some(token) = token {
-        if !token.belongs_to(subscription_id) {
-            inner.emit_internal(
-                "settlement",
-                "provider settlement token belongs to another subscription".into(),
-            );
-            return;
-        }
-        if capability == crate::spi::SettlementCapabilities::AcceptRetryReject {
-            let (settled, wait) = mpsc::sync_channel(0);
-            drop(wait);
-            pending_settlements.push_back(CoordinatorMessage::Settlement {
-                token: Some(token),
-                disposition: DeliveryDisposition::Retry,
-                event_id,
-                topic: address.as_str().into(),
-                subscription_id,
-                subscriber_id: subscriber_id.clone(),
-                settled: Some(settled),
-            });
-            return;
-        }
-    }
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
-        inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
-    }
-    inner.emit(Diagnostic::SettlementUnavailable {
-        event_id,
-        topic: address.as_str().into(),
-        subscription_id,
-        subscriber_id: subscriber_id.clone(),
-        requested: DeliveryDisposition::Retry,
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-    use std::time::SystemTime;
-
-    use super::CoordinatorMessage;
-    use super::EventId;
-    use super::Id;
-    use super::OwnerSettlementRouter;
-    use super::SubscriberId;
-    use super::apply_queued_settlement;
-    use super::mpsc;
-    use super::release_settlement_waiter;
-    use super::requeue_unstarted_message;
-    use super::requeue_unstarted_message_via_owner;
-    use crate::model::Headers;
-    use crate::model::ProviderMessageMetadata;
-    use crate::model::ProviderOptions;
-    use crate::model::StartPosition;
-    use crate::model::SubscriptionDurability;
-    use crate::spi::DeliveryDisposition;
-    use crate::spi::InboundMessage;
-    use crate::spi::SpiSubscriptionRequest;
-    use crate::spi::TopicAddress;
-    use crate::spi::TransportPayload;
-
-    #[test]
-    fn cancellation_releases_only_a_waiting_settlement_sender() {
-        let (settled, receiver) = mpsc::sync_channel(1);
-        let message = CoordinatorMessage::Settlement {
-            token: None,
-            disposition: DeliveryDisposition::Retry,
-            event_id: EventId::new("cancelled-delivery").unwrap(),
-            topic: "orders.created".into(),
-            subscription_id: Id::new(7),
-            subscriber_id: SubscriberId::new("consumer").unwrap(),
-            settled: Some(settled),
-        };
-        release_settlement_waiter(&message);
-        assert!(receiver.try_recv().is_ok());
-
-        release_settlement_waiter(&CoordinatorMessage::TaskFinished(7));
-    }
-
-    #[test]
-    fn queued_task_completion_does_not_attempt_provider_settlement() {
-        let bus = crate::facade::EventBus::local(crate::local::LocalEventBusConfig::default()).unwrap();
-        let request = SpiSubscriptionRequest::new(
-            Id::new(9),
-            TopicAddress::new("worker.task-finished").unwrap(),
-            SubscriberId::new("worker").unwrap(),
-            None,
-            SubscriptionDurability::Ephemeral,
-            StartPosition::New,
-            ProviderOptions::new(),
-            std::any::TypeId::of::<()>(),
-        );
-        let mut subscription = bus.inner.spi.subscribe(request).unwrap();
-
-        assert!(apply_queued_settlement(
-            &bus.inner,
-            &mut *subscription,
-            &CoordinatorMessage::TaskFinished(9),
-        ));
-        let already_settled = CoordinatorMessage::Settlement {
-            token: None,
-            disposition: DeliveryDisposition::Accept,
-            event_id: EventId::new("already-settled").unwrap(),
-            topic: "worker.task-finished".into(),
-            subscription_id: Id::new(9),
-            subscriber_id: SubscriberId::new("worker").unwrap(),
-            settled: None,
-        };
-        assert!(apply_queued_settlement(
-            &bus.inner,
-            &mut *subscription,
-            &already_settled
-        ));
-    }
-
-    #[test]
-    fn cancelled_unstarted_ephemeral_delivery_is_counted_as_abandoned() {
-        let bus = crate::facade::EventBus::local(crate::local::LocalEventBusConfig::default()).unwrap();
-        let inner = bus.inner.clone();
-        let subscriber_id = SubscriberId::new("worker").unwrap();
-        let message = || {
-            InboundMessage::new(
-                TopicAddress::new("worker.cancelled").unwrap(),
-                EventId::new("cancelled-message").unwrap(),
-                SystemTime::UNIX_EPOCH,
-                Headers::new(),
-                None,
-                TransportPayload::Native(Arc::new(())),
-                None,
-                ProviderMessageMetadata::new(),
-            )
-        };
-        requeue_unstarted_message(&inner, &mut Default::default(), Id::new(1), &subscriber_id, message());
-        let (sender, _receiver) = mpsc::channel();
-        requeue_unstarted_message_via_owner(
-            &inner,
-            &OwnerSettlementRouter { sender },
-            Id::new(1),
-            &subscriber_id,
-            message(),
-        );
-
-        assert_eq!(inner.abandoned_deliveries.load(Ordering::Acquire), 2);
+        topic,
+        ..
+    }) = canceled_intent(inner, router.lease_id, subscription_id, subscriber_id, message)
+    {
+        router.settle(token, disposition, event_id, &topic, subscription_id, subscriber_id);
+    } else {
+        router.abandon(subscription_id);
     }
 }

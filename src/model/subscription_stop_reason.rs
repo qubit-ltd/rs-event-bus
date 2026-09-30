@@ -12,6 +12,8 @@ use std::sync::Arc;
 use crate::error::CodecError;
 use crate::error::SpiError;
 use crate::model::EventId;
+use crate::model::SettlementTermination;
+use crate::spi::DeliveryDisposition;
 
 /// Why new receives stopped; durable source deliveries remain unsettled.
 ///
@@ -38,6 +40,7 @@ use crate::model::EventId;
 /// }
 /// ```
 #[derive(Clone, Debug, thiserror::Error)]
+#[must_use]
 pub enum SubscriptionStopReason {
     /// Codec or payload boundary failure after event identity was obtained.
     #[error("subscription stopped at event {event_id:?}: {error}")]
@@ -52,6 +55,23 @@ pub enum SubscriptionStopReason {
     #[error("subscription stopped at provider boundary: {error}")]
     Provider {
         /// Original provider failure with its source chain.
+        #[source]
+        error: Arc<SpiError>,
+    },
+    /// Provider settlement could not reach a successful terminal disposition.
+    #[error(
+        "subscription stopped settling event {event_id:?} with {disposition:?} after {attempts} attempts ({termination:?}): {error}"
+    )]
+    Settlement {
+        /// Identity of the event whose settlement stopped.
+        event_id: EventId,
+        /// Immutable disposition requested for this delivery.
+        disposition: DeliveryDisposition,
+        /// Number of provider settlement calls performed.
+        attempts: u32,
+        /// Stable terminal classification.
+        termination: SettlementTermination,
+        /// Original provider error, shared with runtime diagnostics.
         #[source]
         error: Arc<SpiError>,
     },

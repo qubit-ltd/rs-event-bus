@@ -15,8 +15,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 mod catch_unwind_future;
+mod internal;
 
 use catch_unwind_future::CatchUnwindFuture;
+use internal::InFlightPublish;
 use qubit_clock::Timer;
 use qubit_retry::AsyncRetry;
 use qubit_retry::AttemptFailure;
@@ -302,25 +304,6 @@ pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateR
     )
 }
 
-/// Retains conservative admission evidence if retry abandons an in-flight SPI
-/// call. Creating an unpolled attempt future does not create this guard.
-struct InFlightPublish {
-    /// Monotonic evidence shared with the complete publication.
-    seen_unknown: Arc<AtomicBool>,
-    /// Whether SPI returned an explicit result before the future was dropped.
-    completed: bool,
-}
-
-impl Drop for InFlightPublish {
-    /// Marks an unfinished attempt as potentially admitted without fabricating
-    /// a public failure or invoking error callbacks when the caller drops it.
-    fn drop(&mut self) {
-        if !self.completed {
-            self.seen_unknown.store(true, Ordering::Release);
-        }
-    }
-}
-
 /// Tracks the outcome of an SPI future through completion or abandonment.
 ///
 /// # Type Parameters
@@ -405,6 +388,37 @@ mod tests {
     use crate::error::PublishAttemptError;
     use crate::model::DuplicateRiskPolicy;
 
+    /// Checks that abandoning an unpolled provider attempt does not invent
+    /// uncertainty or admission evidence.
+    #[test]
+    fn test_unpolled_attempt_drop_does_not_arm_unknown_evidence() {
+        let seen_unknown = Arc::new(AtomicBool::new(false));
+        let seen_admission = Arc::new(AtomicBool::new(false));
+        let attempt = super::publish_attempt(std::future::pending(), seen_unknown.clone(), seen_admission.clone());
+        drop(attempt);
+        assert!(!seen_unknown.load(Ordering::Acquire));
+        assert!(!seen_admission.load(Ordering::Acquire));
+    }
+
+    /// Checks the first-poll boundary directly: dropping a pending attempt
+    /// preserves uncertainty but does not fabricate confirmed admission.
+    #[test]
+    fn test_polled_attempt_drop_preserves_unknown_evidence() {
+        let seen_unknown = Arc::new(AtomicBool::new(false));
+        let seen_admission = Arc::new(AtomicBool::new(false));
+        let mut attempt = Box::pin(super::publish_attempt(
+            std::future::pending(),
+            seen_unknown.clone(),
+            seen_admission.clone(),
+        ));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(attempt.as_mut().poll(&mut context).is_pending());
+        assert!(!seen_unknown.load(Ordering::Acquire));
+        drop(attempt);
+        assert!(seen_unknown.load(Ordering::Acquire));
+        assert!(!seen_admission.load(Ordering::Acquire));
+    }
+
     /// Drives the real publish attempt boundary through a configured hard
     /// timeout.
     fn assert_hard_timeout_preserves_uncertainty(flow_timeout: bool) {
@@ -442,11 +456,11 @@ mod tests {
         assert!(seen_unknown.load(Ordering::Acquire));
     }
     #[test]
-    fn hard_attempt_timeout_cannot_bypass_uncertainty_gate() {
+    fn test_hard_attempt_timeout_cannot_bypass_uncertainty_gate() {
         assert_hard_timeout_preserves_uncertainty(false);
     }
     #[test]
-    fn hard_flow_timeout_preserves_in_flight_uncertainty() {
+    fn test_hard_flow_timeout_preserves_in_flight_uncertainty() {
         assert_hard_timeout_preserves_uncertainty(true);
     }
 }

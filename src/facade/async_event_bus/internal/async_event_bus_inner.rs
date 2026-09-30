@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -22,19 +23,23 @@ use super::AsyncSignal;
 use super::AsyncTracker;
 use super::async_shutdown_driver::AsyncShutdownDriver;
 use super::bus_state::BusState;
+use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
-use crate::facade::async_admission::AsyncAdmission;
 use crate::facade::event_bus_facade_config::EventBusFacadeConfig;
+use crate::facade::internal::DeliveryMetrics;
+use crate::facade::internal::DeliverySchedulerCore;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::facade::publish_metrics::PublishMetrics;
 use crate::facade::shutdown_report::ShutdownReport;
 use crate::model::ProviderId;
-use crate::pipeline::AsyncOrderingLanes;
+use crate::model::SubscriberId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
+use crate::pipeline::emit_diagnostic;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::EventBusCapabilities;
 
 /// Shared provider, lifecycle, and pipeline state used by every facade clone.
 pub(in crate::facade) struct AsyncEventBusInner {
@@ -43,7 +48,7 @@ pub(in crate::facade) struct AsyncEventBusInner {
     /// Stable identifier used in diagnostics and provider errors.
     pub(in crate::facade) provider_id: ProviderId,
     /// Capabilities reported by the provider at construction.
-    pub(in crate::facade) capabilities: crate::spi::EventBusCapabilities,
+    pub(in crate::facade) capabilities: EventBusCapabilities,
     /// Publisher middleware and retry pipeline shared by facade clones.
     pub(in crate::facade) publisher: PublisherPipeline,
     /// Immutable middleware, codec, and delivery configuration.
@@ -74,24 +79,36 @@ pub(in crate::facade) struct AsyncEventBusInner {
     pub(in crate::facade) observers: Mutex<Vec<Weak<ObserverEntry>>>,
     /// Tracks in-flight publishes, subscriptions, and runners.
     pub(in crate::facade) tracker: Arc<AsyncTracker>,
-    /// Per-key ordering locks shared by subscription runners.
-    pub(in crate::facade) ordering_lanes: AsyncOrderingLanes<()>,
-    /// Bounds deliveries admitted for handler processing.
-    pub(in crate::facade) admission: Arc<AsyncAdmission>,
+    /// Shared bounded receive and handler scheduler.
+    pub(in crate::facade) scheduler: Arc<DeliverySchedulerCore>,
     /// Runtime-neutral timer used for deadlines and delays.
     pub(in crate::facade) timer: Arc<dyn Timer>,
+    /// Fixed-size delivery lifecycle counters, shared by all subscriptions.
+    pub(in crate::facade) delivery_metrics: Arc<DeliveryMetrics>,
     /// Publication counters shared by facade clones.
     pub(in crate::facade) publish_metrics: PublishMetrics,
 }
 
 impl AsyncEventBusInner {
+    /// Routes coalesced scheduler wakeups after releasing the scheduler lock.
+    pub(in crate::facade) fn notify_scheduler(&self) {
+        let ids = self.scheduler.take_notifications();
+        let controls = self.controls.lock().unwrap_or_else(PoisonError::into_inner);
+        let targets: Vec<_> = ids.iter().filter_map(|id| controls.get(id).cloned()).collect();
+        drop(controls);
+        for control in targets {
+            control.notify();
+        }
+    }
+
     /// Starts a publish operation while the facade is running.
     ///
     /// # Returns
     /// A guard that releases the publish counter, or None after shutdown
     /// starts.
+    #[must_use]
     pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<super::AsyncPublishGuard> {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
@@ -105,8 +122,9 @@ impl AsyncEventBusInner {
     /// # Returns
     /// A guard that releases the subscribe counter, or None after shutdown
     /// starts.
+    #[must_use]
     pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<super::AsyncSubscribeGuard> {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
@@ -119,8 +137,9 @@ impl AsyncEventBusInner {
     ///
     /// # Returns
     /// Strong references to active callbacks for one emission pass.
+    #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
         observers.retain(|entry| entry.strong_count() > 0);
         observers
             .iter()
@@ -135,7 +154,7 @@ impl AsyncEventBusInner {
     /// # Parameters
     /// - diagnostic: event delivered to active observers.
     pub(in crate::facade) fn emit(&self, diagnostic: &Diagnostic) {
-        crate::pipeline::emit_diagnostic(&self.observer_snapshot(), diagnostic);
+        emit_diagnostic(&self.observer_snapshot(), diagnostic);
     }
 
     /// Records the first close failure for a subscription control.
@@ -150,8 +169,8 @@ impl AsyncEventBusInner {
     pub(in crate::facade) fn record_close_error(
         &self,
         control: &dyn AsyncShutdownDriver,
-        subscriber_id: &crate::model::SubscriberId,
-        error: crate::error::SpiError,
+        subscriber_id: &SubscriberId,
+        error: SpiError,
     ) -> Arc<SubscriptionCloseFailure> {
         if let Some(failure) = control.close_error() {
             return failure.clone();
@@ -160,12 +179,9 @@ impl AsyncEventBusInner {
         let failure = control.store_close_error(failure);
         self.close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(failure.clone());
-        *self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         failure
     }
 
@@ -176,12 +192,9 @@ impl AsyncEventBusInner {
     pub(in crate::facade) fn record_close_failure(&self, failure: Arc<SubscriptionCloseFailure>) {
         self.close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(failure);
-        *self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Returns a cached aggregate of recorded close failures, if any exist.
@@ -189,15 +202,10 @@ impl AsyncEventBusInner {
     /// # Returns
     /// Some with all close failures recorded so far, or None when there are
     /// none.
+    #[must_use]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let failures = self
-            .close_errors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut snapshot = self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
             return Some(errors.clone());
         }
@@ -207,5 +215,76 @@ impl AsyncEventBusInner {
         let errors = Arc::new(SubscriptionCloseErrors::from_failures(failures.clone()));
         *snapshot = Some(errors.clone());
         Some(errors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::num::NonZeroUsize;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+
+    use crate::facade::AsyncEventBus;
+    use crate::facade::DeliverySchedulingConfig;
+    use crate::facade::EventBusFacadeConfig;
+    use crate::local::AsyncLocalEventBusSpi;
+    use crate::model::ProviderId;
+    use crate::model::SubscribeRequest;
+    use crate::model::Topic;
+
+    /// Drives a synchronous-ready local-provider operation without a runtime.
+    ///
+    /// # Type Parameters
+    /// - `F`: Local operation expected to complete in a bounded number of
+    ///   polls.
+    ///
+    /// # Parameters
+    /// - `future`: Operation owned and polled by this helper.
+    ///
+    /// # Returns
+    /// The operation result.
+    ///
+    /// # Panics
+    /// Panics if the local fixture needs more than 64 polls.
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = pin!(future);
+        for _ in 0..64 {
+            if let Poll::Ready(result) = future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                return result;
+            }
+        }
+        panic!("local operation did not become ready within bounded polls");
+    }
+
+    /// Retained closed handles cannot turn the live bus registry into a history
+    /// map.
+    #[test]
+    fn test_async_registry_returns_to_baseline_across_1000_sessions() {
+        let limit = NonZeroUsize::new(1).expect("one live session");
+        let config = EventBusFacadeConfig::new()
+            .with_delivery_scheduling(DeliverySchedulingConfig::new(limit, limit, limit, limit).expect("limits"));
+        let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
+        let bus =
+            AsyncEventBus::with_config(ProviderId::new("local").expect("provider"), provider, config).expect("bus");
+        let topic = Topic::<u32>::new("session-registry").expect("topic");
+        let mut closed_handles = Vec::new();
+        for index in 0..1000 {
+            let request = SubscribeRequest::new(&format!("session-{index}"), topic.clone()).expect("request");
+            let mut subscription = ready(bus.subscribe(request)).expect("slot was released by prior close");
+            assert_eq!(bus.inner.controls.lock().expect("controls").len(), 1);
+            let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
+            assert!(run.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+            drop(run);
+            ready(subscription.close()).expect("close");
+            assert!(bus.inner.controls.lock().expect("controls").is_empty());
+            assert_eq!(subscription.delivery_metrics().metrics, Default::default());
+            closed_handles.push(subscription);
+        }
+        assert_eq!(closed_handles.len(), 1000);
+        assert_eq!(bus.delivery_metrics(), Default::default());
     }
 }

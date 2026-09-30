@@ -24,20 +24,29 @@ use crate::error::DeliveryError;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::event_bus::OwnerSettlementRouter;
 use crate::facade::event_bus::publishing::publish_internal;
+use crate::facade::event_bus::worker::count_abandoned;
+use crate::model::AdmissionOutcome;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
+use crate::model::EventId;
 use crate::model::FailureDirective;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
+use crate::model::SubscribeOptions;
 use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::DeliveryFailureAction;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
 use crate::pipeline::dead_letter_retry_config;
+use crate::pipeline::dead_letter_was_accepted;
 use crate::spi::DeliveryDisposition;
+use crate::spi::DurabilityCapability;
+use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
 
 /// Applies the terminal failure directive and records its diagnostics.
@@ -67,7 +76,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
     event: Arc<EventEnvelope<T>>,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     error: DeliveryError,
     attempts: u32,
     directive: FailureDirective,
@@ -87,68 +96,18 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
     } else {
         SubscriberPipeline::failure_disposition(action, capabilities)
     };
-    let is_dead_letter = event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
+    let is_dead_letter = event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE);
     let mut dead_letter_forward_failed = false;
     if action == DeliveryFailureAction::DeadLetter && !is_dead_letter {
-        if let Some(policy) = options.dead_letter() {
-            let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone());
-            let context =
-                if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
-                    context.as_dead_letter()
-                } else {
-                    context
-                };
-            let delivery = Delivery::new(event.clone(), context);
-            match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
-                Ok(Some(envelope)) => {
-                    match publish_dead_letter_sync(
-                        inner,
-                        &envelope,
-                        options.retry_policy(),
-                        options.retry_cancellation_token(),
-                        policy.admission_policy(),
-                    ) {
-                        Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
-                                inner.emit_internal(
-                                    "dead_letter_partial",
-                                    "dead-letter publication was partially accepted; retrying the whole record may duplicate it".into(),
-                                );
-                            }
-                            disposition = SubscriberPipeline::failure_disposition(
-                                DeliveryFailureAction::DeadLetter,
-                                capabilities,
-                            );
-                        }
-                        Err(message) => {
-                            inner.emit_internal("dead_letter_publish", message);
-                            dead_letter_forward_failed = true;
-                            stop_after_dead_letter_failure(inner, subscription_id);
-                        }
-                    }
-                }
-                Ok(None) => {
-                    inner.emit_internal("dead_letter_build", "dead-letter event was not created".into());
-                    dead_letter_forward_failed = true;
-                    stop_after_dead_letter_failure(inner, subscription_id);
-                }
-                Err(build_error) => {
-                    inner.emit_internal("dead_letter_build", build_error.to_string());
-                    dead_letter_forward_failed = true;
-                    stop_after_dead_letter_failure(inner, subscription_id);
-                }
-            }
-        } else {
-            inner.emit_internal(
-                "dead_letter_policy",
-                "dead-letter directive has no configured topic".into(),
-            );
-            dead_letter_forward_failed = true;
-            stop_after_dead_letter_failure(inner, subscription_id);
-        }
+        (disposition, dead_letter_forward_failed) = forward_dead_letter(
+            inner,
+            &event,
+            &error,
+            subscription_id,
+            subscriber_id,
+            options,
+            capabilities,
+        );
     } else if action == DeliveryFailureAction::DeadLetter {
         disposition = SubscriberPipeline::failure_disposition(DeliveryFailureAction::DeadLetter, capabilities);
     }
@@ -157,7 +116,17 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         disposition =
             SubscriberPipeline::failure_disposition(DeliveryFailureAction::Discard, inner.capabilities.settlement());
     }
-    if let Some(disposition) = disposition {
+    if token.is_none() && !dead_letter_forward_failed {
+        inner.emit(Diagnostic::SettlementUnavailable {
+            event_id: event.id().clone(),
+            topic: event.topic().name().into(),
+            subscription_id,
+            subscriber_id: subscriber_id.clone(),
+            requested: requested_disposition,
+        });
+        count_abandoned(inner, subscription_id);
+        settler.abandon(subscription_id);
+    } else if let Some(disposition) = disposition {
         settle_token(
             inner,
             settler,
@@ -168,6 +137,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
             subscriber_id,
         );
     } else if dead_letter_forward_failed {
+        settler.abandon(subscription_id);
         // Keep a durable source token unsettled so the provider can recover it.
     } else if token.as_ref().is_some_and(|token| !token.belongs_to(subscription_id)) {
         inner.emit_internal(
@@ -182,6 +152,8 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
             subscriber_id: subscriber_id.clone(),
             requested: requested_disposition,
         });
+        count_abandoned(inner, subscription_id);
+        settler.abandon(subscription_id);
     }
     inner.emit(Diagnostic::DeliveryFailed {
         event_id: event.id().clone(),
@@ -191,6 +163,88 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         attempts,
         error: error.to_string().into(),
     });
+}
+
+/// Forwards one failed delivery when its directive requests dead-lettering.
+///
+/// Keeps policy lookup, envelope construction, retrying publication, and
+/// failure diagnostics together so the caller can preserve settlement order.
+///
+/// # Type Parameters
+/// - `T`: event payload type retained by the failed delivery.
+///
+/// # Parameters
+/// - `inner`: bus state used for dead-letter publication and diagnostics.
+/// - `event`: failed event and its portable metadata.
+/// - `error`: terminal failure included in the dead-letter record.
+/// - `subscription_id`: bus-local subscription identity.
+/// - `subscriber_id`: logical subscriber identity.
+/// - `options`: retry and dead-letter policy for the subscription.
+/// - `capabilities`: provider settlement capabilities used for the final
+///   action.
+///
+/// # Returns
+/// The settlement disposition and whether forwarding failed.
+///
+/// # Side Effects
+/// May publish a dead-letter event, emit diagnostics, and stop the subscription
+/// if forwarding cannot complete.
+fn forward_dead_letter<T: Send + Sync + 'static>(
+    inner: &Arc<EventBusInner>,
+    event: &Arc<EventEnvelope<T>>,
+    error: &DeliveryError,
+    subscription_id: Id,
+    subscriber_id: &SubscriberId,
+    options: &SubscribeOptions<T>,
+    capabilities: SettlementCapabilities,
+) -> (Option<DeliveryDisposition>, bool) {
+    let Some(policy) = options.dead_letter() else {
+        inner.emit_internal(
+            "dead_letter_policy",
+            "dead-letter directive has no configured topic".into(),
+        );
+        stop_after_dead_letter_failure(inner, subscription_id);
+        return (None, true);
+    };
+    let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone());
+    let delivery = Delivery::new(event.clone(), context);
+    let envelope = match dead_letter_envelope(&delivery, error, policy.topic_name()) {
+        Ok(Some(envelope)) => envelope,
+        Ok(None) => {
+            inner.emit_internal("dead_letter_build", "dead-letter event was not created".into());
+            stop_after_dead_letter_failure(inner, subscription_id);
+            return (None, true);
+        }
+        Err(build_error) => {
+            inner.emit_internal("dead_letter_build", build_error.to_string());
+            stop_after_dead_letter_failure(inner, subscription_id);
+            return (None, true);
+        }
+    };
+    let receipt = match publish_dead_letter_sync(
+        inner,
+        &envelope,
+        options.retry_policy(),
+        options.retry_cancellation_token(),
+        policy.admission_policy(),
+    ) {
+        Ok(receipt) => receipt,
+        Err(message) => {
+            inner.emit_internal("dead_letter_publish", message);
+            stop_after_dead_letter_failure(inner, subscription_id);
+            return (None, true);
+        }
+    };
+    if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
+        inner.emit_internal(
+            "dead_letter_partial",
+            "dead-letter publication was partially accepted; retrying the whole record may duplicate it".into(),
+        );
+    }
+    (
+        SubscriberPipeline::failure_disposition(DeliveryFailureAction::DeadLetter, capabilities),
+        false,
+    )
 }
 
 /// Settles one provider-issued token and emits a structured failure on error.
@@ -211,7 +265,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
 /// Dispatches settlement through the owning receiver and emits diagnostics
 /// for invalid or unavailable tokens.
 pub(in crate::facade) fn settle_token<T>(
-    inner: &Arc<EventBusInner>,
+    _inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
     token: Option<SettlementToken>,
     disposition: DeliveryDisposition,
@@ -222,13 +276,6 @@ pub(in crate::facade) fn settle_token<T>(
     let Some(token) = token else {
         return;
     };
-    if !token.belongs_to(subscription_id) {
-        inner.emit_internal(
-            "settlement",
-            "provider settlement token belongs to another subscription".into(),
-        );
-        return;
-    }
     settler.settle(
         Some(token),
         disposition,
@@ -259,22 +306,30 @@ pub(in crate::facade) fn settle_rejected(
     token: Option<SettlementToken>,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
-    event_id: crate::model::EventId,
+    event_id: EventId,
     topic: &str,
     error: DeliveryError,
 ) {
-    if let Some(token) = token {
-        if token.belongs_to(subscription_id) {
-            if inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
-                settler.settle(
-                    Some(token),
-                    DeliveryDisposition::Reject,
-                    event_id.clone(),
-                    topic,
-                    subscription_id,
-                    subscriber_id,
-                );
-            } else {
+    match token {
+        Some(token)
+            if !token.belongs_to(subscription_id)
+                || inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject =>
+        {
+            // Invalid ownership is validated by the receiver before SPI entry,
+            // even when this provider cannot otherwise perform Reject.
+            settler.settle(
+                Some(token),
+                DeliveryDisposition::Reject,
+                event_id.clone(),
+                topic,
+                subscription_id,
+                subscriber_id,
+            );
+        }
+        token => {
+            count_abandoned(inner, subscription_id);
+            settler.abandon(subscription_id);
+            if token.is_some() {
                 inner.emit(Diagnostic::SettlementUnavailable {
                     event_id: event_id.clone(),
                     topic: topic.into(),
@@ -283,11 +338,6 @@ pub(in crate::facade) fn settle_rejected(
                     requested: DeliveryDisposition::Reject,
                 });
             }
-        } else {
-            inner.emit_internal(
-                "settlement",
-                "provider settlement token belongs to another subscription".into(),
-            );
         }
     }
     inner.emit(Diagnostic::DeliveryFailed {
@@ -328,7 +378,7 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
     let mut publish_once = || {
         let receipt = publish_internal(inner, PublishRequest::from_envelope(envelope.clone()))
             .map_err(DeadLetterForwardError::Publish)?;
-        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+        if dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
             Ok(receipt)
         } else {
             Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
@@ -359,7 +409,7 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
 /// # Side Effects
 /// Counts known ephemeral loss and requests that the subscription stop.
 pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, subscription_id: Id) {
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     if let Some(control) = inner
@@ -367,7 +417,11 @@ pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, s
         .iter()
         .find(|control| control.id == subscription_id)
     {
+        if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
+            control.delivery_metrics.record_abandoned_ephemeral();
+        }
         control.request_cancel();
+        inner.scheduler.cancel_subscription(subscription_id);
     }
 }
 
@@ -378,6 +432,7 @@ pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, s
 ///
 /// # Returns
 /// A stable message that reveals whether the panic payload was string-like.
+#[must_use]
 pub(in crate::facade) fn panic_message(payload: &(dyn Any + Send)) -> &'static str {
     if payload.is::<&'static str>() || payload.is::<String>() {
         "user or provider callback panicked"

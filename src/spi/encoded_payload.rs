@@ -52,6 +52,7 @@ impl EncodedPayload {
     ///
     /// # Returns
     /// An encoded payload retaining the byte allocation and metadata.
+    #[inline]
     pub fn new(bytes: Arc<[u8]>, content_type: ContentType, schema_id: Option<SchemaId>) -> Self {
         Self {
             bytes,

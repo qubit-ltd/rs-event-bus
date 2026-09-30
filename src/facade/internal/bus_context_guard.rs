@@ -15,6 +15,7 @@ thread_local! {
 }
 
 /// Temporarily marks a thread as executing synchronous work owned by a bus.
+#[must_use]
 pub(in crate::facade) struct BusContextGuard {
     /// Identity of the bus whose callback or worker scope is active.
     bus_identity: usize,

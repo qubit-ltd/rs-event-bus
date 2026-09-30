@@ -41,6 +41,7 @@ pub type ProviderMessageMetadata = BTreeMap<String, String>;
 /// assert_eq!(acknowledgement.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
 #[non_exhaustive]
 pub enum PublishAcknowledgement {
     /// A broker accepted the message; consumer identities may be unknown.

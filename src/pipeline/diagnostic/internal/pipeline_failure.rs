@@ -14,6 +14,7 @@ use crate::model::PublishEffect;
 /// Failure carrying its origin without inspecting or cloning the error.
 #[derive(Debug, thiserror::Error)]
 #[error("publisher pipeline failed at {origin:?}: {error}")]
+#[must_use]
 pub(crate) struct PipelineFailure {
     /// Stage that produced the pipeline failure.
     origin: PipelineFailureOrigin,
@@ -26,11 +27,13 @@ pub(crate) struct PipelineFailure {
 
 impl PipelineFailure {
     /// Attaches admission evidence without inspecting or replacing the source.
+    #[inline]
     pub(crate) fn with_publish_effect(mut self, effect: PublishEffect) -> Self {
         self.effect = effect;
         self
     }
     /// Returns admission evidence carried from the terminal attempt boundary.
+    #[inline]
     pub(crate) fn publish_effect(&self) -> PublishEffect {
         self.effect
     }

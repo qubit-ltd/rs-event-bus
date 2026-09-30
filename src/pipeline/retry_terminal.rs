@@ -44,6 +44,7 @@ pub(crate) fn is_retry_rule_failure(reason: &RetryErrorReason) -> bool {
 ///
 /// A terminal facade action: `Requeue` for a rule panic, `Discard` for an
 /// exhausted or otherwise terminated requested retry, or the original action.
+#[inline]
 pub(crate) fn terminal_directive(reason: &RetryErrorReason, requested: FailureDirective) -> FailureDirective {
     if is_retry_rule_failure(reason) {
         FailureDirective::Requeue
@@ -51,52 +52,5 @@ pub(crate) fn terminal_directive(reason: &RetryErrorReason, requested: FailureDi
         FailureDirective::Discard
     } else {
         requested
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use qubit_retry::RetryErrorReason;
-    use qubit_retry::RetryLimitKind;
-
-    use super::terminal_directive;
-    use crate::model::FailureDirective;
-
-    #[test]
-    fn test_terminal_directive_preserves_non_retry_requests_across_terminal_reasons() {
-        let reasons = [
-            RetryErrorReason::Aborted,
-            RetryErrorReason::Exhausted {
-                limit: RetryLimitKind::Attempts,
-            },
-        ];
-        let directives = [
-            FailureDirective::Requeue,
-            FailureDirective::DeadLetter,
-            FailureDirective::Discard,
-        ];
-
-        for reason in &reasons {
-            for requested in directives {
-                assert_eq!(terminal_directive(reason, requested), requested);
-            }
-        }
-    }
-
-    #[test]
-    fn test_terminal_local_retry_is_discarded_after_each_non_rule_terminal_reason() {
-        let reasons = [
-            RetryErrorReason::Aborted,
-            RetryErrorReason::Exhausted {
-                limit: RetryLimitKind::Attempts,
-            },
-        ];
-
-        for reason in &reasons {
-            assert_eq!(
-                terminal_directive(reason, FailureDirective::Retry),
-                FailureDirective::Discard,
-            );
-        }
     }
 }

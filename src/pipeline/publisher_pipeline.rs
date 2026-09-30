@@ -21,6 +21,8 @@ use std::sync::atomic::Ordering;
 use qubit_clock::Timer;
 
 use self::internal::PreparedOutbound;
+use self::internal::PreparedPublish;
+use self::internal::PublishPreparation;
 use crate::codec::CodecRegistry;
 use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
@@ -120,69 +122,11 @@ impl PublisherPipeline {
         global_interceptors: &[GlobalPublisherInterceptor],
         observers: &[Arc<DiagnosticObserver>],
     ) -> Result<PublishReceipt, PipelineFailure> {
-        let (mut envelope, options) = request.into_parts();
-        let input_event_id = envelope.id().clone();
-        let is_dead_letter =
-            envelope.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
-        for interceptor in options.interceptors() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interceptor(envelope))) {
-                Ok(Ok(Some(next))) => {
-                    if next.id() != &input_event_id {
-                        return Err(failure(
-                            PipelineFailureOrigin::Interceptor,
-                            crate::error::ConfigurationError::InvalidField {
-                                field: "event_id",
-                                message: "typed publisher interceptor cannot change event identity".into(),
-                            },
-                        ));
-                    }
-                    envelope = next;
-                }
-                Ok(Ok(None)) => {
-                    return Ok(PublishReceipt::new(
-                        input_event_id.clone(),
-                        None,
-                        self.provider_id.clone(),
-                        PublishAcknowledgement::DroppedByInterceptor,
-                    ));
-                }
-                Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-                Err(payload) => {
-                    return Err(failure(
-                        PipelineFailureOrigin::Interceptor,
-                        PublishError::InterceptorPanicked {
-                            scope: "typed",
-                            message: panic_text(payload.as_ref()).into(),
-                        },
-                    ));
-                }
-            }
-        }
-        let mut metadata = PublishMetadata::from_headers(envelope.headers().clone());
-        for interceptor in global_interceptors {
-            match interceptor.apply(&mut metadata) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Ok(PublishReceipt::new(
-                        input_event_id.clone(),
-                        None,
-                        self.provider_id.clone(),
-                        PublishAcknowledgement::DroppedByInterceptor,
-                    ));
-                }
-                Err(error) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-            }
-        }
-        envelope.headers = metadata.into_headers();
-        if is_dead_letter {
-            envelope.headers.insert(
-                crate::model::DEAD_LETTER_HEADER.into(),
-                crate::model::DEAD_LETTER_HEADER_VALUE.into(),
-            );
-        }
-        let capabilities = self.capabilities;
-        validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
-        let outbound = self.prepare_outbound(capabilities.payload_modes(), envelope)?;
+        let prepared = match self.prepare_publish(request, global_interceptors)? {
+            PublishPreparation::Dropped(receipt) => return Ok(receipt),
+            PublishPreparation::Ready(prepared) => *prepared,
+        };
+        let PreparedPublish { options, outbound, .. } = &prepared;
         let seen_unknown = Cell::new(false);
         let seen_admission = Cell::new(false);
         let result = retry::publish_sync(
@@ -196,28 +140,12 @@ impl PublisherPipeline {
             &seen_unknown,
             &seen_admission,
         );
-        let acknowledgement = match result {
-            Ok(acknowledgement) => acknowledgement,
-            Err(error) => {
-                let origin = publish_failure_origin(&error);
-                let effect = if seen_unknown.get() || seen_admission.get() {
-                    crate::model::PublishEffect::MayHaveBeenAccepted
-                } else {
-                    error.publish_effect()
-                };
-                let error =
-                    notify_publish_error_handlers(&outbound.failure_context, options.error_handlers(), error, effect);
-                return Err(failure(origin, error).with_publish_effect(effect));
+        match result {
+            Ok(acknowledgement) => {
+                Ok(self.finish_publish_success(prepared, acknowledgement, seen_unknown.get(), observers))
             }
-        };
-        self.emit_rejections(&acknowledgement, &outbound.event_id, outbound.topic.as_str(), observers);
-        Ok(PublishReceipt::new(
-            input_event_id,
-            Some(outbound.event_id),
-            self.provider_id.clone(),
-            acknowledgement,
-        )
-        .with_duplicate_possible(seen_unknown.get()))
+            Err(error) => Err(self.finish_publish_failure(&prepared, error, seen_unknown.get(), seen_admission.get())),
+        }
     }
 
     /// Publishes one typed event through the runtime-neutral async pipeline.
@@ -251,6 +179,68 @@ impl PublisherPipeline {
         observers: &[Arc<DiagnosticObserver>],
         timer: Arc<dyn Timer>,
     ) -> Result<PublishReceipt, PipelineFailure> {
+        let prepared = match self.prepare_publish(request, global_interceptors)? {
+            PublishPreparation::Dropped(receipt) => return Ok(receipt),
+            PublishPreparation::Ready(prepared) => *prepared,
+        };
+        let PreparedPublish { options, outbound, .. } = &prepared;
+        let seen_unknown = Arc::new(AtomicBool::new(false));
+        let seen_admission = Arc::new(AtomicBool::new(false));
+        let result = retry::publish_async(
+            spi,
+            self.provider_id.as_str(),
+            || outbound.build(),
+            options.retry_policy(),
+            options.retry_rule(),
+            options.retry_cancellation_token(),
+            timer,
+            options.duplicate_risk_policy(),
+            seen_unknown.clone(),
+            seen_admission.clone(),
+        )
+        .await;
+        match result {
+            Ok(acknowledgement) => Ok(self.finish_publish_success(
+                prepared,
+                acknowledgement,
+                seen_unknown.load(Ordering::Acquire),
+                observers,
+            )),
+            Err(error) => Err(self.finish_publish_failure(
+                &prepared,
+                error,
+                seen_unknown.load(Ordering::Acquire),
+                seen_admission.load(Ordering::Acquire),
+            )),
+        }
+    }
+
+    /// Applies publication interceptors and prepares one immutable outbound.
+    ///
+    /// # Type Parameters
+    /// - `T`: Thread-safe event payload retained for retries and callbacks.
+    ///
+    /// # Parameters
+    /// - `request`: Input envelope and publication options.
+    /// - `global_interceptors`: Bus-wide metadata callbacks run after typed
+    ///   callbacks.
+    ///
+    /// # Returns
+    /// An interceptor-drop receipt or validated data prepared once for all
+    /// attempts.
+    ///
+    /// # Errors
+    /// Returns the original interceptor, capability, or codec failure.
+    ///
+    /// # Side Effects
+    /// Invokes interceptors and, for encoded providers, the codec. Async
+    /// callers invoke this method only when their publication future is
+    /// first polled.
+    fn prepare_publish<T: Send + Sync + 'static>(
+        &self,
+        request: PublishRequest<T>,
+        global_interceptors: &[GlobalPublisherInterceptor],
+    ) -> Result<PublishPreparation<T>, PipelineFailure> {
         let (mut envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();
         let is_dead_letter =
@@ -270,12 +260,12 @@ impl PublisherPipeline {
                     envelope = next;
                 }
                 Ok(Ok(None)) => {
-                    return Ok(PublishReceipt::new(
+                    return Ok(PublishPreparation::Dropped(PublishReceipt::new(
                         input_event_id.clone(),
                         None,
                         self.provider_id.clone(),
                         PublishAcknowledgement::DroppedByInterceptor,
-                    ));
+                    )));
                 }
                 Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
                 Err(payload) => {
@@ -294,12 +284,12 @@ impl PublisherPipeline {
             match interceptor.apply(&mut metadata) {
                 Ok(true) => {}
                 Ok(false) => {
-                    return Ok(PublishReceipt::new(
+                    return Ok(PublishPreparation::Dropped(PublishReceipt::new(
                         input_event_id.clone(),
                         None,
                         self.provider_id.clone(),
                         PublishAcknowledgement::DroppedByInterceptor,
-                    ));
+                    )));
                 }
                 Err(error) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
             }
@@ -314,66 +304,89 @@ impl PublisherPipeline {
         let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes())?;
-        let seen_unknown = Arc::new(AtomicBool::new(false));
-        let seen_admission = Arc::new(AtomicBool::new(false));
-        let result = retry::publish_async(
-            spi,
-            self.provider_id.as_str(),
-            || outbound.build(),
-            options.retry_policy(),
-            options.retry_rule(),
-            options.retry_cancellation_token(),
-            timer,
-            options.duplicate_risk_policy(),
-            seen_unknown.clone(),
-            seen_admission.clone(),
-        )
-        .await;
-        let acknowledgement = match result {
-            Ok(acknowledgement) => acknowledgement,
-            Err(error) => {
-                let origin = publish_failure_origin(&error);
-                let effect = if seen_unknown.load(Ordering::Acquire) || seen_admission.load(Ordering::Acquire) {
-                    crate::model::PublishEffect::MayHaveBeenAccepted
-                } else {
-                    error.publish_effect()
-                };
-                let error =
-                    notify_publish_error_handlers(&outbound.failure_context, options.error_handlers(), error, effect);
-                return Err(failure(origin, error).with_publish_effect(effect));
-            }
-        };
-        self.emit_rejections(&acknowledgement, &outbound.event_id, outbound.topic.as_str(), observers);
-        Ok(PublishReceipt::new(
+        Ok(PublishPreparation::Ready(Box::new(PreparedPublish {
             input_event_id,
-            Some(outbound.event_id),
+            options,
+            outbound,
+        })))
+    }
+
+    /// Builds a successful receipt without discarding earlier unknown evidence.
+    ///
+    /// # Type Parameters
+    /// - `T`: Thread-safe event payload retained in the prepared publication.
+    ///
+    /// # Parameters
+    /// - `prepared`: Original identity and outbound data for this publication.
+    /// - `acknowledgement`: Unmodified provider response.
+    /// - `duplicate_possible`: Aggregate uncertainty from previous attempts.
+    /// - `observers`: Callbacks receiving destination rejection diagnostics.
+    ///
+    /// # Returns
+    /// The provider receipt with the aggregate duplicate flag.
+    ///
+    /// # Side Effects
+    /// Notifies diagnostic observers once for each rejected destination.
+    fn finish_publish_success<T: Send + Sync + 'static>(
+        &self,
+        prepared: PreparedPublish<T>,
+        acknowledgement: PublishAcknowledgement,
+        duplicate_possible: bool,
+        observers: &[Arc<DiagnosticObserver>],
+    ) -> PublishReceipt {
+        self.emit_rejections(
+            &acknowledgement,
+            &prepared.outbound.event_id,
+            prepared.outbound.topic.as_str(),
+            observers,
+        );
+        PublishReceipt::new(
+            prepared.input_event_id,
+            Some(prepared.outbound.event_id),
             self.provider_id.clone(),
             acknowledgement,
         )
-        .with_duplicate_possible(seen_unknown.load(Ordering::Acquire)))
+        .with_duplicate_possible(duplicate_possible)
     }
 
-    /// Prepares the transport payload using an explicitly selected payload
-    /// mode.
+    /// Retains admission evidence while returning the terminal error chain.
+    ///
+    /// # Type Parameters
+    /// - `T`: Thread-safe event payload retained for publication error
+    ///   callbacks.
     ///
     /// # Parameters
-    ///
-    /// - `modes`: Payload representations supported by the provider.
-    /// - `envelope`: Event to convert into an outbound transport message.
+    /// - `prepared`: Context and handlers prepared once for the publication.
+    /// - `error`: Original terminal error returned by the retry adapter.
+    /// - `seen_unknown`: Whether any attempt may have been admitted.
+    /// - `seen_admission`: Whether any attempt acknowledged admission.
     ///
     /// # Returns
+    /// A classified failure with the aggregate publication effect and original
+    /// error, wrapped only if an error handler panics.
     ///
-    /// A prepared message retaining the original context for error callbacks.
-    ///
-    /// # Errors
-    ///
-    /// Returns a pipeline failure when metadata or payload preparation fails.
-    fn prepare_outbound<T: Send + Sync + 'static>(
+    /// # Side Effects
+    /// Invokes each publication error handler once.
+    fn finish_publish_failure<T: Send + Sync + 'static>(
         &self,
-        modes: PayloadModes,
-        envelope: EventEnvelope<T>,
-    ) -> Result<PreparedOutbound<T>, PipelineFailure> {
-        self.prepare_outbound_for(envelope, modes)
+        prepared: &PreparedPublish<T>,
+        error: PublishError,
+        seen_unknown: bool,
+        seen_admission: bool,
+    ) -> PipelineFailure {
+        let origin = publish_failure_origin(&error);
+        let effect = if seen_unknown || seen_admission {
+            crate::model::PublishEffect::MayHaveBeenAccepted
+        } else {
+            error.publish_effect()
+        };
+        let error = notify_publish_error_handlers(
+            &prepared.outbound.failure_context,
+            prepared.options.error_handlers(),
+            error,
+            effect,
+        );
+        failure(origin, error).with_publish_effect(effect)
     }
 
     /// Encodes or erases an event payload according to provider capabilities.
@@ -493,6 +506,7 @@ impl PublisherPipeline {
 ///
 /// `Retry` for retry wrapper errors and `Provider` for all other publish
 /// errors.
+#[inline]
 fn publish_failure_origin(error: &PublishError) -> PipelineFailureOrigin {
     if matches!(error, PublishError::Retry(_)) {
         PipelineFailureOrigin::Retry
@@ -553,6 +567,7 @@ fn notify_publish_error_handlers<T: 'static>(
 /// # Returns
 ///
 /// A failure suitable for returning from publication processing.
+#[inline]
 fn failure(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> PipelineFailure {
     PipelineFailure::new(origin, error)
 }
@@ -566,6 +581,7 @@ fn failure(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> Pi
 /// # Returns
 ///
 /// The contained string or a stable fallback for non-string payloads.
+#[inline]
 fn panic_text(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&'static str>()

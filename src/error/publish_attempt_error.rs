@@ -71,7 +71,7 @@ impl PublishAttemptError {
     ///
     /// # Returns
     /// Whether this individual failed attempt can be proven not admitted.
-    #[must_use]
+    #[must_use = "attempt admission evidence must be observed"]
     #[inline]
     pub fn effect(&self) -> PublishEffect {
         match self {

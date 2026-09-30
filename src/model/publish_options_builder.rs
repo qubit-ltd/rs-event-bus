@@ -150,7 +150,6 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// The configured options value.
-    #[must_use]
     pub fn build(self) -> PublishOptions<T> {
         self.options
     }
@@ -158,6 +157,9 @@ impl<T: 'static> PublishOptionsBuilder<T> {
 
 impl<T: 'static> Default for PublishOptionsBuilder<T> {
     /// Creates a builder with default retry and callback settings.
+    ///
+    /// # Returns
+    /// A builder with no retry policy or callbacks configured.
     fn default() -> Self {
         Self::new()
     }

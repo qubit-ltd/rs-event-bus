@@ -36,6 +36,17 @@ pub struct SubscriptionCloseErrors {
 }
 
 impl SubscriptionCloseErrors {
+    /// Builds an immutable close-error snapshot from the bus lifecycle ledger.
+    ///
+    /// # Parameters
+    /// - `failures`: shared failure records retained by the lifecycle ledger.
+    ///
+    /// # Returns
+    /// An immutable collection over the supplied records.
+    pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
+        Self { failures }
+    }
+
     /// Returns the number of failed subscription closes.
     ///
     /// # Returns
@@ -64,17 +75,6 @@ impl SubscriptionCloseErrors {
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
         self.failures.iter().map(Arc::as_ref)
-    }
-
-    /// Builds an immutable close-error snapshot from the bus lifecycle ledger.
-    ///
-    /// # Parameters
-    /// - `failures`: shared failure records retained by the lifecycle ledger.
-    ///
-    /// # Returns
-    /// An immutable collection over the supplied records.
-    pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
-        Self { failures }
     }
 }
 

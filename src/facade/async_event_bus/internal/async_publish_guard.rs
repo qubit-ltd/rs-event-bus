@@ -25,6 +25,8 @@ impl AsyncPublishGuard {
     ///
     /// # Returns
     /// A guard that releases the publish count when dropped.
+    #[must_use]
+    #[inline]
     pub(in crate::facade) fn after_start(tracker: Arc<AsyncTracker>) -> Self {
         Self(tracker)
     }

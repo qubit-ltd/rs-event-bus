@@ -90,6 +90,8 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
+    #[must_use]
+    #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.envelope.header(key)
     }
@@ -106,7 +108,6 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The retry and callback policy associated with the request.
-    #[must_use]
     #[inline]
     pub fn options(&self) -> &PublishOptions<T> {
         &self.options
@@ -118,6 +119,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The request with its policy replaced.
+    #[inline]
     pub fn with_options(mut self, options: PublishOptions<T>) -> Self {
         self.options = options;
         self
@@ -126,6 +128,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The envelope and policy as separate owned values.
+    #[inline]
     pub fn into_parts(self) -> (EventEnvelope<T>, PublishOptions<T>) {
         (self.envelope, self.options)
     }

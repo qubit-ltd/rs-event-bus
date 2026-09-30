@@ -48,6 +48,7 @@ impl PayloadLimits {
     /// # Returns
     /// Independent limits for the two facade boundaries.
     #[must_use]
+    #[inline]
     pub const fn new(max_publish_bytes: NonZeroUsize, max_receive_bytes: NonZeroUsize) -> Self {
         Self {
             max_publish_bytes,
@@ -76,6 +77,9 @@ impl PayloadLimits {
 
 impl Default for PayloadLimits {
     /// Sets both encoded boundaries to one mebibyte.
+    ///
+    /// # Returns
+    /// Limits that allow one mebibyte for both publishing and receiving.
     fn default() -> Self {
         let limit = NonZeroUsize::new(1_048_576).expect("the default payload limit is positive");
         Self::new(limit, limit)

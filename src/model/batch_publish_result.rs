@@ -37,6 +37,7 @@ impl BatchPublishResult {
     ///
     /// # Returns
     /// A batch retaining the supplied result order.
+    #[inline]
     pub fn new(items: Vec<Result<PublishReceipt, PublishFailure>>) -> Self {
         Self { items }
     }

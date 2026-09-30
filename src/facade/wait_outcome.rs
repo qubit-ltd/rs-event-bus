@@ -19,11 +19,17 @@
 /// ```
 /// use qubit_event_bus::WaitOutcome;
 ///
-/// let outcome = WaitOutcome::Idle;
-/// assert_eq!(outcome, WaitOutcome::Idle);
+/// let outcome = WaitOutcome::TimedOut;
+/// let status = match outcome {
+///     WaitOutcome::Idle => "idle",
+///     WaitOutcome::TimedOut => "timed out",
+///     _ => "another outcome",
+/// };
+/// assert_eq!(status, "timed out");
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub enum WaitOutcome {
     /// The selected provider or facade reports no outstanding work for the
     /// topic.

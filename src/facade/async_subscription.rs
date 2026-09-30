@@ -9,7 +9,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::PoisonError;
 
 use qubit_id::Id;
 
@@ -21,13 +21,17 @@ use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
 use super::async_event_bus::BusState;
 use super::async_event_bus::SignalRegistration;
+use crate::codec::EventCodec;
 use crate::error::DeliveryError;
+use crate::error::LifecycleError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseErrors;
+use crate::facade::SubscriptionDeliveryMetricsSnapshot;
 use crate::model::Delivery;
 use crate::model::FailureDirective;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
+use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::AsyncEventSubscriptionSpi;
@@ -95,11 +99,6 @@ pub struct AsyncSubscription<T: 'static> {
     control: Arc<AsyncSubscriptionControl<T>>,
 }
 
-/// Initial delay between receiver settlement retries.
-const SETTLEMENT_RETRY_BASE_DELAY: Duration = Duration::from_millis(10);
-/// Maximum delay between receiver settlement retries.
-const SETTLEMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
-
 impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Constructs a public handle and its bus-owned shutdown control.
     ///
@@ -122,7 +121,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         id: Id,
         subscriber_id: SubscriberId,
         topic: Topic<T>,
-        codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
+        codec: Option<Arc<dyn EventCodec<T>>>,
         options: SubscribeOptions<T>,
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
     ) -> (Self, Arc<AsyncSubscriptionControl<T>>) {
@@ -148,6 +147,20 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         )
     }
 
+    /// Returns this subscription's live gauges and counters retained after
+    /// close.
+    ///
+    /// # Returns
+    /// Subscription identity, live gauges, and cumulative lifecycle counters.
+    #[must_use]
+    pub fn delivery_metrics(&self) -> SubscriptionDeliveryMetricsSnapshot {
+        SubscriptionDeliveryMetricsSnapshot {
+            subscription_id: self.id,
+            subscriber_id: self.subscriber_id.clone(),
+            metrics: self.control.delivery_metrics(),
+        }
+    }
+
     /// Returns this subscription's bus-local object ID.
     ///
     /// # Returns
@@ -168,11 +181,24 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         &self.subscriber_id
     }
 
+    /// Returns the first terminal receive cause, or None before a failure.
+    /// The Arc is retained across runner cancellation and receiver close.
+    ///
+    /// # Returns
+    /// `Some` with the immutable first cause after a terminal receive failure;
+    /// `None` when no terminal failure has been recorded.
+    #[must_use]
+    #[inline]
+    pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
+        self.control.signals.terminal_failure()
+    }
+
     /// Runs this subscription until its receiver closes or shutdown stops it.
     ///
-    /// The bus-wide `max_in_flight` admission setting bounds the delivery
-    /// futures owned by this and other subscriptions. Different ordering keys
-    /// may run concurrently; messages with the same key retain receive order.
+    /// The bus-wide delivery scheduling configuration independently bounds
+    /// running handlers, owned deliveries, and registered subscriptions.
+    /// Different ordering keys may run concurrently; messages with the same
+    /// key retain receive order through settlement completion.
     /// Dropping this future pauses the session. A later call resumes existing
     /// handler futures before using its handler for new messages.
     ///
@@ -187,7 +213,8 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// `Ok(())` when the provider closes or shutdown stops the runner.
     ///
     /// # Errors
-    /// Returns provider receive, timer, or receiver close failures.
+    /// Returns the retained first terminal cause as `ReceiveError::Stopped`,
+    /// or a receiver close failure when no earlier cause exists.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
@@ -196,9 +223,6 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
         F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
     {
-        if let Some(reason) = self.terminal_failure() {
-            return Err(ReceiveError::Stopped(reason));
-        }
         let mut lease = self.control.lease().await.ok_or(ReceiveError::Closed)?;
         lease
             .session
@@ -208,13 +232,6 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
             .await
     }
 
-    /// Returns the first terminal receive cause, or None before a failure.
-    /// The Arc is retained across runner cancellation and receiver close.
-    #[must_use]
-    pub fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
-        self.control.signals.terminal_failure()
-    }
-
     /// Stops this session and closes its provider receiver.
     ///
     /// # Returns
@@ -222,14 +239,20 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Errors
     /// Returns a lifecycle error when provider receiver close fails.
-    pub async fn close(&mut self) -> Result<(), crate::error::LifecycleError> {
-        if self.control.bus.upgrade().is_none_or(|inner| {
-            *inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != BusState::Running
-        }) {
+    ///
+    /// # Panics
+    /// Panics if the session lease invariant is violated internally.
+    pub async fn close(&mut self) -> Result<(), LifecycleError> {
+        if self
+            .control
+            .bus
+            .upgrade()
+            .is_none_or(|inner| *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running)
+        {
             return Ok(());
         }
         self.control.signals.stop(ShutdownMode::Immediate);
-        let mut lease = self.control.lease().await.ok_or(crate::error::LifecycleError::Closed)?;
+        let mut lease = self.control.lease().await.ok_or(LifecycleError::Closed)?;
         lease
             .session
             .as_mut()
@@ -244,37 +267,4 @@ impl<T: 'static> Drop for AsyncSubscription<T> {
     fn drop(&mut self) {
         self.control.dispose();
     }
-}
-
-/// Awaits an operation until it completes or the subscription stops.
-///
-/// # Type Parameters
-/// - `F`: future type being awaited.
-///
-/// # Parameters
-/// - `future`: timer or asynchronous operation.
-/// - `control`: session stop signals.
-///
-/// # Returns
-/// `Some` with the future output when complete, or `None` after stop.
-async fn await_or_stop<F>(future: F, control: &SessionSignals) -> Option<F::Output>
-where
-    F: Future,
-{
-    let mut future = Box::pin(future);
-    let registration = SignalRegistration::new(control.signal());
-    std::future::poll_fn(|cx| {
-        if control.is_stopped() {
-            return std::task::Poll::Ready(None);
-        }
-        registration.register(cx.waker());
-        if control.is_stopped() {
-            return std::task::Poll::Ready(None);
-        }
-        match future.as_mut().poll(cx) {
-            std::task::Poll::Ready(value) => std::task::Poll::Ready(Some(value)),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    })
-    .await
 }

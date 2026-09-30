@@ -13,13 +13,16 @@ use qubit_retry::AsyncRetry;
 use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 
+use crate::facade::async_event_bus::publishing::publish_pipeline_error;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::EventEnvelope;
 use crate::model::PublishReceipt;
+use crate::model::PublishRequest;
 use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::dead_letter_retry_config;
+use crate::pipeline::dead_letter_was_accepted;
 
 /// Publishes a dead-letter event with the configured retry policy.
 ///
@@ -71,18 +74,14 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
             .publisher
             .publish_async(
                 inner.spi.as_ref(),
-                crate::model::PublishRequest::from_envelope(envelope),
+                PublishRequest::from_envelope(envelope),
                 &[],
                 &inner.observer_snapshot(),
                 inner.timer.clone(),
             )
             .await
-            .map_err(|failure| {
-                DeadLetterForwardError::Publish(crate::facade::async_event_bus::publishing::publish_pipeline_error(
-                    event_id, failure,
-                ))
-            })?;
-        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+            .map_err(|failure| DeadLetterForwardError::Publish(publish_pipeline_error(event_id, failure)))?;
+        if dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
             Ok(receipt)
         } else {
             Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))

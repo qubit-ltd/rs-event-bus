@@ -7,9 +7,14 @@
 // =============================================================================
 //! Runtime-neutral asynchronous in-process transport SPI.
 
+use std::future::Future;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::task::Poll;
+use std::time::Duration;
 use std::time::Instant;
 
 use qubit_clock::StdTimer;
@@ -24,11 +29,15 @@ use super::local_event_bus_spi::operation_error;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
+use crate::error::ConfigurationError;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
+use crate::model::StartPosition;
+use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
@@ -43,6 +52,7 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiFuture;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::SubscriptionModes;
 use crate::spi::TransportPayload;
 
 /// Asynchronous native-only local backend. Receive waits are driven by wakers;
@@ -78,7 +88,7 @@ impl AsyncLocalEventBusSpi {
     /// # Errors
     /// Returns `ConfigurationError::InvalidField` if either configured
     /// capacity is zero.
-    pub fn new(config: &LocalEventBusConfig) -> Result<Self, crate::error::ConfigurationError> {
+    pub fn new(config: &LocalEventBusConfig) -> Result<Self, ConfigurationError> {
         Self::with_timer(config, Arc::new(StdTimer::new()))
     }
 
@@ -95,10 +105,7 @@ impl AsyncLocalEventBusSpi {
     /// # Errors
     /// Returns `ConfigurationError::InvalidField` when either configured
     /// capacity is zero.
-    pub fn with_timer(
-        config: &LocalEventBusConfig,
-        timer: Arc<dyn Timer>,
-    ) -> Result<Self, crate::error::ConfigurationError> {
+    pub fn with_timer(config: &LocalEventBusConfig, timer: Arc<dyn Timer>) -> Result<Self, ConfigurationError> {
         config.validate()?;
         Ok(Self {
             shared: Arc::new(AsyncLocalShared::new(
@@ -123,7 +130,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             OrderingCapability::PerKey,
             DelayedDeliveryCapability::Native,
             DurabilityCapability::Ephemeral,
-            crate::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -217,12 +224,12 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn crate::spi::AsyncEventSubscriptionSpi>, SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         Box::pin(async move {
             let topic = request.topic().clone();
-            if request.durability() != crate::model::SubscriptionDurability::Ephemeral
+            if request.durability() != SubscriptionDurability::Ephemeral
                 || request.group().is_some()
-                || !matches!(request.start_position(), crate::model::StartPosition::New)
+                || !matches!(request.start_position(), StartPosition::New)
             {
                 return Err(operation_error(
                     "subscribe",
@@ -272,7 +279,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 Arc::clone(&self.shared),
                 mailbox,
                 request.subscription_id(),
-            )) as Box<dyn crate::spi::AsyncEventSubscriptionSpi>)
+            )) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
 
@@ -299,23 +306,23 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     let started = Instant::now();
                     let mut wait_registration = None;
                     let mut timer_future = None;
-                    std::future::poll_fn(|cx| {
+                    poll_fn(|cx| {
                         let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                         let busy = bus.mailboxes.values().any(|mailbox| {
                             let queue = mailbox.queue.lock();
                             !queue.is_pending_empty() || !queue.in_flight.is_empty()
                         });
                         if !busy {
-                            return std::task::Poll::Ready(Ok(ShutdownOutcome::Complete));
+                            return Poll::Ready(Ok(ShutdownOutcome::Complete));
                         }
-                        let remaining = if timeout == std::time::Duration::MAX {
+                        let remaining = if timeout == Duration::MAX {
                             None
                         } else {
                             let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
-                                return std::task::Poll::Ready(Ok(ShutdownOutcome::TimedOut));
+                                return Poll::Ready(Ok(ShutdownOutcome::TimedOut));
                             };
                             if remaining.is_zero() {
-                                return std::task::Poll::Ready(Ok(ShutdownOutcome::TimedOut));
+                                return Poll::Ready(Ok(ShutdownOutcome::TimedOut));
                             }
                             Some(remaining)
                         };
@@ -339,16 +346,16 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                                     source: Box::new(error),
                                 })
                             })
-                                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SpiError>> + Send>>);
+                                as Pin<Box<dyn Future<Output = Result<(), SpiError>> + Send>>);
                         }
                         wait_registration = Some(self.shared.changed.register(cx.waker()));
                         drop(bus);
                         if let Some(timer) = timer_future.as_mut()
-                            && let std::task::Poll::Ready(result) = std::future::Future::poll(timer.as_mut(), cx)
+                            && let Poll::Ready(result) = timer.as_mut().poll(cx)
                         {
-                            return std::task::Poll::Ready(result.map(|()| ShutdownOutcome::TimedOut));
+                            return Poll::Ready(result.map(|()| ShutdownOutcome::TimedOut));
                         }
-                        std::task::Poll::Pending
+                        Poll::Pending
                     })
                     .await?
                 }

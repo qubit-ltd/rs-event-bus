@@ -18,7 +18,17 @@ use crate::error::SpiError;
 /// ```
 /// use qubit_event_bus::error::SubscribeError;
 ///
-/// assert!(matches!(SubscribeError::Closed, SubscribeError::Closed));
+/// let error = SubscribeError::ResourceLimit {
+///     resource: "subscription workers",
+///     limit: 4,
+/// };
+/// assert!(matches!(
+///     error,
+///     SubscribeError::ResourceLimit {
+///         resource: "subscription workers",
+///         limit: 4,
+///     }
+/// ));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

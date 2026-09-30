@@ -7,13 +7,17 @@
 // =============================================================================
 //! Event publication failures.
 
+use std::error::Error;
+
 use qubit_retry::RetryError;
 
 use crate::error::CapabilityError;
 use crate::error::CodecError;
 use crate::error::ConfigurationError;
 use crate::error::PublishAttemptError;
+use crate::error::PublishFailure;
 use crate::error::SpiError;
+use crate::model::PublishEffect;
 
 /// An event could not be published.
 ///
@@ -82,7 +86,7 @@ pub enum PublishError {
         message: Box<str>,
         /// Original terminal publication failure.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Box<dyn Error + Send + Sync>,
     },
     /// The event bus has already closed.
     #[error("cannot publish after event bus shutdown")]
@@ -92,6 +96,12 @@ pub enum PublishError {
 impl From<RetryError<PublishAttemptError>> for PublishError {
     /// Boxes the comparatively large retry report to keep this public error
     /// inexpensive to return by value.
+    ///
+    /// # Parameters
+    /// - `error`: Retry report containing the attempted publish failures.
+    ///
+    /// # Returns
+    /// A retry variant containing the report behind a box.
     fn from(error: RetryError<PublishAttemptError>) -> Self {
         Self::Retry(Box::new(error))
     }
@@ -101,17 +111,23 @@ impl PublishError {
     /// Classifies the terminal attempt while retaining structured source
     /// errors. Whole-publication aggregation is supplied by the retry
     /// pipeline.
-    pub(crate) fn publish_effect(&self) -> crate::model::PublishEffect {
+    ///
+    /// # Returns
+    /// The effect of the terminal publication attempt, with uncertain
+    /// acceptance preserved when the original failure may have reached the
+    /// provider.
+    #[must_use = "publication admission evidence must be observed"]
+    #[inline]
+    pub(crate) fn publish_effect(&self) -> PublishEffect {
         match self {
             Self::Spi(error) => error.publish_effect(),
             Self::Retry(error) => error
                 .last_error()
-                .map_or(crate::model::PublishEffect::NotAccepted, PublishAttemptError::effect),
-            Self::ErrorHandlerPanicked { source, .. } => source.downcast_ref::<crate::error::PublishFailure>().map_or(
-                crate::model::PublishEffect::MayHaveBeenAccepted,
-                crate::error::PublishFailure::effect,
-            ),
-            _ => crate::model::PublishEffect::NotAccepted,
+                .map_or(PublishEffect::NotAccepted, PublishAttemptError::effect),
+            Self::ErrorHandlerPanicked { source, .. } => source
+                .downcast_ref::<PublishFailure>()
+                .map_or(PublishEffect::MayHaveBeenAccepted, PublishFailure::effect),
+            _ => PublishEffect::NotAccepted,
         }
     }
 }

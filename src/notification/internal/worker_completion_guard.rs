@@ -10,12 +10,15 @@
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::thread;
 
 use super::worker_exit::WorkerExit;
 use super::worker_state::WorkerState;
 use crate::notification::notification_stats::NotificationStats;
 
 /// Sole publisher of the worker's terminal state; owns no user resources.
+#[must_use = "the completion guard must stay alive until processing ends"]
 pub(in crate::notification) struct WorkerCompletionGuard {
     /// State and wakeup shared with every closer.
     state: Arc<(Mutex<WorkerState>, Condvar)>,
@@ -50,13 +53,13 @@ impl WorkerCompletionGuard {
 impl Drop for WorkerCompletionGuard {
     /// Publishes one immutable result and wakes all closers without user code.
     fn drop(&mut self) {
-        let exit = if std::thread::panicking() {
+        let exit = if thread::panicking() {
             WorkerExit::Panicked
         } else {
             self.exit
         };
         let (lock, changed) = &*self.state;
-        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
         if state.exit.is_none() {
             if exit == WorkerExit::Panicked {
                 NotificationStats::increment(&self.stats.worker_panicked);
@@ -65,5 +68,71 @@ impl Drop for WorkerCompletionGuard {
         }
         drop(state);
         changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+    use std::sync::Arc;
+    use std::sync::Condvar;
+    use std::sync::Mutex;
+
+    use super::WorkerCompletionGuard;
+    use crate::notification::internal::worker_exit::WorkerExit;
+    use crate::notification::internal::worker_state::WorkerState;
+    use crate::notification::notification_stats::NotificationStats;
+
+    fn completion_state() -> Arc<(Mutex<WorkerState>, Condvar)> {
+        Arc::new((Mutex::new(WorkerState { exit: None }), Condvar::new()))
+    }
+
+    fn terminal_exit(state: &Arc<(Mutex<WorkerState>, Condvar)>) -> WorkerExit {
+        let (lock, _) = &**state;
+        lock.lock()
+            .expect("worker state lock is not poisoned")
+            .exit
+            .expect("guard publishes a terminal result")
+    }
+
+    #[test]
+    fn test_drop_without_drain_publishes_panicked_and_increments_counter() {
+        let state = completion_state();
+        let stats = Arc::new(NotificationStats::default());
+
+        drop(WorkerCompletionGuard::new(Arc::clone(&state), Arc::clone(&stats)));
+
+        assert_eq!(WorkerExit::Panicked, terminal_exit(&state));
+        assert_eq!(1, stats.snapshot().worker_panicked());
+    }
+
+    #[test]
+    fn test_mark_drained_publishes_success_without_panic_counter() {
+        let state = completion_state();
+        let stats = Arc::new(NotificationStats::default());
+        let mut guard = WorkerCompletionGuard::new(Arc::clone(&state), Arc::clone(&stats));
+        guard.mark_drained();
+
+        drop(guard);
+
+        assert_eq!(WorkerExit::Drained, terminal_exit(&state));
+        assert_eq!(0, stats.snapshot().worker_panicked());
+    }
+
+    #[test]
+    fn test_unwinding_overrides_marked_drained_result() {
+        let state = completion_state();
+        let stats = Arc::new(NotificationStats::default());
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = WorkerCompletionGuard::new(Arc::clone(&state), Arc::clone(&stats));
+            guard.mark_drained();
+            panic!("worker processing unwinds before completion");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(WorkerExit::Panicked, terminal_exit(&state));
+        assert_eq!(1, stats.snapshot().worker_panicked());
     }
 }

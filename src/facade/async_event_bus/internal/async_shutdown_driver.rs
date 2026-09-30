@@ -11,15 +11,28 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
+use crate::spi::ShutdownMode;
 
 /// Operations needed to stop and close an asynchronous subscription.
 pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
+    /// Wakes the caller driving scheduler work.
+    fn notify(&self);
+    /// Stores a first metrics-clock failure and requests stop before observer
+    /// callbacks.
+    ///
+    /// # Parameters
+    /// - `error`: metrics-clock failure to retain as the terminal cause.
+    ///
+    /// # Returns
+    /// `true` only when this call records the first terminal cause.
+    fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool;
     /// Requests the subscription runner to stop receiving.
     ///
     /// # Parameters
     /// - `mode`: shutdown policy to apply to the runner.
-    fn stop(&self, mode: crate::spi::ShutdownMode);
+    fn stop(&self, mode: ShutdownMode);
 
     /// Returns the canonical receiver close failure, if one has been recorded.
     ///
@@ -49,6 +62,6 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// Resolves with the provider receiver close failure if close fails.
     fn shutdown<'a>(
         &'a self,
-        mode: crate::spi::ShutdownMode,
+        mode: ShutdownMode,
     ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>>;
 }

@@ -9,11 +9,16 @@
 
 mod internal;
 
-pub(crate) use internal::PipelineFailure;
-pub(crate) use internal::PipelineFailureOrigin;
+use std::panic;
+use std::sync::Arc;
+
 use qubit_id::Id;
 
+pub(crate) use self::internal::PipelineFailure;
+pub(crate) use self::internal::PipelineFailureOrigin;
+use crate::error::SpiError;
 use crate::model::EventId;
+use crate::model::SettlementTermination;
 use crate::model::SubscriberId;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DeliveryGap;
@@ -88,8 +93,29 @@ pub enum Diagnostic {
         subscriber_id: SubscriberId,
         /// Terminal disposition that could not be applied.
         disposition: DeliveryDisposition,
-        /// Human-readable provider failure detail.
-        error: Box<str>,
+        /// One-based provider settlement attempt number.
+        attempt: u32,
+        /// Original provider failure, retaining its source chain.
+        error: Arc<SpiError>,
+    },
+    /// Settlement stopped permanently; the first terminal cause is retained.
+    SettlementStopped {
+        /// Event whose settlement stopped.
+        event_id: EventId,
+        /// Topic associated with the event.
+        topic: Box<str>,
+        /// Bus-local subscription identity.
+        subscription_id: Id,
+        /// Logical subscriber identity.
+        subscriber_id: SubscriberId,
+        /// Immutable requested terminal disposition.
+        disposition: DeliveryDisposition,
+        /// Number of provider settlement calls performed.
+        attempts: u32,
+        /// Stable terminal classification.
+        termination: SettlementTermination,
+        /// Original provider failure shared with the stop reason.
+        error: Arc<SpiError>,
     },
     /// A requested terminal disposition was unavailable or its token was
     /// invalid.
@@ -123,8 +149,8 @@ pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 /// # Parameters
 /// - `observers`: observers to invoke in their registration order.
 /// - `diagnostic`: runtime fact passed to each observer.
-pub(crate) fn emit_diagnostic(observers: &[std::sync::Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
+pub(crate) fn emit_diagnostic(observers: &[Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
     for observer in observers {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(diagnostic)));
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| observer(diagnostic)));
     }
 }

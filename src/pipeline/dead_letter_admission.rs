@@ -29,6 +29,8 @@ use crate::spi::PublishGuarantee;
 /// # Returns
 ///
 /// `true` when the configured policy considers the dead-letter event forwarded.
+#[must_use]
+#[inline]
 pub(crate) fn was_accepted(
     receipt: &PublishReceipt,
     capabilities: EventBusCapabilities,
@@ -55,12 +57,14 @@ mod tests {
 
     use super::was_accepted;
     use crate::model::AdmissionOutcome;
-    use crate::model::AdmissionSummary;
+    use crate::model::AdmissionStatus;
     use crate::model::DeadLetterAdmissionPolicy;
+    use crate::model::DestinationAdmission;
     use crate::model::EventId;
     use crate::model::ProviderId;
     use crate::model::PublishAcknowledgement;
     use crate::model::PublishReceipt;
+    use crate::model::SubscriberId;
     use crate::spi::DelayedDeliveryCapability;
     use crate::spi::DurabilityCapability;
     use crate::spi::EventBusCapabilities;
@@ -119,15 +123,15 @@ mod tests {
     #[test]
     fn test_dead_letter_acceptance_accepts_partial_and_guaranteed_opaque() {
         let partial = PublishAcknowledgement::DestinationAdmissions(vec![
-            crate::model::DestinationAdmission::new(
+            DestinationAdmission::new(
                 Id::new(1),
-                crate::model::SubscriberId::new("accepted").unwrap(),
-                crate::model::AdmissionStatus::Accepted,
+                SubscriberId::new("accepted").unwrap(),
+                AdmissionStatus::Accepted,
             ),
-            crate::model::DestinationAdmission::new(
+            DestinationAdmission::new(
                 Id::new(2),
-                crate::model::SubscriberId::new("rejected").unwrap(),
-                crate::model::AdmissionStatus::Rejected("full".into()),
+                SubscriberId::new("rejected").unwrap(),
+                AdmissionStatus::Rejected("full".into()),
             ),
         ]);
         assert!(was_accepted(
@@ -160,6 +164,5 @@ mod tests {
             capabilities(PublishGuarantee::Accepted),
             DeadLetterAdmissionPolicy::KnownDestination,
         ));
-        let _: AdmissionSummary = AdmissionSummary::default();
     }
 }

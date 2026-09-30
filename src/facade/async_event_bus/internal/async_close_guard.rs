@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Releases one counted close operation when its caller exits or is cancelled.
+#[must_use = "the close guard must stay alive until the operation finishes"]
 pub(in crate::facade) struct AsyncCloseGuard(
     /// Tracker whose active close count this guard owns.
     Arc<AsyncTracker>,

@@ -141,6 +141,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
+    #[must_use = "Use the returned header value."]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
