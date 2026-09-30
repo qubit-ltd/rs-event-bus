@@ -95,38 +95,6 @@ impl<T: 'static> Topic<T> {
         })
     }
 
-    /// Attaches an owned codec for encoded backends.
-    ///
-    /// # Type Parameters
-    /// - `C`: the codec implementation associated with payload type `T`.
-    ///
-    /// # Parameters
-    /// - `codec`: the codec used by providers that require encoded payloads.
-    ///
-    /// # Returns
-    /// `self` with the codec shared through an `Arc`.
-    #[must_use]
-    pub fn with_codec<C>(mut self, codec: C) -> Self
-    where
-        C: EventCodec<T> + 'static,
-    {
-        self.codec = Some(Arc::new(codec));
-        self
-    }
-
-    /// Attaches an already shared or registered codec for encoded backends.
-    ///
-    /// # Parameters
-    /// - `codec`: the shared codec used by encoded providers.
-    ///
-    /// # Returns
-    /// `self` retaining the supplied shared codec.
-    #[must_use]
-    pub fn with_shared_codec(mut self, codec: Arc<dyn EventCodec<T>>) -> Self {
-        self.codec = Some(codec);
-        self
-    }
-
     /// Returns the validated topic name.
     ///
     /// # Returns
@@ -176,6 +144,38 @@ impl<T: 'static> Topic<T> {
     #[inline]
     pub fn schema_id(&self) -> Option<&SchemaId> {
         self.codec.as_ref().and_then(|codec| codec.schema_id())
+    }
+
+    /// Attaches an owned codec for encoded backends.
+    ///
+    /// # Type Parameters
+    /// - `C`: the codec implementation associated with payload type `T`.
+    ///
+    /// # Parameters
+    /// - `codec`: the codec used by providers that require encoded payloads.
+    ///
+    /// # Returns
+    /// `self` with the codec shared through an `Arc`.
+    #[must_use]
+    pub fn with_codec<C>(mut self, codec: C) -> Self
+    where
+        C: EventCodec<T> + 'static,
+    {
+        self.codec = Some(Arc::new(codec));
+        self
+    }
+
+    /// Attaches an already shared or registered codec for encoded backends.
+    ///
+    /// # Parameters
+    /// - `codec`: the shared codec used by encoded providers.
+    ///
+    /// # Returns
+    /// `self` retaining the supplied shared codec.
+    #[must_use]
+    pub fn with_shared_codec(mut self, codec: Arc<dyn EventCodec<T>>) -> Self {
+        self.codec = Some(codec);
+        self
     }
 }
 

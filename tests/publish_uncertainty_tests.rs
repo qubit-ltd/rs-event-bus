@@ -550,7 +550,9 @@ fn test_allow_duplicates_preserves_encoded_bytes_identity_and_timestamp() {
     scripted.encoded = true;
     let spi = Arc::new(scripted);
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
-    let topic = Topic::new_with_codec("encoded.uncertain", TextCodec(ContentType::new("text/plain").unwrap())).unwrap();
+    let topic = Topic::new("encoded.uncertain")
+        .unwrap()
+        .with_codec(TextCodec(ContentType::new("text/plain").unwrap()));
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("same encoded bytes".to_owned())
