@@ -562,11 +562,9 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
 fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let bus = bus(spi.clone());
-    let topic = Topic::new("codec.failure")
-        .unwrap()
-        .with_codec(FailingStringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        });
+    let topic = Topic::new("codec.failure").unwrap().with_codec(FailingStringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+    });
     let request = PublishRequest::new(topic, "payload".to_owned()).unwrap();
 
     let error = bus.publish(request).unwrap_err();
@@ -583,11 +581,9 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         NonZeroUsize::new(4).expect("positive receive limit"),
     ));
     let topic = || {
-        Topic::new("codec.limit")
-            .unwrap()
-            .with_codec(SuccessfulStringCodec {
-                content_type: ContentType::TEXT_PLAIN,
-            })
+        Topic::new("codec.limit").unwrap().with_codec(SuccessfulStringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        })
     };
     let sync_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let sync_bus = EventBus::with_config(

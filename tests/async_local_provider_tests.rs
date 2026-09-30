@@ -80,7 +80,7 @@ fn test_async_local_delivers_and_settles_without_a_runtime_dependency() {
         }))
     });
 
-    block_on(bus.publish(PublishRequest::new(topic, "message".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic, "message".to_owned()).unwrap())).unwrap();
     assert_eq!("message", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_ephemeral_shutdown_report(
         block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
@@ -170,7 +170,7 @@ fn test_async_local_drop_racing_publish_releases_capacity_after_close() {
     let second_topic = Topic::<String>::new("async.local.drop-publish-second").unwrap();
     let first = block_on(spi.subscribe(spi_request(702, "first", "async.local.drop-publish-first"))).unwrap();
     let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second"))).unwrap();
-    block_on(bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).unwrap())).unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
     let worker_barrier = Arc::clone(&barrier);
@@ -203,7 +203,7 @@ fn test_async_local_settlement_racing_shutdown_never_leaks_budget() {
         AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<String>::new("async.local.settle-shutdown-race").unwrap();
     let mut receiver = block_on(spi.subscribe(spi_request(704, "race", "async.local.settle-shutdown-race"))).unwrap();
-    block_on(bus.publish(PublishRequest::new(topic, "racing".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic, "racing".to_owned()).unwrap())).unwrap();
     let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).unwrap() else {
         panic!("accepted message is available for settlement");
     };
@@ -444,7 +444,7 @@ fn test_async_local_same_subscriber_instances_report_independent_queue_capacity(
     let mut first = block_on(spi.subscribe(spi_request(71, "same", "async.local.same-subscriber-capacity"))).unwrap();
     let mut second = block_on(spi.subscribe(spi_request(72, "same", "async.local.same-subscriber-capacity"))).unwrap();
 
-    block_on(bus.publish(PublishRequest::new(topic.clone(), "occupy".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), "occupy".to_owned()).unwrap())).unwrap();
     let ReceiveOutcome::Message(mut first_occupy) = block_on(first.receive(Duration::ZERO)).unwrap() else {
         panic!("first mailbox receives the first event");
     };
@@ -490,7 +490,7 @@ fn test_async_local_drop_discards_pending_messages_for_the_same_subscriber() {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
     let topic = Topic::<String>::new("async.local.recovery").unwrap();
     let first = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap();
-    block_on(bus.publish(PublishRequest::new(topic.clone(), "retained".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), "retained".to_owned()).unwrap())).unwrap();
     drop(first);
 
     drop(block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap());
@@ -502,7 +502,7 @@ fn test_async_local_drop_discards_pending_messages_for_the_same_subscriber() {
             async { Ok(()) }
         }))
     });
-    block_on(bus.publish(PublishRequest::new(topic, "fresh".to_owned()).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic, "fresh".to_owned()).unwrap())).unwrap();
     assert_eq!("fresh", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_ephemeral_shutdown_report(
         block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
@@ -565,7 +565,7 @@ fn test_async_local_receive_cancellation_keeps_the_message_available() {
     assert!(poll_once(pending.as_mut()).is_pending());
     drop(pending);
 
-    block_on(
+    let _ = block_on(
         bus.publish(
             PublishRequest::new(
                 Topic::<String>::new("async.local.cancel").unwrap(),
@@ -646,7 +646,7 @@ fn test_async_local_drop_discards_an_unsettled_in_flight_delivery() {
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut first = block_on(spi.subscribe(spi_request(10, "in-flight-recovery", "async.local.requeue"))).unwrap();
-    block_on(
+    let _ = block_on(
         bus.publish(
             PublishRequest::new(
                 Topic::<String>::new("async.local.requeue").unwrap(),
@@ -676,7 +676,7 @@ fn test_async_local_settle_and_close_can_be_retried_after_unpolled_future_drop()
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut receiver = block_on(spi.subscribe(spi_request(35, "cancelled-ops", "async.local.cancelled-ops"))).unwrap();
-    block_on(
+    let _ = block_on(
         bus.publish(
             PublishRequest::new(
                 Topic::<String>::new("async.local.cancelled-ops").unwrap(),
@@ -721,7 +721,7 @@ fn test_async_local_shutdown_wakes_pending_receives_and_cancelled_shutdown_can_r
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let _receiver = block_on(spi.subscribe(spi_request(21, "graceful-waiter", "async.local.cancel"))).unwrap();
-    block_on(
+    let _ = block_on(
         bus.publish(
             PublishRequest::new(
                 Topic::<String>::new("async.local.cancel").unwrap(),
@@ -746,7 +746,7 @@ fn test_async_local_graceful_shutdown_observes_finite_timeout() {
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let _receiver = block_on(spi.subscribe(spi_request(34, "finite-shutdown", "async.local.finite"))).unwrap();
-    block_on(
+    let _ = block_on(
         bus.publish(
             PublishRequest::new(
                 Topic::<String>::new("async.local.finite").unwrap(),

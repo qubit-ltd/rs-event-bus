@@ -642,7 +642,7 @@ fn test_async_registry_installs_configured_codec_registry_into_the_facade() {
     let request = PublishRequest::new(Topic::<u32>::new("test.topic").expect("topic is valid"), 42)
         .expect("event ID generation succeeds");
 
-    block_on(bus.publish(request)).expect("registered codec encodes async publication");
+    let _ = block_on(bus.publish(request)).expect("registered codec encodes async publication");
     assert_eq!(1, encoded_messages.load(Ordering::SeqCst));
 }
 

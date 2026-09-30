@@ -187,7 +187,8 @@ fn test_local_facade_delivers_owned_string_payload_without_a_clone_bound() {
         )
         .unwrap();
 
-    bus.publish(PublishRequest::new(topic, String::from("owned payload")).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(topic, String::from("owned payload")).unwrap())
         .unwrap();
     assert_eq!(
         "owned payload",
@@ -234,7 +235,7 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
         }
     });
 
-    bus.publish(PublishRequest::new(topic.clone(), 1).unwrap()).unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 1).unwrap()).unwrap();
     handler_entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let rejected = (2..=8)
         .map(|value| bus.publish(PublishRequest::new(topic.clone(), value).unwrap()).unwrap())
@@ -509,7 +510,7 @@ fn test_idle_wait_includes_delayed_queued_message() {
         .delay(Duration::from_secs(30))
         .build()
         .unwrap();
-    bus.publish(request).unwrap();
+    let _ = bus.publish(request).unwrap();
 
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
@@ -525,7 +526,7 @@ fn test_idle_wait_includes_in_flight_message() {
     let mut receiver = spi.subscribe(request(131, "idle.inflight")).unwrap();
     let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.inflight").unwrap();
-    bus.publish(PublishRequest::new(topic.clone(), 7).unwrap()).unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 7).unwrap()).unwrap();
     let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
         panic!("published message is available");
     };
@@ -549,7 +550,7 @@ fn test_idle_wait_wakes_when_subscription_closes() {
     let mut receiver = spi.subscribe(request(132, "idle.close")).unwrap();
     let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.close").unwrap();
-    bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
         WaitOutcome::TimedOut
@@ -629,7 +630,7 @@ fn test_local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() 
             .ordering_key("customer-1")
             .build()
             .unwrap();
-        bus.publish(request).unwrap();
+        let _ = bus.publish(request).unwrap();
         if value == 1 {
             first_started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         }
@@ -682,10 +683,10 @@ fn test_local_facade_allows_a_different_ordering_key_to_progress_while_one_handl
             .build()
             .unwrap()
     };
-    bus.publish(publish(1, "key-a")).unwrap();
+    let _ = bus.publish(publish(1, "key-a")).unwrap();
     started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    bus.publish(publish(2, "key-a")).unwrap();
-    bus.publish(publish(3, "key-b")).unwrap();
+    let _ = bus.publish(publish(2, "key-a")).unwrap();
+    let _ = bus.publish(publish(3, "key-b")).unwrap();
 
     let progressed = done_rx.recv_timeout(Duration::from_millis(150)).ok();
     let _ = release_tx.send(());
@@ -735,7 +736,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
         .ordering_key("key-b")
         .build()
         .unwrap();
-    bus.publish(delayed).unwrap();
+    let _ = bus.publish(delayed).unwrap();
     let immediate_receipt = bus.publish(immediate).unwrap();
     let progressed = done_rx.recv_timeout(Duration::from_millis(150)).ok();
     subscription.cancel().unwrap();

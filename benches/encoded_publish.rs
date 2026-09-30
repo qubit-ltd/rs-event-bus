@@ -255,7 +255,7 @@ fn sample(bytes: usize, failures: usize) -> (u128, usize, usize, bool) {
         .unwrap()
         .with_options(options);
     let start = Instant::now();
-    bus.publish(black_box(request)).unwrap();
+    let _ = bus.publish(black_box(request)).unwrap();
     let elapsed = start.elapsed().as_nanos();
     let addresses = provider.byte_addresses.lock().unwrap();
     let attempts = provider.attempts.load(Ordering::Acquire);

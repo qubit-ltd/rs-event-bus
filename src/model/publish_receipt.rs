@@ -131,6 +131,7 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The provider or interceptor's admission report.
+    #[must_use = "Use the returned acknowledgement for admission details."]
     #[inline]
     pub fn acknowledgement(&self) -> &PublishAcknowledgement {
         &self.acknowledgement
@@ -177,7 +178,7 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// This receipt with the supplied duplicate possibility.
-    #[must_use]
+    #[must_use = "Use the receipt with updated duplicate evidence."]
     #[inline]
     pub fn with_duplicate_possible(mut self, value: bool) -> Self {
         self.duplicate_possible = value;

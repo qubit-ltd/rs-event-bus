@@ -554,7 +554,7 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
         )
         .expect("subscription starts");
 
-    bus.publish(request("reentrant")).expect("publish reaches callback");
+    let _ = bus.publish(request("reentrant")).expect("publish reaches callback");
     let (wait, shutdown) = result_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("callback reports both lifecycle outcomes");
@@ -646,7 +646,8 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
         )
         .expect("second subscription starts");
 
-    bus.publish(keyed_request("shared-key-event", "same-key"))
+    let _ = bus
+        .publish(keyed_request("shared-key-event", "same-key"))
         .expect("publish to both subscriptions");
     first_started_rx
         .recv_timeout(Duration::from_secs(2))
@@ -705,12 +706,14 @@ fn test_same_ordering_key_is_independent_between_topics() {
         )
         .expect("second subscription starts");
 
-    bus.publish(keyed_request_for(first_topic, "first-topic-event", "same-key"))
+    let _ = bus
+        .publish(keyed_request_for(first_topic, "first-topic-event", "same-key"))
         .expect("publish to first topic");
     first_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("first topic handler starts");
-    bus.publish(keyed_request_for(second_topic, "second-topic-event", "same-key"))
+    let _ = bus
+        .publish(keyed_request_for(second_topic, "second-topic-event", "same-key"))
         .expect("publish to second topic");
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
@@ -774,7 +777,8 @@ fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
         )
         .expect("second subscription starts");
 
-    bus.publish(request("capacity-event"))
+    let _ = bus
+        .publish(request("capacity-event"))
         .expect("publish to both subscriptions");
     let first_started = started_rx
         .recv_timeout(Duration::from_secs(2))
@@ -837,7 +841,8 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
         )
         .expect("second subscription starts");
 
-    bus.publish(request("blocked-event"))
+    let _ = bus
+        .publish(request("blocked-event"))
         .expect("publish to both subscriptions");
     for _ in 0..2 {
         started_rx

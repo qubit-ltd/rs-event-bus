@@ -279,7 +279,7 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str) -> Sample {
     };
     let mut requests = requests.into_iter();
     for request in requests.by_ref().take(initial_queue) {
-        black_box(block_on(bus.publish(request)).unwrap());
+        let _ = black_box(block_on(bus.publish(request)).unwrap());
     }
     let released = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicUsize::new(0));
@@ -321,7 +321,7 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str) -> Sample {
     // A fixed 64-ticket same-key backlog exercises serialization without an
     // unmeasured cubic setup cost from repeatedly polling thousands of waiters.
     for request in requests {
-        black_box(block_on(bus.publish(request)).unwrap());
+        let _ = black_box(block_on(bus.publish(request)).unwrap());
     }
     let process_cpu_start = cpu_nanoseconds(2);
     let cpu_start = cpu_nanoseconds(3);

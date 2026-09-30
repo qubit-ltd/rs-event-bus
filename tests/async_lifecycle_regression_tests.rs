@@ -64,7 +64,8 @@ fn test_close_drains_all_started_handlers() {
     let mut subscription = ready(bus.subscribe(SubscribeRequest::new("close-drain", topic.clone()).expect("request")))
         .expect("subscription");
     for value in 0..2 {
-        ready(bus.publish(PublishRequest::new(topic.clone(), value).expect("publish request"))).expect("publish");
+        let _ =
+            ready(bus.publish(PublishRequest::new(topic.clone(), value).expect("publish request"))).expect("publish");
     }
 
     let gates = Arc::new([AtomicBool::new(false), AtomicBool::new(false)]);
@@ -117,7 +118,7 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
     let topic = Topic::<usize>::new("regression.self-wait").expect("topic");
     let mut subscription = ready(bus.subscribe(SubscribeRequest::new("self-wait", topic.clone()).expect("request")))
         .expect("subscription");
-    ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
+    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
 
     let observed = Arc::new(Mutex::new(None));
     let mut run = {
@@ -166,7 +167,7 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     let mut sub_c = ready(bus.subscribe(SubscribeRequest::new("admission-c", topic_c.clone()).expect("request C")))
         .expect("subscription C");
     for (topic, value) in [(topic_a.clone(), 0), (topic_a, 1), (topic_b, 0), (topic_c, 0)] {
-        ready(bus.publish(PublishRequest::new(topic, value).expect("publish request"))).expect("publish");
+        let _ = ready(bus.publish(PublishRequest::new(topic, value).expect("publish request"))).expect("publish");
     }
 
     let gate_a = Arc::new(AtomicBool::new(false));

@@ -110,6 +110,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The retry and callback policy associated with the request.
+    #[must_use = "Use the returned options."]
     #[inline]
     pub fn options(&self) -> &PublishOptions<T> {
         &self.options
@@ -130,7 +131,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The envelope and policy as separate owned values.
-    #[must_use]
+    #[must_use = "Use the returned event envelope and publish options."]
     #[inline]
     pub fn into_parts(self) -> (EventEnvelope<T>, PublishOptions<T>) {
         (self.envelope, self.options)

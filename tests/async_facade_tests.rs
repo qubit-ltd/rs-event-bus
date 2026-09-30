@@ -9,12 +9,20 @@
 
 mod support;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
+use std::time::Duration;
 use std::time::SystemTime;
 
+use qubit_clock::ManualMonotonicClock;
+use qubit_clock::MonotonicClock;
 use qubit_event_bus::CodecError;
 use qubit_event_bus::ConfigurationError;
 use qubit_event_bus::DeliveryError;
@@ -30,6 +38,7 @@ use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::PublishAttemptError;
+use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::DeliveryAdmissionConfig;
@@ -46,6 +55,7 @@ use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishMetadata;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -80,6 +90,9 @@ use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
+use qubit_retry::AttemptFailure;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
 
@@ -378,9 +391,6 @@ fn test_async_facade_publishes_single_and_ordered_batch_without_runtime_dependen
 
 #[test]
 fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
-    use qubit_event_bus::facade::EventBusFacadeConfig;
-    use qubit_event_bus::model::PublishMetadata;
-
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let typed_order = order.clone();
     let global_order = order.clone();
@@ -416,12 +426,6 @@ fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
 
 #[test]
 fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
-    use qubit_event_bus::error::PublishError;
-    use qubit_event_bus::model::PublishOptions;
-    use qubit_retry::AttemptFailure;
-    use qubit_retry::RetryContext;
-    use qubit_retry::RetryDecision;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.fail_next_publish();
     let bus =
@@ -475,8 +479,6 @@ fn test_async_subscription_is_created_without_spawning_until_run_is_driven() {
 
 #[test]
 fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus =
@@ -577,8 +579,6 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
 
 #[test]
 fn test_async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_released() {
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus =
@@ -695,10 +695,6 @@ fn test_idle_async_subscription_does_not_consume_delivery_admission() {
 
 #[test]
 fn test_async_received_wait_includes_deliveries_queued_for_admission() {
-    use std::sync::atomic::AtomicBool;
-    use std::task::Poll;
-    use std::time::Duration;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
@@ -764,12 +760,6 @@ fn test_async_received_wait_includes_deliveries_queued_for_admission() {
 
 #[test]
 fn test_cancelled_admission_head_wakes_the_next_waiter_after_slot_release() {
-    use std::future::Future;
-    use std::sync::mpsc;
-    use std::task::Context;
-    use std::task::Poll;
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(1).unwrap());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config).unwrap();
@@ -788,10 +778,12 @@ fn test_cancelled_admission_head_wakes_the_next_waiter_after_slot_release() {
             .subscribe(SubscribeRequest::new("admission-successor", waiting_topic.clone()).unwrap())
             .await
             .unwrap();
-        bus.publish(PublishRequest::new(holding_topic, 1).unwrap())
+        let _ = bus
+            .publish(PublishRequest::new(holding_topic, 1).unwrap())
             .await
             .unwrap();
-        bus.publish(PublishRequest::new(waiting_topic, 2).unwrap())
+        let _ = bus
+            .publish(PublishRequest::new(waiting_topic, 2).unwrap())
             .await
             .unwrap();
         (sub_a, sub_b, sub_c)
@@ -873,8 +865,6 @@ fn test_cancelled_admission_head_wakes_the_next_waiter_after_slot_release() {
 
 #[test]
 fn test_async_subscription_runs_different_ordering_keys_concurrently() {
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -942,8 +932,6 @@ fn test_async_subscription_runs_different_ordering_keys_concurrently() {
 
 #[test]
 fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
@@ -1010,8 +998,6 @@ fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
 
 #[test]
 fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler() {
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1088,9 +1074,6 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
 
 #[test]
 fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
-    use std::task::Poll;
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1199,8 +1182,6 @@ fn test_shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
 
 #[test]
 fn test_cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() {
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_close();
     let bus =
@@ -1317,8 +1298,6 @@ fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
 
 #[test]
 fn test_cancelling_pending_subscribe_releases_admission_for_shutdown() {
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();
     let bus =
@@ -1371,9 +1350,6 @@ fn test_asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider
 
 #[test]
 fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
-    use std::future::Future;
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1429,11 +1405,6 @@ fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
 
 #[test]
 fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
-    use std::future::Future;
-    use std::task::Context;
-    use std::task::Poll;
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1504,14 +1475,6 @@ fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
 
 #[test]
 fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
-    use std::future::Future;
-    use std::task::Context;
-    use std::task::Poll;
-    use std::task::Waker;
-
-    use qubit_clock::ManualMonotonicClock;
-    use qubit_clock::MonotonicClock;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();
     let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
@@ -2092,10 +2055,6 @@ fn test_async_manual_acknowledgement_requires_an_explicit_ack() {
 /// attempt.
 #[test]
 fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
-    use qubit_retry::AttemptFailure;
-    use qubit_retry::RetryContext;
-    use qubit_retry::RetryDecision;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2420,9 +2379,6 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
 
 #[test]
 fn test_dropping_subscription_during_shutdown_takeover_releases_the_active_session() {
-    use std::task::Poll;
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2603,12 +2559,10 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     }
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
-    let topic = Topic::new("async.panic-codec")
-        .unwrap()
-        .with_codec(PanicOnceCodec {
-            content_type: ContentType::TEXT_PLAIN,
-            panicked: Arc::new(AtomicBool::new(false)),
-        });
+    let topic = Topic::new("async.panic-codec").unwrap().with_codec(PanicOnceCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        panicked: Arc::new(AtomicBool::new(false)),
+    });
     let handled = Arc::new(AtomicUsize::new(0));
     let diagnostic_seen = Arc::new(AtomicBool::new(false));
     let observed = diagnostic_seen.clone();
@@ -2679,11 +2633,7 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
-            TransportPayload::Encoded(EncodedPayload::new(
-                Arc::from(bytes),
-                ContentType::TEXT_PLAIN,
-                None,
-            )),
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from(bytes), ContentType::TEXT_PLAIN, None)),
             Some(SettlementToken::new(recovered.id(), id)),
             Default::default(),
         ));
@@ -2928,9 +2878,6 @@ fn test_async_success_settles_the_provider_token_after_handler_completion() {
 
 #[test]
 fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
-    use std::future::Future;
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -2989,11 +2936,6 @@ fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
 
 #[test]
 fn test_dropping_idle_wait_unregisters_signal_waker() {
-    use std::future::Future;
-    use std::task::Context;
-    use std::task::Poll;
-    use std::task::Waker;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3136,8 +3078,6 @@ fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handle
 
 #[test]
 fn test_cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() {
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3241,8 +3181,6 @@ fn test_async_settlement_call_panic_is_reported_once_and_does_not_retry() {
 
 #[test]
 fn test_permanent_settlement_failure_yields_to_same_executor_shutdown() {
-    use std::task::Poll;
-
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -3331,11 +3269,7 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
-            TransportPayload::Encoded(EncodedPayload::new(
-                Arc::from([0xff_u8]),
-                ContentType::TEXT_PLAIN,
-                None,
-            )),
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None)),
             Some(SettlementToken::new(subscription.id(), "decode-fail")),
             Default::default(),
         ));

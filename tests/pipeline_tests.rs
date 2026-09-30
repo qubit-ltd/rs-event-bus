@@ -51,7 +51,8 @@ fn test_async_retry_rule_panic_requeues_delivery() {
         .expect("valid subscriber ID")
         .with_options(options);
     let mut subscription = block_on(bus.subscribe(request)).expect("subscription is supported");
-    block_on(bus.publish(PublishRequest::new(topic, 42_u32).expect("valid request"))).expect("publish is accepted");
+    let _ =
+        block_on(bus.publish(PublishRequest::new(topic, 42_u32).expect("valid request"))).expect("publish is accepted");
     let mut run = Box::pin(subscription.run(|_| async {
         Err(DeliveryError::Handler {
             source: Box::new(Error::other("synthetic handler failure")),

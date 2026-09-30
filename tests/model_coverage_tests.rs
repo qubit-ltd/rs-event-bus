@@ -452,7 +452,7 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
         .payload(NonClonePayload(42))
         .event_id(EventId::new("original-event-42")?)
         .build()?;
-    bus.publish(publish)?;
+    let _ = bus.publish(publish)?;
 
     let (event_id, same_original, payload, subscriber_id, reason) = receiver.recv_timeout(Duration::from_secs(2))?;
     assert_eq!(event_id, "original-event-42");

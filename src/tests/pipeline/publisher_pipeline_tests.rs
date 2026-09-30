@@ -257,7 +257,7 @@ fn test_typed_interceptor_runs_before_global_and_drop_short_circuits_spi() {
         *capture.lock().unwrap() = metadata.header("typed").map(str::to_owned);
         Ok(true)
     });
-    pipeline
+    let _ = pipeline
         .publish(spi.as_ref(), request(options), &[global], &[])
         .unwrap();
     assert_eq!(seen.lock().unwrap().as_deref(), Some("yes"));
@@ -296,7 +296,7 @@ fn test_retry_replays_the_same_prepared_message_until_provider_accepts() {
     let options = PublishOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
-    pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap();
+    let _ = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap();
     assert_eq!(state.lock().unwrap().calls, 2);
 }
 
@@ -319,18 +319,16 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
 fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new("orders.encoded")
-        .unwrap()
-        .with_codec(StringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        });
+    let topic = Topic::new("orders.encoded").unwrap().with_codec(StringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+    });
     let encoded_request = PublishRequest::builder()
         .topic(topic)
         .payload("serialized".to_owned())
         .event_id(EventId::new("encoded-event").unwrap())
         .build()
         .unwrap();
-    pipeline.publish(spi.as_ref(), encoded_request, &[], &[]).unwrap();
+    let _ = pipeline.publish(spi.as_ref(), encoded_request, &[], &[]).unwrap();
     assert_eq!(state.lock().unwrap().payload_was_encoded, Some(true));
 
     let request = request(PublishOptions::new());
@@ -350,7 +348,7 @@ fn test_native_payload_does_not_require_clone() {
         .event_id(EventId::new("non-clone-event").unwrap())
         .build()
         .unwrap();
-    pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
+    let _ = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
     assert_eq!(state.lock().unwrap().payload_was_encoded, Some(false));
 }
 
@@ -358,18 +356,16 @@ fn test_native_payload_does_not_require_clone() {
 fn test_native_and_encoded_provider_prefers_native_payload() {
     let (spi, state) = bus(PayloadModes::NativeAndEncoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new("orders.hybrid")
-        .unwrap()
-        .with_codec(StringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        });
+    let topic = Topic::new("orders.hybrid").unwrap().with_codec(StringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+    });
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("hybrid".to_owned())
         .event_id(EventId::new("hybrid-event").unwrap())
         .build()
         .unwrap();
-    pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
+    let _ = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
     assert_eq!(state.lock().unwrap().payload_was_encoded, Some(false));
 }
 
