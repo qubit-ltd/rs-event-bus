@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
-cleanup_script="$project_root/.infra/tools/cleanup-build-artifacts.sh"
+cleanup_script="$project_root/.infra/lib/cleanup-build-artifacts.sh"
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/infra-cleanup-test.XXXXXX")
 trap 'command rm -rf -- "$test_root"' EXIT
 
