@@ -15,21 +15,10 @@
 
 ## 安装
 
-0.18.0 已在本地准备，尚未发布。若应用目录与 `rs-event-bus` 检出处于同一
-父目录，在应用的 `Cargo.toml` 中同时指定直接依赖与 patch，让传递依赖也
-解析到同一份源码：
-
 ```toml
 [dependencies]
-qubit-event-bus = { version = "0.18", path = "../rs-event-bus" }
-
-[patch.crates-io]
-qubit-event-bus = { version = "0.18", path = "../rs-event-bus" }
+qubit-event-bus = "0.18"
 ```
-
-请按实际目录调整相对路径。0.18 发布后，才可改用注册表形式
-`qubit-event-bus = "0.18"` 并移除本地 path/patch。另见
-[0.18 迁移指南](doc/migration.zh_CN.md#从-017-升级到-018)。
 
 ## 快速开始
 
@@ -62,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    bus.shutdown(ShutdownMode::Graceful {
+    let _ = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
     Ok(())
@@ -133,6 +122,10 @@ pub fn create_order(
         total_cents: order.total_cents,
     };
     let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
+    if receipt.duplicate_possible() {
+        // Retain the receipt and reconcile by event ID before deciding to republish.
+        return Ok(receipt);
+    }
     match receipt.admission_outcome() {
         AdmissionOutcome::Accepted(_) => Ok(receipt),
         AdmissionOutcome::OpaqueAccepted => {
@@ -233,27 +226,14 @@ let orders = OrderService::new(bus.clone());
 - 内置 local provider 为每个订阅者设置有界队列；facade 在 provider 能力允许时支持拦截器、重试、ACK/NACK、死信、顺序、诊断和关闭控制。
 - Codec 回调受 panic 边界保护并返回结构化错误；编码后的字节在 provider 重试间共享。
 - 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
+- `EventBus::request_shutdown` 返回可复用 ticket，用于非阻塞观察停机；观察者超时不会取消清理（见[停机指南](doc/user_guide.zh_CN.md#非阻塞地请求停机)）。
 - 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 
-本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 facade 默认最多创建 256 个活跃订阅接收线程，可用 `SyncDeliverySchedulerConfig::with_max_subscription_workers` 调整；异步 provider 不会为每个订阅者创建接收线程，但应用必须驱动 `AsyncSubscription::run`。订阅量较大时，在目标主机运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 实测，不把样本结果当作固定容量阈值。`EventBusFacadeConfig::with_payload_limits(PayloadLimits)` 分别设置编码发布和接收的正数上限，默认均为 1 MiB；原生 payload 的内存占用没有字节上限。异步订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[用户手册](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
+本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 facade 默认最多创建 256 个活跃订阅接收线程，可用 `EventBusFacadeConfig::with_delivery_scheduling` 配置 `DeliverySchedulingConfig` 的执行、全局持有、每订阅持有和订阅数量四项上限。订阅量较大时，在目标主机运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 实测，不把样本结果当作固定容量阈值。`EventBusFacadeConfig::with_payload_limits(PayloadLimits)` 分别设置编码发布和接收的正数上限，默认均为 1 MiB；原生 payload 的内存占用没有字节上限。异步 local 订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。持久 provider 按自身恢复协议处理。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[用户手册](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。升级 provider 或 codec 前请阅读[迁移指南](doc/migration.zh_CN.md)。
 
-## 请求关闭并观察完成
-
-0.18 新增 `EventBus::request_shutdown(mode)`：它关闭接纳入口，返回
-`EventBusShutdown` ticket，不等待 handler、worker 或 provider。应用持有 ticket，
-通过 `wait(Some(timeout))` 或 `wait_async().await` 获取完成结果。取消异步等待只
-移除该观察者的 waker；之后可再次等待同一 ticket，无须重新请求关闭。ticket
-始终绑定原来的关闭代次，丢弃 ticket 只释放观察登记，后台关闭继续进行。
-丢弃 `EventBus` 句柄不会自动发起关闭。
-
-同步 `shutdown` 仍会等待完成，`Immediate` 也一样。IoC 的停止和回滚回调应
-使用 request API。`Managed` 和 `ShutdownHandle` 的 Drop 路径只请求 abort，
-不会创建或轮询 wait；显式调用 `ShutdownHandle::wait` 才会驱动异步资源清理
-并取得报告。超时只限制观察，不能杀死阻塞的 handler 或 provider 代码。具体用法见
-[关闭指南](doc/user_guide.zh_CN.md#请求关闭并异步观察)和
-[0.18 迁移说明](doc/migration.zh_CN.md#从-017-升级到-018)。
+配套版本为 core 0.18、Redis 0.6、task 0.9。结算重试有次数和时间预算，未知重试性默认停止；重发前检查历史，停机超时交应用处置。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
@@ -289,7 +269,7 @@ Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
 ## 贡献
 
 欢迎贡献。请遵循 Rust API 指南，及时更新公共 API 文档与测试，并在提交
-Pull Request 前运行 `./align-ci.sh`格式化代码，运行`./ci-check.sh`对齐CI要求。
+Pull Request 前运行 `./align-ci.sh` 格式化代码，运行 `./ci-check.sh` 对齐 CI 要求。
 
 ## 作者
 
