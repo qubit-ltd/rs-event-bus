@@ -1,0 +1,5 @@
+# Pinned installation metadata for rs-infra-verify.
+source = "https://github.com/qubit-ltd/rs-infra-verify.git"
+revision = "86652062f373e6e6772be9a56b5c570e5d4c9816"
+binary = "rs-infra-verify"
+package = "qubit-infra-verify"
