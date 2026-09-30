@@ -189,7 +189,7 @@ fn publish_sample(topics: usize, subscribers: usize, target: usize) -> (u128, u6
             }
         }
     }
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
     summarize(timings)
 }
 
@@ -256,7 +256,7 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
             );
         }
     }
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
     summarize(timings)
 }
 
@@ -292,7 +292,7 @@ fn end_to_end_sample() -> (u128, u64) {
         settlement.unwrap();
         timings.push(elapsed.as_nanos() as u64);
     }
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
     summarize(timings)
 }
 

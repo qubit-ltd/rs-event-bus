@@ -356,7 +356,7 @@ fn run_async_churn_probe() -> io::Result<()> {
         admissions,
         optional_number(threads)
     );
-    block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
     Ok(())
 }
 
@@ -418,7 +418,7 @@ fn run_async_routing_probe() -> io::Result<()> {
                 let started = Instant::now();
                 let result = block_on(spi.publish(message));
                 elapsed += started.elapsed().as_nanos();
-                result.map_err(io::Error::other)?;
+                let _ = result.map_err(io::Error::other)?;
                 let outcome = block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
                 let ReceiveOutcome::Message(mut inbound) = outcome else {
                     return Err(io::Error::other("hot topic message was not received"));
@@ -430,7 +430,7 @@ fn run_async_routing_probe() -> io::Result<()> {
             }
             let elapsed = elapsed / 128;
             samples.push(elapsed);
-            block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+            let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
             drop(cold_receivers);
         }
         let mut measured = samples.split_off(WARMUPS);
