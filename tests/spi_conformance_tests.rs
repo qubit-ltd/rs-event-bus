@@ -10,7 +10,11 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::mpsc::channel;
+use std::task::Poll;
+use std::thread;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
@@ -72,13 +76,37 @@ use qubit_event_bus::spi::conformance::ConformanceSkipReason;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_async;
 #[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::run_async_with_profile;
+#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_sync;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_sync_with_profile;
+use qubit_id::Id;
 use qubit_spi::ServiceProvider;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
+
+fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id: Id) -> Result<(), String> {
+    match acknowledgement {
+        PublishAcknowledgement::Accepted { .. } => Ok(()),
+        PublishAcknowledgement::DestinationAdmissions(admissions) => match admissions.as_slice() {
+            [admission]
+                if admission.subscription_id() == subscription_id
+                    && matches!(admission.status(), AdmissionStatus::Accepted) =>
+            {
+                Ok(())
+            }
+            _ => Err(format!(
+                "expected an accepted admission for subscription {subscription_id}, got {admissions:?}"
+            )),
+        },
+        PublishAcknowledgement::DroppedByInterceptor => {
+            Err("conformance publication was dropped by an interceptor".into())
+        }
+        _ => Err("provider returned an unsupported publication acknowledgement".into()),
+    }
+}
 
 #[cfg(feature = "conformance")]
 #[test]
@@ -425,9 +453,6 @@ fn test_local_sync_provider_passes_supported_spi_conformance_cases() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_sync_local_passes_public_spi_conformance_publish_cases() {
-    use qubit_event_bus::spi::conformance::ConformanceHooks;
-    use qubit_event_bus::spi::conformance::run_sync;
-
     let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
     let report = run_sync(
         || {
@@ -443,20 +468,18 @@ fn test_sync_local_passes_public_spi_conformance_publish_cases() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
-    use qubit_event_bus::spi::conformance::ConformanceProfile;
-    use qubit_event_bus::spi::conformance::run_sync_with_profile;
-
     let cleanup: Arc<dyn Fn() -> Result<(), String> + Send + Sync> = Arc::new(|| {
         let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
         let spi = LocalEventBusProvider
             .create_configured(&config)
             .map_err(|error| error.to_string())?;
         let request = crate::support::fake_spi::subscription_request();
-        let mut receiver = spi
-            .subscribe(crate::support::fake_spi::subscription_request())
+        let subscription_id = request.subscription_id();
+        let mut receiver = spi.subscribe(request).map_err(|error| error.to_string())?;
+        let acknowledgement = spi
+            .publish(crate::support::fake_spi::outbound_message())
             .map_err(|error| error.to_string())?;
-        spi.publish(crate::support::fake_spi::outbound_message())
-            .map_err(|error| error.to_string())?;
+        accepted_publication(acknowledgement, subscription_id)?;
         let unsettled = receiver
             .receive(Duration::from_secs(1))
             .map_err(|error| error.to_string())?;
@@ -464,7 +487,9 @@ fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
             return Err("published delivery was not received".into());
         }
         receiver.close().map_err(|error| error.to_string())?;
-        let mut replacement = spi.subscribe(request).map_err(|error| error.to_string())?;
+        let mut replacement = spi
+            .subscribe(crate::support::fake_spi::subscription_request())
+            .map_err(|error| error.to_string())?;
         if !matches!(replacement.receive(Duration::ZERO), Ok(ReceiveOutcome::TimedOut)) {
             return Err("closed ephemeral delivery was restored to a new receiver".into());
         }
@@ -509,10 +534,6 @@ fn test_bounded_channel_fixture_passes_public_spi_conformance_without_settlement
 #[cfg(feature = "conformance")]
 #[test]
 fn test_strict_conformance_fails_when_required_provider_hooks_are_missing() {
-    use qubit_event_bus::spi::conformance::ConformanceProfile;
-    use qubit_event_bus::spi::conformance::ConformanceSkipReason;
-    use qubit_event_bus::spi::conformance::run_sync_with_profile;
-
     let report = run_sync_with_profile(
         crate::support::flume_spi::create,
         &ConformanceHooks::default(),
@@ -542,10 +563,6 @@ fn test_strict_conformance_fails_when_required_provider_hooks_are_missing() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_strict_conformance_requires_each_advertised_durability_cleanup() {
-    use qubit_event_bus::spi::conformance::ConformanceProfile;
-    use qubit_event_bus::spi::conformance::ConformanceSkipReason;
-    use qubit_event_bus::spi::conformance::run_sync_with_profile;
-
     let report = run_sync_with_profile(
         || Arc::new(FakeEventBusSpi::with_capabilities(durable_test_capabilities())),
         &ConformanceHooks::default(),
@@ -566,9 +583,6 @@ fn test_strict_conformance_requires_each_advertised_durability_cleanup() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_strict_conformance_reports_a_provider_durable_recovery_check() {
-    use qubit_event_bus::spi::conformance::ConformanceProfile;
-    use qubit_event_bus::spi::conformance::run_sync_with_profile;
-
     let hooks = ConformanceHooks {
         settlement: Some(Arc::new(|| Ok(()))),
         receive_cancellation: Some(Arc::new(|| Ok(()))),
@@ -595,10 +609,6 @@ fn test_strict_conformance_reports_a_provider_durable_recovery_check() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
-    use qubit_event_bus::spi::conformance::AsyncConformanceCheck;
-    use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
-    use qubit_event_bus::spi::conformance::ConformanceProfile;
-    use qubit_event_bus::spi::conformance::run_async_with_profile;
     let check: AsyncConformanceCheck = Arc::new(|| Box::pin(async { Ok(()) }));
     let hooks = AsyncConformanceHooks {
         settlement: Some(check.clone()),
@@ -628,16 +638,6 @@ fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
 /// Declares both durability modes so strict checks require both cleanup hooks.
 #[cfg(feature = "conformance")]
 fn durable_test_capabilities() -> EventBusCapabilities {
-    use qubit_event_bus::spi::DelayedDeliveryCapability;
-    use qubit_event_bus::spi::DurabilityCapability;
-    use qubit_event_bus::spi::EventBusCapabilities;
-    use qubit_event_bus::spi::OrderingCapability;
-    use qubit_event_bus::spi::PublishGuarantee;
-    use qubit_event_bus::spi::PublishVisibility;
-    use qubit_event_bus::spi::ReplayCapability;
-    use qubit_event_bus::spi::SettlementCapabilities;
-    use qubit_event_bus::spi::SubscriptionModes;
-
     EventBusCapabilities::new(
         PayloadModes::Native,
         SettlementCapabilities::AcceptRetryReject,
@@ -684,7 +684,7 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
     let bus =
         EventBus::from_spi(ProviderId::new("bounded-channel").unwrap(), spi).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("test.topic").unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, receiver) = channel();
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("typed", topic.clone()).unwrap(),
@@ -694,7 +694,10 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
     bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
     assert_eq!(42, receiver.recv_timeout(Duration::from_secs(1)).unwrap());
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+    assert_eq!(0, report.known_abandoned_deliveries);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 /// Exercises synchronous provider behavior and records unsupported cases.
@@ -713,7 +716,8 @@ fn run_sync_conformance(
     {
         let payload_mode = capabilities.payload_modes();
         if matches!(payload_mode, PayloadModes::Native | PayloadModes::NativeAndEncoded) {
-            bus.publish(outbound_native()).unwrap();
+            accepted_publication(bus.publish(outbound_native()).unwrap(), subscription_id)
+                .unwrap_or_else(|error| panic!("{error}"));
             let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
                 panic!("native publication should be received");
             };
@@ -721,7 +725,8 @@ fn run_sync_conformance(
             received_settlement = message.take_settlement();
             cases.push("native-publish-receive");
         } else if payload_mode == PayloadModes::Encoded {
-            bus.publish(outbound_encoded()).unwrap();
+            accepted_publication(bus.publish(outbound_encoded()).unwrap(), subscription_id)
+                .unwrap_or_else(|error| panic!("{error}"));
             let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
                 panic!("encoded publication should be received");
             };
@@ -818,7 +823,7 @@ fn test_async_conformance_uses_manual_time_and_preserves_in_flight_message_on_ca
 fn test_sync_finite_timeout_rechecks_after_spurious_wake() {
     let bus = FakeEventBusSpi::new();
     let mut subscription = bus.subscribe(crate::support::fake_spi::subscription_request()).unwrap();
-    let receive = std::thread::spawn(move || subscription.receive(Duration::from_secs(2)));
+    let receive = thread::spawn(move || subscription.receive(Duration::from_secs(2)));
 
     bus.wait_until_receive_is_blocked();
     bus.wake_receivers_spuriously();
@@ -845,10 +850,11 @@ fn run_async_conformance(
             capabilities.payload_modes(),
             PayloadModes::Native | PayloadModes::NativeAndEncoded
         ) {
-            bus.publish(outbound_native()).await.unwrap();
+            accepted_publication(bus.publish(outbound_native()).await.unwrap(), subscription_id)
+                .unwrap_or_else(|error| panic!("{error}"));
             let mut cancelled = Box::pin(subscription.receive(Duration::from_secs(30)));
             match crate::support::manual_async::poll_once(cancelled.as_mut()) {
-                std::task::Poll::Pending => {
+                Poll::Pending => {
                     drop(cancelled);
                     assert!(matches!(
                         subscription.receive(Duration::ZERO).await.unwrap(),
@@ -856,7 +862,7 @@ fn run_async_conformance(
                     ));
                     cases.push("async-cancel-redelivery");
                 }
-                std::task::Poll::Ready(Ok(ReceiveOutcome::Message(_))) => {
+                Poll::Ready(Ok(ReceiveOutcome::Message(_))) => {
                     drop(cancelled);
                     cases.push("async-cancel-window-unavailable");
                 }
@@ -872,7 +878,7 @@ fn run_async_conformance(
         advance_time(Duration::from_secs(7));
         assert!(matches!(
             crate::support::manual_async::poll_once(timeout.as_mut()),
-            std::task::Poll::Ready(Ok(ReceiveOutcome::TimedOut))
+            Poll::Ready(Ok(ReceiveOutcome::TimedOut))
         ));
         drop(timeout);
         cases.push("finite-timeout");
@@ -930,7 +936,7 @@ fn outbound_encoded() -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new("test.topic").unwrap(),
         EventId::new("event-encoded-outbound").unwrap(),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Default::default(),
         None,
         None,

@@ -11,16 +11,26 @@ mod support;
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::future::pending as pending_future;
+use std::future::poll_fn;
+use std::io::Error;
+use std::mem::take;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::thread::sleep;
+use std::thread::spawn;
 use std::time::Duration;
+use std::time::SystemTime;
 
+use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_clock::MonotonicInstant;
 use qubit_clock::StdMonotonicClock;
@@ -30,23 +40,31 @@ use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::PublishError;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::SubscribeError;
+use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
+use qubit_event_bus::facade::PublishMetricsSnapshot;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DEAD_LETTER_HEADER;
 use qubit_event_bus::model::DEAD_LETTER_HEADER_VALUE;
 use qubit_event_bus::model::DeadLetterPolicy;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
+use qubit_event_bus::model::PublishMetadata;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeOptions;
@@ -76,6 +94,7 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
+use qubit_id::Id;
 use qubit_retry::RetryPolicy;
 
 use crate::support::manual_async::block_on;
@@ -96,6 +115,19 @@ impl Timer for FailingTimer {
 
 fn topic() -> Topic<u32> {
     Topic::new("async.coverage").expect("valid test topic")
+}
+
+/// Checks the report for an ephemeral test provider after complete shutdown.
+fn assert_ephemeral_shutdown_report(report: ShutdownReport, known_abandoned: u64) {
+    assert_eq!(report.outcome, ShutdownOutcome::Complete, "provider shutdown outcome");
+    assert_eq!(
+        report.known_abandoned_deliveries, known_abandoned,
+        "facade-known abandoned deliveries"
+    );
+    assert!(
+        report.provider_may_have_abandoned_deliveries,
+        "ephemeral providers may abandon deliveries outside facade tracking"
+    );
 }
 
 struct PublisherCoverageSpi {
@@ -159,15 +191,15 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
         let pending = self.pending;
         Box::pin(async move {
             if pending {
-                std::future::pending::<Result<PublishAcknowledgement, SpiError>>().await
+                pending_future::<Result<PublishAcknowledgement, SpiError>>().await
             } else if should_fail {
                 Err(SpiError::Publish {
                     provider_id: "async-publisher-coverage".into(),
                     resource: None,
                     kind: "injected_publish_failure",
                     retryable: Some(attempt < self.retryable_failures),
-                    effect: qubit_event_bus::model::PublishEffect::NotAccepted,
-                    source: Box::new(std::io::Error::other("injected async provider failure")),
+                    effect: PublishEffect::NotAccepted,
+                    source: Box::new(Error::other("injected async provider failure")),
                 })
             } else {
                 Ok(acknowledgement.unwrap_or(PublishAcknowledgement::Accepted {
@@ -207,7 +239,7 @@ impl EventCodec<String> for StringCodec {
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         if self.fail_encode {
             Err(CodecError::Encode {
-                source: Box::new(std::io::Error::other("injected async codec failure")),
+                source: Box::new(Error::other("injected async codec failure")),
             })
         } else {
             Ok(Arc::from(value.as_bytes()))
@@ -237,14 +269,11 @@ fn test_async_publisher_retries_a_retryable_failure_then_succeeds() {
     let receipt = block_on(bus.publish(request)).expect("second async attempt should succeed");
     assert_eq!(receipt.input_event_id().as_str().len(), 36);
     assert_eq!(spi.attempts.load(Ordering::Acquire), 2);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
 }
 
 #[test]
 fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
-    use qubit_event_bus::EventBusFacadeConfig;
-    use qubit_event_bus::facade::PublishMetricsSnapshot;
-
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-publisher-metrics").unwrap(), spi)
         .expect("valid provider capabilities");
@@ -260,7 +289,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(bus.publish_metrics().attempts, 2);
     assert_eq!(bus.publish_metrics().opaque_accepted, 2);
 
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     let closed = block_on(bus.publish(PublishRequest::builder().topic(topic()).payload(3_u32).build().unwrap()));
     assert!(matches!(closed, Err(failure) if matches!(failure.cause(), PublishError::Closed)));
     assert_eq!(clone.publish_metrics().attempts, 3);
@@ -278,10 +307,6 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(dropped.dropped, 1);
     assert_eq!(dropped.errors, 0);
 
-    use qubit_event_bus::SubscriberId;
-    use qubit_event_bus::model::AdmissionStatus;
-    use qubit_event_bus::model::DestinationAdmission;
-    use qubit_id::Id;
     let mixed_ack = PublishAcknowledgement::DestinationAdmissions(vec![
         DestinationAdmission::new(
             Id::new(10),
@@ -343,7 +368,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     let workers = (0..8)
         .map(|index| {
             let worker_bus = concurrent_bus.clone();
-            std::thread::spawn(move || {
+            spawn(move || {
                 block_on(worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()))
                     .expect("concurrent publish should be accepted");
             })
@@ -376,9 +401,6 @@ fn test_async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled
 
 #[test]
 fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
-    use qubit_event_bus::EventBusFacadeConfig;
-    use qubit_event_bus::model::PublishMetadata;
-
     let config = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
         assert_eq!(
             metadata.headers().get("origin").map(String::as_str),
@@ -407,16 +429,11 @@ fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
 
     block_on(bus.publish(request)).expect("global interceptor allows publish");
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
 }
 
 #[test]
 fn test_async_string_delivery_runs_error_handler_and_terminates_failure() {
-    use qubit_event_bus::model::FailureDirective;
-    use qubit_event_bus::model::Headers;
-    use qubit_event_bus::model::SubscribeOptions;
-    use qubit_event_bus::spi::InboundMessage;
-
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-string-delivery").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -431,28 +448,28 @@ fn test_async_string_delivery_runs_error_handler_and_terminates_failure() {
     spi.enqueue(InboundMessage::new(
         TopicAddress::new("async.string").unwrap(),
         EventId::new("async-string-event").unwrap(),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Native(Arc::new(String::from("body"))),
         None,
         Default::default(),
     ));
-    let (handled_tx, handled_rx) = std::sync::mpsc::channel();
-    let runner = std::thread::spawn(move || {
+    let (handled_tx, handled_rx) = mpsc::channel();
+    let runner = spawn(move || {
         block_on(subscription.run(move |delivery| {
             let handled = handled_tx.clone();
             async move {
                 handled.send(delivery.payload().clone()).unwrap();
                 Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("expected handler failure")),
+                    source: Box::new(Error::other("expected handler failure")),
                 })
             }
         }))
     });
 
     assert_eq!(handled_rx.recv_timeout(Duration::from_secs(2)).unwrap(), "body");
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     runner.join().unwrap().unwrap();
 }
 
@@ -474,7 +491,7 @@ fn test_failed_timer_registration_surfaces_after_a_failed_settlement() {
             "timer-failure-token",
         ))));
         let result = subscription.run(|_| async { Ok(()) }).await;
-        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).await.unwrap(), 1);
         result
     })
     .expect_err("settlement retry cannot continue without timer registration");
@@ -487,6 +504,34 @@ fn test_failed_timer_registration_surfaces_after_a_failed_settlement() {
             .filter(|operation| **operation == "settle")
             .count()
     );
+}
+
+#[test]
+fn test_graceful_shutdown_timer_registration_failure_leaves_bus_available_for_immediate_shutdown() {
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
+    let timer = Arc::new(FailingTimer {
+        clock: StdMonotonicClock::new(),
+    });
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), timer)
+        .expect("valid provider capabilities");
+
+    let error = block_on(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }))
+    .expect_err("failed graceful deadline registration must be returned");
+    assert!(matches!(
+        error,
+        ShutdownError::Lifecycle(LifecycleError::Timer(TimeError::InstantOverflow))
+    ));
+    assert!(
+        spi.operation_log().is_empty(),
+        "failed registration must not start provider shutdown"
+    );
+    assert_eq!(spi.shutdown_transition_count(), 0);
+
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
+    assert_eq!(spi.operation_log(), ["shutdown"]);
+    assert_eq!(spi.shutdown_transition_count(), 1);
 }
 
 #[test]
@@ -507,7 +552,7 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
         .expect("codec should encode successfully");
     assert_eq!(*spi.payload_was_encoded.lock().unwrap(), [true]);
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
 
     let failing_spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let failing_bus = AsyncEventBus::from_spi(ProviderId::new("async-codec-failure").unwrap(), failing_spi.clone())
@@ -524,7 +569,7 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
         .unwrap_err();
     assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
     assert_eq!(failing_spi.attempts.load(Ordering::Acquire), 0);
-    block_on(failing_bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(failing_bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
 }
 
 #[test]
@@ -569,7 +614,7 @@ fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_meta
             "account-async-1".to_owned(),
         ))
     );
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
 }
 
 #[derive(Default)]
@@ -653,7 +698,7 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
                     resource: None,
                     kind: "close_failed",
                     retryable: Some(false),
-                    source: Box::new(std::io::Error::other("test close failure")),
+                    source: Box::new(Error::other("test close failure")),
                 })
             } else {
                 Ok(())
@@ -725,9 +770,7 @@ fn test_shutdown_aggregates_multiple_async_subscription_close_failures() {
                 .subscribe(SubscribeRequest::new(name, topic()).expect("valid subscriber ID"))
                 .await
                 .unwrap();
-            runners.push(std::thread::spawn(move || {
-                block_on(subscription.run(|_| async { Ok(()) }))
-            }));
+            runners.push(spawn(move || block_on(subscription.run(|_| async { Ok(()) }))));
         }
     });
 
@@ -735,7 +778,7 @@ fn test_shutdown_aggregates_multiple_async_subscription_close_failures() {
         if spi.receives.load(Ordering::Acquire) == 2 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(spi.receives.load(Ordering::Acquire), 2);
 
@@ -758,7 +801,7 @@ fn test_publish_and_subscribe_are_rejected_after_async_shutdown() {
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
 
     block_on(async {
-        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).await.unwrap(), 0);
         let publish_error = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap_err();
         assert!(matches!(publish_error.cause(), PublishError::Closed));
         let subscribe_result = bus
@@ -812,7 +855,7 @@ fn test_dropping_unrun_subscription_releases_receiver_without_async_close() {
         drop(subscription);
         assert_eq!(spi.close_attempts.load(Ordering::Acquire), 0);
         assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
-        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).await.unwrap(), 0);
         assert_eq!(spi.close_attempts.load(Ordering::Acquire), 0);
     });
 }
@@ -825,12 +868,12 @@ fn test_shutdown_cancels_pending_receive_before_closing_receiver() {
     let mut subscription =
         block_on(bus.subscribe(SubscribeRequest::new("cancel-receive", topic()).expect("valid subscriber ID")))
             .unwrap();
-    let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
+    let runner = spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
     for _ in 0..100 {
         if spi.receives.load(Ordering::Acquire) != 0 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(spi.receives.load(Ordering::Acquire), 1);
 
@@ -846,16 +889,12 @@ fn test_shutdown_cancels_pending_receive_before_closing_receiver() {
 
 #[test]
 fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
-    use std::task::Poll;
-
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let handler_started = Arc::new(AtomicBool::new(false));
     let release_handler = Arc::new(AtomicBool::new(false));
-    let handler_waker = Arc::new(std::sync::Mutex::new(None::<std::task::Waker>));
+    let handler_waker = Arc::new(Mutex::new(None::<Waker>));
 
     let (mut active_subscription, mut idle_subscription) = block_on(async {
         let active = bus
@@ -878,14 +917,14 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
     let started_by_handler = handler_started.clone();
     let release_by_handler = release_handler.clone();
     let waker_by_handler = handler_waker.clone();
-    let runner = std::thread::spawn(move || {
+    let runner = spawn(move || {
         block_on(active_subscription.run(move |_| {
             let started = started_by_handler.clone();
             let release = release_by_handler.clone();
             let waker = waker_by_handler.clone();
             async move {
                 started.store(true, Ordering::Release);
-                std::future::poll_fn(move |cx| {
+                poll_fn(move |cx| {
                     if release.load(Ordering::Acquire) {
                         Poll::Ready(Ok(()))
                     } else {
@@ -901,7 +940,7 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
         if handler_started.load(Ordering::Acquire) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert!(handler_started.load(Ordering::Acquire));
 
@@ -933,12 +972,6 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
 
 #[test]
 fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume() {
-    use std::sync::atomic::AtomicBool;
-    use std::task::Poll;
-
-    use qubit_clock::ManualMonotonicClock;
-    use qubit_clock::MonotonicClock;
-
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();
     let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
@@ -957,14 +990,14 @@ fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume(
     let started_by_handler = handler_started.clone();
     let release_by_handler = release_handler.clone();
     let waker_by_handler = handler_waker.clone();
-    let runner = std::thread::spawn(move || {
+    let runner = spawn(move || {
         block_on(subscription.run(move |_| {
             let started = started_by_handler.clone();
             let release = release_by_handler.clone();
             let waker = waker_by_handler.clone();
             async move {
                 started.store(true, Ordering::Release);
-                std::future::poll_fn(move |cx| {
+                poll_fn(move |cx| {
                     if release.load(Ordering::Acquire) {
                         Poll::Ready(Ok(()))
                     } else {
@@ -980,7 +1013,7 @@ fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume(
         if handler_started.load(Ordering::Acquire) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert!(handler_started.load(Ordering::Acquire));
 
@@ -1079,7 +1112,7 @@ impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
         let messages = self.messages.clone();
         let receive_wakers = self.receive_wakers.clone();
         Box::pin(async move {
-            std::future::poll_fn(move |cx| {
+            poll_fn(move |cx| {
                 if let Some(message) = messages.lock().unwrap().pop_front() {
                     return Poll::Ready(Ok(ReceiveOutcome::Message(message)));
                 }
@@ -1128,20 +1161,20 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
     spi.messages.lock().unwrap().push_back(InboundMessage::new(
         TopicAddress::new("async.coverage").unwrap(),
         EventId::new("dead-letter-source-event").unwrap(),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Native(Arc::new(9_u32)),
         Some(SettlementToken::new(subscription.id(), "dead-letter-source-token")),
         Default::default(),
     ));
-    for waker in std::mem::take(&mut *spi.receive_wakers.lock().unwrap()) {
+    for waker in take(&mut *spi.receive_wakers.lock().unwrap()) {
         waker.wake();
     }
-    let runner = std::thread::spawn(move || {
+    let runner = spawn(move || {
         block_on(subscription.run(|_| async {
             Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other("send to dead letter")),
+                source: Box::new(Error::other("send to dead letter")),
             })
         }))
     });
@@ -1149,7 +1182,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         if !spi.published.lock().unwrap().is_empty() && spi.settlements.load(Ordering::Acquire) == 1 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(
         *spi.published.lock().unwrap(),
@@ -1157,7 +1190,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         "dead-letter publication must use the configured topic and reserved marker"
     );
     assert_eq!(spi.settlements.load(Ordering::Acquire), 1);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     runner.join().unwrap().unwrap();
 
     let string_spi = Arc::new(DeadLetterCaptureSpi::default());
@@ -1181,7 +1214,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
     string_spi.messages.lock().unwrap().push_back(InboundMessage::new(
         TopicAddress::new("async.coverage.string").unwrap(),
         EventId::new("dead-letter-string-event").unwrap(),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Native(Arc::new(String::from("string payload"))),
@@ -1191,13 +1224,13 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         )),
         Default::default(),
     ));
-    for waker in std::mem::take(&mut *string_spi.receive_wakers.lock().unwrap()) {
+    for waker in take(&mut *string_spi.receive_wakers.lock().unwrap()) {
         waker.wake();
     }
-    let string_runner = std::thread::spawn(move || {
+    let string_runner = spawn(move || {
         block_on(string_subscription.run(|_| async {
             Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other("send string to dead letter")),
+                source: Box::new(Error::other("send string to dead letter")),
             })
         }))
     });
@@ -1205,13 +1238,13 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         if !string_spi.published.lock().unwrap().is_empty() && string_spi.settlements.load(Ordering::Acquire) == 1 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(
         *string_spi.published.lock().unwrap(),
         [("async.dead.string".to_owned(), true)]
     );
-    block_on(string_bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(string_bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     string_runner.join().unwrap().unwrap();
 
     let non_clone_spi = Arc::new(DeadLetterCaptureSpi::default());
@@ -1236,7 +1269,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
     non_clone_spi.messages.lock().unwrap().push_back(InboundMessage::new(
         TopicAddress::new("async.coverage.non-clone").unwrap(),
         EventId::new("dead-letter-non-clone-event").unwrap(),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Native(Arc::new(NonCloneDeadLetterPayload)),
@@ -1246,13 +1279,13 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         )),
         Default::default(),
     ));
-    for waker in std::mem::take(&mut *non_clone_spi.receive_wakers.lock().unwrap()) {
+    for waker in take(&mut *non_clone_spi.receive_wakers.lock().unwrap()) {
         waker.wake();
     }
-    let non_clone_runner = std::thread::spawn(move || {
+    let non_clone_runner = spawn(move || {
         block_on(non_clone_subscription.run(|_| async {
             Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other("send non-clone payload to dead letter")),
+                source: Box::new(Error::other("send non-clone payload to dead letter")),
             })
         }))
     });
@@ -1261,13 +1294,13 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(
         *non_clone_spi.published.lock().unwrap(),
         [("async.dead.non-clone".to_owned(), true)]
     );
-    block_on(non_clone_bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(non_clone_bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     non_clone_runner.join().unwrap().unwrap();
 }
 
@@ -1280,7 +1313,7 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
         let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
             .expect("valid provider capabilities");
         let handler_calls = Arc::new(AtomicUsize::new(0));
-        let delivery_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let delivery_failed = Arc::new(AtomicBool::new(false));
         let observed = delivery_failed.clone();
         let _observer = bus.observe_diagnostics(move |diagnostic| {
             if matches!(diagnostic, Diagnostic::DeliveryFailed { .. }) {
@@ -1311,7 +1344,7 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
                 "filter-event",
             ))));
             let calls = handler_calls.clone();
-            let runner = std::thread::spawn(move || {
+            let runner = spawn(move || {
                 block_on(subscription.run(move |_| {
                     calls.fetch_add(1, Ordering::AcqRel);
                     async { Ok(()) }
@@ -1321,10 +1354,10 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
                 if spi.settlement_count() > 0 {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                sleep(Duration::from_millis(2));
             }
             let dispositions = spi.settlement_dispositions();
-            bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+            assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).await.unwrap(), 0);
             runner.join().unwrap().unwrap();
             (
                 handler_calls.load(Ordering::Acquire),
@@ -1350,7 +1383,7 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
     let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let internal_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let internal_failure = Arc::new(AtomicBool::new(false));
     let observed = internal_failure.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::InternalFailure { .. }) {
@@ -1373,10 +1406,10 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
         subscription.id(),
         "error-handler-panic-event",
     ))));
-    let runner = std::thread::spawn(move || {
+    let runner = spawn(move || {
         block_on(subscription.run(|_| async {
             Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other("handler failure")),
+                source: Box::new(Error::other("handler failure")),
             })
         }))
     });
@@ -1384,10 +1417,63 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
         if spi.settlement_count() > 0 && internal_failure.load(Ordering::Acquire) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(2));
     }
     assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     assert!(internal_failure.load(Ordering::Acquire));
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
+    runner.join().unwrap().unwrap();
+}
+
+#[test]
+fn test_async_receive_gap_is_diagnosed_and_runner_continues() {
+    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let observed_gap = Arc::new(Mutex::new(None));
+    let observed_by_callback = observed_gap.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::ReceiveGap { gap, .. } = diagnostic {
+            *observed_by_callback.lock().unwrap() = Some((gap.reason.to_string(), gap.missed));
+        }
+    });
+    let handled = Arc::new(AtomicUsize::new(0));
+
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("receive-gap", topic()).expect("valid subscriber ID"))).unwrap();
+    spi.inject_gap();
+    let handled_by_runner = handled.clone();
+    let runner = spawn(move || {
+        block_on(subscription.run(move |_| {
+            let handled = handled_by_runner.clone();
+            async move {
+                handled.fetch_add(1, Ordering::AcqRel);
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    });
+
+    for _ in 0..100 {
+        if observed_gap.lock().unwrap().is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    assert_eq!(*observed_gap.lock().unwrap(), Some(("fake gap".to_owned(), Some(1))));
+
+    block_on(bus.publish(PublishRequest::new(topic(), 17).expect("valid publish request")))
+        .expect("publish after a receive gap");
+    for _ in 0..100 {
+        if handled.load(Ordering::Acquire) == 1 {
+            break;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        handled.load(Ordering::Acquire),
+        1,
+        "runner continues receiving after a gap"
+    );
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap(), 0);
     runner.join().unwrap().unwrap();
 }
