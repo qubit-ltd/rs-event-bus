@@ -228,6 +228,15 @@ impl FakeEventBusSpi {
         }
     }
 
+    #[must_use]
+    pub(crate) fn shutdown_transition_count(&self) -> usize {
+        *self.shutdown_transitions.lock().unwrap()
+    }
+    #[must_use]
+    pub(crate) fn operation_log(&self) -> Vec<&'static str> {
+        self.calls.lock().unwrap().clone()
+    }
+
     pub(crate) fn enqueue(&self, message: InboundMessage) {
         let queues = self.queues.lock().unwrap().clone();
         for (_, queue) in queues {
@@ -235,13 +244,6 @@ impl FakeEventBusSpi {
             lock.lock().unwrap().messages.push_back(message_for_copy(&message));
             ready.notify_one();
         }
-    }
-
-    pub(crate) fn shutdown_transition_count(&self) -> usize {
-        *self.shutdown_transitions.lock().unwrap()
-    }
-    pub(crate) fn operation_log(&self) -> Vec<&'static str> {
-        self.calls.lock().unwrap().clone()
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
@@ -385,6 +387,7 @@ pub(crate) struct FakeEventSubscriptionSpi {
 
 impl FakeEventSubscriptionSpi {
     #[allow(dead_code)]
+    #[must_use]
     pub(crate) fn settlement_count(&self) -> usize {
         self.queue.0.lock().unwrap().settled.len()
     }
@@ -510,12 +513,45 @@ impl FakeAsyncEventBusSpi {
         }
     }
 
-    pub(crate) fn panic_on_capabilities(&self) {
-        self.capabilities_panics.store(true, Ordering::Release);
-    }
-
+    #[must_use]
+    #[inline]
     pub(crate) fn capabilities_calls(&self) -> usize {
         self.capabilities_calls.load(Ordering::Acquire)
+    }
+    #[must_use]
+    pub(crate) fn shutdown_transition_count(&self) -> usize {
+        *self.shutdown_transitions.lock().unwrap()
+    }
+    #[must_use]
+    pub(crate) fn operation_log(&self) -> Vec<&'static str> {
+        self.calls.lock().unwrap().clone()
+    }
+    #[must_use]
+    pub(crate) fn settlement_count(&self) -> usize {
+        self.queues
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, queue)| queue.lock().unwrap().settled.len())
+            .sum()
+    }
+    #[must_use]
+    #[inline]
+    pub(crate) fn receiver_drop_recoveries(&self) -> usize {
+        self.receiver_drop_recoveries.load(Ordering::Acquire)
+    }
+    #[must_use]
+    pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
+        self.queues
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(_, queue)| queue.lock().unwrap().settlement_dispositions.clone())
+            .collect()
+    }
+
+    pub(crate) fn panic_on_capabilities(&self) {
+        self.capabilities_panics.store(true, Ordering::Release);
     }
     pub(crate) fn panic_on_subscribe_call(&self) {
         self.subscribe_panics.store(true, Ordering::Release);
@@ -528,12 +564,6 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn panic_on_settle_call(&self) {
         self.settle_panics.store(true, Ordering::Release);
-    }
-    pub(crate) fn shutdown_transition_count(&self) -> usize {
-        *self.shutdown_transitions.lock().unwrap()
-    }
-    pub(crate) fn operation_log(&self) -> Vec<&'static str> {
-        self.calls.lock().unwrap().clone()
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
@@ -551,25 +581,6 @@ impl FakeAsyncEventBusSpi {
                 waker.wake();
             }
         }
-    }
-    pub(crate) fn settlement_count(&self) -> usize {
-        self.queues
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(_, queue)| queue.lock().unwrap().settled.len())
-            .sum()
-    }
-    pub(crate) fn receiver_drop_recoveries(&self) -> usize {
-        self.receiver_drop_recoveries.load(Ordering::Acquire)
-    }
-    pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
-        self.queues
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|(_, queue)| queue.lock().unwrap().settlement_dispositions.clone())
-            .collect()
     }
     pub(crate) fn fail_next_settle(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
@@ -768,16 +779,17 @@ impl Drop for FakeAsyncEventSubscriptionSpi {
 
 impl FakeAsyncEventSubscriptionSpi {
     #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn settlement_count(&self) -> usize {
+        self.queue.lock().unwrap().settled.len()
+    }
+    #[allow(dead_code)]
     pub(crate) fn inject_gap(&self) {
         let mut s = self.queue.lock().unwrap();
         s.gaps += 1;
         for w in s.wakers.drain(..) {
             w.wake();
         }
-    }
-    #[allow(dead_code)]
-    pub(crate) fn settlement_count(&self) -> usize {
-        self.queue.lock().unwrap().settled.len()
     }
     #[allow(dead_code)]
     pub(crate) fn fail_next_receive(&self) {

@@ -368,7 +368,7 @@ fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error
         }
     }
     let native = Topic::<String>::new("orders.created")?;
-    let encoded = Topic::<String>::new_with_codec("orders.created", StringCodec(ContentType::new("text/plain")?))?;
+    let encoded = Topic::<String>::new("orders.created")?.with_codec(StringCodec(ContentType::TEXT_PLAIN));
     assert_eq!(native, encoded);
     assert!(native.codec().is_none());
     assert!(encoded.codec().is_some());
@@ -501,7 +501,7 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
         }
     }
     let mut registry = CodecRegistry::new();
-    registry.register::<String>(Arc::new(TextCodec(ContentType::new("text/plain")?)));
+    registry.register::<String>(Arc::new(TextCodec(ContentType::TEXT_PLAIN)));
     let codec = registry.get::<String>().unwrap();
     assert_eq!(
         codec.decode(&EncodedPayload::new(
@@ -511,7 +511,7 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
         ))?,
         "payload"
     );
-    let topic = Topic::<String>::new_with_shared_codec("orders.created", codec)?;
+    let topic = Topic::<String>::new("orders.created")?.with_shared_codec(codec);
     assert!(topic.codec().is_some());
     assert!(registry.get::<u32>().is_none());
     Ok(())

@@ -158,7 +158,7 @@ pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, Transport
 pub(super) fn encoded_probe() -> TransportPayload {
     TransportPayload::Encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"spi-conformance"[..]),
-        ContentType::new("application/octet-stream").expect("static MIME type is valid"),
+        ContentType::APPLICATION_OCTET_STREAM,
         None,
     ))
 }

@@ -44,6 +44,7 @@ use super::PublishAcknowledgement;
 /// assert!(!receipt.duplicate_possible());
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
 pub struct PublishReceipt {
     /// Event identifier supplied by the original caller.
     input_event_id: EventId,
@@ -69,7 +70,6 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// A receipt preserving input and dispatched identity separately.
-    #[must_use]
     #[inline]
     pub fn new(
         input_event_id: EventId,
@@ -159,6 +159,7 @@ impl PublishReceipt {
     /// Counts for reported destinations, including zero counts for an empty
     /// snapshot, or `None` when destination admission is not visible.
     #[must_use = "Use the returned query result."]
+    #[inline]
     pub fn admission_summary(&self) -> Option<AdmissionSummary> {
         match self.admission_outcome() {
             AdmissionOutcome::Accepted(summary)
