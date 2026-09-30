@@ -66,7 +66,7 @@ impl EventCodec<String> for Utf8Codec {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let codec = Utf8Codec(ContentType::new("text/plain")?);
+    let codec = Utf8Codec(ContentType::TEXT_PLAIN);
     let original = String::from("order-created");
     let encoded = codec.encode(&original)?;
     let payload = EncodedPayload::new(encoded, codec.content_type().clone(), None);

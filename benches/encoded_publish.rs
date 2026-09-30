@@ -234,14 +234,12 @@ fn sample(bytes: usize, failures: usize) -> (u128, usize, usize, bool) {
         byte_addresses: Mutex::new(Vec::new()),
     });
     let bus = EventBus::from_spi(ProviderId::new("bench").unwrap(), provider.clone()).unwrap();
-    let topic = Topic::new_with_shared_codec(
-        "bench.encoded",
-        Arc::new(BenchCodec {
-            content_type: ContentType::new("application/octet-stream").unwrap(),
+    let topic = Topic::new("bench.encoded")
+        .unwrap()
+        .with_shared_codec(Arc::new(BenchCodec {
+            content_type: ContentType::APPLICATION_OCTET_STREAM,
             calls: codec_calls.clone(),
-        }),
-    )
-    .unwrap();
+        }));
     let options = PublishOptions::builder()
         .retry_policy(
             RetryPolicy::builder()
