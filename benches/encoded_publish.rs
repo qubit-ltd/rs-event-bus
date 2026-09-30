@@ -8,6 +8,7 @@
 //! Measures encoded facade publication and checks allocation reuse on retries.
 
 use std::hint::black_box;
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -22,6 +23,7 @@ use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -144,8 +146,8 @@ impl EventBusSpi for BenchSpi {
                 resource: None,
                 kind: "transient",
                 retryable: Some(true),
-                effect: qubit_event_bus::model::PublishEffect::NotAccepted,
-                source: Box::new(std::io::Error::other("synthetic retry")),
+                effect: PublishEffect::NotAccepted,
+                source: Box::new(Error::other("synthetic retry")),
             });
         }
         Ok(PublishAcknowledgement::Accepted {
@@ -171,7 +173,7 @@ impl EventBusSpi for BenchSpi {
             resource: None,
             kind: "unsupported",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other("benchmark SPI has no receiver")),
+            source: Box::new(Error::other("benchmark SPI has no receiver")),
         })
     }
 
@@ -255,8 +257,9 @@ fn sample(bytes: usize, failures: usize) -> (u128, usize, usize, bool) {
         .unwrap()
         .with_options(options);
     let start = Instant::now();
-    bus.publish(black_box(request)).unwrap();
+    let result = black_box(bus.publish(black_box(request)));
     let elapsed = start.elapsed().as_nanos();
+    result.unwrap();
     let addresses = provider.byte_addresses.lock().unwrap();
     let attempts = provider.attempts.load(Ordering::Acquire);
     let encodes = codec_calls.load(Ordering::Acquire);
@@ -300,6 +303,7 @@ fn run(bytes: usize, failures: usize) {
         encodes = sample_encodes;
         shared = sample_shared;
     }
+    eprintln!("encoded_sync_raw bytes={bytes} failures={failures} elapsed_ns={elapsed:?}");
     elapsed.sort_unstable();
     println!(
         "encoded_sync,{bytes},{failures},{attempts},{encodes},{shared},{},{}",
@@ -308,6 +312,7 @@ fn run(bytes: usize, failures: usize) {
     );
 }
 
+/// Runs the payload/retry matrix; encoding itself is the measured workload.
 fn main() {
     println!("scenario,bytes,failures,attempts,encodes,shared,median_ns,p95_ns");
     for bytes in SIZES {
