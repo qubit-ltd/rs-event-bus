@@ -8,6 +8,7 @@
 //! Asynchronous event bus diagnostics operations.
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 
 use crate::AsyncEventBus;
@@ -28,7 +29,6 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// A handle that unregisters the observer when dropped.
-    #[must_use]
     pub fn observe_diagnostics<F>(&self, observer: F) -> DiagnosticObserverHandle
     where
         F: Fn(&Diagnostic) + Send + Sync + 'static,
@@ -37,11 +37,7 @@ impl AsyncEventBus {
             active: AtomicBool::new(true),
             callback: Arc::new(observer),
         });
-        let mut entries = self
-            .inner
-            .observers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = self.inner.observers.lock().unwrap_or_else(PoisonError::into_inner);
         entries.retain(|entry| entry.strong_count() > 0);
         entries.push(Arc::downgrade(&entry));
         DiagnosticObserverHandle::new(entry)
@@ -51,7 +47,7 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// Strong references to observers that are still registered.
-    #[must_use]
+    #[inline]
     pub(super) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
         self.inner.observer_snapshot()
     }

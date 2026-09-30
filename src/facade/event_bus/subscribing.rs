@@ -7,8 +7,10 @@
 // =============================================================================
 //! Event bus subscribing operations.
 
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::thread;
 
@@ -29,12 +31,17 @@ use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::event_bus::worker::run_subscription_worker;
 use crate::facade::internal::BusContextGuard;
+use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::Delivery;
+use crate::model::OrderingPolicy;
 use crate::model::SubscribeRequest;
 use crate::pipeline::SubscriberPipeline;
+use crate::spi::EventSubscriptionSpi;
 use crate::spi::PayloadModes;
+use crate::spi::PublishVisibility;
 use crate::spi::SpiSubscriptionRequest;
 use crate::spi::TopicAddress;
+use crate::spi::panic_boundary;
 
 impl EventBus {
     /// Creates a provider subscription and starts its SPI coordinator.
@@ -60,6 +67,10 @@ impl EventBus {
     /// acknowledgement, ordering, durability, consumer-group, replay, or codec
     /// requirements, `Configuration` for runtime-model mismatches, or the
     /// provider subscription error.
+    ///
+    /// # Panics
+    /// Panics if the SPI subscription request is incomplete or the worker
+    /// cannot take ownership of its initialized provider receiver.
     pub fn subscribe<T, H, R>(&self, request: SubscribeRequest<T>, handler: H) -> Result<Subscription, SubscribeError>
     where
         T: Send + Sync + 'static,
@@ -88,9 +99,7 @@ impl EventBus {
         let capabilities = self.inner.capabilities;
         let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
-            && !capabilities.ordering().supports_per_key()
-        {
+        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "ordering.per_key",
             }));
@@ -100,8 +109,8 @@ impl EventBus {
         }
         SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
         if options.dead_letter().is_some_and(|policy| {
-            policy.admission_policy() == crate::model::DeadLetterAdmissionPolicy::KnownDestination
-                && capabilities.publish_visibility() == crate::spi::PublishVisibility::Opaque
+            policy.admission_policy() == DeadLetterAdmissionPolicy::KnownDestination
+                && capabilities.publish_visibility() == PublishVisibility::Opaque
         }) {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "dead_letter.known_destination_admission",
@@ -109,17 +118,18 @@ impl EventBus {
         }
         let id = self.next_subscription_id()?;
         let address = TopicAddress::new(topic.name())?;
-        let spi_request = SpiSubscriptionRequest::new(
-            id,
-            address,
-            subscriber_id.clone(),
-            options.consumer_group().cloned(),
-            options.durability(),
-            options.start_position().clone(),
-            options.provider_options().clone(),
-            topic.payload_type_id(),
-        );
-        let spi_subscription = crate::spi::panic_boundary::catch_spi_call(
+        let spi_request = SpiSubscriptionRequest::builder()
+            .subscription_id(id)
+            .topic(address)
+            .subscriber_id(subscriber_id.clone())
+            .group(options.consumer_group().cloned())
+            .durability(options.durability())
+            .start_position(options.start_position().clone())
+            .provider_options(options.provider_options().clone())
+            .payload_type_id(topic.payload_type_id())
+            .build()
+            .expect("all provider subscription request fields are configured");
+        let spi_subscription = panic_boundary::catch_spi_call(
             self.inner.provider_id.as_str(),
             "subscribe",
             Some(subscriber_id.as_str()),
@@ -129,7 +139,7 @@ impl EventBus {
         if let Err(error) = self.inner.scheduler.start() {
             let spi_subscription = spi_subscription_slot
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .take();
             return Err(cleanup_failed_worker_spawn(
                 &self.inner,
@@ -145,7 +155,7 @@ impl EventBus {
             self.inner
                 .subscriptions
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .insert(id, control.clone());
         }
         let inner = self.inner.clone();
@@ -162,7 +172,7 @@ impl EventBus {
                 let _worker_permit = worker_permit;
                 let spi_subscription = thread_spi_subscription_slot
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .take()
                     .expect("subscription worker owns an initialized SPI subscription");
                 run_subscription_worker(
@@ -187,11 +197,11 @@ impl EventBus {
                 self.inner
                     .subscriptions
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .remove(&id);
                 let spi_subscription = spi_subscription_slot
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .take();
                 Err(cleanup_failed_worker_spawn(
                     &self.inner,
@@ -238,8 +248,8 @@ impl EventBus {
 pub(in crate::facade) fn cleanup_failed_worker_spawn(
     inner: &EventBusInner,
     subscriber_id: &SubscriberId,
-    spi_subscription: Option<Box<dyn crate::spi::EventSubscriptionSpi>>,
-    spawn_error: std::io::Error,
+    spi_subscription: Option<Box<dyn EventSubscriptionSpi>>,
+    spawn_error: Error,
 ) -> SubscribeError {
     if let Some(mut spi_subscription) = spi_subscription
         && let Err(close_error) = close_spi_subscription(inner, subscriber_id, &mut *spi_subscription)
@@ -248,7 +258,7 @@ pub(in crate::facade) fn cleanup_failed_worker_spawn(
         inner
             .close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::new(SubscriptionCloseFailure::new(
                 subscriber_id.clone(),
                 close_error,

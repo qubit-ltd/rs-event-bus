@@ -14,6 +14,7 @@ use crate::error::SpiError;
 /// Shares an original provider error without formatting away its source chain.
 #[derive(Debug, thiserror::Error)]
 #[error("{error}")]
+#[must_use]
 pub(super) struct SharedSpiError {
     /// Original cached failure shared by all callers without source conversion.
     #[source]
@@ -28,6 +29,7 @@ impl SharedSpiError {
     ///
     /// # Returns
     /// A source adapter sharing the original failure without converting it.
+    #[inline]
     pub(super) fn new(error: Arc<SpiError>) -> Self {
         Self { error }
     }

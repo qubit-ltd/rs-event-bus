@@ -20,10 +20,12 @@ use crate::error::SpiError;
 /// # Examples
 ///
 /// ```
+/// use std::io::Error;
+///
 /// use qubit_event_bus::error::DeliveryError;
 ///
 /// let error = DeliveryError::Handler {
-///     source: Box::new(std::io::Error::other("storage unavailable")),
+///     source: Box::new(Error::other("storage unavailable")),
 /// };
 /// assert!(matches!(error, DeliveryError::Handler { .. }));
 /// ```

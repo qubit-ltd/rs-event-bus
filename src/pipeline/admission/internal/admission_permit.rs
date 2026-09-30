@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 /// RAII reservation; dropping it releases exactly one admission slot.
 #[derive(Debug)]
+#[must_use]
 pub(crate) struct AdmissionPermit {
     /// Shared counter decremented when this reservation is released.
     pub(in crate::pipeline) in_flight: Arc<AtomicUsize>,

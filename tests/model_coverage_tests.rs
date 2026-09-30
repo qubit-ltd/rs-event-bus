@@ -10,8 +10,11 @@
 use std::any::TypeId;
 use std::any::type_name;
 use std::collections::hash_map::DefaultHasher;
+use std::error::Error as StdError;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::Error as IoError;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -59,6 +62,7 @@ use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_id::Id;
@@ -69,8 +73,7 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
 
 #[test]
-fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks() -> Result<(), Box<dyn StdError>> {
     let defaults = SubscribeOptions::<u32>::new();
     let from_new = SubscribeOptionsBuilder::<u32>::new().build();
     let from_default = SubscribeOptionsBuilder::<u32>::default().build();
@@ -155,7 +158,7 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
 }
 
 #[test]
-fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> Result<(), Box<dyn StdError>> {
     let defaults = SubscribeOptions::<String>::new();
     assert!(defaults.retry_rule().is_none());
     assert!(defaults.retry_cancellation_token().is_none());
@@ -180,7 +183,7 @@ fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> 
 }
 
 #[test]
-fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box<dyn std::error::Error>> {
+fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box<dyn StdError>> {
     let topic = Topic::<u32>::new("orders.created")?;
     let request = SubscribeRequestBuilder::<u32>::new()
         .subscriber_id(SubscriberId::new("worker")?)
@@ -219,7 +222,7 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
     assert!(options.retry_rule().is_some());
     assert!(options.retry_cancellation_token().is_some());
     let error = DeliveryError::Handler {
-        source: Box::new(std::io::Error::other("test failure")),
+        source: Box::new(IoError::other("test failure")),
     };
     assert_eq!(options.error_handlers()[0](&event, &error), FailureDirective::Requeue);
     assert_eq!(options.interceptors().len(), 1);
@@ -245,8 +248,7 @@ fn test_subscribe_request_builder_default_reports_missing_identity() {
 }
 
 #[test]
-fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() -> Result<(), Box<dyn StdError>> {
     let topic = Topic::<u32>::new("orders.created")?;
     let reusable = SubscribeOptions::<u32>::builder()
         .ack_mode(AckMode::Manual)
@@ -281,7 +283,7 @@ fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() ->
     let odd_event = EventEnvelope::new(Topic::<u32>::new("orders.created")?, 13)?;
     assert!(!filter(&odd_event));
     let error = DeliveryError::Handler {
-        source: Box::new(std::io::Error::other("test failure")),
+        source: Box::new(IoError::other("test failure")),
     };
     assert_eq!(request.options().error_handlers().len(), 2);
     assert_eq!(
@@ -313,7 +315,7 @@ fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() ->
 }
 
 #[test]
-fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> Result<(), Box<dyn std::error::Error>> {
+fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> Result<(), Box<dyn StdError>> {
     let subscriber_id = SubscriberId::new("audit")?;
     let topic = Topic::<u32>::new("orders.created")?;
     let options = SubscribeOptions::<u32>::builder()
@@ -342,7 +344,7 @@ fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> R
 
 #[test]
 fn test_subscribe_request_builder_rejects_retry_without_policy_and_invalid_provider_options()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn StdError>> {
     let make_builder = || {
         SubscribeRequest::builder()
             .subscriber_id(SubscriberId::new("audit").expect("valid subscriber ID"))
@@ -375,7 +377,7 @@ fn test_subscribe_request_builder_rejects_retry_without_policy_and_invalid_provi
 }
 
 #[test]
-fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<(), Box<dyn std::error::Error>> {
+fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<(), Box<dyn StdError>> {
     assert_eq!(ConsumerGroup::new("workers")?.as_str(), "workers");
     for invalid in ["", " workers", "workers ", "work\ners"] {
         assert!(matches!(
@@ -386,7 +388,10 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
             })
         ));
     }
-    assert!(DeadLetterPolicy::with_topic_name("dead.events")?.topic_name() == "dead.events");
+    assert_eq!(
+        DeadLetterPolicy::with_topic_name("dead.events")?.topic_name(),
+        "dead.events"
+    );
     let topic = Topic::<String>::new("dead.events")?;
     assert_eq!(DeadLetterPolicy::with_topic(&topic).topic_name(), "dead.events");
     assert_eq!(
@@ -406,7 +411,7 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
 }
 
 #[test]
-fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Result<(), Box<dyn std::error::Error>> {
+fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Result<(), Box<dyn StdError>> {
     struct NonClonePayload(u32);
 
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(8))?;
@@ -421,7 +426,7 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
             sender
                 .send((
                     dead_letter.original_event().id().as_str().to_owned(),
-                    std::ptr::eq(dead_letter.original_event(), original.as_ref()),
+                    ptr::eq(dead_letter.original_event(), original.as_ref()),
                     original.payload().0,
                     dead_letter.subscriber_id().as_str().to_owned(),
                     dead_letter.reason().to_owned(),
@@ -438,7 +443,7 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
             .build()?,
         |_| -> Result<(), DeliveryError> {
             Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other("forced delivery failure")),
+                source: Box::new(IoError::other("forced delivery failure")),
             })
         },
     )?;
@@ -457,12 +462,15 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
     assert!(reason.contains("forced delivery failure"));
     source_subscription.cancel()?;
     dead_letter_subscription.cancel()?;
-    bus.shutdown(ShutdownMode::Immediate)?;
+    let report = bus.shutdown(ShutdownMode::Immediate)?;
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
     Ok(())
 }
 
 #[test]
-fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
+fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Box<dyn StdError>> {
     let mut provider_options = ProviderOptions::new();
     provider_options.insert("local.prefetch".into(), "16".into());
     let request = SpiSubscriptionRequest::new(
@@ -473,7 +481,7 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
         SubscriptionDurability::Durable,
         StartPosition::At("cursor-7".into()),
         provider_options.clone(),
-        std::any::TypeId::of::<String>(),
+        TypeId::of::<String>(),
     );
     assert_eq!(request.subscription_id(), Id::new(7));
     assert_eq!(request.topic().as_str(), "orders.created");
@@ -491,7 +499,7 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
-        std::any::TypeId::of::<String>(),
+        TypeId::of::<String>(),
     );
     assert!(standalone.group().is_none());
     assert!(standalone.provider_options().is_empty());
@@ -499,7 +507,7 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
 }
 
 #[test]
-fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Box<dyn std::error::Error>> {
+fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Box<dyn StdError>> {
     struct TextCodec {
         content_type: ContentType,
         schema_id: SchemaId,
@@ -581,8 +589,7 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
 }
 
 #[test]
-fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy() -> Result<(), Box<dyn StdError>> {
     let defaults = PublishOptions::<String>::new();
     assert!(defaults.retry_policy().is_none());
     assert!(defaults.retry_rule().is_none());
@@ -649,8 +656,7 @@ fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy(
 }
 
 #[test]
-fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity() -> Result<(), Box<dyn StdError>> {
     let topic = Topic::<String>::new("orders.created")?;
     let plain = EventEnvelope::new(topic.clone(), "plain".to_owned())?;
     assert!(plain.headers().is_empty());
@@ -699,8 +705,7 @@ fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
 }
 
 #[test]
-fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy() -> Result<(), Box<dyn StdError>> {
     let topic = Topic::<String>::new("orders.text")?;
     let options = PublishOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build()?)
@@ -733,7 +738,7 @@ fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy(
 }
 
 #[test]
-fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> Result<(), Box<dyn std::error::Error>> {
+fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> Result<(), Box<dyn StdError>> {
     let provider = ProviderId::new("local")?;
     let subscriber = SubscriberId::new("audit")?;
     let default_context = DeliveryContext::new(provider.clone(), Id::new(9), subscriber.clone());
@@ -754,7 +759,7 @@ fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> R
     let event = Arc::new(EventEnvelope::new(Topic::<u32>::new("orders.created")?, 42)?);
     let delivery = Delivery::new(event.clone(), context);
     assert_eq!(delivery.payload(), &42);
-    assert!(std::ptr::eq(delivery.event(), event.as_ref()));
+    assert!(ptr::eq(delivery.event(), event.as_ref()));
     let actual = delivery.context();
     assert_eq!(actual.provider_id(), &provider);
     assert_eq!(actual.subscription_id(), Id::new(9));
@@ -770,7 +775,7 @@ fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> R
 }
 
 #[test]
-fn test_publish_receipt_and_batch_into_items_preserve_order_and_admission() -> Result<(), Box<dyn std::error::Error>> {
+fn test_publish_receipt_and_batch_into_items_preserve_order_and_admission() -> Result<(), Box<dyn StdError>> {
     let provider = ProviderId::new("local")?;
     let input = EventId::new("original")?;
     let dispatched = EventId::new("transformed")?;

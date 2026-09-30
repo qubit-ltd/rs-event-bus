@@ -15,6 +15,10 @@ use std::sync::atomic::AtomicBool;
 
 use crate::Diagnostic;
 use crate::SubscriberId;
+use crate::codec::EventCodec;
+use crate::codec::ReceiveFailureAction;
+use crate::codec::decode_payload;
+use crate::codec::receive_failure_action;
 use crate::facade::async_event_bus::catch_spi_future;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::AsyncSession;
@@ -25,11 +29,15 @@ use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::delivery_task_context::DeliveryTaskContext;
 use crate::model::EventEnvelope;
+use crate::model::EventId;
 use crate::model::SubscribeOptions;
+use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
+use crate::spi::SettlementCapabilities;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Creates a session from all owned runtime and subscription state.
@@ -51,7 +59,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         id: Id,
         subscriber_id: SubscriberId,
         topic: Topic<T>,
-        codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
+        codec: Option<Arc<dyn EventCodec<T>>>,
         options: SubscribeOptions<T>,
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
         signals: Arc<SessionSignals>,
@@ -114,17 +122,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let tracking = self.inner.tracker.track(self.topic.name());
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
-        let payload = match crate::codec::decode_payload(
+        let payload = match decode_payload(
             self.codec.as_ref(),
             &transport_payload,
             self.inner.facade_config.payload_limits().max_receive_bytes(),
         ) {
             Ok(payload) => payload,
             Err(error) => {
-                if crate::codec::receive_failure_action(&error) == crate::codec::ReceiveFailureAction::StopUnsettled {
+                if receive_failure_action(&error) == ReceiveFailureAction::StopUnsettled {
                     let message = error.to_string();
                     self.record_abandoned_delivery();
-                    if self.signals.fail_receive(crate::model::SubscriptionStopReason::Codec {
+                    if self.signals.fail_receive(SubscriptionStopReason::Codec {
                         event_id,
                         error: Arc::new(error),
                     }) {
@@ -215,9 +223,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         }
         let capability = self.inner.capabilities.settlement();
         let supported = match disposition {
-            DeliveryDisposition::Accept => capability != crate::spi::SettlementCapabilities::None,
+            DeliveryDisposition::Accept => capability != SettlementCapabilities::None,
             DeliveryDisposition::Retry | DeliveryDisposition::Reject => {
-                capability == crate::spi::SettlementCapabilities::AcceptRetryReject
+                capability == SettlementCapabilities::AcceptRetryReject
             }
         };
         if !supported {
@@ -233,7 +241,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             return;
         }
         let result = if let Some(receiver) = self.receiver.as_mut() {
-            match crate::spi::panic_boundary::catch_spi_call(
+            match catch_spi_call(
                 self.inner.provider_id.as_str(),
                 "settle",
                 Some(self.subscriber_id.as_str()),
@@ -304,7 +312,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     pub(in crate::facade) fn emit_failure_diagnostic(
         &self,
         failure: Option<(u32, Box<str>)>,
-        event_id: crate::model::EventId,
+        event_id: EventId,
         topic: Box<str>,
     ) {
         if let Some((attempts, error)) = failure {

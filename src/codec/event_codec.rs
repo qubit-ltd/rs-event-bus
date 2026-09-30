@@ -63,7 +63,13 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     ///
     /// Exact text and Option equality is the default. Override this method to
     /// permit a documented set of compatible MIME texts or schema versions.
-    /// Returns MetadataMismatch on incompatibility without inspecting bytes.
+    ///
+    /// # Returns
+    /// `Ok(())` when the payload metadata matches the codec configuration.
+    ///
+    /// # Errors
+    /// Returns [`CodecError::MetadataMismatch`] when either the content type
+    /// or schema identifier differs, without inspecting the payload bytes.
     fn validate_metadata(&self, payload: &EncodedPayload) -> Result<(), CodecError> {
         if self.content_type() == payload.content_type() && self.schema_id() == payload.schema_id() {
             Ok(())

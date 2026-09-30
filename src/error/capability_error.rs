@@ -27,7 +27,7 @@ pub enum CapabilityError {
     /// The selected backend does not support the named capability.
     #[error("unsupported event bus capability: {capability}")]
     Unsupported {
-        /// Stable capability name.
+        /// Stable name of the capability the backend does not support.
         capability: &'static str,
     },
 }

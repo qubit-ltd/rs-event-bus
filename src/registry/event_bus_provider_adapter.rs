@@ -46,6 +46,7 @@ impl EventBusProviderAdapter {
     /// # Panics
     /// Panics if the provider descriptor callback panics or its provider ID
     /// violates the facade's validated provider-ID invariants.
+    #[must_use]
     pub(crate) fn new(provider: Arc<EventBusProvider>) -> Self {
         let descriptor = provider.descriptor();
         let provider_id =
@@ -80,6 +81,10 @@ impl ServiceProvider<EventBusSpec> for EventBusProviderAdapter {
     /// # Errors
     /// Returns the provider's creation failure, a capability-query failure, or
     /// an unsupported-capability failure when the SPI cannot meet `config`.
+    ///
+    /// # Panics
+    /// Propagates a panic from the provider's SPI factory. Panics raised by the
+    /// capability query are converted into initialization failures.
     fn create_configured(
         &self,
         config: &EventBusConfig,

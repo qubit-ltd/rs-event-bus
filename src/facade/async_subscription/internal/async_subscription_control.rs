@@ -8,10 +8,13 @@
 //! Internal asynchronous subscription state.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
+use std::task::Poll;
 
 use qubit_id::Id;
 
@@ -22,6 +25,8 @@ use super::AsyncSession;
 use super::SessionLease;
 use super::SessionSignals;
 use super::SessionSlot;
+use crate::error::ReceiveError;
+use crate::error::SubscriptionCloseFailure;
 use crate::facade::async_event_bus::AsyncSignal;
 use crate::pipeline::Diagnostic;
 use crate::spi::ShutdownMode;
@@ -38,7 +43,7 @@ pub(in crate::facade) struct AsyncSubscriptionControl<T: 'static> {
     /// Wakes callers waiting for the session lease.
     pub(in crate::facade::async_subscription) available: AsyncSignal,
     /// Canonical provider receiver close failure.
-    pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<crate::error::SubscriptionCloseFailure>>>,
+    pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
     /// Weak owner used to unregister this control from the bus.
     pub(in crate::facade::async_subscription) bus: Weak<AsyncEventBusInner>,
     /// Bus-local subscription identity.
@@ -80,19 +85,19 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     /// `Some` with a lease while the control is live, or `None` after disposal.
     pub(in crate::facade::async_subscription) async fn lease(&self) -> Option<SessionLease<'_, T>> {
         let registration = SignalRegistration::new(&self.available);
-        let session = std::future::poll_fn(|cx| {
-            let mut slot = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = poll_fn(|cx| {
+            let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
             if slot.disposed {
-                return std::task::Poll::Ready(None);
+                return Poll::Ready(None);
             }
             if !slot.active
                 && let Some(session) = slot.session.take()
             {
                 slot.active = true;
-                return std::task::Poll::Ready(Some(session));
+                return Poll::Ready(Some(session));
             }
             registration.register(cx.waker());
-            std::task::Poll::Pending
+            Poll::Pending
         })
         .await;
         session.map(|session| SessionLease {
@@ -111,14 +116,14 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     pub(in crate::facade::async_subscription) fn dispose(&self) {
         self.signals.stop(ShutdownMode::Immediate);
         let session = {
-            let mut slot = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
             slot.disposed = true;
             if slot.active { None } else { slot.session.take() }
         };
         if let Some(bus) = self.bus.upgrade() {
             bus.controls
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&self.id);
         }
         drop(session);
@@ -139,11 +144,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The stored close failure, or `None` before a close failure occurs.
-    fn close_error(&self) -> Option<Arc<crate::error::SubscriptionCloseFailure>> {
-        self.close_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+    fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>> {
+        self.close_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Stores the first close failure for later shutdown callers.
@@ -153,14 +155,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The first stored failure.
-    fn store_close_error(
-        &self,
-        failure: Arc<crate::error::SubscriptionCloseFailure>,
-    ) -> Arc<crate::error::SubscriptionCloseFailure> {
-        let mut stored = self
-            .close_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure> {
+        let mut stored = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
         stored.get_or_insert(failure).clone()
     }
 
@@ -178,7 +174,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     fn shutdown<'a>(
         &'a self,
         mode: ShutdownMode,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Arc<crate::error::SubscriptionCloseFailure>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>> {
         Box::pin(async move {
             self.signals.stop(mode);
             let Some(mut lease) = self.lease().await else {
@@ -189,7 +185,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
             };
             if let Some(handler) = session.handler.clone()
                 && let Err(error) = session.run_loop(handler).await
-                && !matches!(error, crate::error::ReceiveError::Stopped(_))
+                && !matches!(error, ReceiveError::Stopped(_))
             {
                 session.inner.emit(&Diagnostic::InternalFailure {
                     origin: "shutdown_resume".into(),

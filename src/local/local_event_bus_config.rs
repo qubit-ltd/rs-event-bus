@@ -35,6 +35,7 @@ const MAX_TOTAL_OUTSTANDING_OPTION: &str = "local.max_total_outstanding";
 /// let config = LocalEventBusConfig::new().queue_capacity(64);
 /// assert_eq!(config.get_queue_capacity(), 64);
 /// ```
+#[must_use = "local transport limits must be applied to a provider"]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalEventBusConfig {
     /// Maximum queued and unsettled delivery items for each subscription.
@@ -49,27 +50,12 @@ impl LocalEventBusConfig {
     ///
     /// # Returns
     /// A configuration with the documented local-provider defaults.
-    #[must_use]
+    #[inline]
     pub const fn new() -> Self {
         Self {
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
             max_total_outstanding: DEFAULT_MAX_TOTAL_OUTSTANDING,
         }
-    }
-
-    /// Sets the maximum number of queued or unsettled messages for each
-    /// subscription.
-    ///
-    /// # Parameters
-    /// - `capacity`: per-subscription queue and unsettled-message limit.
-    ///
-    /// # Returns
-    /// The updated configuration. A zero value is rejected by
-    /// [`Self::validate`].
-    #[must_use]
-    pub const fn queue_capacity(mut self, capacity: usize) -> Self {
-        self.queue_capacity = capacity;
-        self
     }
 
     /// Returns the per-subscription pending queue limit.
@@ -80,20 +66,6 @@ impl LocalEventBusConfig {
     #[inline]
     pub const fn get_queue_capacity(&self) -> usize {
         self.queue_capacity
-    }
-
-    /// Sets the provider-wide limit for queued or unsettled deliveries.
-    ///
-    /// # Parameters
-    /// - `capacity`: provider-wide outstanding-delivery limit.
-    ///
-    /// # Returns
-    /// The updated configuration. A zero value is rejected by
-    /// [`Self::validate`].
-    #[must_use]
-    pub const fn max_total_outstanding(mut self, capacity: usize) -> Self {
-        self.max_total_outstanding = capacity;
-        self
     }
 
     /// Returns the maximum number of outstanding deliveries across this
@@ -122,6 +94,35 @@ impl LocalEventBusConfig {
             ),
         ]
         .into()
+    }
+
+    /// Sets the maximum number of queued or unsettled messages for each
+    /// subscription.
+    ///
+    /// # Parameters
+    /// - `capacity`: per-subscription queue and unsettled-message limit.
+    ///
+    /// # Returns
+    /// The updated configuration. A zero value is rejected by
+    /// [`Self::validate`].
+    #[inline]
+    pub const fn queue_capacity(mut self, capacity: usize) -> Self {
+        self.queue_capacity = capacity;
+        self
+    }
+
+    /// Sets the provider-wide limit for queued or unsettled deliveries.
+    ///
+    /// # Parameters
+    /// - `capacity`: provider-wide outstanding-delivery limit.
+    ///
+    /// # Returns
+    /// The updated configuration. A zero value is rejected by
+    /// [`Self::validate`].
+    #[inline]
+    pub const fn max_total_outstanding(mut self, capacity: usize) -> Self {
+        self.max_total_outstanding = capacity;
+        self
     }
 
     /// Validates local transport configuration.

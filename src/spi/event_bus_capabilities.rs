@@ -9,6 +9,7 @@
 
 use super::DelayedDeliveryCapability;
 use super::DurabilityCapability;
+use super::EventBusCapabilitiesBuilder;
 use super::OrderingCapability;
 use super::PayloadModes;
 use super::PublishGuarantee;
@@ -33,13 +34,19 @@ use super::SubscriptionModes;
 /// use qubit_event_bus::spi::SettlementCapabilities;
 /// use qubit_event_bus::spi::SubscriptionModes;
 ///
-/// let capabilities = EventBusCapabilities::new(
-///     PayloadModes::Native, SettlementCapabilities::None,
-///     OrderingCapability::None, DelayedDeliveryCapability::None,
-///     DurabilityCapability::Ephemeral, SubscriptionModes::EPHEMERAL,
-///     false, ReplayCapability::None, PublishGuarantee::Accepted,
-///     PublishVisibility::Opaque,
-/// );
+/// let capabilities = EventBusCapabilities::builder()
+///     .payload_modes(PayloadModes::Native)
+///     .settlement(SettlementCapabilities::None)
+///     .ordering(OrderingCapability::None)
+///     .delayed_delivery(DelayedDeliveryCapability::None)
+///     .durability(DurabilityCapability::Ephemeral)
+///     .subscription_modes(SubscriptionModes::EPHEMERAL)
+///     .consumer_groups(false)
+///     .replay(ReplayCapability::None)
+///     .publish_guarantee(PublishGuarantee::Accepted)
+///     .publish_visibility(PublishVisibility::Opaque)
+///     .build()
+///     .expect("all capability dimensions are configured");
 /// assert_eq!(capabilities.payload_modes(), PayloadModes::Native);
 /// ```
 #[non_exhaustive]
@@ -69,6 +76,29 @@ pub struct EventBusCapabilities {
 }
 
 impl EventBusCapabilities {
+    /// Starts building a capability declaration without assigning implicit
+    /// defaults to any provider capability.
+    ///
+    /// # Returns
+    /// A builder whose fields must be configured before
+    /// [`build`](EventBusCapabilitiesBuilder::build) can create a
+    /// declaration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qubit_event_bus::spi::EventBusCapabilities;
+    ///
+    /// let error = EventBusCapabilities::builder()
+    ///     .build()
+    ///     .expect_err("an empty builder has missing capability fields");
+    /// assert_eq!(error.missing_field(), "payload_modes");
+    /// ```
+    #[inline]
+    pub fn builder() -> EventBusCapabilitiesBuilder {
+        EventBusCapabilitiesBuilder::default()
+    }
+
     /// Creates a capability declaration for a backend instance.
     ///
     /// # Parameters
@@ -87,6 +117,7 @@ impl EventBusCapabilities {
     /// # Returns
     /// An immutable capability declaration containing the supplied values.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub const fn new(
         payload_modes: PayloadModes,
         settlement: SettlementCapabilities,
@@ -117,7 +148,6 @@ impl EventBusCapabilities {
     ///
     /// # Returns
     /// Supported native and encoded payload modes.
-    #[must_use]
     #[inline]
     pub const fn payload_modes(self) -> PayloadModes {
         self.payload_modes
@@ -162,7 +192,6 @@ impl EventBusCapabilities {
     ///
     /// # Returns
     /// The set of accepted durability modes.
-    #[must_use]
     #[inline]
     pub const fn subscription_modes(self) -> SubscriptionModes {
         self.subscription_modes

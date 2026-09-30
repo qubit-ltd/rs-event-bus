@@ -7,7 +7,9 @@
 // =============================================================================
 //! Reservation of global admission and one scheduler queue position.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::PoisonError;
 
 use qubit_id::Id;
 
@@ -16,39 +18,48 @@ use super::super::SyncDeliveryScheduler;
 use super::scheduled_job::ScheduledJob;
 use crate::pipeline::AdmissionPermit;
 
-/// Reserves both global admission and one bounded queue slot before a job is
-/// built.
+/// Holds global admission and a bounded scheduler queue slot for a future job.
+///
+/// A reservation starts uncommitted. Submitting it transfers the admission
+/// permit and queue position into dispatcher state; dropping it first returns
+/// the reserved queue capacity. The permit then remains with the scheduled job
+/// until its handler or cancellation callback finishes.
 pub(in crate::facade) struct SchedulerReservation {
-    /// Dispatcher whose queue capacity was reserved.
+    /// Shared dispatcher whose queue capacity and state this reservation uses.
     pub(in crate::facade::sync_delivery_scheduler) scheduler: Arc<SyncDeliveryScheduler>,
-    /// Subscription coordinator that owns the future job.
+    /// Subscription that owns the job and scopes subscription cancellation.
     pub(in crate::facade::sync_delivery_scheduler) subscription_id: Id,
-    /// Optional lane reserved for this job.
+    /// Optional ordering lane that serializes this job with matching
+    /// deliveries.
     pub(in crate::facade::sync_delivery_scheduler) ordering_key: Option<OrderingLaneKey>,
-    /// Global admission permit retained until job completion.
+    /// Global queued-or-active admission permit transferred to the scheduled
+    /// job.
     pub(in crate::facade::sync_delivery_scheduler) permit: Option<AdmissionPermit>,
-    /// Whether the reservation has been transferred into dispatcher state.
+    /// Prevents `Drop` from releasing queue capacity after submission transfers
+    /// it.
     pub(in crate::facade::sync_delivery_scheduler) committed: bool,
 }
 
 impl SchedulerReservation {
-    /// Commits a reserved delivery to the shared dispatcher.
+    /// Transfers this reservation and delivery callback into the dispatcher.
+    ///
+    /// The reservation's queue slot is committed under the dispatcher lock. A
+    /// live subscription adds the job to its fair queue; a canceled
+    /// subscription or immediate stop instead schedules its cancellation
+    /// callback. In either case the callback runs on a dispatcher worker
+    /// and its admission permit remains held until the callback returns.
     ///
     /// # Type Parameters
     /// - `F`: one-shot handler closure type.
     ///
     /// # Parameters
-    /// - `run`: closure invoked with `true` if cancellation prevents it from
-    ///   starting.
+    /// - `run`: one-shot delivery callback; it receives `true` if cancellation
+    ///   prevents delivery from starting and `false` when the handler may run.
     pub(in crate::facade) fn submit<F>(mut self, run: F)
     where
         F: FnOnce(bool) + Send + 'static,
     {
-        let mut state = self
-            .scheduler
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.scheduler.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.reserved_queue = state.reserved_queue.saturating_sub(1);
         if state.stopping_immediate || state.cancelled_subscriptions.contains(&self.subscription_id) {
             state.cancelled_jobs.push_back(ScheduledJob {
@@ -68,10 +79,7 @@ impl SchedulerReservation {
             permit: self.permit.take(),
         };
         let subscription_id = job.subscription_id;
-        let queue_is_empty = state
-            .queues
-            .get(&subscription_id)
-            .is_none_or(std::collections::VecDeque::is_empty);
+        let queue_is_empty = state.queues.get(&subscription_id).is_none_or(VecDeque::is_empty);
         if queue_is_empty {
             state.round_robin.push_back(job.subscription_id);
         }
@@ -86,11 +94,7 @@ impl Drop for SchedulerReservation {
     /// Releases the queue slot when it was never committed to dispatcher state.
     fn drop(&mut self) {
         if !self.committed {
-            let mut state = self
-                .scheduler
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.scheduler.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.reserved_queue = state.reserved_queue.saturating_sub(1);
             self.scheduler.changed.notify_all();
         }

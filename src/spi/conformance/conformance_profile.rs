@@ -16,6 +16,7 @@
 ///
 /// assert_eq!(ConformanceProfile::default(), ConformanceProfile::Structural);
 /// ```
+#[must_use]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConformanceProfile {
     /// Lightweight structural smoke checks; missing provider fixtures are

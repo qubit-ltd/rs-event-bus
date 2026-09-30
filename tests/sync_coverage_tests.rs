@@ -20,6 +20,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::ConfigurationError;
@@ -71,6 +72,23 @@ use qubit_event_bus::spi::TransportPayload;
 
 const PROVIDER_ID: &str = "sync-coverage";
 const TOPIC_NAME: &str = "sync.coverage";
+
+/// Checks that an idle ephemeral-provider shutdown reports its uncertainty.
+fn assert_ephemeral_shutdown_report(report: ShutdownReport, scenario: &str) {
+    assert_eq!(
+        report.outcome,
+        ShutdownOutcome::Complete,
+        "{scenario}: shutdown outcome"
+    );
+    assert_eq!(
+        report.known_abandoned_deliveries, 0,
+        "{scenario}: no facade-owned deliveries remain abandoned"
+    );
+    assert!(
+        report.provider_may_have_abandoned_deliveries,
+        "{scenario}: ephemeral provider may abandon provider-owned deliveries"
+    );
+}
 
 struct CoverageState {
     receivers: Mutex<Vec<(String, TopicAddress, SyncSender<InboundMessage>)>>,
@@ -397,8 +415,11 @@ fn test_publish_all_keeps_later_results_after_a_provider_failure() {
         })
     ));
     assert!(result.items()[1].is_ok());
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down after batch publication");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("bus shuts down after batch publication"),
+        "batch publication",
+    );
 }
 
 #[test]
@@ -425,8 +446,11 @@ fn test_provider_subscribe_failure_does_not_poison_later_subscription() {
         )
         .expect("a failed admission leaves the facade usable");
     subscription.cancel().expect("successful receiver closes");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down after subscription recovery");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("bus shuts down after subscription recovery"),
+        "subscription recovery",
+    );
 }
 
 #[test]
@@ -505,8 +529,11 @@ fn test_subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
     assert!(subscription.is_cancelled());
     assert_eq!(object_id, subscription.id());
     subscription.cancel().expect("repeated cancel remains idempotent");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down after explicit cancellation");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("bus shuts down after explicit cancellation"),
+        "repeated explicit cancellation",
+    );
 }
 
 #[test]
@@ -545,8 +572,11 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
     ));
 
     subscription.cancel().expect("external caller cancels worker");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down after callback exits");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("bus shuts down after callback exits"),
+        "reentrant callback exit",
+    );
 }
 
 #[test]
@@ -633,7 +663,10 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down"),
+        "same-key subscription lanes",
+    );
 }
 
 #[test]
@@ -696,7 +729,10 @@ fn test_same_ordering_key_is_independent_between_topics() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down"),
+        "cross-topic subscription lanes",
+    );
 }
 
 #[test]
@@ -758,7 +794,10 @@ fn test_max_in_flight_capacity_is_shared_across_subscriptions() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    assert_ephemeral_shutdown_report(
+        bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down"),
+        "shared in-flight capacity",
+    );
 }
 
 #[test]

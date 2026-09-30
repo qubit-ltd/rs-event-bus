@@ -19,6 +19,7 @@ use qubit_clock::StdTimer;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
@@ -48,6 +49,24 @@ use qubit_id::Id;
 use crate::support::manual_async::block_on;
 use crate::support::manual_async::poll_once;
 
+/// Checks that immediate shutdown reports facade cleanup and ephemeral-provider
+/// risk.
+fn assert_ephemeral_shutdown_report(report: ShutdownReport, scenario: &str) {
+    assert_eq!(
+        report.outcome,
+        ShutdownOutcome::Complete,
+        "{scenario}: shutdown outcome"
+    );
+    assert_eq!(
+        report.known_abandoned_deliveries, 0,
+        "{scenario}: no facade-owned deliveries remain abandoned"
+    );
+    assert!(
+        report.provider_may_have_abandoned_deliveries,
+        "{scenario}: ephemeral local provider may abandon provider-owned deliveries"
+    );
+}
+
 #[test]
 fn test_async_local_delivers_and_settles_without_a_runtime_dependency() {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(2))).unwrap();
@@ -63,7 +82,10 @@ fn test_async_local_delivers_and_settles_without_a_runtime_dependency() {
 
     block_on(bus.publish(PublishRequest::new(topic, "message".to_owned()).unwrap())).unwrap();
     assert_eq!("message", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "delivery and settlement",
+    );
     runner.join().unwrap().unwrap();
 }
 
@@ -78,7 +100,10 @@ fn test_async_local_reports_capacity_rejection_per_destination() {
 
     assert!(matches!(first.admission_outcome(), AdmissionOutcome::Accepted(_)));
     assert!(matches!(second.admission_outcome(), AdmissionOutcome::NoneAccepted(_)));
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "per-destination capacity rejection",
+    );
 }
 
 #[test]
@@ -210,7 +235,10 @@ fn test_async_local_is_registered_in_the_async_provider_catalog() {
     );
     let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
     let bus = block_on(registry.create(&config)).unwrap();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "async provider registry",
+    );
 }
 
 #[test]
@@ -284,7 +312,10 @@ fn test_async_local_topic_index_preserves_fanout_and_removes_closed_routes() {
     };
     assert_eq!(1, admissions.len());
     drop(second);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "topic index cleanup",
+    );
 }
 
 #[test]
@@ -372,7 +403,10 @@ fn test_async_local_broadcasts_to_same_subscriber_instances_and_closes_them_inde
     };
     assert_eq!("remaining", payload.downcast_ref::<String>().unwrap());
     block_on(second.close()).unwrap();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "same-subscriber broadcast",
+    );
 }
 
 #[test]
@@ -394,7 +428,10 @@ fn test_async_local_repeated_close_of_old_subscription_preserves_reused_id() {
     ));
 
     block_on(replacement.close()).unwrap();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "reused subscription ID",
+    );
 }
 
 #[test]
@@ -442,7 +479,10 @@ fn test_async_local_same_subscriber_instances_report_independent_queue_capacity(
     block_on(second.settle(&second_occupy.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
     block_on(first.close()).unwrap();
     block_on(second.close()).unwrap();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "independent subscriber capacity",
+    );
 }
 
 #[test]
@@ -464,7 +504,10 @@ fn test_async_local_drop_discards_pending_messages_for_the_same_subscriber() {
     });
     block_on(bus.publish(PublishRequest::new(topic, "fresh".to_owned()).unwrap())).unwrap();
     assert_eq!("fresh", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "drop recovery",
+    );
     runner.join().unwrap().unwrap();
 }
 
@@ -493,7 +536,10 @@ fn test_async_local_subscription_count_does_not_create_receiver_threads() {
     let after = std::fs::read_dir("/proc/self/task").unwrap().count();
     assert_eq!(before, after, "subscription creation must not spawn a receiver thread");
     drop(subscriptions);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "subscription thread count",
+    );
 }
 
 #[cfg(all(test, not(target_os = "linux")))]
@@ -567,7 +613,10 @@ fn test_async_local_close_removes_the_destination_and_topic_type_binding() {
         ReceiveOutcome::TimedOut
     ));
     block_on(replacement.close()).unwrap();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "topic type binding cleanup",
+    );
 }
 
 #[test]
@@ -585,7 +634,10 @@ fn test_async_local_drop_does_not_leave_stale_destinations() {
         receipt.acknowledgement(),
         PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
     ));
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(
+        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
+        "stale destinations",
+    );
 }
 
 #[test]

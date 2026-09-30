@@ -15,6 +15,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
@@ -25,8 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    bus.shutdown(ShutdownMode::Graceful {
+    let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     Ok(())
 }

@@ -14,6 +14,7 @@ use crate::facade::async_admission::AsyncAdmissionPermit;
 ///
 /// # Type Parameters
 /// - `T`: payload type retained by a completed delivery.
+#[must_use = "handle the delivery event or admission permit before continuing"]
 pub(in crate::facade::async_subscription) enum AdmissionWaitEvent<T: 'static> {
     /// Admission capacity became available.
     Permit(

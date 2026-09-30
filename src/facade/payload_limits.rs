@@ -30,6 +30,7 @@ use std::num::NonZeroUsize;
 /// assert_eq!(config.payload_limits().max_receive_bytes().get(), 1_024);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub struct PayloadLimits {
     /// Maximum encoded bytes admitted before provider publication.
     max_publish_bytes: NonZeroUsize,
@@ -47,7 +48,7 @@ impl PayloadLimits {
     ///
     /// # Returns
     /// Independent limits for the two facade boundaries.
-    #[must_use]
+    #[inline]
     pub const fn new(max_publish_bytes: NonZeroUsize, max_receive_bytes: NonZeroUsize) -> Self {
         Self {
             max_publish_bytes,
@@ -58,7 +59,6 @@ impl PayloadLimits {
     ///
     /// # Returns
     /// The positive publication byte limit, inclusive of its boundary.
-    #[must_use]
     #[inline]
     pub const fn max_publish_bytes(&self) -> NonZeroUsize {
         self.max_publish_bytes
@@ -67,7 +67,6 @@ impl PayloadLimits {
     ///
     /// # Returns
     /// The positive receive byte limit, inclusive of its boundary.
-    #[must_use]
     #[inline]
     pub const fn max_receive_bytes(&self) -> NonZeroUsize {
         self.max_receive_bytes
@@ -76,6 +75,7 @@ impl PayloadLimits {
 
 impl Default for PayloadLimits {
     /// Sets both encoded boundaries to one mebibyte.
+    #[inline]
     fn default() -> Self {
         let limit = NonZeroUsize::new(1_048_576).expect("the default payload limit is positive");
         Self::new(limit, limit)

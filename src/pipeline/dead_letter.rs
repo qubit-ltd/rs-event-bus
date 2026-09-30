@@ -107,8 +107,8 @@ mod tests {
         let event_id = EventId::new("order-42").unwrap();
         let subscriber = SubscriberId::new("billing").unwrap();
         assert_eq!(
-            dead_letter_id(&event_id, &subscriber),
-            dead_letter_id(&event_id, &subscriber)
+            dead_letter_id(&event_id, &subscriber).as_str(),
+            "dlq-5177e8019aa006974ef10db127dff43c"
         );
         assert_ne!(
             dead_letter_id(&event_id, &subscriber),

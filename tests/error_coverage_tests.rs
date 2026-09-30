@@ -118,12 +118,14 @@ fn test_close_errors_aggregate_failures_and_preserve_the_source_chain() {
         panic!("expected aggregate subscription-close error");
     };
     assert_eq!(errors.len(), 2);
-    assert!(!errors.is_empty());
-    let failures = errors.iter().collect::<Vec<_>>();
-    assert_eq!(failures[0].subscriber_id().as_str(), "first");
-    assert_eq!(failures[1].subscriber_id().as_str(), "second");
-    assert_eq!(failures[0].error().kind(), "close_failed");
-    assert_eq!(failures[1].error().resource(), Some("second"));
+    let mut failures = errors.iter();
+    let first = failures.next().expect("first close failure is retained");
+    let second = failures.next().expect("second close failure is retained");
+    assert!(failures.next().is_none(), "the aggregate has exactly two failures");
+    assert_eq!(first.subscriber_id().as_str(), "first");
+    assert_eq!(second.subscriber_id().as_str(), "second");
+    assert_eq!(first.error().kind(), "close_failed");
+    assert_eq!(second.error().resource(), Some("second"));
     assert!(errors.to_string().contains("2 subscription close failure(s)"));
 
     let first_source = errors.source().expect("aggregate exposes first close failure");

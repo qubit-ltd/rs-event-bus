@@ -7,6 +7,9 @@
 // =============================================================================
 //! Fully validated outbound data retained across provider retry attempts.
 
+use std::time::Duration;
+use std::time::SystemTime;
+
 use crate::model::EventId;
 use crate::model::Headers;
 use crate::model::PublishFailureContext;
@@ -17,6 +20,11 @@ use crate::spi::TransportPayload;
 
 /// Validated publication metadata and payload prepared once for provider
 /// retries.
+///
+/// # Type Parameters
+/// - `T`: the original typed event payload retained for publish failure
+///   handling. It must be `'static` because the provider retry lifecycle may
+///   outlive the caller's stack frame.
 #[must_use]
 pub(in crate::pipeline::publisher) struct PreparedOutbound<T: 'static> {
     /// Provider address validated before retry begins.
@@ -24,13 +32,13 @@ pub(in crate::pipeline::publisher) struct PreparedOutbound<T: 'static> {
     /// Event identity retained consistently across retry attempts.
     pub(in crate::pipeline::publisher) event_id: EventId,
     /// Original event creation timestamp.
-    pub(in crate::pipeline::publisher) timestamp: std::time::SystemTime,
+    pub(in crate::pipeline::publisher) timestamp: SystemTime,
     /// Portable headers copied into each provider attempt.
     pub(in crate::pipeline::publisher) headers: Headers,
     /// Optional per-key ordering metadata.
     pub(in crate::pipeline::publisher) ordering_key: Option<OrderingKey>,
     /// Optional provider delivery delay.
-    pub(in crate::pipeline::publisher) delay: Option<std::time::Duration>,
+    pub(in crate::pipeline::publisher) delay: Option<Duration>,
     /// Native or encoded payload shared across attempts.
     pub(in crate::pipeline::publisher) payload: TransportPayload,
     /// Original typed event context used by error handlers.

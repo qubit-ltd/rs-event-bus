@@ -9,6 +9,10 @@
 
 mod internal;
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::sync::Arc;
+
 pub(crate) use internal::PipelineFailure;
 pub(crate) use internal::PipelineFailureOrigin;
 use qubit_id::Id;
@@ -123,8 +127,8 @@ pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 /// # Parameters
 /// - `observers`: observers to invoke in their registration order.
 /// - `diagnostic`: runtime fact passed to each observer.
-pub(crate) fn emit_diagnostic(observers: &[std::sync::Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
+pub(crate) fn emit_diagnostic(observers: &[Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
     for observer in observers {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(diagnostic)));
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(diagnostic)));
     }
 }

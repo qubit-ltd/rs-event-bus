@@ -18,6 +18,8 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::ShutdownReport;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
@@ -49,6 +51,7 @@ use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -58,6 +61,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -95,6 +99,20 @@ use qubit_retry::RetryPolicy;
 
 /// Shares a provider mailbox and its receive notification.
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
+
+fn assert_idle(outcome: WaitOutcome) {
+    assert_eq!(outcome, WaitOutcome::Idle);
+}
+
+fn assert_ephemeral_shutdown(report: ShutdownReport) {
+    assert_shutdown_report(report, 0);
+}
+
+fn assert_shutdown_report(report: ShutdownReport, expected_abandoned: u64) {
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, expected_abandoned);
+    assert!(report.provider_may_have_abandoned_deliveries);
+}
 
 #[test]
 fn test_sync_facade_capability_panic_is_a_terminal_spi_error() {
@@ -173,7 +191,7 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
         )
         .expect("cancellation releases the subscription budget");
     third.cancel().expect("third subscription is cancelled");
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -203,7 +221,7 @@ fn test_sync_spi_call_panics_are_returned_as_structured_errors() {
             ..
         }))
     ));
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds"));
 }
 
 #[test]
@@ -219,7 +237,7 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
     subscription
         .cancel()
         .expect("receive panic is contained and the worker closes");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds"));
 
     let (bus, backend) = create_bus();
     backend.settle_panics.store(true, Ordering::Release);
@@ -242,7 +260,7 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
     subscription
         .cancel()
         .expect("settlement panic does not prevent cancellation");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds"));
 }
 
 /// Pauses receive after removal so shutdown can race with message handoff.
@@ -267,7 +285,7 @@ struct QueueState {
 /// Records provider operations and settlement outcomes shared by receivers.
 #[derive(Default)]
 struct TestBackendState {
-    queues: Vec<(Id, SharedQueue)>,
+    queues: Vec<(Id, TopicAddress, SharedQueue)>,
     shutdown_calls: usize,
     shutdown_modes: Vec<ShutdownMode>,
     close_calls: usize,
@@ -514,7 +532,7 @@ impl TestBackend {
 
     fn close_receivers(&self) {
         let queues = self.state.lock().expect("test state lock").queues.clone();
-        for (_, queue) in queues {
+        for (_, _, queue) in queues {
             let (lock, ready) = &*queue;
             lock.lock().expect("queue lock").closed = true;
             ready.notify_all();
@@ -551,9 +569,9 @@ impl TestBackend {
 
     fn enqueue_marked(&self, subscription_id: Id) {
         let queues = self.state.lock().expect("test state lock").queues.clone();
-        let (_, queue) = queues
+        let (_, _, queue) = queues
             .into_iter()
-            .find(|(id, _)| *id == subscription_id)
+            .find(|(id, _, _)| *id == subscription_id)
             .expect("subscription queue");
         let mut headers = Headers::new();
         headers.insert("x-qubit-event-bus-dead-letter".into(), "v1".into());
@@ -574,7 +592,7 @@ impl TestBackend {
 
     fn enqueue_encoded(&self, payload: EncodedPayload) {
         let queues = self.state.lock().expect("test state lock").queues.clone();
-        for (subscription_id, queue) in queues {
+        for (subscription_id, _, queue) in queues {
             let encoded = EncodedPayload::new(
                 Arc::<[u8]>::from(payload.bytes()),
                 payload.content_type().clone(),
@@ -662,7 +680,10 @@ impl EventBusSpi for TestBackend {
             .published_topics
             .push(message.topic().as_str().into());
         let state = self.state.lock().expect("test state lock");
-        for (subscription_id, queue) in &state.queues {
+        for (subscription_id, topic, queue) in &state.queues {
+            if topic != message.topic() {
+                continue;
+            }
             let settlement = match self.settlement_capability.load(Ordering::Acquire) {
                 0 => None,
                 _ => Some(SettlementToken::new(*subscription_id, "test-token")),
@@ -710,11 +731,11 @@ impl EventBusSpi for TestBackend {
         );
         Self::wait_at_gate(&self.subscribe_gate, "subscribe");
         let queue = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
-        self.state
-            .lock()
-            .expect("test state lock")
-            .queues
-            .push((request.subscription_id(), queue.clone()));
+        self.state.lock().expect("test state lock").queues.push((
+            request.subscription_id(),
+            request.topic().clone(),
+            queue.clone(),
+        ));
         Ok(Box::new(TestSubscription {
             id: request.subscription_id(),
             queue,
@@ -847,7 +868,7 @@ fn test_spi_error(operation: &'static str) -> SpiError {
             resource: None,
             kind: "test_error",
             retryable: Some(false),
-            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+            effect: PublishEffect::NotAccepted,
             source: Box::new(std::io::Error::other("test SPI error")),
         };
     }
@@ -1097,10 +1118,12 @@ fn test_shutdown_waits_for_a_publish_admitted_before_shutdown() {
         .recv_timeout(Duration::from_secs(2))
         .expect("publish completes")
         .expect("publish succeeds");
-    shutdown_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("shutdown completes")
-        .expect("shutdown succeeds");
+    assert_ephemeral_shutdown(
+        shutdown_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown completes")
+            .expect("shutdown succeeds"),
+    );
     publish_thread.join().expect("publish thread exits");
     shutdown_thread.join().expect("shutdown thread exits");
     assert_eq!(backend.shutdown_calls(), 1);
@@ -1138,8 +1161,10 @@ fn test_graceful_shutdown_deadline_includes_an_admitted_blocking_publish() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("the background shutdown can be joined after publish release");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("the background shutdown can be joined after publish release"),
+    );
     assert!(
         timed_out_before_release,
         "Graceful timeout must include time waiting for an admitted SPI publish"
@@ -1173,8 +1198,10 @@ fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("the completed coordinator outcome is observable later");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("the completed coordinator outcome is observable later"),
+    );
     assert!(
         timed_out_before_release,
         "the caller deadline must include provider shutdown"
@@ -1214,8 +1241,10 @@ fn test_graceful_shutdown_deadline_includes_subscription_close() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
     }
     shutdown_thread.join().expect("shutdown thread exits");
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("the completed coordinator outcome is observable later");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("the completed coordinator outcome is observable later"),
+    );
     assert!(
         timed_out_before_release,
         "the caller deadline must include receiver close"
@@ -1265,10 +1294,12 @@ fn test_immediate_shutdown_strengthens_a_timed_out_graceful_attempt() {
     });
     assert!(immediate_rx.recv_timeout(Duration::from_millis(50)).is_err());
     handler_gate.release();
-    immediate_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("immediate shutdown completes after active handler")
-        .expect("immediate shutdown succeeds");
+    assert_ephemeral_shutdown(
+        immediate_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("immediate shutdown completes after active handler")
+            .expect("immediate shutdown succeeds"),
+    );
     grace_thread.join().expect("graceful caller exits after timeout");
     immediate_thread.join().expect("immediate caller exits");
     assert_eq!([ShutdownMode::Immediate], backend.shutdown_modes().as_slice());
@@ -1313,8 +1344,10 @@ fn test_shutdown_from_publish_interceptor_returns_would_deadlock_instead_of_wait
         0,
         "reentrant shutdown must not close provider"
     );
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("shutdown outside callback");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("shutdown outside callback"),
+    );
 }
 
 #[test]
@@ -1353,10 +1386,12 @@ fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() 
         .recv_timeout(Duration::from_secs(2))
         .expect("subscribe completes")
         .expect("admitted subscribe succeeds");
-    shutdown_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("shutdown completes")
-        .expect("shutdown succeeds");
+    assert_ephemeral_shutdown(
+        shutdown_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown completes")
+            .expect("shutdown succeeds"),
+    );
     subscribe_thread.join().expect("subscribe thread exits");
     shutdown_thread.join().expect("shutdown thread exits");
     assert!(subscription.is_cancelled());
@@ -1437,8 +1472,10 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         panic_was_observed.load(Ordering::Acquire),
         "codec panic should be diagnosed"
     );
-    bus.wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
-        .expect("panic path completes its owned delivery");
+    assert_idle(
+        bus.wait_for_received_deliveries(&encoded_topic, Some(Duration::from_secs(2)))
+            .expect("panic path completes its owned delivery"),
+    );
     assert!(
         backend.settlement_dispositions().is_empty(),
         "codec panic never settles the source token"
@@ -1447,10 +1484,10 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         .terminal_failure()
         .expect("codec panic stops the subscription");
     assert!(
-        matches!(failure.as_ref(), qubit_event_bus::model::SubscriptionStopReason::Codec { error, .. } if matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
+        matches!(failure.as_ref(), SubscriptionStopReason::Codec { error, .. } if matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
     );
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_shutdown_report(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"), 1);
 }
 
 #[test]
@@ -1526,7 +1563,7 @@ fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
             .expect("encoded payload is decoded")
     );
     subscription.cancel().expect("subscription cancels");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down"));
 }
 
 #[test]
@@ -1586,7 +1623,7 @@ fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
         receiver.recv_timeout(Duration::from_secs(2)).unwrap()
     );
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 /// Adds a registry marker on decode to detect codec precedence.
@@ -1669,11 +1706,13 @@ fn test_panicking_custom_retry_rule_requeues_instead_of_rejecting_delivery() {
     handler_entered_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("handler starts");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("retry rule panic settles");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("retry rule panic settles"),
+    );
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 /// Panics on decode to exercise message recovery at the facade boundary.
@@ -1771,8 +1810,10 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
         terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
         "cancel-retry-lane"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .unwrap(),
+    );
     assert!(
         token.is_cancelled(),
         "external cancellation must remain observable on caller-owned token"
@@ -1783,8 +1824,10 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
         terminal_failure_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
         "cancel-retry-lane"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .unwrap(),
+    );
     assert_eq!(
         attempts.load(Ordering::Acquire),
         1,
@@ -1802,7 +1845,7 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
     );
     subscription.cancel().unwrap();
     independent_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
     drop(failure_observer);
 }
 
@@ -1852,8 +1895,10 @@ fn test_subscription_worker_processes_and_settles_spi_messages_until_cancelled()
             .expect("handler invoked"),
         "hello"
     );
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("handler and settlement complete");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("handler and settlement complete"),
+    );
     assert_eq!(backend.settlement_calls(), 1);
 
     subscription.cancel().expect("cancel closes SPI subscription");
@@ -1988,10 +2033,12 @@ fn test_per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial
     key_a_second_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("same-key task runs after prior settlement");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("all keyed work completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("all keyed work completes"),
+    );
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
     assert_eq!(backend.settlement_calls(), 3);
 }
 
@@ -2070,10 +2117,12 @@ fn test_global_max_in_flight_includes_queued_deliveries_before_admission() {
             .recv_timeout(Duration::from_secs(2))
             .expect("each accepted delivery completes");
     }
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("all admitted work settles");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("all admitted work settles"),
+    );
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2138,12 +2187,14 @@ fn test_saturated_scheduler_holds_only_one_received_handoff_and_loses_no_message
             .recv_timeout(Duration::from_secs(2))
             .expect("each provider message reaches the handler");
     }
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("all messages settle after capacity returns");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("all messages settle after capacity returns"),
+    );
     assert_eq!(calls.load(Ordering::Acquire), 4);
     assert_eq!(backend.settlement_calls(), 4);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2206,12 +2257,14 @@ fn test_zero_handler_queue_capacity_allows_only_direct_handoff_to_an_idle_key_la
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second handler starts after its key is free");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("both messages settle");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("both messages settle"),
+    );
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 2);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2278,7 +2331,7 @@ fn test_cancel_requeues_admitted_waiting_jobs_before_waiting_for_active_handler(
     assert_eq!(calls.load(Ordering::Acquire), 1);
     assert_eq!(backend.settlement_calls(), 2);
     subscription.cancel().expect("repeated cancel observes completion");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2339,10 +2392,12 @@ fn test_graceful_shutdown_drains_admitted_jobs_and_requeues_unadmitted_handoff()
     }
     assert!(subscription.is_cancelled());
     first_gate.release();
-    shutdown_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("shutdown completes")
-        .expect("shutdown succeeds");
+    assert_ephemeral_shutdown(
+        shutdown_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown completes")
+            .expect("shutdown succeeds"),
+    );
     shutdown_thread.join().expect("shutdown thread exits");
     assert_eq!(
         calls.load(Ordering::Acquire),
@@ -2418,10 +2473,12 @@ fn test_immediate_shutdown_requeues_queued_deliveries_without_starting_handlers(
     }
     assert!(subscription.is_cancelled());
     gate.release();
-    shutdown_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("shutdown completes")
-        .expect("shutdown succeeds");
+    assert_ephemeral_shutdown(
+        shutdown_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown completes")
+            .expect("shutdown succeeds"),
+    );
     shutdown_thread.join().expect("shutdown thread exits");
     assert_eq!(calls.load(Ordering::Acquire), 1, "queued handlers never start");
     let dispositions = backend.settlement_dispositions();
@@ -2495,8 +2552,10 @@ fn test_manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     ];
     handled.sort_unstable();
     assert_eq!(handled, ["acked", "nacked", "pending"]);
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("manual ACKs settle");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("manual ACKs settle"),
+    );
     let dispositions = backend.settlement_dispositions();
     assert_eq!(dispositions.len(), 3);
     assert!(dispositions.contains(&DeliveryDisposition::Accept));
@@ -2505,7 +2564,7 @@ fn test_manual_acknowledgement_accepts_only_explicit_acknowledgements() {
     acknowledged.cancel().expect("cancel ACK subscription");
     unacknowledged.cancel().expect("cancel pending subscription");
     negatively_acknowledged.cancel().expect("cancel NACK subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 /// Verifies subscriber middleware and error callbacks surround every retry
@@ -2567,8 +2626,10 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
     completed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt completes");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("retry completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("retry completes"),
+    );
     assert_eq!(
         *calls.lock().unwrap(),
         ["before", "handler-1", "after", "error", "before", "handler-2", "after"]
@@ -2590,7 +2651,7 @@ fn test_subscriber_interceptor_and_error_handler_wrap_each_failed_retry_attempt(
         0
     );
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2632,8 +2693,10 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
         .unwrap();
     bus.publish(request("ordered".into())).unwrap();
     done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .unwrap();
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .unwrap(),
+    );
     assert_eq!(
         *calls.lock().unwrap(),
         [
@@ -2688,7 +2751,7 @@ fn test_facade_subscriber_middleware_wraps_typed_middleware_and_filter_bypasses_
     );
     subscription.cancel().unwrap();
     filtered_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -2711,7 +2774,7 @@ fn test_sync_facade_rejects_async_global_subscriber_middleware() {
         }))
     ));
     assert_eq!(backend.state.lock().unwrap().queues.len(), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 fn create_bus_with_config(config: EventBusFacadeConfig) -> (EventBus, Arc<TestBackend>) {
@@ -2763,7 +2826,7 @@ fn test_concurrent_cancel_callers_both_wait_for_worker_close() {
     assert!(first.1.is_ok());
     assert!(second.1.is_ok());
     assert_eq!(backend.close_calls(), 1);
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2861,7 +2924,7 @@ fn test_one_bus_worker_can_request_cancel_for_a_different_subscription_without_j
         .cancel()
         .expect("target already joined");
     a_subscription.cancel().expect("cancel caller");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2933,7 +2996,7 @@ fn test_workers_canceling_each_other_do_not_form_a_join_cycle() {
         .expect("B handle")
         .cancel()
         .expect("external B cancel waits");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -2959,7 +3022,7 @@ fn test_handler_can_reenter_publish_without_a_facade_lock_deadlock() {
             .expect("handler can reenter")
     );
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3011,7 +3074,7 @@ fn test_blocking_lifecycle_calls_from_own_worker_fail_instead_of_deadlocking() {
         Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock { .. }))
     ));
     subscription.cancel().expect("cancel subscription");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown outside worker");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown outside worker"));
 }
 
 #[test]
@@ -3191,8 +3254,10 @@ fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_sch
     second_done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("admitted queued handler completes");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("both admitted deliveries settle");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("both admitted deliveries settle"),
+    );
     let close_deadline = std::time::Instant::now() + Duration::from_secs(2);
     while backend.close_calls() == 0 && std::time::Instant::now() < close_deadline {
         std::thread::yield_now();
@@ -3200,8 +3265,10 @@ fn test_natural_provider_close_waits_for_admitted_key_lane_jobs_and_releases_sch
     assert_eq!(backend.close_calls(), 1, "natural close waits for scheduler completion");
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 2);
-    bus.shutdown(ShutdownMode::Immediate)
-        .expect("shutdown joins idle scheduler workers");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Immediate)
+            .expect("shutdown joins idle scheduler workers"),
+    );
     assert!(
         !subscription.is_cancelled(),
         "provider close is distinct from caller cancellation"
@@ -3478,10 +3545,12 @@ fn test_drop_does_not_implicitly_cancel_subscription() {
         .expect("subscription starts");
     drop(subscription);
     assert_eq!(backend.close_calls(), 0);
-    bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(2),
-    })
-    .expect("bus owns worker lifetime");
+    assert_ephemeral_shutdown(
+        bus.shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(2),
+        })
+        .expect("bus owns worker lifetime"),
+    );
     assert_eq!(backend.close_calls(), 1);
 }
 
@@ -3513,12 +3582,14 @@ fn test_diagnostic_observers_receive_terminal_delivery_failures_and_isolate_pani
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("failed delivery reaches terminal diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("diagnosed delivery has completed");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("diagnosed delivery has completed"),
+    );
     assert_eq!(observed.load(Ordering::Acquire), 1);
 
     drop((subscription, observer, panic_observer));
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3578,13 +3649,15 @@ fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overri
     done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("second attempt succeeds");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("retry flow completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("retry flow completes"),
+    );
     assert_eq!(attempts.load(Ordering::Acquire), 2);
     assert_eq!(error_callbacks.load(Ordering::Acquire), 1);
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Accept]);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 
     let (bus, backend) = create_bus();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -3621,13 +3694,15 @@ fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overri
         .expect("subscription starts");
     bus.publish(request("discard".into())).expect("publish");
     entered_rx.recv_timeout(Duration::from_secs(2)).expect("handler starts");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("discard reaches terminal state");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("discard reaches terminal state"),
+    );
     assert_eq!(attempts.load(Ordering::Acquire), 1);
     assert_eq!(callbacks.load(Ordering::Acquire), 1);
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3659,8 +3734,10 @@ fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admissio
 
     bus.publish(request("dead-letter-me".into()))
         .expect("original publish succeeds");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("dead-letter retry completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("dead-letter retry completes"),
+    );
     let publish_deadline = std::time::Instant::now() + Duration::from_secs(2);
     while backend.settlement_dispositions().is_empty() && std::time::Instant::now() < publish_deadline {
         std::thread::yield_now();
@@ -3678,7 +3755,7 @@ fn test_dead_letter_publish_retry_reuses_the_envelope_and_rejects_after_admissio
     );
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3737,7 +3814,7 @@ fn test_partial_dead_letter_admission_is_not_republished() {
     assert_ne!(ids[0], ids[1]);
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3815,13 +3892,15 @@ fn test_inbound_dead_letter_marker_prevents_recursive_sync_dead_letter_publish()
     handler_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("marked handler runs");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("marked delivery completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("marked delivery completes"),
+    );
     assert!(observed.load(Ordering::SeqCst));
     assert_eq!(backend.publish_calls(), 0);
     assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3853,11 +3932,13 @@ fn test_unsupported_failure_settlement_is_reported_without_calling_provider_sett
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("terminal handling completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("terminal handling completes"),
+    );
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3895,11 +3976,13 @@ fn test_unsupported_reject_settlement_is_reported_without_calling_provider_settl
     diagnostic_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("settlement limitation diagnostic");
-    bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
-        .expect("terminal handling completes");
+    assert_idle(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("terminal handling completes"),
+    );
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3939,7 +4022,7 @@ fn test_undecodable_message_respects_settlement_capability_and_reports_unavailab
     assert!(handler_rx.try_recv().is_err());
     assert_eq!(backend.settlement_calls(), 0);
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -3968,7 +4051,7 @@ fn test_subscribe_preserves_provider_subscription_id_and_typed_delivery_metadata
     assert_eq!(actual_id, expected_id);
     assert_eq!(subscriber, "metadata-case");
     subscription.cancel().expect("cancel");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
 }
 
 #[test]
@@ -4004,7 +4087,7 @@ fn test_facade_publisher_interceptor_runs_after_typed_interceptors_and_can_drop(
     ));
     assert_eq!(*order.lock().unwrap(), ["typed", "global"]);
     assert_eq!(backend.publish_calls(), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -4032,8 +4115,10 @@ fn test_dead_letter_directive_without_a_topic_keeps_source_unsettled_and_stops_s
     handler_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("the failing handler runs");
-    bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
-        .expect("the failed delivery reaches terminal handling");
+    assert_idle(
+        bus.wait_for_idle(&topic(), Some(Duration::from_secs(2)))
+            .expect("the failed delivery reaches terminal handling"),
+    );
     let report = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("shutdown closes the stopped subscription");

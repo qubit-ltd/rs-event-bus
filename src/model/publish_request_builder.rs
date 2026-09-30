@@ -15,9 +15,11 @@ use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
+use super::DEAD_LETTER_HEADER;
 use super::EventEnvelope;
 use super::EventId;
 use super::Headers;
+use super::PublishFailureContext;
 use super::PublishOptions;
 use super::PublishRequest;
 use super::PublishRequestBuildError;
@@ -151,6 +153,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder; `Forbid` remains the default.
+    #[inline]
     pub fn duplicate_risk_policy(mut self, value: DuplicateRiskPolicy) -> Self {
         self.options.duplicate_risk_policy = value;
         self
@@ -164,6 +167,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// # Returns
     /// The updated builder.
     #[must_use = "Use the returned topic."]
+    #[inline]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
         self
@@ -176,6 +180,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// # Returns
     /// The updated builder.
     #[must_use = "Use the returned payload."]
+    #[inline]
     pub fn payload(mut self, value: T) -> Self {
         self.payload = Some(value);
         self
@@ -188,6 +193,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// # Returns
     /// The updated builder.
     #[must_use = "Use the returned event id."]
+    #[inline]
     pub fn event_id(mut self, value: EventId) -> Self {
         self.event_id = Some(value);
         self
@@ -245,6 +251,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn timestamp(mut self, value: SystemTime) -> Self {
         self.timestamp = Some(value);
         self
@@ -256,6 +263,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn delay(mut self, value: Duration) -> Self {
         self.delay = Some(value);
         self
@@ -267,6 +275,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
         self
@@ -295,6 +304,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
         self
@@ -317,7 +327,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// The updated builder.
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&super::PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static,
+        F: Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static,
     {
         self.options.error_handlers.push(Arc::new(handler));
         self
@@ -346,6 +356,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn options(mut self, value: PublishOptions<T>) -> Self {
         self.options = value;
         self
@@ -392,7 +403,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         let topic = self.topic.ok_or(PublishRequestBuildError::MissingField("topic"))?;
         let payload = self.payload.ok_or(PublishRequestBuildError::MissingField("payload"))?;
         for (key, value) in &self.headers {
-            if key.eq_ignore_ascii_case(super::DEAD_LETTER_HEADER)
+            if key.eq_ignore_ascii_case(DEAD_LETTER_HEADER)
                 || key.is_empty()
                 || !key
                     .bytes()

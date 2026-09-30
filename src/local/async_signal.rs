@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
@@ -33,11 +34,12 @@ impl AsyncSignal {
     ///
     /// # Returns
     /// A guard that unregisters this waiter when dropped.
+    #[must_use = "keep the waiter guard alive while the task is waiting"]
     pub(super) fn register(&self, waker: &Waker) -> AsyncWaiter {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let owned_waker = waker.clone();
         let replaced = {
-            let mut waiters = self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
             waiters.insert(id, owned_waker)
         };
         drop(replaced);
@@ -49,7 +51,7 @@ impl AsyncSignal {
         let waiters = self
             .waiters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .drain()
             .map(|(_, waker)| waker)
             .collect::<Vec<_>>();
@@ -65,10 +67,7 @@ impl AsyncSignal {
     #[must_use]
     #[cfg(test)]
     fn waiter_count(&self) -> usize {
-        self.waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.waiters.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 }
 
@@ -77,6 +76,8 @@ mod tests {
     use std::sync::Arc;
     use std::sync::TryLockError;
     use std::sync::Weak;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::task::RawWaker;
     use std::task::RawWakerVTable;
     use std::task::Wake;
@@ -126,13 +127,13 @@ mod tests {
     static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[derive(Default)]
-    struct CountWake(std::sync::atomic::AtomicUsize);
+    struct CountWake(AtomicUsize);
     impl Wake for CountWake {
         fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
         fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -144,7 +145,7 @@ mod tests {
         let registration = signal.register(&waker);
         assert_eq!(1, signal.waiter_count());
         signal.notify_all();
-        assert_eq!(1, counter.0.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(1, counter.0.load(Ordering::Relaxed));
         drop(registration);
         assert_eq!(0, signal.waiter_count());
     }
@@ -164,7 +165,7 @@ mod tests {
         let waker = Waker::from(counter.clone());
         let _registration = signal.register(&waker);
         waker.wake_by_ref();
-        assert_eq!(1, counter.0.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(1, counter.0.load(Ordering::Relaxed));
     }
 
     #[test]

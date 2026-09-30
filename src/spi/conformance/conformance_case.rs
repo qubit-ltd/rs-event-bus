@@ -7,6 +7,8 @@
 // =============================================================================
 //! One outcome from a conformance check.
 
+use super::ConformanceSkipReason;
+
 /// Result of one named conformance check.
 ///
 /// # Examples
@@ -37,6 +39,6 @@ pub enum ConformanceCase {
         /// Stable identifier for this check.
         case_id: String,
         /// Why the check could not be performed.
-        reason: super::conformance_skip_reason::ConformanceSkipReason,
+        reason: ConformanceSkipReason,
     },
 }

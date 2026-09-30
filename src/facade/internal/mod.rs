@@ -16,5 +16,8 @@ mod bus_context_guard;
 mod erased_middleware_list;
 mod lifecycle_state;
 
+mod shutdown_result;
+pub(super) use shutdown_result::ShutdownResult;
+
 mod shutdown_registration;
 pub(super) use shutdown_registration::ShutdownRegistration;

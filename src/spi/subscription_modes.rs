@@ -14,14 +14,16 @@ use crate::model::SubscriptionDurability;
 /// # Examples
 ///
 /// ```
+/// use qubit_event_bus::model::SubscriptionDurability;
 /// use qubit_event_bus::spi::SubscriptionModes;
 ///
 /// assert!(SubscriptionModes::BOTH.supports(
-///     qubit_event_bus::model::SubscriptionDurability::Durable,
+///     SubscriptionDurability::Durable,
 /// ));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub struct SubscriptionModes(
     /// Bit mask whose low bits enable ephemeral and durable subscriptions.
     u8,

@@ -22,6 +22,7 @@ use super::conformance_report::publish_case;
 use super::conformance_report::push_hook;
 use super::conformance_report::settlement_case;
 use crate::model::SubscriptionDurability;
+use crate::spi::DeliveryDisposition;
 use crate::spi::EventBusSpi;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementCapabilities;
@@ -134,12 +135,12 @@ where
                     });
                     let token = message.take_settlement();
                     report.push(settlement_case(capabilities.settlement(), token.as_ref(), |token| {
-                        subscription.settle(token, crate::spi::DeliveryDisposition::Accept)?;
-                        subscription.settle(token, crate::spi::DeliveryDisposition::Accept)
+                        subscription.settle(token, DeliveryDisposition::Accept)?;
+                        subscription.settle(token, DeliveryDisposition::Accept)
                     }));
                     report.push(match token.as_ref() {
                         Some(token) if capabilities.settlement() != SettlementCapabilities::None => {
-                            match subscription.settle(token, crate::spi::DeliveryDisposition::Reject) {
+                            match subscription.settle(token, DeliveryDisposition::Reject) {
                                 Err(error) if error.kind() == "invalid_settlement_token" => ConformanceCase::Passed {
                                     case_id: "settlement-conflicting-disposition".into(),
                                 },

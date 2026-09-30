@@ -17,7 +17,11 @@ use qubit_event_bus::spi::EncodedPayload;
 
 use crate::orders::events::OrderCreated;
 
-pub struct OrderCreatedCodec(pub ContentType);
+/// Encodes and decodes the `OrderCreated` event for the documentation fixture.
+pub struct OrderCreatedCodec(
+    /// Content type advertised for encoded order events.
+    pub ContentType,
+);
 
 impl EventCodec<OrderCreated> for OrderCreatedCodec {
     fn content_type(&self) -> &ContentType {

@@ -49,6 +49,9 @@ impl IntoHandlerResult for () {
     ///
     /// # Returns
     /// `Ok(())` to indicate successful handling.
+    ///
+    /// # Errors
+    /// This implementation never returns an error.
     #[inline]
     fn into_handler_result(self) -> Result<(), DeliveryError> {
         Ok(())
@@ -63,6 +66,9 @@ impl IntoHandlerResult for Result<(), DeliveryError> {
     ///
     /// # Returns
     /// Success unchanged, or a handler error retaining the original error.
+    ///
+    /// # Errors
+    /// Returns a handler error retaining the original `DeliveryError`.
     #[inline]
     fn into_handler_result(self) -> Result<(), DeliveryError> {
         self.map_err(|source| DeliveryError::Handler {

@@ -10,6 +10,7 @@
 mod internal;
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 
 pub(crate) use internal::SubscriptionControl;
 use qubit_id::Id;
@@ -20,6 +21,7 @@ use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::model::SubscriberId;
+use crate::model::SubscriptionStopReason;
 
 /// Handle for one typed subscription managed by an [`super::EventBus`].
 ///
@@ -66,6 +68,7 @@ impl Subscription {
     ///
     /// # Returns
     /// A handle that can cancel and join the worker.
+    #[inline]
     pub(super) fn new(
         control: Arc<SubscriptionControl>,
         bus_identity: usize,
@@ -112,7 +115,8 @@ impl Subscription {
     /// Returns the canonical receive failure, or None before a terminal stop.
     /// The same Arc remains available after cancellation and provider close.
     #[must_use]
-    pub fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+    #[inline]
+    pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.control.terminal_failure()
     }
 
@@ -127,8 +131,9 @@ impl Subscription {
     ///
     /// # Errors
     /// Returns [`LifecycleError::SubscriptionClose`] if the worker cannot close
-    /// its provider subscription. A handler calling this method from any worker
-    /// owned by the same bus requests cancellation without joining a worker.
+    /// its provider subscription, or [`LifecycleError::Spi`] if the worker
+    /// thread panics while joining. A handler calling this method from any
+    /// worker owned by the same bus requests cancellation without joining.
     pub fn cancel(&self) -> Result<(), LifecycleError> {
         self.scheduler.cancel_subscription(self.control.id);
         self.control.request_cancel();
@@ -141,7 +146,7 @@ impl Subscription {
             .control
             .close_error
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
         {
             let errors = Arc::new(SubscriptionCloseErrors::from_failures(vec![error]));
@@ -162,7 +167,7 @@ impl Subscription {
             .control
             .worker
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(worker) = worker {
             worker.join().map_err(|_| {

@@ -31,7 +31,7 @@ struct DiscoveredSyncProvider;
 
 impl ProviderMetadata for DiscoveredSyncProvider {
     fn descriptor(&self) -> ProviderDescriptor {
-        ProviderDescriptor::new(ProviderId::new("test-sync-discovered").unwrap())
+        ProviderDescriptor::new(ProviderId::new("test-sync-discovered").expect("valid provider ID"))
     }
 }
 
@@ -52,17 +52,15 @@ submit_sync_provider! {
 
 #[test]
 fn test_discovered_sync_provider_is_creatable() {
-    let registry = EventBusRegistry::discover().unwrap();
-    assert!(registry.provider_ids().iter().any(|id| id.as_str() == "local"));
-    assert!(
-        registry
-            .provider_ids()
-            .iter()
-            .any(|id| id.as_str() == "test-sync-discovered")
-    );
-    let config = EventBusConfig::default().with_selection(ProviderSelection::named("test-sync-discovered").unwrap());
-    let bus = registry.create(&config).unwrap();
-    let request = PublishRequest::new(Topic::<String>::new("discovery.test").unwrap(), "hello".to_owned()).unwrap();
-    let receipt = bus.publish(request).unwrap();
+    let registry = EventBusRegistry::discover().expect("discover linked providers");
+    let provider_ids = registry.provider_ids();
+    assert!(provider_ids.iter().any(|id| id.as_str() == "local"));
+    assert!(provider_ids.iter().any(|id| id.as_str() == "test-sync-discovered"));
+    let selection = ProviderSelection::named("test-sync-discovered").expect("valid provider selection");
+    let config = EventBusConfig::default().with_selection(selection);
+    let bus = registry.create(&config).expect("create bus from discovered provider");
+    let topic = Topic::<String>::new("discovery.test").expect("valid topic");
+    let request = PublishRequest::new(topic, "hello".to_owned()).expect("valid publish request");
+    let receipt = bus.publish(request).expect("publish through discovered provider");
     assert_eq!(receipt.provider_id().as_str(), "test-sync-discovered");
 }

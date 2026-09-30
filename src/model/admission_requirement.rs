@@ -13,10 +13,42 @@
 /// # Examples
 ///
 /// ```
+/// use qubit_event_bus::model::AdmissionCheckError;
 /// use qubit_event_bus::model::AdmissionRequirement;
+/// use qubit_event_bus::model::AdmissionStatus;
+/// use qubit_event_bus::model::DestinationAdmission;
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::ProviderId;
+/// use qubit_event_bus::model::PublishAcknowledgement;
+/// use qubit_event_bus::model::PublishReceipt;
+/// use qubit_event_bus::model::SubscriberId;
+/// use qubit_id::Id;
 ///
-/// let requirement = AdmissionRequirement::AtLeastOneAccepted;
-/// assert_eq!(requirement, AdmissionRequirement::AtLeastOneAccepted);
+/// let receipt = PublishReceipt::new(
+///     EventId::new("orders-42").unwrap(),
+///     Some(EventId::new("orders-42").unwrap()),
+///     ProviderId::new("local").unwrap(),
+///     PublishAcknowledgement::DestinationAdmissions(vec![
+///         DestinationAdmission::new(
+///             Id::new(1),
+///             SubscriberId::new_static("orders.primary"),
+///             AdmissionStatus::Accepted,
+///         ),
+///         DestinationAdmission::new(
+///             Id::new(2),
+///             SubscriberId::new_static("orders.audit"),
+///             AdmissionStatus::Rejected("queue full".into()),
+///         ),
+///     ]),
+/// );
+/// assert_eq!(
+///     receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted),
+///     Ok(()),
+/// );
+/// assert!(matches!(
+///     receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected),
+///     Err(AdmissionCheckError::RejectedDestinations { count: 1 }),
+/// ));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]

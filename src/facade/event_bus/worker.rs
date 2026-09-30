@@ -11,42 +11,60 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::convert::identity;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::thread::sleep;
 use std::time::Duration;
 
 use qubit_id::Id;
 
+use super::internal::OwnerSettlementRouter;
 use super::internal::close_spi_subscription;
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::EventId;
 use crate::SubscriberId;
+use crate::codec::EventCodec;
+use crate::codec::ReceiveFailureAction;
+use crate::codec::decode_payload;
+use crate::codec::receive_failure_action;
+use crate::error::CodecError;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::DeliveryTrackerGuard;
 use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::CoordinatorMessage;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::OwnerSettlementRouter;
 use crate::facade::event_bus::delivery::process_inbound;
 use crate::facade::event_bus::failure::panic_message;
 use crate::facade::internal::BusContextGuard;
 use crate::facade::internal::LifecycleState;
 use crate::facade::lifecycle::receive_poll_interval;
 use crate::model::Delivery;
+use crate::model::OrderingPolicy;
+use crate::model::SubscribeOptions;
+use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::pipeline::OrderingLaneKey;
 use crate::spi::DeliveryDisposition;
+use crate::spi::DurabilityCapability;
+use crate::spi::EventSubscriptionSpi;
 use crate::spi::InboundMessage;
+use crate::spi::OrderingKey;
 use crate::spi::ReceiveOutcome;
+use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
+use crate::spi::panic_boundary::catch_spi_call;
 
 /// One receiver-owned message, its decoded result, and its tracking permit.
 type PendingInbound<'tracking, T> = (
     usize,
     InboundMessage,
-    Result<Arc<T>, crate::error::CodecError>,
+    Result<Arc<T>, CodecError>,
     DeliveryTrackerGuard<'tracking>,
 );
 
@@ -79,17 +97,17 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     inner: Arc<EventBusInner>,
     bus_identity: usize,
     control: Arc<SubscriptionControl>,
-    mut spi_subscription: Box<dyn crate::spi::EventSubscriptionSpi>,
+    mut spi_subscription: Box<dyn EventSubscriptionSpi>,
     topic: Topic<T>,
-    codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
+    codec: Option<Arc<dyn EventCodec<T>>>,
     subscriber_id: SubscriberId,
-    options: crate::model::SubscribeOptions<T>,
+    options: SubscribeOptions<T>,
     handler: Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
 ) where
     T: Send + Sync + 'static,
 {
     let _worker_context = BusContextGuard::enter(bus_identity);
-    let worker_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let worker_result = catch_unwind(AssertUnwindSafe(|| {
         let (message_tx, message_rx) = mpsc::channel();
         let mut pending: Option<PendingInbound<'_, T>> = None;
         let mut pending_settlements = VecDeque::new();
@@ -141,10 +159,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             }
 
             if let Some((task_id, message, decoded, guard)) = pending.take() {
-                let ordering_key = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
+                let ordering_key = if options.ordering_policy() == OrderingPolicy::PerKey {
                     Some(OrderingLaneKey::new(
                         topic.name(),
-                        message.ordering_key().map(crate::spi::OrderingKey::as_str),
+                        message.ordering_key().map(OrderingKey::as_str),
                         control.id,
                     ))
                 } else {
@@ -162,7 +180,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     let task_id_for_job = task_id;
                     reservation.submit(move |cancelled| {
                         let _task_context = BusContextGuard::enter(bus_identity);
-                        let task_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let task_result = catch_unwind(AssertUnwindSafe(|| {
                             if !task_control.try_start() {
                                 abandon_stopped_message(&task_inner, message);
                             } else if cancelled {
@@ -207,7 +225,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             }
 
             if pending.is_none() && !receive_closed {
-                match crate::spi::panic_boundary::catch_spi_call(
+                match catch_spi_call(
                     inner.provider_id.as_str(),
                     "receive",
                     Some(subscriber_id.as_str()),
@@ -219,7 +237,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         })
                     },
                 )
-                .and_then(std::convert::identity)
+                .and_then(identity)
                 {
                     Ok(ReceiveOutcome::TimedOut) => {}
                     Ok(ReceiveOutcome::Closed) => receive_closed = true,
@@ -244,21 +262,18 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             // codec failure cannot race another receive or retry itself.
                             let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
                                 message.into_parts();
-                            let decoded = crate::codec::decode_payload(
+                            let decoded = decode_payload(
                                 codec.as_ref(),
                                 &payload,
                                 inner.facade_config.payload_limits().max_receive_bytes(),
                             );
                             let decoded = match decoded {
-                                Err(error)
-                                    if crate::codec::receive_failure_action(&error)
-                                        == crate::codec::ReceiveFailureAction::StopUnsettled =>
-                                {
-                                    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+                                Err(error) if receive_failure_action(&error) == ReceiveFailureAction::StopUnsettled => {
+                                    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
                                         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
                                     }
                                     let message = error.to_string();
-                                    if control.fail_receive(crate::model::SubscriptionStopReason::Codec {
+                                    if control.fail_receive(SubscriptionStopReason::Codec {
                                         event_id,
                                         error: Arc::new(error),
                                     }) {
@@ -291,9 +306,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     }
                     Err(error) => {
                         let message = error.to_string();
-                        if control
-                            .fail_receive(crate::model::SubscriptionStopReason::Provider { error: Arc::new(error) })
-                        {
+                        if control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) }) {
                             inner.scheduler.cancel_subscription(control.id);
                             inner.emit_internal("receive", message);
                         }
@@ -301,7 +314,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     }
                 }
             } else if !active.is_empty() || pending.is_some() {
-                std::thread::sleep(Duration::from_millis(1));
+                sleep(Duration::from_millis(1));
             }
         }
     }));
@@ -315,7 +328,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
         inner
             .close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(failure);
     }
     inner.scheduler.finish_subscription(control.id);
@@ -323,18 +336,15 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     inner
         .subscriptions
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(PoisonError::into_inner)
         .remove(&control.id);
-    let mut lifecycle = inner
-        .lifecycle
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut lifecycle = inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner);
     if *lifecycle == LifecycleState::Closing
         && inner.tracker.workers_are_idle()
         && inner
             .shutdown_gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .report
             .is_some()
     {
@@ -361,9 +371,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
 ///
 /// `true` when settlement completed or cannot be retried; `false` when a
 /// retryable provider error leaves the settlement pending.
+#[must_use]
 pub(in crate::facade) fn apply_owner_settlement(
     inner: &EventBusInner,
-    spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
+    spi_subscription: &mut dyn EventSubscriptionSpi,
     token: &SettlementToken,
     disposition: DeliveryDisposition,
     event_id: EventId,
@@ -378,13 +389,13 @@ pub(in crate::facade) fn apply_owner_settlement(
         );
         return true;
     }
-    let result = crate::spi::panic_boundary::catch_spi_call(
+    let result = catch_spi_call(
         inner.provider_id.as_str(),
         "settle",
         Some(subscriber_id.as_str()),
         || spi_subscription.settle(token, disposition),
     )
-    .and_then(std::convert::identity);
+    .and_then(identity);
     match result {
         Ok(()) => true,
         Err(error) => {
@@ -424,9 +435,10 @@ pub(in crate::facade) fn apply_owner_settlement(
 ///
 /// `true` when the message is complete and may be discarded; `false` when its
 /// settlement must remain queued for a later retry.
+#[must_use]
 pub(in crate::facade) fn apply_queued_settlement(
     inner: &EventBusInner,
-    spi_subscription: &mut dyn crate::spi::EventSubscriptionSpi,
+    spi_subscription: &mut dyn EventSubscriptionSpi,
     message: &CoordinatorMessage,
 ) -> bool {
     let CoordinatorMessage::Settlement {
@@ -462,6 +474,9 @@ pub(in crate::facade) fn apply_queued_settlement(
 /// Unblocks a facade worker after its final best-effort settlement attempt
 /// fails during cancellation; receiver close then owns unresolved delivery
 /// recovery according to the provider's SPI contract.
+///
+/// # Parameters
+/// - `message`: queued settlement whose waiting sender must be released.
 pub(in crate::facade) fn release_settlement_waiter(message: &CoordinatorMessage) {
     if let CoordinatorMessage::Settlement {
         settled: Some(settled), ..
@@ -473,8 +488,12 @@ pub(in crate::facade) fn release_settlement_waiter(message: &CoordinatorMessage)
 
 /// Releases unstarted work after a terminal receive stop without settlement.
 /// Durable state remains provider-owned; ephemeral loss is counted once.
+///
+/// # Parameters
+/// - `inner`: bus state used to inspect durability and count ephemeral loss.
+/// - `message`: received delivery that will be abandoned without settlement.
 fn abandon_stopped_message(inner: &EventBusInner, message: InboundMessage) {
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     drop(message);
@@ -482,6 +501,13 @@ fn abandon_stopped_message(inner: &EventBusInner, message: InboundMessage) {
 
 /// Requeues a delivery canceled before its handler starts through the SPI
 /// owner.
+///
+/// # Parameters
+/// - `inner`: bus state used to settle or report the unavailable disposition.
+/// - `router`: owner that serializes provider settlement for this subscription.
+/// - `subscription_id`: subscription expected to own the delivery token.
+/// - `subscriber_id`: subscriber identity included in settlement diagnostics.
+/// - `message`: canceled delivery that has not reached its handler.
 pub(in crate::facade) fn requeue_unstarted_message_via_owner(
     inner: &EventBusInner,
     router: &OwnerSettlementRouter,
@@ -499,7 +525,7 @@ pub(in crate::facade) fn requeue_unstarted_message_via_owner(
             );
             return;
         }
-        if capability == crate::spi::SettlementCapabilities::AcceptRetryReject {
+        if capability == SettlementCapabilities::AcceptRetryReject {
             router.settle(
                 Some(token),
                 DeliveryDisposition::Retry,
@@ -511,7 +537,7 @@ pub(in crate::facade) fn requeue_unstarted_message_via_owner(
             return;
         }
     }
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     inner.emit(Diagnostic::SettlementUnavailable {
@@ -525,6 +551,13 @@ pub(in crate::facade) fn requeue_unstarted_message_via_owner(
 
 /// Retains a message received at the cancellation boundary for provider
 /// requeue without invoking the subscriber handler.
+///
+/// # Parameters
+/// - `inner`: bus state used for capabilities and diagnostics.
+/// - `pending_settlements`: owner queue that retains the provider settlement.
+/// - `subscription_id`: subscription expected to own the delivery token.
+/// - `subscriber_id`: subscriber identity included in settlement diagnostics.
+/// - `message`: delivery received as cancellation began.
 pub(in crate::facade) fn requeue_unstarted_message(
     inner: &Arc<EventBusInner>,
     pending_settlements: &mut VecDeque<CoordinatorMessage>,
@@ -542,7 +575,7 @@ pub(in crate::facade) fn requeue_unstarted_message(
             );
             return;
         }
-        if capability == crate::spi::SettlementCapabilities::AcceptRetryReject {
+        if capability == SettlementCapabilities::AcceptRetryReject {
             let (settled, wait) = mpsc::sync_channel(0);
             drop(wait);
             pending_settlements.push_back(CoordinatorMessage::Settlement {
@@ -557,7 +590,7 @@ pub(in crate::facade) fn requeue_unstarted_message(
             return;
         }
     }
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     inner.emit(Diagnostic::SettlementUnavailable {
@@ -571,6 +604,7 @@ pub(in crate::facade) fn requeue_unstarted_message(
 
 #[cfg(test)]
 mod tests {
+    use std::any::TypeId;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::time::SystemTime;
@@ -585,6 +619,8 @@ mod tests {
     use super::release_settlement_waiter;
     use super::requeue_unstarted_message;
     use super::requeue_unstarted_message_via_owner;
+    use crate::facade::EventBus;
+    use crate::local::LocalEventBusConfig;
     use crate::model::Headers;
     use crate::model::ProviderMessageMetadata;
     use crate::model::ProviderOptions;
@@ -597,7 +633,7 @@ mod tests {
     use crate::spi::TransportPayload;
 
     #[test]
-    fn cancellation_releases_only_a_waiting_settlement_sender() {
+    fn test_cancellation_releases_only_a_waiting_settlement_sender() {
         let (settled, receiver) = mpsc::sync_channel(1);
         let message = CoordinatorMessage::Settlement {
             token: None,
@@ -615,18 +651,19 @@ mod tests {
     }
 
     #[test]
-    fn queued_task_completion_does_not_attempt_provider_settlement() {
-        let bus = crate::facade::EventBus::local(crate::local::LocalEventBusConfig::default()).unwrap();
-        let request = SpiSubscriptionRequest::new(
-            Id::new(9),
-            TopicAddress::new("worker.task-finished").unwrap(),
-            SubscriberId::new("worker").unwrap(),
-            None,
-            SubscriptionDurability::Ephemeral,
-            StartPosition::New,
-            ProviderOptions::new(),
-            std::any::TypeId::of::<()>(),
-        );
+    fn test_queued_task_completion_does_not_attempt_provider_settlement() {
+        let bus = EventBus::local(LocalEventBusConfig::default()).unwrap();
+        let request = SpiSubscriptionRequest::builder()
+            .subscription_id(Id::new(9))
+            .topic(TopicAddress::new("worker.task-finished").unwrap())
+            .subscriber_id(SubscriberId::new("worker").unwrap())
+            .group(None)
+            .durability(SubscriptionDurability::Ephemeral)
+            .start_position(StartPosition::New)
+            .provider_options(ProviderOptions::new())
+            .payload_type_id(TypeId::of::<()>())
+            .build()
+            .expect("all worker request fields are configured");
         let mut subscription = bus.inner.spi.subscribe(request).unwrap();
 
         assert!(apply_queued_settlement(
@@ -651,8 +688,8 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_unstarted_ephemeral_delivery_is_counted_as_abandoned() {
-        let bus = crate::facade::EventBus::local(crate::local::LocalEventBusConfig::default()).unwrap();
+    fn test_cancelled_unstarted_ephemeral_delivery_is_counted_as_abandoned() {
+        let bus = EventBus::local(LocalEventBusConfig::default()).unwrap();
         let inner = bus.inner.clone();
         let subscriber_id = SubscriberId::new("worker").unwrap();
         let message = || {

@@ -31,6 +31,7 @@ pub(super) struct AsyncLaneState<T> {
 ///
 /// # Returns
 /// The front ticket's waker, or `None` when the queue is empty or unpolled.
+#[must_use = "wake the returned waker to resume the front ticket"]
 #[inline]
 pub(super) fn front_waker<T>(state: &AsyncLaneState<T>) -> Option<Waker> {
     state.queue.front().and_then(|(_, _, waker)| waker.clone())

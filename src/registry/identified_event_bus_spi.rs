@@ -7,6 +7,7 @@
 // =============================================================================
 //! Provider-identity proxy for a synchronous SPI output.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::SpiError;
@@ -23,11 +24,12 @@ use crate::spi::TopicAddress;
 
 /// Delegates every operation while attaching the descriptor that created the
 /// SPI.
+#[must_use]
 pub(crate) struct IdentifiedEventBusSpi {
     /// Canonical identity snapshotted from provider metadata at registration.
     provider_id: ProviderId,
     /// Provider-owned implementation receiving all transport operations.
-    inner: std::sync::Arc<dyn EventBusSpi>,
+    inner: Arc<dyn EventBusSpi>,
     /// Capability snapshot checked before the facade was created.
     capabilities: EventBusCapabilities,
 }
@@ -44,7 +46,7 @@ impl IdentifiedEventBusSpi {
     /// An identity proxy that delegates to `inner`.
     pub(crate) fn new(
         provider_id: ProviderId,
-        inner: std::sync::Arc<dyn EventBusSpi>,
+        inner: Arc<dyn EventBusSpi>,
         capabilities: EventBusCapabilities,
     ) -> Self {
         Self {
@@ -60,6 +62,7 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     ///
     /// # Returns
     /// The stable provider ID; this adapter always has one.
+    #[inline]
     fn provider_id(&self) -> Option<ProviderId> {
         Some(self.provider_id.clone())
     }
@@ -83,6 +86,7 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     ///
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
@@ -97,6 +101,7 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     ///
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.inner.subscribe(request)
     }
@@ -112,6 +117,7 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     ///
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         self.inner.wait_for_topic_idle(topic, timeout)
     }
@@ -126,6 +132,7 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     ///
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         self.inner.shutdown(mode)
     }

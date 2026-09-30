@@ -17,9 +17,13 @@ use super::super::EncodedPayload;
 use super::super::OutboundMessage;
 use super::super::PayloadModes;
 use super::super::SettlementCapabilities;
+use super::super::SettlementToken;
 use super::super::TopicAddress;
 use super::super::TransportPayload;
 pub(super) use super::conformance_case::ConformanceCase;
+use super::conformance_profile::ConformanceProfile;
+use super::conformance_skip_reason::ConformanceSkipReason;
+use crate::error::SpiError;
 use crate::model::ContentType;
 use crate::model::EventId;
 use crate::model::Headers;
@@ -27,6 +31,7 @@ use crate::model::ProviderOptions;
 use crate::model::StartPosition;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
+use crate::spi::DurabilityCapability;
 use crate::spi::SpiSubscriptionRequest;
 
 /// Results collected from one provider conformance run.
@@ -102,7 +107,7 @@ impl ConformanceReport {
     pub(super) fn not_applicable(&mut self, case_id: &str, reason: &'static str) {
         self.push(ConformanceCase::Skipped {
             case_id: case_id.into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::NotApplicable { reason },
+            reason: ConformanceSkipReason::NotApplicable { reason },
         });
     }
 
@@ -110,13 +115,13 @@ impl ConformanceReport {
     ///
     /// # Parameters
     /// - `profile`: policy applied to skipped checks.
-    pub(super) fn apply_profile(&mut self, profile: super::conformance_profile::ConformanceProfile) {
-        if profile == super::conformance_profile::ConformanceProfile::Strict {
+    pub(super) fn apply_profile(&mut self, profile: ConformanceProfile) {
+        if profile == ConformanceProfile::Strict {
             for case in &mut self.cases {
                 let ConformanceCase::Skipped { case_id, reason } = case else {
                     continue;
                 };
-                if let super::conformance_skip_reason::ConformanceSkipReason::MissingFixture { .. } = reason {
+                if let ConformanceSkipReason::MissingFixture { .. } = reason {
                     *case = ConformanceCase::Failed {
                         case_id: case_id.clone(),
                         detail: format!("strict profile requires this check: {reason}"),
@@ -134,6 +139,7 @@ impl ConformanceReport {
 ///
 /// # Returns
 /// Named native and/or encoded probe payloads.
+#[must_use]
 pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, TransportPayload)> {
     match mode {
         PayloadModes::Native => vec![("declared-native-publish", TransportPayload::Native(Arc::new(0_u8)))],
@@ -184,23 +190,23 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
 ///
 /// # Returns
 /// A request subscribed to the conformance probe topic.
-pub(super) fn probe_request(
-    subscription_id: u64,
-    durability: crate::spi::DurabilityCapability,
-) -> SpiSubscriptionRequest {
-    SpiSubscriptionRequest::new(
-        Id::new(subscription_id),
-        TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
-        SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
-        None,
-        match durability {
-            crate::spi::DurabilityCapability::Durable => SubscriptionDurability::Durable,
-            crate::spi::DurabilityCapability::Ephemeral => SubscriptionDurability::Ephemeral,
-        },
-        StartPosition::New,
-        ProviderOptions::default(),
-        TypeId::of::<u8>(),
-    )
+pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapability) -> SpiSubscriptionRequest {
+    SpiSubscriptionRequest::builder()
+        .subscription_id(Id::new(subscription_id))
+        .topic(TopicAddress::new("spi.conformance.probe").expect("static topic is valid"))
+        .subscriber_id(
+            SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
+        )
+        .group(None)
+        .durability(match durability {
+            DurabilityCapability::Durable => SubscriptionDurability::Durable,
+            DurabilityCapability::Ephemeral => SubscriptionDurability::Ephemeral,
+        })
+        .start_position(StartPosition::New)
+        .provider_options(ProviderOptions::default())
+        .payload_type_id(TypeId::of::<u8>())
+        .build()
+        .expect("all conformance request fields are configured")
 }
 
 /// Checks whether a received transport payload matches the named probe.
@@ -211,6 +217,8 @@ pub(super) fn probe_request(
 ///
 /// # Returns
 /// `true` when the received representation and native type match.
+#[must_use]
+#[inline]
 pub(super) fn payload_matches(payload: &TransportPayload, expected: &str) -> bool {
     matches!(
         (expected, payload),
@@ -232,13 +240,13 @@ pub(super) fn payload_matches(payload: &TransportPayload, expected: &str) -> boo
 /// A pass, failure, or unsupported-capability skip case.
 pub(super) fn settlement_case(
     settlement: SettlementCapabilities,
-    token: Option<&super::super::SettlementToken>,
-    settle: impl FnOnce(&super::super::SettlementToken) -> Result<(), crate::error::SpiError>,
+    token: Option<&SettlementToken>,
+    settle: impl FnOnce(&SettlementToken) -> Result<(), SpiError>,
 ) -> ConformanceCase {
     match (settlement, token) {
         (SettlementCapabilities::None, None) => ConformanceCase::Skipped {
             case_id: "settlement-idempotence".into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+            reason: ConformanceSkipReason::UnsupportedCapability {
                 capability: "settlement",
             },
         },
@@ -271,7 +279,7 @@ pub(super) fn settlement_case(
 ///
 /// # Returns
 /// A passed or failed conformance case.
-pub(super) fn publish_case(case_id: &str, result: Result<(), crate::error::SpiError>, model: &str) -> ConformanceCase {
+pub(super) fn publish_case(case_id: &str, result: Result<(), SpiError>, model: &str) -> ConformanceCase {
     match result {
         Ok(()) => ConformanceCase::Passed {
             case_id: case_id.into(),
@@ -306,7 +314,7 @@ pub(super) fn push_hook(
         },
         None => ConformanceCase::Skipped {
             case_id: case_id.into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+            reason: ConformanceSkipReason::MissingFixture {
                 detail: "provider-specific hook was not supplied".into(),
             },
         },

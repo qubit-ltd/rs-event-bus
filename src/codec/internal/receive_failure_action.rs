@@ -9,6 +9,7 @@
 use crate::error::CodecError;
 
 /// Whether a failure identifies a bad message or an unsafe receive contract.
+#[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReceiveFailureAction {
     /// Reject a deterministically malformed message and continue receiving.

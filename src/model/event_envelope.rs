@@ -188,9 +188,45 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Returns
     /// The header value when present, otherwise `None`.
+    #[must_use = "use the returned header value"]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
+    }
+    /// Returns the ordering key, or `None` when delivery is unordered.
+    ///
+    /// # Returns
+    /// The requested ordering key, or `None` when no key was set.
+    #[inline]
+    #[must_use = "Use the returned ordering key."]
+    pub fn ordering_key(&self) -> Option<&str> {
+        self.ordering_key.as_deref()
+    }
+    /// Returns the creation timestamp.
+    ///
+    /// # Returns
+    /// The event creation time.
+    #[must_use]
+    #[inline]
+    pub fn timestamp(&self) -> SystemTime {
+        self.timestamp
+    }
+    /// Returns the requested delay, or `None` for immediate delivery.
+    ///
+    /// # Returns
+    /// The requested delivery delay, or `None` when delivery is immediate.
+    #[inline]
+    #[must_use = "Use the returned delay."]
+    pub fn delay(&self) -> Option<Duration> {
+        self.delay
+    }
+    /// Consumes the envelope and returns its payload.
+    ///
+    /// # Returns
+    /// The shared payload owner without the envelope metadata.
+    #[must_use]
+    pub fn into_payload(self) -> Arc<T> {
+        self.payload
     }
     /// Inserts or replaces a validated portable header.
     ///
@@ -255,42 +291,6 @@ impl<T: 'static> EventEnvelope<T> {
             });
         }
         Ok(self.headers.remove(key))
-    }
-
-    /// Returns the ordering key, or `None` when delivery is unordered.
-    ///
-    /// # Returns
-    /// The requested ordering key, or `None` when no key was set.
-    #[inline]
-    #[must_use = "Use the returned ordering key."]
-    pub fn ordering_key(&self) -> Option<&str> {
-        self.ordering_key.as_deref()
-    }
-    /// Returns the creation timestamp.
-    ///
-    /// # Returns
-    /// The event creation time.
-    #[must_use]
-    #[inline]
-    pub fn timestamp(&self) -> SystemTime {
-        self.timestamp
-    }
-    /// Returns the requested delay, or `None` for immediate delivery.
-    ///
-    /// # Returns
-    /// The requested delivery delay, or `None` when delivery is immediate.
-    #[inline]
-    #[must_use = "Use the returned delay."]
-    pub fn delay(&self) -> Option<Duration> {
-        self.delay
-    }
-    /// Consumes the envelope and returns its payload.
-    ///
-    /// # Returns
-    /// The shared payload owner without the envelope metadata.
-    #[must_use]
-    pub fn into_payload(self) -> Arc<T> {
-        self.payload
     }
 
     /// Sets a facade-owned header after public caller validation is bypassed.

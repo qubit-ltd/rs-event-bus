@@ -8,6 +8,7 @@
 //! Internal FIFO ordering-lane state.
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 
 use super::async_lane::AsyncLane;
 use super::async_lane_state::front_waker;
@@ -32,6 +33,8 @@ impl<T> AsyncOrderingGuard<T> {
     ///
     /// # Panics
     /// Panics if the lane guard was created without its queued value.
+    #[must_use]
+    #[inline]
     pub(crate) fn value(&self) -> &T {
         self._value.as_ref().expect("lane guard always owns its value")
     }
@@ -40,11 +43,7 @@ impl<T> Drop for AsyncOrderingGuard<T> {
     /// Releases lane ownership and wakes the next ticket.
     fn drop(&mut self) {
         let waker = {
-            let mut state = self
-                .lane
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.lane.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.active = false;
             front_waker(&state)
         };

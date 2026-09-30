@@ -8,6 +8,7 @@
 //! Public facade contract tests for provider admission acknowledgements.
 
 use std::collections::VecDeque;
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -89,7 +90,7 @@ fn provider_error(operation: &'static str) -> SpiError {
         resource: None,
         kind: "unsupported",
         retryable: Some(false),
-        source: Box::new(std::io::Error::other("unsupported in this test provider")),
+        source: Box::new(IoError::other("unsupported in this test provider")),
     }
 }
 
@@ -129,13 +130,6 @@ fn destination(id: u64, status: AdmissionStatus) -> DestinationAdmission {
 
 #[test]
 fn test_admission_checks_cover_every_acknowledgement_outcome() {
-    use AdmissionCheckError::Dropped;
-    use AdmissionCheckError::NoAcceptedDestination;
-    use AdmissionCheckError::RejectedDestinations;
-    use AdmissionCheckError::VisibilityUnavailable;
-    use AdmissionRequirement::AtLeastOneAccepted;
-    use AdmissionRequirement::AtLeastOneAcceptedAndNoRejected;
-
     let cases = [
         (
             "opaque accepted",
@@ -144,22 +138,22 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 metadata: Default::default(),
             },
             None,
-            Err(VisibilityUnavailable),
-            Err(VisibilityUnavailable),
+            Err(AdmissionCheckError::VisibilityUnavailable),
+            Err(AdmissionCheckError::VisibilityUnavailable),
         ),
         (
             "interceptor dropped",
             PublishAcknowledgement::DroppedByInterceptor,
             None,
-            Err(Dropped),
-            Err(Dropped),
+            Err(AdmissionCheckError::Dropped),
+            Err(AdmissionCheckError::Dropped),
         ),
         (
             "empty snapshot",
             PublishAcknowledgement::DestinationAdmissions(vec![]),
             Some(AdmissionSummary::default()),
-            Err(NoAcceptedDestination),
-            Err(NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
         ),
         (
             "filtered only",
@@ -169,8 +163,8 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 filtered: 1,
                 rejected: 0,
             }),
-            Err(NoAcceptedDestination),
-            Err(NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
         ),
         (
             "rejected only",
@@ -183,8 +177,8 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 filtered: 0,
                 rejected: 2,
             }),
-            Err(NoAcceptedDestination),
-            Err(NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
         ),
         (
             "accepted only",
@@ -209,17 +203,21 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 rejected: 1,
             }),
             Ok(()),
-            Err(RejectedDestinations { count: 1 }),
+            Err(AdmissionCheckError::RejectedDestinations { count: 1 }),
         ),
     ];
 
     for (name, acknowledgement, summary, at_least_one, no_rejected) in cases {
         let receipt = receipt(acknowledgement.clone());
         assert_eq!(summary, receipt.admission_summary(), "{name}");
-        assert_eq!(at_least_one, receipt.check_admission(AtLeastOneAccepted), "{name}");
+        assert_eq!(
+            at_least_one,
+            receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted),
+            "{name}"
+        );
         assert_eq!(
             no_rejected,
-            receipt.check_admission(AtLeastOneAcceptedAndNoRejected),
+            receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected),
             "{name}"
         );
         assert_eq!(

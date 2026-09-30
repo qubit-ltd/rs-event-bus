@@ -10,9 +10,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::task::Waker;
 
 /// Guard that unregisters one task waker when its wait is canceled or ends.
+#[must_use]
 pub(in crate::local) struct AsyncWaiter {
     /// Registration ID removed when this guard is dropped.
     id: u64,
@@ -38,7 +40,7 @@ impl Drop for AsyncWaiter {
     /// Removes this registration from the shared waiter registry.
     fn drop(&mut self) {
         let removed = {
-            let mut waiters = self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
             waiters.remove(&self.id)
         };
         drop(removed);

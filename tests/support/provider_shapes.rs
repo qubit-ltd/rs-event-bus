@@ -7,6 +7,7 @@
 // =============================================================================
 //! Provider-shaped adapters used to exercise transport and settlement variants.
 
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -65,6 +66,8 @@ impl ChannelShapedEventBusSpi {
     ///
     /// # Returns
     /// A fresh channel-shaped provider double.
+    #[must_use]
+    #[inline]
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -202,6 +205,7 @@ impl EventSubscriptionSpi for ChannelSubscription {
 ///
 /// # Returns
 /// A capability value with encoded payloads and full settlement support.
+#[inline]
 pub(crate) fn encoded_settlement_capabilities() -> EventBusCapabilities {
     EventBusCapabilities::new(
         PayloadModes::Encoded,
@@ -232,6 +236,6 @@ fn provider_error(operation: &'static str, kind: &'static str) -> SpiError {
         resource: None,
         kind,
         retryable: Some(false),
-        source: Box::new(std::io::Error::other(kind)),
+        source: Box::new(Error::other(kind)),
     }
 }

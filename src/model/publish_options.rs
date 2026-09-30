@@ -46,6 +46,7 @@ pub type PublisherInterceptor<T> =
 /// let options = PublishOptions::<String>::builder().build();
 /// assert!(options.retry_policy().is_none());
 /// ```
+#[must_use]
 pub struct PublishOptions<T: 'static> {
     /// Whether retry may repeat uncertain provider admission.
     pub(crate) duplicate_risk_policy: DuplicateRiskPolicy,
@@ -121,8 +122,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The retry schedule when configured, otherwise `None`.
-    #[inline]
     #[must_use = "Use the returned retry policy."]
+    #[inline]
     pub fn retry_policy(&self) -> Option<&RetryPolicy> {
         self.retry_policy.as_ref()
     }
@@ -131,8 +132,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The custom retry rule when configured, otherwise `None`.
-    #[inline]
     #[must_use = "Use the returned retry rule."]
+    #[inline]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<PublishAttemptError>>> {
         self.retry_rule.as_ref()
     }
@@ -140,8 +141,8 @@ impl<T: 'static> PublishOptions<T> {
     ///
     /// # Returns
     /// The shared cancellation token when configured, otherwise `None`.
-    #[inline]
     #[must_use = "Use the returned retry cancellation token."]
+    #[inline]
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }

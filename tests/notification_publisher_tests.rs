@@ -7,12 +7,21 @@
 // =============================================================================
 //! Public contract tests for the bounded notification publisher.
 
+use std::env;
+use std::hint;
+use std::io::Error as IoError;
+use std::io::ErrorKind;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::EventBus;
@@ -43,7 +52,7 @@ use qubit_event_bus::spi::TransportPayload;
 
 mod support;
 
-use support::isolated_process;
+use crate::support::isolated_process;
 
 #[test]
 fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {
@@ -54,7 +63,7 @@ fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
-        std::num::NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
         move |outcome| outcome_sender.send(outcome).unwrap(),
     )
     .unwrap();
@@ -92,7 +101,7 @@ fn test_notification_publisher_close_is_idempotent_and_does_not_close_bus() {
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
-        std::num::NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
         |_| {},
     )
     .unwrap();
@@ -100,7 +109,7 @@ fn test_notification_publisher_close_is_idempotent_and_does_not_close_bus() {
     publisher.close().unwrap();
     publisher.close().unwrap();
     assert!(matches!(publisher.try_publish("late".into()), Err(TryPublishError::Closed(value)) if value == "late"));
-    assert_eq!(0, spi.shutdown_calls.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(0, spi.shutdown_calls.load(Ordering::Acquire));
     let error = publisher.try_publish("again".into()).unwrap_err();
     assert_eq!("notification publisher is closed", error.to_string());
     assert_eq!("Closed(..)", format!("{error:?}"));
@@ -115,7 +124,7 @@ fn test_notification_publisher_close_with_timeout_can_be_retried_after_provider_
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.close-timeout"),
-        std::num::NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
         |_| {},
     )
     .unwrap();
@@ -132,7 +141,7 @@ fn test_notification_publisher_close_with_timeout_can_be_retried_after_provider_
     let error = publisher
         .close_with_timeout(Duration::from_millis(20))
         .expect_err("blocked provider work exceeds the close deadline");
-    assert_eq!(std::io::ErrorKind::TimedOut, error.kind());
+    assert_eq!(ErrorKind::TimedOut, error.kind());
     assert!(matches!(
         publisher.try_publish("after-timeout".into()),
         Err(TryPublishError::Closed(value)) if value == "after-timeout"
@@ -154,7 +163,7 @@ fn test_notification_publisher_zero_timeout_is_nonblocking_and_finished_close_su
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.close-zero-timeout"),
-        std::num::NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
         |_| {},
     )
     .unwrap();
@@ -171,7 +180,7 @@ fn test_notification_publisher_zero_timeout_is_nonblocking_and_finished_close_su
     let error = publisher
         .close_with_timeout(Duration::ZERO)
         .expect_err("zero timeout must not wait for a blocked provider");
-    assert_eq!(std::io::ErrorKind::TimedOut, error.kind());
+    assert_eq!(ErrorKind::TimedOut, error.kind());
     spi.release();
     publisher.close().expect("unbounded close drains the accepted item");
     publisher
@@ -188,7 +197,7 @@ fn test_notification_publisher_concurrent_timed_close_callers_can_timeout_and_re
         NotificationPublisher::new(
             bus,
             Topic::<String>::new_static("notification.concurrent-close-timeout"),
-            std::num::NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
             |_| {},
         )
         .unwrap(),
@@ -205,13 +214,13 @@ fn test_notification_publisher_concurrent_timed_close_callers_can_timeout_and_re
 
     let (first_started_sender, first_started_receiver) = mpsc::channel();
     let first_publisher = Arc::clone(&publisher);
-    let first = std::thread::spawn(move || {
+    let first = thread::spawn(move || {
         first_started_sender.send(()).unwrap();
         first_publisher.close_with_timeout(Duration::from_millis(20))
     });
     let (second_started_sender, second_started_receiver) = mpsc::channel();
     let second_publisher = Arc::clone(&publisher);
-    let second = std::thread::spawn(move || {
+    let second = thread::spawn(move || {
         second_started_sender.send(()).unwrap();
         second_publisher.close_with_timeout(Duration::from_secs(2))
     });
@@ -219,7 +228,7 @@ fn test_notification_publisher_concurrent_timed_close_callers_can_timeout_and_re
     second_started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
 
     let error = first.join().unwrap().expect_err("short close caller times out");
-    assert_eq!(std::io::ErrorKind::TimedOut, error.kind());
+    assert_eq!(ErrorKind::TimedOut, error.kind());
     spi.release();
     second.join().unwrap().expect("long close caller observes completion");
     assert_eq!(vec!["blocked"], *spi.published.lock().unwrap());
@@ -234,7 +243,7 @@ fn test_notification_stats_snapshot_exposes_all_counters() {
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
-        std::num::NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
         |_| {},
     )
     .unwrap();
@@ -260,18 +269,18 @@ fn test_notification_publisher_concurrent_close_callers_share_worker_completion(
         NotificationPublisher::new(
             bus,
             Topic::<String>::new_static("notification.events"),
-            std::num::NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
             |_| {},
         )
         .unwrap(),
     );
     let first = {
         let publisher = publisher.clone();
-        std::thread::spawn(move || publisher.close())
+        thread::spawn(move || publisher.close())
     };
     let second = {
         let publisher = publisher.clone();
-        std::thread::spawn(move || publisher.close())
+        thread::spawn(move || publisher.close())
     };
     first.join().unwrap().unwrap();
     second.join().unwrap().unwrap();
@@ -285,7 +294,7 @@ fn test_notification_publisher_contains_observer_panics_and_continues() {
     let publisher = NotificationPublisher::new(
         bus,
         Topic::<String>::new_static("notification.events"),
-        std::num::NonZeroUsize::new(2).unwrap(),
+        NonZeroUsize::new(2).unwrap(),
         |_| panic!("observer panic is contained"),
     )
     .unwrap();
@@ -311,7 +320,7 @@ fn test_notification_observer_cannot_close_its_own_worker() {
         NotificationPublisher::new(
             bus,
             Topic::<String>::new_static("notification.events"),
-            std::num::NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(2).unwrap(),
             move |_| {
                 let publisher = callback_publisher_ref
                     .get()
@@ -348,7 +357,7 @@ fn test_notification_observer_cannot_close_its_own_worker() {
             .expect("observer close calls return without blocking its worker");
         for result in results {
             let (kind, message) = result.expect_err("worker-thread close must be rejected");
-            assert_eq!(std::io::ErrorKind::Other, kind);
+            assert_eq!(ErrorKind::Other, kind);
             assert_eq!("notification publisher cannot close from its worker thread", message);
         }
     }
@@ -364,7 +373,7 @@ fn test_notification_observer_cannot_close_its_own_worker() {
 #[test]
 fn test_notification_observer_drop_panic_releases_all_close_callers() {
     let test_name = "test_notification_observer_drop_panic_releases_all_close_callers";
-    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
+    if env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
         isolated_process::run_case_with_timeout(test_name, test_name, Duration::from_secs(5));
         return;
     }
@@ -374,19 +383,19 @@ fn test_notification_observer_drop_panic_releases_all_close_callers() {
         NotificationPublisher::new(
             bus,
             Topic::<String>::new_static("notification.drop-panic"),
-            std::num::NonZeroUsize::new(1).expect("nonzero capacity"),
+            NonZeroUsize::new(1).expect("nonzero capacity"),
             move |_| {
-                std::hint::black_box(&captured);
+                hint::black_box(&captured);
             },
         )
         .expect("publisher starts"),
     );
-    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let barrier = Arc::new(Barrier::new(3));
     let closers = (0..2)
         .map(|_| {
             let publisher = Arc::clone(&publisher);
             let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 barrier.wait();
                 publisher
                     .close_with_timeout(Duration::from_secs(1))
@@ -397,24 +406,21 @@ fn test_notification_observer_drop_panic_releases_all_close_callers() {
     barrier.wait();
     for closer in closers {
         assert_eq!(
-            Err((
-                std::io::ErrorKind::Other,
-                "notification publisher worker panicked".into()
-            )),
+            Err((ErrorKind::Other, "notification publisher worker panicked".into())),
             closer.join().expect("close caller returns"),
         );
     }
     assert_eq!(1, publisher.stats().worker_panicked());
     assert_eq!(0, publisher.stats().observer_panicked());
     assert_eq!(
-        std::io::ErrorKind::Other,
+        ErrorKind::Other,
         publisher
             .close()
             .expect_err("repeated close preserves panic outcome")
             .kind()
     );
     assert_eq!(
-        std::io::ErrorKind::Other,
+        ErrorKind::Other,
         publisher
             .close_with_timeout(Duration::ZERO)
             .expect_err("finished panic beats zero timeout")
@@ -426,7 +432,7 @@ fn test_notification_observer_drop_panic_releases_all_close_callers() {
 #[test]
 fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
     let test_name = "test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity";
-    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
+    if env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(test_name) {
         isolated_process::run_case_with_timeout(test_name, test_name, Duration::from_secs(5));
         return;
     }
@@ -443,16 +449,16 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
         NotificationPublisher::new(
             bus,
             Topic::<String>::new_static("notification.cleanup-timeout"),
-            std::num::NonZeroUsize::new(1).expect("nonzero capacity"),
+            NonZeroUsize::new(1).expect("nonzero capacity"),
             move |_| {
-                std::hint::black_box(&captured);
+                hint::black_box(&captured);
             },
         )
         .expect("publisher starts"),
     );
     assert!(publisher_ref.set(Arc::downgrade(&publisher)).is_ok());
     assert_eq!(
-        std::io::ErrorKind::TimedOut,
+        ErrorKind::TimedOut,
         publisher
             .close_with_timeout(Duration::ZERO)
             .expect_err("cleanup has not finished")
@@ -461,10 +467,10 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
     let self_close_error = entered_receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("observer destructor entered");
-    assert_eq!(std::io::ErrorKind::Other, self_close_error);
+    assert_eq!(ErrorKind::Other, self_close_error);
     assert_eq!(0, publisher.stats().worker_panicked());
     assert_eq!(
-        std::io::ErrorKind::TimedOut,
+        ErrorKind::TimedOut,
         publisher
             .close_with_timeout(Duration::ZERO)
             .expect_err("blocked destructor keeps completion pending")
@@ -472,7 +478,7 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
     );
     release_sender.send(()).expect("release observer destructor");
     assert_eq!(
-        std::io::ErrorKind::Other,
+        ErrorKind::Other,
         publisher
             .close_with_timeout(Duration::from_secs(1))
             .expect_err("cleanup panic is preserved after timeout")
@@ -480,7 +486,7 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
     );
     assert_eq!(1, publisher.stats().worker_panicked());
     assert_eq!(
-        std::io::ErrorKind::Other,
+        ErrorKind::Other,
         publisher.close().expect_err("all retries retain panic outcome").kind()
     );
 }
@@ -488,7 +494,7 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
 /// Holds cleanup until the test releases it, then panics after reentrant close.
 struct GatedPanicOnDrop {
     publisher: Arc<OnceLock<Weak<NotificationPublisher<String>>>>,
-    entered: mpsc::Sender<std::io::ErrorKind>,
+    entered: mpsc::Sender<ErrorKind>,
     release: Mutex<mpsc::Receiver<()>>,
 }
 
@@ -527,8 +533,8 @@ struct GatedSpi {
     entered_sender: Mutex<Option<mpsc::Sender<String>>>,
     released: (Mutex<bool>, Condvar),
     published: Mutex<Vec<String>>,
-    publish_count: std::sync::atomic::AtomicUsize,
-    shutdown_calls: std::sync::atomic::AtomicUsize,
+    publish_count: AtomicUsize,
+    shutdown_calls: AtomicUsize,
 }
 
 impl GatedSpi {
@@ -539,8 +545,8 @@ impl GatedSpi {
             entered_sender: Mutex::new(Some(entered_sender)),
             released: (Mutex::new(false), Condvar::new()),
             published: Mutex::new(Vec::new()),
-            publish_count: std::sync::atomic::AtomicUsize::new(0),
-            shutdown_calls: std::sync::atomic::AtomicUsize::new(0),
+            publish_count: AtomicUsize::new(0),
+            shutdown_calls: AtomicUsize::new(0),
         }
     }
 
@@ -575,7 +581,7 @@ impl EventBusSpi for GatedSpi {
             .downcast_ref::<String>()
             .expect("test notification payload has the expected type")
             .clone();
-        let call = self.publish_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let call = self.publish_count.fetch_add(1, Ordering::AcqRel);
         if call == 0 {
             if let Some(sender) = self.entered_sender.lock().unwrap().take() {
                 sender.send(event.clone()).unwrap();
@@ -599,12 +605,12 @@ impl EventBusSpi for GatedSpi {
             resource: None,
             kind: "unsupported",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other("subscriptions are unsupported")),
+            source: Box::new(IoError::other("subscriptions are unsupported")),
         })
     }
 
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        self.shutdown_calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
         Ok(ShutdownOutcome::Complete)
     }
 }

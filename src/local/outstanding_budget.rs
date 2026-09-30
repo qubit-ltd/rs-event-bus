@@ -29,6 +29,7 @@ impl OutstandingBudget {
     ///
     /// # Panics
     /// Panics when `limit` is zero.
+    #[must_use]
     pub(super) fn new(limit: usize) -> Self {
         assert!(limit > 0, "outstanding budget must be positive");
         Self {

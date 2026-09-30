@@ -14,6 +14,7 @@ use std::panic::PanicHookInfo;
 type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
 /// Restores the previously installed panic hook when dropped.
+#[must_use = "the previous panic hook is restored when this guard is dropped"]
 pub(crate) struct PanicHookGuard {
     previous_hook: Option<PanicHook>,
 }

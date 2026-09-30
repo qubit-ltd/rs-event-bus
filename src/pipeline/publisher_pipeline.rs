@@ -14,26 +14,39 @@ use std::any::Any;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use qubit_clock::Timer;
 
 use self::internal::PreparedOutbound;
 use crate::codec::CodecRegistry;
+use crate::codec::call_codec;
 use crate::codec::resolve_codec;
 use crate::error::CapabilityError;
+use crate::error::CodecError;
+use crate::error::ConfigurationError;
 use crate::error::EventBusError;
 use crate::error::PublishError;
+use crate::error::PublishFailure;
 use crate::model::AdmissionStatus;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::EventEnvelope;
+use crate::model::EventId;
+use crate::model::PayloadDirection;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
+use crate::model::PublishEffect;
+use crate::model::PublishErrorHandler;
 use crate::model::PublishFailureContext;
 use crate::model::PublishMetadata;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
+use crate::model::PublisherInterceptor;
 use crate::pipeline::diagnostic::Diagnostic;
 use crate::pipeline::diagnostic::DiagnosticObserver;
 use crate::pipeline::diagnostic::PipelineFailure;
@@ -42,9 +55,11 @@ use crate::pipeline::diagnostic::emit_diagnostic;
 use crate::pipeline::global_publisher_interceptor::GlobalPublisherInterceptor;
 use crate::pipeline::retry;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::DelayedDeliveryCapability;
 use crate::spi::EncodedPayload;
 use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
+use crate::spi::OrderingCapability;
 use crate::spi::OrderingKey;
 use crate::spi::PayloadModes;
 use crate::spi::TopicAddress;
@@ -77,6 +92,7 @@ impl PublisherPipeline {
     /// # Returns
     ///
     /// A publication pipeline configured for the provider.
+    #[inline]
     pub(crate) fn new(
         provider_id: ProviderId,
         codecs: Arc<CodecRegistry>,
@@ -120,25 +136,12 @@ impl PublisherPipeline {
         global_interceptors: &[GlobalPublisherInterceptor],
         observers: &[Arc<DiagnosticObserver>],
     ) -> Result<PublishReceipt, PipelineFailure> {
-        let (mut envelope, options) = request.into_parts();
+        let (envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();
-        let is_dead_letter =
-            envelope.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
-        for interceptor in options.interceptors() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interceptor(envelope))) {
-                Ok(Ok(Some(next))) => {
-                    if next.id() != &input_event_id {
-                        return Err(failure(
-                            PipelineFailureOrigin::Interceptor,
-                            crate::error::ConfigurationError::InvalidField {
-                                field: "event_id",
-                                message: "typed publisher interceptor cannot change event identity".into(),
-                            },
-                        ));
-                    }
-                    envelope = next;
-                }
-                Ok(Ok(None)) => {
+        let envelope =
+            match Self::apply_interceptors(envelope, &input_event_id, options.interceptors(), global_interceptors)? {
+                Some(envelope) => envelope,
+                None => {
                     return Ok(PublishReceipt::new(
                         input_event_id.clone(),
                         None,
@@ -146,40 +149,7 @@ impl PublisherPipeline {
                         PublishAcknowledgement::DroppedByInterceptor,
                     ));
                 }
-                Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-                Err(payload) => {
-                    return Err(failure(
-                        PipelineFailureOrigin::Interceptor,
-                        PublishError::InterceptorPanicked {
-                            scope: "typed",
-                            message: panic_text(payload.as_ref()).into(),
-                        },
-                    ));
-                }
-            }
-        }
-        let mut metadata = PublishMetadata::from_headers(envelope.headers().clone());
-        for interceptor in global_interceptors {
-            match interceptor.apply(&mut metadata) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Ok(PublishReceipt::new(
-                        input_event_id.clone(),
-                        None,
-                        self.provider_id.clone(),
-                        PublishAcknowledgement::DroppedByInterceptor,
-                    ));
-                }
-                Err(error) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-            }
-        }
-        envelope.headers = metadata.into_headers();
-        if is_dead_letter {
-            envelope.headers.insert(
-                crate::model::DEAD_LETTER_HEADER.into(),
-                crate::model::DEAD_LETTER_HEADER_VALUE.into(),
-            );
-        }
+            };
         let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let outbound = self.prepare_outbound(capabilities.payload_modes(), envelope)?;
@@ -201,7 +171,7 @@ impl PublisherPipeline {
             Err(error) => {
                 let origin = publish_failure_origin(&error);
                 let effect = if seen_unknown.get() || seen_admission.get() {
-                    crate::model::PublishEffect::MayHaveBeenAccepted
+                    PublishEffect::MayHaveBeenAccepted
                 } else {
                     error.publish_effect()
                 };
@@ -251,25 +221,12 @@ impl PublisherPipeline {
         observers: &[Arc<DiagnosticObserver>],
         timer: Arc<dyn Timer>,
     ) -> Result<PublishReceipt, PipelineFailure> {
-        let (mut envelope, options) = request.into_parts();
+        let (envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();
-        let is_dead_letter =
-            envelope.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
-        for interceptor in options.interceptors() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interceptor(envelope))) {
-                Ok(Ok(Some(next))) => {
-                    if next.id() != &input_event_id {
-                        return Err(failure(
-                            PipelineFailureOrigin::Interceptor,
-                            crate::error::ConfigurationError::InvalidField {
-                                field: "event_id",
-                                message: "typed publisher interceptor cannot change event identity".into(),
-                            },
-                        ));
-                    }
-                    envelope = next;
-                }
-                Ok(Ok(None)) => {
+        let envelope =
+            match Self::apply_interceptors(envelope, &input_event_id, options.interceptors(), global_interceptors)? {
+                Some(envelope) => envelope,
+                None => {
                     return Ok(PublishReceipt::new(
                         input_event_id.clone(),
                         None,
@@ -277,40 +234,7 @@ impl PublisherPipeline {
                         PublishAcknowledgement::DroppedByInterceptor,
                     ));
                 }
-                Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-                Err(payload) => {
-                    return Err(failure(
-                        PipelineFailureOrigin::Interceptor,
-                        PublishError::InterceptorPanicked {
-                            scope: "typed",
-                            message: panic_text(payload.as_ref()).into(),
-                        },
-                    ));
-                }
-            }
-        }
-        let mut metadata = PublishMetadata::from_headers(envelope.headers().clone());
-        for interceptor in global_interceptors {
-            match interceptor.apply(&mut metadata) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Ok(PublishReceipt::new(
-                        input_event_id.clone(),
-                        None,
-                        self.provider_id.clone(),
-                        PublishAcknowledgement::DroppedByInterceptor,
-                    ));
-                }
-                Err(error) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
-            }
-        }
-        envelope.headers = metadata.into_headers();
-        if is_dead_letter {
-            envelope.headers.insert(
-                crate::model::DEAD_LETTER_HEADER.into(),
-                crate::model::DEAD_LETTER_HEADER_VALUE.into(),
-            );
-        }
+            };
         let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes())?;
@@ -334,7 +258,7 @@ impl PublisherPipeline {
             Err(error) => {
                 let origin = publish_failure_origin(&error);
                 let effect = if seen_unknown.load(Ordering::Acquire) || seen_admission.load(Ordering::Acquire) {
-                    crate::model::PublishEffect::MayHaveBeenAccepted
+                    PublishEffect::MayHaveBeenAccepted
                 } else {
                     error.publish_effect()
                 };
@@ -353,6 +277,75 @@ impl PublisherPipeline {
         .with_duplicate_possible(seen_unknown.load(Ordering::Acquire)))
     }
 
+    /// Applies typed and bus-wide publication interceptors consistently for
+    /// both sync and async publishing.
+    ///
+    /// # Type Parameters
+    /// - `T`: Event payload type.
+    ///
+    /// # Parameters
+    /// - `envelope`: Event envelope before interceptor processing.
+    /// - `input_event_id`: Original event identity that interceptors must keep.
+    /// - `interceptors`: Per-publication interceptors to invoke in order.
+    /// - `global_interceptors`: Bus-wide metadata interceptors to invoke.
+    ///
+    /// # Returns
+    /// The transformed envelope, or `None` when an interceptor drops it.
+    ///
+    /// # Errors
+    /// Returns an interceptor failure, including a panic converted to a
+    /// publication error.
+    fn apply_interceptors<T: Send + Sync + 'static>(
+        mut envelope: EventEnvelope<T>,
+        input_event_id: &EventId,
+        interceptors: &[Arc<PublisherInterceptor<T>>],
+        global_interceptors: &[GlobalPublisherInterceptor],
+    ) -> Result<Option<EventEnvelope<T>>, PipelineFailure> {
+        let is_dead_letter = envelope.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE);
+        for interceptor in interceptors {
+            match catch_unwind(AssertUnwindSafe(|| interceptor(envelope))) {
+                Ok(Ok(Some(next))) => {
+                    if next.id() != input_event_id {
+                        return Err(failure(
+                            PipelineFailureOrigin::Interceptor,
+                            ConfigurationError::InvalidField {
+                                field: "event_id",
+                                message: "typed publisher interceptor cannot change event identity".into(),
+                            },
+                        ));
+                    }
+                    envelope = next;
+                }
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
+                Err(payload) => {
+                    return Err(failure(
+                        PipelineFailureOrigin::Interceptor,
+                        PublishError::InterceptorPanicked {
+                            scope: "typed",
+                            message: panic_text(payload.as_ref()).into(),
+                        },
+                    ));
+                }
+            }
+        }
+        let mut metadata = PublishMetadata::from_headers(envelope.headers().clone());
+        for interceptor in global_interceptors {
+            match interceptor.apply(&mut metadata) {
+                Ok(true) => {}
+                Ok(false) => return Ok(None),
+                Err(error) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
+            }
+        }
+        envelope.headers = metadata.into_headers();
+        if is_dead_letter {
+            envelope
+                .headers
+                .insert(DEAD_LETTER_HEADER.into(), DEAD_LETTER_HEADER_VALUE.into());
+        }
+        Ok(Some(envelope))
+    }
+
     /// Prepares the transport payload using an explicitly selected payload
     /// mode.
     ///
@@ -368,6 +361,7 @@ impl PublisherPipeline {
     /// # Errors
     ///
     /// Returns a pipeline failure when metadata or payload preparation fails.
+    #[inline]
     fn prepare_outbound<T: Send + Sync + 'static>(
         &self,
         modes: PayloadModes,
@@ -412,21 +406,21 @@ impl PublisherPipeline {
             PayloadModes::Encoded => {
                 let codec =
                     codec.ok_or_else(|| failure(PipelineFailureOrigin::Capability, CapabilityError::CodecRequired))?;
-                let bytes = crate::codec::call_codec("encode", || codec.encode(failure_context.payload()))
+                let bytes = call_codec("encode", || codec.encode(failure_context.payload()))
                     .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
                 if bytes.len() > self.max_encoded_payload_bytes.get() {
                     return Err(failure(
                         PipelineFailureOrigin::Codec,
-                        crate::error::CodecError::PayloadTooLarge {
+                        CodecError::PayloadTooLarge {
                             actual: bytes.len(),
                             limit: self.max_encoded_payload_bytes.get(),
-                            direction: crate::model::PayloadDirection::Publish,
+                            direction: PayloadDirection::Publish,
                         },
                     ));
                 }
-                let content_type = crate::codec::call_codec("content_type", || Ok(codec.content_type().clone()))
+                let content_type = call_codec("content_type", || Ok(codec.content_type().clone()))
                     .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
-                let schema_id = crate::codec::call_codec("schema_id", || Ok(codec.schema_id().cloned()))
+                let schema_id = call_codec("schema_id", || Ok(codec.schema_id().cloned()))
                     .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
                 TransportPayload::Encoded(EncodedPayload::new(bytes, content_type, schema_id))
             }
@@ -458,7 +452,7 @@ impl PublisherPipeline {
     fn emit_rejections(
         &self,
         acknowledgement: &PublishAcknowledgement,
-        event_id: &crate::model::EventId,
+        event_id: &EventId,
         topic: &str,
         observers: &[Arc<DiagnosticObserver>],
     ) {
@@ -493,6 +487,7 @@ impl PublisherPipeline {
 ///
 /// `Retry` for retry wrapper errors and `Provider` for all other publish
 /// errors.
+#[must_use]
 fn publish_failure_origin(error: &PublishError) -> PipelineFailureOrigin {
     if matches!(error, PublishError::Retry(_)) {
         PipelineFailureOrigin::Retry
@@ -520,14 +515,14 @@ fn publish_failure_origin(error: &PublishError) -> PipelineFailureOrigin {
 /// The terminal error, wrapped when one or more callbacks panic.
 fn notify_publish_error_handlers<T: 'static>(
     context: &PublishFailureContext<T>,
-    handlers: &[Arc<crate::model::PublishErrorHandler<T>>],
+    handlers: &[Arc<PublishErrorHandler<T>>],
     terminal_error: PublishError,
-    effect: crate::model::PublishEffect,
+    effect: PublishEffect,
 ) -> PublishError {
-    let terminal_error = crate::error::PublishFailure::new(context.event_id().clone(), effect, terminal_error);
+    let terminal_error = PublishFailure::new(context.event_id().clone(), effect, terminal_error);
     let mut panic_message = None;
     for handler in handlers {
-        match std::panic::catch_unwind(AssertUnwindSafe(|| handler(context, &terminal_error))) {
+        match catch_unwind(AssertUnwindSafe(|| handler(context, &terminal_error))) {
             Err(payload) if panic_message.is_none() => {
                 panic_message = Some(panic_text(payload.as_ref()).to_owned().into_boxed_str());
             }
@@ -553,6 +548,7 @@ fn notify_publish_error_handlers<T: 'static>(
 /// # Returns
 ///
 /// A failure suitable for returning from publication processing.
+#[inline]
 fn failure(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> PipelineFailure {
     PipelineFailure::new(origin, error)
 }
@@ -566,6 +562,7 @@ fn failure(origin: PipelineFailureOrigin, error: impl Into<EventBusError>) -> Pi
 /// # Returns
 ///
 /// The contained string or a stable fallback for non-string payloads.
+#[must_use]
 fn panic_text(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&'static str>()
@@ -591,11 +588,11 @@ fn panic_text(payload: &(dyn Any + Send)) -> &str {
 ///
 /// Returns a capability failure for an unsupported delay or ordering key.
 fn validate_transport_metadata(
-    delay: Option<std::time::Duration>,
+    delay: Option<Duration>,
     ordering_key: Option<&str>,
-    capabilities: crate::spi::EventBusCapabilities,
+    capabilities: EventBusCapabilities,
 ) -> Result<(), PipelineFailure> {
-    if delay.is_some() && capabilities.delayed_delivery() == crate::spi::DelayedDeliveryCapability::None {
+    if delay.is_some() && capabilities.delayed_delivery() == DelayedDeliveryCapability::None {
         return Err(failure(
             PipelineFailureOrigin::Capability,
             CapabilityError::Unsupported {
@@ -603,7 +600,7 @@ fn validate_transport_metadata(
             },
         ));
     }
-    if ordering_key.is_some() && capabilities.ordering() == crate::spi::OrderingCapability::None {
+    if ordering_key.is_some() && capabilities.ordering() == OrderingCapability::None {
         return Err(failure(
             PipelineFailureOrigin::Capability,
             CapabilityError::Unsupported { capability: "ordering" },

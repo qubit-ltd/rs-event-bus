@@ -15,6 +15,7 @@ use std::time::Duration;
 /// # Returns
 /// A 50 millisecond interval that bounds how long cancellation waits for a
 /// blocking receive poll to return.
+#[inline]
 pub(crate) fn receive_poll_interval() -> Duration {
     Duration::from_millis(50)
 }

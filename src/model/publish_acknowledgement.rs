@@ -42,6 +42,7 @@ pub type ProviderMessageMetadata = BTreeMap<String, String>;
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub enum PublishAcknowledgement {
     /// A broker accepted the message; consumer identities may be unknown.
     Accepted {

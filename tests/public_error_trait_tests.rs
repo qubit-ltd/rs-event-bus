@@ -10,6 +10,7 @@ use std::error::Error;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::PublishEffect;
 use qubit_retry::Retry;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryErrorReason;
@@ -33,13 +34,13 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
         .max_attempts(1)
         .fallback(RetryFallback::Retry)
         .build()
-        .unwrap();
+        .expect("retry config is valid");
     let retry_error = Retry::new(&config)
         .run(|| {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
                 Some(false),
-                qubit_event_bus::model::PublishEffect::NotAccepted,
+                PublishEffect::NotAccepted,
                 std::io::Error::other("provider unavailable"),
             ))
         })
@@ -50,5 +51,11 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
         panic!("retry outcome should remain a retry publish error");
     };
     assert!(matches!(retry_error.reason(), RetryErrorReason::Exhausted { .. }));
-    assert_eq!(retry_error.last_error().unwrap().kind(), "injected");
+    assert_eq!(
+        retry_error
+            .last_error()
+            .expect("terminal retry error retains its last attempt")
+            .kind(),
+        "injected"
+    );
 }

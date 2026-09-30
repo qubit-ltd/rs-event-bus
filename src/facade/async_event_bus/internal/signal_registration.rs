@@ -7,9 +7,12 @@
 // =============================================================================
 //! Registers one task waker and removes it when the waiting future is dropped.
 
+use std::task::Waker;
+
 use super::AsyncSignal;
 
 /// Waiter registration that unregisters itself when its owner is dropped.
+#[must_use = "keep the registration alive while the waiter is registered"]
 pub(in crate::facade) struct SignalRegistration<'a> {
     /// Signal whose waiter list contains this registration.
     signal: &'a AsyncSignal,
@@ -36,7 +39,8 @@ impl SignalRegistration<'_> {
     ///
     /// # Parameters
     /// - waker: task waker to use when the signal changes.
-    pub(in crate::facade) fn register(&self, waker: &std::task::Waker) {
+    #[inline]
+    pub(in crate::facade) fn register(&self, waker: &Waker) {
         self.signal.register_waiter(self.id, waker);
     }
 }

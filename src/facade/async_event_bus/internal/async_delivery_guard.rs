@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Decrements the topic's in-flight count when a received delivery is terminal.
+#[must_use = "dropping the guard releases the in-flight delivery count"]
 pub(in crate::facade) struct AsyncDeliveryGuard {
     /// Shared tracker whose topic count this guard owns.
     pub(super) tracker: Arc<AsyncTracker>,

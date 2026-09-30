@@ -25,6 +25,11 @@ use crate::spi::AsyncEventSubscriptionSpi;
 
 /// Runtime state for one typed subscription, including the receiver and all
 /// delivery futures that have been accepted by the facade.
+///
+/// # Type Parameters
+/// - `T`: Payload type carried by the subscription. The `'static` bound allows
+///   accepted delivery tasks to retain payloads after the caller-owned runner
+///   pauses.
 pub(in crate::facade) struct AsyncSession<T: 'static> {
     /// Shared bus lifecycle, tracker, provider, and pipelines.
     pub(in crate::facade) inner: Arc<AsyncEventBusInner>,

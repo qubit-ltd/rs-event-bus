@@ -50,6 +50,7 @@ pub(crate) const fn is_nonblank_without_controls(value: &str) -> bool {
 /// `true` when the name is 1 to 255 UTF-8 bytes and passes
 /// [`is_nonblank_without_controls`].
 #[must_use = "Use the returned query result."]
+#[inline]
 pub(crate) const fn is_valid_topic_name(value: &str) -> bool {
     let length = value.len();
     length >= 1 && length <= 255 && is_nonblank_without_controls(value)
@@ -65,6 +66,10 @@ pub(crate) const fn is_valid_topic_name(value: &str) -> bool {
 ///
 /// # Returns
 /// The decoded Unicode scalar value and the number of consumed bytes.
+///
+/// # Panics
+/// Panics if `index` does not identify an existing code point in `bytes`.
+#[inline]
 const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
     let first = bytes[index];
     if first < 0x80 {

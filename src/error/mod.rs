@@ -7,24 +7,24 @@
 // =============================================================================
 //! Errors classified by event bus operation and layer.
 
-pub use capability_error::CapabilityError;
-pub use codec_error::CodecError;
-pub use configuration_error::ConfigurationError;
-pub use delivery_attempt_error::DeliveryAttemptError;
-pub use delivery_error::DeliveryError;
-pub use event_bus_error::EventBusError;
-pub use event_id_generation_error::EventIdGenerationError;
-pub use lifecycle_error::LifecycleError;
-pub use provider_error::ProviderError;
-pub use publish_attempt_error::PublishAttemptError;
-pub use publish_error::PublishError;
-pub use receive_error::ReceiveError;
-pub use settlement_error::SettlementError;
-pub use shutdown_error::ShutdownError;
-pub use spi_error::SpiError;
-pub use subscribe_error::SubscribeError;
-pub use subscription_close_errors::SubscriptionCloseErrors;
-pub use subscription_close_failure::SubscriptionCloseFailure;
+pub use self::capability_error::CapabilityError;
+pub use self::codec_error::CodecError;
+pub use self::configuration_error::ConfigurationError;
+pub use self::delivery_attempt_error::DeliveryAttemptError;
+pub use self::delivery_error::DeliveryError;
+pub use self::event_bus_error::EventBusError;
+pub use self::event_id_generation_error::EventIdGenerationError;
+pub use self::lifecycle_error::LifecycleError;
+pub use self::provider_error::ProviderError;
+pub use self::publish_attempt_error::PublishAttemptError;
+pub use self::publish_error::PublishError;
+pub use self::receive_error::ReceiveError;
+pub use self::settlement_error::SettlementError;
+pub use self::shutdown_error::ShutdownError;
+pub use self::spi_error::SpiError;
+pub use self::subscribe_error::SubscribeError;
+pub use self::subscription_close_errors::SubscriptionCloseErrors;
+pub use self::subscription_close_failure::SubscriptionCloseFailure;
 
 mod capability_error;
 mod codec_error;
@@ -46,4 +46,4 @@ mod subscription_close_errors;
 mod subscription_close_failure;
 
 mod publish_failure;
-pub use publish_failure::PublishFailure;
+pub use self::publish_failure::PublishFailure;

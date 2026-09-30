@@ -10,6 +10,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::task::Context;
 use std::task::Poll;
 
@@ -51,7 +52,7 @@ impl<T> Future for AsyncOrderingTurn<T> {
             return Poll::Ready(None);
         };
         let lane = self.lane.clone();
-        let mut state = lane.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lane.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.active && state.queue.front().is_some_and(|(queued, _, _)| *queued == ticket) {
             let (_, value, _) = state.queue.pop_front().expect("front ticket was observed");
             state.active = true;
@@ -82,11 +83,7 @@ impl<T> Drop for AsyncOrderingTurn<T> {
             return;
         };
         let waker = {
-            let mut state = self
-                .lane
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.lane.state.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(index) = state.queue.iter().position(|(queued, _, _)| *queued == ticket) {
                 state.queue.remove(index);
             }

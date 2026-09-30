@@ -63,3 +63,6 @@ pub mod pipeline;
 pub mod registry;
 pub mod spi;
 mod util;
+
+#[cfg(test)]
+mod tests;

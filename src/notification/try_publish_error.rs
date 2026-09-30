@@ -7,6 +7,7 @@
 // =============================================================================
 //! Errors returned when notification admission fails.
 
+use std::error::Error;
 use std::fmt;
 
 /// Returns the original payload when a notification cannot enter the queue.
@@ -69,4 +70,4 @@ impl<T> fmt::Display for TryPublishError<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> std::error::Error for TryPublishError<T> {}
+impl<T: Send + Sync + 'static> Error for TryPublishError<T> {}

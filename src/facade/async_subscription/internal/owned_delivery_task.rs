@@ -17,6 +17,11 @@ use std::sync::atomic::Ordering;
 use super::PendingDelivery;
 
 /// A handler/retry task that does not own the provider receiver.
+///
+/// # Type Parameters
+/// - `T`: Delivery payload retained by the owned handler future; the `T:
+///   'static` bound prevents the task from borrowing payload data from its
+///   caller.
 pub(in crate::facade) struct OwnedDeliveryTask<T: 'static> {
     /// Produces the same pending delivery after handler work completes.
     pub(in crate::facade) future: Pin<Box<dyn Future<Output = PendingDelivery<T>> + Send>>,
@@ -25,6 +30,10 @@ pub(in crate::facade) struct OwnedDeliveryTask<T: 'static> {
 }
 
 /// Drops queued handlers that have not started, counting ephemeral deliveries.
+///
+/// # Type Parameters
+/// - `T`: Payload type carried by each pending delivery; the `T: 'static` bound
+///   lets the task future be retained independently of the caller's stack.
 ///
 /// # Parameters
 ///

@@ -8,15 +8,18 @@
 //! Waker registration for asynchronous facade state changes.
 
 use std::collections::HashMap;
+use std::mem::take;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Waker;
 
 /// Wakes tasks waiting for asynchronous facade state changes.
 #[derive(Default)]
 pub(in crate::facade) struct AsyncSignal {
     /// Current waker for each registered waiter ID.
-    wakers: Mutex<HashMap<u64, std::task::Waker>>,
+    wakers: Mutex<HashMap<u64, Waker>>,
     /// Generates unique waiter IDs for signal registrations.
     next_waiter: AtomicU64,
 }
@@ -24,7 +27,7 @@ pub(in crate::facade) struct AsyncSignal {
 impl AsyncSignal {
     /// Wakes all registered waiters after releasing the registry lock.
     pub(in crate::facade) fn notify(&self) {
-        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let wakers = take(&mut *self.wakers.lock().unwrap_or_else(PoisonError::into_inner));
         for (_, waker) in wakers {
             waker.wake();
         }
@@ -35,10 +38,10 @@ impl AsyncSignal {
     /// # Parameters
     /// - `id`: waiter ID allocated by this signal.
     /// - `waker`: task waker to notify after a state change.
-    pub(in crate::facade) fn register_waiter(&self, id: u64, waker: &std::task::Waker) {
+    pub(in crate::facade) fn register_waiter(&self, id: u64, waker: &Waker) {
         let owned_waker = waker.clone();
         let replaced = {
-            let mut wakers = self.wakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
             wakers.insert(id, owned_waker)
         };
         drop(replaced);
@@ -50,7 +53,7 @@ impl AsyncSignal {
     /// - `id`: waiter ID to remove.
     pub(in crate::facade) fn unregister(&self, id: u64) {
         let removed = {
-            let mut wakers = self.wakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
             wakers.remove(&id)
         };
         drop(removed);
@@ -59,7 +62,10 @@ impl AsyncSignal {
     /// Allocates a unique identifier for a new wait registration.
     ///
     /// # Returns
-    /// An ID not previously allocated by this signal instance.
+    /// An ID not previously allocated by this signal instance, unless the
+    /// counter wraps after allocating all `u64` values.
+    #[must_use]
+    #[inline]
     pub(in crate::facade) fn next_waiter_id(&self) -> u64 {
         self.next_waiter.fetch_add(1, Ordering::Relaxed)
     }
@@ -70,6 +76,8 @@ mod tests {
     use std::sync::Arc;
     use std::sync::TryLockError;
     use std::sync::Weak;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::task::RawWaker;
     use std::task::RawWakerVTable;
     use std::task::Waker;
@@ -78,13 +86,16 @@ mod tests {
 
     struct CloneDropProbe {
         signal: Weak<AsyncSignal>,
+        wake_count: AtomicUsize,
     }
 
     fn assert_registry_unlocked(probe: &CloneDropProbe) {
         if let Some(signal) = probe.signal.upgrade() {
             match signal.wakers.try_lock() {
                 Ok(_) | Err(TryLockError::Poisoned(_)) => {}
-                Err(TryLockError::WouldBlock) => panic!("external waker code called under registry lock"),
+                Err(TryLockError::WouldBlock) => {
+                    panic!("external waker code called under registry lock")
+                }
             }
         }
     }
@@ -106,7 +117,9 @@ mod tests {
 
     unsafe fn wake_probe(pointer: *const ()) {
         // SAFETY: wake consumes this waker's owned reference.
-        unsafe { drop_probe(pointer) };
+        let probe = unsafe { Arc::<CloneDropProbe>::from_raw(pointer.cast()) };
+        assert_registry_unlocked(&probe);
+        probe.wake_count.fetch_add(1, Ordering::Relaxed);
     }
 
     unsafe fn wake_probe_by_ref(pointer: *const ()) {
@@ -118,16 +131,20 @@ mod tests {
     static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[test]
-    fn test_waker_clone_and_drop_are_outside_the_registry_lock() {
+    fn test_waker_callbacks_are_outside_the_registry_lock() {
         let signal = Arc::new(AsyncSignal::default());
         let probe = Arc::new(CloneDropProbe {
             signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
         });
-        let pointer = Arc::into_raw(probe).cast();
+        let pointer = Arc::into_raw(Arc::clone(&probe)).cast();
         // SAFETY: The custom vtable maintains Arc ownership for each raw waker.
         let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
         signal.register_waiter(1, &waker);
-        signal.unregister(1);
+        signal.notify();
+        assert_eq!(probe.wake_count.load(Ordering::Relaxed), 1);
+        signal.register_waiter(2, &waker);
+        signal.unregister(2);
         drop(waker);
     }
 }

@@ -97,7 +97,6 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// The handler, retry, and provider policy for the registration.
-    #[must_use]
     #[inline]
     pub fn options(&self) -> &SubscribeOptions<T> {
         &self.options
@@ -109,6 +108,7 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// The request with the supplied options.
+    #[inline]
     pub fn with_options(mut self, options: SubscribeOptions<T>) -> Self {
         self.options = options;
         self
@@ -117,6 +117,7 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// The validated identity, typed topic, and options as owned values.
+    #[inline]
     pub fn into_parts(self) -> (SubscriberId, Topic<T>, SubscribeOptions<T>) {
         (self.subscriber_id, self.topic, self.options)
     }
@@ -131,6 +132,7 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// A request retaining the supplied identity, topic, and options.
+    #[inline]
     pub(super) fn from_validated_parts(
         subscriber_id: SubscriberId,
         topic: Topic<T>,

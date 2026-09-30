@@ -7,6 +7,9 @@
 // =============================================================================
 //! Handler and retry processing state, separate from the receiver owner.
 
+use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -21,16 +24,21 @@ use crate::error::DeliveryError;
 use crate::facade::async_subscription::dead_letter::publish_dead_letter_async;
 use crate::facade::async_subscription::delivery_task::notify_failure;
 use crate::facade::async_subscription::delivery_task::run_with_retry;
+use crate::model::AdmissionOutcome;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
 use crate::model::FailureDirective;
+use crate::model::OrderingPolicy;
 use crate::model::ProviderMessageMetadata;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
 use crate::model::Topic;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::OrderingLaneKey;
+use crate::pipeline::dead_letter_envelope;
 use crate::spi::DeliveryDisposition;
 
 /// Processing context carried by one owned handler task.
@@ -61,7 +69,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// # Parameters
     ///
-    /// - `handler`: Subscriber callback invoked for a decoded and accepted
+    /// - `handler`: subscriber callback invoked for a decoded and accepted
     ///   event.
     ///
     /// # Side Effects
@@ -87,7 +95,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             return;
         };
         if let Some(filter) = self.options.filter() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(&event))) {
+            match catch_unwind(AssertUnwindSafe(|| filter(&event))) {
                 Ok(false) => {
                     self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await;
                     return;
@@ -98,7 +106,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     let metadata = self.pending.as_ref().expect("pending delivery exists").metadata.clone();
                     let delivery = Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
                     let error = DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("subscriber filter panicked")),
+                        source: Box::new(Error::other("subscriber filter panicked")),
                     };
                     let directive = notify_failure(
                         &self.options,
@@ -115,7 +123,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let pending = self.pending.as_ref().expect("pending delivery exists");
         let context = self.context(pending.token.is_some(), pending.metadata.clone(), &event);
         let delivery = Delivery::new(event.clone(), context);
-        let _lane = if self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
+        let _lane = if self.options.ordering_policy() == OrderingPolicy::PerKey {
             let key = OrderingLaneKey::new(self.topic.name(), event.ordering_key(), self.id);
             Some(self.inner.ordering_lanes.enqueue(key, ()).await)
         } else {
@@ -150,9 +158,9 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// # Parameters
     ///
-    /// - `can_settle`: Whether the provider supplied a settlement token.
-    /// - `metadata`: Metadata supplied by the provider.
-    /// - `event`: Event whose dead-letter marker is inspected.
+    /// - `can_settle`: whether the provider supplied a settlement token.
+    /// - `metadata`: metadata supplied by the provider.
+    /// - `event`: event whose dead-letter marker is inspected.
     ///
     /// # Returns
     ///
@@ -166,7 +174,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let context = DeliveryContext::new(self.inner.provider_id.clone(), self.id, self.subscriber_id.clone())
             .with_provider_metadata(metadata)
             .with_settlement(can_settle);
-        if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
+        if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
             context.as_dead_letter()
         } else {
             context
@@ -177,10 +185,10 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// # Parameters
     ///
-    /// - `delivery`: Event and context associated with the failed attempt.
-    /// - `error`: Handler or processing error to record.
-    /// - `attempts`: Number of handler attempts made.
-    /// - `directive`: Action selected by the failure policy.
+    /// - `delivery`: event and context associated with the failed attempt.
+    /// - `error`: handler or processing error to record.
+    /// - `attempts`: number of handler attempts made.
+    /// - `directive`: action selected by the failure policy.
     ///
     /// # Side Effects
     ///
@@ -196,9 +204,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         self.record_failure_diagnostic(attempts, error.to_string().into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) =
-                    crate::pipeline::dead_letter_envelope(&delivery, &error, policy.topic_name())
-                {
+                if let Ok(Some(envelope)) = dead_letter_envelope(&delivery, &error, policy.topic_name()) {
                     match publish_dead_letter_async(
                         &self.inner,
                         &envelope,
@@ -209,10 +215,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     .await
                     {
                         Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
+                            if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
                                 self.inner.emit(&Diagnostic::InternalFailure {
                                     origin: "dead_letter_partial".into(),
                                     message: "dead-letter publication was partially accepted; it was not republished"
@@ -266,8 +269,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// # Parameters
     ///
-    /// - `disposition`: Provider settlement action selected for this delivery.
-    /// - `_event`: Event associated with the decision, retained for call-site
+    /// - `disposition`: provider settlement action selected for this delivery.
+    /// - `_event`: event associated with the decision, retained for call-site
     ///   context.
     ///
     /// # Side Effects
@@ -284,8 +287,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// # Parameters
     ///
-    /// - `attempts`: Number of attempts made before failure.
-    /// - `error`: Human-readable failure message.
+    /// - `attempts`: number of attempts made before failure.
+    /// - `error`: human-readable failure message.
     ///
     /// # Side Effects
     ///

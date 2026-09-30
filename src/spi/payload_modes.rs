@@ -19,6 +19,7 @@
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub enum PayloadModes {
     /// Native Rust values only.
     Native,

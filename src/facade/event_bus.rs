@@ -10,14 +10,9 @@
 
 use std::sync::Arc;
 
-pub(in crate::facade) use internal::CoordinatorMessage;
-pub(in crate::facade) use internal::EventBusInner;
-pub(in crate::facade) use internal::clone_spi_error;
-
-use self::internal::OperationGate;
-use self::internal::OwnerSettlementRouter;
-use self::internal::ShutdownState;
-use self::internal::SubscriptionWorkerBudget;
+pub(in crate::facade) use self::internal::CoordinatorMessage;
+pub(in crate::facade) use self::internal::EventBusInner;
+pub(in crate::facade) use self::internal::clone_spi_error;
 
 // Implements local-provider construction and facade configuration.
 mod construction;
@@ -37,8 +32,6 @@ mod publishing;
 mod subscribing;
 // Owns and runs provider coordinator workers.
 mod worker;
-#[cfg(test)]
-pub(in crate::facade) use subscribing::cleanup_failed_worker_spawn;
 
 /// A cloneable synchronous facade with one provider coordinator per
 /// subscription and a shared bounded handler pool.
@@ -69,9 +62,8 @@ pub(in crate::facade) use subscribing::cleanup_failed_worker_spawn;
 #[derive(Clone)]
 pub struct EventBus {
     /// Shared provider, subscription, scheduler, and lifecycle state.
-    pub(super) inner: Arc<EventBusInner>,
+    pub(super) inner: Arc<internal::EventBusInner>,
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/spawn_failure_tests.rs"]
-mod spawn_failure_tests;
+mod tests;

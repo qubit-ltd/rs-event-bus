@@ -8,6 +8,8 @@
 //! Regression tests for asynchronous shutdown mode escalation.
 
 use std::future::Future;
+use std::future::pending;
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -96,7 +98,7 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
                 resource: None,
                 kind: "unsupported_test_operation",
                 retryable: Some(false),
-                source: Box::new(std::io::Error::other("unused")),
+                source: Box::new(Error::other("unused")),
             })
         })
     }
@@ -105,7 +107,7 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
         self.calls.lock().expect("calls lock").push(mode);
         Box::pin(async move {
             if matches!(mode, ShutdownMode::Graceful { .. }) {
-                std::future::pending::<()>().await;
+                pending::<()>().await;
             }
             Ok(SpiShutdownOutcome::Complete)
         })

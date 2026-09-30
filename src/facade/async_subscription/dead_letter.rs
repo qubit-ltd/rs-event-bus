@@ -13,13 +13,55 @@ use qubit_retry::AsyncRetry;
 use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 
+use crate::facade::async_event_bus::publishing::publish_pipeline_error;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::EventEnvelope;
 use crate::model::PublishReceipt;
+use crate::model::PublishRequest;
 use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::dead_letter_retry_config;
+use crate::pipeline::dead_letter_was_accepted;
+
+/// Publishes one dead-letter envelope and validates destination admission.
+///
+/// # Type Parameters
+/// - `T`: original event payload type.
+///
+/// # Parameters
+/// - `inner`: bus state and provider pipeline.
+/// - `envelope`: dead-letter event to publish.
+/// - `admission_policy`: required provider admission result.
+///
+/// # Returns
+/// The receipt when the provider admitted the dead-letter event.
+///
+/// # Errors
+/// Returns the pipeline or not-admitted failure.
+async fn attempt_dead_letter_async<T: Send + Sync + 'static>(
+    inner: &Arc<AsyncEventBusInner>,
+    envelope: EventEnvelope<DeadLetterEvent<T>>,
+    admission_policy: DeadLetterAdmissionPolicy,
+) -> Result<PublishReceipt, DeadLetterForwardError> {
+    let event_id = envelope.id().clone();
+    let receipt = inner
+        .publisher
+        .publish_async(
+            inner.spi.as_ref(),
+            PublishRequest::from_envelope(envelope),
+            &[],
+            &inner.observer_snapshot(),
+            inner.timer.clone(),
+        )
+        .await
+        .map_err(|failure| DeadLetterForwardError::Publish(publish_pipeline_error(event_id, failure)))?;
+    if dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+        Ok(receipt)
+    } else {
+        Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
+    }
+}
 
 /// Publishes a dead-letter event with the configured retry policy.
 ///
@@ -46,51 +88,8 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
     cancellation: Option<&RetryCancellationToken>,
     admission_policy: DeadLetterAdmissionPolicy,
 ) -> Result<PublishReceipt, String> {
-    /// Publishes one dead-letter envelope and validates destination admission.
-    ///
-    /// # Type Parameters
-    /// - `T`: original event payload type.
-    ///
-    /// # Parameters
-    /// - `inner`: bus state and provider pipeline.
-    /// - `envelope`: dead-letter event to publish.
-    /// - `admission_policy`: required provider admission result.
-    ///
-    /// # Returns
-    /// The receipt when the provider admitted the dead-letter event.
-    ///
-    /// # Errors
-    /// Returns the pipeline or not-admitted failure.
-    pub(in crate::facade) async fn attempt<T: Send + Sync + 'static>(
-        inner: &Arc<AsyncEventBusInner>,
-        envelope: EventEnvelope<DeadLetterEvent<T>>,
-        admission_policy: DeadLetterAdmissionPolicy,
-    ) -> Result<PublishReceipt, DeadLetterForwardError> {
-        let event_id = envelope.id().clone();
-        let receipt = inner
-            .publisher
-            .publish_async(
-                inner.spi.as_ref(),
-                crate::model::PublishRequest::from_envelope(envelope),
-                &[],
-                &inner.observer_snapshot(),
-                inner.timer.clone(),
-            )
-            .await
-            .map_err(|failure| {
-                DeadLetterForwardError::Publish(crate::facade::async_event_bus::publishing::publish_pipeline_error(
-                    event_id, failure,
-                ))
-            })?;
-        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
-            Ok(receipt)
-        } else {
-            Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
-        }
-    }
-
     let Some(policy) = retry_policy else {
-        return attempt(inner, envelope.clone(), admission_policy)
+        return attempt_dead_letter_async(inner, envelope.clone(), admission_policy)
             .await
             .map_err(|error| error.to_string());
     };
@@ -100,7 +99,7 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
         retry = retry.cancellation_token(cancellation.clone());
     }
     retry
-        .run(|| attempt(inner, envelope.clone(), admission_policy))
+        .run(|| attempt_dead_letter_async(inner, envelope.clone(), admission_policy))
         .await
         .map(|success| success.value().clone())
         .map_err(|error| error.to_string())

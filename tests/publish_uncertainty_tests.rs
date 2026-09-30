@@ -7,23 +7,54 @@
 // =============================================================================
 //! Regression tests for conservative publication evidence across retries.
 mod support;
+
+use std::future;
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::time::Duration;
 
+use qubit_clock::ClockDomain;
+use qubit_clock::ManualMonotonicClock;
+use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
+use qubit_clock::TimeError;
+use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::error::CodecError;
 use qubit_event_bus::error::PublishAttemptError;
+use qubit_event_bus::error::PublishError;
+use qubit_event_bus::error::PublishFailure;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DeadLetterPolicy;
+use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::DuplicateRiskPolicy;
+use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::SubscribeOptions;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
@@ -34,12 +65,15 @@ use qubit_event_bus::spi::PublishGuarantee;
 use qubit_event_bus::spi::PublishVisibility;
 use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
+use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
+use qubit_event_bus::spi::TransportPayload;
 use qubit_retry::AttemptFailure;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
@@ -82,7 +116,7 @@ impl Scripted {
                 resource: None,
                 kind: "lost_response",
                 retryable: Some(true),
-                source: Box::new(std::io::Error::other("generic source")),
+                source: Box::new(IoError::other("generic source")),
             });
         }
         if self.immediate_ack || (!first && self.succeeds) {
@@ -101,7 +135,7 @@ impl Scripted {
             } else {
                 PublishEffect::NotAccepted
             },
-            source: Box::new(std::io::Error::other("original provider source")),
+            source: Box::new(IoError::other("original provider source")),
         })
     }
 }
@@ -158,7 +192,7 @@ impl AsyncEventBusSpi for Scripted {
             let prior_attempt = !self.calls.lock().unwrap().is_empty();
             if self.pending || (self.reject_then_pending && prior_attempt) {
                 self.calls.lock().unwrap().push(message);
-                std::future::pending().await
+                future::pending().await
             } else {
                 self.attempt(message)
             }
@@ -185,7 +219,7 @@ fn request(policy: DuplicateRiskPolicy) -> PublishRequest<String> {
         .unwrap()
 }
 #[test]
-fn sync_forbid_is_a_hard_gate() {
+fn test_sync_forbid_is_a_hard_gate() {
     let spi = Arc::new(Scripted::new(true));
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let failure = bus
@@ -195,7 +229,7 @@ fn sync_forbid_is_a_hard_gate() {
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn sync_allow_keeps_prior_unknown_on_failure() {
+fn test_sync_allow_keeps_prior_unknown_on_failure() {
     let spi = Arc::new(Scripted::new(false));
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let failure = bus.publish(request(DuplicateRiskPolicy::AllowDuplicates)).unwrap_err();
@@ -203,7 +237,7 @@ fn sync_allow_keeps_prior_unknown_on_failure() {
     assert_eq!(spi.calls.lock().unwrap().len(), 2);
 }
 #[test]
-fn sync_allow_success_reports_duplicates_and_stable_metadata() {
+fn test_sync_allow_success_reports_duplicates_and_stable_metadata() {
     let spi = Arc::new(Scripted::new(true));
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let receipt = bus.publish(request(DuplicateRiskPolicy::AllowDuplicates)).unwrap();
@@ -214,7 +248,7 @@ fn sync_allow_success_reports_duplicates_and_stable_metadata() {
     assert_eq!(calls[0].timestamp(), calls[1].timestamp());
 }
 #[test]
-fn async_forbid_is_a_hard_gate() {
+fn test_async_forbid_is_a_hard_gate() {
     let spi = Arc::new(Scripted::new(true));
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let failure = support::manual_async::block_on(bus.publish(request(DuplicateRiskPolicy::Forbid)))
@@ -223,7 +257,7 @@ fn async_forbid_is_a_hard_gate() {
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn async_allow_keeps_prior_unknown_on_failure() {
+fn test_async_allow_keeps_prior_unknown_on_failure() {
     let spi = Arc::new(Scripted::new(false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let failure =
@@ -231,7 +265,7 @@ fn async_allow_keeps_prior_unknown_on_failure() {
     assert_eq!(failure.effect(), PublishEffect::MayHaveBeenAccepted);
 }
 #[test]
-fn async_allow_success_reports_duplicates() {
+fn test_async_allow_success_reports_duplicates() {
     let spi = Arc::new(Scripted::new(true));
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi).unwrap();
     assert!(
@@ -242,7 +276,7 @@ fn async_allow_success_reports_duplicates() {
 }
 
 #[test]
-fn generic_publish_error_is_conservatively_unknown() {
+fn test_generic_publish_error_is_conservatively_unknown() {
     let mut scripted = Scripted::new(true);
     scripted.generic = true;
     let spi = Arc::new(scripted);
@@ -254,7 +288,7 @@ fn generic_publish_error_is_conservatively_unknown() {
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn provider_panic_is_conservatively_unknown() {
+fn test_provider_panic_is_conservatively_unknown() {
     let mut scripted = Scripted::new(true);
     scripted.panics = true;
     let spi = Arc::new(scripted);
@@ -266,9 +300,7 @@ fn provider_panic_is_conservatively_unknown() {
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn error_handler_panic_preserves_original_failure_identity_and_effect() {
-    use qubit_event_bus::error::PublishError;
-    use qubit_event_bus::error::PublishFailure;
+fn test_error_handler_panic_preserves_original_failure_identity_and_effect() {
     let spi = Arc::new(Scripted::new(false));
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi).unwrap();
     let observed = Arc::new(Mutex::new(None));
@@ -301,7 +333,7 @@ fn error_handler_panic_preserves_original_failure_identity_and_effect() {
     assert!(matches!(original.cause(), PublishError::Retry(_)));
 }
 #[test]
-fn allow_duplicates_does_not_force_retry_without_a_policy() {
+fn test_allow_duplicates_does_not_force_retry_without_a_policy() {
     let spi = Arc::new(Scripted::new(true));
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let request = PublishRequest::builder()
@@ -317,7 +349,7 @@ fn allow_duplicates_does_not_force_retry_without_a_policy() {
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn async_unpolled_publish_makes_no_provider_attempt() {
+fn test_async_unpolled_publish_makes_no_provider_attempt() {
     let spi = Arc::new(Scripted::new(true));
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
     let future = bus.publish(request(DuplicateRiskPolicy::AllowDuplicates));
@@ -329,25 +361,25 @@ fn async_unpolled_publish_makes_no_provider_attempt() {
 struct DeadLetterSpi {
     sync: support::fake_spi::FakeEventBusSpi,
     asynchronous: support::fake_spi::FakeAsyncEventBusSpi,
-    attempts: std::sync::atomic::AtomicUsize,
+    attempts: AtomicUsize,
 }
 impl DeadLetterSpi {
     fn new() -> Self {
         Self {
             sync: support::fake_spi::FakeEventBusSpi::with_capabilities(durable_capabilities()),
             asynchronous: support::fake_spi::FakeAsyncEventBusSpi::with_capabilities(durable_capabilities()),
-            attempts: std::sync::atomic::AtomicUsize::new(0),
+            attempts: AtomicUsize::new(0),
         }
     }
     fn lost_response(&self) -> SpiError {
-        self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.attempts.fetch_add(1, Ordering::SeqCst);
         SpiError::Publish {
             provider_id: "dead-letter".into(),
             resource: None,
             kind: "response_lost",
             retryable: Some(true),
             effect: PublishEffect::MayHaveBeenAccepted,
-            source: Box::new(std::io::Error::other("DLQ response lost")),
+            source: Box::new(IoError::other("DLQ response lost")),
         }
     }
 }
@@ -391,15 +423,6 @@ impl AsyncEventBusSpi for DeadLetterSpi {
     }
 }
 fn durable_capabilities() -> EventBusCapabilities {
-    use qubit_event_bus::spi::DelayedDeliveryCapability;
-    use qubit_event_bus::spi::DurabilityCapability;
-    use qubit_event_bus::spi::OrderingCapability;
-    use qubit_event_bus::spi::PayloadModes;
-    use qubit_event_bus::spi::PublishGuarantee;
-    use qubit_event_bus::spi::PublishVisibility;
-    use qubit_event_bus::spi::ReplayCapability;
-    use qubit_event_bus::spi::SettlementCapabilities;
-    use qubit_event_bus::spi::SubscriptionModes;
     EventBusCapabilities::new(
         PayloadModes::Native,
         SettlementCapabilities::AcceptRetryReject,
@@ -413,25 +436,19 @@ fn durable_capabilities() -> EventBusCapabilities {
         PublishVisibility::Opaque,
     )
 }
-fn dead_letter_options() -> qubit_event_bus::model::SubscribeOptions<u32> {
-    use qubit_event_bus::model::DeadLetterPolicy;
-    use qubit_event_bus::model::FailureDirective;
-    use qubit_event_bus::model::SubscribeOptions;
+fn dead_letter_options() -> SubscribeOptions<u32> {
     SubscribeOptions::builder()
-        .durability(qubit_event_bus::model::SubscriptionDurability::Durable)
+        .durability(SubscriptionDurability::Durable)
         .retry_policy(RetryPolicy::builder().max_attempts(3).build().unwrap())
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(DeadLetterPolicy::with_topic_name("uncertain.dead").unwrap())
         .build()
 }
 #[test]
-fn sync_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
-    use qubit_event_bus::model::Delivery;
-    use qubit_event_bus::model::SubscribeRequest;
-    use qubit_event_bus::pipeline::Diagnostic;
+fn test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
     let spi = Arc::new(DeadLetterSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("dead-letter").unwrap(), spi.clone()).unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::DeliveryFailed { .. }) {
             tx.send(()).unwrap();
@@ -443,24 +460,25 @@ fn sync_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
                 .unwrap()
                 .with_options(dead_letter_options()),
             |_: Delivery<u32>| {
-                Err(qubit_event_bus::DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failure")),
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failure")),
                 })
             },
         )
         .unwrap();
     bus.publish(PublishRequest::new(Topic::new("test.topic").unwrap(), 42_u32).unwrap())
         .unwrap();
-    rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-    assert_eq!(spi.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(spi.attempts.load(Ordering::SeqCst), 1);
     assert!(!spi.sync.operation_log().contains(&"settle"));
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(!report.provider_may_have_abandoned_deliveries);
 }
 #[test]
-fn async_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
-    use qubit_event_bus::model::SubscribeRequest;
-    use qubit_event_bus::spi::SettlementToken;
+fn test_async_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
     let spi = Arc::new(DeadLetterSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("dead-letter").unwrap(), spi.clone()).unwrap();
     support::manual_async::block_on(async {
@@ -479,25 +497,25 @@ fn async_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
             ))));
         let failure = subscription
             .run(|_| async {
-                Err(qubit_event_bus::DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failure")),
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failure")),
                 })
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            failure,
-            qubit_event_bus::error::ReceiveError::DeadLetterForwardFailed { .. }
-        ));
-        assert_eq!(spi.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(failure, ReceiveError::DeadLetterForwardFailed { .. }));
+        assert_eq!(spi.attempts.load(Ordering::SeqCst), 1);
         assert!(spi.asynchronous.settlement_dispositions().is_empty());
-        bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        let report = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        assert_eq!(report.outcome, ShutdownOutcome::Complete);
+        assert_eq!(report.known_abandoned_deliveries, 0);
+        assert!(!report.provider_may_have_abandoned_deliveries);
         assert_eq!(spi.asynchronous.receiver_drop_recoveries(), 1);
     });
 }
 
 #[test]
-fn cancelled_pending_async_publish_does_not_invent_a_terminal_result() {
+fn test_cancelled_pending_async_publish_does_not_invent_a_terminal_result() {
     let mut scripted = Scripted::new(true);
     scripted.pending = true;
     let spi = Arc::new(scripted);
@@ -510,35 +528,28 @@ fn cancelled_pending_async_publish_does_not_invent_a_terminal_result() {
     assert_eq!(bus.publish_metrics().errors, 0);
     assert_eq!(bus.publish_metrics().opaque_accepted, 0);
 }
-struct TextCodec(qubit_event_bus::model::ContentType);
-impl qubit_event_bus::codec::EventCodec<String> for TextCodec {
-    fn content_type(&self) -> &qubit_event_bus::model::ContentType {
+struct TextCodec(ContentType);
+impl EventCodec<String> for TextCodec {
+    fn content_type(&self) -> &ContentType {
         &self.0
     }
-    fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+    fn schema_id(&self) -> Option<&SchemaId> {
         None
     }
-    fn encode(&self, value: &String) -> Result<Arc<[u8]>, qubit_event_bus::error::CodecError> {
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::from(value.as_bytes()))
     }
-    fn decode(
-        &self,
-        payload: &qubit_event_bus::spi::EncodedPayload,
-    ) -> Result<String, qubit_event_bus::error::CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
         Ok(String::from_utf8_lossy(payload.bytes()).into_owned())
     }
 }
 #[test]
-fn allow_duplicates_preserves_encoded_bytes_identity_and_timestamp() {
+fn test_allow_duplicates_preserves_encoded_bytes_identity_and_timestamp() {
     let mut scripted = Scripted::new(true);
     scripted.encoded = true;
     let spi = Arc::new(scripted);
     let bus = EventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
-    let topic = Topic::new_with_codec(
-        "encoded.uncertain",
-        TextCodec(qubit_event_bus::model::ContentType::new("text/plain").unwrap()),
-    )
-    .unwrap();
+    let topic = Topic::new_with_codec("encoded.uncertain", TextCodec(ContentType::new("text/plain").unwrap())).unwrap();
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("same encoded bytes".to_owned())
@@ -551,10 +562,10 @@ fn allow_duplicates_preserves_encoded_bytes_identity_and_timestamp() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].id(), calls[1].id());
     assert_eq!(calls[0].timestamp(), calls[1].timestamp());
-    let qubit_event_bus::spi::TransportPayload::Encoded(first) = calls[0].payload() else {
+    let TransportPayload::Encoded(first) = calls[0].payload() else {
         panic!("encoded payload")
     };
-    let qubit_event_bus::spi::TransportPayload::Encoded(second) = calls[1].payload() else {
+    let TransportPayload::Encoded(second) = calls[1].payload() else {
         panic!("encoded payload")
     };
     assert_eq!(first.bytes(), second.bytes());
@@ -564,7 +575,7 @@ fn allow_duplicates_preserves_encoded_bytes_identity_and_timestamp() {
 /// Builds a pending publication with a real cancellation token and observable
 /// callback.
 fn pending_request(
-    token: qubit_retry::RetryCancellationToken,
+    token: RetryCancellationToken,
     observed: Arc<Mutex<Option<PublishEffect>>>,
 ) -> PublishRequest<String> {
     PublishRequest::builder()
@@ -577,12 +588,12 @@ fn pending_request(
         .unwrap()
 }
 #[test]
-fn pending_provider_token_cancellation_returns_unknown_with_original_identity() {
+fn test_pending_provider_token_cancellation_returns_unknown_with_original_identity() {
     let mut scripted = Scripted::new(true);
     scripted.pending = true;
     let spi = Arc::new(scripted);
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
-    let token = qubit_retry::RetryCancellationToken::new();
+    let token = RetryCancellationToken::new();
     let observed = Arc::new(Mutex::new(None));
     let request = pending_request(token.clone(), observed.clone());
     let id = request.envelope().id().clone();
@@ -597,12 +608,12 @@ fn pending_provider_token_cancellation_returns_unknown_with_original_identity() 
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn token_cancelled_before_spi_retains_not_accepted_without_provider_attempt() {
+fn test_token_cancelled_before_spi_retains_not_accepted_without_provider_attempt() {
     let mut scripted = Scripted::new(true);
     scripted.pending = true;
     let spi = Arc::new(scripted);
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
-    let token = qubit_retry::RetryCancellationToken::new();
+    let token = RetryCancellationToken::new();
     token.cancel();
     let observed = Arc::new(Mutex::new(None));
     let request = pending_request(token, observed.clone());
@@ -614,10 +625,6 @@ fn token_cancelled_before_spi_retains_not_accepted_without_provider_attempt() {
     assert!(spi.calls.lock().unwrap().is_empty());
 }
 fn assert_soft_budget_keeps_pending_until_token_cancellation(total_budget: bool) {
-    use std::time::Duration;
-
-    use qubit_clock::ManualMonotonicClock;
-    use qubit_clock::MonotonicClock;
     let mut scripted = Scripted::new(true);
     scripted.pending = true;
     let spi = Arc::new(scripted);
@@ -631,7 +638,7 @@ fn assert_soft_budget_keeps_pending_until_token_cancellation(total_budget: bool)
     };
     let observed = Arc::new(Mutex::new(None));
     let callback = observed.clone();
-    let token = qubit_retry::RetryCancellationToken::new();
+    let token = RetryCancellationToken::new();
     let request = PublishRequest::builder()
         .topic(Topic::new("budget.uncertain").unwrap())
         .payload("pending admission".to_owned())
@@ -661,21 +668,21 @@ fn assert_soft_budget_keeps_pending_until_token_cancellation(total_budget: bool)
     assert_eq!(spi.calls.lock().unwrap().len(), 1);
 }
 #[test]
-fn pending_provider_soft_operation_budget_preserves_cancellation_uncertainty() {
+fn test_pending_provider_soft_operation_budget_preserves_cancellation_uncertainty() {
     assert_soft_budget_keeps_pending_until_token_cancellation(false);
 }
 #[test]
-fn pending_provider_soft_total_budget_preserves_cancellation_uncertainty() {
+fn test_pending_provider_soft_total_budget_preserves_cancellation_uncertainty() {
     assert_soft_budget_keeps_pending_until_token_cancellation(true);
 }
 
 #[test]
-fn token_cancelled_during_second_pending_attempt_keeps_unknown_after_rejection() {
+fn test_token_cancelled_during_second_pending_attempt_keeps_unknown_after_rejection() {
     let mut scripted = Scripted::new(false);
     scripted.reject_then_pending = true;
     let spi = Arc::new(scripted);
     let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").unwrap(), spi.clone()).unwrap();
-    let token = qubit_retry::RetryCancellationToken::new();
+    let token = RetryCancellationToken::new();
     let observed = Arc::new(Mutex::new(None));
     let request = pending_request(token.clone(), observed.clone());
     let id = request.envelope().id().clone();
@@ -689,7 +696,7 @@ fn token_cancelled_during_second_pending_attempt_keeps_unknown_after_rejection()
     assert_eq!(*observed.lock().unwrap(), Some(PublishEffect::MayHaveBeenAccepted));
 }
 #[test]
-fn successful_first_async_attempt_does_not_report_possible_duplicates() {
+fn test_successful_first_async_attempt_does_not_report_possible_duplicates() {
     let mut scripted = Scripted::new(true);
     scripted.immediate_ack = true;
     let spi = Arc::new(scripted);
@@ -703,51 +710,50 @@ fn successful_first_async_attempt_does_not_report_possible_duplicates() {
 /// acknowledgement.
 #[derive(Clone)]
 struct AckRegressionTimer {
-    manual: Arc<qubit_clock::ManualMonotonicClock>,
-    early: qubit_clock::MonotonicInstant,
-    acknowledged: Arc<std::sync::atomic::AtomicBool>,
+    manual: Arc<ManualMonotonicClock>,
+    early: MonotonicInstant,
+    acknowledged: Arc<AtomicBool>,
 }
 impl AckRegressionTimer {
     fn new() -> Self {
-        use qubit_clock::MonotonicClock;
-        let manual = qubit_clock::ManualMonotonicClock::new_shared();
+        let manual = ManualMonotonicClock::new_shared();
         let early = manual.now();
-        manual.advance(std::time::Duration::from_secs(2)).unwrap();
+        manual.advance(Duration::from_secs(2)).unwrap();
         Self {
             manual,
             early,
-            acknowledged: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            acknowledged: Arc::new(AtomicBool::new(false)),
         }
     }
 }
-impl qubit_clock::MonotonicClock for AckRegressionTimer {
-    fn domain(&self) -> qubit_clock::ClockDomain {
+impl MonotonicClock for AckRegressionTimer {
+    fn domain(&self) -> ClockDomain {
         self.early.domain()
     }
-    fn now(&self) -> qubit_clock::MonotonicInstant {
-        if self.acknowledged.load(std::sync::atomic::Ordering::Acquire) {
+    fn now(&self) -> MonotonicInstant {
+        if self.acknowledged.load(Ordering::Acquire) {
             self.early
         } else {
-            qubit_clock::MonotonicClock::now(self.manual.as_ref())
+            MonotonicClock::now(self.manual.as_ref())
         }
     }
-    fn new_timer(&self) -> Arc<dyn qubit_clock::Timer> {
+    fn new_timer(&self) -> Arc<dyn Timer> {
         Arc::new(self.clone())
     }
 }
-impl qubit_clock::Timer for AckRegressionTimer {
-    fn clock(&self) -> &dyn qubit_clock::MonotonicClock {
+impl Timer for AckRegressionTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
         self
     }
-    fn at(&self, deadline: qubit_clock::MonotonicInstant) -> Result<qubit_clock::TimerFuture, qubit_clock::TimeError> {
-        qubit_clock::MonotonicClock::new_timer(self.manual.as_ref()).at(deadline)
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        MonotonicClock::new_timer(self.manual.as_ref()).at(deadline)
     }
 }
 struct AckFailureSpi {
     clock: AckRegressionTimer,
     rejects_first: bool,
     no_destinations: bool,
-    calls: std::sync::atomic::AtomicUsize,
+    calls: AtomicUsize,
 }
 impl AsyncEventBusSpi for AckFailureSpi {
     fn capabilities(&self) -> EventBusCapabilities {
@@ -755,7 +761,7 @@ impl AsyncEventBusSpi for AckFailureSpi {
     }
     fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
-            let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
             if first && self.rejects_first {
                 return Err(SpiError::Publish {
                     provider_id: "ack-clock".into(),
@@ -763,12 +769,10 @@ impl AsyncEventBusSpi for AckFailureSpi {
                     kind: "rejected",
                     retryable: Some(true),
                     effect: PublishEffect::NotAccepted,
-                    source: Box::new(std::io::Error::other("known rejection")),
+                    source: Box::new(IoError::other("known rejection")),
                 });
             }
-            self.clock
-                .acknowledged
-                .store(true, std::sync::atomic::Ordering::Release);
+            self.clock.acknowledged.store(true, Ordering::Release);
             if self.no_destinations {
                 Ok(PublishAcknowledgement::DestinationAdmissions(Vec::new()))
             } else {
@@ -795,7 +799,7 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
         clock: clock.clone(),
         rejects_first,
         no_destinations,
-        calls: std::sync::atomic::AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
     });
     let bus = AsyncEventBus::with_timer(ProviderId::new("ack-clock").unwrap(), spi.clone(), Arc::new(clock)).unwrap();
     let observed = Arc::new(Mutex::new(None));
@@ -811,10 +815,7 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
         .unwrap();
     let id = request.envelope().id().clone();
     let failure = support::manual_async::block_on(bus.publish(request)).expect_err("clock failure after ACK");
-    assert!(matches!(
-        failure.cause(),
-        qubit_event_bus::error::PublishError::Retry(_)
-    ));
+    assert!(matches!(failure.cause(), PublishError::Retry(_)));
     assert_eq!(failure.event_id(), &id);
     let expected_effect = if no_destinations {
         PublishEffect::NotAccepted
@@ -823,21 +824,18 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
     };
     assert_eq!(failure.effect(), expected_effect);
     assert_eq!(*observed.lock().unwrap(), Some((id, expected_effect)));
-    assert_eq!(
-        spi.calls.load(std::sync::atomic::Ordering::SeqCst),
-        if rejects_first { 2 } else { 1 }
-    );
+    assert_eq!(spi.calls.load(Ordering::SeqCst), if rejects_first { 2 } else { 1 });
 }
 #[test]
-fn first_ack_followed_by_clock_failure_is_not_misclassified_as_rejection() {
+fn test_first_ack_followed_by_clock_failure_is_not_misclassified_as_rejection() {
     assert_ack_followed_by_clock_failure_effect(false, false);
 }
 #[test]
-fn rejection_then_ack_followed_by_clock_failure_keeps_admission_evidence() {
+fn test_rejection_then_ack_followed_by_clock_failure_keeps_admission_evidence() {
     assert_ack_followed_by_clock_failure_effect(true, false);
 }
 
 #[test]
-fn no_destination_ack_then_clock_failure_retains_known_non_admission() {
+fn test_no_destination_ack_then_clock_failure_retains_known_non_admission() {
     assert_ack_followed_by_clock_failure_effect(false, true);
 }

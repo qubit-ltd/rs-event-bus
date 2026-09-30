@@ -7,6 +7,7 @@
 // =============================================================================
 //! Public contracts for shared event-processing pipelines.
 
+use std::io::Error;
 use std::sync::Arc;
 
 use qubit_event_bus::AsyncEventBus;
@@ -19,6 +20,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryPolicy;
@@ -52,7 +54,7 @@ fn test_async_retry_rule_panic_requeues_delivery() {
     block_on(bus.publish(PublishRequest::new(topic, 42_u32).expect("valid request"))).expect("publish is accepted");
     let mut run = Box::pin(subscription.run(|_| async {
         Err(DeliveryError::Handler {
-            source: Box::new(std::io::Error::other("synthetic handler failure")),
+            source: Box::new(Error::other("synthetic handler failure")),
         })
     }));
     let mut run_pending = false;
@@ -70,5 +72,8 @@ fn test_async_retry_rule_panic_requeues_delivery() {
     );
     drop(run);
     block_on(subscription.close()).expect("subscription closes after runner cancellation");
-    block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
+    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }

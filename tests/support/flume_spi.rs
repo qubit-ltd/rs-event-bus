@@ -68,6 +68,7 @@ struct FlumeSpi {
 }
 
 /// Creates the fixture as a public SPI trait object.
+#[must_use]
 pub(crate) fn create() -> Arc<dyn EventBusSpi> {
     Arc::new(FlumeSpi::default())
 }

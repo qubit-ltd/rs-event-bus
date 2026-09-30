@@ -94,6 +94,7 @@ impl EventBusConfig {
     /// # Returns
     /// The updated configuration.
     #[must_use]
+    #[inline]
     pub fn with_selection(mut self, selection: ProviderSelection) -> Self {
         self.selection = Some(selection);
         self
@@ -107,6 +108,7 @@ impl EventBusConfig {
     /// # Returns
     /// The updated configuration.
     #[must_use]
+    #[inline]
     pub fn with_facade_config(mut self, facade: EventBusFacadeConfig) -> Self {
         self.facade = facade;
         self
@@ -120,6 +122,7 @@ impl EventBusConfig {
     /// # Returns
     /// The updated configuration.
     #[must_use]
+    #[inline]
     pub fn with_required_capabilities(mut self, required: RequiredCapabilities) -> Self {
         self.required_capabilities = required;
         self
@@ -133,6 +136,7 @@ impl EventBusConfig {
     /// # Returns
     /// The updated configuration.
     #[must_use]
+    #[inline]
     pub fn with_provider_options(mut self, options: ProviderOptions) -> Self {
         self.provider_options = options;
         self
