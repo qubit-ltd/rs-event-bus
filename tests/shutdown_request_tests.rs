@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::ShutdownError;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
@@ -45,7 +46,7 @@ impl Drop for Gate {
     }
 }
 /// Creates a real local handler blocked until the returned gate is released.
-fn blocked_bus() -> (EventBus, Gate, qubit_event_bus::Subscription) {
+fn blocked_bus() -> (EventBus, Gate, Subscription) {
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
     let topic = Topic::<String>::new("shutdown.requests").expect("topic");
     let gate = Gate(Arc::new((Mutex::new(false), Condvar::new())));
@@ -64,7 +65,8 @@ fn blocked_bus() -> (EventBus, Gate, qubit_event_bus::Subscription) {
             },
         )
         .expect("subscription");
-    bus.publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
         .expect("publish");
     entered_rx.recv_timeout(LIMIT).expect("handler entered");
     (bus, gate, subscription)
@@ -159,7 +161,8 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
             },
         )
         .expect("subscribe");
-    bus.publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
         .expect("publish");
     let (ticket, rejected) = rx.recv_timeout(LIMIT).expect("callback returns");
     assert!(rejected);

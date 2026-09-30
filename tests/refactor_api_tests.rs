@@ -71,7 +71,7 @@ fn test_payload_limits_defaults_and_custom_values() {
 #[test]
 fn test_metadata_validation_is_exact() {
     let codec = TextCodec {
-        content_type: ContentType::new("text/plain").expect("valid MIME"),
+        content_type: ContentType::TEXT_PLAIN,
         schema_id: None,
     };
     let exact = EncodedPayload::new(Arc::from(&b"hello"[..]), codec.content_type.clone(), None);
@@ -130,7 +130,7 @@ fn test_duplicate_risk_policy_default_and_builder() {
 /// MIME.
 #[test]
 fn test_metadata_validation_schema_options_and_versions() {
-    let mime = ContentType::new("text/plain").expect("valid MIME");
+    let mime = ContentType::TEXT_PLAIN;
     let v1 = SchemaId::new("v1").expect("valid schema");
     let v2 = SchemaId::new("v2").expect("valid schema");
     for (expected, actual) in [

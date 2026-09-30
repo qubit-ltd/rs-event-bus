@@ -532,17 +532,14 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
     assert!(native.schema_id().is_none());
 
     let shared_codec: Arc<dyn EventCodec<String>> = Arc::new(TextCodec {
-        content_type: ContentType::new("text/plain")?,
+        content_type: ContentType::TEXT_PLAIN,
         schema_id: SchemaId::new("order-v1")?,
     });
-    let shared = Topic::<String>::new_with_shared_codec("orders.created", shared_codec.clone())?;
-    let owned = Topic::<String>::new_with_codec(
-        "orders.created",
-        TextCodec {
-            content_type: ContentType::new("text/plain")?,
-            schema_id: SchemaId::new("order-v1")?,
-        },
-    )?;
+    let shared = Topic::<String>::new("orders.created")?.with_shared_codec(shared_codec.clone());
+    let owned = Topic::<String>::new("orders.created")?.with_codec(TextCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        schema_id: SchemaId::new("order-v1")?,
+    });
     assert_eq!(native, shared);
     assert_eq!(shared, owned);
     assert!(owned.codec().is_some());
@@ -556,7 +553,7 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
     assert_eq!(
         shared.codec().expect("configured codec").decode(&EncodedPayload::new(
             Arc::from(b"example".as_slice()),
-            ContentType::new("text/plain")?,
+            ContentType::TEXT_PLAIN,
             Some(SchemaId::new("order-v1")?)
         ))?,
         "example"

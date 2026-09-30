@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::PublishError;
+use qubit_event_bus::PublishFailure;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
@@ -31,6 +32,7 @@ use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
@@ -245,9 +247,9 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> 
     let batch = BatchPublishResult::new(vec![
         Ok(accepted),
         Ok(dropped),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -325,9 +327,9 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
             provider,
             PublishAcknowledgement::DroppedByInterceptor,
         )),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -362,7 +364,7 @@ fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn std::error
         }
     }
     let native = Topic::<String>::new("orders.created")?;
-    let encoded = Topic::<String>::new_with_codec("orders.created", StringCodec(ContentType::new("text/plain")?))?;
+    let encoded = Topic::<String>::new("orders.created")?.with_codec(StringCodec(ContentType::TEXT_PLAIN));
     assert_eq!(native, encoded);
     assert!(native.codec().is_none());
     assert!(encoded.codec().is_some());
@@ -429,7 +431,7 @@ fn test_attempt_errors_keep_classification_and_source() {
     let publish = PublishAttemptError::new(
         "transient",
         Some(true),
-        qubit_event_bus::model::PublishEffect::NotAccepted,
+        PublishEffect::NotAccepted,
         std::io::Error::other("offline"),
     );
     let delivery = DeliveryAttemptError::new("handler", Some(false), std::io::Error::other("bad record"));
@@ -500,7 +502,7 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
         }
     }
     let mut registry = CodecRegistry::new();
-    registry.register::<String>(Arc::new(TextCodec(ContentType::new("text/plain")?)));
+    registry.register::<String>(Arc::new(TextCodec(ContentType::TEXT_PLAIN)));
     let codec = registry.get::<String>().unwrap();
     assert_eq!(
         codec.decode(&EncodedPayload::new(
@@ -510,7 +512,7 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn std::error::E
         ))?,
         "payload"
     );
-    let topic = Topic::<String>::new_with_shared_codec("orders.created", codec)?;
+    let topic = Topic::<String>::new("orders.created")?.with_shared_codec(codec);
     assert!(topic.codec().is_some());
     assert!(registry.get::<u32>().is_none());
     Ok(())

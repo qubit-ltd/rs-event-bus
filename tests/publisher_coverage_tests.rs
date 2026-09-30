@@ -26,13 +26,17 @@ use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::facade::PayloadLimits;
+use qubit_event_bus::facade::PublishMetricsSnapshot;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::PayloadDirection;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -243,9 +247,6 @@ fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
 
 #[test]
 fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
-    use qubit_event_bus::EventBusFacadeConfig;
-    use qubit_event_bus::facade::PublishMetricsSnapshot;
-
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let sync_bus = bus(spi);
     assert_eq!(sync_bus.publish_metrics(), PublishMetricsSnapshot::default());
@@ -273,7 +274,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
         EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
     )
     .expect("valid provider capabilities");
-    dropped_bus
+    let _ = dropped_bus
         .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 4_u32).unwrap())
         .unwrap();
     let dropped = dropped_bus.publish_metrics();
@@ -301,7 +302,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
     let destination_bus = bus(Arc::new(
         CoverageSpi::new(PayloadModes::Native, false).with_acknowledgement(mixed_ack),
     ));
-    destination_bus
+    let _ = destination_bus
         .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 5_u32).unwrap())
         .unwrap();
     let destination_metrics = destination_bus.publish_metrics();
@@ -313,7 +314,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
         CoverageSpi::new(PayloadModes::Native, false)
             .with_acknowledgement(PublishAcknowledgement::DestinationAdmissions(Vec::new())),
     ));
-    empty_bus
+    let _ = empty_bus
         .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 6_u32).unwrap())
         .unwrap();
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
@@ -333,7 +334,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
         .map(|index| {
             let worker_bus = concurrent_bus.clone();
             std::thread::spawn(move || {
-                worker_bus
+                let _ = worker_bus
                     .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), index).unwrap())
                     .expect("concurrent publish should be accepted");
             })
@@ -386,7 +387,7 @@ impl EventBusSpi for ScriptedFailureSpi {
                 resource: None,
                 kind: "scripted_failure",
                 retryable: self.retryable,
-                effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+                effect: PublishEffect::NotAccepted,
                 source: Box::new(std::io::Error::other("scripted provider failure")),
             });
         }
@@ -554,13 +555,11 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
 fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let bus = bus(spi.clone());
-    let topic = Topic::new_with_codec(
-        "codec.failure",
-        FailingStringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
-        },
-    )
-    .unwrap();
+    let topic = Topic::new("codec.failure")
+        .unwrap()
+        .with_codec(FailingStringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let request = PublishRequest::new(topic, "payload".to_owned()).unwrap();
 
     let error = bus.publish(request).unwrap_err();
@@ -572,18 +571,16 @@ fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
 
 #[test]
 fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades() {
-    let config = EventBusFacadeConfig::new().with_payload_limits(qubit_event_bus::facade::PayloadLimits::new(
+    let config = EventBusFacadeConfig::new().with_payload_limits(PayloadLimits::new(
         NonZeroUsize::new(4).expect("positive publish limit"),
         NonZeroUsize::new(4).expect("positive receive limit"),
     ));
     let topic = || {
-        Topic::new_with_codec(
-            "codec.limit",
-            SuccessfulStringCodec {
-                content_type: ContentType::new("text/plain").unwrap(),
-            },
-        )
-        .unwrap()
+        Topic::new("codec.limit")
+            .unwrap()
+            .with_codec(SuccessfulStringCodec {
+                content_type: ContentType::TEXT_PLAIN,
+            })
     };
     let sync_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let sync_bus = EventBus::with_config(
@@ -592,7 +589,7 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         config.clone(),
     )
     .unwrap();
-    sync_bus
+    let _ = sync_bus
         .publish(PublishRequest::new(topic(), "four".to_owned()).unwrap())
         .expect("payload equal to the limit is accepted");
     let error = sync_bus
@@ -601,7 +598,7 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
     assert!(matches!(
         error.cause(),
         PublishError::Codec(CodecError::PayloadTooLarge {
-            direction: qubit_event_bus::model::PayloadDirection::Publish,
+            direction: PayloadDirection::Publish,
             actual: 9,
             limit: 4
         })
@@ -620,7 +617,7 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
     assert!(matches!(
         error.cause(),
         PublishError::Codec(CodecError::PayloadTooLarge {
-            direction: qubit_event_bus::model::PayloadDirection::Publish,
+            direction: PayloadDirection::Publish,
             actual: 9,
             limit: 4
         })
@@ -660,34 +657,44 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
 
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let bus = bus(spi.clone());
-    bus.publish(PublishRequest::new(Topic::new("generic.bool").unwrap(), true).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.bool").unwrap(), true).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.i8").unwrap(), -8_i8).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.i8").unwrap(), -8_i8).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.char").unwrap(), 'x').unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.char").unwrap(), 'x').unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.u64").unwrap(), 64_u64).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.u64").unwrap(), 64_u64).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.u128").unwrap(), 42_u128).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.u128").unwrap(), 42_u128).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.bytes").unwrap(), vec![1_u8, 2, 3]).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.bytes").unwrap(), vec![1_u8, 2, 3]).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.array").unwrap(), [4_u8, 5, 6]).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.array").unwrap(), [4_u8, 5, 6]).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.option").unwrap(), Some(7_u16)).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.option").unwrap(), Some(7_u16)).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("generic.result").unwrap(), Ok::<i32, &'static str>(8)).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("generic.result").unwrap(), Ok::<i32, &'static str>(8)).unwrap())
         .unwrap();
-    bus.publish(
-        PublishRequest::new(
-            Topic::new("generic.domain").unwrap(),
-            NonCloneCommand {
-                _name: "reconcile".to_owned(),
-            },
+    let _ = bus
+        .publish(
+            PublishRequest::new(
+                Topic::new("generic.domain").unwrap(),
+                NonCloneCommand {
+                    _name: "reconcile".to_owned(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .unwrap();
+        .unwrap();
 
     let observed = spi.native_payload_types.lock().unwrap();
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 10);
@@ -714,14 +721,12 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
 fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
     let encoded_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let encoded_bus = bus(encoded_spi.clone());
-    let encoded_topic = Topic::new_with_codec(
-        "representation.encoded",
-        SuccessfulStringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
-        },
-    )
-    .unwrap();
-    encoded_bus
+    let encoded_topic = Topic::new("representation.encoded")
+        .unwrap()
+        .with_codec(SuccessfulStringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
+    let _ = encoded_bus
         .publish(PublishRequest::new(encoded_topic, "encoded body".to_owned()).unwrap())
         .unwrap();
     assert_eq!(encoded_spi.publish_calls.load(Ordering::Acquire), 1);
@@ -730,14 +735,12 @@ fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
 
     let hybrid_spi = Arc::new(CoverageSpi::new(PayloadModes::NativeAndEncoded, false));
     let hybrid_bus = bus(hybrid_spi.clone());
-    let hybrid_topic = Topic::new_with_codec(
-        "representation.hybrid",
-        SuccessfulStringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
-        },
-    )
-    .unwrap();
-    hybrid_bus
+    let hybrid_topic = Topic::new("representation.hybrid")
+        .unwrap()
+        .with_codec(SuccessfulStringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
+    let _ = hybrid_bus
         .publish(PublishRequest::new(hybrid_topic, "native preferred".to_owned()).unwrap())
         .unwrap();
     assert_eq!(
@@ -809,7 +812,7 @@ fn test_direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() 
         source,
         SpiError::Publish {
             kind: "scripted_failure",
-            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+            effect: PublishEffect::NotAccepted,
             ..
         }
     ));
@@ -830,7 +833,8 @@ fn test_custom_retry_rule_can_override_explicit_non_retryable_spi_classification
         .unwrap()
         .with_options(options);
 
-    bus.publish(request)
+    let _ = bus
+        .publish(request)
         .expect("custom rule should allow the second attempt");
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 2);
     bus.shutdown(ShutdownMode::Immediate).unwrap();
@@ -978,46 +982,46 @@ fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_boun
     macro_rules! publish {
         ($name:literal, $request:expr) => {
             block_on(bus.publish($request))
-                .unwrap_or_else(|error| panic!("async publish for {} payload failed: {error}", $name));
+                .unwrap_or_else(|error| panic!("async publish for {} payload failed: {error}", $name))
         };
     }
-    publish!(
+    let _ = publish!(
         "bool",
         PublishRequest::new(Topic::new("async.bool").unwrap(), true).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "i16",
         PublishRequest::new(Topic::new("async.i16").unwrap(), -16_i16).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "char",
         PublishRequest::new(Topic::new("async.char").unwrap(), 'z').unwrap()
     );
-    publish!(
+    let _ = publish!(
         "u64",
         PublishRequest::new(Topic::new("async.u64").unwrap(), 64_u64).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "u128",
         PublishRequest::new(Topic::new("async.u128").unwrap(), 128_u128).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "bytes",
         PublishRequest::new(Topic::new("async.bytes").unwrap(), vec![1_u8, 2]).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "array",
         PublishRequest::new(Topic::new("async.array").unwrap(), [3_u8, 4]).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "option",
         PublishRequest::new(Topic::new("async.option").unwrap(), Some(5_u16)).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "result",
         PublishRequest::new(Topic::new("async.result").unwrap(), Ok::<i32, &'static str>(6)).unwrap()
     );
-    publish!(
+    let _ = publish!(
         "non-clone domain",
         PublishRequest::new(
             Topic::new("async.domain").unwrap(),
@@ -1060,12 +1064,14 @@ fn test_diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observ
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
     assert_eq!(calls.load(Ordering::Acquire), 0);
 
-    bus.publish(PublishRequest::new(Topic::new("diagnostics.valid").unwrap(), 2).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("diagnostics.valid").unwrap(), 2).unwrap())
         .unwrap();
     assert_eq!(calls.load(Ordering::Acquire), 1);
 
     drop(handle);
-    bus.publish(PublishRequest::new(Topic::new("diagnostics.closed").unwrap(), 3).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("diagnostics.closed").unwrap(), 3).unwrap())
         .unwrap();
     assert_eq!(calls.load(Ordering::Acquire), 1);
 

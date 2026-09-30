@@ -45,7 +45,7 @@ fn test_spi_traits_are_object_safe() {
 fn test_cloning_encoded_payload_shares_its_byte_allocation() {
     let original = EncodedPayload::new(
         std::sync::Arc::from(b"shared payload".as_slice()),
-        ContentType::new("application/octet-stream").expect("valid content type"),
+        ContentType::APPLICATION_OCTET_STREAM,
         None,
     );
     let clone = original.clone();

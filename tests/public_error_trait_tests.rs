@@ -7,9 +7,11 @@
 // =============================================================================
 
 use std::error::Error;
+use std::io::Error as IoError;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::PublishEffect;
 use qubit_retry::Retry;
 use qubit_retry::RetryConfig;
 use qubit_retry::RetryErrorReason;
@@ -19,7 +21,7 @@ use qubit_retry::RetryFallback;
 fn test_publish_error_handler_panic_preserves_source_chain() {
     let error = PublishError::ErrorHandlerPanicked {
         message: "observer failed".into(),
-        source: Box::new(std::io::Error::other("transport failed")),
+        source: Box::new(IoError::other("transport failed")),
     };
 
     assert!(error.to_string().contains("observer failed"));
@@ -39,8 +41,8 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
                 Some(false),
-                qubit_event_bus::model::PublishEffect::NotAccepted,
-                std::io::Error::other("provider unavailable"),
+                PublishEffect::NotAccepted,
+                IoError::other("provider unavailable"),
             ))
         })
         .expect_err("single failed attempt should be terminal");

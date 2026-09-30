@@ -301,13 +301,11 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
 fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new_with_codec(
-        "orders.encoded",
-        StringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
-        },
-    )
-    .unwrap();
+    let topic = Topic::new("orders.encoded")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let encoded_request = PublishRequest::builder()
         .topic(topic)
         .payload("serialized".to_owned())
@@ -342,13 +340,11 @@ fn test_native_payload_does_not_require_clone() {
 fn test_native_and_encoded_provider_prefers_native_payload() {
     let (spi, state) = bus(PayloadModes::NativeAndEncoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new_with_codec(
-        "orders.hybrid",
-        StringCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
-        },
-    )
-    .unwrap();
+    let topic = Topic::new("orders.hybrid")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("hybrid".to_owned())

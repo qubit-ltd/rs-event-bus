@@ -1415,9 +1415,9 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         }
     });
     let codec = PanickingCodec {
-        content_type: ContentType::new("text/plain").expect("valid MIME type"),
+        content_type: ContentType::TEXT_PLAIN,
     };
-    let encoded_topic = Topic::new_with_codec("sync.events", codec).expect("valid codec topic");
+    let encoded_topic = Topic::new("sync.events").expect("valid codec topic").with_codec(codec);
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("codec-panic", encoded_topic.clone()).expect("valid ID"),
@@ -1426,7 +1426,7 @@ fn test_panicking_codec_stops_without_settling_the_provider_message() {
         .expect("subscription starts");
     backend.enqueue_encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"payload"[..]),
-        ContentType::new("text/plain").expect("valid MIME type"),
+        ContentType::TEXT_PLAIN,
         None,
     ));
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -1471,11 +1471,9 @@ fn test_panicking_codec_encode_fails_before_the_provider_publish_call() {
         }
     }
     let (bus, backend) = create_bus_configured(|backend| backend.set_payload_mode(PayloadModes::Encoded));
-    let topic = Topic::new_with_codec(
-        "sync.panic-encode",
-        PanicEncodeCodec(ContentType::new("text/plain").expect("valid content type")),
-    )
-    .expect("valid codec topic");
+    let topic = Topic::new("sync.panic-encode")
+        .expect("valid codec topic")
+        .with_codec(PanicEncodeCodec(ContentType::TEXT_PLAIN));
     let error = bus
         .publish(PublishRequest::new(topic, "payload".to_owned()).expect("valid publish request"))
         .expect_err("codec panic is returned as an error");
@@ -1495,7 +1493,7 @@ fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
     codecs.register::<String>(Arc::new(Utf8Codec(
-        ContentType::new("text/plain").expect("MIME type is valid"),
+        ContentType::TEXT_PLAIN,
     )));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = EventBus::with_config(
@@ -1515,7 +1513,7 @@ fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
 
     backend.enqueue_encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"decoded through registry"[..]),
-        ContentType::new("text/plain").expect("MIME type is valid"),
+        ContentType::TEXT_PLAIN,
         None,
     ));
 
@@ -1560,15 +1558,13 @@ fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").unwrap())));
+    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::TEXT_PLAIN)));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = EventBus::with_config(ProviderId::new("sync-test").unwrap(), backend.clone(), config)
         .expect("valid provider capabilities");
-    let topic = Topic::<String>::new_with_codec(
-        "sync.topic-codec-priority",
-        Utf8Codec(ContentType::new("text/plain").unwrap()),
-    )
-    .unwrap();
+    let topic = Topic::<String>::new("sync.topic-codec-priority")
+        .unwrap()
+        .with_codec(Utf8Codec(ContentType::TEXT_PLAIN));
     let (sender, receiver) = mpsc::channel();
     let subscription = bus
         .subscribe(
@@ -1578,7 +1574,7 @@ fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
         .unwrap();
     backend.enqueue_encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"topic codec wins"[..]),
-        ContentType::new("text/plain").unwrap(),
+        ContentType::TEXT_PLAIN,
         None,
     ));
     assert_eq!(
@@ -3923,7 +3919,9 @@ fn test_undecodable_message_respects_settlement_capability_and_reports_unavailab
         .subscribe(
             SubscribeRequest::new(
                 "decode-failure",
-                Topic::new_with_codec("sync.events", Utf8Codec(ContentType::TEXT_PLAIN)).expect("valid codec topic"),
+                Topic::new("sync.events")
+                    .expect("valid codec topic")
+                    .with_codec(Utf8Codec(ContentType::TEXT_PLAIN)),
             )
             .expect("valid ID"),
             move |_| {
