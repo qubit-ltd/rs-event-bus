@@ -7,15 +7,23 @@
 // =============================================================================
 //! Deterministic sync and async transport fakes for SPI contract tests.
 
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::future::pending;
+use std::future::poll_fn;
+use std::io::Error as IoError;
+use std::mem::take;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
@@ -27,6 +35,7 @@ use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderMessageMetadata;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
@@ -120,8 +129,8 @@ fn spi_error(operation: &'static str) -> SpiError {
             resource: None,
             kind: "fake_failure",
             retryable: Some(false),
-            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
-            source: Box::new(std::io::Error::other("injected fake SPI failure before admission")),
+            effect: PublishEffect::NotAccepted,
+            source: Box::new(IoError::other("injected fake SPI failure before admission")),
         };
     }
     SpiError::Operation {
@@ -130,7 +139,7 @@ fn spi_error(operation: &'static str) -> SpiError {
         resource: None,
         kind: "fake_failure",
         retryable: Some(false),
-        source: Box::new(std::io::Error::other("injected fake SPI failure")),
+        source: Box::new(IoError::other("injected fake SPI failure")),
     }
 }
 
@@ -141,7 +150,7 @@ fn conflicting_settlement_error() -> SpiError {
         resource: None,
         reason: "conflicting_disposition",
         retryable: Some(false),
-        source: Box::new(std::io::Error::other("settlement disposition is already fixed")),
+        source: Box::new(IoError::other("settlement disposition is already fixed")),
     }
 }
 
@@ -166,7 +175,7 @@ pub(crate) fn subscription_request_with_id(id: u64) -> SpiSubscriptionRequest {
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
-        std::any::TypeId::of::<u32>(),
+        TypeId::of::<u32>(),
     )
 }
 
@@ -313,7 +322,7 @@ impl EventBusSpi for FakeEventBusSpi {
 
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.calls.lock().unwrap().push("publish");
-        if std::mem::take(&mut *self.fail_next_publish.lock().unwrap()) {
+        if take(&mut *self.fail_next_publish.lock().unwrap()) {
             return Err(spi_error("publish"));
         }
         let queues = self.queues.lock().unwrap().clone();
@@ -395,7 +404,7 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
         self.calls.lock().unwrap().push("receive");
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap();
-        if std::mem::take(&mut state.fail_next_receive) {
+        if take(&mut state.fail_next_receive) {
             return Err(spi_error("receive"));
         }
         let started = Instant::now();
@@ -584,7 +593,7 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn release_subscribe(&self) {
         self.subscribe_paused.store(false, Ordering::Release);
-        for waker in std::mem::take(&mut *self.subscribe_wakers.lock().unwrap()) {
+        for waker in take(&mut *self.subscribe_wakers.lock().unwrap()) {
             waker.wake();
         }
     }
@@ -593,7 +602,7 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn release_close(&self) {
         self.close_paused.store(false, Ordering::Release);
-        for waker in std::mem::take(&mut *self.close_wakers.lock().unwrap()) {
+        for waker in take(&mut *self.close_wakers.lock().unwrap()) {
             waker.wake();
         }
     }
@@ -604,7 +613,7 @@ impl FakeAsyncEventBusSpi {
     /// Wakes provider shutdown calls paused by [`Self::pause_shutdown`].
     pub(crate) fn release_shutdown(&self) {
         self.shutdown_paused.store(false, Ordering::Release);
-        for waker in std::mem::take(&mut *self.shutdown_wakers.lock().unwrap()) {
+        for waker in take(&mut *self.shutdown_wakers.lock().unwrap()) {
             waker.wake();
         }
     }
@@ -640,7 +649,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
     }
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.lock().unwrap().push("publish");
-        if std::mem::take(&mut *self.fail_next_publish.lock().unwrap()) {
+        if take(&mut *self.fail_next_publish.lock().unwrap()) {
             return Box::pin(async { Err(spi_error("publish")) });
         }
         for (subscription_id, queue) in self.queues.lock().unwrap().clone() {
@@ -675,15 +684,15 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         let paused = self.subscribe_paused.clone();
         let wakers = self.subscribe_wakers.clone();
         Box::pin(async move {
-            std::future::poll_fn(|cx| {
+            poll_fn(|cx| {
                 if !paused.load(Ordering::Acquire) {
-                    return std::task::Poll::Ready(());
+                    return Poll::Ready(());
                 }
                 let mut waiters = wakers.lock().unwrap();
                 if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
                     waiters.push(cx.waker().clone());
                 }
-                std::task::Poll::Pending
+                Poll::Pending
             })
             .await;
             let queue = Arc::new(Mutex::new(QueueState {
@@ -720,15 +729,15 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         let paused = self.shutdown_paused.clone();
         let wakers = self.shutdown_wakers.clone();
         Box::pin(async move {
-            std::future::poll_fn(|cx| {
+            poll_fn(|cx| {
                 if !paused.load(Ordering::Acquire) {
-                    return std::task::Poll::Ready(());
+                    return Poll::Ready(());
                 }
                 let mut waiters = wakers.lock().unwrap();
                 if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
                     waiters.push(cx.waker().clone());
                 }
-                std::task::Poll::Pending
+                Poll::Pending
             })
             .await;
             Ok(ShutdownOutcome::Complete)
@@ -779,7 +788,7 @@ impl FakeAsyncEventSubscriptionSpi {
 impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
     fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.calls.lock().unwrap().push("receive");
-        if std::mem::take(&mut self.queue.lock().unwrap().panic_next_receive) {
+        if take(&mut self.queue.lock().unwrap().panic_next_receive) {
             return Box::pin(async {
                 panic!("fake async receive poll panic");
                 #[allow(unreachable_code)]
@@ -801,9 +810,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
         if self.settle_panics.swap(false, Ordering::AcqRel) {
             panic!("fake async settle call panic");
         }
-        if std::mem::take(&mut self.queue.lock().unwrap().pause_next_settle) {
+        if take(&mut self.queue.lock().unwrap().pause_next_settle) {
             return Box::pin(async {
-                std::future::pending::<()>().await;
+                pending::<()>().await;
                 Ok(())
             });
         }
@@ -811,7 +820,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             Err(spi_error("settle"))
         } else {
             let mut state = self.queue.lock().unwrap();
-            let should_fail = state.fail_settle_always || std::mem::take(&mut state.fail_next_settle);
+            let should_fail = state.fail_settle_always || take(&mut state.fail_next_settle);
             drop(state);
             if should_fail {
                 return Box::pin(async { Err(spi_error("settle")) });
@@ -844,15 +853,15 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 let mut state = queue.lock().unwrap();
                 state.closed = true;
             }
-            std::future::poll_fn(|context| {
+            poll_fn(|context| {
                 if !paused.load(Ordering::Acquire) {
-                    return std::task::Poll::Ready(());
+                    return Poll::Ready(());
                 }
                 let mut waiters = wakers.lock().unwrap();
                 if !waiters.iter().any(|waker| waker.will_wake(context.waker())) {
                     waiters.push(context.waker().clone());
                 }
-                std::task::Poll::Pending
+                Poll::Pending
             })
             .await;
             let mut state = queue.lock().unwrap();
@@ -872,13 +881,13 @@ struct ReceiveFuture {
 }
 impl Future for ReceiveFuture {
     type Output = Result<ReceiveOutcome, SpiError>;
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
         let queue = this.queue.clone();
         let timeout = this.timeout;
         let result = {
             let mut state = queue.lock().unwrap();
-            if std::mem::take(&mut state.fail_next_receive) {
+            if take(&mut state.fail_next_receive) {
                 Some(Err(spi_error("receive")))
             } else if let Some(message) = state.in_flight.take() {
                 if message.settlement().is_some() {
@@ -912,8 +921,8 @@ impl Future for ReceiveFuture {
             }
         };
         match result {
-            Some(result) => std::task::Poll::Ready(result),
-            None => std::task::Poll::Pending,
+            Some(result) => Poll::Ready(result),
+            None => Poll::Pending,
         }
     }
 }

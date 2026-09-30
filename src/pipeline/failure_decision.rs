@@ -70,5 +70,9 @@ mod tests {
             FailureDirective::DeadLetter,
             choose_failure_directive(true, [Ok(FailureDirective::DeadLetter), Err(())]),
         );
+        assert_eq!(
+            FailureDirective::Discard,
+            choose_failure_directive(true, [Err(()), Ok(FailureDirective::DeadLetter)]),
+        );
     }
 }

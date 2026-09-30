@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -18,10 +19,13 @@ use std::sync::atomic::Ordering;
 use qubit_clock::Timer;
 use qubit_id::Id;
 
+use super::AsyncPublishGuard;
 use super::AsyncSignal;
+use super::AsyncSubscribeGuard;
 use super::AsyncTracker;
 use super::async_shutdown_driver::AsyncShutdownDriver;
 use super::bus_state::BusState;
+use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::async_admission::AsyncAdmission;
@@ -30,11 +34,14 @@ use crate::facade::observer_entry::ObserverEntry;
 use crate::facade::publish_metrics::PublishMetrics;
 use crate::facade::shutdown_report::ShutdownReport;
 use crate::model::ProviderId;
+use crate::model::SubscriberId;
 use crate::pipeline::AsyncOrderingLanes;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
+use crate::pipeline::emit_diagnostic;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::EventBusCapabilities;
 
 /// Shared provider, lifecycle, and pipeline state used by every facade clone.
 pub(in crate::facade) struct AsyncEventBusInner {
@@ -43,7 +50,7 @@ pub(in crate::facade) struct AsyncEventBusInner {
     /// Stable identifier used in diagnostics and provider errors.
     pub(in crate::facade) provider_id: ProviderId,
     /// Capabilities reported by the provider at construction.
-    pub(in crate::facade) capabilities: crate::spi::EventBusCapabilities,
+    pub(in crate::facade) capabilities: EventBusCapabilities,
     /// Publisher middleware and retry pipeline shared by facade clones.
     pub(in crate::facade) publisher: PublisherPipeline,
     /// Immutable middleware, codec, and delivery configuration.
@@ -90,14 +97,14 @@ impl AsyncEventBusInner {
     /// # Returns
     /// A guard that releases the publish counter, or None after shutdown
     /// starts.
-    pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<super::AsyncPublishGuard> {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<AsyncPublishGuard> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
         self.tracker.publish_started();
         drop(state);
-        Some(super::AsyncPublishGuard::after_start(self.tracker.clone()))
+        Some(AsyncPublishGuard::after_start(self.tracker.clone()))
     }
 
     /// Starts a subscribe operation while the facade is running.
@@ -105,22 +112,23 @@ impl AsyncEventBusInner {
     /// # Returns
     /// A guard that releases the subscribe counter, or None after shutdown
     /// starts.
-    pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<super::AsyncSubscribeGuard> {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<AsyncSubscribeGuard> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
         }
         self.tracker.subscribe_started();
         drop(state);
-        Some(super::AsyncSubscribeGuard::after_start(self.tracker.clone()))
+        Some(AsyncSubscribeGuard::after_start(self.tracker.clone()))
     }
 
     /// Returns the currently active diagnostic observer callbacks.
     ///
     /// # Returns
     /// Strong references to active callbacks for one emission pass.
+    #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
         observers.retain(|entry| entry.strong_count() > 0);
         observers
             .iter()
@@ -133,25 +141,25 @@ impl AsyncEventBusInner {
     /// Sends a diagnostic to currently registered observers.
     ///
     /// # Parameters
-    /// - diagnostic: event delivered to active observers.
+    /// - `diagnostic`: event delivered to active observers.
     pub(in crate::facade) fn emit(&self, diagnostic: &Diagnostic) {
-        crate::pipeline::emit_diagnostic(&self.observer_snapshot(), diagnostic);
+        emit_diagnostic(&self.observer_snapshot(), diagnostic);
     }
 
     /// Records the first close failure for a subscription control.
     ///
     /// # Parameters
-    /// - control: subscription retaining the canonical failure.
-    /// - subscriber_id: identity associated with the provider receiver.
-    /// - error: provider error reported while closing the receiver.
+    /// - `control`: subscription retaining the canonical failure.
+    /// - `subscriber_id`: identity associated with the provider receiver.
+    /// - `error`: provider error reported while closing the receiver.
     ///
     /// # Returns
     /// The canonical failure retained by the subscription and bus.
     pub(in crate::facade) fn record_close_error(
         &self,
         control: &dyn AsyncShutdownDriver,
-        subscriber_id: &crate::model::SubscriberId,
-        error: crate::error::SpiError,
+        subscriber_id: &SubscriberId,
+        error: SpiError,
     ) -> Arc<SubscriptionCloseFailure> {
         if let Some(failure) = control.close_error() {
             return failure.clone();
@@ -160,28 +168,22 @@ impl AsyncEventBusInner {
         let failure = control.store_close_error(failure);
         self.close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(failure.clone());
-        *self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         failure
     }
 
     /// Adds a close failure reported by an unstarted subscription.
     ///
     /// # Parameters
-    /// - failure: close failure to include in the bus aggregate.
+    /// - `failure`: close failure to include in the bus aggregate.
     pub(in crate::facade) fn record_close_failure(&self, failure: Arc<SubscriptionCloseFailure>) {
         self.close_errors
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(failure);
-        *self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Returns a cached aggregate of recorded close failures, if any exist.
@@ -189,15 +191,10 @@ impl AsyncEventBusInner {
     /// # Returns
     /// Some with all close failures recorded so far, or None when there are
     /// none.
+    #[must_use]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let failures = self
-            .close_errors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut snapshot = self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
             return Some(errors.clone());
         }

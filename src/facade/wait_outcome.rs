@@ -23,6 +23,7 @@
 /// assert_eq!(outcome, WaitOutcome::Idle);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "inspect whether the wait was idle or timed out"]
 #[non_exhaustive]
 pub enum WaitOutcome {
     /// The selected provider or facade reports no outstanding work for the

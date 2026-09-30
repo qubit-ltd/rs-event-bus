@@ -31,6 +31,7 @@ use crate::error::ConfigurationError;
 /// assert_eq!(config.handler_queue_capacity(), 4);
 /// assert_eq!(config.max_subscription_workers().get(), 16);
 /// ```
+#[must_use = "scheduler limits must be applied to an event bus"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyncDeliverySchedulerConfig {
     /// Maximum number of queued and active deliveries.
@@ -70,21 +71,6 @@ impl SyncDeliverySchedulerConfig {
         })
     }
 
-    /// Sets the maximum number of active or starting subscription receive
-    /// threads.
-    ///
-    /// # Parameters
-    /// - `limit`: positive receive-thread limit.
-    ///
-    /// # Returns
-    /// This scheduler policy with the new subscription-worker bound.
-    #[must_use]
-    #[inline]
-    pub const fn with_max_subscription_workers(mut self, limit: NonZeroUsize) -> Self {
-        self.max_subscription_workers = limit;
-        self
-    }
-
     /// Returns the maximum number of active or starting subscription receive
     /// threads.
     ///
@@ -116,6 +102,20 @@ impl SyncDeliverySchedulerConfig {
     #[inline]
     pub fn handler_queue_capacity(&self) -> usize {
         self.handler_queue_capacity
+    }
+
+    /// Sets the maximum number of active or starting subscription receive
+    /// threads.
+    ///
+    /// # Parameters
+    /// - `limit`: positive receive-thread limit.
+    ///
+    /// # Returns
+    /// This scheduler policy with the new subscription-worker bound.
+    #[inline]
+    pub const fn with_max_subscription_workers(mut self, limit: NonZeroUsize) -> Self {
+        self.max_subscription_workers = limit;
+        self
     }
 }
 

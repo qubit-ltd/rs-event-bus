@@ -52,6 +52,10 @@ pub struct PublishFailureContext<T: 'static> {
 
 impl<T: 'static> Clone for PublishFailureContext<T> {
     /// Clones metadata and the shared payload owner without cloning `T`.
+    ///
+    /// # Returns
+    /// A new context with cloned metadata and shared access to the same
+    /// payload.
     fn clone(&self) -> Self {
         Self {
             payload: self.payload.clone(),
@@ -100,6 +104,7 @@ impl<T: 'static> PublishFailureContext<T> {
     /// # Returns
     /// A new shared owner of the original payload allocation.
     #[must_use]
+    #[inline]
     pub fn payload_arc(&self) -> Arc<T> {
         self.payload.clone()
     }
@@ -141,6 +146,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
+    #[must_use]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
@@ -150,8 +156,8 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The ordering key borrowed from the event, or `None` when absent.
-    #[inline]
     #[must_use = "Use the returned ordering key."]
+    #[inline]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
     }
@@ -170,8 +176,8 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The requested delay, or `None` when the event has no delay.
-    #[inline]
     #[must_use = "Use the returned delay."]
+    #[inline]
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }

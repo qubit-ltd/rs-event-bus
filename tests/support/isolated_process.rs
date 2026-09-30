@@ -7,7 +7,9 @@
 // =============================================================================
 //! Runs a potentially blocking regression case in a bounded child process.
 
+use std::env::current_exe;
 use std::process::Command;
+use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -27,22 +29,23 @@ pub(crate) fn run_case(test_name: &str, case: &str) {
 /// - `case`: value passed through `QUBIT_EVENT_BUS_ISOLATED_CASE`.
 /// - `timeout`: maximum child lifetime before it is killed and reaped.
 pub(crate) fn run_case_with_timeout(test_name: &str, case: &str, timeout: Duration) {
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let executable = current_exe().expect("test executable is available");
+    let mut child = Command::new(executable)
         .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
         .env("QUBIT_EVENT_BUS_ISOLATED_CASE", case)
         .spawn()
-        .unwrap();
+        .expect("isolated test process starts");
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait().unwrap() {
+        if let Some(status) = child.try_wait().expect("isolated process status is available") {
             assert!(status.success(), "isolated case {case} failed: {status}");
             return;
         }
         if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
+            child.kill().expect("timed-out isolated process is killed");
+            child.wait().expect("killed isolated process is reaped");
             panic!("isolated case {case} exceeded its deadlock watchdog");
         }
-        std::thread::sleep(Duration::from_millis(5));
+        sleep(Duration::from_millis(5));
     }
 }

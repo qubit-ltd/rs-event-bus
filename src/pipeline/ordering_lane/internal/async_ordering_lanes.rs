@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -51,7 +52,7 @@ impl<T> AsyncOrderingLanes<T> {
     /// A future that resolves when earlier values release the lane.
     pub(crate) fn enqueue(&self, key: OrderingLaneKey, value: T) -> AsyncOrderingTurn<T> {
         let lane = {
-            let mut lanes = self.lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut lanes = self.lanes.lock().unwrap_or_else(PoisonError::into_inner);
             lanes.retain(|_, lane| lane.strong_count() != 0);
             lanes.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
                 let lane = Arc::new(AsyncLane::default());
@@ -62,7 +63,7 @@ impl<T> AsyncOrderingLanes<T> {
         let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);
         lane.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .queue
             .push_back((ticket, Some(value), None));
         AsyncOrderingTurn {

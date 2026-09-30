@@ -24,11 +24,6 @@ mod retry;
 mod retry_terminal;
 mod subscriber_pipeline;
 
-#[cfg(test)]
-pub(crate) mod subscriber {
-    pub(crate) use super::subscriber_pipeline::DeliveryFailureAction;
-}
-
 pub(crate) use admission_tracker::AdmissionPermit;
 pub(crate) use admission_tracker::AdmissionTracker;
 pub(crate) use dead_letter::dead_letter_envelope;
@@ -57,11 +52,3 @@ pub(crate) use retry_terminal::terminal_directive;
 pub(crate) use subscriber_pipeline::DeliveryFailureAction;
 pub(crate) use subscriber_pipeline::DeliveryOutcome;
 pub(crate) use subscriber_pipeline::SubscriberPipeline;
-
-#[cfg(test)]
-#[path = "../../tests/support/publisher_pipeline_tests.rs"]
-mod publisher_pipeline_tests;
-
-#[cfg(test)]
-#[path = "../../tests/support/subscriber_pipeline_tests.rs"]
-mod subscriber_pipeline_tests;

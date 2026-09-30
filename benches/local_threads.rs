@@ -37,6 +37,7 @@ use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderOptions;
@@ -52,6 +53,7 @@ use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
@@ -299,7 +301,15 @@ fn sample_async(subscription_count: usize) -> Sample {
         }
         if !shutdown_done {
             match shutdown.as_mut().poll(&mut context) {
-                Poll::Ready(Ok(_)) => shutdown_done = true,
+                Poll::Ready(Ok(report)) => {
+                    shutdown_done = true;
+                    if report.outcome != ShutdownOutcome::Complete
+                        || report.known_abandoned_deliveries != 0
+                        || !report.provider_may_have_abandoned_deliveries
+                    {
+                        status = "shutdown_report_incomplete";
+                    }
+                }
                 Poll::Ready(Err(_)) => {
                     shutdown_done = true;
                     status = "shutdown_failed";
@@ -356,7 +366,13 @@ fn run_async_churn_probe() -> io::Result<()> {
         admissions,
         optional_number(threads)
     );
-    block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    if shutdown_report.outcome != ShutdownOutcome::Complete
+        || shutdown_report.known_abandoned_deliveries != 0
+        || !shutdown_report.provider_may_have_abandoned_deliveries
+    {
+        return Err(io::Error::other("async churn shutdown reported incomplete cleanup"));
+    }
     Ok(())
 }
 
@@ -418,7 +434,16 @@ fn run_async_routing_probe() -> io::Result<()> {
                 let started = Instant::now();
                 let result = block_on(spi.publish(message));
                 elapsed += started.elapsed().as_nanos();
-                result.map_err(io::Error::other)?;
+                let acknowledgement = result.map_err(io::Error::other)?;
+                if !matches!(
+                    acknowledgement.admission_outcome(),
+                    AdmissionOutcome::Accepted(summary)
+                        if summary.accepted == 1 && summary.filtered == 0 && summary.rejected == 0
+                ) {
+                    return Err(io::Error::other(
+                        "hot topic publish was not admitted to one destination",
+                    ));
+                }
                 let outcome = block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
                 let ReceiveOutcome::Message(mut inbound) = outcome else {
                     return Err(io::Error::other("hot topic message was not received"));
@@ -444,7 +469,10 @@ fn run_async_routing_probe() -> io::Result<()> {
 }
 
 /// Wakes the benchmark executor thread after an async task makes progress.
-struct ThreadWake(thread::Thread);
+struct ThreadWake(
+    /// Thread that resumes polling when the executor is unparked.
+    thread::Thread,
+);
 impl Wake for ThreadWake {
     /// Unparks the thread that owns this waker.
     fn wake(self: Arc<Self>) {

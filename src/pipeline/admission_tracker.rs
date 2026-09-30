@@ -60,15 +60,4 @@ impl AdmissionTracker {
                 in_flight: self.in_flight.clone(),
             })
     }
-
-    /// Returns the number of currently held permits.
-    ///
-    /// # Returns
-    /// The current permit count, read with acquire ordering.
-    #[must_use]
-    #[inline]
-    #[cfg(test)]
-    pub(crate) fn in_flight(&self) -> usize {
-        self.in_flight.load(Ordering::Acquire)
-    }
 }

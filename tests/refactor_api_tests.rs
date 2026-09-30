@@ -8,21 +8,37 @@
 //! Public contracts for the boundary refactor.
 
 use std::error::Error;
+use std::io::Error as IoError;
+use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusError;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
+use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::PublishFailure;
+use qubit_event_bus::error::ReceiveError;
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::PayloadLimits;
+use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DuplicateRiskPolicy;
 use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
+use qubit_event_bus::model::SubscriptionStopReason;
+use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 /// Supplies a codec with exact metadata matching and observable metadata input.
 struct TextCodec {
@@ -153,9 +169,7 @@ fn test_metadata_validation_schema_options_and_versions() {
 /// classification.
 #[test]
 fn test_spi_publish_error_getters_and_attempt_effect() {
-    use qubit_event_bus::error::PublishAttemptError;
-    use qubit_event_bus::error::SpiError;
-    let source = std::io::Error::other("provider unavailable");
+    let source = IoError::other("provider unavailable");
     let error = SpiError::Publish {
         provider_id: "provider".into(),
         resource: Some("topic".into()),
@@ -179,7 +193,7 @@ fn test_spi_publish_error_getters_and_attempt_effect() {
         resource: None,
         kind: "unavailable",
         retryable: Some(true),
-        source: Box::new(std::io::Error::other("unknown admission")),
+        source: Box::new(IoError::other("unknown admission")),
     };
     assert_eq!(generic.publish_effect(), PublishEffect::MayHaveBeenAccepted);
 }
@@ -187,8 +201,6 @@ fn test_spi_publish_error_getters_and_attempt_effect() {
 /// Verifies that terminal errors share a structured cause without copying it.
 #[test]
 fn test_receive_stopped_retains_shared_reason() {
-    use qubit_event_bus::error::ReceiveError;
-    use qubit_event_bus::model::SubscriptionStopReason;
     let reason = Arc::new(SubscriptionStopReason::Codec {
         event_id: EventId::new("stopped-event").expect("valid event ID"),
         error: Arc::new(CodecError::NativeTypeMismatch),
@@ -203,11 +215,6 @@ fn test_receive_stopped_retains_shared_reason() {
 /// Verifies that interception cannot replace the original publication identity.
 #[test]
 fn test_typed_interceptor_cannot_change_event_id() {
-    use qubit_event_bus::EventBus;
-    use qubit_event_bus::local::LocalEventBusConfig;
-    use qubit_event_bus::model::PublishRequest;
-    use qubit_event_bus::model::Topic;
-    use qubit_event_bus::spi::ShutdownMode;
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
     let topic = Topic::<String>::new("identity.test").expect("valid topic");
     let event_id = EventId::new("original").expect("valid event ID");
@@ -233,15 +240,15 @@ fn test_typed_interceptor_cannot_change_event_id() {
     assert_eq!(failure.event_id(), &event_id);
     assert_eq!(failure.effect(), PublishEffect::NotAccepted);
     assert!(matches!(failure.cause(), PublishError::Configuration(_)));
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 /// Verifies that receipts default to no prior uncertain admission.
 #[test]
 fn test_receipt_duplicate_possible_evidence() {
-    use qubit_event_bus::model::ProviderId;
-    use qubit_event_bus::model::PublishAcknowledgement;
-    use qubit_event_bus::model::PublishReceipt;
     let receipt = PublishReceipt::new(
         EventId::new("event").expect("valid event"),
         None,
@@ -256,9 +263,6 @@ fn test_receipt_duplicate_possible_evidence() {
 /// cause.
 #[test]
 fn test_event_bus_error_conversion_retains_publish_failure() {
-    use qubit_event_bus::EventBusError;
-    use qubit_event_bus::error::SpiError;
-
     let event_id = EventId::new("uncertain-aggregate").expect("valid event ID");
     let cause = SpiError::Publish {
         provider_id: "provider".into(),
@@ -266,7 +270,7 @@ fn test_event_bus_error_conversion_retains_publish_failure() {
         kind: "lost_response",
         retryable: Some(true),
         effect: PublishEffect::MayHaveBeenAccepted,
-        source: Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "original source")),
+        source: Box::new(IoError::new(ErrorKind::TimedOut, "original source")),
     };
     let aggregate: EventBusError = PublishFailure::new(
         event_id.clone(),
@@ -283,9 +287,9 @@ fn test_event_bus_error_conversion_retains_publish_failure() {
                 .cause()
                 .source()
                 .expect("provider cause")
-                .downcast_ref::<std::io::Error>()
+                .downcast_ref::<IoError>()
                 .expect("original source type");
-            assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+            assert_eq!(source.kind(), ErrorKind::TimedOut);
         }
         other => panic!("unexpected aggregate error: {other}"),
     }
@@ -296,9 +300,9 @@ fn test_event_bus_error_conversion_retains_publish_failure() {
 /// failure converted into EventBusError; invoking this helper may call the
 /// provider.
 fn publish_with_aggregate_error(
-    bus: &qubit_event_bus::EventBus,
-    request: qubit_event_bus::model::PublishRequest<String>,
-) -> Result<qubit_event_bus::model::PublishReceipt, qubit_event_bus::EventBusError> {
+    bus: &EventBus,
+    request: PublishRequest<String>,
+) -> Result<PublishReceipt, EventBusError> {
     Ok(bus.publish(request)?)
 }
 
@@ -306,15 +310,11 @@ fn publish_with_aggregate_error(
 /// metadata.
 #[test]
 fn test_facade_publish_question_mark_preserves_failure() {
-    use qubit_event_bus::EventBus;
-    use qubit_event_bus::EventBusError;
-    use qubit_event_bus::local::LocalEventBusConfig;
-    use qubit_event_bus::model::PublishRequest;
-    use qubit_event_bus::model::Topic;
-    use qubit_event_bus::spi::ShutdownMode;
-
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
-    bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
     let event_id = EventId::new("closed-aggregate").expect("valid event ID");
     let request = PublishRequest::builder()
         .topic(Topic::<String>::new("aggregate.test").expect("valid topic"))

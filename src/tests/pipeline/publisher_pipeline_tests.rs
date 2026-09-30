@@ -7,9 +7,22 @@
 // =============================================================================
 //! Shared public-pipeline contract checks for publisher behavior.
 
+use std::error::Error;
 use std::future::Future;
+use std::io::Error as IoError;
+use std::num::NonZeroUsize;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
+use std::thread::Thread;
+use std::thread::current;
+use std::thread::park;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_clock::MonotonicClock;
 use qubit_clock::StdMonotonicClock;
@@ -18,13 +31,18 @@ use qubit_retry::RetryPolicy;
 
 use crate::codec::EventCodec;
 use crate::error::CodecError;
+use crate::error::EventBusError;
 use crate::error::PublishError;
+use crate::error::PublishFailure;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::ContentType;
 use crate::model::DestinationAdmission;
+use crate::model::EventEnvelope;
+use crate::model::EventId;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
+use crate::model::PublishEffect;
 use crate::model::PublishOptions;
 use crate::model::PublishRequest;
 use crate::model::SchemaId;
@@ -35,8 +53,10 @@ use crate::pipeline::GlobalPublisherInterceptor;
 use crate::pipeline::PipelineFailureOrigin;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DurabilityCapability;
+use crate::spi::EncodedPayload;
 use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
 use crate::spi::EventSubscriptionSpi;
@@ -51,6 +71,7 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiFuture;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::SubscriptionModes;
 use crate::spi::TransportPayload;
 
 #[derive(Default)]
@@ -75,7 +96,7 @@ impl EventBusSpi for FakeBus {
             OrderingCapability::PerKey,
             DelayedDeliveryCapability::Native,
             DurabilityCapability::Ephemeral,
-            crate::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -91,11 +112,11 @@ impl EventBusSpi for FakeBus {
         if state.calls <= state.fail_count {
             return Err(SpiError::Publish {
                 provider_id: "fake".into(),
-                effect: crate::model::PublishEffect::NotAccepted,
+                effect: PublishEffect::NotAccepted,
                 resource: Some(message.topic().as_str().into()),
                 kind: "transient",
                 retryable: Some(true),
-                source: Box::new(std::io::Error::other("temporary failure")),
+                source: Box::new(IoError::other("temporary failure")),
             });
         }
         if state.reject_destination {
@@ -135,7 +156,7 @@ impl AsyncEventBusSpi for FakeBus {
     fn subscribe<'a>(
         &'a self,
         _request: SpiSubscriptionRequest,
-    ) -> SpiFuture<'a, Result<Box<dyn crate::spi::AsyncEventSubscriptionSpi>, SpiError>> {
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         Box::pin(async { unreachable!("publisher tests do not subscribe") })
     }
 
@@ -163,7 +184,7 @@ fn make_pipeline(_bus: &Arc<FakeBus>) -> PublisherPipeline {
         ProviderId::new("fake").unwrap(),
         Arc::default(),
         EventBusSpi::capabilities(_bus.as_ref()),
-        std::num::NonZeroUsize::new(1_048_576).unwrap(),
+        NonZeroUsize::new(1_048_576).unwrap(),
     )
 }
 
@@ -171,15 +192,16 @@ fn request(options: PublishOptions<String>) -> PublishRequest<String> {
     PublishRequest::builder()
         .topic(Topic::new("orders.created").unwrap())
         .payload("order-1".to_owned())
-        .event_id(crate::model::EventId::new("test-event").unwrap())
+        .event_id(EventId::new("test-event").unwrap())
         .options(options)
         .build()
         .unwrap()
 }
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    struct ThreadWake(std::thread::Thread);
-    impl std::task::Wake for ThreadWake {
+/// Polls a runtime-neutral future to completion on the current test thread.
+fn block_on<F: Future>(future: F) -> F::Output {
+    struct ThreadWake(Thread);
+    impl Wake for ThreadWake {
         fn wake(self: Arc<Self>) {
             self.0.unpark();
         }
@@ -187,13 +209,13 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
             self.0.unpark();
         }
     }
-    let waker = std::task::Waker::from(Arc::new(ThreadWake(std::thread::current())));
-    let mut context = std::task::Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
+    let waker = Waker::from(Arc::new(ThreadWake(current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
     loop {
         match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(result) => return result,
-            std::task::Poll::Pending => std::thread::park(),
+            Poll::Ready(result) => return result,
+            Poll::Pending => park(),
         }
     }
 }
@@ -212,7 +234,7 @@ impl EventCodec<String> for StringCodec {
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::from(value.as_bytes()))
     }
-    fn decode(&self, payload: &crate::spi::EncodedPayload) -> Result<String, CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
         String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
@@ -224,7 +246,7 @@ fn test_typed_interceptor_runs_before_global_and_drop_short_circuits_spi() {
     let (spi, state) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .interceptor(|mut envelope: crate::model::EventEnvelope<String>| {
+        .interceptor(|mut envelope: EventEnvelope<String>| {
             envelope.set_header("typed", "yes")?;
             Ok(Some(envelope))
         })
@@ -262,9 +284,9 @@ fn test_retry_exhaustion_preserves_retry_source_and_failure_origin() {
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
     assert!(matches!(
         failure.error(),
-        crate::error::EventBusError::Publish(PublishError::Retry(_))
+        EventBusError::Publish(PublishError::Retry(_))
     ));
-    assert!(std::error::Error::source(failure.error()).is_some());
+    assert!(Error::source(failure.error()).is_some());
 }
 
 #[test]
@@ -283,17 +305,13 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
     let (spi, _) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .interceptor(
-            |_| -> Result<Option<crate::model::EventEnvelope<String>>, PublishError> {
-                panic!("typed interceptor failed")
-            },
-        )
+        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> { panic!("typed interceptor failed") })
         .build();
     let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Interceptor);
     assert!(matches!(
         failure.error(),
-        crate::error::EventBusError::Publish(PublishError::InterceptorPanicked { scope: "typed", .. })
+        EventBusError::Publish(PublishError::InterceptorPanicked { scope: "typed", .. })
     ));
 }
 
@@ -311,7 +329,7 @@ fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let encoded_request = PublishRequest::builder()
         .topic(topic)
         .payload("serialized".to_owned())
-        .event_id(crate::model::EventId::new("encoded-event").unwrap())
+        .event_id(EventId::new("encoded-event").unwrap())
         .build()
         .unwrap();
     pipeline.publish(spi.as_ref(), encoded_request, &[], &[]).unwrap();
@@ -331,7 +349,7 @@ fn test_native_payload_does_not_require_clone() {
     let request = PublishRequest::builder()
         .topic(Topic::<NonClonePayload>::new("orders.native").unwrap())
         .payload(NonClonePayload)
-        .event_id(crate::model::EventId::new("non-clone-event").unwrap())
+        .event_id(EventId::new("non-clone-event").unwrap())
         .build()
         .unwrap();
     pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
@@ -352,7 +370,7 @@ fn test_native_and_encoded_provider_prefers_native_payload() {
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("hybrid".to_owned())
-        .event_id(crate::model::EventId::new("hybrid-event").unwrap())
+        .event_id(EventId::new("hybrid-event").unwrap())
         .build()
         .unwrap();
     pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap();
@@ -396,12 +414,9 @@ fn test_async_publish_is_runtime_neutral() {
         &[],
         StdMonotonicClock::new().new_timer(),
     );
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    assert!(matches!(
-        future.as_mut().poll(&mut context),
-        std::task::Poll::Ready(Ok(_))
-    ));
+    let mut future = pin!(future);
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(future.as_mut().poll(&mut context), Poll::Ready(Ok(_))));
     assert_eq!(state.lock().unwrap().calls, 1);
 }
 
@@ -434,7 +449,7 @@ fn test_publish_error_observers_receive_shared_non_clone_payload_and_metadata() 
     let pipeline = make_pipeline(&spi);
     let seen = Arc::new(Mutex::new(None));
     let capture = seen.clone();
-    let timestamp = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
+    let timestamp = SystemTime::UNIX_EPOCH + Duration::from_secs(123);
     let options = PublishOptions::<NonClonePayload>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
         .error_handler(move |context, _error| {
@@ -452,11 +467,11 @@ fn test_publish_error_observers_receive_shared_non_clone_payload_and_metadata() 
     let request = PublishRequest::builder()
         .topic(Topic::<NonClonePayload>::new("orders.native").unwrap())
         .payload(NonClonePayload { value: "payload" })
-        .event_id(crate::model::EventId::new("failure-event").unwrap())
+        .event_id(EventId::new("failure-event").unwrap())
         .header("trace", "trace-1")
         .ordering_key("order-key")
         .timestamp(timestamp)
-        .delay(std::time::Duration::from_secs(5))
+        .delay(Duration::from_secs(5))
         .options(options)
         .build()
         .unwrap();
@@ -470,7 +485,7 @@ fn test_publish_error_observers_receive_shared_non_clone_payload_and_metadata() 
     assert_eq!(observed.3.as_deref(), Some("trace-1"));
     assert_eq!(observed.4.as_deref(), Some("order-key"));
     assert_eq!(observed.5, timestamp);
-    assert_eq!(observed.6, Some(std::time::Duration::from_secs(5)));
+    assert_eq!(observed.6, Some(Duration::from_secs(5)));
 }
 
 #[test]
@@ -494,15 +509,12 @@ fn test_publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
     let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
     assert_eq!(*calls.lock().unwrap(), ["panicking", "later"]);
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
-    let crate::error::EventBusError::Publish(PublishError::ErrorHandlerPanicked { source, .. }) = failure.error()
-    else {
+    let EventBusError::Publish(PublishError::ErrorHandlerPanicked { source, .. }) = failure.error() else {
         panic!("expected structured publish observer panic, got {:?}", failure.error());
     };
     assert!(matches!(
-        source
-            .downcast_ref::<crate::error::PublishFailure>()
-            .map(crate::error::PublishFailure::cause),
+        source.downcast_ref::<PublishFailure>().map(PublishFailure::cause),
         Some(PublishError::Retry(_))
     ));
-    assert!(std::error::Error::source(source.as_ref()).is_some());
+    assert!(Error::source(source.as_ref()).is_some());
 }

@@ -28,6 +28,7 @@ use super::SubscriberId;
 /// );
 /// assert_eq!(admission.status(), &AdmissionStatus::Accepted);
 /// ```
+#[must_use = "destination admission contains the provider decision for a subscriber"]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DestinationAdmission {
     /// Bus-local subscription identifier for this destination.
@@ -48,6 +49,7 @@ impl DestinationAdmission {
     ///
     /// # Returns
     /// A destination result containing the supplied identifiers and status.
+    #[inline]
     pub fn new(subscription_id: Id, subscriber_id: SubscriberId, status: AdmissionStatus) -> Self {
         Self {
             subscription_id,
@@ -55,6 +57,7 @@ impl DestinationAdmission {
             status,
         }
     }
+
     /// Returns the bus-local subscription object ID.
     ///
     /// # Returns
@@ -64,6 +67,7 @@ impl DestinationAdmission {
     pub fn subscription_id(&self) -> Id {
         self.subscription_id
     }
+
     /// Returns the logical subscriber ID.
     ///
     /// # Returns
@@ -73,6 +77,7 @@ impl DestinationAdmission {
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
+
     /// Returns admission status; it does not report handler completion.
     ///
     /// # Returns

@@ -60,7 +60,7 @@ impl<T: 'static> DeadLetterEvent<T> {
     ///
     /// # Returns
     /// The original event borrowed from this dead-letter payload.
-    #[must_use = "the logical subscriber identifies which consumer failed"]
+    #[must_use = "the original event contains the source of this dead letter"]
     #[inline]
     pub fn original_event(&self) -> &EventEnvelope<T> {
         &self.original_event
@@ -72,6 +72,7 @@ impl<T: 'static> DeadLetterEvent<T> {
     /// # Returns
     /// A cloned shared owner of the original event.
     #[must_use]
+    #[inline]
     pub fn original_event_arc(&self) -> Arc<EventEnvelope<T>> {
         Arc::clone(&self.original_event)
     }
@@ -94,6 +95,7 @@ impl<T: 'static> DeadLetterEvent<T> {
     /// # Returns
     /// The retained failure description.
     #[must_use]
+    #[inline]
     pub fn reason(&self) -> &str {
         &self.reason
     }

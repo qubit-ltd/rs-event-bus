@@ -7,6 +7,7 @@
 // =============================================================================
 //! Graceful and immediate shutdown failures.
 
+use std::io::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,7 +41,7 @@ pub enum ShutdownError {
     CoordinatorStart(
         /// Operating-system error from starting the coordinator thread.
         #[source]
-        std::io::Error,
+        Error,
     ),
     /// A lifecycle guard rejected shutdown.
     #[error(transparent)]

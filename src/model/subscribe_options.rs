@@ -97,6 +97,7 @@ pub type AsyncSubscriberInterceptor<T> = dyn Fn(Delivery<T>, AsyncSubscriberNext
 ///     .build();
 /// assert_eq!(options.ack_mode(), AckMode::Manual);
 /// ```
+#[must_use = "subscription options must be applied to a subscription request"]
 pub struct SubscribeOptions<T: 'static> {
     /// Handler acknowledgement behavior.
     pub(crate) ack_mode: AckMode,

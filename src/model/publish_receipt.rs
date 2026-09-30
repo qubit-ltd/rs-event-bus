@@ -69,6 +69,8 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// A receipt preserving input and dispatched identity separately.
+    #[must_use]
+    #[inline]
     pub fn new(
         input_event_id: EventId,
         dispatched_event_id: Option<EventId>,
@@ -94,19 +96,6 @@ impl PublishReceipt {
     pub fn duplicate_possible(&self) -> bool {
         self.duplicate_possible
     }
-    /// Attaches retry evidence without changing provider admission information.
-    ///
-    /// # Parameters
-    /// - `value`: whether an earlier failed attempt had uncertain admission.
-    ///
-    /// # Returns
-    /// This receipt with the supplied duplicate possibility.
-    #[must_use]
-    pub fn with_duplicate_possible(mut self, value: bool) -> Self {
-        self.duplicate_possible = value;
-        self
-    }
-
     /// Returns the original event ID before publisher interception.
     ///
     /// # Returns
@@ -120,8 +109,8 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The dispatched identifier, or `None` when publication was dropped.
-    #[inline]
     #[must_use = "Use the returned dispatched event id."]
+    #[inline]
     pub fn dispatched_event_id(&self) -> Option<&EventId> {
         self.dispatched_event_id.as_ref()
     }
@@ -142,7 +131,6 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The provider or interceptor's admission report.
-    #[must_use]
     #[inline]
     pub fn acknowledgement(&self) -> &PublishAcknowledgement {
         &self.acknowledgement
@@ -156,6 +144,7 @@ impl PublishReceipt {
     /// # Returns
     /// The admission outcome reported by the provider or publisher interceptor.
     #[must_use = "Use the returned admission outcome."]
+    #[inline]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         self.acknowledgement.admission_outcome()
     }
@@ -178,6 +167,20 @@ impl PublishReceipt {
             AdmissionOutcome::NoDestinations => Some(AdmissionSummary::default()),
             AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
         }
+    }
+
+    /// Attaches retry evidence without changing provider admission information.
+    ///
+    /// # Parameters
+    /// - `value`: whether an earlier failed attempt had uncertain admission.
+    ///
+    /// # Returns
+    /// This receipt with the supplied duplicate possibility.
+    #[must_use]
+    #[inline]
+    pub fn with_duplicate_possible(mut self, value: bool) -> Self {
+        self.duplicate_possible = value;
+        self
     }
 
     /// Checks whether reported destination admissions meet `requirement`.

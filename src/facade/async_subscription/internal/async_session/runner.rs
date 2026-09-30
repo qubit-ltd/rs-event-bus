@@ -8,6 +8,7 @@
 //! Async session receive loop and caller-driven runner.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -17,6 +18,7 @@ use super::super::AsyncSubscriptionControl;
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::ReceiveError;
+use crate::error::SpiError;
 use crate::facade::async_event_bus::catch_spi_future;
 use crate::facade::async_subscription::AsyncRunnerGuard;
 use crate::facade::async_subscription::AsyncSession;
@@ -29,8 +31,11 @@ use crate::facade::async_subscription::internal::admission_wait_event::Admission
 use crate::facade::async_subscription::internal::async_runner_event::AsyncRunnerEvent;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
 use crate::model::Delivery;
+use crate::model::SubscriptionStopReason;
+use crate::spi::DurabilityCapability;
 use crate::spi::ReceiveOutcome;
 use crate::spi::ShutdownMode;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Runs this subscription until its provider closes or bus shutdown
@@ -76,7 +81,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let result = self.run_loop(handler).await;
         if let Err(failure) = self.close_inner(control).await {
             let error = failure.error();
-            return Err(ReceiveError::Spi(crate::error::SpiError::Operation {
+            return Err(ReceiveError::Spi(SpiError::Operation {
                 provider_id: error.provider_id().into(),
                 operation: error.operation(),
                 resource: error.resource().map(Into::into),
@@ -118,8 +123,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     let registration = SignalRegistration::new(self.signals.signal());
                     let tasks = &mut self.tasks;
                     let abandoned = &self.inner.abandoned_deliveries;
-                    let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
-                    let event = std::future::poll_fn(|cx| {
+                    let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
+                    let event = poll_fn(|cx| {
                         if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                             discard_unstarted_tasks(tasks, abandoned, ephemeral);
                             if tasks.is_empty() {
@@ -229,7 +234,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         None => Ok(()),
                     };
                 }
-                let completed = std::future::poll_fn(|cx| {
+                let completed = poll_fn(|cx| {
                     for index in 0..self.tasks.len() {
                         if let Poll::Ready(delivery) = self.tasks[index].future.as_mut().poll(cx) {
                             drop(self.tasks.swap_remove(index));
@@ -245,10 +250,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let provider_id = self.inner.provider_id.clone();
             let resource = self.subscriber_id.as_str().to_owned();
             let receiver = self.receiver.as_mut().ok_or(ReceiveError::Closed)?;
-            let receive =
-                crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
-                    receiver.receive(Duration::MAX)
-                });
+            let receive = catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
+                receiver.receive(Duration::MAX)
+            });
             let mut receive = Box::pin(async move {
                 match receive {
                     Ok(future) => catch_spi_future(future, &provider_id, "receive", Some(&resource)).await,
@@ -258,8 +262,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let registration = SignalRegistration::new(self.signals.signal());
             let tasks = &mut self.tasks;
             let abandoned = &self.inner.abandoned_deliveries;
-            let ephemeral = self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral;
-            let event = std::future::poll_fn(|cx| {
+            let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
+            let event = poll_fn(|cx| {
                 if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
                     discard_unstarted_tasks(tasks, abandoned, ephemeral);
                     if tasks.is_empty() {
@@ -299,7 +303,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         let message = error.to_string();
                         if self
                             .signals
-                            .fail_receive(crate::model::SubscriptionStopReason::Provider { error: Arc::new(error) })
+                            .fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) })
                         {
                             self.inner.emit(&Diagnostic::InternalFailure {
                                 origin: "receive".into(),

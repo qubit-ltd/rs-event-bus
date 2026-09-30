@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Releases one already-counted publish operation when the call completes.
+#[must_use = "the publish operation guard must remain alive until completion"]
 pub(in crate::facade) struct AsyncPublishGuard(
     /// Tracker whose active publish count this guard owns.
     Arc<AsyncTracker>,
@@ -25,6 +26,7 @@ impl AsyncPublishGuard {
     ///
     /// # Returns
     /// A guard that releases the publish count when dropped.
+    #[inline]
     pub(in crate::facade) fn after_start(tracker: Arc<AsyncTracker>) -> Self {
         Self(tracker)
     }

@@ -38,6 +38,7 @@ use crate::model::EventId;
 /// }
 /// ```
 #[derive(Clone, Debug, thiserror::Error)]
+#[must_use]
 pub enum SubscriptionStopReason {
     /// Codec or payload boundary failure after event identity was obtained.
     #[error("subscription stopped at event {event_id:?}: {error}")]

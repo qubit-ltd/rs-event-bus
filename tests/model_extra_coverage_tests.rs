@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Additional coverage for static model identifiers, codecs, and publish
+//! results.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
@@ -114,7 +116,7 @@ impl EventCodec<String> for StringCodec {
 
     fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
         let bytes = payload.bytes();
-        String::from_utf8(bytes.to_vec()).map_err(|error| CodecError::Encode {
+        String::from_utf8(bytes.to_vec()).map_err(|error| CodecError::Decode {
             source: Box::new(error),
         })
     }
@@ -132,6 +134,16 @@ fn test_topic_codec_metadata_and_publish_options_are_accessible() {
     assert_eq!(topic.payload_type_name(), std::any::type_name::<String>());
     assert_eq!(topic.schema_id().map(SchemaId::as_str), Some("string-v1"));
     assert_eq!(topic.codec().expect("codec").content_type().as_str(), "text/plain");
+    let decode_error = topic
+        .codec()
+        .expect("codec")
+        .decode(&EncodedPayload::new(
+            Arc::from([0xff_u8]),
+            ContentType::new("text/plain").expect("valid MIME type"),
+            None,
+        ))
+        .expect_err("invalid UTF-8 cannot decode as a string");
+    assert!(matches!(decode_error, CodecError::Decode { .. }));
     assert_eq!(topic.clone(), topic);
     assert_eq!(topic, topic.clone());
     assert!(format!("{topic:?}").contains("strings"));

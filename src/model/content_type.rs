@@ -55,6 +55,32 @@ impl ContentType {
         Self(Cow::Borrowed(value))
     }
 
+    /// Creates a MIME content type from two nonempty ASCII token components.
+    ///
+    /// The value must contain exactly one slash, with no whitespace or
+    /// parameters. Each component may contain ASCII letters, digits, `-`, `_`,
+    /// `+`, or `.`.
+    ///
+    /// # Parameters
+    /// - `value`: the MIME type string to validate and copy.
+    ///
+    /// # Returns
+    /// The validated content type, stored as an owned immutable string.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] for `content_type` when
+    /// either component is empty or contains a character outside the accepted
+    /// ASCII token set.
+    pub fn new(value: &str) -> Result<Self, ConfigurationError> {
+        if !is_valid_content_type(value) {
+            return Err(ConfigurationError::InvalidField {
+                field: "content_type",
+                message: "expected a MIME type".into(),
+            });
+        }
+        Ok(Self(Cow::Owned(value.into())))
+    }
+
     /// The `text/plain` content type.
     pub const TEXT_PLAIN: Self = Self::new_static("text/plain");
 
@@ -81,32 +107,6 @@ impl ContentType {
 
     /// The `application/protobuf` content type.
     pub const APPLICATION_PROTOBUF: Self = Self::new_static("application/protobuf");
-
-    /// Creates a MIME content type from two nonempty ASCII token components.
-    ///
-    /// The value must contain exactly one slash, with no whitespace or
-    /// parameters. Each component may contain ASCII letters, digits, `-`, `_`,
-    /// `+`, or `.`.
-    ///
-    /// # Parameters
-    /// - `value`: the MIME type string to validate and copy.
-    ///
-    /// # Returns
-    /// The validated content type, stored as an owned immutable string.
-    ///
-    /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] for `content_type` when
-    /// either component is empty or contains a character outside the accepted
-    /// ASCII token set.
-    pub fn new(value: &str) -> Result<Self, ConfigurationError> {
-        if !is_valid_content_type(value) {
-            return Err(ConfigurationError::InvalidField {
-                field: "content_type",
-                message: "expected a MIME type".into(),
-            });
-        }
-        Ok(Self(Cow::Owned(value.into())))
-    }
 
     /// Returns the validated MIME type string.
     ///
@@ -148,6 +148,7 @@ const fn is_valid_content_type(value: &str) -> bool {
 ///
 /// # Returns
 /// `true` when nonempty and composed only of accepted ASCII token bytes.
+#[must_use]
 const fn valid_mime_token(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {

@@ -10,15 +10,18 @@
 
 mod internal;
 
+use std::any::Any;
 use std::future::Future;
+use std::io::Error;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 
-pub(crate) use internal::DeliveryFailureAction;
-pub(crate) use internal::DeliveryOutcome;
 use qubit_retry::RetryError;
 
 use self::internal::CatchUnwindFuture;
+pub(crate) use self::internal::DeliveryFailureAction;
+pub(crate) use self::internal::DeliveryOutcome;
 use crate::error::CapabilityError;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
@@ -178,18 +181,6 @@ impl SubscriberPipeline {
         Self::finish_attempt(mode, &delivery, result)
     }
 
-    /// Wraps one failed attempt as a `qubit-retry` input without losing source.
-    ///
-    /// # Parameters
-    /// - `error`: Delivery failure to retain as a retry error source.
-    ///
-    /// # Returns
-    /// A retry input tagged as a delivery attempt.
-    #[cfg(test)]
-    pub(crate) fn attempt_error(error: DeliveryError) -> DeliveryAttemptError {
-        DeliveryAttemptError::new("delivery", None, error)
-    }
-
     /// Preserves retry terminal metadata and its full source chain publicly.
     ///
     /// # Parameters
@@ -197,7 +188,6 @@ impl SubscriberPipeline {
     ///
     /// # Returns
     /// A delivery error retaining the complete retry error chain.
-    #[inline]
     pub(crate) fn retry_error(error: RetryError<DeliveryAttemptError>) -> DeliveryError {
         DeliveryError::Retry(Box::new(error))
     }
@@ -214,6 +204,7 @@ impl SubscriberPipeline {
     ///
     /// # Returns
     /// Success or the appropriate handler/acknowledgement failure.
+    #[inline]
     pub(crate) fn finish_attempt<T: 'static>(
         mode: AckMode,
         delivery: &Delivery<T>,
@@ -241,6 +232,7 @@ impl SubscriberPipeline {
     ///
     /// # Returns
     /// The corresponding action performed by the facade.
+    #[inline]
     pub(crate) fn failure_action(directive: FailureDirective) -> DeliveryFailureAction {
         match directive {
             FailureDirective::Retry => DeliveryFailureAction::RetryLocally,
@@ -260,6 +252,8 @@ impl SubscriberPipeline {
     /// # Returns
     /// The provider disposition required by the action, or `None` when no
     /// settlement applies.
+    #[must_use]
+    #[inline]
     pub(crate) fn failure_disposition(
         action: DeliveryFailureAction,
         capability: SettlementCapabilities,
@@ -274,24 +268,6 @@ impl SubscriberPipeline {
                 DeliveryFailureAction::DeadLetter | DeliveryFailureAction::Discard,
                 SettlementCapabilities::AcceptRetryReject,
             ) => Some(DeliveryDisposition::Reject),
-        }
-    }
-
-    /// Maps successful handler completion to provider acceptance when possible.
-    ///
-    /// # Parameters
-    /// - `capability`: Provider settlement operations supported by the
-    ///   transport.
-    ///
-    /// # Returns
-    /// An acceptance disposition when the provider supports settlement.
-    #[cfg(test)]
-    pub(crate) fn success_disposition(capability: SettlementCapabilities) -> Option<DeliveryDisposition> {
-        match capability {
-            SettlementCapabilities::None => None,
-            SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject => {
-                Some(DeliveryDisposition::Accept)
-            }
         }
     }
 
@@ -386,6 +362,7 @@ impl SubscriberPipeline {
 ///
 /// # Returns
 /// A callback representing the remaining middleware and handler chain.
+#[must_use]
 fn sync_next<T: 'static>(
     index: usize,
     chain: Vec<Arc<SubscriberInterceptor<T>>>,
@@ -393,11 +370,11 @@ fn sync_next<T: 'static>(
 ) -> Arc<SyncDeliveryHandler<T>> {
     Arc::new(move |delivery| {
         if index == chain.len() {
-            return std::panic::catch_unwind(AssertUnwindSafe(|| handler(delivery)))
+            return catch_unwind(AssertUnwindSafe(|| handler(delivery)))
                 .unwrap_or_else(|panic| Err(panic_to_delivery_error(panic)));
         }
         let next = sync_next(index + 1, chain.clone(), handler.clone());
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
+        catch_unwind(AssertUnwindSafe(|| {
             (chain[index])(delivery, Box::new(move |delivery| next(delivery)))
         }))
         .unwrap_or_else(|panic| Err(panic_to_delivery_error(panic)))
@@ -416,6 +393,7 @@ fn sync_next<T: 'static>(
 ///
 /// # Returns
 /// A callback representing the remaining middleware and handler chain.
+#[must_use]
 fn async_next<T: 'static>(
     index: usize,
     chain: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
@@ -423,12 +401,12 @@ fn async_next<T: 'static>(
 ) -> Arc<AsyncDeliveryHandler<T>> {
     Arc::new(move |delivery| {
         if index == chain.len() {
-            let future = std::panic::catch_unwind(AssertUnwindSafe(|| handler(delivery)))
+            let future = catch_unwind(AssertUnwindSafe(|| handler(delivery)))
                 .unwrap_or_else(|panic| Box::pin(async move { Err(panic_to_delivery_error(panic)) }));
             return catch_async_panic(future);
         }
         let next = async_next(index + 1, chain.clone(), handler.clone());
-        let future = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let future = catch_unwind(AssertUnwindSafe(|| {
             (chain[index])(delivery, Box::new(move |delivery| next(delivery)))
         }))
         .unwrap_or_else(|panic| Box::pin(async move { Err(panic_to_delivery_error(panic)) }));
@@ -468,9 +446,9 @@ where
 ///
 /// # Returns
 /// A handler error containing a stable message derived from the payload type.
-fn panic_to_delivery_error(panic: Box<dyn std::any::Any + Send>) -> DeliveryError {
+fn panic_to_delivery_error(panic: Box<dyn Any + Send>) -> DeliveryError {
     DeliveryError::Handler {
-        source: Box::new(std::io::Error::other(panic_message(panic.as_ref()))),
+        source: Box::new(Error::other(panic_message(panic.as_ref()))),
     }
 }
 
@@ -482,7 +460,8 @@ fn panic_to_delivery_error(panic: Box<dyn std::any::Any + Send>) -> DeliveryErro
 ///
 /// # Returns
 /// A stable message distinguishing string and non-string payloads.
-fn panic_message(panic: &(dyn std::any::Any + Send)) -> &'static str {
+#[must_use]
+fn panic_message(panic: &(dyn Any + Send)) -> &'static str {
     if panic.is::<&'static str>() || panic.is::<String>() {
         "subscriber middleware or handler panicked"
     } else {
@@ -500,6 +479,6 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &'static str {
 /// A delivery handler error wrapping the supplied message.
 fn ack_state_error(message: &'static str) -> DeliveryError {
     DeliveryError::Handler {
-        source: Box::new(std::io::Error::other(message)),
+        source: Box::new(Error::other(message)),
     }
 }

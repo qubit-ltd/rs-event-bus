@@ -7,6 +7,7 @@
 // =============================================================================
 //! Asynchronous event bus subscribing operations.
 
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 
 use qubit_id::Id;
@@ -17,13 +18,19 @@ use crate::AsyncSubscription;
 use crate::CapabilityError;
 use crate::SubscribeError;
 use crate::codec::resolve_codec;
+use crate::error::ConfigurationError;
 use crate::facade::async_event_bus::BusState;
 use crate::facade::async_event_bus::catch_spi_future;
+use crate::model::DeadLetterAdmissionPolicy;
+use crate::model::OrderingPolicy;
 use crate::model::SubscribeRequest;
+use crate::pipeline::SubscriberPipeline;
 use crate::spi::PayloadModes;
+use crate::spi::PublishVisibility;
 use crate::spi::ShutdownMode;
 use crate::spi::SpiSubscriptionRequest;
 use crate::spi::TopicAddress;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl AsyncEventBus {
     /// Creates an asynchronous provider subscription without spawning a task.
@@ -53,19 +60,15 @@ impl AsyncEventBus {
         let _subscribe = self.inner.begin_subscribe().ok_or(SubscribeError::Closed)?;
         let (subscriber_id, topic, options) = request.into_parts();
         if !options.interceptors().is_empty() || self.inner.facade_config.has_sync_subscriber_interceptors::<T>() {
-            return Err(SubscribeError::Configuration(
-                crate::error::ConfigurationError::InvalidField {
-                    field: "sync_subscriber_interceptor",
-                    message: "AsyncEventBus requires async subscriber middleware".into(),
-                },
-            ));
+            return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "sync_subscriber_interceptor",
+                message: "AsyncEventBus requires async subscriber middleware".into(),
+            }));
         }
         let capabilities = self.inner.capabilities;
         let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
-        crate::pipeline::SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == crate::model::OrderingPolicy::PerKey
-            && !capabilities.ordering().supports_per_key()
-        {
+        SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
+        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "ordering.per_key",
             }));
@@ -73,10 +76,10 @@ impl AsyncEventBus {
         if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
             return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
         }
-        crate::pipeline::SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
+        SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
         if options.dead_letter().is_some_and(|policy| {
-            policy.admission_policy() == crate::model::DeadLetterAdmissionPolicy::KnownDestination
-                && capabilities.publish_visibility() == crate::spi::PublishVisibility::Opaque
+            policy.admission_policy() == DeadLetterAdmissionPolicy::KnownDestination
+                && capabilities.publish_visibility() == PublishVisibility::Opaque
         }) {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "dead_letter.known_destination_admission",
@@ -84,17 +87,18 @@ impl AsyncEventBus {
         }
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = Id::new(raw_id);
-        let spi_request = SpiSubscriptionRequest::new(
-            id,
-            TopicAddress::new(topic.name())?,
-            subscriber_id.clone(),
-            options.consumer_group().cloned(),
-            options.durability(),
-            options.start_position().clone(),
-            options.provider_options().clone(),
-            topic.payload_type_id(),
-        );
-        let subscribe = crate::spi::panic_boundary::catch_spi_call(
+        let spi_request = SpiSubscriptionRequest::builder()
+            .subscription_id(id)
+            .topic(TopicAddress::new(topic.name())?)
+            .subscriber_id(subscriber_id.clone())
+            .group(options.consumer_group().cloned())
+            .durability(options.durability())
+            .start_position(options.start_position().clone())
+            .provider_options(options.provider_options().clone())
+            .payload_type_id(topic.payload_type_id())
+            .build()
+            .expect("all provider subscription request fields are configured");
+        let subscribe = catch_spi_call(
             self.inner.provider_id.as_str(),
             "subscribe",
             Some(subscriber_id.as_str()),
@@ -117,18 +121,14 @@ impl AsyncEventBus {
             receiver,
         );
         let admitted = {
-            let state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
             if *state != BusState::Running {
                 false
             } else {
                 self.inner
                     .controls
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .insert(id, control.clone());
                 true
             }

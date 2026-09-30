@@ -29,6 +29,9 @@ pub(in crate::local) struct DelayedQueueHead {
 
 impl PartialEq for DelayedQueueHead {
     /// Compares heap identity by deadline and insertion sequence.
+    ///
+    /// # Returns
+    /// Whether both delayed heads have the same deadline and sequence.
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline && self.sequence == other.sequence
     }
@@ -38,6 +41,9 @@ impl Eq for DelayedQueueHead {}
 
 impl PartialOrd for DelayedQueueHead {
     /// Orders delayed heads by deadline, then by insertion sequence.
+    ///
+    /// # Returns
+    /// The ordering wrapped in `Some`; delayed heads always have a total order.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -45,6 +51,9 @@ impl PartialOrd for DelayedQueueHead {
 
 impl Ord for DelayedQueueHead {
     /// Orders delayed heads by deadline, then by insertion sequence.
+    ///
+    /// # Returns
+    /// The ordering by deadline, using sequence to break ties.
     fn cmp(&self, other: &Self) -> Ordering {
         self.deadline
             .cmp(&other.deadline)

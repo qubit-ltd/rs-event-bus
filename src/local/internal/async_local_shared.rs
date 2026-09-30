@@ -43,6 +43,7 @@ impl AsyncLocalShared {
     ///
     /// # Panics
     /// Panics if `max_total_outstanding` is zero.
+    #[must_use]
     pub(in crate::local) fn new(capacity: usize, max_total_outstanding: usize, timer: Arc<dyn Timer>) -> Self {
         Self {
             capacity,

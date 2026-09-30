@@ -7,7 +7,11 @@
 // =============================================================================
 //! Event bus lifecycle operations.
 
+use std::io::Error as IoError;
+use std::io::Result as IoResult;
 use std::sync::Arc;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::thread;
 use std::time::Duration;
 
@@ -17,11 +21,14 @@ use crate::LifecycleError;
 use crate::ShutdownError;
 use crate::ShutdownReport;
 use crate::WaitOutcome;
+use crate::facade::SubscriptionControl;
+use crate::facade::event_bus::EventBusInner;
 use crate::facade::internal::LifecycleState;
 use crate::facade::internal::is_current_bus_context;
 use crate::model::Topic;
 use crate::spi::ShutdownMode;
 use crate::spi::TopicAddress;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl EventBus {
     /// Waits until the provider reports that `topic` has no queued or unsettled
@@ -56,7 +63,7 @@ impl EventBus {
             });
         }
         let address = TopicAddress::new(topic.name()).expect("typed topic names are valid SPI addresses");
-        crate::spi::panic_boundary::catch_spi_call(
+        catch_spi_call(
             self.inner.provider_id.as_str(),
             "wait_for_topic_idle",
             Some(address.as_str()),
@@ -151,6 +158,17 @@ impl EventBus {
     /// cached ticket if already closed. A thread start failure is published
     /// to joined tickets before returning `CoordinatorStart`; a subsequent
     /// request may retry.
+    ///
+    /// # Parameters
+    /// - `mode`: graceful or immediate shutdown policy.
+    ///
+    /// # Returns
+    /// A ticket bound to the shutdown attempt, or a ready ticket if already
+    /// closed.
+    ///
+    /// # Errors
+    /// Returns `CoordinatorStart` when the shutdown coordinator thread cannot
+    /// start.
     pub fn request_shutdown(&self, mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError> {
         self.request_shutdown_with_spawner(mode, |inner, generation| {
             thread::Builder::new()
@@ -164,9 +182,23 @@ impl EventBus {
     /// The launcher runs after admission closes and lifecycle locks are
     /// released; start errors are published to existing generation
     /// observers before return.
+    ///
+    /// # Type Parameters
+    /// - `F`: one-shot launcher receiving the bus state and shutdown
+    ///   generation.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown policy selected for this generation.
+    /// - `spawn`: launcher for the coordinator thread.
+    ///
+    /// # Returns
+    /// A ticket bound to this shutdown generation, or a ready ticket if closed.
+    ///
+    /// # Errors
+    /// Returns `CoordinatorStart` if the launcher cannot start the coordinator.
     fn request_shutdown_with_spawner<F>(&self, mode: ShutdownMode, spawn: F) -> Result<EventBusShutdown, ShutdownError>
     where
-        F: FnOnce(Arc<crate::facade::event_bus::EventBusInner>, u64) -> std::io::Result<()>,
+        F: FnOnce(Arc<EventBusInner>, u64) -> IoResult<()>,
     {
         let (start, generation) = {
             let mut state = self.lock_lifecycle();
@@ -188,12 +220,11 @@ impl EventBus {
             self.inner.shutdown_coordinator.mode(generation),
             ShutdownMode::Immediate
         ));
-        self.inner
-            .signal_subscriptions(crate::facade::SubscriptionControl::request_cancel);
+        self.inner.signal_subscriptions(SubscriptionControl::request_cancel);
         if start && let Err(error) = spawn(self.inner.clone(), generation) {
             let returned = error.raw_os_error().map_or_else(
-                || std::io::Error::new(error.kind(), error.to_string()),
-                std::io::Error::from_raw_os_error,
+                || IoError::new(error.kind(), error.to_string()),
+                IoError::from_raw_os_error,
             );
             self.inner.shutdown_coordinator.abort_start(generation, error);
             return Err(ShutdownError::CoordinatorStart(returned));
@@ -205,17 +236,15 @@ impl EventBus {
     ///
     /// # Returns
     /// The lifecycle mutex guard for this bus.
-    pub(in crate::facade) fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, LifecycleState> {
-        self.inner
-            .lifecycle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub(in crate::facade) fn lock_lifecycle(&self) -> MutexGuard<'_, LifecycleState> {
+        self.inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::io::Error;
     use std::sync::Mutex;
     use std::task::Context;
     use std::task::Poll;
@@ -234,14 +263,15 @@ mod tests {
             .request_shutdown_with_spawner(ShutdownMode::Immediate, |_, _| {
                 *joined.lock().expect("ticket slot") =
                     Some(bus.request_shutdown(ShutdownMode::Immediate).expect("join ticket"));
-                Err(std::io::Error::other("injected coordinator start failure"))
+                Err(Error::other("injected coordinator start failure"))
             })
             .err()
             .expect("start failure");
         assert!(matches!(error, ShutdownError::CoordinatorStart(_)));
         let old = joined.into_inner().expect("ticket slot").expect("joined ticket");
         let retry = bus.request_shutdown(ShutdownMode::Immediate).expect("retry starts");
-        retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
+        let retry_report = retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
+        assert_eq!(retry_report.outcome, crate::spi::ShutdownOutcome::Complete);
         assert!(matches!(
             old.wait(Some(Duration::ZERO)),
             Err(ShutdownError::CoordinatorStart(_))

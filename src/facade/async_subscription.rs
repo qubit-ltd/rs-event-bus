@@ -8,7 +8,10 @@
 //! Caller-driven asynchronous subscription runner.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::sync::Arc;
+use std::sync::PoisonError;
+use std::task::Poll;
 use std::time::Duration;
 
 use qubit_id::Id;
@@ -21,13 +24,16 @@ use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
 use super::async_event_bus::BusState;
 use super::async_event_bus::SignalRegistration;
+use crate::codec::EventCodec;
 use crate::error::DeliveryError;
+use crate::error::LifecycleError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseErrors;
 use crate::model::Delivery;
 use crate::model::FailureDirective;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
+use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::AsyncEventSubscriptionSpi;
@@ -86,6 +92,7 @@ type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 ///
 /// # Type Parameters
 /// - `T`: payload type received by this subscription.
+#[must_use]
 pub struct AsyncSubscription<T: 'static> {
     /// Bus-local object ID used in diagnostics and provider tokens.
     id: Id,
@@ -122,7 +129,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         id: Id,
         subscriber_id: SubscriberId,
         topic: Topic<T>,
-        codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
+        codec: Option<Arc<dyn EventCodec<T>>>,
         options: SubscribeOptions<T>,
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
     ) -> (Self, Arc<AsyncSubscriptionControl<T>>) {
@@ -208,10 +215,14 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
             .await
     }
 
-    /// Returns the first terminal receive cause, or None before a failure.
-    /// The Arc is retained across runner cancellation and receiver close.
+    /// Returns the first terminal receive cause.
+    /// The `Arc` is retained across runner cancellation and receiver close.
+    ///
+    /// # Returns
+    /// The first failure reason, or `None` if no failure has occurred.
     #[must_use]
-    pub fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+    #[inline]
+    pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.control.signals.terminal_failure()
     }
 
@@ -222,14 +233,20 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Errors
     /// Returns a lifecycle error when provider receiver close fails.
-    pub async fn close(&mut self) -> Result<(), crate::error::LifecycleError> {
-        if self.control.bus.upgrade().is_none_or(|inner| {
-            *inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != BusState::Running
-        }) {
+    ///
+    /// # Panics
+    /// Panics if the session lease invariant is violated internally.
+    pub async fn close(&mut self) -> Result<(), LifecycleError> {
+        if self
+            .control
+            .bus
+            .upgrade()
+            .is_none_or(|inner| *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running)
+        {
             return Ok(());
         }
         self.control.signals.stop(ShutdownMode::Immediate);
-        let mut lease = self.control.lease().await.ok_or(crate::error::LifecycleError::Closed)?;
+        let mut lease = self.control.lease().await.ok_or(LifecycleError::Closed)?;
         lease
             .session
             .as_mut()
@@ -257,23 +274,24 @@ impl<T: 'static> Drop for AsyncSubscription<T> {
 ///
 /// # Returns
 /// `Some` with the future output when complete, or `None` after stop.
+#[must_use]
 async fn await_or_stop<F>(future: F, control: &SessionSignals) -> Option<F::Output>
 where
     F: Future,
 {
     let mut future = Box::pin(future);
     let registration = SignalRegistration::new(control.signal());
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if control.is_stopped() {
-            return std::task::Poll::Ready(None);
+            return Poll::Ready(None);
         }
         registration.register(cx.waker());
         if control.is_stopped() {
-            return std::task::Poll::Ready(None);
+            return Poll::Ready(None);
         }
         match future.as_mut().poll(cx) {
-            std::task::Poll::Ready(value) => std::task::Poll::Ready(Some(value)),
-            std::task::Poll::Pending => std::task::Poll::Pending,
+            Poll::Ready(value) => Poll::Ready(Some(value)),
+            Poll::Pending => Poll::Pending,
         }
     })
     .await

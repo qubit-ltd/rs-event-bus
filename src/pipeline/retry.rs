@@ -9,14 +9,18 @@
 //! Publish-specific adapters for the `qubit-retry` execution API.
 
 use std::cell::Cell;
+use std::convert::identity;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 mod catch_unwind_future;
+// Tracks in-flight provider attempts and conservative admission evidence.
+mod internal;
 
 use catch_unwind_future::CatchUnwindFuture;
+use internal::InFlightPublish;
 use qubit_clock::Timer;
 use qubit_retry::AsyncRetry;
 use qubit_retry::AttemptFailure;
@@ -29,9 +33,11 @@ use qubit_retry::RetryFallback;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryRule;
 
+use crate::error::ConfigurationError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishError;
 use crate::error::SpiError;
+use crate::model::AdmissionOutcome;
 use crate::model::DuplicateRiskPolicy;
 use crate::model::PublishAcknowledgement;
 use crate::model::PublishEffect;
@@ -39,6 +45,8 @@ use crate::spi::AsyncEventBusSpi;
 use crate::spi::EventBusSpi;
 use crate::spi::OutboundMessage;
 use crate::spi::SpiFuture;
+use crate::spi::panic_boundary::catch_spi_call;
+use crate::spi::panic_boundary::provider_panic;
 
 /// Invokes the provider once or through the configured same-thread retry.
 ///
@@ -201,16 +209,10 @@ async fn spi_publish(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    let future =
-        crate::spi::panic_boundary::catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))?;
+    let future = catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))?;
     match CatchUnwindFuture::new(future).await {
         Ok(result) => result,
-        Err(payload) => Err(crate::spi::panic_boundary::provider_panic(
-            provider_id,
-            "publish",
-            Some(&resource),
-            payload,
-        )),
+        Err(payload) => Err(provider_panic(provider_id, "publish", Some(&resource), payload)),
     }
 }
 
@@ -232,8 +234,7 @@ fn spi_publish_sync(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    crate::spi::panic_boundary::catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))
-        .and_then(std::convert::identity)
+    catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message)).and_then(identity)
 }
 
 /// Builds an abort-on-exhaustion retry configuration for publication attempts.
@@ -280,7 +281,7 @@ fn retry_config(
         },
     );
     builder.build().map_err(|source| {
-        PublishError::Configuration(crate::error::ConfigurationError::InvalidField {
+        PublishError::Configuration(ConfigurationError::InvalidField {
             field: "retry_policy",
             message: source.to_string().into(),
         })
@@ -295,30 +296,12 @@ fn retry_config(
 ///
 /// # Returns
 /// Whether the attempt may proceed to ordinary retry decisions.
+#[inline]
 pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateRiskPolicy) -> bool {
     matches!(
         (effect, policy),
         (PublishEffect::NotAccepted, _) | (PublishEffect::MayHaveBeenAccepted, DuplicateRiskPolicy::AllowDuplicates)
     )
-}
-
-/// Retains conservative admission evidence if retry abandons an in-flight SPI
-/// call. Creating an unpolled attempt future does not create this guard.
-struct InFlightPublish {
-    /// Monotonic evidence shared with the complete publication.
-    seen_unknown: Arc<AtomicBool>,
-    /// Whether SPI returned an explicit result before the future was dropped.
-    completed: bool,
-}
-
-impl Drop for InFlightPublish {
-    /// Marks an unfinished attempt as potentially admitted without fabricating
-    /// a public failure or invoking error callbacks when the caller drops it.
-    fn drop(&mut self) {
-        if !self.completed {
-            self.seen_unknown.store(true, Ordering::Release);
-        }
-    }
 }
 
 /// Tracks the outcome of an SPI future through completion or abandonment.
@@ -372,12 +355,11 @@ where
 ///
 /// # Returns
 /// Whether a later infrastructure failure must retain admission evidence.
+#[inline]
 fn acknowledges_admission(acknowledgement: &PublishAcknowledgement) -> bool {
     matches!(
         acknowledgement.admission_outcome(),
-        crate::model::AdmissionOutcome::OpaqueAccepted
-            | crate::model::AdmissionOutcome::Accepted(_)
-            | crate::model::AdmissionOutcome::PartiallyAccepted(_)
+        AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Accepted(_) | AdmissionOutcome::PartiallyAccepted(_)
     )
 }
 
@@ -385,6 +367,7 @@ fn acknowledges_admission(acknowledgement: &PublishAcknowledgement) -> bool {
 mod tests {
     use std::cell::Cell;
     use std::future::Future;
+    use std::future::pending;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
@@ -402,6 +385,8 @@ mod tests {
     use qubit_retry::RetryPolicy;
     use qubit_retry::RetryRule;
 
+    use super::publish_attempt;
+    use super::retry_config;
     use crate::error::PublishAttemptError;
     use crate::model::DuplicateRiskPolicy;
 
@@ -412,7 +397,7 @@ mod tests {
         let rule: Arc<dyn RetryRule<PublishAttemptError>> =
             Arc::new(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry);
         let policy = RetryPolicy::builder().max_attempts(2).build().unwrap();
-        let config = super::retry_config(&policy, Some(&rule), DuplicateRiskPolicy::Forbid).unwrap();
+        let config = retry_config(&policy, Some(&rule), DuplicateRiskPolicy::Forbid).unwrap();
         let retry = AsyncRetry::new(&config).timer(clock.new_timer());
         let retry = if flow_timeout {
             retry.hard_flow_timeout(Duration::from_secs(1))
@@ -422,10 +407,10 @@ mod tests {
         let calls = Cell::new(0);
         let seen_unknown = Arc::new(AtomicBool::new(false));
         let mut future = Box::pin(retry.run(|| {
-            super::publish_attempt(
+            publish_attempt(
                 async {
                     calls.set(calls.get() + 1);
-                    std::future::pending().await
+                    pending().await
                 },
                 seen_unknown.clone(),
                 Arc::new(AtomicBool::new(false)),
@@ -442,11 +427,11 @@ mod tests {
         assert!(seen_unknown.load(Ordering::Acquire));
     }
     #[test]
-    fn hard_attempt_timeout_cannot_bypass_uncertainty_gate() {
+    fn test_hard_attempt_timeout_cannot_bypass_uncertainty_gate() {
         assert_hard_timeout_preserves_uncertainty(false);
     }
     #[test]
-    fn hard_flow_timeout_preserves_in_flight_uncertainty() {
+    fn test_hard_flow_timeout_preserves_in_flight_uncertainty() {
         assert_hard_timeout_preserves_uncertainty(true);
     }
 }

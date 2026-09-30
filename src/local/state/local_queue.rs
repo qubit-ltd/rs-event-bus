@@ -9,11 +9,14 @@
 
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
 use qubit_id::Id;
 
 use super::local_queue_state::LocalQueueState;
+use crate::local::async_signal::AsyncSignal;
+use crate::model::SubscriberId;
 use crate::spi::TopicAddress;
 
 /// One bounded FIFO queue and receiver lifecycle for a logical subscriber.
@@ -23,7 +26,7 @@ pub(in crate::local) struct LocalQueue {
     /// Topic this queue receives.
     pub(in crate::local) topic: TopicAddress,
     /// Logical subscriber identity reported by publish admissions.
-    pub(in crate::local) subscriber_id: crate::model::SubscriberId,
+    pub(in crate::local) subscriber_id: SubscriberId,
     /// Maximum number of queued and unsettled events for this subscription.
     pub(in crate::local) capacity: usize,
     /// Queue state shared by publisher and its single receiver.
@@ -31,7 +34,7 @@ pub(in crate::local) struct LocalQueue {
     /// Wakes synchronous receives after publish, close, or shutdown.
     pub(in crate::local) ready: Condvar,
     /// Wakes asynchronous receives after provider state changes.
-    pub(in crate::local) async_ready: crate::local::async_signal::AsyncSignal,
+    pub(in crate::local) async_ready: AsyncSignal,
 }
 
 impl LocalQueue {
@@ -40,7 +43,7 @@ impl LocalQueue {
     /// # Returns
     /// The queue state guard, recovering the inner state if the mutex was
     /// poisoned.
-    pub(in crate::local) fn lock(&self) -> std::sync::MutexGuard<'_, LocalQueueState> {
+    pub(in crate::local) fn lock(&self) -> MutexGuard<'_, LocalQueueState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

@@ -7,12 +7,17 @@
 // =============================================================================
 //! Public request builders, option reuse, and acknowledgement contracts.
 
+use std::error::Error;
+use std::io::Error as IoError;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::PublishError;
+use qubit_event_bus::PublishFailure;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
@@ -31,6 +36,7 @@ use qubit_event_bus::model::EventEnvelope;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
@@ -245,9 +251,9 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> 
     let batch = BatchPublishResult::new(vec![
         Ok(accepted),
         Ok(dropped),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -325,9 +331,9 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
             provider,
             PublishAcknowledgement::DroppedByInterceptor,
         )),
-        Err(qubit_event_bus::PublishFailure::new(
+        Err(PublishFailure::new(
             EventId::new("failed")?,
-            qubit_event_bus::model::PublishEffect::NotAccepted,
+            PublishEffect::NotAccepted,
             PublishError::Closed,
         )),
     ]);
@@ -424,15 +430,13 @@ fn test_delivery_context_preserves_transport_and_attempt_metadata() -> Result<()
 
 #[test]
 fn test_attempt_errors_keep_classification_and_source() {
-    use std::error::Error;
-
     let publish = PublishAttemptError::new(
         "transient",
         Some(true),
-        qubit_event_bus::model::PublishEffect::NotAccepted,
-        std::io::Error::other("offline"),
+        PublishEffect::NotAccepted,
+        IoError::other("offline"),
     );
-    let delivery = DeliveryAttemptError::new("handler", Some(false), std::io::Error::other("bad record"));
+    let delivery = DeliveryAttemptError::new("handler", Some(false), IoError::other("bad record"));
     assert_eq!(publish.kind(), "transient");
     assert_eq!(publish.retryable(), Some(true));
     assert_eq!(publish.source().unwrap().to_string(), "offline");
@@ -443,9 +447,6 @@ fn test_attempt_errors_keep_classification_and_source() {
 
 #[test]
 fn test_acknowledgement_race_has_one_terminal_winner() {
-    use std::sync::Barrier;
-    use std::thread;
-
     let ack = Acknowledgement::new();
     let barrier = Arc::new(Barrier::new(3));
     let left_ack = ack.clone();

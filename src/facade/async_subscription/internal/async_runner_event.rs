@@ -8,12 +8,14 @@
 //! Internal asynchronous subscription state.
 
 use super::PendingDelivery;
+use crate::error::SpiError;
 use crate::spi::ReceiveOutcome;
 
 /// Event returned by the runner's select loop.
 ///
 /// # Type Parameters
 /// - `T`: payload type retained by completed delivery tasks.
+#[must_use]
 pub(in crate::facade::async_subscription) enum AsyncRunnerEvent<T: 'static> {
     /// One completed owned delivery task.
     Delivery(
@@ -23,7 +25,7 @@ pub(in crate::facade::async_subscription) enum AsyncRunnerEvent<T: 'static> {
     /// Result of the provider receive operation.
     Receive(
         /// Provider receive result or operation error.
-        Result<ReceiveOutcome, crate::error::SpiError>,
+        Result<ReceiveOutcome, SpiError>,
     ),
     /// The stop signal won the current poll.
     Stopped,

@@ -172,6 +172,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// # Returns
     /// A best-effort snapshot whose counters are loaded independently.
     #[must_use]
+    #[inline]
     pub fn stats(&self) -> NotificationStatsSnapshot {
         self.stats.snapshot()
     }

@@ -34,6 +34,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::pipeline::Diagnostic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
@@ -91,7 +92,10 @@ fn test_retry_runs_interceptor_and_handler_again() {
     assert_eq!(attempts.load(Ordering::Acquire), 2);
     assert_eq!(intercepted.load(Ordering::Acquire), 2);
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 #[test]
@@ -148,7 +152,10 @@ fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagn
 
     source_subscription.cancel().unwrap();
     dead_letter_subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 #[test]
@@ -213,5 +220,8 @@ fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_d
     assert_eq!(handler_calls.load(Ordering::Acquire), 3);
 
     subscription.cancel().unwrap();
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }

@@ -15,7 +15,11 @@ use qubit_retry::RetryFallback;
 use qubit_retry::RetryPolicy;
 use qubit_retry::RetryPolicyError;
 
+use crate::model::AdmissionOutcome;
+use crate::model::DuplicateRiskPolicy;
+use crate::model::PublishEffect;
 use crate::pipeline::DeadLetterForwardError;
+use crate::pipeline::retry::uncertainty_allows_retry;
 
 /// Builds a retry flow using the subscription's bounded retry and backoff
 /// budget.
@@ -41,13 +45,11 @@ pub(crate) fn retry_config(policy: &RetryPolicy) -> Result<RetryConfig<DeadLette
             let effect = match failure.as_error() {
                 Some(DeadLetterForwardError::Publish(error)) => error.effect(),
                 Some(DeadLetterForwardError::NotAdmitted(
-                    crate::model::AdmissionOutcome::NoneAccepted(_)
-                    | crate::model::AdmissionOutcome::NoDestinations
-                    | crate::model::AdmissionOutcome::Dropped,
-                )) => crate::model::PublishEffect::NotAccepted,
-                Some(DeadLetterForwardError::NotAdmitted(_)) | None => crate::model::PublishEffect::MayHaveBeenAccepted,
+                    AdmissionOutcome::NoneAccepted(_) | AdmissionOutcome::NoDestinations | AdmissionOutcome::Dropped,
+                )) => PublishEffect::NotAccepted,
+                Some(DeadLetterForwardError::NotAdmitted(_)) | None => PublishEffect::MayHaveBeenAccepted,
             };
-            if crate::pipeline::retry::uncertainty_allows_retry(effect, crate::model::DuplicateRiskPolicy::Forbid) {
+            if uncertainty_allows_retry(effect, DuplicateRiskPolicy::Forbid) {
                 RetryDecision::Retry
             } else {
                 RetryDecision::Abort
@@ -59,6 +61,7 @@ pub(crate) fn retry_config(policy: &RetryPolicy) -> Result<RetryConfig<DeadLette
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::io::Error;
 
     use qubit_retry::Retry;
     use qubit_retry::RetryPolicy;
@@ -73,7 +76,7 @@ mod tests {
     use crate::pipeline::DeadLetterForwardError;
 
     #[test]
-    fn unknown_dead_letter_publish_is_not_retried() {
+    fn test_unknown_dead_letter_publish_is_not_retried() {
         let config = super::retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
         let calls = Cell::new(0);
         let result: Result<_, _> = Retry::new(&config).run(|| {
@@ -87,7 +90,7 @@ mod tests {
                     resource: None,
                     kind: "lost_response",
                     retryable: Some(true),
-                    source: Box::new(std::io::Error::other("source retained")),
+                    source: Box::new(Error::other("source retained")),
                 }),
             )))
         });
@@ -96,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn partially_admitted_dead_letter_is_not_retried() {
+    fn test_partially_admitted_dead_letter_is_not_retried() {
         let config = super::retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
         let calls = Cell::new(0);
         let result: Result<_, _> = Retry::new(&config).run(|| {

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -37,6 +38,7 @@ impl<T> OrderingLanes<T> {
     ///
     /// # Returns
     /// A collection with no live keys and ticket numbering starting at one.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             lanes: Mutex::new(HashMap::new()),
@@ -54,7 +56,7 @@ impl<T> OrderingLanes<T> {
     /// A ticket that waits until earlier lane items finish.
     pub(crate) fn enqueue(&self, key: OrderingLaneKey, value: T) -> OrderingTurn<T> {
         let lane = {
-            let mut lanes = self.lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut lanes = self.lanes.lock().unwrap_or_else(PoisonError::into_inner);
             lanes.retain(|_, lane| lane.strong_count() != 0);
             lanes.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
                 let lane = Arc::new(SyncLane::default());
@@ -64,7 +66,7 @@ impl<T> OrderingLanes<T> {
         };
         let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);
         let is_leader = {
-            let mut state = lane.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = lane.state.lock().unwrap_or_else(PoisonError::into_inner);
             let is_leader = !state.active && state.queue.is_empty();
             state.queue.push_back((ticket, Some(value)));
             is_leader
@@ -81,6 +83,7 @@ impl<T> OrderingLanes<T> {
 impl<T> Default for OrderingLanes<T> {
     /// Creates an empty lane collection with ticket numbering at its initial
     /// value.
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

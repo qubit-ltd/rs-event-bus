@@ -10,6 +10,7 @@
 use super::ACTIVE_BUS_POLLS;
 
 /// Removes the poll-scoped identity when polling returns or unwinds.
+#[must_use]
 pub(super) struct BusPollScope;
 
 impl Drop for BusPollScope {

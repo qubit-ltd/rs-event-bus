@@ -22,17 +22,23 @@ pub(in crate::local) enum SharedPayload {
 }
 
 impl SharedPayload {
-    /// Copies a supported provider payload into its shareable local form.
+    /// Stores a native provider payload in its shareable local form.
+    ///
+    /// This clones the payload's `Arc` handle; it does not clone or serialize
+    /// the underlying value. Encoded payloads are rejected by the local SPI's
+    /// native-payload contract.
     ///
     /// # Parameters
-    /// - `payload`: payload accepted by the local provider.
+    /// - `payload`: borrowed SPI payload, which must contain a native value.
     ///
     /// # Returns
     /// Shared native payload storage.
     ///
     /// # Panics
-    /// Panics if `payload` is encoded, which violates the local SPI's native
-    /// payload contract.
+    /// Panics if `payload` is encoded, violating the local SPI's native-payload
+    /// contract.
+    #[must_use = "use the shared payload in local queue state"]
+    #[inline]
     pub(in crate::local) fn from_transport(payload: &TransportPayload) -> Self {
         match payload {
             TransportPayload::Native(value) => Self::Native(value.clone()),
@@ -46,6 +52,8 @@ impl SharedPayload {
     ///
     /// # Returns
     /// A native SPI payload sharing the original allocation.
+    #[must_use = "use the reconstructed SPI payload"]
+    #[inline]
     pub(in crate::local) fn to_transport(&self) -> TransportPayload {
         match self {
             Self::Native(value) => TransportPayload::Native(value.clone()),

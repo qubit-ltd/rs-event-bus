@@ -7,9 +7,12 @@
 // =============================================================================
 //! Ticket that waits for a synchronous ordering lane.
 
+#[cfg(test)]
 use std::sync::Arc;
 
+#[cfg(test)]
 use super::ordering_guard::OrderingGuard;
+#[cfg(test)]
 use super::sync_lane::SyncLane;
 
 /// A synchronous lane ticket that waits until earlier work has completed.

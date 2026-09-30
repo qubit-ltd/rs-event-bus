@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -18,6 +19,7 @@ use qubit_id::Id;
 
 use crate::error::SubscriptionCloseFailure;
 use crate::model::SubscriberId;
+use crate::model::SubscriptionStopReason;
 
 /// Coordination state shared by a subscription handle and its worker.
 pub(crate) struct SubscriptionControl {
@@ -28,7 +30,7 @@ pub(crate) struct SubscriptionControl {
     /// Cancellation flag observed by the worker loop.
     cancelled: AtomicBool,
     /// First terminal receive cause, retained independently of close failures.
-    terminal_failure: Mutex<Option<Arc<crate::model::SubscriptionStopReason>>>,
+    terminal_failure: Mutex<Option<Arc<SubscriptionStopReason>>>,
     /// Linearizes new delivery work against terminal receive failure.
     start_gate: Mutex<()>,
     /// Worker thread handle retained until one caller joins it.
@@ -50,6 +52,7 @@ impl SubscriptionControl {
     ///
     /// # Returns
     /// A shared control block ready to receive its worker handle.
+    #[must_use = "retain the control block to coordinate the subscription"]
     pub(in crate::facade) fn new(id: Id, subscriber_id: SubscriberId) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -65,24 +68,48 @@ impl SubscriptionControl {
     }
 
     /// Returns the first terminal receive cause, or None while healthy.
-    pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<crate::model::SubscriptionStopReason>> {
+    ///
+    /// # Returns
+    /// The first terminal receive cause, or `None` while the subscription is
+    /// healthy.
+    #[must_use = "observe the first terminal receive cause"]
+    pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.terminal_failure
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
+    /// Returns whether cancellation was requested for this subscription.
+    ///
+    /// # Returns
+    /// True after cancellation is requested, otherwise false.
+    #[must_use = "observe whether cancellation was requested"]
+    #[inline]
+    pub(in crate::facade) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Linearizes the start of owned delivery work against a receive stop.
+    /// Admitted work completes normally even if a later receive failure stops
+    /// future work.
+    ///
+    /// # Returns
+    /// `true` when the subscription has no terminal failure; `false` otherwise.
+    #[must_use = "observe whether delivery work was admitted"]
+    pub(in crate::facade) fn try_start(&self) -> bool {
+        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        self.terminal_failure().is_none()
+    }
+
     /// Caches a receive failure once and prevents subsequent receives.
-    /// Returns true only for the first cause, so callers emit one diagnostic.
-    pub(in crate::facade) fn fail_receive(&self, reason: crate::model::SubscriptionStopReason) -> bool {
-        let _start = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut stored = self
-            .terminal_failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ///
+    /// # Returns
+    /// `true` when this call stores the first cause; `false` when one was
+    /// already stored.
+    pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
+        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
         let first = stored.is_none();
         if first {
             *stored = Some(Arc::new(reason));
@@ -91,36 +118,16 @@ impl SubscriptionControl {
         first
     }
 
-    /// Linearizes the start of owned delivery work against a receive stop.
-    /// Returns false after a terminal failure; admitted work completes
-    /// normally.
-    pub(in crate::facade) fn try_start(&self) -> bool {
-        let _start = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.terminal_failure().is_none()
-    }
-
     /// Publishes the worker join handle after a successful thread spawn.
     ///
     /// # Parameters
     /// - `worker`: running worker thread to join during cancellation.
     pub(in crate::facade) fn set_worker(&self, worker: JoinHandle<()>) {
-        *self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(worker);
-    }
-
-    /// Returns whether cancellation was requested for this subscription.
-    ///
-    /// # Returns
-    /// True after cancellation is requested, otherwise false.
-    #[must_use = "Use the returned is cancelled."]
-    #[inline]
-    pub(in crate::facade) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        *self.worker.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker);
     }
 
     /// Requests worker cancellation without waiting for an executing handler.
+    #[inline]
     pub(in crate::facade) fn request_cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
@@ -130,10 +137,7 @@ impl SubscriptionControl {
     /// # Parameters
     /// - `error`: canonical provider close failure to retain.
     pub(in crate::facade) fn record_close_error(&self, error: Arc<SubscriptionCloseFailure>) {
-        let mut slot = self
-            .close_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.is_none() {
             *slot = Some(error);
         }
@@ -141,7 +145,7 @@ impl SubscriptionControl {
 
     /// Marks receiver cleanup complete and wakes concurrent cancellers.
     pub(in crate::facade) fn mark_finished(&self) {
-        *self.finished.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
         self.finished_changed.notify_all();
     }
 
@@ -149,12 +153,12 @@ impl SubscriptionControl {
     ///
     /// This blocks only callers outside the worker's bus context.
     pub(in crate::facade) fn wait_finished(&self) {
-        let mut finished = self.finished.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
         while !*finished {
             finished = self
                 .finished_changed
                 .wait(finished)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 }

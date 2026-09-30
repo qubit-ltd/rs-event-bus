@@ -21,6 +21,7 @@
 /// let snapshot = PublishMetricsSnapshot { attempts: 3, errors: 1, ..Default::default() };
 /// assert_eq!(snapshot.attempts - snapshot.errors, 2);
 /// ```
+#[must_use = "inspect the snapshot to use its publication metrics"]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PublishMetricsSnapshot {
     /// Number of public publish attempts, including calls rejected as closed.

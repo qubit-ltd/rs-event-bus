@@ -24,6 +24,7 @@ use crate::error::ConfigurationError;
 /// assert_eq!(config.max_in_flight(), 8);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub struct DeliveryAdmissionConfig {
     /// Maximum number of admitted asynchronous deliveries across subscriptions.
     max_in_flight: usize,
@@ -65,6 +66,7 @@ impl DeliveryAdmissionConfig {
 
 impl Default for DeliveryAdmissionConfig {
     /// Creates the default limit of four admitted asynchronous deliveries.
+    #[inline]
     fn default() -> Self {
         Self { max_in_flight: 4 }
     }

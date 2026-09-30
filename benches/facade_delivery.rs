@@ -23,6 +23,7 @@ use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 const WARMUPS: usize = 2;
 const SAMPLES: usize = 7;
@@ -65,7 +66,10 @@ fn sample() -> u128 {
         block_on(bus.publish(black_box(request))).unwrap();
     }
     let elapsed = start.elapsed().as_nanos();
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     elapsed / ITERATIONS as u128
 }
 

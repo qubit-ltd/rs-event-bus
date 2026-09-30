@@ -76,7 +76,6 @@ impl PublishMetrics {
     /// # Returns
     /// A point-in-time snapshot; concurrent counters may reflect different
     /// instants.
-    #[must_use]
     pub(crate) fn snapshot(&self) -> PublishMetricsSnapshot {
         PublishMetricsSnapshot {
             attempts: self.attempts.load(Ordering::Relaxed),

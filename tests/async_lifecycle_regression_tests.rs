@@ -8,8 +8,10 @@
 //! Public regression tests for asynchronous event bus lifecycle contracts.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -29,6 +31,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 fn poll_once<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
@@ -77,7 +80,7 @@ fn test_close_drains_all_started_handlers() {
             let finished = finished.clone();
             async move {
                 started.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gates[*delivery.payload()].load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -102,7 +105,10 @@ fn test_close_drains_all_started_handlers() {
     gates[1].store(true, Ordering::SeqCst);
     assert!(poll_once(close.as_mut(), Waker::noop()).is_ready());
     assert_eq!(2, finished.load(Ordering::SeqCst));
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 #[test]
@@ -113,7 +119,7 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
         .expect("subscription");
     ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
 
-    let observed = Arc::new(std::sync::Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
     let mut run = {
         let bus = bus.clone();
         let topic = topic.clone();
@@ -137,7 +143,10 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
     ));
     drop(run);
     ready(subscription.close()).expect("subscription close");
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 #[test]
@@ -166,7 +175,7 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
         Box::pin(sub_a.run(move |_| {
             let gate_a = gate_a.clone();
             async move {
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_a.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -180,17 +189,12 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     };
     let gate_b = Arc::new(AtomicBool::new(false));
     let gate_c = Arc::new(AtomicBool::new(false));
-    let started_b = Arc::new(AtomicUsize::new(0));
-    let started_c = Arc::new(AtomicUsize::new(0));
     let mut run_b = {
         let gate_b = gate_b.clone();
-        let started_b = started_b.clone();
         Box::pin(sub_b.run(move |_| {
             let gate_b = gate_b.clone();
-            let started_b = started_b.clone();
             async move {
-                started_b.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_b.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -204,13 +208,10 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     };
     let mut run_c = {
         let gate_c = gate_c.clone();
-        let started_c = started_c.clone();
         Box::pin(sub_c.run(move |_| {
             let gate_c = gate_c.clone();
-            let started_c = started_c.clone();
             async move {
-                started_c.fetch_add(1, Ordering::SeqCst);
-                std::future::poll_fn(|_| {
+                poll_fn(|_| {
                     if gate_c.load(Ordering::SeqCst) {
                         Poll::Ready(())
                     } else {
@@ -241,5 +242,8 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     drop(run_a);
     drop(run_b);
     drop(run_c);
-    ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }

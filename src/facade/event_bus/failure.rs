@@ -18,26 +18,34 @@ use qubit_retry::Retry;
 use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 
+use super::internal::OwnerSettlementRouter;
 use crate::Diagnostic;
 use crate::SubscriberId;
 use crate::error::DeliveryError;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::OwnerSettlementRouter;
 use crate::facade::event_bus::publishing::publish_internal;
+use crate::model::AdmissionOutcome;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
+use crate::model::EventId;
 use crate::model::FailureDirective;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
+use crate::model::SubscribeOptions;
 use crate::pipeline::DeadLetterForwardError;
 use crate::pipeline::DeliveryFailureAction;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
 use crate::pipeline::dead_letter_retry_config;
+use crate::pipeline::dead_letter_was_accepted;
 use crate::spi::DeliveryDisposition;
+use crate::spi::DurabilityCapability;
+use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
 
 /// Applies the terminal failure directive and records its diagnostics.
@@ -67,7 +75,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
     event: Arc<EventEnvelope<T>>,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     error: DeliveryError,
     attempts: u32,
     directive: FailureDirective,
@@ -87,17 +95,16 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
     } else {
         SubscriberPipeline::failure_disposition(action, capabilities)
     };
-    let is_dead_letter = event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
+    let is_dead_letter = event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE);
     let mut dead_letter_forward_failed = false;
     if action == DeliveryFailureAction::DeadLetter && !is_dead_letter {
         if let Some(policy) = options.dead_letter() {
             let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone());
-            let context =
-                if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
-                    context.as_dead_letter()
-                } else {
-                    context
-                };
+            let context = if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
+                context.as_dead_letter()
+            } else {
+                context
+            };
             let delivery = Delivery::new(event.clone(), context);
             match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
                 Ok(Some(envelope)) => {
@@ -109,10 +116,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
                         policy.admission_policy(),
                     ) {
                         Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
+                            if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
                                 inner.emit_internal(
                                     "dead_letter_partial",
                                     "dead-letter publication was partially accepted; retrying the whole record may duplicate it".into(),
@@ -259,13 +263,13 @@ pub(in crate::facade) fn settle_rejected(
     token: Option<SettlementToken>,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
-    event_id: crate::model::EventId,
+    event_id: EventId,
     topic: &str,
     error: DeliveryError,
 ) {
     if let Some(token) = token {
         if token.belongs_to(subscription_id) {
-            if inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
+            if inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject {
                 settler.settle(
                     Some(token),
                     DeliveryDisposition::Reject,
@@ -328,7 +332,7 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
     let mut publish_once = || {
         let receipt = publish_internal(inner, PublishRequest::from_envelope(envelope.clone()))
             .map_err(DeadLetterForwardError::Publish)?;
-        if crate::pipeline::dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
+        if dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
             Ok(receipt)
         } else {
             Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
@@ -359,7 +363,7 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
 /// # Side Effects
 /// Counts known ephemeral loss and requests that the subscription stop.
 pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, subscription_id: Id) {
-    if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+    if inner.capabilities.durability() == DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
     }
     if let Some(control) = inner
@@ -378,6 +382,7 @@ pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, s
 ///
 /// # Returns
 /// A stable message that reveals whether the panic payload was string-like.
+#[must_use]
 pub(in crate::facade) fn panic_message(payload: &(dyn Any + Send)) -> &'static str {
     if payload.is::<&'static str>() || payload.is::<String>() {
         "user or provider callback panicked"
@@ -393,7 +398,7 @@ mod tests {
     use super::panic_message;
 
     #[test]
-    fn panic_message_hides_payload_details_and_handles_non_string_payloads() {
+    fn test_panic_message_hides_payload_details_and_handles_non_string_payloads() {
         let string_payload: Box<dyn Any + Send> = Box::new(String::from("private panic detail"));
         assert_eq!(
             panic_message(string_payload.as_ref()),

@@ -7,8 +7,11 @@
 // =============================================================================
 //! Delivery attempt execution and terminal failure handling.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
@@ -26,11 +29,14 @@ use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::RetryFailure;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::choose_terminal_directive;
+use crate::model::AsyncSubscriberInterceptor;
 use crate::model::Delivery;
 use crate::model::EventEnvelope;
 use crate::model::FailureDirective;
 use crate::model::SubscribeOptions;
 use crate::pipeline::DeliveryOutcome;
+use crate::pipeline::SubscriberPipeline;
+use crate::pipeline::choose_failure_directive;
 use crate::pipeline::is_retry_rule_failure;
 
 /// Runs subscriber middleware and one handler attempt.
@@ -52,10 +58,10 @@ pub(in crate::facade) async fn run_one_attempt<T: Send + Sync + 'static>(
     delivery: Delivery<T>,
     handler: SharedAsyncHandler<T>,
     attempt: u32,
-    global_interceptors: &[Arc<crate::model::AsyncSubscriberInterceptor<T>>],
+    global_interceptors: &[Arc<AsyncSubscriberInterceptor<T>>],
 ) -> DeliveryOutcome {
     let interceptors = options.async_interceptors().to_vec();
-    crate::pipeline::SubscriberPipeline::attempt_async(
+    SubscriberPipeline::attempt_async(
         options.ack_mode(),
         delivery.next_attempt(attempt),
         global_interceptors,
@@ -87,7 +93,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
     delivery: Delivery<T>,
     handler: SharedAsyncHandler<T>,
     inner: &Arc<AsyncEventBusInner>,
-    global_interceptors: Vec<Arc<crate::model::AsyncSubscriberInterceptor<T>>>,
+    global_interceptors: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
 ) -> Result<u32, RetryFailure> {
     let Some(policy) = options.retry_policy().cloned() else {
         let outcome = run_one_attempt(&options, delivery.clone(), handler, 1, &global_interceptors).await;
@@ -109,7 +115,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
             move |failure: &AttemptFailure<DeliveryAttemptError>, context: &RetryContext| {
                 let requested = rule_directive
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .unwrap_or(FailureDirective::Discard);
                 if requested != FailureDirective::Retry {
                     return RetryDecision::Abort;
@@ -153,7 +159,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
                 DeliveryOutcome::Success => Ok(()),
                 DeliveryOutcome::Failure(error) => {
                     let requested = notify_failure(&options, delivery.event(), &error, true, &inner);
-                    *directive.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(requested);
+                    *directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(requested);
                     Err(DeliveryAttemptError::new(
                         "delivery",
                         Some(requested == FailureDirective::Retry),
@@ -169,7 +175,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
             let count = attempts.load(Ordering::Acquire);
             let requested = directive
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .unwrap_or(FailureDirective::Discard);
             if is_retry_rule_failure(error.reason()) {
                 inner.emit(&Diagnostic::InternalFailure {
@@ -213,7 +219,7 @@ pub(in crate::facade) fn notify_failure<T: Send + Sync + 'static>(
     }
     let mut directives = Vec::with_capacity(options.error_handlers().len());
     for callback in options.error_handlers() {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(event, error))) {
+        match catch_unwind(AssertUnwindSafe(|| callback(event, error))) {
             Ok(directive) => directives.push(Ok(directive)),
             Err(_) => {
                 inner.emit(&Diagnostic::InternalFailure {
@@ -224,5 +230,5 @@ pub(in crate::facade) fn notify_failure<T: Send + Sync + 'static>(
             }
         }
     }
-    crate::pipeline::choose_failure_directive(retry_enabled, directives)
+    choose_failure_directive(retry_enabled, directives)
 }

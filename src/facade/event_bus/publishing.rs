@@ -76,7 +76,7 @@ impl EventBus {
     ///
     /// # Returns
     /// A point-in-time snapshot of publication counters.
-    #[must_use]
+    #[inline]
     pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
         self.inner.publish_metrics.snapshot()
     }
@@ -107,7 +107,8 @@ impl EventBus {
 /// Converts a publisher pipeline failure into its operation-level error type.
 ///
 /// # Parameters
-/// - `failure`: pipeline stage and underlying event bus error.
+/// - `event_id`: Original event identifier, preserved in the publish failure.
+/// - `failure`: Pipeline stage and underlying event bus error.
 ///
 /// # Returns
 /// The matching public publish error variant.

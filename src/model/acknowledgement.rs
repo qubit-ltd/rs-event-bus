@@ -40,6 +40,7 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// A handle whose shared state is [`AcknowledgementState::Pending`].
+    #[must_use = "use the acknowledgement handle to complete or inspect the outcome"]
     #[inline]
     pub fn new() -> Self {
         Self::default()

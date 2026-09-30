@@ -8,14 +8,17 @@
 //! Cancellation-safe future for acquiring an asynchronous delivery slot.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::task::Context;
 use std::task::Poll;
 
-use super::AsyncAdmission;
+use super::super::AsyncAdmission;
 use super::async_admission_permit::AsyncAdmissionPermit;
 
 /// Waits in FIFO order for bus-wide delivery admission.
+#[must_use]
 pub(in crate::facade) struct AsyncAdmissionFuture {
     /// Shared gate whose waiter queue this future owns.
     admission: Arc<AsyncAdmission>,
@@ -34,7 +37,8 @@ impl AsyncAdmissionFuture {
     ///
     /// # Returns
     /// A future that has not yet registered its waker or queue position.
-    pub(super) fn new(admission: Arc<AsyncAdmission>, waiter_id: u64) -> Self {
+    #[inline]
+    pub(in crate::facade::async_admission) fn new(admission: Arc<AsyncAdmission>, waiter_id: u64) -> Self {
         Self {
             admission,
             waiter_id,
@@ -57,14 +61,10 @@ impl Future for AsyncAdmissionFuture {
     /// # Returns
     /// `Poll::Ready` with an owned permit when admitted, otherwise
     /// `Poll::Pending`.
-    fn poll(mut self: std::pin::Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
         let (admitted, next_waker) = {
-            let mut state = this
-                .admission
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = this.admission.state.lock().unwrap_or_else(PoisonError::into_inner);
             if !this.queued {
                 state.waiters.push_back((this.waiter_id, context.waker().clone()));
                 this.queued = true;
@@ -102,11 +102,7 @@ impl Drop for AsyncAdmissionFuture {
     fn drop(&mut self) {
         if self.queued {
             let waker = {
-                let mut state = self
-                    .admission
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = self.admission.state.lock().unwrap_or_else(PoisonError::into_inner);
                 let was_head = state.waiters.front().is_some_and(|(id, _)| *id == self.waiter_id);
                 state.waiters.retain(|(id, _)| *id != self.waiter_id);
                 (was_head && state.in_flight < self.admission.limit)

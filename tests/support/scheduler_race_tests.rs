@@ -8,6 +8,7 @@
 //! Race contracts for the synchronous delivery scheduler.
 
 use std::sync::mpsc;
+use std::thread::spawn;
 use std::time::Duration;
 
 use qubit_id::Id;
@@ -28,7 +29,7 @@ fn test_reservation_cancel_race_does_not_run_owner_settlement_inline() {
     let (callback_started_tx, callback_started_rx) = mpsc::channel();
     let (release_callback_tx, release_callback_rx) = mpsc::channel();
     let (submit_returned_tx, submit_returned_rx) = mpsc::channel();
-    let submitter = std::thread::spawn(move || {
+    let submitter = spawn(move || {
         reservation.submit(move |cancelled| {
             assert!(cancelled);
             callback_started_tx.send(()).expect("callback observer remains alive");

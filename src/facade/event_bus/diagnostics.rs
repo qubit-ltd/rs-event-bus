@@ -8,6 +8,7 @@
 //! Event bus diagnostics operations.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::Diagnostic;
 use crate::DiagnosticObserverHandle;
@@ -28,13 +29,12 @@ impl EventBus {
     ///
     /// # Returns
     /// A handle that unregisters the observer when dropped.
-    #[must_use]
     pub fn observe_diagnostics<F>(&self, observer: F) -> DiagnosticObserverHandle
     where
         F: Fn(&Diagnostic) + Send + Sync + 'static,
     {
         let entry = Arc::new(ObserverEntry {
-            active: std::sync::atomic::AtomicBool::new(true),
+            active: AtomicBool::new(true),
             callback: Arc::new(observer),
         });
         let mut entries = self

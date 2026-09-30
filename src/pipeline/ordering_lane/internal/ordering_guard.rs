@@ -8,6 +8,7 @@
 //! Guard that releases a synchronous ordering lane when dropped.
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 
 use super::sync_lane::SyncLane;
 
@@ -32,6 +33,8 @@ impl<T> OrderingGuard<T> {
     ///
     /// # Panics
     /// Panics if the lane guard was created without its queued value.
+    #[must_use]
+    #[inline]
     pub(crate) fn value(&self) -> &T {
         self.value.as_ref().expect("lane guard always owns its value")
     }
@@ -40,11 +43,7 @@ impl<T> OrderingGuard<T> {
 impl<T> Drop for OrderingGuard<T> {
     /// Releases lane ownership and wakes the next ticket.
     fn drop(&mut self) {
-        let mut state = self
-            .lane
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.lane.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active = false;
         self.lane.changed.notify_all();
     }

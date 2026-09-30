@@ -5,6 +5,10 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Tests subscription cleanup when the synchronous worker fails to spawn.
+
+use std::error::Error;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -28,6 +32,7 @@ use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
 use crate::spi::EventSubscriptionSpi;
+use crate::spi::OrderingCapability;
 use crate::spi::OutboundMessage;
 use crate::spi::PayloadModes;
 use crate::spi::PublishGuarantee;
@@ -39,18 +44,15 @@ use crate::spi::SettlementToken;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiSubscriptionRequest;
+use crate::spi::SubscriptionModes;
+use crate::spi::panic_boundary::provider_panic;
 
 struct EmptySpi;
 
 #[test]
 fn test_provider_panic_error_has_stable_operation_context() {
     let provider_id = ProviderId::new("panic-test").expect("valid provider ID");
-    let error = crate::spi::panic_boundary::provider_panic(
-        provider_id.as_str(),
-        "publish",
-        None,
-        Box::new("provider SPI panicked"),
-    );
+    let error = provider_panic(provider_id.as_str(), "publish", None, Box::new("provider SPI panicked"));
     assert!(matches!(
         &error,
         SpiError::Operation {
@@ -61,7 +63,7 @@ fn test_provider_panic_error_has_stable_operation_context() {
         }
     ));
     assert_eq!(
-        std::error::Error::source(&error).unwrap().to_string(),
+        error.source().expect("provider panic retains its source").to_string(),
         "provider SPI panicked"
     );
 }
@@ -76,10 +78,10 @@ impl EventBusSpi for EmptySpi {
         EventBusCapabilities::new(
             PayloadModes::Native,
             SettlementCapabilities::None,
-            crate::spi::OrderingCapability::None,
+            OrderingCapability::None,
             DelayedDeliveryCapability::None,
             DurabilityCapability::Ephemeral,
-            crate::spi::SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
@@ -143,7 +145,7 @@ fn test_failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
         calls: close_calls.clone(),
         fail: false,
     });
-    let error = super::cleanup_failed_worker_spawn(
+    let error = super::subscribing::cleanup_failed_worker_spawn(
         &bus.inner,
         &SubscriberId::new("spawn-failure").expect("valid ID"),
         Some(receiver),
@@ -151,7 +153,7 @@ fn test_failed_worker_spawn_closes_receiver_and_keeps_the_spawn_error_source() {
     );
 
     assert_eq!(close_calls.load(Ordering::Acquire), 1);
-    let source = std::error::Error::source(&error).expect("spawn I/O error remains chained");
+    let source = error.source().expect("spawn I/O error remains chained");
     assert_eq!(source.to_string(), "synthetic thread spawn failure");
 }
 
@@ -186,7 +188,7 @@ fn test_scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_erro
     let config = EventBusFacadeConfig::new().with_sync_delivery_scheduler(
         SyncDeliverySchedulerConfig::new(2, 1)
             .expect("valid scheduler config")
-            .with_max_subscription_workers(std::num::NonZeroUsize::new(1).unwrap()),
+            .with_max_subscription_workers(NonZeroUsize::new(1).expect("worker limit is non-zero")),
     );
     let bus = EventBus::with_config(
         ProviderId::new("spawn-test").expect("valid provider ID"),
@@ -209,7 +211,7 @@ fn test_scheduler_spawn_failure_closes_provider_subscription_and_keeps_both_erro
     };
     assert!(matches!(error, SubscribeError::Spi(_)));
     assert_eq!(close_calls.load(Ordering::Acquire), 1);
-    let source = std::error::Error::source(&error).expect("spawn source retained");
+    let source = error.source().expect("spawn source retained");
     assert_eq!(source.to_string(), "synthetic scheduler worker spawn failure");
 
     bus.inner.scheduler.fail_spawn_at(usize::MAX);

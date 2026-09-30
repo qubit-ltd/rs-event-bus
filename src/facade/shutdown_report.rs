@@ -30,6 +30,7 @@ use crate::spi::ShutdownOutcome;
 /// # Ok(())
 /// # }
 /// ```
+#[must_use = "shutdown reports contain provider and delivery cleanup results"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShutdownReport {
     /// Final provider shutdown result.

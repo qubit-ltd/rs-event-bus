@@ -32,8 +32,9 @@ use crate::model::PublishAcknowledgement;
 ///
 /// ```
 /// use qubit_event_bus::spi::EventBusSpi;
+/// use qubit_event_bus::spi::PayloadModes;
 ///
-/// fn payload_modes(provider: &dyn EventBusSpi) -> qubit_event_bus::spi::PayloadModes {
+/// fn payload_modes(provider: &dyn EventBusSpi) -> PayloadModes {
 ///     provider.capabilities().payload_modes()
 /// }
 /// ```
@@ -79,18 +80,19 @@ use crate::model::PublishAcknowledgement;
 ///
 /// impl EventBusSpi for RejectingExample {
 ///     fn capabilities(&self) -> EventBusCapabilities {
-///         EventBusCapabilities::new(
-///             PayloadModes::Native,
-///             SettlementCapabilities::None,
-///             OrderingCapability::None,
-///             DelayedDeliveryCapability::None,
-///             DurabilityCapability::Ephemeral,
-///             SubscriptionModes::EPHEMERAL,
-///             false,
-///             ReplayCapability::None,
-///             PublishGuarantee::FireAndForget,
-///             PublishVisibility::Opaque,
-///         )
+///         EventBusCapabilities::builder()
+///             .payload_modes(PayloadModes::Native)
+///             .settlement(SettlementCapabilities::None)
+///             .ordering(OrderingCapability::None)
+///             .delayed_delivery(DelayedDeliveryCapability::None)
+///             .durability(DurabilityCapability::Ephemeral)
+///             .subscription_modes(SubscriptionModes::EPHEMERAL)
+///             .consumer_groups(false)
+///             .replay(ReplayCapability::None)
+///             .publish_guarantee(PublishGuarantee::FireAndForget)
+///             .publish_visibility(PublishVisibility::Opaque)
+///             .build()
+///             .expect("all example capabilities are configured")
 ///     }
 ///
 ///     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {

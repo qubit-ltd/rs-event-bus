@@ -11,6 +11,7 @@ use std::any::TypeId;
 
 use qubit_id::Id;
 
+use super::SpiSubscriptionRequestBuilder;
 use super::TopicAddress;
 use crate::model::ConsumerGroup;
 use crate::model::ProviderOptions;
@@ -34,12 +35,17 @@ use crate::model::SubscriptionDurability;
 /// use qubit_event_bus::spi::TopicAddress;
 /// use qubit_id::Id;
 ///
-/// let request = SpiSubscriptionRequest::new(
-///     Id::new(1), TopicAddress::new("orders.created").unwrap(),
-///     SubscriberId::new("audit").unwrap(), None,
-///     SubscriptionDurability::Ephemeral, StartPosition::New,
-///     ProviderOptions::new(), TypeId::of::<String>(),
-/// );
+/// let request = SpiSubscriptionRequest::builder()
+///     .subscription_id(Id::new(1))
+///     .topic(TopicAddress::new("orders.created").unwrap())
+///     .subscriber_id(SubscriberId::new("audit").unwrap())
+///     .group(None)
+///     .durability(SubscriptionDurability::Ephemeral)
+///     .start_position(StartPosition::New)
+///     .provider_options(ProviderOptions::new())
+///     .payload_type_id(TypeId::of::<String>())
+///     .build()
+///     .expect("all provider request fields are configured");
 /// assert_eq!(request.topic().as_str(), "orders.created");
 /// ```
 #[must_use]
@@ -63,6 +69,16 @@ pub struct SpiSubscriptionRequest {
 }
 
 impl SpiSubscriptionRequest {
+    /// Starts building a provider subscription request with every field
+    /// explicitly configured.
+    ///
+    /// # Returns
+    /// A builder that reports the first missing field when `build` is called.
+    #[inline]
+    pub fn builder() -> SpiSubscriptionRequestBuilder {
+        SpiSubscriptionRequestBuilder::default()
+    }
+
     /// Creates a provider subscription request.
     ///
     /// # Parameters
@@ -78,6 +94,7 @@ impl SpiSubscriptionRequest {
     /// # Returns
     /// A provider request containing the supplied transport settings.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub fn new(
         subscription_id: Id,
         topic: TopicAddress,

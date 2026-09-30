@@ -6,7 +6,9 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
+use std::env::var;
 use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -30,8 +32,8 @@ use qubit_event_bus::spi::ShutdownOutcome;
 mod support;
 
 fn ready<F: Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    match future.as_mut().poll(&mut Context::from_waker(std::task::Waker::noop())) {
+    let mut future = pin!(future);
+    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("probe operation unexpectedly pending"),
     }
@@ -53,7 +55,7 @@ impl Wake for Reenter {
 #[test]
 fn test_shutdown_waker_can_reenter_publish() {
     let test_name = "test_shutdown_waker_can_reenter_publish";
-    let Ok(case) = std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE") else {
+    let Ok(case) = var("QUBIT_EVENT_BUS_ISOLATED_CASE") else {
         for case in ["immediate", "graceful"] {
             support::isolated_process::run_case(test_name, case);
         }
@@ -80,5 +82,8 @@ fn test_shutdown_waker_can_reenter_publish() {
     assert_eq!(ShutdownOutcome::Complete, ready(spi.shutdown(mode)).unwrap());
     assert!(reenter.calls.load(Ordering::SeqCst) >= 1);
     drop(runner);
-    ready(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::AsyncTracker;
 
 /// Decrements the active runner count when a runner future is dropped.
+#[must_use]
 pub(in crate::facade) struct AsyncRunnerGuard(
     /// Tracker whose active runner count this guard owns.
     Arc<AsyncTracker>,

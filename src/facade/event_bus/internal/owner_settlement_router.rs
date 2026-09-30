@@ -25,7 +25,9 @@ pub(in crate::facade) struct OwnerSettlementRouter {
 }
 
 impl OwnerSettlementRouter {
-    /// Sends a settlement to the receiver owner and waits for its response.
+    /// Sends a settlement to the receiver owner and waits for its response if
+    /// the message is accepted; returns without a response if the channel is
+    /// closed.
     ///
     /// # Parameters
     /// - `token`: provider token to settle, or `None` when unavailable.

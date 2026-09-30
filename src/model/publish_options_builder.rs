@@ -24,7 +24,9 @@ use crate::model::DuplicateRiskPolicy;
 /// Builds reusable publication policy independently of an individual request.
 ///
 /// # Type Parameters
-/// - `T`: payload type handled by the configured callbacks.
+/// - `T`: payload type handled by the configured callbacks. It must be
+///   `'static` because reusable options store callbacks that may observe this
+///   payload type.
 ///
 /// # Examples
 ///
@@ -45,6 +47,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// A builder containing no retry policy or callbacks.
+    #[inline]
     pub fn new() -> Self {
         Self {
             options: PublishOptions::default(),
@@ -57,6 +60,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder; `Forbid` remains the default.
+    #[inline]
     pub fn duplicate_risk_policy(mut self, value: DuplicateRiskPolicy) -> Self {
         self.options.duplicate_risk_policy = value;
         self
@@ -69,6 +73,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
         self
@@ -99,6 +104,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[inline]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
         self
@@ -150,7 +156,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     ///
     /// # Returns
     /// The configured options value.
-    #[must_use]
+    #[inline]
     pub fn build(self) -> PublishOptions<T> {
         self.options
     }
@@ -158,6 +164,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
 
 impl<T: 'static> Default for PublishOptionsBuilder<T> {
     /// Creates a builder with default retry and callback settings.
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

@@ -34,6 +34,7 @@ use super::observer_entry::ObserverEntry;
 /// drop(observer); // Unregister before subsequent diagnostics are dispatched.
 /// bus.shutdown(ShutdownMode::Immediate).unwrap();
 /// ```
+#[must_use = "keep this handle alive while observing diagnostics"]
 pub struct DiagnosticObserverHandle {
     /// Shared registration entry deactivated when this handle is dropped.
     entry: Arc<ObserverEntry>,

@@ -7,6 +7,8 @@
 // =============================================================================
 //! Gate for new public calls while admitted SPI operations drain.
 
+use std::sync::PoisonError;
+
 use super::operation_gate_state::OperationGateState;
 use super::operation_permit::OperationPermit;
 use crate::internal::sync::Condvar;
@@ -29,7 +31,7 @@ impl OperationGate {
     /// A permit when admission is open, otherwise None.
     #[must_use]
     pub(in crate::facade) fn enter(&self) -> Option<OperationPermit<'_>> {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.closing {
             return None;
         }
@@ -39,19 +41,16 @@ impl OperationGate {
 
     /// Closes operation admission without waiting for existing calls.
     pub(in crate::facade) fn close_admission(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.closing = true;
         self.changed.notify_all();
     }
 
     /// Waits for every previously admitted SPI call to finish.
     pub(in crate::facade) fn wait_for_idle(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         while state.active != 0 {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
@@ -59,6 +58,7 @@ impl OperationGate {
     ///
     /// # Parameters
     /// - `state`: gate state whose active operation count is decremented.
+    #[inline]
     pub(super) fn release(&self, state: &mut OperationGateState) {
         state.active = state.active.saturating_sub(1);
         if state.active == 0 {
@@ -71,7 +71,7 @@ impl OperationGate {
     /// # Returns
     /// A guard for the current operation admission state.
     pub(super) fn lock_state(&self) -> MutexGuard<'_, OperationGateState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

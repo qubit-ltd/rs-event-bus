@@ -14,14 +14,19 @@
 /// ```
 /// use qubit_event_bus::spi::DurabilityCapability;
 ///
-/// let durability = DurabilityCapability::Durable;
-/// assert_eq!(durability, DurabilityCapability::Durable);
+/// let retention = match DurabilityCapability::Durable {
+///     DurabilityCapability::Durable => "retained across downtime",
+///     DurabilityCapability::Ephemeral => "available only while online",
+///     _ => "provider-defined retention",
+/// };
+/// assert_eq!(retention, "retained across downtime");
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum DurabilityCapability {
-    /// Messages are ephemeral.
+    /// Messages are not retained across subscriber downtime.
     Ephemeral,
-    /// Messages are durably retained.
+    /// Messages remain available after subscriber downtime under the
+    /// provider's durable-retention policy.
     Durable,
 }

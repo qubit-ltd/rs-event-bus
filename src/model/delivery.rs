@@ -93,21 +93,6 @@ impl<T: 'static> Delivery<T> {
     pub fn event(&self) -> &EventEnvelope<T> {
         &self.event
     }
-    /// Creates a fresh per-attempt acknowledgement while retaining event
-    /// context.
-    ///
-    /// # Parameters
-    /// - `retry_attempt`: one-based facade attempt number for the new delivery.
-    ///
-    /// # Returns
-    /// A delivery over the same event with fresh attempt state.
-    pub(crate) fn next_attempt(&self, retry_attempt: u32) -> Self {
-        Self {
-            event: self.event.clone(),
-            context: self.context.clone().with_retry_attempt(retry_attempt),
-            acknowledgement: Acknowledgement::new(),
-        }
-    }
     /// Returns provider and subscriber context.
     ///
     /// # Returns
@@ -125,6 +110,22 @@ impl<T: 'static> Delivery<T> {
     #[inline]
     pub fn acknowledgement(&self) -> &Acknowledgement {
         &self.acknowledgement
+    }
+
+    /// Creates a fresh per-attempt acknowledgement while retaining event
+    /// context.
+    ///
+    /// # Parameters
+    /// - `retry_attempt`: one-based facade attempt number for the new delivery.
+    ///
+    /// # Returns
+    /// A delivery over the same event with fresh attempt state.
+    pub(crate) fn next_attempt(&self, retry_attempt: u32) -> Self {
+        Self {
+            event: self.event.clone(),
+            context: self.context.clone().with_retry_attempt(retry_attempt),
+            acknowledgement: Acknowledgement::new(),
+        }
     }
 
     /// Returns a shared owner for use by retry and dead-letter policies.

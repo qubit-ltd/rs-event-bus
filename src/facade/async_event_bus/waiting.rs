@@ -8,6 +8,7 @@
 //! Runtime-neutral async deadline and signal waits.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
@@ -46,26 +47,26 @@ pub(in crate::facade) async fn wait_until(
         None => None,
     };
     let registration = SignalRegistration::new(signal);
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if ready() {
-            return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+            return Poll::Ready(Ok(WaitOutcome::Idle));
         }
         if let Some(deadline) = deadline.as_mut() {
             match deadline.as_mut().poll(cx) {
-                std::task::Poll::Ready(Ok(())) => {
-                    return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut));
+                Poll::Ready(Ok(())) => {
+                    return Poll::Ready(Ok(WaitOutcome::TimedOut));
                 }
-                std::task::Poll::Ready(Err(error)) => {
-                    return std::task::Poll::Ready(Err(LifecycleError::Timer(error)));
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Err(LifecycleError::Timer(error)));
                 }
-                std::task::Poll::Pending => {}
+                Poll::Pending => {}
             }
         }
         registration.register(cx.waker());
         if ready() {
-            return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+            return Poll::Ready(Ok(WaitOutcome::Idle));
         }
-        std::task::Poll::Pending
+        Poll::Pending
     })
     .await
 }
@@ -95,7 +96,7 @@ pub(in crate::facade) async fn await_shutdown_or_immediate<F: Future>(
     let mut future = Box::pin(future);
     let mut deadline = deadline;
     let registration = SignalRegistration::new(signal);
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if immediate.load(Ordering::Acquire) {
             return Poll::Ready(Ok(ShutdownWait::ImmediateRequested));
         }
@@ -140,14 +141,14 @@ pub(in crate::facade) async fn await_until_deadline<F: Future>(
     let Some(deadline) = deadline else {
         return Ok(Some(future.await));
     };
-    std::future::poll_fn(|cx| {
-        if let std::task::Poll::Ready(output) = future.as_mut().poll(cx) {
-            return std::task::Poll::Ready(Ok(Some(output)));
+    poll_fn(|cx| {
+        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+            return Poll::Ready(Ok(Some(output)));
         }
         match deadline.as_mut().poll(cx) {
-            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(None)),
-            std::task::Poll::Ready(Err(error)) => std::task::Poll::Ready(Err(LifecycleError::Timer(error))),
-            std::task::Poll::Pending => std::task::Poll::Pending,
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(None)),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(LifecycleError::Timer(error))),
+            Poll::Pending => Poll::Pending,
         }
     })
     .await
@@ -172,37 +173,37 @@ pub(in crate::facade) async fn wait_until_deadline(
 ) -> Result<WaitOutcome, LifecycleError> {
     let Some(deadline) = deadline else {
         let registration = SignalRegistration::new(signal);
-        return std::future::poll_fn(|cx| {
+        return poll_fn(|cx| {
             if ready() {
-                return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+                return Poll::Ready(Ok(WaitOutcome::Idle));
             }
             registration.register(cx.waker());
             if ready() {
-                return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+                return Poll::Ready(Ok(WaitOutcome::Idle));
             }
-            std::task::Poll::Pending
+            Poll::Pending
         })
         .await;
     };
     let registration = SignalRegistration::new(signal);
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if ready() {
-            return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+            return Poll::Ready(Ok(WaitOutcome::Idle));
         }
         match deadline.as_mut().poll(cx) {
-            std::task::Poll::Ready(Ok(())) => {
-                return std::task::Poll::Ready(Ok(WaitOutcome::TimedOut));
+            Poll::Ready(Ok(())) => {
+                return Poll::Ready(Ok(WaitOutcome::TimedOut));
             }
-            std::task::Poll::Ready(Err(error)) => {
-                return std::task::Poll::Ready(Err(LifecycleError::Timer(error)));
+            Poll::Ready(Err(error)) => {
+                return Poll::Ready(Err(LifecycleError::Timer(error)));
             }
-            std::task::Poll::Pending => {}
+            Poll::Pending => {}
         }
         registration.register(cx.waker());
         if ready() {
-            return std::task::Poll::Ready(Ok(WaitOutcome::Idle));
+            return Poll::Ready(Ok(WaitOutcome::Idle));
         }
-        std::task::Poll::Pending
+        Poll::Pending
     })
     .await
 }

@@ -8,8 +8,12 @@
 //! Shared provider, lifecycle, observer, and worker state for facade clones.
 
 use std::collections::HashMap;
+use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -27,6 +31,7 @@ use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
 use crate::facade::ShutdownReport;
 use crate::facade::SubscriptionControl;
+use crate::facade::event_bus::failure::panic_message;
 use crate::facade::internal::BusContextGuard;
 use crate::facade::internal::LifecycleState;
 use crate::facade::observer_entry::ObserverEntry;
@@ -36,16 +41,20 @@ use crate::model::ProviderId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
+use crate::pipeline::emit_diagnostic;
+use crate::spi::DurabilityCapability;
+use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
+use crate::spi::panic_boundary::catch_spi_call;
 
 /// Shared provider, lifecycle, observer, and worker state for facade clones.
 pub(in crate::facade) struct EventBusInner {
     /// Provider implementation shared by facade clones.
     pub(in crate::facade) spi: Arc<dyn EventBusSpi>,
     /// Immutable capabilities captured at construction.
-    pub(in crate::facade) capabilities: crate::spi::EventBusCapabilities,
+    pub(in crate::facade) capabilities: EventBusCapabilities,
     /// Provider identity used for errors and diagnostics.
     pub(in crate::facade) provider_id: ProviderId,
     /// Publisher validation, retry, and interception pipeline.
@@ -87,8 +96,9 @@ impl EventBusInner {
     ///
     /// # Returns
     /// Strong callback owners retained for one diagnostic emission.
+    #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
         observers.retain(|entry| entry.strong_count() > 0);
         observers
             .iter()
@@ -104,7 +114,7 @@ impl EventBusInner {
     /// # Parameters
     /// - `diagnostic`: event delivered to active observer callbacks.
     pub(in crate::facade) fn emit(&self, diagnostic: Diagnostic) {
-        crate::pipeline::emit_diagnostic(&self.observer_snapshot(), &diagnostic);
+        emit_diagnostic(&self.observer_snapshot(), &diagnostic);
     }
 
     /// Emits a non-fatal internal failure through the common observer path.
@@ -127,7 +137,7 @@ impl EventBusInner {
     pub(in crate::facade) fn subscription_snapshot(&self) -> Vec<Arc<SubscriptionControl>> {
         self.subscriptions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -141,10 +151,7 @@ impl EventBusInner {
     where
         F: FnMut(&SubscriptionControl),
     {
-        let subscriptions = self
-            .subscriptions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subscriptions = self.subscriptions.lock().unwrap_or_else(PoisonError::into_inner);
         for control in subscriptions.values() {
             signal(control);
         }
@@ -155,18 +162,13 @@ impl EventBusInner {
     ///
     /// # Returns
     /// Some with all failures, or None if no close failure was recorded.
+    #[must_use]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let mut snapshot = self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
             return Some(errors.clone());
         }
-        let failures = self
-            .close_errors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
         if failures.is_empty() {
             return None;
         }
@@ -186,11 +188,7 @@ impl EventBusInner {
     /// # Errors
     /// Returns an SPI error when the worker thread panicked.
     pub(in crate::facade) fn join_control(&self, control: &Arc<SubscriptionControl>) -> Result<(), SpiError> {
-        let worker = control
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let worker = control.worker.lock().unwrap_or_else(PoisonError::into_inner).take();
         if let Some(worker) = worker {
             worker.join().map_err(|_| SpiError::Operation {
                 provider_id: self.provider_id.as_str().into(),
@@ -198,7 +196,7 @@ impl EventBusInner {
                 resource: Some(control.subscriber_id.as_str().into()),
                 kind: "worker_panicked",
                 retryable: None,
-                source: Box::new(std::io::Error::other("subscription worker panicked")),
+                source: Box::new(Error::other("subscription worker panicked")),
             })?;
         }
         Ok(())
@@ -211,19 +209,16 @@ impl EventBusInner {
     pub(in crate::facade) fn run_shutdown(self: Arc<Self>, generation: u64) {
         let bus_identity = Arc::as_ptr(&self) as usize;
         let _context = BusContextGuard::enter(bus_identity);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.perform_shutdown(generation)))
-            .unwrap_or_else(|panic| {
-                Err(SpiError::Operation {
-                    provider_id: self.provider_id.as_str().into(),
-                    operation: "shutdown_coordinator",
-                    resource: None,
-                    kind: "coordinator_panicked",
-                    retryable: None,
-                    source: Box::new(std::io::Error::other(crate::facade::event_bus::failure::panic_message(
-                        panic.as_ref(),
-                    ))),
-                })
-            });
+        let result = catch_unwind(AssertUnwindSafe(|| self.perform_shutdown(generation))).unwrap_or_else(|panic| {
+            Err(SpiError::Operation {
+                provider_id: self.provider_id.as_str().into(),
+                operation: "shutdown_coordinator",
+                resource: None,
+                kind: "coordinator_panicked",
+                retryable: None,
+                source: Box::new(Error::other(panic_message(panic.as_ref()))),
+            })
+        });
         let failure_message = result.as_ref().err().map(ToString::to_string);
         self.shutdown_coordinator.finish(generation, result);
         if let Some(message) = failure_message {
@@ -251,7 +246,7 @@ impl EventBusInner {
         for control in &controls {
             control.request_cancel();
         }
-        self.tracker.wait_for_workers(None);
+        assert!(self.tracker.wait_for_workers(None));
         for control in &controls {
             self.join_control(control)?;
         }
@@ -259,7 +254,7 @@ impl EventBusInner {
         let mode = self.shutdown_coordinator.mode(generation);
         let outcome = self.shutdown_provider_once(mode)?;
         if self.tracker.workers_are_idle() {
-            *self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = LifecycleState::Closed;
+            *self.lifecycle.lock().unwrap_or_else(PoisonError::into_inner) = LifecycleState::Closed;
         }
         Ok(outcome)
     }
@@ -278,25 +273,15 @@ impl EventBusInner {
         // Only perform_shutdown on the single active coordinator generation
         // calls this method. The coordinator owns provider-call serialization;
         // this mutex protects only the cached report, never provider code.
-        let cached = self
-            .shutdown_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .report;
+        let cached = self.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner).report;
         if let Some(report) = cached {
             return Ok(report.outcome);
         }
-        let outcome = crate::spi::panic_boundary::catch_spi_call(self.provider_id.as_str(), "shutdown", None, || {
-            self.spi.shutdown(mode)
-        })??;
-        self.shutdown_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .report = Some(ShutdownReport::new(
+        let outcome = catch_spi_call(self.provider_id.as_str(), "shutdown", None, || self.spi.shutdown(mode))??;
+        self.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner).report = Some(ShutdownReport::new(
             outcome,
             self.abandoned_deliveries.load(Ordering::Acquire),
-            self.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral
-                || outcome == ShutdownOutcome::TimedOut,
+            self.capabilities.durability() == DurabilityCapability::Ephemeral || outcome == ShutdownOutcome::TimedOut,
         ));
         Ok(outcome)
     }
@@ -304,17 +289,25 @@ impl EventBusInner {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::fmt;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::mpsc;
+    use std::thread;
     use std::time::Duration;
+
+    use qubit_id::Id;
 
     use crate::EventBus;
     use crate::error::SpiError;
+    use crate::facade::SubscriptionControl;
     use crate::facade::internal::LifecycleState;
     use crate::local::LocalEventBusConfig;
     use crate::model::ProviderId;
     use crate::model::PublishAcknowledgement;
+    use crate::model::SubscriberId;
+    use crate::model::SubscriptionStopReason;
     use crate::spi::EventBusCapabilities;
     use crate::spi::EventBusSpi;
     use crate::spi::EventSubscriptionSpi;
@@ -375,7 +368,7 @@ mod tests {
         // No production-only scheduling hooks or extra public API are needed.
         let (cleanup_entered_tx, cleanup_entered_rx) = mpsc::channel();
         let cleanup_inner = bus.inner.clone();
-        let cleanup = std::thread::spawn(move || {
+        let cleanup = thread::spawn(move || {
             let mut lifecycle = cleanup_inner.lifecycle.lock().expect("worker lifecycle");
             cleanup_entered_tx.send(()).expect("cleanup observer");
             let report = cleanup_inner.shutdown_gate.lock().expect("worker report").report;
@@ -387,7 +380,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("cleanup owns lifecycle");
         let (returned_tx, returned_rx) = mpsc::channel();
-        let caller = std::thread::spawn(move || {
+        let caller = thread::spawn(move || {
             returned_tx
                 .send(bus.request_shutdown(ShutdownMode::Immediate))
                 .expect("second request observer")
@@ -396,32 +389,26 @@ mod tests {
         release_tx.send(()).expect("release provider before any assertion");
         cleanup.join().expect("worker cleanup joins");
         caller.join().expect("request caller joins");
-        ticket
+        let first_report = ticket
             .wait(Some(Duration::from_secs(5)))
             .expect("first shutdown finishes");
+        assert_eq!(first_report.outcome, ShutdownOutcome::Complete);
         assert!(
             returned_before_provider_release.is_ok(),
             "request must return before provider shutdown release despite worker lifecycle cleanup"
         );
-        returned_before_provider_release
+        let joined_report = returned_before_provider_release
             .expect("request returned")
             .expect("joined ticket")
             .wait(Some(Duration::from_secs(5)))
             .expect("joined generation completes");
+        assert_eq!(joined_report.outcome, ShutdownOutcome::Complete);
     }
     #[test]
     fn test_shutdown_request_does_not_own_terminal_error_destruction() {
-        use std::fmt;
-
-        use qubit_id::Id;
-
-        use crate::facade::SubscriptionControl;
-        use crate::model::SubscriberId;
-        use crate::model::SubscriptionStopReason;
-
         #[derive(Debug)]
         struct BlockingErrorDrop {
-            entered: mpsc::Sender<std::thread::ThreadId>,
+            entered: mpsc::Sender<thread::ThreadId>,
             release: Mutex<mpsc::Receiver<()>>,
         }
         impl fmt::Display for BlockingErrorDrop {
@@ -429,12 +416,10 @@ mod tests {
                 f.write_str("terminal receive error")
             }
         }
-        impl std::error::Error for BlockingErrorDrop {}
+        impl Error for BlockingErrorDrop {}
         impl Drop for BlockingErrorDrop {
             fn drop(&mut self) {
-                self.entered
-                    .send(std::thread::current().id())
-                    .expect("error-drop observer");
+                self.entered.send(thread::current().id()).expect("error-drop observer");
                 self.release
                     .lock()
                     .expect("error-drop release")
@@ -468,7 +453,7 @@ mod tests {
         let (signal_release_tx, signal_release_rx) = mpsc::channel();
         let (returned_tx, returned_rx) = mpsc::channel();
         let request_bus = bus.clone();
-        let requester = std::thread::spawn(move || {
+        let requester = thread::spawn(move || {
             // Pause the exact production borrow/signal operation after the
             // atomic store to deterministically model thread preemption.
             request_bus.inner.signal_subscriptions(|control| {
@@ -486,7 +471,7 @@ mod tests {
         let borrowed_under_registry_guard = bus.inner.subscriptions.try_lock().is_err();
         let cleanup_inner = bus.inner.clone();
         let (removed_tx, removed_rx) = mpsc::channel();
-        let cleanup = std::thread::spawn(move || {
+        let cleanup = thread::spawn(move || {
             let removed = cleanup_inner
                 .subscriptions
                 .lock()
@@ -520,9 +505,10 @@ mod tests {
                 .expect("request after cleanup release"),
         }
         .expect("shutdown ticket");
-        ticket
+        let report = ticket
             .wait(Some(Duration::from_secs(5)))
             .expect("coordinator completes");
+        assert_eq!(report.outcome, ShutdownOutcome::Complete);
         assert_eq!(
             destructor_thread, cleanup_thread,
             "provider error Drop must remain on the cleanup thread"

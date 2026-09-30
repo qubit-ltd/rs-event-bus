@@ -40,6 +40,7 @@ impl EventIdGenerationError {
     /// # Returns
     /// An event-ID generation error that exposes `source` through its error
     /// chain.
+    #[inline]
     pub(crate) fn new(source: IdGenerationError) -> Self {
         Self(source)
     }

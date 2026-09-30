@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 
 use crate::error::CodecError;
 
@@ -34,7 +35,7 @@ pub(crate) fn call_codec<R>(
     operation: &'static str,
     call: impl FnOnce() -> Result<R, CodecError>,
 ) -> Result<R, CodecError> {
-    match std::panic::catch_unwind(AssertUnwindSafe(call)) {
+    match catch_unwind(AssertUnwindSafe(call)) {
         Ok(result) => result,
         Err(payload) => Err(CodecError::Panicked {
             operation,

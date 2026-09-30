@@ -23,6 +23,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 /// Wakes the thread that drives the example future.
 struct ThreadWake(
@@ -79,9 +80,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     block_on(bus.publish(PublishRequest::new(topic, "order-42".to_owned())?))?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(2))?, "order-42");
-    block_on(bus.shutdown(ShutdownMode::Graceful {
+    let shutdown_report = block_on(bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(2),
     }))?;
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     runner.join().expect("subscription runner should exit")?;
     Ok(())
 }

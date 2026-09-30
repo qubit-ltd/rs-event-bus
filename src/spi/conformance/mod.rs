@@ -14,7 +14,8 @@
 //! ```
 //! use std::sync::Arc;
 //! use qubit_event_bus::spi::EventBusSpi;
-//! use qubit_event_bus::spi::conformance::{ConformanceHooks, run_sync};
+//! use qubit_event_bus::spi::conformance::ConformanceHooks;
+//! use qubit_event_bus::spi::conformance::run_sync;
 //!
 //! fn verify_provider(factory: impl Fn() -> Arc<dyn EventBusSpi>) {
 //!     let report = run_sync(factory, &ConformanceHooks::default());

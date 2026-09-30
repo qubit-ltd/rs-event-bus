@@ -100,6 +100,9 @@ impl SpiError {
 
     /// Returns the provider ID retained by this SPI failure.
     ///
+    /// The returned string is borrowed from `self` and remains valid only
+    /// while `self` is borrowed. This lookup does not allocate.
+    ///
     /// # Returns
     /// The provider identifier associated with the failure.
     #[must_use]
@@ -126,6 +129,9 @@ impl SpiError {
     }
 
     /// Returns `Some` topic or subscription context when known, or `None`.
+    ///
+    /// Any returned string is borrowed from `self` and remains valid only
+    /// while `self` is borrowed. This lookup does not allocate.
     ///
     /// # Returns
     /// The associated resource name, if the operation had one.

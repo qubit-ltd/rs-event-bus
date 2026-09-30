@@ -9,9 +9,14 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use std::io::Error;
+use std::panic;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use qubit_id::Id;
 use qubit_retry::AttemptFailure;
@@ -21,28 +26,38 @@ use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryFallback;
 
+use super::internal::OwnerSettlementRouter;
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::EventId;
 use crate::SubscriberId;
+use crate::error::CodecError;
 use crate::error::DeliveryAttemptError;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::OwnerSettlementRouter;
 use crate::facade::event_bus::failure::finish_failed_delivery;
 use crate::facade::event_bus::failure::panic_message;
 use crate::facade::event_bus::failure::settle_rejected;
 use crate::facade::event_bus::failure::settle_token;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
 use crate::model::FailureDirective;
+use crate::model::Headers;
+use crate::model::ProviderMessageMetadata;
+use crate::model::SubscribeOptions;
+use crate::model::SubscriberInterceptor;
 use crate::model::Topic;
 use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::SubscriberPipeline;
+use crate::pipeline::choose_failure_directive;
 use crate::pipeline::is_retry_rule_failure;
 use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
+use crate::spi::OrderingKey;
+use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
 use crate::spi::TopicAddress;
 
@@ -68,10 +83,10 @@ pub(in crate::facade) fn process_inbound<T>(
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     message: InboundMessage,
-    decoded: Result<Arc<T>, crate::error::CodecError>,
+    decoded: Result<Arc<T>, CodecError>,
 ) where
     T: Send + Sync + 'static,
 {
@@ -79,7 +94,7 @@ pub(in crate::facade) fn process_inbound<T>(
         message.into_parts();
     let fallback_event_id = event_id.clone();
     let fallback_topic = address.as_str().to_owned();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         process_inbound_parts(
             inner,
             settler,
@@ -102,7 +117,7 @@ pub(in crate::facade) fn process_inbound<T>(
         inner.emit_internal("delivery_worker", panic_message(payload.as_ref()).into());
         if let Some(token) = settlement.take() {
             if token.belongs_to(subscription_id)
-                && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+                && inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject
             {
                 settler.settle(
                     Some(token),
@@ -156,16 +171,16 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     subscription_id: Id,
     subscriber_id: &SubscriberId,
     topic: &Topic<T>,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     address: TopicAddress,
     event_id: EventId,
-    timestamp: std::time::SystemTime,
-    headers: crate::model::Headers,
-    ordering_key: Option<crate::spi::OrderingKey>,
-    decoded: Result<Arc<T>, crate::error::CodecError>,
+    timestamp: SystemTime,
+    headers: Headers,
+    ordering_key: Option<OrderingKey>,
+    decoded: Result<Arc<T>, CodecError>,
     settlement: &mut Option<SettlementToken>,
-    provider_metadata: crate::model::ProviderMessageMetadata,
+    provider_metadata: ProviderMessageMetadata,
 ) where
     T: Send + Sync + 'static,
 {
@@ -191,7 +206,7 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     event.ordering_key = ordering_key.map(|value| value.as_str().into());
     let event = Arc::new(event);
     if let Some(filter) = options.filter() {
-        let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(&event)));
+        let accepted = panic::catch_unwind(panic::AssertUnwindSafe(|| filter(&event)));
         match accepted {
             Ok(false) => {
                 settle_token(
@@ -208,7 +223,7 @@ pub(in crate::facade) fn process_inbound_parts<T>(
             Ok(true) => {}
             Err(_) => {
                 let error = DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("subscriber filter panicked")),
+                    source: Box::new(Error::other("subscriber filter panicked")),
                 };
                 let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 finish_failed_delivery(
@@ -231,7 +246,7 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone())
         .with_provider_metadata(provider_metadata)
         .with_settlement(settlement.is_some());
-    let context = if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
+    let context = if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
         context.as_dead_letter()
     } else {
         context
@@ -284,10 +299,10 @@ pub(in crate::facade) fn process_inbound_parts<T>(
 /// directive when processing or retry configuration fails.
 pub(in crate::facade) fn run_delivery_with_retry<T>(
     inner: &EventBusInner,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     delivery: Delivery<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
-    global_interceptors: &[Arc<crate::model::SubscriberInterceptor<T>>],
+    global_interceptors: &[Arc<SubscriberInterceptor<T>>],
 ) -> Result<(), (DeliveryError, u32, FailureDirective)>
 where
     T: Send + Sync + 'static,
@@ -317,7 +332,7 @@ where
             move |failure: &AttemptFailure<DeliveryAttemptError>, context: &RetryContext| {
                 let directive = directive_for_rule
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .unwrap_or(FailureDirective::Discard);
                 if directive != FailureDirective::Retry {
                     return RetryDecision::Abort;
@@ -345,7 +360,7 @@ where
     if let Some(token) = options.retry_cancellation_token() {
         retry = retry.cancellation_token(token.clone());
     }
-    let attempts = std::sync::atomic::AtomicU32::new(0);
+    let attempts = AtomicU32::new(0);
     let event = delivery.event_arc();
     match retry.run(|| {
         let attempt = attempts.fetch_add(1, Ordering::AcqRel) + 1;
@@ -359,9 +374,7 @@ where
             DeliveryOutcome::Success => Ok(()),
             DeliveryOutcome::Failure(error) => {
                 let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
-                *terminal_directive
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(directive);
+                *terminal_directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(directive);
                 Err(DeliveryAttemptError::new(
                     "delivery",
                     Some(directive == FailureDirective::Retry),
@@ -375,7 +388,7 @@ where
             let count = attempts.load(Ordering::Acquire);
             let directive = terminal_directive
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .unwrap_or(FailureDirective::Discard);
             if is_retry_rule_failure(error.reason()) {
                 inner.emit_internal("retry_rule", error.to_string());
@@ -403,7 +416,7 @@ where
 /// The selected retry, requeue, dead-letter, or discard directive.
 pub(in crate::facade) fn notify_error_handlers<T>(
     inner: &EventBusInner,
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     event: &EventEnvelope<T>,
     error: &DeliveryError,
     retry_enabled: bool,
@@ -417,7 +430,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
     }
     let mut directives = Vec::with_capacity(options.error_handlers().len());
     for handler in options.error_handlers() {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(event, error))) {
+        match panic::catch_unwind(panic::AssertUnwindSafe(|| handler(event, error))) {
             Ok(directive) => directives.push(Ok(directive)),
             Err(payload) => {
                 inner.emit_internal("subscriber_error_handler", panic_message(payload.as_ref()).into());
@@ -425,7 +438,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
             }
         }
     }
-    crate::pipeline::choose_failure_directive(retry_enabled, directives)
+    choose_failure_directive(retry_enabled, directives)
 }
 
 /// Invokes one handler attempt through global and typed synchronous middleware.
@@ -443,11 +456,11 @@ pub(in crate::facade) fn notify_error_handlers<T>(
 /// # Returns
 /// The successful outcome or handler/middleware failure.
 pub(in crate::facade) fn run_delivery_attempt<T>(
-    options: &crate::model::SubscribeOptions<T>,
+    options: &SubscribeOptions<T>,
     delivery: Delivery<T>,
     handler: &Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
     _attempt: u32,
-    global_interceptors: &[Arc<crate::model::SubscriberInterceptor<T>>],
+    global_interceptors: &[Arc<SubscriberInterceptor<T>>],
 ) -> DeliveryOutcome
 where
     T: Send + Sync + 'static,

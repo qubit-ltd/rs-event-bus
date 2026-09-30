@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 use super::AsyncEventBusInner;
 
 /// Releases shutdown leadership and wakes callers waiting for the leader.
+#[must_use = "the shutdown leader guard must remain alive during shutdown work"]
 pub(in crate::facade::async_event_bus) struct ShutdownLeaderGuard(
     /// Bus whose shutdown leader is released when this guard is dropped.
     Arc<AsyncEventBusInner>,
@@ -34,6 +35,7 @@ impl ShutdownLeaderGuard {
     ///
     /// # Returns
     /// A guard that releases leadership when dropped.
+    #[inline]
     pub(in crate::facade::async_event_bus) fn new(inner: Arc<AsyncEventBusInner>) -> Self {
         Self(inner)
     }

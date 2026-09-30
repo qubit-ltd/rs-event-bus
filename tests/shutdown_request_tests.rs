@@ -17,15 +17,18 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread::spawn;
 use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::ShutdownError;
+use qubit_event_bus::Subscription;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 const LIMIT: Duration = Duration::from_secs(5);
 
@@ -45,7 +48,7 @@ impl Drop for Gate {
     }
 }
 /// Creates a real local handler blocked until the returned gate is released.
-fn blocked_bus() -> (EventBus, Gate, qubit_event_bus::Subscription) {
+fn blocked_bus() -> (EventBus, Gate, Subscription) {
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
     let topic = Topic::<String>::new("shutdown.requests").expect("topic");
     let gate = Gate(Arc::new((Mutex::new(false), Condvar::new())));
@@ -87,7 +90,7 @@ fn poll<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
 fn test_request_returns_before_handler_gate_releases() {
     let (bus, gate, _subscription) = blocked_bus();
     let (returned_tx, returned_rx) = mpsc::channel();
-    let caller = std::thread::spawn(move || {
+    let caller = spawn(move || {
         let result = bus.request_shutdown(ShutdownMode::Immediate);
         returned_tx.send(result).expect("request result");
     });
@@ -97,7 +100,10 @@ fn test_request_returns_before_handler_gate_releases() {
     let ticket = returned
         .expect("request must return while handler remains blocked")
         .expect("ticket");
-    ticket.wait(Some(LIMIT)).expect("shutdown after release");
+    let report = ticket.wait(Some(LIMIT)).expect("shutdown after release");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }
 
 #[test]
@@ -163,5 +169,8 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
         .expect("publish");
     let (ticket, rejected) = rx.recv_timeout(LIMIT).expect("callback returns");
     assert!(rejected);
-    ticket.wait(Some(LIMIT)).expect("external wait");
+    let report = ticket.wait(Some(LIMIT)).expect("external wait");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
 }

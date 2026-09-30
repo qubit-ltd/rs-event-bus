@@ -88,7 +88,7 @@ impl LocalQueueState {
     ///
     /// # Returns
     /// `true` when all ordering lanes are empty.
-    #[must_use = "Use the returned is pending empty."]
+    #[must_use = "Use the returned pending-state check."]
     #[inline]
     pub(in crate::local) fn is_pending_empty(&self) -> bool {
         self.pending_count == 0
@@ -98,6 +98,7 @@ impl LocalQueueState {
     ///
     /// # Returns
     /// Events whose payload references must be released outside the queue lock.
+    #[must_use]
     pub(in crate::local) fn clear_pending(&mut self) -> Vec<LocalEvent> {
         let mut discarded = self.lanes.drain().flat_map(|(_, lane)| lane.events).collect::<Vec<_>>();
         discarded.extend(self.in_flight.drain().map(|(_, flight)| flight.event));
@@ -121,6 +122,7 @@ impl LocalQueueState {
     ///
     /// # Panics
     /// Panics if a ready-lane or heap entry violates its queue-state invariant.
+    #[must_use]
     pub(in crate::local) fn pop_ready(&mut self, now: Instant) -> Option<LocalEvent> {
         self.promote_due_heads(now);
         while let Some((key, version)) = self.ready_lanes.pop_front() {
@@ -157,6 +159,7 @@ impl LocalQueueState {
     /// # Returns
     /// `Some` with the time until the next delayed event, or `None` when no
     /// delayed head exists.
+    #[must_use]
     pub(in crate::local) fn next_ready_delay(&mut self, now: Instant) -> Option<Duration> {
         self.discard_stale_delayed_heads();
         self.delayed_lanes

@@ -7,7 +7,9 @@
 // =============================================================================
 //! Publisher interceptor adapters and portable metadata views.
 
+use std::any::Any;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 
 use crate::error::PublishError;
@@ -19,6 +21,7 @@ pub(crate) type GlobalPublisherInterceptorFn =
 
 /// One global interceptor restricted to portable metadata.
 #[derive(Clone)]
+#[must_use]
 pub(crate) struct GlobalPublisherInterceptor(
     /// Shared callback invoked by each publication admitted to the pipeline.
     Arc<GlobalPublisherInterceptorFn>,
@@ -56,7 +59,7 @@ impl GlobalPublisherInterceptor {
     /// Preserves a callback's publication error, or returns
     /// [`PublishError::InterceptorPanicked`] with global scope after an unwind.
     pub(crate) fn apply(&self, metadata: &mut PublishMetadata) -> Result<bool, PublishError> {
-        match std::panic::catch_unwind(AssertUnwindSafe(|| (self.0)(metadata))) {
+        match catch_unwind(AssertUnwindSafe(|| (self.0)(metadata))) {
             Ok(result) => result,
             Err(payload) => Err(PublishError::InterceptorPanicked {
                 scope: "global",
@@ -73,7 +76,7 @@ impl GlobalPublisherInterceptor {
 ///
 /// # Returns
 /// A string payload when available, or a fixed fallback message.
-pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&'static str>()
         .copied()
@@ -83,21 +86,23 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::panic_any;
+
     use super::GlobalPublisherInterceptor;
+    use crate::error::PublishError;
     use crate::model::PublishMetadata;
 
     #[test]
     fn test_interceptor_converts_string_panic_to_structured_error() {
-        let interceptor =
-            GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, crate::error::PublishError> {
-                panic!("publisher middleware failed")
-            });
+        let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
+            panic!("publisher middleware failed")
+        });
         let error = interceptor
             .apply(&mut PublishMetadata::default())
             .expect_err("panic should become a structured error");
         assert!(matches!(
             error,
-            crate::error::PublishError::InterceptorPanicked {
+            PublishError::InterceptorPanicked {
                 scope: "global",
                 message
             } if message.as_ref() == "publisher middleware failed"
@@ -106,16 +111,15 @@ mod tests {
 
     #[test]
     fn test_interceptor_handles_non_string_panic_payload() {
-        let interceptor =
-            GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, crate::error::PublishError> {
-                std::panic::panic_any(17_u8)
-            });
+        let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
+            panic_any(17_u8)
+        });
         let error = interceptor
             .apply(&mut PublishMetadata::default())
             .expect_err("panic should become a structured error");
         assert!(matches!(
             error,
-            crate::error::PublishError::InterceptorPanicked { message, .. }
+            PublishError::InterceptorPanicked { message, .. }
                 if message.as_ref() == "non-string panic payload"
         ));
     }

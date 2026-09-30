@@ -12,8 +12,8 @@ mod fixture_provider;
 use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::registry::sync_provider_inventory::Entry;
 use qubit_spi::submit_sync_provider;
-use fixture_provider::FixtureProvider;
 
+use fixture_provider::FixtureProvider;
 
 submit_sync_provider! {
     inventory_entry = Entry;

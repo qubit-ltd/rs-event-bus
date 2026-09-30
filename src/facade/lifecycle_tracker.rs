@@ -12,6 +12,8 @@ mod internal;
 
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -92,7 +94,7 @@ impl LifecycleTracker {
             let (next_state, result) = self
                 .changed
                 .wait_timeout(state, remaining)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(PoisonError::into_inner);
             state = next_state;
             if result.timed_out() && state.in_flight_by_topic.get(topic).copied().unwrap_or_default() != 0 {
                 return WaitOutcome::TimedOut;
@@ -107,6 +109,7 @@ impl LifecycleTracker {
     ///
     /// # Returns
     /// True when all workers have exited, or false when the deadline expires.
+    #[must_use = "check that all subscription workers exited before continuing"]
     pub(crate) fn wait_for_workers(&self, timeout: Option<Duration>) -> bool {
         let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
         let mut state = self.lock_state();
@@ -122,7 +125,7 @@ impl LifecycleTracker {
             let (next_state, result) = self
                 .changed
                 .wait_timeout(state, remaining)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(PoisonError::into_inner);
             state = next_state;
             if result.timed_out() && state.active_workers != 0 {
                 return false;
@@ -136,30 +139,8 @@ impl LifecycleTracker {
     /// # Returns
     /// True when the active worker count is zero.
     #[must_use]
-    #[inline]
     pub(crate) fn workers_are_idle(&self) -> bool {
         self.lock_state().active_workers == 0
-    }
-
-    /// Locks tracker state while recovering from a poisoned internal mutex.
-    ///
-    /// # Returns
-    /// The exclusive state guard; dropping it releases the mutex.
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, TrackerState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Waits on the condition variable while recovering its state after poison.
-    ///
-    /// # Parameters
-    /// - `state`: tracker state guard to release while waiting.
-    ///
-    /// # Returns
-    /// Tracker state reacquired after a notification or poison recovery.
-    fn wait<'a>(&self, state: std::sync::MutexGuard<'a, TrackerState>) -> std::sync::MutexGuard<'a, TrackerState> {
-        self.changed
-            .wait(state)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Decrements one topic's in-flight count and wakes idle/shutdown waiters.
@@ -175,5 +156,24 @@ impl LifecycleTracker {
             }
         }
         self.changed.notify_all();
+    }
+
+    /// Locks tracker state while recovering from a poisoned internal mutex.
+    ///
+    /// # Returns
+    /// The exclusive state guard; dropping it releases the mutex.
+    fn lock_state(&self) -> MutexGuard<'_, TrackerState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits on the condition variable while recovering its state after poison.
+    ///
+    /// # Parameters
+    /// - `state`: tracker state guard to release while waiting.
+    ///
+    /// # Returns
+    /// Tracker state reacquired after a notification or poison recovery.
+    fn wait<'a>(&self, state: MutexGuard<'a, TrackerState>) -> MutexGuard<'a, TrackerState> {
+        self.changed.wait(state).unwrap_or_else(PoisonError::into_inner)
     }
 }

@@ -53,6 +53,7 @@ use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_id::Id;
 
 const WARMUPS: usize = 2;
@@ -333,7 +334,10 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str) -> Sample {
     let cpu_ns = cpu_nanoseconds(3) - cpu_start;
     let process_cpu_ns = cpu_nanoseconds(2) - process_cpu_start;
     drop(runner);
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     black_box(completed.load(Ordering::Relaxed));
     Sample {
         ns_per_operation: elapsed / operations as u128,

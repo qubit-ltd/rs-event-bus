@@ -7,8 +7,10 @@
 // =============================================================================
 //! Additional edge-contract coverage for the built-in local provider.
 
+use std::any::TypeId;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::thread::spawn;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -60,7 +62,7 @@ fn subscribe(spi: &dyn EventBusSpi, id: u64, topic: &str) -> Box<dyn EventSubscr
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
         ProviderOptions::new(),
-        std::any::TypeId::of::<u32>(),
+        TypeId::of::<u32>(),
     ))
     .expect("valid local subscription is accepted")
 }
@@ -90,6 +92,18 @@ fn destination_admissions(acknowledgement: PublishAcknowledgement) -> Vec<Destin
         panic!("local provider reports one admission result per matching subscription");
     };
     admissions
+}
+
+fn assert_single_accepted_admission(acknowledgement: PublishAcknowledgement, subscription_id: u64) {
+    let admissions = destination_admissions(acknowledgement);
+    let [admission] = admissions.as_slice() else {
+        panic!("publication targets exactly one matching subscription");
+    };
+    assert_eq!(Id::new(subscription_id), admission.subscription_id());
+    assert!(
+        matches!(admission.status(), AdmissionStatus::Accepted),
+        "target subscription admission must be accepted"
+    );
 }
 
 #[test]
@@ -122,7 +136,7 @@ fn test_immediate_shutdown_wakes_a_blocked_receiver() {
     let subscription = subscribe(spi.as_ref(), 2, "coverage.shutdown");
     let (started_tx, started_rx) = mpsc::channel();
     let (outcome_tx, outcome_rx) = mpsc::channel();
-    std::thread::spawn(move || {
+    spawn(move || {
         let mut subscription = subscription;
         started_tx.send(()).expect("test receiver remains alive");
         let outcome = subscription.receive(Duration::from_secs(30));
@@ -206,14 +220,17 @@ fn test_capacity_is_per_subscription_and_includes_in_flight_messages() {
 fn test_retry_at_full_queue_preserves_the_original_in_flight_delivery() {
     let spi = create_local(2);
     let mut subscription = subscribe(spi.as_ref(), 5, "coverage.retry-capacity");
-    spi.publish(outbound(
-        "coverage.retry-capacity",
-        "retry-original",
-        1,
-        Some("partition-a"),
-        None,
-    ))
-    .expect("original publication succeeds");
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.retry-capacity",
+            "retry-original",
+            1,
+            Some("partition-a"),
+            None,
+        ))
+        .expect("original publication succeeds"),
+        5,
+    );
     let ReceiveOutcome::Message(mut original) = subscription
         .receive(Duration::ZERO)
         .expect("original delivery is available")
@@ -223,14 +240,17 @@ fn test_retry_at_full_queue_preserves_the_original_in_flight_delivery() {
     let token = original
         .take_settlement()
         .expect("delivery includes its settlement token");
-    spi.publish(outbound(
-        "coverage.retry-capacity",
-        "queue-filler",
-        2,
-        Some("partition-a"),
-        None,
-    ))
-    .expect("the pending queue accepts its boundary event");
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.retry-capacity",
+            "queue-filler",
+            2,
+            Some("partition-a"),
+            None,
+        ))
+        .expect("the pending queue accepts its boundary event"),
+        5,
+    );
 
     subscription
         .settle(&token, DeliveryDisposition::Retry)
@@ -258,8 +278,11 @@ fn test_retry_at_full_queue_preserves_the_original_in_flight_delivery() {
 fn test_settlement_rejects_wrong_provider_token_state_without_consuming_real_token() {
     let spi = create_local(1);
     let mut subscription = subscribe(spi.as_ref(), 6, "coverage.forged-token");
-    spi.publish(outbound("coverage.forged-token", "valid-token", 7, None, None))
-        .expect("publication succeeds");
+    assert_single_accepted_admission(
+        spi.publish(outbound("coverage.forged-token", "valid-token", 7, None, None))
+            .expect("publication succeeds"),
+        6,
+    );
     let ReceiveOutcome::Message(mut message) = subscription
         .receive(Duration::ZERO)
         .expect("published event is available")
@@ -321,32 +344,44 @@ fn test_delayed_pending_event_consumes_subscription_capacity() {
 fn test_receive_uses_earliest_partition_deadline_without_overtaking_same_key() {
     let spi = create_local(4);
     let mut subscription = subscribe(spi.as_ref(), 8, "coverage.partition-deadlines");
-    spi.publish(outbound(
-        "coverage.partition-deadlines",
-        "partition-a-head",
-        1,
-        Some("partition-a"),
-        Some(Duration::from_millis(250)),
-    ))
-    .expect("long-delayed partition head is admitted");
-    spi.publish(outbound(
-        "coverage.partition-deadlines",
-        "partition-a-successor",
-        2,
-        Some("partition-a"),
-        Some(Duration::from_millis(20)),
-    ))
-    .expect("earlier-deadline same-key successor is admitted");
-    spi.publish(outbound(
-        "coverage.partition-deadlines",
-        "partition-b-head",
-        3,
-        Some("partition-b"),
-        Some(Duration::from_millis(20)),
-    ))
-    .expect("shorter-delayed independent partition is admitted");
-    spi.publish(outbound("coverage.partition-deadlines", "unkeyed-ready", 4, None, None))
-        .expect("unkeyed message is admitted");
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.partition-deadlines",
+            "partition-a-head",
+            1,
+            Some("partition-a"),
+            Some(Duration::from_millis(250)),
+        ))
+        .expect("long-delayed partition head is admitted"),
+        8,
+    );
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.partition-deadlines",
+            "partition-a-successor",
+            2,
+            Some("partition-a"),
+            Some(Duration::from_millis(20)),
+        ))
+        .expect("earlier-deadline same-key successor is admitted"),
+        8,
+    );
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.partition-deadlines",
+            "partition-b-head",
+            3,
+            Some("partition-b"),
+            Some(Duration::from_millis(20)),
+        ))
+        .expect("shorter-delayed independent partition is admitted"),
+        8,
+    );
+    assert_single_accepted_admission(
+        spi.publish(outbound("coverage.partition-deadlines", "unkeyed-ready", 4, None, None))
+            .expect("unkeyed message is admitted"),
+        8,
+    );
 
     let ReceiveOutcome::Message(unkeyed) = subscription
         .receive(Duration::ZERO)
@@ -379,14 +414,17 @@ fn test_receive_uses_earliest_partition_deadline_without_overtaking_same_key() {
 fn test_graceful_shutdown_times_out_for_undelivered_delay_head() {
     let spi = create_local(1);
     let mut subscription = subscribe(spi.as_ref(), 7, "coverage.delayed-shutdown");
-    spi.publish(outbound(
-        "coverage.delayed-shutdown",
-        "shutdown-delay",
-        1,
-        Some("partition-a"),
-        Some(Duration::from_secs(5)),
-    ))
-    .expect("delayed event is queued");
+    assert_single_accepted_admission(
+        spi.publish(outbound(
+            "coverage.delayed-shutdown",
+            "shutdown-delay",
+            1,
+            Some("partition-a"),
+            Some(Duration::from_secs(5)),
+        ))
+        .expect("delayed event is queued"),
+        7,
+    );
 
     assert_eq!(
         ShutdownOutcome::TimedOut,

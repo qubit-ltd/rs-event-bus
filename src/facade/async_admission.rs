@@ -10,14 +10,13 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
-pub(super) use self::async_admission_future::AsyncAdmissionFuture;
-pub(super) use self::async_admission_permit::AsyncAdmissionPermit;
-use self::async_admission_state::AsyncAdmissionState;
+pub(super) use self::internal::AsyncAdmissionFuture;
+pub(super) use self::internal::AsyncAdmissionPermit;
+use self::internal::AsyncAdmissionState;
 
-mod async_admission_future;
-mod async_admission_permit;
-mod async_admission_state;
+mod internal;
 
 /// Bus-wide asynchronous delivery admission with cancellation-safe FIFO
 /// waiters.
@@ -50,11 +49,8 @@ impl AsyncAdmission {
     ///
     /// # Returns
     /// A future that joins the gate's FIFO queue when first polled.
-    #[must_use]
+    #[inline]
     pub(super) fn acquire(self: &Arc<Self>) -> AsyncAdmissionFuture {
-        AsyncAdmissionFuture::new(
-            self.clone(),
-            self.next_waiter.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        )
+        AsyncAdmissionFuture::new(self.clone(), self.next_waiter.fetch_add(1, Ordering::Relaxed))
     }
 }

@@ -36,6 +36,18 @@ pub struct SubscriptionCloseErrors {
 }
 
 impl SubscriptionCloseErrors {
+    /// Builds an immutable close-error snapshot from the bus lifecycle ledger.
+    ///
+    /// # Parameters
+    /// - `failures`: shared failure records retained by the lifecycle ledger.
+    ///
+    /// # Returns
+    /// An immutable collection over the supplied records.
+    #[inline]
+    pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
+        Self { failures }
+    }
+
     /// Returns the number of failed subscription closes.
     ///
     /// # Returns
@@ -65,21 +77,19 @@ impl SubscriptionCloseErrors {
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
         self.failures.iter().map(Arc::as_ref)
     }
-
-    /// Builds an immutable close-error snapshot from the bus lifecycle ledger.
-    ///
-    /// # Parameters
-    /// - `failures`: shared failure records retained by the lifecycle ledger.
-    ///
-    /// # Returns
-    /// An immutable collection over the supplied records.
-    pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
-        Self { failures }
-    }
 }
 
 impl fmt::Display for SubscriptionCloseErrors {
     /// Formats the total failure count and every affected subscriber.
+    ///
+    /// # Parameters
+    /// - `formatter`: Destination that receives the failure summary.
+    ///
+    /// # Returns
+    /// `Ok(())` when the summary is written successfully.
+    ///
+    /// # Errors
+    /// Returns `fmt::Error` if the formatter cannot accept the summary.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{} subscription close failure(s)", self.len())?;
         for failure in &self.failures {
@@ -92,6 +102,9 @@ impl fmt::Display for SubscriptionCloseErrors {
 impl Error for SubscriptionCloseErrors {
     /// Exposes the first close failure while callers can inspect all via
     /// [`Self::iter`].
+    ///
+    /// # Returns
+    /// The first recorded close failure, or `None` when this snapshot is empty.
     #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.failures
@@ -104,6 +117,7 @@ impl Error for SubscriptionCloseErrors {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::io::Error as IoError;
     use std::sync::Arc;
 
     use super::SubscriptionCloseErrors;
@@ -127,7 +141,7 @@ mod tests {
                 resource: Some("worker-1".into()),
                 kind: "close_failed",
                 retryable: Some(false),
-                source: Box::new(std::io::Error::other("close failed")),
+                source: Box::new(IoError::other("close failed")),
             },
         ));
         let errors = SubscriptionCloseErrors::from_failures(vec![failure]);

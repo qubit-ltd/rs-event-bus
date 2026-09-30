@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::CodecError;
@@ -241,9 +242,14 @@ fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
     EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi).expect("valid provider capabilities")
 }
 
+fn assert_ephemeral_shutdown_report(report: ShutdownReport) {
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert!(report.provider_may_have_abandoned_deliveries);
+}
+
 #[test]
 fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
-    use qubit_event_bus::EventBusFacadeConfig;
     use qubit_event_bus::facade::PublishMetricsSnapshot;
 
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
@@ -259,7 +265,7 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(sync_bus.publish_metrics().attempts, 2);
     assert_eq!(sync_bus.publish_metrics().opaque_accepted, 2);
 
-    sync_bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(sync_bus.shutdown(ShutdownMode::Immediate).unwrap());
     assert!(matches!(
         sync_bus.publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), 3_u32).unwrap()),
         Err(failure) if matches!(failure.cause(), PublishError::Closed)
@@ -567,7 +573,7 @@ fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
     assert!(std::error::Error::source(&error).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -607,7 +613,7 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         })
     ));
     assert_eq!(sync_spi.publish_calls.load(Ordering::Acquire), 1);
-    sync_bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(sync_bus.shutdown(ShutdownMode::Immediate).unwrap());
 
     let async_spi = Arc::new(EncodedAsyncPublishSpi(AtomicUsize::new(0)));
     let async_bus = AsyncEventBus::with_config(
@@ -626,7 +632,7 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         })
     ));
     assert_eq!(async_spi.0.load(Ordering::Acquire), 0);
-    block_on(async_bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(async_bus.shutdown(ShutdownMode::Immediate)).unwrap());
 }
 
 #[test]
@@ -649,7 +655,7 @@ fn test_sync_spi_publish_panic_becomes_source_preserving_publish_error() {
         } if provider_id.as_ref() == "publisher-coverage" && resource.as_ref() == "sync.panic"
     ));
     assert!(std::error::Error::source(&source).is_some());
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -707,7 +713,7 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
         ]
     );
     drop(observed);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -726,7 +732,7 @@ fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
         .unwrap();
     assert_eq!(encoded_spi.publish_calls.load(Ordering::Acquire), 1);
     assert!(encoded_spi.native_payload_types.lock().unwrap().is_empty());
-    encoded_bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(encoded_bus.shutdown(ShutdownMode::Immediate).unwrap());
 
     let hybrid_spi = Arc::new(CoverageSpi::new(PayloadModes::NativeAndEncoded, false));
     let hybrid_bus = bus(hybrid_spi.clone());
@@ -744,7 +750,7 @@ fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
         hybrid_spi.native_payload_types.lock().unwrap().as_slice(),
         [TypeId::of::<String>()]
     );
-    hybrid_bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(hybrid_bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -764,7 +770,7 @@ fn test_typed_metadata_mutation_error_is_returned_before_provider_publish() {
     let error = bus.publish(request).unwrap_err();
     assert!(matches!(error.cause(), PublishError::Configuration(_)));
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -792,7 +798,7 @@ fn test_retry_policy_aborts_non_retryable_provider_failure_after_one_attempt() {
             .count(),
         1
     );
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -815,7 +821,7 @@ fn test_direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() 
     ));
     assert!(std::error::Error::source(&source).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 1);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -833,7 +839,7 @@ fn test_custom_retry_rule_can_override_explicit_non_retryable_spi_classification
     bus.publish(request)
         .expect("custom rule should allow the second attempt");
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 2);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -886,7 +892,7 @@ fn test_terminal_publish_error_handler_can_inspect_shared_non_clone_event_contex
             true,
         ))
     );
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -911,7 +917,7 @@ fn test_typed_publisher_interceptor_panic_is_converted_to_scoped_error() {
         } if message.contains("typed publisher middleware panic")
     ));
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }
 
 #[test]
@@ -936,7 +942,7 @@ fn test_async_spi_future_panic_becomes_source_preserving_publish_error() {
         }
     ));
     assert!(std::error::Error::source(&source).is_some());
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap());
 }
 
 #[test]
@@ -964,7 +970,7 @@ fn test_async_spi_future_construction_panic_becomes_source_preserving_publish_er
             && resource.as_ref() == "async.construction.panic"
     ));
     assert!(std::error::Error::source(&source).is_some());
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap());
 }
 
 #[test]
@@ -1026,7 +1032,7 @@ fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_boun
         .unwrap()
     );
 
-    block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_ephemeral_shutdown_report(block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap());
 }
 
 #[test]
@@ -1070,5 +1076,5 @@ fn test_diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observ
     assert_eq!(calls.load(Ordering::Acquire), 1);
 
     drop(panic_handle);
-    bus.shutdown(ShutdownMode::Immediate).unwrap();
+    assert_ephemeral_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
 }

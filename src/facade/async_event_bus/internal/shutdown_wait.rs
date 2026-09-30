@@ -11,6 +11,7 @@
 ///
 /// # Type Parameters
 /// - `T`: output produced by the provider shutdown future.
+#[must_use]
 pub(in crate::facade) enum ShutdownWait<T> {
     /// The provider future completed with this output.
     Complete(

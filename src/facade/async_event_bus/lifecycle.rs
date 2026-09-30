@@ -8,6 +8,7 @@
 //! Asynchronous event bus lifecycle operations.
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -109,7 +110,7 @@ impl AsyncEventBus {
                 .inner
                 .controls
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .values()
                 .cloned()
                 .collect();
@@ -123,14 +124,7 @@ impl AsyncEventBus {
         };
         let mut deadline = None;
         loop {
-            let is_closed = {
-                *self
-                    .inner
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    == BusState::Closed
-            };
+            let is_closed = { *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed };
             if is_closed {
                 if let Some(errors) = self.inner.close_errors_snapshot() {
                     return Err(ShutdownError::SubscriptionClose(errors));
@@ -139,7 +133,7 @@ impl AsyncEventBus {
                     .inner
                     .shutdown_report
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
             if deadline.is_none() {
@@ -154,17 +148,13 @@ impl AsyncEventBus {
                 .is_ok()
             {
                 let _leader = ShutdownLeaderGuard::new(self.inner.clone());
-                *self
-                    .inner
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = BusState::Closing;
+                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closing;
                 let requested_mode = self.requested_shutdown_mode(mode);
                 let controls: Vec<_> = self
                     .inner
                     .controls
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .values()
                     .cloned()
                     .collect();
@@ -230,12 +220,8 @@ impl AsyncEventBus {
                     .inner
                     .shutdown_report
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
-                *self
-                    .inner
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = BusState::Closed;
+                    .unwrap_or_else(PoisonError::into_inner) = Some(report);
+                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
                 if let Some(errors) = self.inner.close_errors_snapshot() {
                     return Err(ShutdownError::SubscriptionClose(errors));
                 }
@@ -278,7 +264,7 @@ impl AsyncEventBus {
             .inner
             .controls
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .map(|(id, control)| (*id, control.clone()))
             .collect();
@@ -290,7 +276,7 @@ impl AsyncEventBus {
             self.inner
                 .controls
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&id);
         }
     }

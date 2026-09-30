@@ -24,13 +24,22 @@ use std::time::Duration;
 ///
 /// ```
 /// use std::time::Duration;
+/// use qubit_event_bus::registry::EventBusConfig;
+/// use qubit_event_bus::registry::EventBusRegistry;
 /// use qubit_event_bus::spi::ShutdownMode;
+/// use qubit_event_bus::spi::ShutdownOutcome;
 ///
-/// let mode = ShutdownMode::Graceful { timeout: Duration::from_secs(5) };
-/// assert!(matches!(mode, ShutdownMode::Graceful { .. }));
+/// let registry = EventBusRegistry::with_local()?;
+/// let bus = registry.create(&EventBusConfig::default())?;
+/// let report = bus.shutdown(ShutdownMode::Graceful {
+///     timeout: Duration::from_secs(5),
+/// })?;
+/// assert_eq!(report.outcome, ShutdownOutcome::Complete);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub enum ShutdownMode {
     /// Drain provider work for at most the given time.
     Graceful {

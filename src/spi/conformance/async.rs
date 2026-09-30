@@ -109,19 +109,15 @@ where
                         detail: "subscription could not be created".into(),
                     },
                 });
-                report.push(match spi.shutdown(ShutdownMode::Immediate).await {
-                    Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
-                        case_id: "shutdown".into(),
-                    },
-                    Ok(outcome) => ConformanceCase::Failed {
-                        case_id: "shutdown".into(),
-                        detail: format!("immediate shutdown returned {outcome:?}"),
-                    },
-                    Err(error) => ConformanceCase::Failed {
-                        case_id: "shutdown".into(),
-                        detail: format!("async shutdown failed: {error}"),
-                    },
-                });
+                report.push(
+                    shutdown_case(
+                        spi.as_ref(),
+                        "shutdown",
+                        "immediate shutdown returned",
+                        "async shutdown failed",
+                    )
+                    .await,
+                );
                 continue;
             }
         };
@@ -233,32 +229,24 @@ where
                 detail: format!("repeated async receiver close failed: {error}"),
             },
         });
-        report.push(match spi.shutdown(ShutdownMode::Immediate).await {
-            Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
-                case_id: "shutdown".into(),
-            },
-            Ok(outcome) => ConformanceCase::Failed {
-                case_id: "shutdown".into(),
-                detail: format!("immediate shutdown returned {outcome:?}"),
-            },
-            Err(error) => ConformanceCase::Failed {
-                case_id: "shutdown".into(),
-                detail: format!("async shutdown failed: {error}"),
-            },
-        });
-        report.push(match spi.shutdown(ShutdownMode::Immediate).await {
-            Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
-                case_id: "shutdown-idempotence".into(),
-            },
-            Ok(outcome) => ConformanceCase::Failed {
-                case_id: "shutdown-idempotence".into(),
-                detail: format!("repeated immediate shutdown returned {outcome:?}"),
-            },
-            Err(error) => ConformanceCase::Failed {
-                case_id: "shutdown-idempotence".into(),
-                detail: format!("repeated async shutdown failed: {error}"),
-            },
-        });
+        report.push(
+            shutdown_case(
+                spi.as_ref(),
+                "shutdown",
+                "immediate shutdown returned",
+                "async shutdown failed",
+            )
+            .await,
+        );
+        report.push(
+            shutdown_case(
+                spi.as_ref(),
+                "shutdown-idempotence",
+                "repeated immediate shutdown returned",
+                "repeated async shutdown failed",
+            )
+            .await,
+        );
     }
     let capabilities = capability_spi.capabilities();
     if capabilities.settlement() == SettlementCapabilities::None {
@@ -332,6 +320,37 @@ where
     }
     report.apply_profile(profile);
     report
+}
+
+/// Converts an immediate shutdown result into its conformance case.
+///
+/// # Parameters
+/// - `spi`: Provider instance to shut down.
+/// - `case_id`: Stable identifier for this shutdown check.
+/// - `outcome_prefix`: Detail prefix for a non-complete shutdown outcome.
+/// - `error_prefix`: Detail prefix for a shutdown error.
+///
+/// # Returns
+/// A passed or failed case describing the shutdown result.
+async fn shutdown_case(
+    spi: &dyn AsyncEventBusSpi,
+    case_id: &str,
+    outcome_prefix: &str,
+    error_prefix: &str,
+) -> ConformanceCase {
+    match spi.shutdown(ShutdownMode::Immediate).await {
+        Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
+            case_id: case_id.into(),
+        },
+        Ok(outcome) => ConformanceCase::Failed {
+            case_id: case_id.into(),
+            detail: format!("{outcome_prefix} {outcome:?}"),
+        },
+        Err(error) => ConformanceCase::Failed {
+            case_id: case_id.into(),
+            detail: format!("{error_prefix}: {error}"),
+        },
+    }
 }
 
 /// Runs an optional provider-specific asynchronous check and records its
