@@ -60,6 +60,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// A request with default per-publication options.
+    #[inline]
     pub fn from_envelope(envelope: EventEnvelope<T>) -> Self {
         Self {
             envelope,
@@ -70,6 +71,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// An empty request builder requiring a topic and payload.
+    #[must_use = "Configure and build the returned request builder."]
     #[inline]
     pub fn builder() -> PublishRequestBuilder<T> {
         PublishRequestBuilder::new()
@@ -90,6 +92,8 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
+    #[must_use = "Use the returned header value."]
+    #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.envelope.header(key)
     }
@@ -118,6 +122,7 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The request with its policy replaced.
+    #[inline]
     pub fn with_options(mut self, options: PublishOptions<T>) -> Self {
         self.options = options;
         self
@@ -126,6 +131,8 @@ impl<T: Send + Sync + 'static> PublishRequest<T> {
     ///
     /// # Returns
     /// The envelope and policy as separate owned values.
+    #[must_use]
+    #[inline]
     pub fn into_parts(self) -> (EventEnvelope<T>, PublishOptions<T>) {
         (self.envelope, self.options)
     }
