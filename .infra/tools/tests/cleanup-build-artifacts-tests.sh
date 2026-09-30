@@ -17,6 +17,8 @@ run_case() {
         "$case_root/target/release" \
         "$case_root/target/llvm-cov-target" \
         "$case_root/target/rs-ci-feature-matrix" \
+        "$case_root/target/infra-feature-matrix" \
+        "$case_root/target/infra/coverage" \
         "$case_root/target/tmp" \
         "$case_root/target/llvm-cov/html" \
         "$case_root/target/doc" \
@@ -41,6 +43,8 @@ run_case() {
         "$case_root/target/release" \
         "$case_root/target/llvm-cov-target" \
         "$case_root/target/rs-ci-feature-matrix" \
+        "$case_root/target/infra-feature-matrix" \
+        "$case_root/target/infra/coverage" \
         "$case_root/target/tmp" \
         "$case_root/fuzz/target"; do
         if [ -e "$directory" ]; then
@@ -59,4 +63,36 @@ run_case() {
 
 run_case success 0
 run_case failure 23
+
+run_nested_case() {
+    local case_root="$test_root/nested"
+    local profile="$case_root/target/llvm-cov-target/coverage.profraw"
+
+    mkdir -p "$(dirname "$profile")"
+    : > "$profile"
+
+    (
+        project_root="$case_root"
+        source "$cleanup_script"
+        export cleanup_script test_project_root="$case_root"
+
+        bash -c '
+            project_root="$test_project_root"
+            source "$cleanup_script"
+            [ -f "$project_root/target/llvm-cov-target/coverage.profraw" ]
+        '
+
+        if [ ! -f "$profile" ]; then
+            echo "error: nested cleanup removed coverage profile before report generation" >&2
+            exit 1
+        fi
+    )
+
+    if [ -e "$case_root/target/llvm-cov-target" ]; then
+        echo "error: outer cleanup left transient coverage profiles behind" >&2
+        return 1
+    fi
+}
+
+run_nested_case
 echo "Build artifact cleanup tests passed."
