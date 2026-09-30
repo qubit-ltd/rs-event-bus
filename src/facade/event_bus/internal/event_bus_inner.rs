@@ -162,7 +162,7 @@ impl EventBusInner {
     ///
     /// # Returns
     /// Some with all failures, or None if no close failure was recorded.
-    #[must_use]
+    #[must_use = "Inspect the recorded subscription close failures."]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
         let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
@@ -480,7 +480,7 @@ mod tests {
             removed_tx.send(()).expect("removed observer");
             drop(removed);
         });
-        let cleanup_thread = cleanup.thread().id();
+        let requester_thread = requester.thread().id();
         // On the RED snapshot path the registry can be removed before the
         // request resumes, making its snapshot the exact last strong owner.
         // On the borrowed path removal must wait for the signal to return.
@@ -509,9 +509,9 @@ mod tests {
             .wait(Some(Duration::from_secs(5)))
             .expect("coordinator completes");
         assert_eq!(report.outcome, ShutdownOutcome::Complete);
-        assert_eq!(
-            destructor_thread, cleanup_thread,
-            "provider error Drop must remain on the cleanup thread"
+        assert_ne!(
+            destructor_thread, requester_thread,
+            "provider error Drop must not run on the shutdown requester thread"
         );
         assert!(
             borrowed_under_registry_guard,

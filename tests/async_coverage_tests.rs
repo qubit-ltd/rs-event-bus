@@ -371,8 +371,10 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
         .map(|index| {
             let worker_bus = concurrent_bus.clone();
             spawn(move || {
-                block_on(worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()))
-                    .expect("concurrent publish should be accepted");
+                let _ = block_on(
+                    worker_bus.publish(PublishRequest::builder().topic(topic()).payload(index).build().unwrap()),
+                )
+                .expect("concurrent publish should be accepted");
             })
         })
         .collect::<Vec<_>>();
@@ -541,12 +543,10 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("async-encoded-publisher").unwrap(), spi.clone())
         .expect("valid provider capabilities");
-    let encoded_topic = Topic::new("async.encoded")
-        .unwrap()
-        .with_codec(StringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-            fail_encode: false,
-        });
+    let encoded_topic = Topic::new("async.encoded").unwrap().with_codec(StringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        fail_encode: false,
+    });
 
     let _ = block_on(bus.publish(PublishRequest::new(encoded_topic, "wire payload".to_owned()).unwrap()))
         .expect("codec should encode successfully");
@@ -557,12 +557,10 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let failing_spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let failing_bus = AsyncEventBus::from_spi(ProviderId::new("async-codec-failure").unwrap(), failing_spi.clone())
         .expect("valid provider capabilities");
-    let failing_topic = Topic::new("async.codec.failure")
-        .unwrap()
-        .with_codec(StringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-            fail_encode: true,
-        });
+    let failing_topic = Topic::new("async.codec.failure").unwrap().with_codec(StringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        fail_encode: true,
+    });
     let error = block_on(failing_bus.publish(PublishRequest::new(failing_topic, "cannot encode".to_owned()).unwrap()))
         .unwrap_err();
     assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
@@ -1459,7 +1457,7 @@ fn test_async_receive_gap_is_diagnosed_and_runner_continues() {
     }
     assert_eq!(*observed_gap.lock().unwrap(), Some(("fake gap".to_owned(), Some(1))));
 
-    block_on(bus.publish(PublishRequest::new(topic(), 17).expect("valid publish request")))
+    let _ = block_on(bus.publish(PublishRequest::new(topic(), 17).expect("valid publish request")))
         .expect("publish after a receive gap");
     for _ in 0..100 {
         if handled.load(Ordering::Acquire) == 1 {

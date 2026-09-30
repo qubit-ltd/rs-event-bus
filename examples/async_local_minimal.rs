@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
     });
 
-    block_on(bus.publish(PublishRequest::new(topic, "order-42".to_owned())?))?;
+    let _ = block_on(bus.publish(PublishRequest::new(topic, "order-42".to_owned())?))?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(2))?, "order-42");
     let shutdown_report = block_on(bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(2),

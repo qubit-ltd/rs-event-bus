@@ -85,7 +85,8 @@ fn test_retry_runs_interceptor_and_handler_again() {
         })
         .unwrap();
 
-    bus.publish(PublishRequest::new(topic("pipeline.retry"), 7_u32).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(topic("pipeline.retry"), 7_u32).unwrap())
         .unwrap();
     completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
@@ -140,7 +141,8 @@ fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagn
         )
         .unwrap();
 
-    bus.publish(PublishRequest::new(source_topic.clone(), "original".to_owned()).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(source_topic.clone(), "original".to_owned()).unwrap())
         .unwrap();
 
     let (original_payload, subscriber_id, reason) = dead_letter_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -204,12 +206,15 @@ fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_d
         .unwrap();
 
     let event_topic = topic("pipeline.admission");
-    bus.publish(PublishRequest::new(event_topic.clone(), 1_u32).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(event_topic.clone(), 1_u32).unwrap())
         .unwrap();
     started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    bus.publish(PublishRequest::new(event_topic.clone(), 2_u32).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(event_topic.clone(), 2_u32).unwrap())
         .unwrap();
-    bus.publish(PublishRequest::new(event_topic.clone(), 3_u32).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(event_topic.clone(), 3_u32).unwrap())
         .unwrap();
     release_tx.send(()).unwrap();
     for _ in 0..3 {

@@ -63,7 +63,7 @@ fn sample() -> u128 {
         .collect::<Vec<_>>();
     let start = Instant::now();
     for request in requests {
-        block_on(bus.publish(black_box(request))).unwrap();
+        let _ = block_on(bus.publish(black_box(request))).unwrap();
     }
     let elapsed = start.elapsed().as_nanos();
     let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();

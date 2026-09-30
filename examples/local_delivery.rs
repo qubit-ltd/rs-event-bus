@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Minimal local-provider example showing subscription, publication, and
+//! graceful shutdown.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -24,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
         sender.send(delivery.payload().clone()).unwrap();
     })?;
-    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),

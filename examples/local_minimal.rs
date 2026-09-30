@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Minimal synchronous example using the local provider to publish, receive,
+//! and shut down.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -24,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = sender.send(delivery.payload().clone());
     })?;
 
-    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(2))?, "order-42");
     subscription.cancel()?;
     let report = bus.shutdown(ShutdownMode::Graceful {

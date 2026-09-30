@@ -8,7 +8,10 @@
 //! Additional coverage for static model identifiers, codecs, and publish
 //! results.
 
+use std::any::TypeId;
+use std::any::type_name;
 use std::collections::hash_map::DefaultHasher;
+use std::error::Error;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
@@ -39,7 +42,7 @@ fn identifier_hash<T: Hash>(value: &T) -> u64 {
 }
 
 #[test]
-fn test_static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn std::error::Error>> {
+fn test_static_identifier_constants_match_runtime_identifiers() -> Result<(), Box<dyn Error>> {
     assert_eq!(SubscriberId::new_static("audit-static"), STATIC_SUBSCRIBER_ID);
     assert_eq!(ProviderId::new_static("local-static"), STATIC_PROVIDER_ID);
     assert_eq!(SchemaId::new_static("schema-static-v1"), STATIC_SCHEMA_ID);
@@ -65,7 +68,7 @@ fn test_static_identifier_constants_match_runtime_identifiers() -> Result<(), Bo
 }
 
 #[test]
-fn test_static_content_type_matches_runtime_value_and_predefined_constants() -> Result<(), Box<dyn std::error::Error>> {
+fn test_static_content_type_matches_runtime_value_and_predefined_constants() -> Result<(), Box<dyn Error>> {
     assert_eq!(ContentType::new_static("application/json"), STATIC_CONTENT_TYPE);
     assert_eq!(STATIC_CONTENT_TYPE.as_str(), "application/json");
     let runtime_content_type = ContentType::new("application/json")?;
@@ -130,8 +133,8 @@ fn test_topic_codec_metadata_and_publish_options_are_accessible() {
     };
     let topic = Topic::<String>::new("strings").expect("valid topic").with_codec(codec);
     assert_eq!(topic.name(), "strings");
-    assert_eq!(topic.payload_type_id(), std::any::TypeId::of::<String>());
-    assert_eq!(topic.payload_type_name(), std::any::type_name::<String>());
+    assert_eq!(topic.payload_type_id(), TypeId::of::<String>());
+    assert_eq!(topic.payload_type_name(), type_name::<String>());
     assert_eq!(topic.schema_id().map(SchemaId::as_str), Some("string-v1"));
     assert_eq!(topic.codec().expect("codec").content_type().as_str(), "text/plain");
     let decode_error = topic
