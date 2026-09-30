@@ -466,7 +466,8 @@ fn test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
             },
         )
         .unwrap();
-    bus.publish(PublishRequest::new(Topic::new("test.topic").unwrap(), 42_u32).unwrap())
+    let _ = bus
+        .publish(PublishRequest::new(Topic::new("test.topic").unwrap(), 42_u32).unwrap())
         .unwrap();
     rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(spi.attempts.load(Ordering::SeqCst), 1);

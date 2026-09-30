@@ -371,7 +371,7 @@ fn verify_boundary(
 ) {
     let probe = Probe::new();
     let source = Arc::new(Source::new(size, schema));
-    let topic = Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic");
+    let topic = Topic::new("boundary").expect("topic").with_shared_codec(probe.clone());
     if asynchronous {
         let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
             .expect("bus");
@@ -478,7 +478,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
             bus.subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
             ),
@@ -499,7 +499,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
             bus.subscribe(
                 SubscribeRequest::new(
                     "healthy",
-                    Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
                 )
                 .expect("request"),
             ),
@@ -529,7 +529,7 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
         bus.subscribe(
             SubscribeRequest::new(
                 "paused-close",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -570,7 +570,7 @@ fn test_receive_stop_finishes_already_started_handler() {
         bus.subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -606,7 +606,7 @@ fn test_receive_stop_finishes_already_started_handler() {
 fn test_regular_decode_failure_rejects_without_terminal_stop() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));
-        let topic = Topic::new_with_shared_codec("boundary", panic_probe(3)).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(3));
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
@@ -661,7 +661,7 @@ fn test_content_native_and_ephemeral_stop_contracts() {
                 bus.subscribe(
                     SubscribeRequest::new(
                         "contract",
-                        Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                        Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                     )
                     .expect("request"),
                 ),
@@ -704,7 +704,7 @@ fn test_sync_permanent_panic_is_once_and_cached() {
             .subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
                 |_| -> () { panic!("no handler after codec panic") },
@@ -742,7 +742,7 @@ fn test_explicit_legacy_schema_override_can_decode() {
         bus.subscribe(
             SubscribeRequest::new(
                 "legacy",
-                Topic::new_with_shared_codec("boundary", probe.clone()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
             )
             .expect("request"),
         ),
@@ -770,7 +770,7 @@ fn test_sync_receive_stop_drains_started_handler() {
         .subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
             move |_| {
@@ -811,7 +811,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
         bus.subscribe(
             SubscribeRequest::new(
                 "strict",
-                Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -830,7 +830,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
         bus.subscribe(
             SubscribeRequest::new(
                 "compatible",
-                Topic::new_with_shared_codec("boundary", panic_probe(4)).expect("topic"),
+                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(4)),
             )
             .expect("request"),
         ),
@@ -852,7 +852,7 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
         let observed = notifications.clone();
         let diagnostic_origins = Arc::new(Mutex::new(Vec::new()));
         let recorded_origins = diagnostic_origins.clone();
-        let topic = Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
@@ -957,7 +957,7 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(5, Some(SchemaId::new("v1").expect("schema"))));
         source.close_failed.store(true, Ordering::SeqCst);
-        let topic = Topic::new_with_shared_codec("boundary", Probe::new()).expect("topic");
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
         let cause;
         if asynchronous {
             let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())

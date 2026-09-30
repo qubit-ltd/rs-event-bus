@@ -47,7 +47,7 @@ fn test_inbound_message_exposes_encoded_payload_and_all_transport_metadata() {
     provider_metadata.insert("partition".into(), "3".into());
     let encoded = EncodedPayload::new(
         Arc::from([0_u8, 1, 2, 255]),
-        ContentType::new("application/octet-stream").expect("valid MIME type"),
+        ContentType::APPLICATION_OCTET_STREAM,
         Some(SchemaId::new("schema-v2").expect("valid schema ID")),
     );
     let mut message = InboundMessage::new(
@@ -139,7 +139,7 @@ fn test_outbound_message_exposes_transport_fields_and_consumes_payload() {
         Some(delay),
         TransportPayload::Encoded(EncodedPayload::new(
             Arc::from([42_u8]),
-            ContentType::new("application/cbor").expect("valid MIME type"),
+            ContentType::APPLICATION_CBOR,
             Some(SchemaId::new("notification-v1").expect("valid schema ID")),
         )),
     );

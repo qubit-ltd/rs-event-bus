@@ -125,10 +125,10 @@ impl EventCodec<String> for StringCodec {
 #[test]
 fn test_topic_codec_metadata_and_publish_options_are_accessible() {
     let codec = StringCodec {
-        content_type: ContentType::new("text/plain").expect("valid MIME type"),
+        content_type: ContentType::TEXT_PLAIN,
         schema_id: SchemaId::new("string-v1").expect("valid schema ID"),
     };
-    let topic = Topic::<String>::new_with_codec("strings", codec).expect("valid topic");
+    let topic = Topic::<String>::new("strings").expect("valid topic").with_codec(codec);
     assert_eq!(topic.name(), "strings");
     assert_eq!(topic.payload_type_id(), std::any::TypeId::of::<String>());
     assert_eq!(topic.payload_type_name(), std::any::type_name::<String>());

@@ -54,6 +54,7 @@ use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -494,7 +495,7 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
             .subscribe(SubscribeRequest::new("second", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        bus.publish(PublishRequest::new(topic(), 5).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 5).unwrap()).await.unwrap();
         (first, second)
     });
 
@@ -586,8 +587,8 @@ fn test_async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_rele
         block_on(bus.subscribe(SubscribeRequest::new("admission-progress", topic()).expect("valid subscriber ID")))
             .unwrap();
     block_on(async {
-        bus.publish(PublishRequest::new(topic(), 1).unwrap()).await.unwrap();
-        bus.publish(PublishRequest::new(topic(), 2).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 1).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 2).unwrap()).await.unwrap();
     });
     let state = Arc::new(std::sync::Mutex::new((false, 0_usize, Vec::<Waker>::new())));
     let handler_state = state.clone();
@@ -663,7 +664,7 @@ fn test_idle_async_subscription_does_not_consume_delivery_admission() {
             )
             .await
             .unwrap();
-        bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap();
         (active, idle)
     });
     let active_started = Arc::new(AtomicBool::new(false));
@@ -744,7 +745,7 @@ fn test_async_received_wait_includes_deliveries_queued_for_admission() {
     }
     assert_eq!(started_a.load(Ordering::Acquire), 1);
     let mut sub_b = block_on(bus.subscribe(SubscribeRequest::new("received-b", topic.clone()).unwrap())).unwrap();
-    block_on(bus.publish(PublishRequest::new(topic.clone(), 2).unwrap())).unwrap();
+    let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), 2).unwrap())).unwrap();
     let mut run_b = Box::pin(sub_b.run(|_| async { Ok(()) }));
     for _ in 0..8 {
         assert!(crate::support::manual_async::poll_once(run_b.as_mut()).is_pending());
@@ -889,7 +890,7 @@ fn test_async_subscription_runs_different_ordering_keys_concurrently() {
     )
     .unwrap();
     for (payload, key) in [(1, "left"), (2, "right")] {
-        block_on(
+        let _ = block_on(
             bus.publish(
                 PublishRequest::builder()
                     .topic(topic())
@@ -957,7 +958,7 @@ fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
     )
     .unwrap();
     for payload in [1, 2] {
-        block_on(
+        let _ = block_on(
             bus.publish(
                 PublishRequest::builder()
                     .topic(topic())
@@ -1793,7 +1794,7 @@ fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_canc
             }))
         });
 
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if delivered.load(Ordering::Acquire) == 1 {
                 break;
@@ -1844,7 +1845,7 @@ fn test_async_middleware_wraps_the_handler_in_registration_order() {
                 }
             }))
         });
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if order.lock().unwrap().len() == 3 {
                 break;
@@ -1907,7 +1908,7 @@ fn test_async_facade_global_middleware_wraps_typed_middleware_and_handler() {
                 }
             }))
         });
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if calls.lock().unwrap().len() == 5 {
                 break;
@@ -1972,7 +1973,7 @@ fn test_async_handler_future_panic_is_reported_and_does_not_escape_the_runner() 
                 panic!("handler future panic");
             }))
         });
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if failed.load(Ordering::Acquire) {
                 break;
@@ -2015,7 +2016,7 @@ fn test_async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_po
                 }
             }))
         });
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if attempts.load(Ordering::Acquire) == 2 {
                 break;
@@ -2310,7 +2311,7 @@ fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_res
 
     block_on(async {
         let mut subscription = bus.subscribe(request).await.unwrap();
-        bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         let first_started_by_handler = first_started.clone();
         let allow_completion_by_handler = allow_completion.clone();
         let handler_calls_by_handler = handler_calls.clone();
@@ -2522,11 +2523,9 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let topic = Topic::new_with_codec(
-        "async.encoded-subscription",
-        Utf8Codec(ContentType::new("text/plain").unwrap()),
-    )
-    .unwrap();
+    let topic = Topic::new("async.encoded-subscription")
+        .unwrap()
+        .with_codec(Utf8Codec(ContentType::TEXT_PLAIN));
     let received = Arc::new(std::sync::Mutex::new(None));
 
     block_on(async {
@@ -2542,7 +2541,7 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
             None,
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from(b"decoded from transport".as_slice()),
-                ContentType::new("text/plain").unwrap(),
+                ContentType::TEXT_PLAIN,
                 None,
             )),
             Some(SettlementToken::new(subscription.id(), "encoded-subscription-token")),
@@ -2604,14 +2603,12 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     }
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
-    let topic = Topic::new_with_codec(
-        "async.panic-codec",
-        PanicOnceCodec {
-            content_type: ContentType::new("text/plain").unwrap(),
+    let topic = Topic::new("async.panic-codec")
+        .unwrap()
+        .with_codec(PanicOnceCodec {
+            content_type: ContentType::TEXT_PLAIN,
             panicked: Arc::new(AtomicBool::new(false)),
-        },
-    )
-    .unwrap();
+        });
     let handled = Arc::new(AtomicUsize::new(0));
     let diagnostic_seen = Arc::new(AtomicBool::new(false));
     let observed = diagnostic_seen.clone();
@@ -2632,7 +2629,7 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
             None,
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from(b"ok".as_slice()),
-                ContentType::new("text/plain").unwrap(),
+                ContentType::TEXT_PLAIN,
                 None,
             )),
             Some(SettlementToken::new(subscription_id, token)),
@@ -2651,11 +2648,11 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
         }))
     });
     let result = runner.join().expect("codec panic runner exits");
-    let qubit_event_bus::ReceiveError::Stopped(reason) = result.expect_err("codec panic stops receive") else {
+    let ReceiveError::Stopped(reason) = result.expect_err("codec panic stops receive") else {
         panic!("codec panic must retain a structured stop reason");
     };
     assert!(
-        matches!(reason.as_ref(), qubit_event_bus::model::SubscriptionStopReason::Codec { event_id, error } if event_id.as_str() == "panic-codec-event" && matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
+        matches!(reason.as_ref(), SubscriptionStopReason::Codec { event_id, error } if event_id.as_str() == "panic-codec-event" && matches!(error.as_ref(), CodecError::Panicked { operation: "decode", .. }))
     );
     assert!(diagnostic_seen.load(Ordering::Acquire));
     assert_eq!(handled.load(Ordering::Acquire), 0);
@@ -2684,7 +2681,7 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
             None,
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from(bytes),
-                ContentType::new("text/plain").unwrap(),
+                ContentType::TEXT_PLAIN,
                 None,
             )),
             Some(SettlementToken::new(recovered.id(), id)),
@@ -2757,7 +2754,7 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
         subscribe_calls: AtomicUsize::new(0),
     });
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::new("text/plain").unwrap())));
+    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
         .expect("valid provider capabilities");
@@ -2777,7 +2774,7 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
             None,
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from(b"decoded through registry".as_slice()),
-                ContentType::new("text/plain").unwrap(),
+                ContentType::TEXT_PLAIN,
                 None,
             )),
             Some(SettlementToken::new(subscription.id(), "registry-codec-token")),
@@ -3320,9 +3317,9 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
             })
         }
     }
-    let string_topic =
-        Topic::<String>::new_with_codec("test.topic", InvalidUtf8Codec(ContentType::new("text/plain").unwrap()))
-            .unwrap();
+    let string_topic = Topic::<String>::new("test.topic")
+        .unwrap()
+        .with_codec(InvalidUtf8Codec(ContentType::TEXT_PLAIN));
     let request = SubscribeRequest::new("decode-settle-failure", string_topic).expect("valid subscriber ID");
 
     block_on(async {
@@ -3336,7 +3333,7 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
             None,
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from([0xff_u8]),
-                ContentType::new("text/plain").unwrap(),
+                ContentType::TEXT_PLAIN,
                 None,
             )),
             Some(SettlementToken::new(subscription.id(), "decode-fail")),
@@ -3372,7 +3369,7 @@ fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_clos
         let ReceiveError::Stopped(reason) = error else {
             panic!("provider receive panic must cache a structured stop reason");
         };
-        let qubit_event_bus::model::SubscriptionStopReason::Provider { error } = reason.as_ref() else {
+        let SubscriptionStopReason::Provider { error } = reason.as_ref() else {
             panic!("provider panic must remain a provider cause");
         };
         assert_eq!(error.kind(), "provider_panicked");

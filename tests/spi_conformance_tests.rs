@@ -691,7 +691,7 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
             move |delivery| sender.send(*delivery.payload()).unwrap(),
         )
         .unwrap();
-    bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
+    let _ = bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
     assert_eq!(42, receiver.recv_timeout(Duration::from_secs(1)).unwrap());
     subscription.cancel().unwrap();
     let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
@@ -942,7 +942,7 @@ fn outbound_encoded() -> OutboundMessage {
         None,
         TransportPayload::Encoded(EncodedPayload::new(
             Arc::from(&b"conformance-payload"[..]),
-            ContentType::new("application/octet-stream").unwrap(),
+            ContentType::APPLICATION_OCTET_STREAM,
             Some(SchemaId::new("test-schema-v1").unwrap()),
         )),
     )

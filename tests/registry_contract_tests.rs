@@ -441,7 +441,7 @@ fn test_registry_installs_configured_codec_registry_into_the_facade() {
 
     let mut codecs = CodecRegistry::new();
     codecs.register::<u32>(Arc::new(U32Codec {
-        content_type: ContentType::new("application/octet-stream").expect("MIME type is valid"),
+        content_type: ContentType::APPLICATION_OCTET_STREAM,
     }));
     let config =
         EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
@@ -630,7 +630,7 @@ fn test_async_registry_installs_configured_codec_registry_into_the_facade() {
 
     let mut codecs = CodecRegistry::new();
     codecs.register::<u32>(Arc::new(U32Codec {
-        content_type: ContentType::new("application/octet-stream").expect("MIME type is valid"),
+        content_type: ContentType::APPLICATION_OCTET_STREAM,
     }));
     let config =
         EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));

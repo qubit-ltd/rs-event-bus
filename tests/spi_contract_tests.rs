@@ -64,7 +64,7 @@ fn test_spi_traits_are_object_safe() {
 fn test_cloning_encoded_payload_shares_its_byte_allocation() {
     let original = EncodedPayload::new(
         Arc::from(b"shared payload".as_slice()),
-        ContentType::new("application/octet-stream").expect("valid content type"),
+        ContentType::APPLICATION_OCTET_STREAM,
         None,
     );
     let clone = original.clone();
@@ -186,19 +186,18 @@ fn test_spi_subscription_request_builder_reports_first_missing_field_in_order() 
 
 #[test]
 fn test_backend_capabilities_preserve_declared_dimensions() {
-    let capabilities = EventBusCapabilities::builder()
-        .payload_modes(PayloadModes::NativeAndEncoded)
-        .settlement(SettlementCapabilities::AcceptRetryReject)
-        .ordering(OrderingCapability::PerKey)
-        .delayed_delivery(DelayedDeliveryCapability::Native)
-        .durability(DurabilityCapability::Durable)
-        .subscription_modes(SubscriptionModes::DURABLE)
-        .consumer_groups(true)
-        .replay(ReplayCapability::Timestamp)
-        .publish_guarantee(PublishGuarantee::DurablyStored)
-        .publish_visibility(PublishVisibility::DestinationAdmissions)
-        .build()
-        .expect("all provider capabilities are configured");
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::NativeAndEncoded,
+        SettlementCapabilities::AcceptRetryReject,
+        OrderingCapability::PerKey,
+        DelayedDeliveryCapability::Native,
+        DurabilityCapability::Durable,
+        SubscriptionModes::DURABLE,
+        true,
+        ReplayCapability::Timestamp,
+        PublishGuarantee::DurablyStored,
+        PublishVisibility::DestinationAdmissions,
+    );
 
     assert_eq!(capabilities.payload_modes(), PayloadModes::NativeAndEncoded);
     assert_eq!(capabilities.settlement(), SettlementCapabilities::AcceptRetryReject);

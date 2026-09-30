@@ -866,7 +866,7 @@ An async implementation uses the separate async catalog and `submit_async_provid
 
 ### Encode events for a cross-process implementation
 
-The built-in local provider passes Rust objects directly and needs no conversion. A message that crosses a process boundary usually has to be turned into bytes and restored on receipt. The component that does this is a **codec**. `Topic::new_with_codec` / `new_with_shared_codec` attaches a codec to one event type. A codec can also be placed in a `CodecRegistry` and given to the bus with `EventBusFacadeConfig::with_codec_registry`. A codec on the topic wins. The bus registry is consulted only when the topic has none. The codec is chosen when the subscription is created, and creation fails when both are missing. The application also has to agree on the data format and on version compatibility. This crate does not include a general JSON codec.
+The built-in local provider passes Rust objects directly and needs no conversion. A message that crosses a process boundary usually has to be turned into bytes and restored on receipt. The component that does this is a **codec**. `Topic::with_codec` / `with_shared_codec` attaches a codec to one event type. A codec can also be placed in a `CodecRegistry` and given to the bus with `EventBusFacadeConfig::with_codec_registry`. A codec on the topic wins. The bus registry is consulted only when the topic has none. The codec is chosen when the subscription is created, and creation fails when both are missing. The application also has to agree on the data format and on version compatibility. This crate does not include a general JSON codec.
 
 Codec callbacks run behind a panic boundary. A returned encode error or an encode/metadata panic fails publication before the provider is called; a validate/decode panic becomes `CodecError::Panicked` and stops that subscription without settling the source. Metadata mismatch, receive-size overflow, and native type mismatch also stop reception. A regular `CodecError::Decode` is rejected as an invalid message. The [codec round-trip example](../examples/codec_round_trip.rs) shows a minimal executable implementation for `String`. The fragments below attach a codec to the order event. The byte layout is the application's own convention: three lines, `order_id`, `customer_id`, and `total_cents`, and none of those fields contains a newline. This crate does not supply that layout.
 
@@ -941,10 +941,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
-let topic = Topic::new_with_codec(
-    "orders.created",
-    OrderCreatedCodec(ContentType::new("text/plain")?),
-)?;
+let topic = Topic::new("orders.created")?.with_codec(OrderCreatedCodec(ContentType::TEXT_PLAIN));
 let subscription = bus.subscribe(
     SubscribeRequest::new("audit-log", topic.clone())?,
     move |delivery| store.append_order_created(delivery.payload()),
@@ -965,12 +962,12 @@ use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
 
 let mut codecs = CodecRegistry::new();
-codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)));
 let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
 let config = EventBusConfig::default().with_facade_config(bus_settings);
 ```
 
-Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new_with_shared_codec` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold.
+Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new("orders.created")?.with_shared_codec(...)` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold.
 
 ## Asynchronous bus and subscriptions
 

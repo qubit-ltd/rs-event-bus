@@ -67,7 +67,8 @@ fn blocked_bus() -> (EventBus, Gate, Subscription) {
             },
         )
         .expect("subscription");
-    bus.publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
         .expect("publish");
     entered_rx.recv_timeout(LIMIT).expect("handler entered");
     (bus, gate, subscription)
@@ -165,7 +166,8 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
             },
         )
         .expect("subscribe");
-    bus.publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
         .expect("publish");
     let (ticket, rejected) = rx.recv_timeout(LIMIT).expect("callback returns");
     assert!(rejected);

@@ -7,6 +7,7 @@
 // =============================================================================
 
 use std::error::Error;
+use std::io::Error as IoError;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
@@ -20,7 +21,7 @@ use qubit_retry::RetryFallback;
 fn test_publish_error_handler_panic_preserves_source_chain() {
     let error = PublishError::ErrorHandlerPanicked {
         message: "observer failed".into(),
-        source: Box::new(std::io::Error::other("transport failed")),
+        source: Box::new(IoError::other("transport failed")),
     };
 
     assert!(error.to_string().contains("observer failed"));
@@ -34,14 +35,14 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
         .max_attempts(1)
         .fallback(RetryFallback::Retry)
         .build()
-        .expect("retry config is valid");
+        .unwrap();
     let retry_error = Retry::new(&config)
         .run(|| {
             Err::<(), _>(PublishAttemptError::new(
                 "injected",
                 Some(false),
                 PublishEffect::NotAccepted,
-                std::io::Error::other("provider unavailable"),
+                IoError::other("provider unavailable"),
             ))
         })
         .expect_err("single failed attempt should be terminal");
@@ -51,11 +52,5 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
         panic!("retry outcome should remain a retry publish error");
     };
     assert!(matches!(retry_error.reason(), RetryErrorReason::Exhausted { .. }));
-    assert_eq!(
-        retry_error
-            .last_error()
-            .expect("terminal retry error retains its last attempt")
-            .kind(),
-        "injected"
-    );
+    assert_eq!(retry_error.last_error().unwrap().kind(), "injected");
 }
