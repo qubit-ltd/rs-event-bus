@@ -95,46 +95,36 @@ impl<T: 'static> Topic<T> {
         })
     }
 
-    /// Creates a topic with a codec for encoded backends.
+    /// Attaches an owned codec for encoded backends.
     ///
     /// # Type Parameters
     /// - `C`: the codec implementation associated with payload type `T`.
     ///
     /// # Parameters
-    /// - `name`: the topic name to validate and copy.
     /// - `codec`: the codec used by providers that require encoded payloads.
     ///
     /// # Returns
-    /// A topic that owns its name and shares the codec through an `Arc`.
-    ///
-    /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
-    /// is empty, longer than 255 UTF-8 bytes, has surrounding Unicode
-    /// whitespace, or contains a control character.
-    pub fn new_with_codec<C>(name: &str, codec: C) -> Result<Self, ConfigurationError>
+    /// `self` with the codec shared through an `Arc`.
+    #[must_use]
+    pub fn with_codec<C>(mut self, codec: C) -> Self
     where
-        C: EventCodec<T>,
+        C: EventCodec<T> + 'static,
     {
-        Self::new_with_shared_codec(name, Arc::new(codec))
+        self.codec = Some(Arc::new(codec));
+        self
     }
 
-    /// Creates a topic using an already shared or registered codec.
+    /// Attaches an already shared or registered codec for encoded backends.
     ///
     /// # Parameters
-    /// - `name`: the topic name to validate and copy.
     /// - `codec`: the shared codec used by encoded providers.
     ///
     /// # Returns
-    /// A topic that owns its name and retains the supplied shared codec.
-    ///
-    /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
-    /// is empty, longer than 255 UTF-8 bytes, has surrounding Unicode
-    /// whitespace, or contains a control character.
-    pub fn new_with_shared_codec(name: &str, codec: Arc<dyn EventCodec<T>>) -> Result<Self, ConfigurationError> {
-        let mut topic = Self::new(name)?;
-        topic.codec = Some(codec);
-        Ok(topic)
+    /// `self` retaining the supplied shared codec.
+    #[must_use]
+    pub fn with_shared_codec(mut self, codec: Arc<dyn EventCodec<T>>) -> Self {
+        self.codec = Some(codec);
+        self
     }
 
     /// Returns the validated topic name.

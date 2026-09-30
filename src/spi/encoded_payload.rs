@@ -25,7 +25,7 @@ use crate::model::SchemaId;
 ///
 /// let payload = EncodedPayload::new(
 ///     Arc::from([1_u8, 2, 3]),
-///     ContentType::new("application/octet-stream").unwrap(),
+///     ContentType::APPLICATION_OCTET_STREAM,
 ///     None,
 /// );
 /// assert_eq!(payload.bytes(), &[1, 2, 3]);

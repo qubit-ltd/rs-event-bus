@@ -863,7 +863,7 @@ submit_sync_provider! {
 
 ### 跨进程实现需要编码时
 
-内置 local 直接传递 Rust 对象，不需要转换。消息要跨进程传递时，通常需要先把对象转换成字节，接收时再还原；负责这件事的组件叫**编码器**（codec）。可以用 `Topic::new_with_codec` / `new_with_shared_codec` 为某类事件指定编码器，也可以把编码器放进 `CodecRegistry`，再通过 `EventBusFacadeConfig::with_codec_registry` 配给总线。主题自带编码器优先；没有才查总线的注册表。创建订阅时会选定编码器，两处都没有时会报错。应用还要约定数据格式与版本兼容方式；本库不内置通用 JSON 编码器。
+内置 local 直接传递 Rust 对象，不需要转换。消息要跨进程传递时，通常需要先把对象转换成字节，接收时再还原；负责这件事的组件叫**编码器**（codec）。可以用 `Topic::with_codec` / `with_shared_codec` 为某类事件指定编码器，也可以把编码器放进 `CodecRegistry`，再通过 `EventBusFacadeConfig::with_codec_registry` 配给总线。主题自带编码器优先；没有才查总线的注册表。创建订阅时会选定编码器，两处都没有时会报错。应用还要约定数据格式与版本兼容方式；本库不内置通用 JSON 编码器。
 
 Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回调 panic 时，发布会在调用 provider 前失败；validate/decode panic 会转换为 `CodecError::Panicked` 并停止该订阅，不结算源消息。元数据不兼容、接收字节超限或 Native 类型不匹配也会停止接收。普通 `CodecError::Decode` 仍作为无效消息拒绝。可运行的最小 `String` 实现见[codec 往返示例](../examples/codec_round_trip.rs)。下面的片段为订单事件接上编码器。字节格式由应用自己约定：三行依次是 `order_id`、`customer_id` 和 `total_cents`，且字段中不含换行。本库不提供这种格式。
 
@@ -938,10 +938,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
-let topic = Topic::new_with_codec(
-    "orders.created",
-    OrderCreatedCodec(ContentType::new("text/plain")?),
-)?;
+let topic = Topic::new("orders.created")?.with_codec(OrderCreatedCodec(ContentType::TEXT_PLAIN));
 let subscription = bus.subscribe(
     SubscribeRequest::new("audit-log", topic.clone())?,
     move |delivery| store.append_order_created(delivery.payload()),
@@ -962,12 +959,12 @@ use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
 
 let mut codecs = CodecRegistry::new();
-codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::new("text/plain")?)));
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)));
 let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
 let config = EventBusConfig::default().with_facade_config(bus_settings);
 ```
 
-把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new_with_shared_codec` 挂到主题上。
+把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new("orders.created")?.with_shared_codec(...)` 挂到主题上。
 
 ## 异步总线与订阅
 
