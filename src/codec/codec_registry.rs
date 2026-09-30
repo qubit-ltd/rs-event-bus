@@ -36,21 +36,9 @@ impl CodecRegistry {
     /// # Returns
     /// An empty registry that can be populated with [`Self::register`].
     #[must_use]
+    #[inline]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Registers a codec, replacing any previous codec for `T`.
-    ///
-    /// # Type Parameters
-    /// * `T` — payload type encoded and decoded by `codec`.
-    ///
-    /// # Parameters
-    /// * `codec` — shared codec implementation to retain for `T`.
-    ///
-    /// The codec is shared with future lookups through [`Self::get`].
-    pub fn register<T: Send + Sync + 'static>(&mut self, codec: Arc<dyn EventCodec<T>>) {
-        self.codecs.insert(TypeId::of::<T>(), Box::new(codec));
     }
 
     /// Returns the codec for `T`, or `None` if it was not registered.
@@ -66,5 +54,18 @@ impl CodecRegistry {
         self.codecs
             .get(&TypeId::of::<T>())
             .and_then(|value| value.downcast_ref::<Arc<dyn EventCodec<T>>>().cloned())
+    }
+
+    /// Registers a codec, replacing any previous codec for `T`.
+    ///
+    /// # Type Parameters
+    /// * `T` — payload type encoded and decoded by `codec`.
+    ///
+    /// # Parameters
+    /// * `codec` — shared codec implementation to retain for `T`.
+    ///
+    /// The codec is shared with future lookups through [`Self::get`].
+    pub fn register<T: Send + Sync + 'static>(&mut self, codec: Arc<dyn EventCodec<T>>) {
+        self.codecs.insert(TypeId::of::<T>(), Box::new(codec));
     }
 }

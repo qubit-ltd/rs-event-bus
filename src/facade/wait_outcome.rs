@@ -19,8 +19,13 @@
 /// ```
 /// use qubit_event_bus::WaitOutcome;
 ///
-/// let outcome = WaitOutcome::Idle;
-/// assert_eq!(outcome, WaitOutcome::Idle);
+/// let outcome = WaitOutcome::TimedOut;
+/// let status = match outcome {
+///     WaitOutcome::Idle => "idle",
+///     WaitOutcome::TimedOut => "timed out",
+///     _ => "another outcome",
+/// };
+/// assert_eq!(status, "timed out");
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use = "inspect whether the wait was idle or timed out"]

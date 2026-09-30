@@ -7,6 +7,8 @@
 // =============================================================================
 //! Order-event codec compiled from the bilingual user guides.
 
+use std::io::Error;
+use std::str::from_utf8;
 use std::sync::Arc;
 
 use qubit_event_bus::CodecError;
@@ -33,12 +35,17 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
     }
 
     fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
-        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
+        let text = format!(
+            "{}\n{}\n{}",
+            value.order_id, value.customer_id, value.total_cents
+        );
         Ok(Arc::from(text.into_bytes()))
     }
 
     fn decode(&self, payload: &EncodedPayload) -> Result<OrderCreated, CodecError> {
-        let text = std::str::from_utf8(payload.bytes()).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        let text = from_utf8(payload.bytes()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })?;
         let mut lines = text.lines();
         let order_id = lines.next().unwrap_or("").to_owned();
         let customer_id = lines.next().unwrap_or("").to_owned();
@@ -46,10 +53,14 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
             .next()
             .unwrap_or("")
             .parse::<u64>()
-            .map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+            .map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })?;
         if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
             return Err(CodecError::Decode {
-                source: Box::new(std::io::Error::other("expected order_id, customer_id, and total_cents")),
+                source: Box::new(Error::other(
+                    "expected order_id, customer_id, and total_cents",
+                )),
             });
         }
         Ok(OrderCreated {

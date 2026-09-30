@@ -39,7 +39,7 @@ use crate::spi::SpiFuture;
 type ReceiveTimer = Pin<Box<dyn Future<Output = Result<(), TimeError>> + Send>>;
 
 /// Asynchronous receiver that owns and settles one local provider mailbox.
-#[must_use]
+#[must_use = "the receiver must stay alive to serve and close its mailbox"]
 pub(super) struct AsyncLocalEventSubscription {
     /// Shared async provider queues and outstanding-delivery accounting.
     shared: Arc<AsyncLocalShared>,

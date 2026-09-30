@@ -18,6 +18,8 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use qubit_clock::MonotonicClock;
+use qubit_clock::TimeError;
 use qubit_id::Id;
 
 use super::OperationGate;
@@ -53,6 +55,10 @@ use crate::spi::panic_boundary::catch_spi_call;
 pub(in crate::facade) struct EventBusInner {
     /// Provider implementation shared by facade clones.
     pub(in crate::facade) spi: Arc<dyn EventBusSpi>,
+    /// Fixed-size cumulative delivery counters across all subscriptions.
+    pub(in crate::facade) delivery_metrics: Arc<crate::facade::internal::DeliveryMetrics>,
+    /// Monotonic source shared by settlement budgets in all receiver owners.
+    pub(in crate::facade) clock: Arc<dyn MonotonicClock>,
     /// Immutable capabilities captured at construction.
     pub(in crate::facade) capabilities: EventBusCapabilities,
     /// Provider identity used for errors and diagnostics.
@@ -92,6 +98,86 @@ pub(in crate::facade) struct EventBusInner {
 }
 
 impl EventBusInner {
+    /// Samples the injected clock outside metadata locks and returns exact live
+    /// gauges. A clock error stops affected owners and returns gauges with
+    /// unknown oldest age.
+    ///
+    /// # Parameters
+    /// - `scope`: receiver identity, or None for the entire bus.
+    ///
+    /// # Returns
+    /// Exact captured live gauges; clock failures preserve gauges with unknown
+    /// age.
+    ///
+    /// # Side Effects
+    /// A checked clock failure stops affected owners before invoking
+    /// diagnostics.
+    #[must_use = "delivery gauges are the current bus snapshot"]
+    #[inline]
+    pub(in crate::facade) fn delivery_gauges(&self, scope: Option<Id>) -> crate::facade::DeliveryMetricsSnapshot {
+        match self.scheduler.snapshot(scope, self.clock.as_ref()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let controls = self.subscription_snapshot();
+                let error = Arc::new(SpiError::Operation {
+                    provider_id: self.provider_id.as_str().into(),
+                    operation: "metrics_clock",
+                    resource: None,
+                    kind: "invalid_monotonic_clock",
+                    retryable: Some(false),
+                    source: Box::new(error),
+                });
+                let mut first_failures = 0;
+                for control in controls
+                    .into_iter()
+                    .filter(|control| scope.is_none_or(|id| id == control.id))
+                {
+                    if control.fail_receive(crate::model::SubscriptionStopReason::Provider { error: error.clone() }) {
+                        first_failures += 1;
+                    }
+                    self.scheduler.cancel_subscription(control.id);
+                }
+                for _ in 0..first_failures {
+                    self.emit_internal("metrics_clock", error.to_string());
+                }
+                self.scheduler.snapshot_gauges(scope)
+            }
+        }
+    }
+
+    /// Publishes a checked clock failure with its original source and wakes the
+    /// owner.
+    ///
+    /// # Parameters
+    /// - `control`: affected receiver and first-cause gate.
+    /// - `operation`: clock-dependent operation included in the structured
+    ///   error.
+    /// - `error`: original domain or ordering error preserved as the source.
+    ///
+    /// # Side Effects
+    /// Stops scheduler admission before the first observer callback; repeated
+    /// causes do not reemit.
+    pub(in crate::facade) fn fail_clock(
+        &self,
+        control: &SubscriptionControl,
+        operation: &'static str,
+        error: TimeError,
+    ) {
+        let error = Arc::new(SpiError::Operation {
+            provider_id: self.provider_id.as_str().into(),
+            operation,
+            resource: Some(control.subscriber_id.as_str().into()),
+            kind: "invalid_monotonic_clock",
+            retryable: Some(false),
+            source: Box::new(error),
+        });
+        let first = control.fail_receive(crate::model::SubscriptionStopReason::Provider { error: error.clone() });
+        self.scheduler.cancel_subscription(control.id);
+        if first {
+            self.emit_internal(operation, error.to_string());
+        }
+    }
+
     /// Returns an immutable snapshot of currently active observer callbacks.
     ///
     /// # Returns

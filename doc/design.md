@@ -103,11 +103,11 @@ mean a subscriber finished handling the message.
 between the facade and the provider. Keeping them apart avoids reading
 "publish returned" as "the handler finished".
 
-**(P7) Every queue is bounded.**
+**(P7) Work counts have explicit bounds.**
 The synchronous handler pool, handler queues, async admission, local queue capacity,
 the provider-wide outstanding budget, and the notification publisher queue all have
 explicit limits. Overflow behavior (block, reject, or fall back to `Retry`) is defined.
-Work does not accumulate without a bound.
+Count bounds do not bound native payload size, codec allocations, or time spent in user/provider code.
 
 **(P8) Failures are observable and isolated.**
 User code (handler, filter, interceptor, error handler, retry rule, diagnostic observer)
@@ -124,9 +124,7 @@ Time comes from `qubit-clock` (`Timer`). Provider catalogs and discovery come fr
 crate they actually use, which keeps versions from being coupled through this crate.
 
 **(P10) Lifecycle is explicit and idempotent.**
-`EventBus::request_shutdown(ShutdownMode)` starts or joins shutdown and returns an
-`EventBusShutdown` ticket. `shutdown` remains a blocking convenience method; repeated
-requests and observations are safe.
+`shutdown(ShutdownMode)` is the only shutdown entry point, and calling it again is safe.
 After shutdown, APIs return `Closed`. `Immediate` can strengthen a `Graceful` shutdown
 that is already in progress. Dropping a subscription handle does not cancel it on the
 synchronous facade, and it does dispose it on the asynchronous facade. Both behaviors
@@ -156,8 +154,8 @@ are defined.
                 │                                  │
       ┌─────────▼──────────┐             ┌─────────▼──────────────┐
       │ EventBus (sync)    │             │ AsyncEventBus (async)  │
-      │ · OperationGate    │             │ · AsyncAdmission       │
-      │ · one coordinator  │             │ · AsyncOrderingLanes   │
+      │ · OperationGate    │             │ · scheduler core       │
+      │ · one coordinator  │             │ · owned leases         │
       │   thread / sub     │             │ · AsyncSubscription    │
       │ · SyncDelivery-    │             │   (session/lease)      │
       │   Scheduler pool   │             │ · injected Timer       │
@@ -202,8 +200,8 @@ are defined.
 | `codec` | Codec trait and registry | `EventCodec<T>`, `CodecRegistry`, `ContentType`, `SchemaId`, `EncodedPayload`, `resolve_codec` |
 | `spi` | Provider contract | `EventBusSpi`, `EventSubscriptionSpi`, `AsyncEventBusSpi`, `AsyncEventSubscriptionSpi`, `SpiFuture`, `OutboundMessage`, `InboundMessage`, `TransportPayload`, `ReceiveOutcome`, `SettlementToken`, `DeliveryDisposition`, `SpiSubscriptionRequest`, `EventBusCapabilities` and the capability enums, `ShutdownOutcome`, `DeliveryGap`, `conformance` |
 | `registry` | Provider catalog and assembly | `EventBusSpec`, `EventBusProvider` / `AsyncEventBusProvider` (aliases of `qubit-spi` definition traits), `EventBusRegistry`, `AsyncEventBusRegistry`, `EventBusConfig`, `RequiredCapabilities`, `EventBusProviderError`, internal `EventBusProviderAdapter` / `IdentifiedEventBusSpi`, `sync_provider_inventory` / `async_provider_inventory` (discovery) |
-| `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `AdmissionTracker`, `OrderingLanes`, `DeadLetter*`, retry adapters, `Diagnostic` |
-| `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `SyncDeliverySchedulerConfig`, `DeliveryAdmissionConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
+| `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `AdmissionTracker`, `OrderingLaneKey`, `DeadLetter*`, retry adapters, `Diagnostic` |
+| `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `DeliverySchedulingConfig`, `SettlementRetryConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
 | `local` | Built-in in-process provider | `LocalEventBusConfig`, `LocalEventBusProvider`, `AsyncLocalEventBusProvider`, `LocalEventBusSpi`, `AsyncLocalEventBusSpi`, `LocalQueue`, `OutstandingBudget` |
 | `notification` | A bounded, never-blocking publish queue in front of `EventBus` | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
 | `error` | Layered error types | `EventBusError`, `PublishError`, `SubscribeError`, `DeliveryError`, `LifecycleError`, `ShutdownError`, `ProviderError`, `SpiError`, `CapabilityError`, `CodecError`, `ConfigurationError` |
@@ -319,9 +317,10 @@ A handler receives `Delivery<T>`:
   so the two meanings do not collapse into one number.
 - `acknowledgement()` returns the shared `Acknowledgement`, which exposes `ack()` and `nack()`.
 
-`Acknowledgement` is atomic and **the first decision wins**. The first `ack()` or
-`nack()` is stored. Later calls return `false` and leave the state unchanged.
-`Delivery` and the facade share it. After the handler returns, the facade reads it
+`Acknowledgement` atomically retains the first decision. `ack()` and `nack()` return
+`Result<(), AcknowledgementError>`: repeating the same decision returns `Ok(())`,
+while the opposite decision returns `AcknowledgementError::AlreadyCompleted`.
+Neither changes the retained decision. `Delivery` and the facade share it. After the handler returns, the facade reads it
 to choose settlement (see the ACK matrix in §7.4). Moving the `Delivery` to another
 thread before acknowledging it still produces exactly one terminal state.
 
@@ -363,6 +362,8 @@ no destinations, no accepted destinations, dropped, or opaque admission. Only a 
 with `PublishVisibility::DestinationAdmissions` can report destination-level detail.
 `publish_all` returns `BatchPublishResult`, preserving each request's
 `Result<PublishReceipt, PublishFailure>` in input order. One failure does not stop the later requests.
+
+Every whole-event republish decision checks `duplicate_possible()` first. Unknown history is not erased by final `NoDestinations`/`NoneAccepted`. Reconcile uncertain history by event ID; consider whole-event retry only without that history and with no acceptance. Partial admission repairs rejected destinations only, and Dropped does not automatically republish. `check_admission` still checks only the final ACK. See the [compiled decision](user_guide.md#check-the-publication-result).
 
 ### 3.6 `DeadLetterEvent<T>`
 
@@ -482,7 +483,7 @@ pub struct SettlementToken {
 }
 ```
 
-- **Not `Clone`.** The facade settles a message once, so the provider does not have to accept concurrent settlement of the same token.
+- **Not `Clone`.** One receiver owner serializes attempts; the provider need not support concurrent settlement of the same token.
 - `belongs_to(subscription_id)`: the facade checks ownership before settling. A provider may also reject a mismatched token with `SpiError::InvalidSettlementToken`.
 - **Idempotent.** Settling the same `(token, disposition)` again must return `Ok(())`. The async facade retries the same disposition after a failure.
 - **Conflict.** Settling the same token with a different disposition should error or be ignored. It must not corrupt state beyond a duplicate delivery.
@@ -490,10 +491,10 @@ pub struct SettlementToken {
 
 ### 4.6 Shutdown contract
 
-`shutdown(ShutdownMode)` and, on the synchronous facade, `request_shutdown(ShutdownMode)`:
+`shutdown(ShutdownMode)`:
 
-- `ShutdownMode::Graceful { timeout }` passes its duration to the provider. The synchronous `shutdown` convenience method also uses it as its own observer deadline; a separate `request_shutdown` ticket can instead be observed with its own `wait` timeout or `wait_async`. Observer timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
-- `ShutdownMode::Immediate` requests cancellation, returns queued facade work as `Retry`, and waits for active work before provider cleanup. Unprocessed provider messages are dropped or retained according to that provider.
+- `ShutdownMode::Graceful { timeout }` sets a caller deadline for the facade shutdown. A caller timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
+- `ShutdownMode::Immediate` requests immediate stop admission and provider-specific discard/retention; it can still wait for running handlers or SPI calls and has no bounded-wait guarantee.
 - The call is idempotent. After shutdown, `publish` and `subscribe` return `SpiError::Operation` whose `kind` is closed.
 
 The facade permits at most one provider shutdown call in flight. A failed or
@@ -547,18 +548,37 @@ the retention guarantee. The facade rejects an unsupported mode before calling `
 
 ---
 
+See the [local/Redis comparison](user_guide.md#compare-local-and-redis-capabilities) for actual capability values and PEL/cursor/fsync/close recovery limits. Local is Native/Ephemeral with PerKey and Native delay; Redis is Encoded/Durable with groups and Position replay, but ordering/delay are both None.
+
 ## 6. Registry, discovery, and provider assembly
 
 ### 6.1 `EventBusSpec` and `qubit-spi`
 
 ```rust
-pub struct EventBusSpec;                    // shared by synchronous and asynchronous providers
+use std::sync::Arc;
+
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusProviderError;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_spi::AsyncServiceSpec;
+use qubit_spi::ServiceSpec;
+use qubit_spi::SyncServiceSpec;
+
+pub struct EventBusSpec;
+
 impl ServiceSpec for EventBusSpec {
     type Config = EventBusConfig;
-    type Output = Arc<dyn EventBusSpi>;
     type Error = EventBusProviderError;
 }
-// AsyncServiceSpec for EventBusSpec selects Arc<dyn AsyncEventBusSpi>.
+
+impl SyncServiceSpec for EventBusSpec {
+    type Output = Arc<dyn EventBusSpi>;
+}
+
+impl AsyncServiceSpec for EventBusSpec {
+    type Output = Arc<dyn AsyncEventBusSpi>;
+}
 ```
 
 `EventBusProvider` and `AsyncEventBusProvider` are aliases of `qubit-spi` traits
@@ -661,8 +681,8 @@ or `Registry::create`. It is frozen when the facade is created:
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **Global** publish interceptors. They may only read and write headers (`PublishMetadata`). Returning `false` drops the message |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | **Global synchronous** middleware registered per payload type |
 | `async_subscriber_interceptors` | Same shape, async | Global async middleware (used only by `AsyncEventBus`) |
-| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | Synchronous admission, handler queue, and receiver-thread budget |
-| `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | Global in-flight limit of the async facade |
+| `delivery_scheduling` | `DeliverySchedulingConfig`: running=4, owned=256, per-subscription=32, subscriptions=256 | Independent count limits shared by both facades |
+| `settlement_retry` | `SettlementRetryConfig`: 5 attempts, 5 seconds, initial backoff 10 ms, cap 1 second | Retry only explicitly retryable settlement failures |
 | `payload_limits` | `PayloadLimits` | Independent positive encoded publish/receive byte limits, each 1,048,576 by default |
 
 The facade reads provider capabilities once during construction and keeps that
@@ -673,6 +693,8 @@ construction, the constructor returns a terminal `SpiError` classified as
 Global interceptors and middleware are **added to** request-level ones. On publish,
 typed request interceptors run first and global metadata interceptors run after them.
 On subscribe, global middleware wraps the request middleware: global, then typed, then the handler.
+
+`DeliverySchedulingConfig::new(NonZeroUsize, NonZeroUsize, NonZeroUsize, NonZeroUsize)` takes running, owned, per-subscription, and subscriptions in that order. Running/per-subscription may not exceed owned. Configure through `with_delivery_scheduling` / `with_settlement_retry`; getters are `delivery_scheduling` / `settlement_retry`.
 
 ### 7.2 Codec resolution
 
@@ -746,6 +768,8 @@ Internally, `PipelineFailure { origin, error, publish_effect }` records **which 
 Callers receive `PublishFailure` with the original event ID, aggregate effect,
 and structured `PublishError` cause; the source chain is preserved.
 
+Sync and async publication share `prepare_publish`, `finish_publish_success`, and `finish_publish_failure`. Preparation runs interceptors and encoding once; later attempts retain ID, bytes, and monotonic duplicate-possible evidence. SPI calls and retry/cancellation driving stay in their respective adapters.
+
 ### 7.4 Subscribe pipeline (`SubscriberPipeline`): one message
 
 `SubscriberPipeline<T>` is called by the synchronous worker and by the asynchronous run loop:
@@ -753,7 +777,10 @@ and structured `PublishError` cause; the source chain is preserved.
 ```
 InboundMessage
   │ into_parts()
-  ├─ TransportPayload → Arc<T> (Native downcast / Encoded decode) ── failure → Reject + DeliveryFailed(attempts=0)
+  ├─ Encoded: check receive byte limit, then metadata, then decode
+  │    ├─ ordinary CodecError::Decode → ordered Reject settlement (bad message)
+  │    └─ oversized / incompatible metadata / panic → StopUnsettled; stop subscription, retain unsettled source
+  ├─ Native: downcast → Arc<T>; NativeTypeMismatch → StopUnsettled
   ├─ rebuild EventEnvelope<T>
   ├─ filter(&envelope)? ── false → settle Accept, done
   │                     ── panic → treated as a handler failure
@@ -881,62 +908,28 @@ Threads, named so a debugger can tell them apart:
 | Thread | Count | Role |
 | --- | --- | --- |
 | `event-bus-subscription-{id}` | one per subscription | Coordinator: loops `receive(50 ms)`, decodes and filters, hands handler work to the scheduler, and **performs settlement** |
-| `event-bus-handler-{i}` | `max_in_flight` (default 4), started lazily on the first `subscribe` | Runs middleware, the handler, local retry, error handlers, and dead-letter publish |
+| `event-bus-handler-{i}` | `max_running_handlers` (default 4), started lazily on the first `subscribe` | Runs middleware, the handler, local retry, error handlers, and dead-letter publish |
 | `event-bus-shutdown` | at most one, spawned at shutdown | Drains, joins, and calls provider shutdown in the background |
 
 `EventSubscriptionSpi` is a single owner (`&mut self`), so each subscription needs
 **one** thread that calls `receive` and `settle`. Handlers can be slow. Running them
 serially on that same thread would give neither concurrency nor a global limit.
 The coordinator therefore does I/O and settlement, and handlers run in a shared
-bounded pool. `max_in_flight` is the global in-flight limit.
+bounded pool. `max_running_handlers` limits running handlers; owned work has its own budget.
 
 ### 8.2 `SyncDeliveryScheduler`
 
-- Each subscription has a `VecDeque` of tasks (`handler_queue_capacity`, default 32).
-  Workers walk the subscription queues round-robin so one busy subscription cannot starve the others.
-- `try_reserve()` is admission: the coordinator may enqueue only while `queued < capacity`.
-  Otherwise it keeps the message in `pending` and **stops calling `receive`**, which
-  backpressures the provider. The local provider's queue then fills, and that shows
-  up as an `AdmissionOutcome` on publish. `handler_queue_capacity = 0` degenerates
-  to a direct handoff: a task is accepted only when idle workers outnumber reserved
-  tasks and the key is not active.
-- **Per-key order.** A `OrderingPolicy::PerKey` task carries `ordering_key`. The
-  scheduler keeps `active_keys: HashSet<(subscription_id, key)>`. `take_ready()`
-  skips a task whose key is already active and takes the first runnable task in that
-  subscription's queue. The queue is FIFO and each take is "the earliest runnable
-  task", so tasks for one key run in arrival order while different keys run in parallel.
-- `AdmissionTracker` records issued permits. `wait_for_received_deliveries` uses it
-  to see whether the facade still has unfinished deliveries.
-- `cancel_subscription(id)` takes every queued task for that subscription and runs
-  them with `cancelled = true`, which produces a `Retry` settlement back to the provider, so cancel does not drop a message.
-- `stop_admission(immediate)`: `Graceful` leaves queued tasks to drain. `Immediate`
-  clears the queues and runs them as `cancelled`, so they `Retry`.
+Sync and async adapters share a metadata-only `DeliverySchedulerCore`; each owner retains its receiver, payloads, and handler futures. Before receive, reserve global and per-subscription owned capacity atomically. Backpressure occurs before pulling a message. A single owned lease transfers through reserved, queued, running, and settling stages, with no extra pending message outside the limits.
+
+Eligible work rotates across subscriptions, then keys. Only an executor actually taking a ready candidate acquires a handler slot and lane. Same-key queues and settlement backoff consume no handler slot. Handler completion releases its execution slot; the lane remains owned until settlement succeeds or the subscription terminates. `OrderingPolicy::None` makes each delivery independently eligible. `PerKey` preserves FIFO within `(topic, key, subscription_id)`; keyless messages share that subscription/topic's None lane.
+
+Fairness requires already-received eligible candidates and executors that keep progressing. Receiving B still needs owned capacity; an infinite upstream backlog of A cannot be bypassed. With H=4, D=256, S=256: running≤H, owned≤D, receivers≤S, lanes≤D and waiters≤S. Count bounds do not bound payload bytes.
 
 ### 8.3 Coordinator thread (`run_subscription_worker`)
 
-```
-loop {
-  if cancel_requested { return pending as Retry; break }
-  apply settlements sent back by handler threads (OwnerSettlementRouter)
-  if let Some(job) = pending.take() {
-     if let Some(r) = scheduler.try_reserve(...) { r.submit(job) } else { pending = Some(job); sleep 1ms; continue }
-  }
-  match receiver.receive(50ms) {
-     Message(m)  → process_inbound_parts → build a job → try reserve/submit, else keep it pending
-     Gap(g)      → Diagnostic::ReceiveGap
-     TimedOut    → continue
-     Closed      → break
-     Err(e)      → Diagnostic::InternalFailure, close the receiver, mark stopped
-  }
-}
-drain remaining settlements → receiver.close() → mark stopped
-```
+One owner serializes receive, settle, and close for each receiver. It reserves before receiving and retains an owned map plus ready queue; timeout, Gap and Closed release reservations. Handlers send immutable token/disposition intents and completion notifications through `OwnerSettlementRouter`, without waiting on a zero-capacity settlement reply. The owner correlates both messages without releasing ownership early because of their arrival order.
 
-**Settlement flows back to the owner.** A handler thread cannot call `receiver.settle`
-because it does not hold `&mut` on the receiver. It sends `(token, disposition)`
-through an mpsc channel. The coordinator settles them at the start of each loop.
-A failed settlement emits `Diagnostic::SettlementFailed` and is tried **once more**
-on the next loop, relying on the idempotence contract in §4.5.
+Settlement failures use shared `SettlementRetryState`, preserving token/disposition without rerunning the handler. Permanent errors, unknown retryability, exhausted budgets, panic, invalid token, or infrastructure failure publish the first terminal cause and stop receiving/starting handlers for that subscription. Unstarted durable work follows provider close recovery; ephemeral work is counted as abandoned. Started handlers may finish, but a terminated receiver receives no new settlement attempts. Close errors do not replace the first cause. A blocked SPI call or handler cannot be forcibly terminated.
 
 ### 8.4 `subscribe`
 
@@ -977,60 +970,31 @@ Coordinator and handler threads install a thread-local `BusContextGuard` before
 entering user code. From that context, an operation that would block waiting for
 itself (`shutdown` waiting synchronously, `cancel()` joining, `wait_for_*`) returns
 `LifecycleError::WouldDeadlock { operation }` (wrapped in `ShutdownError::Lifecycle`
-for shutdown) instead of deadlocking. `shutdown` checks this context before issuing
-a request. `request_shutdown` can start background shutdown from that context;
-synchronous `EventBusShutdown::wait` rejects waiting there.
+for shutdown) instead of deadlocking. Shutdown can still be **started** from bus
+context, because it moves onto a background thread. It cannot be waited for there.
 
 ### 8.7 Shutdown: `ShutdownCoordinator`
 
 ```
 request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
-  ├─ Closed → ready ticket reading the cached report
-  ├─ lifecycle: Running → Closing; OperationGate::close_admission()
+  ├─ lifecycle: Running → Closing; close OperationGate admission
   ├─ coordinator.begin(mode) → exact generation; Immediate strengthens active Graceful
-  ├─ scheduler.request_stop(immediate); borrowed subscription controls request_cancel()
-  ├─ start one `event-bus-shutdown` thread when this generation needs a leader
-  │     start failure → Err(ShutdownError::CoordinatorStart); joined tickets retain this error
-  │     wait for OperationGate → drain/cancel queued tasks → wait/join workers
-  │     → scheduler.join() → spi.shutdown(mode) → cache report and mark Closed on success
-  └─ return Ok(generation ticket) without waiting for handlers, joins, or SPI completion
+  ├─ scheduler.request_stop(immediate); request cancellation on subscription controls
+  ├─ start one `event-bus-shutdown` coordinator thread when this generation needs a leader
+  │     wait for OperationGate → finish/clear owner work → wait and join receiver owners
+  │     → scheduler.join() → spi.shutdown(mode) → cache report and mark Closed
+  └─ return the generation ticket without waiting for handlers, joins, or SPI
 
-EventBusShutdown::wait(Some(timeout)) → blocking, bounded observation
+EventBusShutdown::wait(Some(timeout)) → bounded blocking observation
 EventBusShutdown::wait_async()         → runtime-neutral Waker observation
-shutdown(mode)                        → request_shutdown(mode) + ticket.wait(mode timeout)
+shutdown(mode)                         → request_shutdown(mode) + ticket.wait(mode timeout)
 ```
 
-- Requests only close admission, strengthen stop signals, queue cancellation for
-  background processing, and start the coordinator. They never run queued
-  settlement or diagnostic callbacks, wait for handlers/provider, or join threads
-  on the request path. They are safe from bus-owned callbacks.
-- Each ticket retains one generation's result until ticket Drop. Multiple tickets
-  can join one active generation. Immediate strengthens that attempt, returning
-  queued tasks as `Retry` while active handlers finish. A coordinator start failure
-  is published to joined tickets before a later request can retry; an old ticket
-  never observes the retry generation's result.
-- `wait_async` checks completion and registers its waker under the same state
-  mutex. Waker clone/drop/wake run outside that mutex. Cancelling a wait removes
-  only its registration; the ticket still retains the result and can be observed
-  again without resending a request or creating another thread.
-- `wait(Some(timeout))` limits only the observer. `shutdown(Graceful { timeout })`
-  uses that same timeout for its blocking observer and passes the mode to the
-  provider. `shutdown(Immediate)` has no observer deadline and still waits.
-  A timeout returns `ShutdownError::TimedOut` while background cleanup continues;
-  SPI `ShutdownOutcome::TimedOut` instead reports completed provider cleanup after
-  its grace period. Neither mode can kill blocked synchronous code.
-- The report includes facade-known abandoned ephemeral deliveries and whether
-  the provider may have abandoned work it cannot count. Provider calls are
-  serialized by the active coordinator; the report-cache mutex is not held across
-  the SPI shutdown call, so a later request can still strengthen the attempt.
-- The background thread contains unwind panics as a generation failure and emits
-  `Diagnostic::InternalFailure`. Observers receive that failure; it is not a
-  successful shutdown report.
-- `EventBus` is a `Clone` of an `Arc` handle and has **no Drop shutdown**.
-  Background workers can retain `Arc<EventBusInner>`. The caller must explicitly
-  request shutdown and observe completion. Dropping a ticket only releases
-  observation and does not cancel background shutdown.
+`request_shutdown` closes admission and signals the fixed-pool scheduler; it does not run queued handler or settlement callbacks on the requesting thread. The scheduler marks graceful drain or immediate cancellation, then wakes receiver owners. Owners release their own delivery leases and retained payloads; already granted handler callbacks continue on the fixed pool. A separate coordinator joins owners and pool workers before the single provider shutdown call. Immediate strengthens a running Graceful generation, but cannot interrupt a callback or provider call already in progress.
 
+Each ticket retains one exact generation's result until it is dropped. Concurrent requests can join the current generation, and a closed bus returns a ready ticket with the cached report. `wait` timeout limits only that observation; background cleanup continues. `wait_async` registers an independent cancelable waker and neither blocks a thread nor requires a runtime. Cancelling an observation future removes only its waker registration; a retained ticket can be observed again. A coordinator start failure remains associated with tickets for that generation even if a later request starts a retry generation.
+
+`request_shutdown` is safe from bus-owned callbacks because it returns without waiting. Synchronous `shutdown` and `EventBusShutdown::wait` return `WouldDeadlock` when invoked from a callback that would need to finish first. The report includes facade-known abandoned ephemeral deliveries and whether provider-owned work may also have been abandoned without an exact count. `EventBus` has no `Drop` shutdown; dropping either the bus handle or ticket does not cancel cleanup.
 
 ---
 
@@ -1046,71 +1010,24 @@ shutdown(mode)                        → request_shutdown(mode) + ticket.wait(m
   (retry backoff, settlement backoff, `wait_for_received_deliveries` timeout, shutdown
   deadline) goes through `Arc<dyn Timer>`. The default is `qubit_clock::StdTimer`.
   Tests advance time deterministically with the manual timer in `tests/support/manual_async.rs`.
-- **Wakeups use `Waker`.** `AsyncSignal` (one-shot and resettable), `AsyncAdmission`,
-  and `AsyncOrderingLanes` register and wake `Waker`s. They do not use channels or threads.
+- **Wakeups use `Waker`.** `AsyncSignal` (one-shot and resettable) and the shared scheduling core register and wake `Waker`s. They do not use channels or threads.
 - **Every SPI call is a boxed `Send` future**, and `catch_spi_future` captures a provider panic.
 
-### 9.2 `AsyncAdmission`: a global in-flight limit
+### 9.2 Shared ownership and execution capacity
 
-- Capacity comes from `DeliveryAdmissionConfig::max_in_flight` (default 4).
-- `acquire()` returns a future. With no free slot it enqueues its `Waker` in a **FIFO**
-  waiter list. Releasing a permit wakes the head, so waiters are fair and cannot starve.
-- The permit is RAII and releases on drop. A delivery task holds it until the handler
-  finishes and a settlement intent has been produced.
-- `AsyncTracker` counts in-flight work for `wait_for_received_deliveries` and shutdown drain.
+Async uses the same `DeliverySchedulerCore` and four-parameter configuration as §8.2. Registered sessions, including paused sessions, count toward `max_subscriptions` until close/terminal cleanup actually finishes. Each subscription has at most one receive waiter; cancellation removes it and released capacity wakes waiters. Conditions are rechecked after wake registration to avoid lost wakeups.
 
-### 9.3 `AsyncOrderingLanes`
+### 9.3 Per-key lanes
 
-Lanes are keyed by `(subscription_id, ordering_key)`. A delivery task `acquire`s the
-lane before entering the handler. If the previous holder has not released it, the
-task suspends and registers a `Waker`. Release wakes the next waiter in FIFO order.
-An `OrderingPolicy::Unordered` subscription does not use a lane.
+Lanes are keyed by `(topic, key, subscription_id)`. Queued same-key messages consume no handler slot, and successors cannot bypass an unsettled predecessor. `OrderingPolicy::None` uses independently eligible deliveries. The fairness conditions and resource bounds are those in §8.2.
 
-### 9.4 `AsyncSubscription`: session, lease, and a resumable `run`
+### 9.4 `AsyncSubscription`: resumable sessions
 
-```
-AsyncSubscription<T>
- ├─ control: Arc<AsyncSubscriptionControl<T>>   stop signal (SessionSignals), runner count, SessionSlot
- └─ SessionSlot → Mutex<Option<AsyncSession<T>>>
-        AsyncSession
-         ├─ receiver: Option<Box<dyn AsyncEventSubscriptionSpi>>   single-owner receiver
-         ├─ pending / waiting_admission: Option<PendingDelivery>    at most one received, not-yet-admitted message
-         ├─ tasks: Vec<OwnedDeliveryTask>                          delivery futures in progress
-         ├─ completed: VecDeque<PendingDelivery>                    finished items waiting to settle
-         ├─ admission_waiter: Option<AsyncAdmissionFuture>
-         └─ handler: Option<SharedAsyncHandler<T>>                  supplied by run(), kept across a pause
-```
+`AsyncSession` owns the receiver and retains `buffered`, `tasks`, `completed`, and completions arising during settlement. `PendingDelivery` retains payload, token, immutable disposition, settlement timing state, and one owned lease. A handler factory is not called before a runnable grant; started futures remain in the session.
 
-`PendingDelivery` is the facade-side lifetime of one message: the event, the token,
-`settlement_intent`, `settlement_failures`, a pending failure diagnostic, the admission
-permit, and the ordering-lane guard. The permit and the guard drop with the
-`PendingDelivery`, so they cannot be forgotten.
+Each turn polls started tasks in rotation, advances one receiver operation, then receives/dispatches when capacity allows. Settlement backoff and an in-flight async settle still allow polling started handlers, while that receiver never receives concurrently. Dropping `run` pauses: owned work, lanes, tokens, and timing remain in the session. Resuming run or shutdown takes over without implicit spawn.
 
-- `run()` `lease()`s the `Session` (waiting if another `run` already holds it) and
-  executes `run_loop`. If the subscription has not been disposed, the `Session` goes
-  back into the slot. Therefore:
-  - **Dropping the `run()` future pauses.** The receiver stays in the session.
-    Unsettled messages stay with the provider (this depends on `receive` being
-    cancellation-safe). A later `run()` continues from that state.
-  - **Shutdown can take over a paused session.** `AsyncEventBus::shutdown` calls
-    `shutdown(mode)` on each control. That call `lease()`s the session, finishes
-    pending deliveries when the mode is `Graceful`, then `close_inner()`.
-- Each `run_loop` turn checks the stop signal, applies settlement intents, and if a
-  message is pending (received but not yet admitted) `acquire`s a permit; otherwise
-  it calls `receive(Duration::MAX)`. **Each subscription holds at most one message
-  that has not been admitted.** That is the backpressure (the facade does not pull
-  more from the provider) and it means pause or shutdown has only one message to return.
-- A delivery task (`OwnedDeliveryTask`) is a `'static` owned future. `run_loop` polls
-  the `tasks` with `select` semantics: any task completing, `receive` returning, or a
-  stop signal produces an `AsyncRunnerEvent`. After the handler finishes, the
-  `PendingDelivery` enters `completed` with a `settlement_intent`. The next turn of
-  `run_loop` settles it through `&mut receiver`. This is the same idea as the
-  synchronous "send settlement back to the owner thread".
-- `close()` stops `run` (`Immediate`), `lease`s, calls `receiver.close()`, and unregisters from the bus.
-- `Drop` is `dispose()`: stop immediately, drop the session (the receiver is dropped
-  and the provider applies Ephemeral or Durable semantics), and unregister the control.
-  **This differs from the synchronous handle.** Dropping the async handle disposes it,
-  because no background thread is left to keep consuming.
+`close().await` stops and closes one subscription; Drop disposes its receiver under the provider's durable/ephemeral semantics. This differs from the non-cancelling synchronous handle Drop. Cancelling receive is not destroying the receiver. Cancelling settlement fabricates neither Accept nor Reject; a started attempt remains charged to the budget.
 
 ### 9.5 `AsyncEventBus::subscribe` and subscriptions that never start
 
@@ -1120,12 +1037,13 @@ and `close_inner()`s it, so the provider receiver is closed and no subscription 
 left hanging. If `subscribe` completes when the bus is no longer `Running`, the
 receiver is closed immediately and the call returns `SubscribeError::Closed`.
 
-### 9.6 Settlement retry backoff
+### 9.6 Finite settlement retries
 
-A failed settlement emits `Diagnostic::SettlementFailed` and stays on the intent queue.
-The retry delay is `10 ms × 2^n`, capped at 1 s (the exponent is at most 7), using
-the injected `Timer`. Retries rely on the idempotence contract in §4.5. An `Immediate`
-shutdown abandons the remaining intents and emits `SettlementUnavailable`.
+`SettlementRetryConfig::new(max_attempts, max_elapsed, initial_backoff, max_backoff)` takes `NonZeroU32` and three `Duration`s. Defaults are 5 attempts including the first, 5 seconds, 10 ms initial backoff, and a 1-second cap. Elapsed and initial backoff must be nonzero and max must be at least initial; one attempt is valid.
+
+The shared state is `Ready → Attempting → Settled | Waiting(deadline) | Terminal`. Only `retryable()==Some(true)` retries; false and None stop as `PermanentError` and `RetryabilityUnknown`. Other terminal classifications are `AttemptsExhausted`, `DeadlineExceeded`, `ProviderPanicked`, `InvalidToken`, and `InfrastructureFailure`. Failure n waits `min(initial * 2^(n-1), max)` with saturating arithmetic. Recheck attempts and monotonic elapsed budget before entering SPI; timer-registration failure does not count a SPI call.
+
+Each failure emits `SettlementFailed` with `attempt` and `Arc<SpiError>`; first termination emits `SettlementStopped` and is retained by `terminal_failure()`. Budgets do not interrupt an in-flight call: a success returned after the deadline is still success. A cancelled in-flight attempt remains charged; pause itself is not termination, and resume checks the budget again.
 
 ### 9.7 Shutdown
 
@@ -1144,6 +1062,8 @@ shutdown(mode: ShutdownMode).await
 ```
 
 `Immediate` can also strengthen a `Graceful` shutdown already in progress. A control's stop level only rises.
+
+A bounded caller wait is not forced process exit. Use two `Graceful` waits with individual timeouts, handle `ShutdownError::TimedOut`, and hand incomplete cleanup to an external supervisor. `Immediate` can still wait for an uncooperative handler/SPI and is not a timeout rescue. Cancelled futures resume through coordinator state. See the [compiled sync/async policy](user_guide.md#shut-down-a-sync-bus).
 
 ### 9.8 `BusContextFuture`: deadlock detection at poll scope
 
@@ -1195,9 +1115,11 @@ LocalQueueState
 `LocalEvent.payload` is `SharedPayload::Native(Arc<dyn Any>)`. The same `Arc` is
 broadcast into every subscription queue. Publish does not clone the payload.
 
-- **A lane is the order.** Messages with the same key enter the tail of one lane.
-  Only the head of a lane can be delivered, and the lane does not dequeue again
-  until that message is settled. That is the `PerKey` order, with no extra lock.
+- **A lane preserves receive order.** Same-key messages enter one queue and leave
+  from its head, respecting delay. After a pop, `pop_ready` schedules the next head
+  whenever the queue is nonempty; it does not wait for the previous settlement.
+  Successors can become facade-owned early. The facade PerKey lane enforces the
+  handler-start and settlement boundary.
 - **`Retry` returns to the head** (`enqueue_front`) and keeps the original order.
   `Accept` and `Reject` release outstanding budget. `Retry` does not.
 - **The delay heap is compacted lazily.** When a lane is consumed or reordered,
@@ -1266,12 +1188,13 @@ The structure matches the synchronous provider. The waiting primitive and the in
 ### 10.5 How the facade and `local` divide one message
 
 Take a delayed `PerKey` message. The facade checks capabilities and puts
-`ordering_key` and `delay` on the `OutboundMessage`. `local` places it on the
-matching lane and pushes the delay heap. When it is due, `receive` returns it.
-The synchronous scheduler then uses `active_keys` so the same key is not handled
-concurrently. On `local` that second check is redundant, because `local` already
-dequeues one key serially. It is necessary for a provider that only guarantees
-partition order and does not itself serialize a key.
+`ordering_key` and `delay` on `OutboundMessage`; local queues it in the matching
+lane and schedules its delay. Once due, receive returns it in queue order.
+Local can then return a same-key successor before the predecessor settles.
+The facade can prefetch those messages within its owned budget, but its PerKey
+lane prevents starting the successor until the predecessor settles successfully;
+termination does not start successors. This facade constraint is necessary on
+local as well: receive FIFO is not serialized handler execution or settlement.
 
 ### 10.6 Resources and benchmarks
 
@@ -1291,8 +1214,8 @@ cargo bench --bench facade_delivery
 ```
 
 The synchronous facade starts one blocking receiver thread per subscription and
-enforces `max_subscription_workers` (default 256) before calling the provider.
-The handler pool is sized by `max_in_flight`; shutdown may also briefly start a
+enforces `max_subscriptions` (default 256) before calling the provider.
+The handler pool is sized by `max_running_handlers`; shutdown may also briefly start a
 coordinator thread. The async facade creates no thread per subscription. The
 `local` provider itself creates no threads.
 
@@ -1314,6 +1237,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T); the payload is returned
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
+    pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
 }
 
 pub enum NotificationOutcome {
@@ -1337,6 +1261,10 @@ pub enum NotificationOutcome {
 - **`close()`** closes the sender, waits for the worker to drain, and joins it.
   Calling it from the worker thread (that is, from the observer) returns an error
   instead of joining itself, the same idea as §8.6. If the worker has panicked, `close()` returns an error.
+- **`close_with_timeout(timeout)`** closes enqueue admission and waits at most the
+  caller's deadline for the same drain and resource cleanup. A deadline returns
+  `io::ErrorKind::TimedOut`; the worker continues and later close calls can wait
+  again. The timeout cannot interrupt provider calls or running user code.
 - **`Drop`** closes the sender and does not wait. The worker exits after it drains what is left.
 - The publisher does not own the `EventBus` lifetime. After the bus shuts down the
   worker receives `PublishError::Closed` and reports it through the observer. The caller still calls `close()`.
@@ -1408,7 +1336,8 @@ An observer panic is isolated and does not affect other observers or the main pa
 | `AdmissionRejected` | A destination in a publish receipt was rejected (only `DestinationAdmissions` providers) |
 | `ReceiveGap` | Provider `receive` returned `Gap` |
 | `DeliveryFailed` | A delivery reached a terminal failure (includes attempts, the `DeliveryFailureAction`, and the error) |
-| `SettlementFailed` | `settle` returned an error (it will be retried) |
+| `SettlementFailed` | An attempt failed; structured error and attempt are preserved, retry depends on policy |
+| `SettlementStopped` | The first terminal settlement cause stops this subscription |
 | `SettlementUnavailable` | Settlement was required but the capability does not allow it, or it was abandoned (for example an `Immediate` shutdown) |
 | `InternalFailure` | An internal facade failure that should not happen (for example the coordinator's `receive` returned `Err`) |
 
@@ -1422,20 +1351,22 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 
 ---
 
+`delivery_metrics()` returns `DeliveryMetricsSnapshot`; subscriptions return `SubscriptionDeliveryMetricsSnapshot` with subscription/subscriber IDs. Reservations, queued/running/settling/lane-waiting work, attempts/retries/termination, completion/abandonment, durations and oldest-owned age are observable. Snapshots retain no payload/token or per-event/per-key history and are not transactionally consistent across threads. Closed handles retain final subscription counts. Forward synchronous observer records through an application-owned bounded nonblocking queue; panic isolation is not latency isolation. See the [user guide](user_guide.md#diagnose-settlement-termination-and-restore-consumption) for full fields and recovery.
+
 ## 14. Concurrency invariants
 
 1. At any moment only one owner calls methods on a given `EventSubscriptionSpi` or `AsyncEventSubscriptionSpi` (synchronous: the coordinator thread; asynchronous: the `run` or `shutdown` that holds the lease).
-2. A message's `SettlementToken` produces at most one successful settlement. A retry repeats the same disposition.
+2. A token/disposition pair may be retried idempotently; the provider applies its terminal effect once even if more than one call returns success.
 3. The first `Acknowledgement` decision wins and is then immutable.
-4. Handlers for the same subscription and the same `ordering_key` do not run concurrently (synchronous: `active_keys`; asynchronous: `AsyncOrderingLanes`).
-5. The number of handlers running at once is at most `max_in_flight` (synchronous pool size, or asynchronous admission capacity).
-6. Each subscription has at most one message that has been taken from the provider and has not yet entered a handler (synchronous `pending`; asynchronous pending plus a single permit).
+4. A same-key lane remains owned until settlement succeeds or the subscription terminates; successors never bypass FIFO.
+5. Running≤max_running_handlers, owned≤max_owned_deliveries, and per-subscription owned≤max_owned_per_subscription.
+6. Reserve owned before receive; registered subscriptions≤max_subscriptions, with no extra pending item outside capacity.
 7. After `Closing`, `publish` and `subscribe` return `Closed`. Shutdown is idempotent and at most one provider shutdown call is in flight; a failed or cancelled call may be retried.
 8. Callback panics are contained. Codec panic stops its subscription; notification
    cleanup panic publishes a failed worker exit. User code that aborts the process
    or blocks indefinitely cannot be recovered or forcibly interrupted.
 9. Dead-letter is at most one level deep. The dead-letter header cannot be set or altered from outside the pipeline.
-10. Cancel and shutdown return unstarted durable work as `Retry` when supported. Ephemeral providers may discard unstarted work; the facade reports known abandonment and flags provider-owned abandonment that cannot be counted.
+10. Nonterminal durable work follows the provider's close/recovery protocol. Ephemeral work may be discarded and counted; the facade also flags provider abandonment it cannot count. Graceful drains already-owned work, while terminal/cancel/Immediate prevents new handler starts. Sync nonterminal cancellation may send Retry when supported; async non-Graceful close releases unstarted work and closes the receiver without universally sending Retry. Terminal stop starts no new settlement and never fabricates Accept for a handler that did not run.
 11. User code is not called while a facade-internal lock is held. Diagnostic observers
     are snapshotted under the `observers` lock, and `emit` calls them after releasing it.
     Handlers, middleware, and error handlers run on scheduler threads or async delivery
@@ -1614,8 +1545,5 @@ with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
 metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
-inputs fail explicitly. This update coordinates the EventBus, IoC, and
-execution-services consumer; rs-task and rs-event-bus-redis still require their
-own 0.18 dependency migration before the five-repository gate can pass. The
-metadata check supplements each project's CI and does not prove delivery
-behavior by itself.
+inputs fail explicitly; this metadata check supplements each project's CI and
+does not prove delivery behavior by itself.

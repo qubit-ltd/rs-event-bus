@@ -7,6 +7,8 @@
 // =============================================================================
 //! Contract tests for event-bus provider registration and creation.
 
+mod registry;
+
 use std::future::Future;
 use std::io::Error;
 use std::pin::pin;

@@ -64,6 +64,7 @@ impl AsyncTracker {
     ///
     /// # Returns
     /// A guard that decrements the active-close count when dropped.
+    #[must_use = "Keep the guard alive while the close operation is active."]
     pub(in crate::facade) fn close_started(self: &Arc<Self>) -> AsyncCloseGuard {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).active_closes += 1;
         AsyncCloseGuard::new(self.clone())
@@ -150,6 +151,7 @@ impl AsyncTracker {
     ///
     /// # Returns
     /// A guard that decrements the topic count when dropped.
+    #[must_use = "Keep the guard alive while the delivery is in flight."]
     pub(in crate::facade) fn track(self: &Arc<Self>, topic: &str) -> AsyncDeliveryGuard {
         *self
             .state

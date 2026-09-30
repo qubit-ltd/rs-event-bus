@@ -7,6 +7,7 @@
 // =============================================================================
 //! Runtime-neutral asynchronous example using the built-in local provider.
 
+use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -18,6 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::DeliveryError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
@@ -65,7 +67,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default()))?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
@@ -74,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut subscription = subscription;
         block_on(subscription.run(move |delivery| {
             let _ = sender.send(delivery.payload().clone());
-            async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+            async { Ok::<(), DeliveryError>(()) }
         }))
     });
 

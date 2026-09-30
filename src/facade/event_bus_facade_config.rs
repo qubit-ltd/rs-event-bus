@@ -11,9 +11,9 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::DeliveryAdmissionConfig;
+use super::DeliverySchedulingConfig;
 use super::PayloadLimits;
-use super::SyncDeliverySchedulerConfig;
+use super::SettlementRetryConfig;
 use super::internal::ErasedMiddlewareList;
 use crate::codec::CodecRegistry;
 use crate::error::DeliveryError;
@@ -52,25 +52,29 @@ pub struct EventBusFacadeConfig {
     async_subscriber_interceptors: HashMap<TypeId, ErasedMiddlewareList>,
     /// Ordered facade-wide publisher metadata interceptors.
     global_publisher_interceptors: Vec<GlobalPublisherInterceptor>,
-    /// Shared synchronous handler worker and queue limits.
-    sync_delivery_scheduler: SyncDeliverySchedulerConfig,
-    /// Shared facade-wide limit for asynchronous deliveries.
-    delivery_admission: DeliveryAdmissionConfig,
     /// Independent positive byte limits for encoded publication and receiving.
     payload_limits: PayloadLimits,
+    /// Unified handler, delivery ownership and subscription limits.
+    delivery_scheduling: DeliverySchedulingConfig,
+    /// Finite provider settlement retry policy.
+    settlement_retry: SettlementRetryConfig,
 }
 
 impl Default for EventBusFacadeConfig {
     /// Creates an empty configuration with the standard facade limits.
+    ///
+    /// # Returns
+    /// An empty configuration with the default codec, scheduling, and retry
+    /// policies.
     fn default() -> Self {
         Self {
             codecs: Arc::new(CodecRegistry::new()),
             sync_subscriber_interceptors: HashMap::new(),
             async_subscriber_interceptors: HashMap::new(),
             global_publisher_interceptors: Vec::new(),
-            sync_delivery_scheduler: SyncDeliverySchedulerConfig::default(),
-            delivery_admission: DeliveryAdmissionConfig::default(),
             payload_limits: PayloadLimits::default(),
+            delivery_scheduling: DeliverySchedulingConfig::default(),
+            settlement_retry: SettlementRetryConfig::default(),
         }
     }
 }
@@ -87,25 +91,30 @@ impl EventBusFacadeConfig {
         Self::default()
     }
 
-    /// Returns synchronous scheduler limits.
+    /// Returns a copy of the unified delivery scheduling limits.
     ///
     /// # Returns
-    /// A copy of the scheduler policy used by newly-created facades.
+    /// The scheduling limits used by newly-created facades.
+    #[must_use]
     #[inline]
-    pub fn sync_delivery_scheduler(&self) -> SyncDeliverySchedulerConfig {
-        self.sync_delivery_scheduler
+    pub const fn delivery_scheduling(&self) -> DeliverySchedulingConfig {
+        self.delivery_scheduling
     }
 
-    /// Returns facade-wide asynchronous delivery admission limits.
+    /// Returns a copy of the finite settlement retry policy.
     ///
     /// # Returns
-    /// A copy of the shared asynchronous admission policy.
+    /// The settlement retry policy used by newly-created facades.
+    #[must_use]
     #[inline]
-    pub fn delivery_admission(&self) -> DeliveryAdmissionConfig {
-        self.delivery_admission
+    pub const fn settlement_retry(&self) -> SettlementRetryConfig {
+        self.settlement_retry
     }
 
     /// Returns independent positive publishing and receiving byte limits.
+    ///
+    /// # Returns
+    /// The configured encoded publish and receive byte limits.
     #[inline]
     pub const fn payload_limits(&self) -> PayloadLimits {
         self.payload_limits
@@ -121,31 +130,32 @@ impl EventBusFacadeConfig {
         &self.codecs
     }
 
-    /// Replaces facade-wide asynchronous delivery admission limits.
+    /// Replaces the unified delivery scheduling limits for newly-created
+    /// facades.
     ///
     /// # Parameters
-    /// - `config`: the maximum number of admitted asynchronous deliveries.
+    /// - `config`: the validated scheduling limits to install.
     ///
     /// # Returns
-    /// This configuration with the supplied admission policy.
+    /// This configuration with the supplied policy.
     #[must_use]
     #[inline]
-    pub fn with_delivery_admission(mut self, config: DeliveryAdmissionConfig) -> Self {
-        self.delivery_admission = config;
+    pub fn with_delivery_scheduling(mut self, config: DeliverySchedulingConfig) -> Self {
+        self.delivery_scheduling = config;
         self
     }
 
-    /// Replaces the synchronous scheduler limits for newly-created facades.
+    /// Replaces the finite settlement retry policy for newly-created facades.
     ///
     /// # Parameters
-    /// - `config`: scheduler capacity and worker limits to install.
+    /// - `config`: the validated settlement retry policy to install.
     ///
     /// # Returns
-    /// This configuration with the supplied synchronous scheduler policy.
+    /// This configuration with the supplied policy.
     #[must_use]
     #[inline]
-    pub fn with_sync_delivery_scheduler(mut self, config: SyncDeliverySchedulerConfig) -> Self {
-        self.sync_delivery_scheduler = config;
+    pub fn with_settlement_retry(mut self, config: SettlementRetryConfig) -> Self {
+        self.settlement_retry = config;
         self
     }
 
@@ -153,10 +163,10 @@ impl EventBusFacadeConfig {
     /// Exactly the supplied limit is accepted in each direction.
     ///
     /// # Parameters
-    /// - `limits`: positive publish and receive byte limits to install.
+    /// - `limits`: the positive encoded publish and receive byte limits.
     ///
     /// # Returns
-    /// This configuration with the supplied payload limits.
+    /// This configuration using the supplied payload limits.
     #[must_use]
     #[inline]
     pub fn with_payload_limits(mut self, limits: PayloadLimits) -> Self {

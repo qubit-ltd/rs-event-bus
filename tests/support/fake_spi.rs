@@ -568,6 +568,16 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
     }
+    /// Fails an already polled receive future through its shared queue state.
+    pub(crate) fn fail_next_receive(&self) {
+        for (_, queue) in self.queues.lock().unwrap().iter() {
+            let mut state = queue.lock().unwrap();
+            state.fail_next_receive = true;
+            for waker in state.wakers.drain(..) {
+                waker.wake();
+            }
+        }
+    }
     pub(crate) fn panic_next_receive(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
             queue.lock().unwrap().panic_next_receive = true;
@@ -835,7 +845,14 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             let should_fail = state.fail_settle_always || take(&mut state.fail_next_settle);
             drop(state);
             if should_fail {
-                return Box::pin(async { Err(spi_error("settle")) });
+                let permanent = self.queue.lock().unwrap().fail_settle_always;
+                return Box::pin(async move {
+                    let mut error = spi_error("settle");
+                    if !permanent && let SpiError::Operation { retryable, .. } = &mut error {
+                        *retryable = Some(true);
+                    }
+                    Err(error)
+                });
             }
             let key = settlement_token_key(token);
             let mut state = self.queue.lock().unwrap();

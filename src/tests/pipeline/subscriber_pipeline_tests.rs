@@ -5,26 +5,23 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-use std::error::Error as StdError;
+//! Subscriber-pipeline unit contracts that require crate-private access.
+
+use std::error::Error;
 use std::future::Future;
 use std::io::Error as IoError;
-use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
-use std::thread::Thread;
-use std::thread::current;
-use std::thread::park;
-use std::thread::spawn;
+use std::thread;
 
 use qubit_id::Id;
 
+use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
 use crate::model::AckMode;
 use crate::model::AcknowledgementState;
@@ -37,20 +34,15 @@ use crate::model::ProviderId;
 use crate::model::SubscriberId;
 use crate::model::SubscriberInterceptor;
 use crate::model::Topic;
-use crate::pipeline::AdmissionTracker;
-use crate::pipeline::AsyncOrderingGuard;
-use crate::pipeline::AsyncOrderingLanes;
-use crate::pipeline::AsyncOrderingTurn;
 use crate::pipeline::DeliveryFailureAction;
 use crate::pipeline::DeliveryOutcome;
-use crate::pipeline::OrderingLaneKey;
-use crate::pipeline::OrderingLanes;
 use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
 use crate::spi::DeliveryDisposition;
 use crate::spi::SettlementCapabilities;
 use crate::spi::SpiFuture;
 
+/// Builds a delivery with stable test identities and an empty string payload.
 fn delivery() -> Delivery<String> {
     let topic = Topic::<String>::new("test.events").unwrap();
     let event = Arc::new(EventEnvelope::new(topic, String::new()).unwrap());
@@ -194,33 +186,6 @@ fn test_async_subscriber_middleware_uses_runtime_neutral_continuations() {
 }
 
 #[test]
-fn test_admission_permit_is_released_once_on_drop() {
-    let tracker = AdmissionTracker::new(1).unwrap();
-    let permit = tracker.try_acquire().unwrap();
-    assert!(tracker.try_acquire().is_none());
-    drop(permit);
-    assert!(tracker.try_acquire().is_some());
-}
-
-#[test]
-fn test_ordering_lanes_preserve_fifo_per_key_and_allow_other_keys() {
-    let lanes = OrderingLanes::new();
-    let first = OrderingLaneKey::new("orders", Some("a"), Id::new(1));
-    let second = OrderingLaneKey::new("orders", Some("b"), Id::new(1));
-    let first_turn = lanes.enqueue(first.clone(), 1);
-    assert!(first_turn.is_leader());
-    let queued_turn = lanes.enqueue(first.clone(), 2);
-    assert!(!queued_turn.is_leader());
-    let other = lanes.enqueue(second, 3).take().unwrap();
-    assert_eq!(*other.value(), 3);
-    let first_guard = first_turn.take().unwrap();
-    assert_eq!(*first_guard.value(), 1);
-    let waiting = spawn(move || queued_turn.take().map(|guard| *guard.value()));
-    drop(first_guard);
-    assert_eq!(waiting.join().unwrap(), Some(2));
-}
-
-#[test]
 fn test_failure_directive_maps_to_terminal_spi_disposition() {
     assert_eq!(
         SubscriberPipeline::failure_action(FailureDirective::Retry),
@@ -272,13 +237,13 @@ fn test_subscriber_middleware_panic_is_contained_as_delivery_failure() {
 }
 
 #[test]
-fn test_attempt_failure_converts_without_losing_delivery_error_as_source() {
+fn test_delivery_attempt_error_preserves_delivery_error_as_source() {
     let original = DeliveryError::Handler {
         source: Box::new(IoError::other("original")),
     };
-    let attempt = crate::error::DeliveryAttemptError::new("delivery", None, original);
+    let attempt = DeliveryAttemptError::new("delivery", None, original);
     assert_eq!(attempt.kind(), "delivery");
-    assert!(StdError::source(&attempt).unwrap().to_string().contains("original"));
+    assert!(Error::source(&attempt).unwrap().to_string().contains("original"));
 }
 
 #[test]
@@ -319,100 +284,26 @@ fn test_dead_letter_record_preserves_original_and_prevents_recursive_dead_letter
     );
 }
 
-#[test]
-fn test_async_ordering_waits_without_blocking_and_holds_turn_through_handler_scope() {
-    let lanes = AsyncOrderingLanes::new();
-    let key = OrderingLaneKey::new("orders", Some("customer-1"), Id::new(9));
-    let first = block_on(lanes.enqueue(key.clone(), 1)).unwrap();
-    assert_eq!(*first.value(), 1);
-
-    let mut waiting = Box::pin(lanes.enqueue(key, 2));
-    let waker = Waker::from(Arc::new(ThreadWake(current())));
-    let mut context = Context::from_waker(&waker);
-    assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
-    drop(first);
-    let second = block_on(waiting).unwrap();
-    assert_eq!(*second.value(), 2);
-}
-
-#[test]
-fn test_async_ordering_invokes_custom_waker_after_releasing_lane_lock() {
-    let lanes = AsyncOrderingLanes::new();
-    let key = OrderingLaneKey::new("orders", Some("customer-2"), Id::new(10));
-    let first = block_on(lanes.enqueue(key.clone(), 1)).unwrap();
-    let waiting = Arc::new(Mutex::new(Some(Box::pin(lanes.enqueue(key, 2)))));
-    let completed_guard = Arc::new(Mutex::new(None));
-    let completed = Arc::new(AtomicBool::new(false));
-    let waker = Waker::from(Arc::new(ReentrantWake {
-        waiting: waiting.clone(),
-        completed_guard: completed_guard.clone(),
-        completed: completed.clone(),
-    }));
-    let mut context = Context::from_waker(&waker);
-    assert!(matches!(
-        waiting.lock().unwrap().as_mut().unwrap().as_mut().poll(&mut context),
-        Poll::Pending
-    ));
-
-    // This Waker immediately polls the waiting future again. The lane's
-    // internal mutex must therefore already be unlocked when it is called.
-    drop(first);
-    assert!(completed.load(Ordering::Acquire));
-    assert_eq!(*completed_guard.lock().unwrap().as_ref().unwrap().value(), 2);
-}
-
-/// Polls a future on the current thread, parking between pending polls until it
-/// wakes.
+/// Drives a runtime-neutral test future with a thread-backed waker.
 fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(ThreadWake(current())));
+    let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut context = Context::from_waker(&waker);
     let mut future = pin!(future);
     loop {
         if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
             return output;
         }
-        park();
+        thread::park();
     }
 }
 
-/// Wakes the thread parked by the local future driver.
-struct ThreadWake(Thread);
+/// Wakes the parked test thread when its future becomes ready to poll.
+struct ThreadWake(thread::Thread);
 impl Wake for ThreadWake {
     fn wake(self: Arc<Self>) {
         self.0.unpark();
     }
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.unpark();
-    }
-}
-
-type WaitingOrderingTurn = Arc<Mutex<Option<Pin<Box<AsyncOrderingTurn<usize>>>>>>;
-type CompletedOrderingGuard = Arc<Mutex<Option<AsyncOrderingGuard<usize>>>>;
-
-/// Re-polls a queued ordering future inline when its predecessor releases the
-/// lane.
-struct ReentrantWake {
-    waiting: WaitingOrderingTurn,
-    completed_guard: CompletedOrderingGuard,
-    completed: Arc<AtomicBool>,
-}
-
-impl Wake for ReentrantWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        let mut waiting = self.waiting.lock().unwrap();
-        let Some(future) = waiting.as_mut() else {
-            return;
-        };
-        let fallback = Waker::from(Arc::new(ThreadWake(current())));
-        let mut context = Context::from_waker(&fallback);
-        if let Poll::Ready(guard) = future.as_mut().poll(&mut context) {
-            *waiting = None;
-            *self.completed_guard.lock().unwrap() = guard;
-            self.completed.store(true, Ordering::Release);
-        }
     }
 }

@@ -9,18 +9,20 @@
 
 use std::sync::Arc;
 
-use super::super::super::async_admission::AsyncAdmissionPermit;
+use super::owned_delivery_lease::OwnedDeliveryLease;
+use super::settlement_progress::SettlementProgress;
 use crate::EventId;
-use crate::error::DeliveryError;
 use crate::facade::async_event_bus::AsyncDeliveryGuard;
 use crate::model::EventEnvelope;
 use crate::model::ProviderMessageMetadata;
-use crate::pipeline::AsyncOrderingGuard;
 use crate::spi::DeliveryDisposition;
 use crate::spi::SettlementToken;
 
 /// Retains the message, provider token, admission and tracking owners as it
 /// moves between runner stages.
+///
+/// # Type Parameters
+/// - `T`: Payload type retained in the decoded event envelope.
 pub(in crate::facade) struct PendingDelivery<T: 'static> {
     /// Tracks the message from receive through settlement or explicit
     /// abandonment.
@@ -33,16 +35,12 @@ pub(in crate::facade) struct PendingDelivery<T: 'static> {
     pub(in crate::facade) token: Option<SettlementToken>,
     /// Metadata observed when the provider delivered the event.
     pub(in crate::facade) metadata: ProviderMessageMetadata,
-    /// Decode failure converted into a settlement outcome without handler work.
-    pub(in crate::facade) decode_error: Option<DeliveryError>,
     /// Immutable settlement choice retained across provider settlement retries.
     pub(in crate::facade) settlement_intent: Option<DeliveryDisposition>,
-    /// Number of attempts to settle this exact token and disposition.
-    pub(in crate::facade) settlement_failures: u32,
+    /// Persistent attempt accounting and monotonic retry deadline.
+    pub(in crate::facade) settlement: SettlementProgress,
     /// Last failure to report once settlement reaches a terminal state.
     pub(in crate::facade) failure_diagnostic: Option<(u32, Box<str>)>,
-    /// Bus-wide capacity held until this delivery reaches a terminal state.
-    pub(in crate::facade) admission: Option<AsyncAdmissionPermit>,
-    /// Per-key order held until handler and settlement finish.
-    pub(in crate::facade) lane: Option<AsyncOrderingGuard<()>>,
+    /// Single receive-to-completion credit, released when ownership ends.
+    pub(in crate::facade) lease: OwnedDeliveryLease,
 }

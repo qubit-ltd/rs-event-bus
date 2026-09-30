@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Drop guard for in-flight provider publication attempts.
+//! First-poll admission evidence retained when a provider attempt is dropped.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 
 /// Retains conservative admission evidence if retry abandons an in-flight SPI
 /// call. Creating an unpolled attempt future does not create this guard.
-#[must_use]
+#[must_use = "retain the guard until the provider attempt completes"]
 pub(in crate::pipeline::retry) struct InFlightPublish {
     /// Monotonic evidence shared with the complete publication.
     pub(in crate::pipeline::retry) seen_unknown: Arc<AtomicBool>,
@@ -24,7 +24,6 @@ pub(in crate::pipeline::retry) struct InFlightPublish {
 impl Drop for InFlightPublish {
     /// Marks an unfinished attempt as potentially admitted without fabricating
     /// a public failure or invoking error callbacks when the caller drops it.
-    #[inline]
     fn drop(&mut self) {
         if !self.completed {
             self.seen_unknown.store(true, Ordering::Release);

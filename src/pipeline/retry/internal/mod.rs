@@ -5,9 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Internal state for publish retry adapters.
+//! Private attempt lifetime evidence for asynchronous publication retries.
 
-// Owns the drop guard that preserves admission uncertainty for in-flight calls.
 mod in_flight_publish;
 
-pub(in crate::pipeline::retry) use in_flight_publish::InFlightPublish;
+pub(super) use in_flight_publish::InFlightPublish;

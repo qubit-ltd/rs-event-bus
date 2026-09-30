@@ -22,6 +22,7 @@ use crate::error::DeliveryError;
 ///
 /// # Type Parameters
 /// - `F`: delivery future whose polling is isolated.
+#[must_use]
 pub(in crate::pipeline::subscriber_pipeline) struct CatchUnwindFuture<F: Future> {
     /// Pinned middleware or handler future being polled.
     pub(in crate::pipeline::subscriber_pipeline) future: Pin<Box<F>>,

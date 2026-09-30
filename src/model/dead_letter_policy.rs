@@ -159,6 +159,7 @@ impl DeadLetterPolicy {
     /// is guaranteed nonblank, free of surrounding whitespace and control
     /// characters, so it can be handed to a provider without re-validation.
     #[must_use]
+    #[inline]
     pub fn topic_name(&self) -> &str {
         &self.topic_name
     }

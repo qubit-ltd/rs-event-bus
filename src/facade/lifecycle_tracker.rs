@@ -61,6 +61,7 @@ impl LifecycleTracker {
     ///
     /// # Returns
     /// A must-use guard that decrements this topic's counter on drop.
+    #[must_use = "the guard must remain alive while the delivery is in flight"]
     pub(crate) fn track_delivery(&self, topic: &str) -> DeliveryTrackerGuard<'_> {
         *self.lock_state().in_flight_by_topic.entry(topic.into()).or_default() += 1;
         DeliveryTrackerGuard::new(self, topic.into())

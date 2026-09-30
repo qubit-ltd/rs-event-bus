@@ -36,6 +36,7 @@ use crate::facade::async_event_bus::SignalRegistration;
 ///
 /// # Errors
 /// Returns a lifecycle error if creating or polling the timer fails.
+#[must_use = "the wait result must be handled"]
 pub(in crate::facade) async fn wait_until(
     signal: &AsyncSignal,
     timer: &dyn Timer,
@@ -87,6 +88,7 @@ pub(in crate::facade) async fn wait_until(
 ///
 /// # Errors
 /// Returns a lifecycle error if the timer fails.
+#[must_use = "the shutdown wait must be driven and handled"]
 pub(in crate::facade) async fn await_shutdown_or_immediate<F: Future>(
     future: F,
     deadline: Option<&mut TimerFuture>,
@@ -133,6 +135,7 @@ pub(in crate::facade) async fn await_shutdown_or_immediate<F: Future>(
 ///
 /// # Errors
 /// Returns a lifecycle error if polling the deadline timer fails.
+#[must_use = "the deadline result must be handled"]
 pub(in crate::facade) async fn await_until_deadline<F: Future>(
     future: F,
     deadline: Option<&mut TimerFuture>,
@@ -166,6 +169,7 @@ pub(in crate::facade) async fn await_until_deadline<F: Future>(
 ///
 /// # Errors
 /// Returns a lifecycle error if the timer fails.
+#[must_use = "the deadline wait result must be handled"]
 pub(in crate::facade) async fn wait_until_deadline(
     signal: &AsyncSignal,
     deadline: Option<&mut TimerFuture>,

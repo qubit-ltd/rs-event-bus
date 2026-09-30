@@ -69,6 +69,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// An empty requirement set.
     #[must_use]
+    #[inline]
     pub const fn new() -> Self {
         Self {
             payload: None,
@@ -88,6 +89,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirements with durable retention enabled.
     #[must_use]
+    #[inline]
     pub const fn durable(mut self) -> Self {
         self.durability = Some(DurabilityCapability::Durable);
         self
@@ -101,6 +103,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_payload(mut self, payload: PayloadModes) -> Self {
         self.payload = Some(payload);
         self
@@ -114,6 +117,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_settlement(mut self, settlement: SettlementCapabilities) -> Self {
         self.settlement = Some(settlement);
         self
@@ -127,6 +131,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_ordering(mut self, ordering: OrderingCapability) -> Self {
         self.ordering = Some(ordering);
         self
@@ -140,6 +145,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_delayed_delivery(mut self, delayed: DelayedDeliveryCapability) -> Self {
         self.delayed_delivery = Some(delayed);
         self
@@ -153,6 +159,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_durability(mut self, durability: DurabilityCapability) -> Self {
         self.durability = Some(durability);
         self
@@ -166,6 +173,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_consumer_groups(mut self, required: bool) -> Self {
         self.consumer_groups = required;
         self
@@ -179,6 +187,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_replay(mut self, replay: ReplayCapability) -> Self {
         self.replay = Some(replay);
         self
@@ -192,6 +201,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_publish_guarantee(mut self, guarantee: PublishGuarantee) -> Self {
         self.publish_guarantee = Some(guarantee);
         self
@@ -205,6 +215,7 @@ impl RequiredCapabilities {
     /// # Returns
     /// The updated requirement set.
     #[must_use]
+    #[inline]
     pub const fn with_publish_visibility(mut self, visibility: PublishVisibility) -> Self {
         self.publish_visibility = Some(visibility);
         self

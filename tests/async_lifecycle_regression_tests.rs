@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::future::poll_fn;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -23,7 +24,7 @@ use std::task::Waker;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
-use qubit_event_bus::facade::DeliveryAdmissionConfig;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::model::ProviderId;
@@ -37,6 +38,9 @@ fn poll_once<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
 }
 
+/// Polls a local future once and returns its ready output.
+///
+/// Panics when the operation unexpectedly remains pending on its first poll.
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
     match poll_once(future.as_mut(), Waker::noop()) {
@@ -153,8 +157,15 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
 #[test]
 fn test_admission_wakes_successor_after_coalesced_permit_releases() {
     let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
-    let config =
-        EventBusFacadeConfig::new().with_delivery_admission(DeliveryAdmissionConfig::new(2).expect("admission limit"));
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(2).expect("limit"),
+            NonZeroUsize::new(256).expect("limit"),
+            NonZeroUsize::new(32).expect("limit"),
+            NonZeroUsize::new(256).expect("limit"),
+        )
+        .expect("scheduling"),
+    );
     let bus =
         AsyncEventBus::with_config(ProviderId::new("local").expect("provider ID"), provider, config).expect("facade");
     let topic_a = Topic::<usize>::new("regression.admission.a").expect("topic A");

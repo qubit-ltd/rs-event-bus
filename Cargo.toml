@@ -71,4 +71,36 @@ harness = false
 name = "ordering_keys"
 harness = false
 
+[[test]]
+name = "facade_tests"
+path = "tests/facade/mod.rs"
+
+[[test]]
+name = "local_tests"
+path = "tests/local/mod.rs"
+
+[[test]]
+name = "pipeline_module_tests"
+path = "tests/pipeline/mod.rs"
+
+[[test]]
+name = "notification_tests"
+path = "tests/notification/mod.rs"
+
+[[test]]
+name = "registry_tests"
+path = "tests/registry/mod.rs"
+
+[[test]]
+name = "spi_tests"
+path = "tests/spi/mod.rs"
+
+[[test]]
+name = "model_tests"
+path = "tests/model/mod.rs"
+
+[[test]]
+name = "error_tests"
+path = "tests/error/mod.rs"
+
 [workspace]

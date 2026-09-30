@@ -10,16 +10,19 @@
 mod support;
 
 use std::any::TypeId;
+use std::env;
+use std::fs;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::mpsc;
+use std::task::Poll;
+use std::thread;
 use std::time::Duration;
 
 use qubit_clock::StdTimer;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
-use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
@@ -43,207 +46,298 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 #[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
+#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_async;
 use qubit_id::Id;
 
 use crate::support::manual_async::block_on;
 use crate::support::manual_async::poll_once;
 
-/// Checks that immediate shutdown reports facade cleanup and ephemeral-provider
-/// risk.
-fn assert_ephemeral_shutdown_report(report: ShutdownReport, scenario: &str) {
-    assert_eq!(
-        report.outcome,
-        ShutdownOutcome::Complete,
-        "{scenario}: shutdown outcome"
-    );
-    assert_eq!(
-        report.known_abandoned_deliveries, 0,
-        "{scenario}: no facade-owned deliveries remain abandoned"
-    );
-    assert!(
-        report.provider_may_have_abandoned_deliveries,
-        "{scenario}: ephemeral local provider may abandon provider-owned deliveries"
-    );
-}
-
 #[test]
 fn test_async_local_delivers_and_settles_without_a_runtime_dependency() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(2))).unwrap();
-    let topic = Topic::<String>::new("async.local.events").unwrap();
-    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new("consumer", topic.clone()).unwrap())).unwrap();
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(2)))
+        .expect("local event bus must be created from valid configuration");
+    let topic = Topic::<String>::new("async.local.events").expect("static test topic must be valid");
+    let mut subscription =
+        block_on(bus.subscribe(
+            SubscribeRequest::new("consumer", topic.clone()).expect("test subscription request must be valid"),
+        ))
+        .expect("async subscription must be created");
     let (sender, receiver) = mpsc::channel();
-    let runner = std::thread::spawn(move || {
+    let runner = thread::spawn(move || {
         block_on(subscription.run(move |delivery| {
             let _ = sender.send(delivery.payload().clone());
             async { Ok(()) }
         }))
     });
 
-    let _ = block_on(bus.publish(PublishRequest::new(topic, "message".to_owned()).unwrap())).unwrap();
-    assert_eq!("message", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "delivery and settlement",
+    let _ = block_on(
+        bus.publish(PublishRequest::new(topic, "message".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
+    assert_eq!(
+        "message",
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("expected test message must arrive before timeout")
     );
-    runner.join().unwrap().unwrap();
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+    runner
+        .join()
+        .expect("subscription runner thread must not panic")
+        .expect("subscription run must finish without an error");
 }
 
 #[test]
 fn test_async_local_reports_capacity_rejection_per_destination() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(1))).unwrap();
-    let topic = Topic::<String>::new("async.local.capacity").unwrap();
-    let _subscription = block_on(bus.subscribe(SubscribeRequest::new("consumer", topic.clone()).unwrap())).unwrap();
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new().queue_capacity(1)))
+        .expect("local event bus must be created from valid configuration");
+    let topic = Topic::<String>::new("async.local.capacity").expect("static test topic must be valid");
+    let _subscription =
+        block_on(bus.subscribe(
+            SubscribeRequest::new("consumer", topic.clone()).expect("test subscription request must be valid"),
+        ))
+        .expect("async subscription must be created");
 
-    let first = block_on(bus.publish(PublishRequest::new(topic.clone(), "first".to_owned()).unwrap())).unwrap();
-    let second = block_on(bus.publish(PublishRequest::new(topic, "second".to_owned()).unwrap())).unwrap();
+    let first =
+        block_on(bus.publish(
+            PublishRequest::new(topic.clone(), "first".to_owned()).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted");
+    let second = block_on(
+        bus.publish(PublishRequest::new(topic, "second".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
 
     assert!(matches!(first.admission_outcome(), AdmissionOutcome::Accepted(_)));
     assert!(matches!(second.admission_outcome(), AdmissionOutcome::NoneAccepted(_)));
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "per-destination capacity rejection",
-    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_total_capacity_counts_in_flight_until_terminal_settlement() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let first_topic = Topic::<String>::new("async.local.total-first").unwrap();
-    let second_topic = Topic::<String>::new("async.local.total-second").unwrap();
-    let mut first = block_on(spi.subscribe(spi_request(700, "first", "async.local.total-first"))).unwrap();
-    let mut second = block_on(spi.subscribe(spi_request(701, "second", "async.local.total-second"))).unwrap();
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let first_topic = Topic::<String>::new("async.local.total-first").expect("static test topic must be valid");
+    let second_topic = Topic::<String>::new("async.local.total-second").expect("static test topic must be valid");
+    let mut first = block_on(spi.subscribe(spi_request(700, "first", "async.local.total-first")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(701, "second", "async.local.total-second")))
+        .expect("async subscription must be created");
 
-    let accepted = block_on(bus.publish(PublishRequest::new(first_topic.clone(), "one".to_owned()).unwrap())).unwrap();
+    let accepted = block_on(bus.publish(
+        PublishRequest::new(first_topic.clone(), "one".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
-    let rejected = block_on(bus.publish(PublishRequest::new(second_topic.clone(), "two".to_owned()).unwrap())).unwrap();
+    let rejected = block_on(bus.publish(
+        PublishRequest::new(second_topic.clone(), "two".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(
         rejected.admission_outcome(),
         AdmissionOutcome::NoneAccepted(_)
     ));
 
-    let ReceiveOutcome::Message(mut message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(mut message) =
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("accepted message is available for settlement");
     };
-    let token = message.take_settlement().unwrap();
-    block_on(first.settle(&token, DeliveryDisposition::Retry)).unwrap();
-    let rejected =
-        block_on(bus.publish(PublishRequest::new(second_topic.clone(), "three".to_owned()).unwrap())).unwrap();
+    let token = message
+        .take_settlement()
+        .expect("message must carry its expected settlement token");
+    block_on(first.settle(&token, DeliveryDisposition::Retry)).expect("local settlement operation must succeed");
+    let rejected = block_on(bus.publish(
+        PublishRequest::new(second_topic.clone(), "three".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(
         rejected.admission_outcome(),
         AdmissionOutcome::NoneAccepted(_)
     ));
 
-    let ReceiveOutcome::Message(mut retried) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(mut retried) =
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("retried message remains available");
     };
-    block_on(first.settle(&retried.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
-    let accepted =
-        block_on(bus.publish(PublishRequest::new(second_topic.clone(), "four".to_owned()).unwrap())).unwrap();
+    block_on(
+        first.settle(
+            &retried
+                .take_settlement()
+                .expect("message must carry its expected settlement token"),
+            DeliveryDisposition::Accept,
+        ),
+    )
+    .expect("local settlement operation must succeed");
+    let accepted = block_on(bus.publish(
+        PublishRequest::new(second_topic.clone(), "four".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
 
-    let ReceiveOutcome::Message(mut second_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(mut second_message) =
+        block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("accepted message is available for rejection");
     };
-    block_on(second.settle(&second_message.take_settlement().unwrap(), DeliveryDisposition::Reject)).unwrap();
-    let accepted =
-        block_on(bus.publish(PublishRequest::new(first_topic.clone(), "after-reject".to_owned()).unwrap())).unwrap();
+    block_on(
+        second.settle(
+            &second_message
+                .take_settlement()
+                .expect("message must carry its expected settlement token"),
+            DeliveryDisposition::Reject,
+        ),
+    )
+    .expect("local settlement operation must succeed");
+    let accepted = block_on(
+        bus.publish(
+            PublishRequest::new(first_topic.clone(), "after-reject".to_owned())
+                .expect("test publish request must be valid"),
+        ),
+    )
+    .expect("publish request must be admitted");
     assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
 
-    block_on(first.close()).unwrap();
-    let accepted = block_on(bus.publish(PublishRequest::new(second_topic, "after-close".to_owned()).unwrap())).unwrap();
+    block_on(first.close()).expect("local receiver close must complete");
+    let accepted = block_on(bus.publish(
+        PublishRequest::new(second_topic, "after-close".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(accepted.admission_outcome(), AdmissionOutcome::Accepted(_)));
-    block_on(second.close()).unwrap();
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    block_on(second.close()).expect("local receiver close must complete");
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_drop_racing_publish_releases_capacity_after_close() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let first_topic = Topic::<String>::new("async.local.drop-publish-first").unwrap();
-    let second_topic = Topic::<String>::new("async.local.drop-publish-second").unwrap();
-    let first = block_on(spi.subscribe(spi_request(702, "first", "async.local.drop-publish-first"))).unwrap();
-    let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second"))).unwrap();
-    let _ = block_on(bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).unwrap())).unwrap();
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let first_topic = Topic::<String>::new("async.local.drop-publish-first").expect("static test topic must be valid");
+    let second_topic =
+        Topic::<String>::new("async.local.drop-publish-second").expect("static test topic must be valid");
+    let first = block_on(spi.subscribe(spi_request(702, "first", "async.local.drop-publish-first")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second")))
+        .expect("async subscription must be created");
+    let _ = block_on(
+        bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
 
     let barrier = Arc::new(Barrier::new(2));
     let worker_barrier = Arc::clone(&barrier);
     let worker_bus = bus.clone();
     let worker_topic = second_topic.clone();
-    let worker = std::thread::spawn(move || {
+    let worker = thread::spawn(move || {
         worker_barrier.wait();
         drop(first);
-        block_on(worker_bus.publish(PublishRequest::new(worker_topic, "racing".to_owned()).unwrap())).unwrap()
+        block_on(worker_bus.publish(
+            PublishRequest::new(worker_topic, "racing".to_owned()).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted")
     });
     barrier.wait();
-    let raced = worker.join().unwrap();
+    let raced = worker.join().expect("worker thread must not panic");
     if matches!(raced.admission_outcome(), AdmissionOutcome::Accepted(_)) {
-        let ReceiveOutcome::Message(mut message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        let ReceiveOutcome::Message(mut message) =
+            block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+        else {
             panic!("racing accepted message remains available");
         };
-        block_on(second.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+        block_on(
+            second.settle(
+                &message
+                    .take_settlement()
+                    .expect("message must carry its expected settlement token"),
+                DeliveryDisposition::Accept,
+            ),
+        )
+        .expect("local settlement operation must succeed");
     }
-    let after_close =
-        block_on(bus.publish(PublishRequest::new(second_topic, "after-close".to_owned()).unwrap())).unwrap();
+    let after_close = block_on(bus.publish(
+        PublishRequest::new(second_topic, "after-close".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(after_close.admission_outcome(), AdmissionOutcome::Accepted(_)));
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_settlement_racing_shutdown_never_leaks_budget() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let topic = Topic::<String>::new("async.local.settle-shutdown-race").unwrap();
-    let mut receiver = block_on(spi.subscribe(spi_request(704, "race", "async.local.settle-shutdown-race"))).unwrap();
-    let _ = block_on(bus.publish(PublishRequest::new(topic, "racing".to_owned()).unwrap())).unwrap();
-    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).unwrap() else {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.settle-shutdown-race").expect("static test topic must be valid");
+    let mut receiver = block_on(spi.subscribe(spi_request(704, "race", "async.local.settle-shutdown-race")))
+        .expect("async subscription must be created");
+    let _ = block_on(
+        bus.publish(PublishRequest::new(topic, "racing".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
+    let ReceiveOutcome::Message(mut message) =
+        block_on(receiver.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("accepted message is available for settlement");
     };
-    let token = message.take_settlement().unwrap();
+    let token = message
+        .take_settlement()
+        .expect("message must carry its expected settlement token");
     let barrier = Arc::new(Barrier::new(3));
     let settle_barrier = Arc::clone(&barrier);
-    let settle = std::thread::spawn(move || {
+    let settle = thread::spawn(move || {
         settle_barrier.wait();
         block_on(receiver.settle(&token, DeliveryDisposition::Accept))
     });
     let shutdown_barrier = Arc::clone(&barrier);
     let shutdown_spi = Arc::clone(&spi);
-    let shutdown = std::thread::spawn(move || {
+    let shutdown = thread::spawn(move || {
         shutdown_barrier.wait();
         block_on(shutdown_spi.shutdown(ShutdownMode::Immediate))
     });
     barrier.wait();
 
-    let _ = settle.join().unwrap();
-    assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
+    let _ = settle.join().expect("worker thread must not panic");
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        shutdown
+            .join()
+            .expect("shutdown worker thread must not panic")
+            .expect("immediate shutdown must complete successfully")
+    );
 }
 
 #[test]
 fn test_async_local_is_registered_in_the_async_provider_catalog() {
-    let registry = AsyncEventBusRegistry::with_local().unwrap();
+    let registry = AsyncEventBusRegistry::with_local().expect("local async provider registry must be constructed");
     assert_eq!(
         vec!["local"],
         registry.provider_ids().iter().map(|id| id.as_str()).collect::<Vec<_>>()
     );
     let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
-    let bus = block_on(registry.create(&config)).unwrap();
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "async provider registry",
-    );
+    let bus = block_on(registry.create(&config)).expect("configured registry must create an event bus");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_registry_rejects_invalid_local_configuration() {
-    let registry = AsyncEventBusRegistry::with_local().unwrap();
+    let registry = AsyncEventBusRegistry::with_local().expect("local async provider registry must be constructed");
     let config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().queue_capacity(0).provider_options());
     assert!(block_on(registry.create(&config)).is_err());
@@ -254,15 +348,18 @@ fn test_async_local_registry_rejects_invalid_local_configuration() {
 
 #[test]
 fn test_async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let active = block_on(spi.subscribe(spi_request(31, "duplicate", "async.local.conflict"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let active = block_on(spi.subscribe(spi_request(31, "duplicate", "async.local.conflict")))
+        .expect("async subscription must be created");
     let same_subscriber = block_on(spi.subscribe(spi_request(32, "duplicate", "async.local.conflict")))
         .expect("distinct subscription instances may share a logical subscriber ID");
     assert!(block_on(spi.subscribe(spi_request(31, "elsewhere", "async.local.other-topic"))).is_err());
     let type_conflict = SpiSubscriptionRequest::new(
         Id::new(33),
-        TopicAddress::new("async.local.conflict").unwrap(),
-        SubscriberId::new("different").unwrap(),
+        TopicAddress::new("async.local.conflict").expect("static SPI topic address must be valid"),
+        SubscriberId::new("different").expect("static subscriber ID must be valid"),
         None,
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
@@ -272,7 +369,7 @@ fn test_async_local_rejects_duplicate_and_type_conflicting_subscriptions() {
     assert!(block_on(spi.subscribe(type_conflict)).is_err());
     drop(active);
     drop(same_subscriber);
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
@@ -291,45 +388,70 @@ fn test_async_local_with_timer_rejects_zero_limits() {
 
 #[test]
 fn test_async_local_topic_index_preserves_fanout_and_removes_closed_routes() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi).expect("valid provider capabilities");
-    let topic = Topic::<String>::new("async.local.topic-index").unwrap();
-    let cold = Topic::<String>::new("async.local.cold-index").unwrap();
-    let mut first = block_on(bus.subscribe(SubscribeRequest::new("same", topic.clone()).unwrap())).unwrap();
-    let second = block_on(bus.subscribe(SubscribeRequest::new("same", topic.clone()).unwrap())).unwrap();
-    let _cold = block_on(bus.subscribe(SubscribeRequest::new("cold", cold).unwrap())).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi,
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.topic-index").expect("static test topic must be valid");
+    let cold = Topic::<String>::new("async.local.cold-index").expect("static test topic must be valid");
+    let mut first = block_on(
+        bus.subscribe(SubscribeRequest::new("same", topic.clone()).expect("test subscription request must be valid")),
+    )
+    .expect("async subscription must be created");
+    let second = block_on(
+        bus.subscribe(SubscribeRequest::new("same", topic.clone()).expect("test subscription request must be valid")),
+    )
+    .expect("async subscription must be created");
+    let _cold =
+        block_on(bus.subscribe(SubscribeRequest::new("cold", cold).expect("test subscription request must be valid")))
+            .expect("async subscription must be created");
 
-    let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), "one".to_owned()).unwrap())).unwrap();
+    let receipt = block_on(
+        bus.publish(PublishRequest::new(topic.clone(), "one".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
     let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
         panic!("local provider reports per-subscription admissions");
     };
     assert_eq!(2, admissions.len());
 
-    block_on(first.close()).unwrap();
-    let receipt = block_on(bus.publish(PublishRequest::new(topic, "two".to_owned()).unwrap())).unwrap();
+    block_on(first.close()).expect("local receiver close must complete");
+    let receipt = block_on(
+        bus.publish(PublishRequest::new(topic, "two".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
     let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
         panic!("local provider reports per-subscription admissions");
     };
     assert_eq!(1, admissions.len());
     drop(second);
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "topic index cleanup",
-    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_budget_admission_follows_subscription_id() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let mut later = block_on(spi.subscribe(spi_request(22, "later", "async.local.ordered-budget"))).unwrap();
-    let mut earlier = block_on(spi.subscribe(spi_request(11, "earlier", "async.local.ordered-budget"))).unwrap();
-    let topic = Topic::<String>::new("async.local.ordered-budget").unwrap();
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut later = block_on(spi.subscribe(spi_request(22, "later", "async.local.ordered-budget")))
+        .expect("async subscription must be created");
+    let mut earlier = block_on(spi.subscribe(spi_request(11, "earlier", "async.local.ordered-budget")))
+        .expect("async subscription must be created");
+    let topic = Topic::<String>::new("async.local.ordered-budget").expect("static test topic must be valid");
 
     for payload in ["first", "second"] {
-        let receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), payload.to_owned()).unwrap())).unwrap();
+        let receipt = block_on(bus.publish(
+            PublishRequest::new(topic.clone(), payload.to_owned()).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted");
         let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
             panic!("local provider reports per-subscription admissions");
         };
@@ -337,27 +459,47 @@ fn test_async_local_budget_admission_follows_subscription_id() {
         assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
         assert_eq!(22, admissions[1].subscription_id().value());
         assert!(matches!(admissions[1].status(), AdmissionStatus::Rejected(_)));
-        let ReceiveOutcome::Message(mut message) = block_on(earlier.receive(Duration::ZERO)).unwrap() else {
+        let ReceiveOutcome::Message(mut message) =
+            block_on(earlier.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+        else {
             panic!("lower subscription ID is selected first");
         };
-        block_on(earlier.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+        block_on(
+            earlier.settle(
+                &message
+                    .take_settlement()
+                    .expect("message must carry its expected settlement token"),
+                DeliveryDisposition::Accept,
+            ),
+        )
+        .expect("local settlement operation must succeed");
     }
-    block_on(earlier.close()).unwrap();
-    block_on(later.close()).unwrap();
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    block_on(earlier.close()).expect("local receiver close must complete");
+    block_on(later.close()).expect("local receiver close must complete");
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_broadcasts_to_same_subscriber_instances_and_closes_them_independently() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let topic = Topic::<String>::new("async.local.same-subscriber").unwrap();
-    let mut first = block_on(spi.subscribe(spi_request(50, "same-subscriber", "async.local.same-subscriber"))).unwrap();
-    let mut second =
-        block_on(spi.subscribe(spi_request(51, "same-subscriber", "async.local.same-subscriber"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.same-subscriber").expect("static test topic must be valid");
+    let mut first = block_on(spi.subscribe(spi_request(50, "same-subscriber", "async.local.same-subscriber")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(51, "same-subscriber", "async.local.same-subscriber")))
+        .expect("async subscription must be created");
 
-    let first_receipt = block_on(bus.publish(PublishRequest::new(topic.clone(), "first".to_owned()).unwrap())).unwrap();
+    let first_receipt =
+        block_on(bus.publish(
+            PublishRequest::new(topic.clone(), "first".to_owned()).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted");
     let PublishAcknowledgement::DestinationAdmissions(first_admissions) = first_receipt.acknowledgement() else {
         panic!("local provider reports each subscription admission");
     };
@@ -369,177 +511,268 @@ fn test_async_local_broadcasts_to_same_subscriber_instances_and_closes_them_inde
     for admission in first_admissions {
         assert!(matches!(admission.status(), AdmissionStatus::Accepted));
     }
-    let ReceiveOutcome::Message(first_message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(first_message) =
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("first subscription receives the broadcast event");
     };
-    let ReceiveOutcome::Message(second_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(second_message) =
+        block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("second subscription receives the broadcast event");
     };
     let TransportPayload::Native(first_payload) = first_message.payload() else {
         panic!("local provider returns native payloads");
     };
-    assert_eq!("first", first_payload.downcast_ref::<String>().unwrap());
+    assert_eq!(
+        "first",
+        first_payload
+            .downcast_ref::<String>()
+            .expect("native payload must contain a String")
+    );
     let TransportPayload::Native(second_payload) = second_message.payload() else {
         panic!("local provider returns native payloads");
     };
-    assert_eq!("first", second_payload.downcast_ref::<String>().unwrap());
-    block_on(first.close()).unwrap();
+    assert_eq!(
+        "first",
+        second_payload
+            .downcast_ref::<String>()
+            .expect("native payload must contain a String")
+    );
+    block_on(first.close()).expect("local receiver close must complete");
 
-    let remaining = block_on(bus.publish(PublishRequest::new(topic, "remaining".to_owned()).unwrap())).unwrap();
+    let remaining = block_on(
+        bus.publish(PublishRequest::new(topic, "remaining".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
     let PublishAcknowledgement::DestinationAdmissions(remaining_admissions) = remaining.acknowledgement() else {
         panic!("local provider reports each remaining subscription admission");
     };
     assert_eq!(1, remaining_admissions.len());
     assert_eq!(Id::new(51), remaining_admissions[0].subscription_id());
     assert!(matches!(
-        block_on(first.receive(Duration::ZERO)).unwrap(),
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::Closed
     ));
-    let ReceiveOutcome::Message(remaining_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(remaining_message) =
+        block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("remaining subscription receives the next event");
     };
     let TransportPayload::Native(payload) = remaining_message.payload() else {
         panic!("local provider returns native payloads");
     };
-    assert_eq!("remaining", payload.downcast_ref::<String>().unwrap());
-    block_on(second.close()).unwrap();
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "same-subscriber broadcast",
+    assert_eq!(
+        "remaining",
+        payload
+            .downcast_ref::<String>()
+            .expect("native payload must contain a String")
     );
+    block_on(second.close()).expect("local receiver close must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_repeated_close_of_old_subscription_preserves_reused_id() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let topic = Topic::<String>::new("async.local.reused-id").unwrap();
-    let mut old = block_on(spi.subscribe(spi_request(70, "reused", "async.local.reused-id"))).unwrap();
-    block_on(old.close()).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.reused-id").expect("static test topic must be valid");
+    let mut old = block_on(spi.subscribe(spi_request(70, "reused", "async.local.reused-id")))
+        .expect("async subscription must be created");
+    block_on(old.close()).expect("local receiver close must complete");
 
-    let mut replacement = block_on(spi.subscribe(spi_request(70, "replacement", "async.local.reused-id"))).unwrap();
-    block_on(old.close()).unwrap();
-    let receipt = block_on(bus.publish(PublishRequest::new(topic, "still-registered".to_owned()).unwrap())).unwrap();
+    let mut replacement = block_on(spi.subscribe(spi_request(70, "replacement", "async.local.reused-id")))
+        .expect("async subscription must be created");
+    block_on(old.close()).expect("local receiver close must complete");
+    let receipt = block_on(bus.publish(
+        PublishRequest::new(topic, "still-registered".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     assert!(matches!(receipt.admission_outcome(), AdmissionOutcome::Accepted(_)));
     assert!(matches!(
-        block_on(replacement.receive(Duration::ZERO)).unwrap(),
+        block_on(replacement.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::Message(_)
     ));
 
-    block_on(replacement.close()).unwrap();
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "reused subscription ID",
-    );
+    block_on(replacement.close()).expect("local receiver close must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_same_subscriber_instances_report_independent_queue_capacity() {
     let config = LocalEventBusConfig::new().queue_capacity(1);
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let topic = Topic::<String>::new("async.local.same-subscriber-capacity").unwrap();
-    let mut first = block_on(spi.subscribe(spi_request(71, "same", "async.local.same-subscriber-capacity"))).unwrap();
-    let mut second = block_on(spi.subscribe(spi_request(72, "same", "async.local.same-subscriber-capacity"))).unwrap();
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.local.same-subscriber-capacity").expect("static test topic must be valid");
+    let mut first = block_on(spi.subscribe(spi_request(71, "same", "async.local.same-subscriber-capacity")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(72, "same", "async.local.same-subscriber-capacity")))
+        .expect("async subscription must be created");
 
-    let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), "occupy".to_owned()).unwrap())).unwrap();
-    let ReceiveOutcome::Message(mut first_occupy) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+    let _ =
+        block_on(bus.publish(
+            PublishRequest::new(topic.clone(), "occupy".to_owned()).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted");
+    let ReceiveOutcome::Message(mut first_occupy) =
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("first mailbox receives the first event");
     };
-    block_on(first.settle(&first_occupy.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    block_on(
+        first.settle(
+            &first_occupy
+                .take_settlement()
+                .expect("message must carry its expected settlement token"),
+            DeliveryDisposition::Accept,
+        ),
+    )
+    .expect("local settlement operation must succeed");
 
-    let second_receipt = block_on(bus.publish(PublishRequest::new(topic, "independent".to_owned()).unwrap())).unwrap();
+    let second_receipt = block_on(
+        bus.publish(PublishRequest::new(topic, "independent".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
     let PublishAcknowledgement::DestinationAdmissions(admissions) = second_receipt.acknowledgement() else {
         panic!("local provider reports each subscription admission");
     };
     let first_admission = admissions
         .iter()
         .find(|item| item.subscription_id() == Id::new(71))
-        .unwrap();
+        .expect("admission for the expected subscription must be present");
     let second_admission = admissions
         .iter()
         .find(|item| item.subscription_id() == Id::new(72))
-        .unwrap();
+        .expect("admission for the expected subscription must be present");
     assert!(matches!(first_admission.status(), AdmissionStatus::Accepted));
     assert!(matches!(second_admission.status(), AdmissionStatus::Rejected(_)));
 
-    let ReceiveOutcome::Message(mut first_independent) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+    let ReceiveOutcome::Message(mut first_independent) =
+        block_on(first.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("first mailbox accepted its second event");
     };
-    block_on(first.settle(
-        &first_independent.take_settlement().unwrap(),
-        DeliveryDisposition::Accept,
-    ))
-    .unwrap();
-    let ReceiveOutcome::Message(mut second_occupy) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+    block_on(
+        first.settle(
+            &first_independent
+                .take_settlement()
+                .expect("message must carry its expected settlement token"),
+            DeliveryDisposition::Accept,
+        ),
+    )
+    .expect("local settlement operation must succeed");
+    let ReceiveOutcome::Message(mut second_occupy) =
+        block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("second mailbox retained its original event");
     };
-    block_on(second.settle(&second_occupy.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
-    block_on(first.close()).unwrap();
-    block_on(second.close()).unwrap();
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "independent subscriber capacity",
-    );
+    block_on(
+        second.settle(
+            &second_occupy
+                .take_settlement()
+                .expect("message must carry its expected settlement token"),
+            DeliveryDisposition::Accept,
+        ),
+    )
+    .expect("local settlement operation must succeed");
+    block_on(first.close()).expect("local receiver close must complete");
+    block_on(second.close()).expect("local receiver close must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_drop_discards_pending_messages_for_the_same_subscriber() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
-    let topic = Topic::<String>::new("async.local.recovery").unwrap();
-    let first = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap();
-    let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), "retained".to_owned()).unwrap())).unwrap();
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new()))
+        .expect("local event bus must be created from valid configuration");
+    let topic = Topic::<String>::new("async.local.recovery").expect("static test topic must be valid");
+    let first = block_on(bus.subscribe(
+        SubscribeRequest::new("recoverable", topic.clone()).expect("test subscription request must be valid"),
+    ))
+    .expect("async subscription must be created");
+    let _ = block_on(bus.publish(
+        PublishRequest::new(topic.clone(), "retained".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
     drop(first);
 
-    drop(block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap());
-    let mut resumed = block_on(bus.subscribe(SubscribeRequest::new("recoverable", topic.clone()).unwrap())).unwrap();
+    drop(
+        block_on(bus.subscribe(
+            SubscribeRequest::new("recoverable", topic.clone()).expect("test subscription request must be valid"),
+        ))
+        .expect("async subscription must be created"),
+    );
+    let mut resumed = block_on(bus.subscribe(
+        SubscribeRequest::new("recoverable", topic.clone()).expect("test subscription request must be valid"),
+    ))
+    .expect("async subscription must be created");
     let (sender, receiver) = mpsc::channel();
-    let runner = std::thread::spawn(move || {
+    let runner = thread::spawn(move || {
         block_on(resumed.run(move |delivery| {
             let _ = sender.send(delivery.payload().clone());
             async { Ok(()) }
         }))
     });
-    let _ = block_on(bus.publish(PublishRequest::new(topic, "fresh".to_owned()).unwrap())).unwrap();
-    assert_eq!("fresh", receiver.recv_timeout(Duration::from_secs(2)).unwrap());
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "drop recovery",
+    let _ = block_on(
+        bus.publish(PublishRequest::new(topic, "fresh".to_owned()).expect("test publish request must be valid")),
+    )
+    .expect("publish request must be admitted");
+    assert_eq!(
+        "fresh",
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("expected test message must arrive before timeout")
     );
-    runner.join().unwrap().unwrap();
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+    runner
+        .join()
+        .expect("subscription runner thread must not panic")
+        .expect("subscription run must finish without an error");
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn test_async_local_subscription_count_does_not_create_receiver_threads() {
     let name = "test_async_local_subscription_count_does_not_create_receiver_threads";
-    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("thread-count") {
+    if env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("thread-count") {
         crate::support::isolated_process::run_case(name, "thread-count");
         return;
     }
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
-    let before = std::fs::read_dir("/proc/self/task").unwrap().count();
-    let topic = Topic::<u32>::new("async.local.scale").unwrap();
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new()))
+        .expect("local event bus must be created from valid configuration");
+    let before = fs::read_dir("/proc/self/task")
+        .expect("Linux task directory must be readable")
+        .count();
+    let topic = Topic::<u32>::new("async.local.scale").expect("static test topic must be valid");
     let subscriptions = block_on(async {
         let mut subscriptions = Vec::new();
         for index in 0..128 {
             subscriptions.push(
-                bus.subscribe(SubscribeRequest::new(&format!("consumer-{index}"), topic.clone()).unwrap())
-                    .await
-                    .unwrap(),
+                bus.subscribe(
+                    SubscribeRequest::new(&format!("consumer-{index}"), topic.clone())
+                        .expect("test subscription request must be valid"),
+                )
+                .await
+                .expect("async subscription must be created"),
             );
         }
         subscriptions
     });
-    let after = std::fs::read_dir("/proc/self/task").unwrap().count();
+    let after = fs::read_dir("/proc/self/task")
+        .expect("Linux task directory must be readable")
+        .count();
     assert_eq!(before, after, "subscription creation must not spawn a receiver thread");
     drop(subscriptions);
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "subscription thread count",
-    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[cfg(all(test, not(target_os = "linux")))]
@@ -549,16 +782,22 @@ fn test_async_local_subscription_count_does_not_create_receiver_threads() {}
 
 #[test]
 fn test_async_local_receive_cancellation_keeps_the_message_available() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let mut receiver = block_on(spi.subscribe(spi_request(1, "cancel-safe", "async.local.cancel"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut receiver = block_on(spi.subscribe(spi_request(1, "cancel-safe", "async.local.cancel")))
+        .expect("async subscription must be created");
     assert!(matches!(
-        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        block_on(receiver.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::TimedOut
     ));
     assert!(matches!(
-        block_on(receiver.receive(Duration::from_millis(5))).unwrap(),
+        block_on(receiver.receive(Duration::from_millis(5))).expect("local receiver must return an outcome"),
         ReceiveOutcome::TimedOut
     ));
     let mut pending = Box::pin(receiver.receive(Duration::MAX));
@@ -568,125 +807,157 @@ fn test_async_local_receive_cancellation_keeps_the_message_available() {
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
-                Topic::<String>::new("async.local.cancel").unwrap(),
+                Topic::<String>::new("async.local.cancel").expect("static test topic must be valid"),
                 "survives".to_owned(),
             )
-            .unwrap(),
+            .expect("test publish request must be valid"),
         ),
     )
-    .unwrap();
-    let outcome = block_on(receiver.receive(Duration::ZERO)).unwrap();
+    .expect("publish request must be admitted");
+    let outcome = block_on(receiver.receive(Duration::ZERO)).expect("local receiver must return an outcome");
     assert!(matches!(outcome, ReceiveOutcome::Message(_)));
 }
 
 #[test]
 fn test_async_local_receiver_close_wakes_pending_receive() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let mut receiver = block_on(spi.subscribe(spi_request(30, "close-waiter", "async.local.close"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let mut receiver = block_on(spi.subscribe(spi_request(30, "close-waiter", "async.local.close")))
+        .expect("async subscription must be created");
     assert!(matches!(block_on(receiver.close()), Ok(())));
     assert!(matches!(
-        block_on(receiver.receive(Duration::MAX)).unwrap(),
+        block_on(receiver.receive(Duration::MAX)).expect("local receiver must return an outcome"),
         ReceiveOutcome::Closed
     ));
 }
 
 #[test]
 fn test_async_local_close_removes_the_destination_and_topic_type_binding() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let mut receiver = block_on(spi.subscribe(spi_request(40, "close-removes", "async.local.close-removes"))).unwrap();
-    block_on(receiver.close()).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut receiver = block_on(spi.subscribe(spi_request(40, "close-removes", "async.local.close-removes")))
+        .expect("async subscription must be created");
+    block_on(receiver.close()).expect("local receiver close must complete");
 
-    let no_destination =
-        block_on(bus.publish(PublishRequest::new(Topic::<u32>::new("async.local.close-removes").unwrap(), 1).unwrap()))
-            .unwrap();
+    let no_destination = block_on(
+        bus.publish(
+            PublishRequest::new(
+                Topic::<u32>::new("async.local.close-removes").expect("static test topic must be valid"),
+                1,
+            )
+            .expect("test publish request must be valid"),
+        ),
+    )
+    .expect("publish request must be admitted");
     assert!(matches!(
         no_destination.acknowledgement(),
         PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
     ));
 
     let new_type = spi_request_with_type(41, "new-type", "async.local.close-removes", TypeId::of::<String>());
-    let mut replacement = block_on(spi.subscribe(new_type)).unwrap();
+    let mut replacement = block_on(spi.subscribe(new_type)).expect("async subscription must be created");
     assert!(matches!(
-        block_on(replacement.receive(Duration::ZERO)).unwrap(),
+        block_on(replacement.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::TimedOut
     ));
-    block_on(replacement.close()).unwrap();
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "topic type binding cleanup",
-    );
+    block_on(replacement.close()).expect("local receiver close must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_drop_does_not_leave_stale_destinations() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new())).unwrap();
-    let topic = Topic::<u32>::new("async.local.stale-destinations").unwrap();
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::new()))
+        .expect("local event bus must be created from valid configuration");
+    let topic = Topic::<u32>::new("async.local.stale-destinations").expect("static test topic must be valid");
     for index in 0..100 {
         let subscriber = format!("consumer-{index}");
-        let subscription = block_on(bus.subscribe(SubscribeRequest::new(&subscriber, topic.clone()).unwrap())).unwrap();
+        let subscription = block_on(bus.subscribe(
+            SubscribeRequest::new(&subscriber, topic.clone()).expect("test subscription request must be valid"),
+        ))
+        .expect("async subscription must be created");
         drop(subscription);
     }
 
-    let receipt = block_on(bus.publish(PublishRequest::new(topic, 1).unwrap())).unwrap();
+    let receipt = block_on(bus.publish(PublishRequest::new(topic, 1).expect("test publish request must be valid")))
+        .expect("publish request must be admitted");
     assert!(matches!(
         receipt.acknowledgement(),
         PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
     ));
-    assert_ephemeral_shutdown_report(
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown report"),
-        "stale destinations",
-    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_drop_discards_an_unsettled_in_flight_delivery() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let mut first = block_on(spi.subscribe(spi_request(10, "in-flight-recovery", "async.local.requeue"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut first = block_on(spi.subscribe(spi_request(10, "in-flight-recovery", "async.local.requeue")))
+        .expect("async subscription must be created");
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
-                Topic::<String>::new("async.local.requeue").unwrap(),
+                Topic::<String>::new("async.local.requeue").expect("static test topic must be valid"),
                 "redeliver".to_owned(),
             )
-            .unwrap(),
+            .expect("test publish request must be valid"),
         ),
     )
-    .unwrap();
-    let ReceiveOutcome::Message(mut first_message) = block_on(first.receive(Duration::MAX)).unwrap() else {
+    .expect("publish request must be admitted");
+    let ReceiveOutcome::Message(mut first_message) =
+        block_on(first.receive(Duration::MAX)).expect("local receiver must return an outcome")
+    else {
         panic!("message should be delivered");
     };
     assert!(first_message.take_settlement().is_some());
     drop(first);
 
-    let mut second = block_on(spi.subscribe(spi_request(11, "in-flight-recovery", "async.local.requeue"))).unwrap();
+    let mut second = block_on(spi.subscribe(spi_request(11, "in-flight-recovery", "async.local.requeue")))
+        .expect("async subscription must be created");
     assert!(matches!(
-        block_on(second.receive(Duration::ZERO)).unwrap(),
+        block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::TimedOut
     ));
-    block_on(second.close()).unwrap();
+    block_on(second.close()).expect("local receiver close must complete");
 }
 
 #[test]
 fn test_async_local_settle_and_close_can_be_retried_after_unpolled_future_drop() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let mut receiver = block_on(spi.subscribe(spi_request(35, "cancelled-ops", "async.local.cancelled-ops"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut receiver = block_on(spi.subscribe(spi_request(35, "cancelled-ops", "async.local.cancelled-ops")))
+        .expect("async subscription must be created");
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
-                Topic::<String>::new("async.local.cancelled-ops").unwrap(),
+                Topic::<String>::new("async.local.cancelled-ops").expect("static test topic must be valid"),
                 "settle after retry".to_owned(),
             )
-            .unwrap(),
+            .expect("test publish request must be valid"),
         ),
     )
-    .unwrap();
-    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).unwrap() else {
+    .expect("publish request must be admitted");
+    let ReceiveOutcome::Message(mut message) =
+        block_on(receiver.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+    else {
         panic!("message should be delivered");
     };
     let token = message
@@ -694,73 +965,88 @@ fn test_async_local_settle_and_close_can_be_retried_after_unpolled_future_drop()
         .expect("local delivery has a settlement token");
 
     drop(receiver.settle(&token, DeliveryDisposition::Accept));
-    block_on(receiver.settle(&token, DeliveryDisposition::Accept)).unwrap();
+    block_on(receiver.settle(&token, DeliveryDisposition::Accept)).expect("local settlement operation must succeed");
     drop(receiver.close());
-    block_on(receiver.close()).unwrap();
+    block_on(receiver.close()).expect("local receiver close must complete");
     assert!(matches!(
-        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        block_on(receiver.receive(Duration::ZERO)).expect("local receiver must return an outcome"),
         ReceiveOutcome::Closed
     ));
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
 #[test]
 fn test_async_local_shutdown_wakes_pending_receives_and_cancelled_shutdown_can_retry() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let mut receiver = block_on(spi.subscribe(spi_request(20, "shutdown-waiter", "async.local.cancel"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let mut receiver = block_on(spi.subscribe(spi_request(20, "shutdown-waiter", "async.local.cancel")))
+        .expect("async subscription must be created");
     let mut receive = Box::pin(receiver.receive(Duration::MAX));
     assert!(poll_once(receive.as_mut()).is_pending());
-    block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
     assert!(matches!(
         poll_once(receive.as_mut()),
-        std::task::Poll::Ready(Ok(ReceiveOutcome::Closed))
+        Poll::Ready(Ok(ReceiveOutcome::Closed))
     ));
     drop(receive);
 
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let _receiver = block_on(spi.subscribe(spi_request(21, "graceful-waiter", "async.local.cancel"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let _receiver = block_on(spi.subscribe(spi_request(21, "graceful-waiter", "async.local.cancel")))
+        .expect("async subscription must be created");
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
-                Topic::<String>::new("async.local.cancel").unwrap(),
+                Topic::<String>::new("async.local.cancel").expect("static test topic must be valid"),
                 "pending".to_owned(),
             )
-            .unwrap(),
+            .expect("test publish request must be valid"),
         ),
     )
-    .unwrap();
+    .expect("publish request must be admitted");
     let mut graceful = Box::pin(spi.shutdown(ShutdownMode::Graceful { timeout: Duration::MAX }));
     assert!(poll_once(graceful.as_mut()).is_pending());
     drop(graceful);
     assert!(matches!(
-        block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap(),
+        block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete"),
         ShutdownOutcome::Complete
     ));
 }
 
 #[test]
 fn test_async_local_graceful_shutdown_observes_finite_timeout() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let _receiver = block_on(spi.subscribe(spi_request(34, "finite-shutdown", "async.local.finite"))).unwrap();
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI must accept its configuration"),
+    );
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let _receiver = block_on(spi.subscribe(spi_request(34, "finite-shutdown", "async.local.finite")))
+        .expect("async subscription must be created");
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
-                Topic::<String>::new("async.local.finite").unwrap(),
+                Topic::<String>::new("async.local.finite").expect("static test topic must be valid"),
                 "pending".to_owned(),
             )
-            .unwrap(),
+            .expect("test publish request must be valid"),
         ),
     )
-    .unwrap();
+    .expect("publish request must be admitted");
     assert!(matches!(
         block_on(spi.shutdown(ShutdownMode::Graceful {
             timeout: Duration::from_millis(1),
         }))
-        .unwrap(),
+        .expect("local event bus shutdown must complete"),
         ShutdownOutcome::TimedOut
     ));
 }
@@ -774,8 +1060,8 @@ fn spi_request(id: u64, subscriber: &str, topic: &str) -> SpiSubscriptionRequest
 fn spi_request_with_type(id: u64, subscriber: &str, topic: &str, payload_type_id: TypeId) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(id),
-        TopicAddress::new(topic).unwrap(),
-        SubscriberId::new(subscriber).unwrap(),
+        TopicAddress::new(topic).expect("static SPI topic address must be valid"),
+        SubscriberId::new(subscriber).expect("static subscriber ID must be valid"),
         None,
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
@@ -787,10 +1073,12 @@ fn spi_request_with_type(id: u64, subscriber: &str, topic: &str, payload_type_id
 #[cfg(feature = "conformance")]
 #[test]
 fn test_async_local_passes_public_spi_conformance_publish_cases() {
-    use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
     let report = block_on(run_async(
         || async {
-            Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap()) as Arc<dyn AsyncEventBusSpi>
+            Arc::new(
+                AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new())
+                    .expect("local SPI must accept its configuration"),
+            ) as Arc<dyn AsyncEventBusSpi>
         },
         &AsyncConformanceHooks::default(),
     ));

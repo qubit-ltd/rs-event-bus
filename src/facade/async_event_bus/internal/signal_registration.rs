@@ -28,6 +28,7 @@ impl SignalRegistration<'_> {
     ///
     /// # Returns
     /// A registration that unregisters itself on drop.
+    #[inline]
     pub(in crate::facade) fn new(signal: &AsyncSignal) -> SignalRegistration<'_> {
         SignalRegistration {
             signal,

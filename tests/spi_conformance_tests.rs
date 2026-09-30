@@ -9,6 +9,8 @@
 
 mod support;
 
+#[cfg(feature = "conformance")]
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::mpsc::channel;
 use std::task::Poll;
@@ -86,6 +88,16 @@ use qubit_spi::ServiceProvider;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
+use crate::support::fake_spi::full_capabilities;
+use crate::support::fake_spi::inbound_message;
+use crate::support::fake_spi::native_no_settlement_capabilities;
+use crate::support::fake_spi::outbound_message;
+use crate::support::fake_spi::subscription_request;
+use crate::support::flume_spi::create as create_flume_spi;
+use crate::support::manual_async::block_on;
+use crate::support::manual_async::poll_once;
+use crate::support::provider_shapes::ChannelShapedEventBusSpi;
+use crate::support::provider_shapes::encoded_settlement_capabilities;
 
 fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id: Id) -> Result<(), String> {
     match acknowledgement {
@@ -139,7 +151,7 @@ fn test_durable_only_conformance_does_not_invoke_ephemeral_cleanup_hooks() {
         || Arc::new(FakeEventBusSpi::with_capabilities(capabilities)),
         &sync_hooks,
     );
-    let async_report = crate::support::manual_async::block_on(run_async(
+    let async_report = block_on(run_async(
         || async { Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities)) as Arc<dyn AsyncEventBusSpi> },
         &async_hooks,
     ));
@@ -168,7 +180,7 @@ fn test_conformance_publish_failures_skip_receive_and_still_close_providers() {
         },
         &ConformanceHooks::default(),
     );
-    let async_report = crate::support::manual_async::block_on(run_async(
+    let async_report = block_on(run_async(
         || async {
             let spi = Arc::new(FakeAsyncEventBusSpi::new());
             spi.fail_next_publish();
@@ -214,17 +226,13 @@ fn test_conformance_without_settlement_skips_hooks_even_when_supplied() {
         ..AsyncConformanceHooks::default()
     };
     let sync_report = run_sync(
-        || {
-            Arc::new(FakeEventBusSpi::with_capabilities(
-                crate::support::fake_spi::native_no_settlement_capabilities(),
-            ))
-        },
+        || Arc::new(FakeEventBusSpi::with_capabilities(native_no_settlement_capabilities())),
         &sync_hooks,
     );
-    let async_report = crate::support::manual_async::block_on(run_async(
+    let async_report = block_on(run_async(
         || async {
             Arc::new(FakeAsyncEventBusSpi::with_capabilities(
-                crate::support::fake_spi::native_no_settlement_capabilities(),
+                native_no_settlement_capabilities(),
             )) as Arc<dyn AsyncEventBusSpi>
         },
         &async_hooks,
@@ -249,11 +257,7 @@ fn test_public_conformance_runner_preserves_failed_and_skipped_case_results() {
         ..ConformanceHooks::default()
     };
     let report = run_sync(
-        || {
-            Arc::new(FakeEventBusSpi::with_capabilities(
-                crate::support::fake_spi::full_capabilities(),
-            ))
-        },
+        || Arc::new(FakeEventBusSpi::with_capabilities(full_capabilities())),
         &hooks,
     );
     assert!(!report.all_passed());
@@ -285,11 +289,7 @@ fn test_public_conformance_runner_preserves_failed_and_skipped_case_results() {
 #[test]
 fn test_public_conformance_runner_probes_encoded_only_providers() {
     let report = run_sync(
-        || {
-            Arc::new(FakeEventBusSpi::with_capabilities(
-                crate::support::provider_shapes::encoded_settlement_capabilities(),
-            ))
-        },
+        || Arc::new(FakeEventBusSpi::with_capabilities(encoded_settlement_capabilities())),
         &ConformanceHooks::default(),
     );
     assert!(report.all_passed());
@@ -305,11 +305,7 @@ fn test_public_conformance_runner_probes_encoded_only_providers() {
 #[test]
 fn test_strict_conformance_promotes_missing_required_fixtures_to_failures() {
     let report = run_sync_with_profile(
-        || {
-            Arc::new(FakeEventBusSpi::with_capabilities(
-                crate::support::fake_spi::full_capabilities(),
-            ))
-        },
+        || Arc::new(FakeEventBusSpi::with_capabilities(full_capabilities())),
         &ConformanceHooks::default(),
         ConformanceProfile::Strict,
     );
@@ -319,7 +315,7 @@ fn test_strict_conformance_promotes_missing_required_fixtures_to_failures() {
         ConformanceCase::Failed { case_id, detail }
             if case_id == "provider-settlement-idempotence" && detail.contains("strict profile requires")
     )));
-    assert!(std::panic::catch_unwind(|| report.assert_all_passed()).is_err());
+    assert!(catch_unwind(|| report.assert_all_passed()).is_err());
 }
 
 #[cfg(feature = "conformance")]
@@ -336,11 +332,7 @@ fn test_public_conformance_runner_executes_each_provider_supplied_hook() {
         shutdown_cancellation: Some(successful_check),
     };
     let report = run_sync(
-        || {
-            Arc::new(FakeEventBusSpi::with_capabilities(
-                crate::support::fake_spi::full_capabilities(),
-            ))
-        },
+        || Arc::new(FakeEventBusSpi::with_capabilities(full_capabilities())),
         &hooks,
     );
 
@@ -365,11 +357,9 @@ fn test_public_async_conformance_runner_executes_provider_hooks() {
         close_cancellation: Some(successful_check.clone()),
         shutdown_cancellation: Some(successful_check),
     };
-    let report = crate::support::manual_async::block_on(run_async(
+    let report = block_on(run_async(
         || async {
-            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
-                crate::support::fake_spi::full_capabilities(),
-            )) as Arc<dyn AsyncEventBusSpi>
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(full_capabilities())) as Arc<dyn AsyncEventBusSpi>
         },
         &hooks,
     ));
@@ -384,7 +374,7 @@ fn test_public_async_conformance_runner_executes_provider_hooks() {
 
 #[test]
 fn test_sync_conformance_accepts_provider_supplied_trait_object_factory_and_gates_cases() {
-    let full = FakeEventBusSpi::with_capabilities(crate::support::fake_spi::full_capabilities());
+    let full = FakeEventBusSpi::with_capabilities(full_capabilities());
     let full_cases = run_sync_conformance(
         &full,
         |request| full.subscribe(request),
@@ -398,8 +388,7 @@ fn test_sync_conformance_accepts_provider_supplied_trait_object_factory_and_gate
     assert_eq!(full.shutdown_transition_count(), 1);
     assert!(full.operation_log().contains(&"receive"));
 
-    let native_no_settlement =
-        FakeEventBusSpi::with_capabilities(crate::support::fake_spi::native_no_settlement_capabilities());
+    let native_no_settlement = FakeEventBusSpi::with_capabilities(native_no_settlement_capabilities());
     let limited_cases = run_sync_conformance(
         &native_no_settlement,
         |request| native_no_settlement.subscribe(request),
@@ -412,7 +401,7 @@ fn test_sync_conformance_accepts_provider_supplied_trait_object_factory_and_gate
     assert!(!limited_cases.contains(&"settlement"));
     assert!(limited_cases.contains(&"skip-settlement"));
 
-    let channel = crate::support::provider_shapes::ChannelShapedEventBusSpi::new();
+    let channel = ChannelShapedEventBusSpi::new();
     let channel_cases = run_sync_conformance(
         &channel,
         |request| channel.subscribe(request),
@@ -424,7 +413,7 @@ fn test_sync_conformance_accepts_provider_supplied_trait_object_factory_and_gate
     assert!(channel_cases.contains(&"native-publish-receive"));
     assert!(channel_cases.contains(&"skip-settlement"));
 
-    let broker = FakeEventBusSpi::with_capabilities(crate::support::provider_shapes::encoded_settlement_capabilities());
+    let broker = FakeEventBusSpi::with_capabilities(encoded_settlement_capabilities());
     let broker_cases = run_sync_conformance(
         &broker,
         |request| broker.subscribe(request),
@@ -473,12 +462,10 @@ fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
         let spi = LocalEventBusProvider
             .create_configured(&config)
             .map_err(|error| error.to_string())?;
-        let request = crate::support::fake_spi::subscription_request();
+        let request = subscription_request();
         let subscription_id = request.subscription_id();
         let mut receiver = spi.subscribe(request).map_err(|error| error.to_string())?;
-        let acknowledgement = spi
-            .publish(crate::support::fake_spi::outbound_message())
-            .map_err(|error| error.to_string())?;
+        let acknowledgement = spi.publish(outbound_message()).map_err(|error| error.to_string())?;
         accepted_publication(acknowledgement, subscription_id)?;
         let unsettled = receiver
             .receive(Duration::from_secs(1))
@@ -494,7 +481,8 @@ fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
             return Err("closed ephemeral delivery was restored to a new receiver".into());
         }
         replacement.close().map_err(|error| error.to_string())?;
-        spi.shutdown(ShutdownMode::Immediate)
+        let _ = spi
+            .shutdown(ShutdownMode::Immediate)
             .map_err(|error| error.to_string())?;
         Ok(())
     });
@@ -524,7 +512,7 @@ fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
 #[cfg(feature = "conformance")]
 #[test]
 fn test_bounded_channel_fixture_passes_public_spi_conformance_without_settlement() {
-    let report = run_sync(crate::support::flume_spi::create, &ConformanceHooks::default());
+    let report = run_sync(create_flume_spi, &ConformanceHooks::default());
     report.assert_all_passed();
     assert!(report.cases().iter().any(
         |case| matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "provider-settlement-idempotence")
@@ -535,7 +523,7 @@ fn test_bounded_channel_fixture_passes_public_spi_conformance_without_settlement
 #[test]
 fn test_strict_conformance_fails_when_required_provider_hooks_are_missing() {
     let report = run_sync_with_profile(
-        crate::support::flume_spi::create,
+        create_flume_spi,
         &ConformanceHooks::default(),
         ConformanceProfile::Strict,
     );
@@ -619,7 +607,7 @@ fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
         close_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
         shutdown_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
     };
-    let report = crate::support::manual_async::block_on(run_async_with_profile(
+    let report = block_on(run_async_with_profile(
         || async {
             Arc::new(FakeAsyncEventBusSpi::with_capabilities(durable_test_capabilities())) as Arc<dyn AsyncEventBusSpi>
         },
@@ -654,11 +642,17 @@ fn durable_test_capabilities() -> EventBusCapabilities {
 
 #[test]
 fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_facade_delivery() {
-    let spi = crate::support::flume_spi::create();
-    let request = crate::support::fake_spi::subscription_request();
-    let mut receiver = spi.subscribe(request).unwrap();
-    let first = spi.publish(crate::support::fake_spi::outbound_message()).unwrap();
-    let second = spi.publish(crate::support::fake_spi::outbound_message()).unwrap();
+    let spi = create_flume_spi();
+    let request = subscription_request();
+    let mut receiver = spi
+        .subscribe(request)
+        .expect("bounded-channel provider must accept the conformance subscription");
+    let first = spi
+        .publish(outbound_message())
+        .expect("first bounded-channel publish must be admitted");
+    let second = spi
+        .publish(outbound_message())
+        .expect("second bounded-channel publish must report its bounded rejection");
     assert!(matches!(
         first,
         PublishAcknowledgement::DestinationAdmissions(ref admissions)
@@ -670,30 +664,49 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
             if matches!(admissions[0].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
     ));
     assert!(matches!(
-        receiver.receive(Duration::ZERO).unwrap(),
+        receiver
+            .receive(Duration::ZERO)
+            .expect("queued bounded-channel message must be receivable"),
         ReceiveOutcome::Message(_)
     ));
-    receiver.close().unwrap();
+    receiver.close().expect("bounded-channel subscription must close");
     assert!(matches!(
-        spi.publish(crate::support::fake_spi::outbound_message()).unwrap(),
+        spi.publish(outbound_message())
+            .expect("publish after close must return an empty admission result"),
         PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.is_empty()
     ));
-    spi.shutdown(ShutdownMode::Immediate).unwrap();
+    let _ = spi
+        .shutdown(ShutdownMode::Immediate)
+        .expect("bounded-channel provider must shut down");
 
-    let spi = crate::support::flume_spi::create();
-    let bus =
-        EventBus::from_spi(ProviderId::new("bounded-channel").unwrap(), spi).expect("valid provider capabilities");
-    let topic = Topic::<u32>::new("test.topic").unwrap();
+    let spi = create_flume_spi();
+    let bus = EventBus::from_spi(
+        ProviderId::new("bounded-channel").expect("static provider ID must be valid"),
+        spi,
+    )
+    .expect("valid provider capabilities");
+    let topic = Topic::<u32>::new("test.topic").expect("static test topic must be valid");
     let (sender, receiver) = channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("typed", topic.clone()).unwrap(),
-            move |delivery| sender.send(*delivery.payload()).unwrap(),
+            SubscribeRequest::new("typed", topic.clone()).expect("static subscriber ID must be valid"),
+            move |delivery| {
+                sender
+                    .send(*delivery.payload())
+                    .expect("typed delivery observer must remain connected");
+            },
         )
-        .unwrap();
-    let _ = bus.publish(PublishRequest::new(topic, 42).unwrap()).unwrap();
-    assert_eq!(42, receiver.recv_timeout(Duration::from_secs(1)).unwrap());
-    subscription.cancel().unwrap();
+        .expect("typed facade subscription must start");
+    let _ = bus
+        .publish(PublishRequest::new(topic, 42).expect("typed publish request must be valid"))
+        .expect("typed publication must be admitted");
+    assert_eq!(
+        42,
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("typed delivery must reach the observer")
+    );
+    subscription.cancel().expect("typed facade subscription must cancel");
     let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
     assert_eq!(ShutdownOutcome::Complete, report.outcome);
     assert_eq!(0, report.known_abandoned_deliveries);
@@ -707,27 +720,37 @@ fn run_sync_conformance(
     inject_gap: impl Fn(&mut dyn EventSubscriptionSpi) -> bool,
 ) -> Vec<&'static str> {
     let capabilities = bus.capabilities();
-    let request = crate::support::fake_spi::subscription_request();
+    let request = subscription_request();
     let subscription_id = request.subscription_id();
-    let mut subscription = subscribe(request).unwrap();
+    let mut subscription = subscribe(request).expect("conformance provider must accept its subscription");
     let mut cases = Vec::new();
 
     let mut received_settlement = None;
     {
         let payload_mode = capabilities.payload_modes();
         if matches!(payload_mode, PayloadModes::Native | PayloadModes::NativeAndEncoded) {
-            accepted_publication(bus.publish(outbound_native()).unwrap(), subscription_id)
-                .unwrap_or_else(|error| panic!("{error}"));
-            let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
+            let acknowledgement = bus
+                .publish(outbound_native())
+                .expect("native conformance publication must succeed");
+            accepted_publication(acknowledgement, subscription_id).unwrap_or_else(|error| panic!("{error}"));
+            let ReceiveOutcome::Message(mut message) = subscription
+                .receive(Duration::ZERO)
+                .expect("native conformance delivery must be receivable")
+            else {
                 panic!("native publication should be received");
             };
             assert!(matches!(message.payload(), TransportPayload::Native(_)));
             received_settlement = message.take_settlement();
             cases.push("native-publish-receive");
         } else if payload_mode == PayloadModes::Encoded {
-            accepted_publication(bus.publish(outbound_encoded()).unwrap(), subscription_id)
-                .unwrap_or_else(|error| panic!("{error}"));
-            let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
+            let acknowledgement = bus
+                .publish(outbound_encoded())
+                .expect("encoded conformance publication must succeed");
+            accepted_publication(acknowledgement, subscription_id).unwrap_or_else(|error| panic!("{error}"));
+            let ReceiveOutcome::Message(mut message) = subscription
+                .receive(Duration::ZERO)
+                .expect("encoded conformance delivery must be receivable")
+            else {
                 panic!("encoded publication should be received");
             };
             let TransportPayload::Encoded(payload) = message.payload() else {
@@ -743,19 +766,25 @@ fn run_sync_conformance(
         }
     }
     assert!(matches!(
-        subscription.receive(Duration::ZERO).unwrap(),
+        subscription
+            .receive(Duration::ZERO)
+            .expect("zero-timeout receive must return a conformance outcome"),
         ReceiveOutcome::TimedOut
     ));
     cases.push("zero-timeout");
     assert!(matches!(
-        subscription.receive(Duration::from_millis(25)).unwrap(),
+        subscription
+            .receive(Duration::from_millis(25))
+            .expect("finite-timeout receive must return a conformance outcome"),
         ReceiveOutcome::TimedOut
     ));
     cases.push("finite-positive-timeout");
 
     if inject_gap(subscription.as_mut()) {
         assert!(matches!(
-            subscription.receive(Duration::ZERO).unwrap(),
+            subscription
+                .receive(Duration::ZERO)
+                .expect("gap injection must return a conformance outcome"),
             ReceiveOutcome::Gap(_)
         ));
         cases.push("gap");
@@ -767,7 +796,9 @@ fn run_sync_conformance(
         SettlementCapabilities::None => cases.push("skip-settlement"),
         SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject => {
             if let Some(token) = received_settlement {
-                subscription.settle(&token, DeliveryDisposition::Accept).unwrap();
+                subscription
+                    .settle(&token, DeliveryDisposition::Accept)
+                    .expect("first settlement of a real delivery must succeed");
                 subscription
                     .settle(&token, DeliveryDisposition::Accept)
                     .expect("repeating the same real delivery settlement is idempotent");
@@ -777,7 +808,9 @@ fn run_sync_conformance(
                 assert_eq!(conflict.kind(), "invalid_settlement_token");
             } else {
                 let token = SettlementToken::new(subscription_id, "conformance-token");
-                subscription.settle(&token, DeliveryDisposition::Accept).unwrap();
+                subscription
+                    .settle(&token, DeliveryDisposition::Accept)
+                    .expect("provider must accept settlement for the supplied token");
                 assert!(subscription.settle(&token, DeliveryDisposition::Accept).is_err());
             }
             cases.push("settlement");
@@ -785,17 +818,27 @@ fn run_sync_conformance(
         _ => cases.push("skip-unknown-settlement-capability"),
     }
 
-    subscription.close().unwrap();
+    subscription.close().expect("conformance subscription must close");
     assert!(matches!(
-        subscription.receive(Duration::ZERO).unwrap(),
+        subscription
+            .receive(Duration::ZERO)
+            .expect("receive after close must report the closed outcome"),
         ReceiveOutcome::Closed
     ));
     cases.push("close");
     let shutdown = ShutdownMode::Graceful {
         timeout: Duration::ZERO,
     };
-    assert_eq!(bus.shutdown(shutdown).unwrap(), ShutdownOutcome::Complete);
-    assert_eq!(bus.shutdown(shutdown).unwrap(), ShutdownOutcome::Complete);
+    assert_eq!(
+        bus.shutdown(shutdown)
+            .expect("first conformance shutdown must complete"),
+        ShutdownOutcome::Complete
+    );
+    assert_eq!(
+        bus.shutdown(shutdown)
+            .expect("repeated conformance shutdown must remain complete"),
+        ShutdownOutcome::Complete
+    );
     assert_eq!(bus.capabilities(), capabilities);
     cases.push("shutdown-and-stable-capabilities");
     cases
@@ -803,7 +846,7 @@ fn run_sync_conformance(
 
 #[test]
 fn test_async_conformance_uses_manual_time_and_preserves_in_flight_message_on_cancel() {
-    let full = FakeAsyncEventBusSpi::with_capabilities(crate::support::fake_spi::full_capabilities());
+    let full = FakeAsyncEventBusSpi::with_capabilities(full_capabilities());
     let full_cases = run_async_conformance(&full, || full.inject_gap(), |by| full.advance_time(by));
     assert!(full_cases.contains(&"native-publish-receive"));
     assert!(full_cases.contains(&"async-cancel-redelivery"));
@@ -811,8 +854,7 @@ fn test_async_conformance_uses_manual_time_and_preserves_in_flight_message_on_ca
     assert_eq!(full.shutdown_transition_count(), 1);
     assert!(full.operation_log().contains(&"receive"));
 
-    let limited =
-        FakeAsyncEventBusSpi::with_capabilities(crate::support::fake_spi::native_no_settlement_capabilities());
+    let limited = FakeAsyncEventBusSpi::with_capabilities(native_no_settlement_capabilities());
     let limited_cases = run_async_conformance(&limited, || limited.inject_gap(), |by| limited.advance_time(by));
     assert!(limited_cases.contains(&"native-publish-receive"));
     assert!(!limited_cases.contains(&"settlement"));
@@ -822,15 +864,23 @@ fn test_async_conformance_uses_manual_time_and_preserves_in_flight_message_on_ca
 #[test]
 fn test_sync_finite_timeout_rechecks_after_spurious_wake() {
     let bus = FakeEventBusSpi::new();
-    let mut subscription = bus.subscribe(crate::support::fake_spi::subscription_request()).unwrap();
+    let mut subscription = bus
+        .subscribe(subscription_request())
+        .expect("fake provider must accept the subscription");
     let receive = thread::spawn(move || subscription.receive(Duration::from_secs(2)));
 
     bus.wait_until_receive_is_blocked();
     bus.wake_receivers_spuriously();
     bus.wait_until_spurious_wake_is_observed();
-    bus.enqueue(crate::support::fake_spi::inbound_message(None));
+    bus.enqueue(inbound_message(None));
 
-    assert!(matches!(receive.join().unwrap().unwrap(), ReceiveOutcome::Message(_)));
+    let receive_result = receive
+        .join()
+        .expect("receive worker thread must exit without panicking");
+    assert!(matches!(
+        receive_result.expect("receive must complete after the message is enqueued"),
+        ReceiveOutcome::Message(_)
+    ));
 }
 
 /// Drives cancellation and timeout cases without relying on a runtime.
@@ -841,23 +891,32 @@ fn run_async_conformance(
 ) -> Vec<&'static str> {
     let capabilities = bus.capabilities();
     let mut cases = Vec::new();
-    crate::support::manual_async::block_on(async {
-        let request = crate::support::fake_spi::subscription_request();
+    block_on(async {
+        let request = subscription_request();
         let subscription_id = request.subscription_id();
-        let mut subscription = bus.subscribe(request).await.unwrap();
+        let mut subscription = bus
+            .subscribe(request)
+            .await
+            .expect("async conformance provider must accept its subscription");
 
         if matches!(
             capabilities.payload_modes(),
             PayloadModes::Native | PayloadModes::NativeAndEncoded
         ) {
-            accepted_publication(bus.publish(outbound_native()).await.unwrap(), subscription_id)
-                .unwrap_or_else(|error| panic!("{error}"));
+            let acknowledgement = bus
+                .publish(outbound_native())
+                .await
+                .expect("async native conformance publication must succeed");
+            accepted_publication(acknowledgement, subscription_id).unwrap_or_else(|error| panic!("{error}"));
             let mut cancelled = Box::pin(subscription.receive(Duration::from_secs(30)));
-            match crate::support::manual_async::poll_once(cancelled.as_mut()) {
+            match poll_once(cancelled.as_mut()) {
                 Poll::Pending => {
                     drop(cancelled);
                     assert!(matches!(
-                        subscription.receive(Duration::ZERO).await.unwrap(),
+                        subscription
+                            .receive(Duration::ZERO)
+                            .await
+                            .expect("redelivered message must be receivable after cancellation"),
                         ReceiveOutcome::Message(_)
                     ));
                     cases.push("async-cancel-redelivery");
@@ -874,10 +933,10 @@ fn run_async_conformance(
         }
 
         let mut timeout = Box::pin(subscription.receive(Duration::from_secs(7)));
-        assert!(crate::support::manual_async::poll_once(timeout.as_mut()).is_pending());
+        assert!(poll_once(timeout.as_mut()).is_pending());
         advance_time(Duration::from_secs(7));
         assert!(matches!(
-            crate::support::manual_async::poll_once(timeout.as_mut()),
+            poll_once(timeout.as_mut()),
             Poll::Ready(Ok(ReceiveOutcome::TimedOut))
         ));
         drop(timeout);
@@ -885,7 +944,10 @@ fn run_async_conformance(
 
         inject_gap();
         assert!(matches!(
-            subscription.receive(Duration::ZERO).await.unwrap(),
+            subscription
+                .receive(Duration::ZERO)
+                .await
+                .expect("async gap injection must return a conformance outcome"),
             ReceiveOutcome::Gap(_)
         ));
         cases.push("gap");
@@ -894,7 +956,10 @@ fn run_async_conformance(
             SettlementCapabilities::None => cases.push("skip-settlement"),
             SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject => {
                 let token = SettlementToken::new(subscription_id, "async-token");
-                subscription.settle(&token, DeliveryDisposition::Accept).await.unwrap();
+                subscription
+                    .settle(&token, DeliveryDisposition::Accept)
+                    .await
+                    .expect("async provider must accept settlement for the supplied token");
                 subscription
                     .settle(&token, DeliveryDisposition::Accept)
                     .await
@@ -909,17 +974,33 @@ fn run_async_conformance(
             _ => cases.push("skip-unknown-settlement-capability"),
         }
 
-        subscription.close().await.unwrap();
+        subscription
+            .close()
+            .await
+            .expect("async conformance subscription must close");
         assert!(matches!(
-            subscription.receive(Duration::ZERO).await.unwrap(),
+            subscription
+                .receive(Duration::ZERO)
+                .await
+                .expect("async receive after close must report the closed outcome"),
             ReceiveOutcome::Closed
         ));
         cases.push("close");
         let mode = ShutdownMode::Graceful {
             timeout: Duration::ZERO,
         };
-        assert_eq!(bus.shutdown(mode).await.unwrap(), ShutdownOutcome::Complete);
-        assert_eq!(bus.shutdown(mode).await.unwrap(), ShutdownOutcome::Complete);
+        assert_eq!(
+            bus.shutdown(mode)
+                .await
+                .expect("first async conformance shutdown must complete"),
+            ShutdownOutcome::Complete
+        );
+        assert_eq!(
+            bus.shutdown(mode)
+                .await
+                .expect("repeated async conformance shutdown must remain complete"),
+            ShutdownOutcome::Complete
+        );
         assert_eq!(bus.capabilities(), capabilities);
         cases.push("shutdown-and-stable-capabilities");
     });
@@ -928,22 +1009,22 @@ fn run_async_conformance(
 
 /// Creates the native message used by each provider fixture.
 fn outbound_native() -> OutboundMessage {
-    crate::support::fake_spi::outbound_message()
+    outbound_message()
 }
 
 /// Creates an encoded message with content type and schema metadata.
 fn outbound_encoded() -> OutboundMessage {
     OutboundMessage::new(
-        TopicAddress::new("test.topic").unwrap(),
-        EventId::new("event-encoded-outbound").unwrap(),
+        TopicAddress::new("test.topic").expect("static encoded topic must be valid"),
+        EventId::new("event-encoded-outbound").expect("static event ID must be valid"),
         SystemTime::UNIX_EPOCH,
         Default::default(),
         None,
         None,
         TransportPayload::Encoded(EncodedPayload::new(
             Arc::from(&b"conformance-payload"[..]),
-            ContentType::APPLICATION_OCTET_STREAM,
-            Some(SchemaId::new("test-schema-v1").unwrap()),
+            ContentType::new("application/octet-stream").expect("static encoded content type must be valid"),
+            Some(SchemaId::new("test-schema-v1").expect("static schema ID must be valid")),
         )),
     )
 }
@@ -952,7 +1033,7 @@ fn outbound_encoded() -> OutboundMessage {
 fn test_sync_fake_supports_injected_structured_provider_failures() {
     let bus = FakeEventBusSpi::new();
     bus.fail_next_publish();
-    let error = bus.publish(crate::support::fake_spi::outbound_message()).unwrap_err();
+    let error = bus.publish(outbound_message()).unwrap_err();
     assert_eq!(error.provider_id(), "fake");
     assert_eq!(error.operation(), "publish");
 }
@@ -961,11 +1042,8 @@ fn test_sync_fake_supports_injected_structured_provider_failures() {
 fn test_async_fake_supports_injected_structured_provider_failures() {
     let bus = FakeAsyncEventBusSpi::new();
     bus.fail_next_publish();
-    crate::support::manual_async::block_on(async {
-        let error = bus
-            .publish(crate::support::fake_spi::outbound_message())
-            .await
-            .unwrap_err();
+    block_on(async {
+        let error = bus.publish(outbound_message()).await.unwrap_err();
         assert_eq!(error.provider_id(), "fake");
         assert_eq!(error.operation(), "publish");
     });

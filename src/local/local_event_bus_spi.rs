@@ -82,7 +82,7 @@ impl LocalEventBusSpi {
     /// A synchronous local provider SPI with empty queues.
     ///
     /// # Errors
-    /// Returns [`crate::error::ConfigurationError::InvalidField`] if either
+    /// Returns [`ConfigurationError::InvalidField`] if either
     /// capacity is zero.
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, ConfigurationError> {
         config.validate()?;
@@ -154,19 +154,18 @@ impl EventBusSpi for LocalEventBusSpi {
     /// The local provider's fixed capability declaration.
     #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
-        EventBusCapabilities::builder()
-            .payload_modes(PayloadModes::Native)
-            .settlement(SettlementCapabilities::AcceptRetryReject)
-            .ordering(OrderingCapability::PerKey)
-            .delayed_delivery(DelayedDeliveryCapability::Native)
-            .durability(DurabilityCapability::Ephemeral)
-            .subscription_modes(SubscriptionModes::EPHEMERAL)
-            .consumer_groups(false)
-            .replay(ReplayCapability::None)
-            .publish_guarantee(PublishGuarantee::Accepted)
-            .publish_visibility(PublishVisibility::DestinationAdmissions)
-            .build()
-            .expect("all synchronous local capabilities are configured")
+        EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::AcceptRetryReject,
+            OrderingCapability::PerKey,
+            DelayedDeliveryCapability::Native,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::DestinationAdmissions,
+        )
     }
 
     /// Shares a native event with each matching bounded subscription queue.
@@ -438,6 +437,7 @@ fn validate_message(message: &OutboundMessage, topic: &TopicAddress) -> Result<(
 /// # Panics
 /// Panics if the payload is encoded, which indicates that local payload-mode
 /// validation was skipped.
+#[must_use]
 fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
     match payload {
         TransportPayload::Native(value) => value.as_ref().type_id(),

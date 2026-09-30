@@ -33,6 +33,24 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "0.18"):
             gate.validate_graph(metadata("0.17.0"), require_bus=True)
 
+    def test_rejects_mixed_old_and_new_minor(self):
+        with self.assertRaisesRegex(ValueError, "multiple"):
+            gate.validate_graph(metadata("0.17.0", "0.18.0"), require_bus=True)
+
+    def test_controlled_layout_covers_all_fifteen_fixtures(self):
+        self.assertEqual(len(gate.FIXTURES), 15)
+        self.assertIn("rs-ioc/tests/fixtures/application_consumer_current", gate.FIXTURES)
+
+    def test_non_bus_fixtures_do_not_require_bus(self):
+        root = Path("/layout")
+        for name in ("rs-task/tests/fixtures/consumer",
+                     "rs-ioc/tests/fixtures/macro_contracts",
+                     "rs-execution-services/tests/fixtures/documentation_consumer"):
+            with self.subTest(fixture=name):
+                self.assertFalse(gate.requires_bus(root / name / "Cargo.toml", root))
+        self.assertTrue(gate.requires_bus(
+            root / "rs-ioc/tests/fixtures/application_consumer_current/Cargo.toml", root))
+
     def test_rejects_duplicate_registry_and_path_packages(self):
         graph = metadata("0.18.0", "0.18.0")
         graph["packages"][2]["source"] = "registry+https://example.invalid"

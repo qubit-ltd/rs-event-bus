@@ -19,7 +19,6 @@ use crate::codec::EventCodec;
 use crate::codec::ReceiveFailureAction;
 use crate::codec::decode_payload;
 use crate::codec::receive_failure_action;
-use crate::facade::async_event_bus::catch_spi_future;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::AsyncSession;
 use crate::facade::async_subscription::Id;
@@ -34,10 +33,7 @@ use crate::model::SubscribeOptions;
 use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
 use crate::spi::AsyncEventSubscriptionSpi;
-use crate::spi::DeliveryDisposition;
 use crate::spi::InboundMessage;
-use crate::spi::SettlementCapabilities;
-use crate::spi::panic_boundary::catch_spi_call;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Creates a session from all owned runtime and subscription state.
@@ -64,7 +60,11 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         receiver: Box<dyn AsyncEventSubscriptionSpi>,
         signals: Arc<SessionSignals>,
     ) -> Self {
+        let metrics = Arc::new(crate::facade::internal::DeliveryMetrics::new_subscription(
+            inner.delivery_metrics.clone(),
+        ));
         Self {
+            metrics,
             inner,
             id,
             subscriber_id,
@@ -74,30 +74,46 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             receiver: Some(receiver),
             receiver_closed: false,
             signals,
-            pending: None,
-            waiting_admission: None,
+            buffered: VecDeque::new(),
             tasks: Vec::new(),
             completed: VecDeque::new(),
-            defer_settlement: false,
+            completed_during_settlement: VecDeque::new(),
             handler: None,
-            admission_waiter: None,
         }
     }
 
     /// Transfers the pending delivery into an owned handler task.
     ///
     /// # Parameters
+    /// - `pending`: delivery transferred to the new handler task.
     /// - `handler`: callback retained by the new task.
-    pub(in crate::facade) fn start_pending_task(&mut self, handler: SharedAsyncHandler<T>) {
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
+    pub(in crate::facade) fn start_pending_task(
+        &mut self,
+        pending: PendingDelivery<T>,
+        handler: SharedAsyncHandler<T>,
+    ) {
+        let original_handler = handler;
+        let inner = self.inner.clone();
+        let metrics = self.metrics.clone();
+        let signals = self.signals.clone();
+        let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| {
+            let duration = super::super::handler_duration_guard::HandlerDurationGuard::new(
+                inner.clone(),
+                metrics.clone(),
+                signals.clone(),
+            );
+            let future = original_handler(delivery);
+            Box::pin(async move {
+                let result = future.await;
+                drop(duration);
+                result
+            })
+        });
         let started = Arc::new(AtomicBool::new(false));
         let mut task = DeliveryTaskContext {
             inner: self.inner.clone(),
             id: self.id,
             subscriber_id: self.subscriber_id.clone(),
-            topic: self.topic.clone(),
             options: self.options.clone(),
             signals: self.signals.clone(),
             pending: Some(pending),
@@ -118,10 +134,22 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// # Parameters
     /// - `message`: received transport message and optional settlement token.
-    pub(in crate::facade) fn prepare_message(&mut self, message: InboundMessage) {
+    /// - `lease`: owned scheduler lease retained with the resulting delivery.
+    pub(in crate::facade) fn prepare_message(
+        &mut self,
+        message: InboundMessage,
+        lease: super::super::owned_delivery_lease::OwnedDeliveryLease,
+    ) {
         let tracking = self.inner.tracker.track(self.topic.name());
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
+        let lane = (self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey).then(|| {
+            crate::pipeline::OrderingLaneKey::new(
+                self.topic.name(),
+                ordering_key.as_ref().map(|key| key.as_str()),
+                self.id,
+            )
+        });
         let payload = match decode_payload(
             self.codec.as_ref(),
             &transport_payload,
@@ -145,18 +173,20 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     drop(token);
                     return;
                 }
-                self.pending = Some(PendingDelivery {
+                self.inner.scheduler.enqueue_settlement(lease.id, lane);
+                self.inner.notify_scheduler();
+                self.buffered.push_back(PendingDelivery {
                     _tracking: tracking,
                     event_id,
                     event: None,
                     token,
                     metadata: provider_metadata,
-                    decode_error: Some(error.into()),
-                    settlement_intent: None,
-                    settlement_failures: 0,
-                    failure_diagnostic: None,
-                    admission: None,
-                    lane: None,
+                    settlement_intent: Some(crate::spi::DeliveryDisposition::Reject),
+                    settlement: super::super::settlement_progress::SettlementProgress::new(
+                        self.inner.facade_config.settlement_retry(),
+                    ),
+                    failure_diagnostic: Some((0, error.to_string().into())),
+                    lease,
                 });
                 let _ = address;
                 return;
@@ -168,138 +198,21 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         event.ordering_key = ordering_key.map(|key| key.as_str().into());
         let event = Arc::new(event);
         let event_id = event.id().clone();
-        self.pending = Some(PendingDelivery {
+        self.inner.scheduler.enqueue(lease.id, lane);
+        self.inner.notify_scheduler();
+        self.buffered.push_back(PendingDelivery {
             _tracking: tracking,
             event_id,
             event: Some(event),
             token,
             metadata: provider_metadata,
-            decode_error: None,
             settlement_intent: None,
-            settlement_failures: 0,
+            settlement: super::super::settlement_progress::SettlementProgress::new(
+                self.inner.facade_config.settlement_retry(),
+            ),
             failure_diagnostic: None,
-            admission: None,
-            lane: None,
+            lease,
         });
-    }
-
-    /// Applies or retries the selected terminal provider disposition.
-    ///
-    /// # Parameters
-    /// - `disposition`: terminal action selected by handler policy.
-    /// - `event`: decoded event used for diagnostics, when decoding succeeded.
-    pub(in crate::facade) async fn settle_pending(
-        &mut self,
-        disposition: DeliveryDisposition,
-        event: Option<&EventEnvelope<T>>,
-    ) {
-        let Some(pending) = self.pending.as_mut() else {
-            return;
-        };
-        pending.settlement_intent = Some(disposition);
-        if self.defer_settlement {
-            return;
-        }
-        let failure_diagnostic = pending.failure_diagnostic.clone();
-        let event_id = event
-            .map(|event| event.id().clone())
-            .unwrap_or_else(|| pending.event_id.clone());
-        let topic = event
-            .map(|event| event.topic().name().into())
-            .unwrap_or_else(|| self.topic.name().into());
-        let Some(token) = pending.token.as_ref() else {
-            self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
-            self.pending.take();
-            return;
-        };
-        if !token.belongs_to(self.id) {
-            self.inner.emit(&Diagnostic::InternalFailure {
-                origin: "settlement".into(),
-                message: "provider settlement token belongs to another subscription".into(),
-            });
-            self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
-            self.pending.take();
-            return;
-        }
-        let capability = self.inner.capabilities.settlement();
-        let supported = match disposition {
-            DeliveryDisposition::Accept => capability != SettlementCapabilities::None,
-            DeliveryDisposition::Retry | DeliveryDisposition::Reject => {
-                capability == SettlementCapabilities::AcceptRetryReject
-            }
-        };
-        if !supported {
-            self.inner.emit(&Diagnostic::SettlementUnavailable {
-                event_id: event_id.clone(),
-                topic: topic.clone(),
-                subscription_id: self.id,
-                subscriber_id: self.subscriber_id.clone(),
-                requested: disposition,
-            });
-            self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
-            self.pending.take();
-            return;
-        }
-        let result = if let Some(receiver) = self.receiver.as_mut() {
-            match catch_spi_call(
-                self.inner.provider_id.as_str(),
-                "settle",
-                Some(self.subscriber_id.as_str()),
-                || receiver.settle(token, disposition),
-            ) {
-                Ok(future) => {
-                    catch_spi_future(
-                        future,
-                        &self.inner.provider_id,
-                        "settle",
-                        Some(self.subscriber_id.as_str()),
-                    )
-                    .await
-                }
-                Err(error) => Err(error),
-            }
-        } else {
-            Ok(())
-        };
-        match result {
-            Ok(()) => {
-                self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
-                self.pending.take();
-            }
-            Err(error) => {
-                if error.kind() == "provider_panicked" {
-                    self.inner.emit(&Diagnostic::SettlementUnavailable {
-                        event_id: event_id.clone(),
-                        topic: topic.clone(),
-                        subscription_id: self.id,
-                        subscriber_id: self.subscriber_id.clone(),
-                        requested: disposition,
-                    });
-                    self.inner.emit(&Diagnostic::SettlementFailed {
-                        event_id: event_id.clone(),
-                        topic: topic.clone(),
-                        subscription_id: self.id,
-                        subscriber_id: self.subscriber_id.clone(),
-                        disposition,
-                        error: error.to_string().into(),
-                    });
-                    self.emit_failure_diagnostic(failure_diagnostic, event_id, topic);
-                    self.pending.take();
-                    return;
-                }
-                if let Some(pending) = self.pending.as_mut() {
-                    pending.settlement_failures = pending.settlement_failures.saturating_add(1);
-                }
-                self.inner.emit(&Diagnostic::SettlementFailed {
-                    event_id: event_id.clone(),
-                    topic: topic.clone(),
-                    subscription_id: self.id,
-                    subscriber_id: self.subscriber_id.clone(),
-                    disposition,
-                    error: error.to_string().into(),
-                });
-            }
-        }
     }
 
     /// Emits a terminal delivery failure after settlement completes.

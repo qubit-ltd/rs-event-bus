@@ -54,7 +54,8 @@ pub enum ReceiveError {
     /// New receives stopped with a stable cause retained for recovery.
     #[error("{0}")]
     Stopped(
-        /// Stable terminal reason shared with callers recovering from shutdown.
+        /// Stable terminal reason shared with callers for diagnosis and
+        /// recovery.
         #[source]
         Arc<SubscriptionStopReason>,
     ),

@@ -31,6 +31,7 @@ use crate::error::CodecError;
 /// # Errors
 /// Returns the callback's [`CodecError`] unchanged, or a structured panic
 /// error containing the operation and a readable panic message.
+#[must_use = "the codec result must be handled by the caller"]
 pub(crate) fn call_codec<R>(
     operation: &'static str,
     call: impl FnOnce() -> Result<R, CodecError>,
@@ -54,6 +55,7 @@ pub(crate) fn call_codec<R>(
 ///
 /// # Returns
 /// An owned panic message, or a fallback description for non-string payloads.
+#[must_use = "the panic message must be used to report the callback failure"]
 fn panic_message(payload: &(dyn Any + Send)) -> Box<str> {
     if let Some(message) = payload.downcast_ref::<String>() {
         message.as_str().into()

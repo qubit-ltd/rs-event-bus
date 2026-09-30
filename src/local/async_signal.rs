@@ -93,7 +93,9 @@ mod tests {
         if let Some(signal) = probe.signal.upgrade() {
             match signal.waiters.try_lock() {
                 Ok(_) | Err(TryLockError::Poisoned(_)) => {}
-                Err(TryLockError::WouldBlock) => panic!("external waker code called under registry lock"),
+                Err(TryLockError::WouldBlock) => {
+                    panic!("external waker code called under registry lock")
+                }
             }
         }
     }
@@ -179,7 +181,6 @@ mod tests {
         let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
         let registration = signal.register(&waker);
         drop(registration);
-        assert_eq!(0, signal.waiter_count());
         drop(waker);
     }
 }

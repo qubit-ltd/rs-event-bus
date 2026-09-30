@@ -29,6 +29,7 @@ use crate::error::ProviderError;
 use crate::facade::EventBus;
 use crate::local::LocalEventBusProvider;
 use crate::model::ProviderId as FacadeProviderId;
+use crate::spi::EventBusSpi;
 
 /// Mutable catalog of synchronous event-bus providers.
 ///
@@ -174,6 +175,7 @@ impl EventBusRegistry {
     /// # Returns
     /// The current registry selection policy.
     #[must_use]
+    #[inline]
     pub fn default_selection(&self) -> ProviderSelection {
         self.providers.default_selection()
     }
@@ -269,7 +271,7 @@ impl Default for EventBusRegistry {
 /// # Panics
 /// Panics if a provider adapter violates its invariant and omits the canonical
 /// provider ID.
-fn facade(spi: Arc<dyn crate::spi::EventBusSpi>, config: &EventBusConfig) -> Result<EventBus, ProviderError> {
+fn facade(spi: Arc<dyn EventBusSpi>, config: &EventBusConfig) -> Result<EventBus, ProviderError> {
     let provider_id: FacadeProviderId = spi
         .provider_id()
         .expect("registered provider adapters attach a canonical provider ID");

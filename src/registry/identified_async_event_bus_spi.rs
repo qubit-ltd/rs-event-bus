@@ -41,6 +41,8 @@ impl IdentifiedAsyncEventBusSpi {
     ///
     /// # Returns
     /// An identity proxy that delegates to `inner`.
+    #[must_use]
+    #[inline]
     pub(crate) fn new(
         provider_id: ProviderId,
         inner: Arc<dyn AsyncEventBusSpi>,
@@ -59,6 +61,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Returns
     /// The stable provider ID; this adapter always has one.
+    #[inline]
     fn provider_id(&self) -> Option<ProviderId> {
         Some(self.provider_id.clone())
     }

@@ -18,11 +18,21 @@ use crate::PublishMetricsSnapshot;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::internal::BusContextGuard;
 use crate::model::BatchPublishResult;
+use crate::model::EventId;
 use crate::model::PublishEffect;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
+use crate::pipeline::PipelineFailure;
 
 impl EventBus {
+    /// Returns the shared publication counters for this facade and its clones.
+    ///
+    /// # Returns
+    /// A point-in-time snapshot of publication counters.
+    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
+        self.inner.publish_metrics.snapshot()
+    }
+
     /// Publishes one typed request through publisher interceptors, retry, and
     /// SPI.
     ///
@@ -72,15 +82,6 @@ impl EventBus {
             })
     }
 
-    /// Returns the shared publication counters for this facade and its clones.
-    ///
-    /// # Returns
-    /// A point-in-time snapshot of publication counters.
-    #[inline]
-    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
-        self.inner.publish_metrics.snapshot()
-    }
-
     /// Publishes requests independently in input order and retains each result.
     ///
     /// Later requests are still attempted after an earlier request fails.
@@ -112,10 +113,8 @@ impl EventBus {
 ///
 /// # Returns
 /// The matching public publish error variant.
-pub(in crate::facade) fn publish_pipeline_error(
-    event_id: crate::model::EventId,
-    failure: crate::pipeline::PipelineFailure,
-) -> PublishFailure {
+#[must_use]
+pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
     let effect = failure.publish_effect();
     let cause = match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),

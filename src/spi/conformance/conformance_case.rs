@@ -7,7 +7,7 @@
 // =============================================================================
 //! One outcome from a conformance check.
 
-use super::ConformanceSkipReason;
+use super::conformance_skip_reason::ConformanceSkipReason;
 
 /// Result of one named conformance check.
 ///

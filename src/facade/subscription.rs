@@ -9,16 +9,21 @@
 
 mod internal;
 
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::PoisonError;
+use std::sync::Weak;
 
-pub(crate) use internal::SubscriptionControl;
 use qubit_id::Id;
 
+/// Shared worker control state used by facade subscription modules.
+pub(crate) use self::internal::SubscriptionControl;
 use super::internal::is_current_bus_context;
 use crate::error::LifecycleError;
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
+use crate::facade::SubscriptionDeliveryMetricsSnapshot;
+use crate::facade::event_bus::EventBusInner;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionStopReason;
@@ -50,6 +55,9 @@ use crate::model::SubscriptionStopReason;
 /// ```
 #[must_use = "dropping a subscription handle does not cancel it; call cancel() or shut down the bus"]
 pub struct Subscription {
+    /// Weak bus context used for live gauges without retaining receiver
+    /// history.
+    inner: Weak<EventBusInner>,
     /// Shared worker cancellation and completion state.
     control: Arc<SubscriptionControl>,
     /// Identity used to detect waits from this bus's own callbacks.
@@ -65,6 +73,7 @@ impl Subscription {
     /// - `control`: worker state for the provider receiver.
     /// - `bus_identity`: identity used to recognize calls from this bus.
     /// - `scheduler`: scheduler whose queued work is released on cancellation.
+    /// - `inner`: weak bus context used to read active metrics.
     ///
     /// # Returns
     /// A handle that can cancel and join the worker.
@@ -73,11 +82,34 @@ impl Subscription {
         control: Arc<SubscriptionControl>,
         bus_identity: usize,
         scheduler: Arc<SyncDeliveryScheduler>,
+        inner: Weak<EventBusInner>,
     ) -> Self {
         Self {
+            inner,
             control,
             bus_identity,
             scheduler,
+        }
+    }
+
+    /// Returns live gauges and retained cumulative counters for this
+    /// subscription. Closed handles preserve final counters without
+    /// retaining payload or tokens.
+    ///
+    /// # Returns
+    /// This subscription identity, live gauges when active, and retained
+    /// counters after close.
+    #[must_use]
+    pub fn delivery_metrics(&self) -> SubscriptionDeliveryMetricsSnapshot {
+        let gauges = self
+            .inner
+            .upgrade()
+            .map(|inner| inner.delivery_gauges(Some(self.control.id)))
+            .unwrap_or_default();
+        SubscriptionDeliveryMetricsSnapshot {
+            subscription_id: self.control.id,
+            subscriber_id: self.control.subscriber_id.clone(),
+            metrics: self.control.delivery_metrics.snapshot(gauges),
         }
     }
 
@@ -177,7 +209,7 @@ impl Subscription {
                     resource: Some(self.control.subscriber_id.as_str().into()),
                     kind: "worker_panicked",
                     retryable: None,
-                    source: Box::new(std::io::Error::other("subscription worker panicked")),
+                    source: Box::new(IoError::other("subscription worker panicked")),
                 })
             })?;
         }
@@ -188,6 +220,7 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::thread::spawn;
 
     use qubit_id::Id;
 
@@ -203,7 +236,7 @@ mod tests {
         let worker_control = control.clone();
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        let worker = spawn(move || {
             started_tx.send(()).expect("test receiver is active");
             release_rx.recv().expect("test releases worker completion");
             worker_control.mark_finished();

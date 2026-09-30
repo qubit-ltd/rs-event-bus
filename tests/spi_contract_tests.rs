@@ -5,27 +5,36 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Public provider SPI contracts and local ephemeral lifecycle behavior.
+
+mod spi;
 mod support;
 
 use std::any::Any;
 use std::any::TypeId;
 use std::future::pending;
-use std::io::Error as IoError;
+use std::io::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::Poll;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::local::AsyncLocalEventBusSpi;
+use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::ProviderMessageMetadata;
 use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -51,6 +60,10 @@ use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
 
+use crate::support::fake_spi::FakeEventBusSpi;
+use crate::support::manual_async::block_on;
+use crate::support::manual_async::poll_once;
+
 fn assert_sync_object_safe(_: Option<&dyn EventBusSpi>) {}
 fn assert_async_object_safe(_: Option<&dyn AsyncEventBusSpi>) {}
 
@@ -64,23 +77,12 @@ fn test_spi_traits_are_object_safe() {
 fn test_cloning_encoded_payload_shares_its_byte_allocation() {
     let original = EncodedPayload::new(
         Arc::from(b"shared payload".as_slice()),
-        ContentType::APPLICATION_OCTET_STREAM,
+        ContentType::new("application/octet-stream").expect("valid content type"),
         None,
     );
     let clone = original.clone();
     assert_eq!(original.bytes(), clone.bytes());
     assert_eq!(original.bytes().as_ptr(), clone.bytes().as_ptr());
-}
-
-#[test]
-fn test_spi_idle_wait_defaults_to_unsupported() {
-    let provider = support::fake_spi::FakeEventBusSpi::new();
-    let topic = TopicAddress::new("contract.idle").expect("valid topic");
-
-    assert_eq!(
-        provider.wait_for_topic_idle(&topic, Some(Duration::ZERO)).unwrap(),
-        None
-    );
 }
 
 #[test]
@@ -374,7 +376,7 @@ fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
                             resource: None,
                             reason: "conflicting_disposition",
                             retryable: Some(false),
-                            source: Box::new(IoError::other("disposition already fixed")),
+                            source: Box::new(Error::other("disposition already fixed")),
                         })),
                         None => {
                             *state = Some(disposition);
@@ -401,25 +403,112 @@ fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
     };
 
     let mut first_attempt = Box::pin(provider.settle(&token, DeliveryDisposition::Accept));
-    assert!(matches!(
-        support::manual_async::poll_once(first_attempt.as_mut()),
-        Poll::Pending
-    ));
+    assert!(matches!(poll_once(first_attempt.as_mut()), Poll::Pending));
     drop(first_attempt);
 
     let mut retry = Box::pin(provider.settle(&token, DeliveryDisposition::Accept));
-    assert!(matches!(
-        support::manual_async::poll_once(retry.as_mut()),
-        Poll::Ready(Ok(()))
-    ));
+    assert!(matches!(poll_once(retry.as_mut()), Poll::Ready(Ok(()))));
     drop(retry);
 
     let mut conflict = Box::pin(provider.settle(&token, DeliveryDisposition::Reject));
-    let result = match support::manual_async::poll_once(conflict.as_mut()) {
+    let result = match poll_once(conflict.as_mut()) {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("conflicting settlement must fail promptly"),
     };
     let error = result.expect_err("conflicting disposition must be rejected");
     assert_eq!(error.kind(), "invalid_settlement_token");
     assert_eq!(error.operation(), "settle");
+}
+
+/// Creates a local ephemeral receiver request without requiring recovery.
+fn local_ephemeral_request(id: u64) -> SpiSubscriptionRequest {
+    SpiSubscriptionRequest::new(
+        Id::new(id),
+        TopicAddress::new("contract.ephemeral").expect("valid topic"),
+        SubscriberId::new("contract-ephemeral").expect("valid subscriber"),
+        None,
+        SubscriptionDurability::Ephemeral,
+        StartPosition::New,
+        ProviderOptions::new(),
+        TypeId::of::<String>(),
+    )
+}
+
+#[test]
+fn test_local_receive_cancellation_preserves_next_message_on_same_receiver() {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("valid provider ID"), spi.clone())
+        .expect("valid provider");
+    let mut receiver = block_on(spi.subscribe(local_ephemeral_request(810))).expect("receiver created");
+    let mut pending = Box::pin(receiver.receive(Duration::MAX));
+    assert!(matches!(poll_once(pending.as_mut()), Poll::Pending));
+    drop(pending);
+    let _ = block_on(
+        bus.publish(
+            PublishRequest::new(
+                Topic::<String>::new("contract.ephemeral").expect("valid topic"),
+                "after cancellation".to_owned(),
+            )
+            .expect("valid publication"),
+        ),
+    )
+    .expect("publish accepted");
+    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).expect("receive succeeds")
+    else {
+        panic!("cancelled receive must not prevent later delivery")
+    };
+    block_on(receiver.settle(
+        &message.take_settlement().expect("local settlement token"),
+        DeliveryDisposition::Accept,
+    ))
+    .expect("settled");
+    block_on(receiver.close()).expect("closed");
+}
+
+#[test]
+fn test_local_ephemeral_drop_can_discard_unsettled_delivery() {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("valid provider ID"), spi.clone())
+        .expect("valid provider");
+    let mut first = block_on(spi.subscribe(local_ephemeral_request(811))).expect("receiver created");
+    let _ = block_on(
+        bus.publish(
+            PublishRequest::new(
+                Topic::<String>::new("contract.ephemeral").expect("valid topic"),
+                "ephemeral payload".to_owned(),
+            )
+            .expect("valid publication"),
+        ),
+    )
+    .expect("publish accepted");
+    let ReceiveOutcome::Message(mut message) = block_on(first.receive(Duration::ZERO)).expect("receive succeeds")
+    else {
+        panic!("accepted delivery available")
+    };
+    assert!(message.take_settlement().is_some());
+    drop(first);
+    let mut second = block_on(spi.subscribe(local_ephemeral_request(812))).expect("fresh receiver created");
+    assert!(matches!(
+        block_on(second.receive(Duration::ZERO)).expect("receive succeeds"),
+        ReceiveOutcome::TimedOut
+    ));
+    block_on(second.close()).expect("closed");
+}
+
+#[test]
+fn test_spi_provider_id_defaults_to_unassigned() {
+    let provider = FakeEventBusSpi::new();
+
+    assert_eq!(provider.provider_id(), None);
+}
+
+#[test]
+fn test_spi_idle_wait_defaults_to_unsupported() {
+    let provider = FakeEventBusSpi::new();
+    let topic = TopicAddress::new("contract.idle").expect("valid topic");
+
+    assert_eq!(
+        provider.wait_for_topic_idle(&topic, Some(Duration::ZERO)).unwrap(),
+        None
+    );
 }

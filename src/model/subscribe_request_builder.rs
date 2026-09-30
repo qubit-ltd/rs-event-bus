@@ -104,7 +104,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned subscriber id."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn subscriber_id(mut self, value: SubscriberId) -> Self {
         self.subscriber_id = Some(value);
@@ -117,7 +117,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned topic."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
@@ -130,7 +130,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned ack mode."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn ack_mode(mut self, value: AckMode) -> Self {
         self.options.ack_mode = value;
@@ -275,7 +275,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned ordering policy."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn ordering_policy(mut self, value: OrderingPolicy) -> Self {
         self.options.ordering_policy = value;
@@ -301,7 +301,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned durability."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn durability(mut self, value: SubscriptionDurability) -> Self {
         self.options.durability = value;
@@ -314,7 +314,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned start position."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn start_position(mut self, value: StartPosition) -> Self {
         self.options.start_position = value;
@@ -402,6 +402,10 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
 
 impl<T: Send + Sync + 'static> Default for SubscribeRequestBuilder<T> {
     /// Creates a builder with no subscriber identity or topic.
+    ///
+    /// # Returns
+    /// A builder with default subscription options and both required fields
+    /// unset.
     fn default() -> Self {
         Self::new()
     }

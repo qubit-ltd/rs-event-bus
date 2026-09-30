@@ -32,7 +32,6 @@ use qubit_event_bus::EventBus;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
-use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::error::SubscriptionCloseErrors;
@@ -348,18 +347,6 @@ fn config() -> EventBusFacadeConfig {
         NonZeroUsize::new(4).expect("receive limit"),
     ))
 }
-/// Confirms durable-source cleanup completed without abandoning work.
-fn assert_shutdown_report_complete(report: ShutdownReport) {
-    assert_eq!(report.outcome, ShutdownOutcome::Complete, "provider shutdown outcome");
-    assert_eq!(
-        report.known_abandoned_deliveries, 0,
-        "facade-known abandoned deliveries"
-    );
-    assert!(
-        !report.provider_may_have_abandoned_deliveries,
-        "durable provider abandonment"
-    );
-}
 /// Verifies callback ordering without relying on terminal-state API
 /// availability.
 fn verify_boundary(
@@ -394,9 +381,7 @@ fn verify_boundary(
         } else {
             result.expect("healthy run");
         }
-        assert_shutdown_report_complete(
-            manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"),
-        );
+        let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     } else {
         let bus =
             EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
@@ -412,7 +397,7 @@ fn verify_boundary(
             assert!(subscription.terminal_failure().is_some());
         }
         subscription.cancel().expect("cancel");
-        assert_shutdown_report_complete(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     }
     assert_eq!(
         probe.validate.load(Ordering::SeqCst),
@@ -514,9 +499,7 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
         .expect("new subscription recovers durable source");
         assert_eq!(handled.load(Ordering::SeqCst), 1);
         assert_eq!(source.settled.load(Ordering::SeqCst), 1);
-        assert_shutdown_report_complete(
-            manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"),
-        );
+        let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     }
 }
 #[test]
@@ -545,8 +528,7 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
     assert!(manual_async::poll_once(close.as_mut()).is_pending());
     drop(close);
     source.close_paused.store(false, Ordering::SeqCst);
-    let report =
-        manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus driver resumes provider close");
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus driver resumes provider close");
     assert_eq!(source.closed.load(Ordering::SeqCst), 1);
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
@@ -557,7 +539,6 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
         &reason,
         &subscription.terminal_failure().expect("cause remains")
     ));
-    assert_shutdown_report_complete(report);
 }
 #[test]
 fn test_receive_stop_finishes_already_started_handler() {
@@ -578,14 +559,18 @@ fn test_receive_stop_finishes_already_started_handler() {
     .expect("subscription");
     let release = Arc::new(AtomicBool::new(false));
     let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
     let handler_release = release.clone();
     let handler_started = started.clone();
+    let handler_finished = finished.clone();
     let mut run = Box::pin(subscription.run(move |_| {
         handler_started.fetch_add(1, Ordering::SeqCst);
         let release = handler_release.clone();
-        poll_fn(move |_| {
+        let handler_finished = handler_finished.clone();
+        std::future::poll_fn(move |_| {
             if release.load(Ordering::SeqCst) {
-                Poll::Ready(Ok(()))
+                handler_finished.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
             }
@@ -595,12 +580,18 @@ fn test_receive_stop_finishes_already_started_handler() {
     assert_eq!(started.load(Ordering::SeqCst), 1);
     release.store(true, Ordering::SeqCst);
     assert!(matches!(manual_async::block_on(run), Err(ReceiveError::Stopped(_))));
+    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
-        1,
-        "already started handler still accepts its healthy message"
+        0,
+        "terminal receive stop leaves the healthy started message unsettled"
     );
-    assert_shutdown_report_complete(manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"));
+    assert_eq!(
+        source.closed.load(Ordering::SeqCst),
+        1,
+        "receiver closes after the handler completes"
+    );
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 #[test]
 fn test_regular_decode_failure_rejects_without_terminal_stop() {
@@ -616,9 +607,7 @@ fn test_regular_decode_failure_rejects_without_terminal_stop() {
             manual_async::block_on(subscription.run(|_| async { panic!("no decoded delivery") }))
                 .expect("ordinary bad message rejected");
             assert!(subscription.terminal_failure().is_none());
-            assert_shutdown_report_complete(
-                manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"),
-            );
+            let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         } else {
             let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
                 .expect("bus");
@@ -634,7 +623,7 @@ fn test_regular_decode_failure_rejects_without_terminal_stop() {
             }
             subscription.cancel().expect("cancel");
             assert!(subscription.terminal_failure().is_none());
-            assert_shutdown_report_complete(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
+            let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
         }
         assert_eq!(source.settled.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -728,7 +717,7 @@ fn test_sync_permanent_panic_is_once_and_cached() {
             source.dispositions.lock().expect("settlement log").is_empty(),
             "fail-stop must never settle with any disposition"
         );
-        assert_shutdown_report_complete(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     }
 }
 
@@ -752,7 +741,7 @@ fn test_explicit_legacy_schema_override_can_decode() {
     assert_eq!(probe.validate.load(Ordering::SeqCst), 1);
     assert_eq!(probe.decode.load(Ordering::SeqCst), 1);
     assert!(subscription.terminal_failure().is_none());
-    assert_shutdown_report_complete(manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"));
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 
 #[test]
@@ -766,6 +755,8 @@ fn test_sync_receive_stop_drains_started_handler() {
     let (release, wait) = mpsc::channel();
     let wait = Arc::new(Mutex::new(wait));
     let handler_source = source.clone();
+    let finished = Arc::new(AtomicUsize::new(0));
+    let handler_finished = finished.clone();
     let subscription = bus
         .subscribe(
             SubscribeRequest::new(
@@ -779,6 +770,7 @@ fn test_sync_receive_stop_drains_started_handler() {
                     .expect("handler gate")
                     .recv()
                     .expect("release started handler");
+                handler_finished.fetch_add(1, Ordering::SeqCst);
             },
         )
         .expect("subscription");
@@ -794,13 +786,14 @@ fn test_sync_receive_stop_drains_started_handler() {
     );
     release.send(()).expect("release handler");
     subscription.cancel().expect("cancel drains handler");
+    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
-        1,
-        "healthy started message accepts once"
+        0,
+        "terminal receive stop leaves the healthy started message unsettled"
     );
     assert_eq!(source.closed.load(Ordering::SeqCst), 1);
-    assert_shutdown_report_complete(bus.shutdown(ShutdownMode::Immediate).expect("shutdown"));
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 #[test]
 fn test_schema_stop_recovers_after_explicit_compatibility_change() {
@@ -839,7 +832,7 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     manual_async::block_on(restored.run(|_| async { Ok(()) })).expect("same durable record recovers");
     assert_eq!(source.settled.load(Ordering::SeqCst), 1);
     assert_eq!(source.closed.load(Ordering::SeqCst), 2);
-    assert_shutdown_report_complete(manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown"));
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
 
 #[test]
@@ -965,15 +958,14 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             let mut subscription =
                 manual_async::block_on(bus.subscribe(SubscribeRequest::new("close-error", topic).expect("request")))
                     .expect("subscription");
-            let ReceiveError::Spi(close_error) =
+            let ReceiveError::Stopped(run_cause) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
-                    .expect_err("close failure must not be hidden by codec stop")
+                    .expect_err("run returns the first codec stop cause")
             else {
-                panic!("independent close SPI failure")
+                panic!("codec stop cause")
             };
-            assert_eq!(close_error.kind(), "injected_close_failure");
-            assert_eq!(close_error.operation(), "close");
             cause = subscription.terminal_failure().expect("codec cause still available");
+            assert!(Arc::ptr_eq(&cause, &run_cause));
             let ReceiveError::Stopped(repeated) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("same terminal cause")

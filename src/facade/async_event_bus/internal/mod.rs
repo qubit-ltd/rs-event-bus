@@ -37,3 +37,5 @@ pub(in crate::facade) use catch_spi_future::catch_spi_future as catch_spi_future
 pub(super) use shutdown_leader_guard::ShutdownLeaderGuard;
 pub(super) use shutdown_wait::ShutdownWait;
 pub(in crate::facade) use signal_registration::SignalRegistration;
+
+pub(super) mod scheduler_registration;

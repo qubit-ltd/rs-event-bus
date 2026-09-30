@@ -117,3 +117,6 @@ pub use duplicate_risk_policy::DuplicateRiskPolicy;
 
 mod subscription_stop_reason;
 pub use subscription_stop_reason::SubscriptionStopReason;
+
+mod settlement_termination;
+pub use settlement_termination::SettlementTermination;
