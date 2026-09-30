@@ -4,49 +4,89 @@
 
 ## 从 0.17 升级到 0.18
 
-当前托管消费者使用 `qubit-event-bus = "0.18"` 和 `qubit-ioc = "0.3"`。
-这些版本通过本地联合检出准备；尚未发布的依赖必须明确使用 path/patch，不能
-依赖注册表里的旧版本。消费者及 EventBus 的最终外部 commit pin 要等真实版本
-提交产生后再填写。历史下游 lane 继续使用原来固定的 EventBus 0.15 源码，不覆盖
-本次新增的托管关闭和最终 flush 能力。本轮只协调 EventBus、IoC 和执行服务
-消费者。五仓 metadata 门禁还覆盖 rs-task 与 rs-event-bus-redis；它们仍有 0.17
-依赖，须另行协调升级，才能在 0.18 通过该门禁。那些项目中的历史 0.17 示例
-不能作为当前 0.18 的验证证据。
+协调版本为 `qubit-event-bus = "0.18.0"`、`qubit-event-bus-redis = "0.6.0"`、`qubit-task = "0.9.0"`。所有根与消费 fixture 必须解析同一个本地 core 0.18；IoC/执行服务仅迁移 fixture，不提升生产版本。更新锁文件并运行 ecosystem metadata 门禁。
 
-### 分开关闭请求与完成等待
+### 把接手数量与执行额度分开
 
-| 原集成方式 | 0.18 集成方式 |
-| --- | --- |
-| 在同步停止或回滚回调中调用 `EventBus::shutdown` | 调用 `request_shutdown(mode)`，保留 `EventBusShutdown` ticket |
-| 回调阻塞到 provider 和 handler 都结束 | 在托管 wait future 中调用 `ticket.wait_async().await` |
-| 取消观察后重新请求关闭 | 保留 ticket，再次等待；取消不会重发请求 |
+旧同步 `max_in_flight` 同时限制等待与执行，异步使用另一套 admission 配置：
 
-`request_shutdown(ShutdownMode::Graceful { timeout })` 会关闭新工作的接纳入口，
-启动或加入后台关闭，不等待 handler 或 provider 完成。mode 中的 timeout 传给
-provider；`ticket.wait(Some(timeout))` 只限制这一次同步观察。
-`wait_async()` 没有内置期限，异步观察预算由应用或 IoC `WaitPolicy` 提供。
-同步 `shutdown` 仍是请求加阻塞等待：Graceful 使用自己的 timeout 限制观察，
-Immediate 则没有调用方期限。需要有限终止预算时，应请求 Immediate 后再进行
-有界观察。两种模式都无法强行停止阻塞的同步代码。
+```rust
+// Before: 0.17; historical API, removed in 0.18.
+let sync = EventBusFacadeConfig::new()
+    .with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(4, 0)?);
+let asynchronous = EventBusFacadeConfig::new()
+    .with_delivery_admission(DeliveryAdmissionConfig::new(4)?);
+```
 
-ticket 保留确切的关闭代次。多次请求可加入同一代，Immediate 可以加强正在
-进行的 Graceful，而已有 ticket 继续观察原代。取消 `wait_async` future 只移除
-自己的 waker 登记；保留 ticket 后可以重复观察，丢弃 ticket 也不会取消后台关闭。
-协调线程启动失败时，已加入的 ticket 仍能看到该代错误，不会误读后来重试的结果。
-已经关闭的 bus 返回携带缓存报告的就绪 ticket。仅丢弃 `EventBus` 句柄不会发起关闭。
+两种 facade 现在共用以下四参数配置及独立结算预算：
 
-IoC 适配器保留一个共享 ticket 槽：graceful 回调保存请求的 ticket；abort 回调
-请求 Immediate，但不替换已保存或正在观察的 ticket；一次性 wait future 取出
-原 ticket，释放槽锁后再等待。请求失败应保留为 `CleanupError`。abort 回调不能
-调用阻塞 `shutdown`，也不能用 `spawn_blocking` 包装它来冒充非阻塞请求。
-取消 `ShutdownHandle::wait` 后，其拥有的资源 wait 仍可继续观察。
+```rust
+use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
+use std::time::Duration;
 
-正常应用通过 `Application::begin_shutdown(ShutdownMode::Graceful)` 和有界
-`WaitPolicy` 关闭，消费者结束后再关闭依赖。失败清理请求 Immediate，应用通过
-`BuildFailure::take_cleanup()` 取出所有权，再显式等待 `ShutdownHandle::wait()`。
-报告中的 `incomplete` 表示没有确认资源终止，不表示资源已被杀死。终止预算耗尽
-后仍会继续关闭依赖，因此不能继续保证未结束消费者的依赖可用。具体代码见
-[请求与观察示例](user_guide.zh_CN.md#请求关闭并异步观察)。
+use qubit_event_bus::facade::DeliverySchedulingConfig;
+use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::facade::SettlementRetryConfig;
+
+let scheduling = DeliverySchedulingConfig::new(
+    NonZeroUsize::new(4).unwrap(),   // running handlers
+    NonZeroUsize::new(256).unwrap(), // globally owned deliveries
+    NonZeroUsize::new(32).unwrap(),  // owned per subscription
+    NonZeroUsize::new(256).unwrap(), // registered subscriptions
+)?;
+let settlement = SettlementRetryConfig::new(
+    NonZeroU32::new(5).unwrap(),
+    Duration::from_secs(5),
+    Duration::from_millis(10),
+    Duration::from_secs(1),
+)?;
+let config = EventBusFacadeConfig::new()
+    .with_delivery_scheduling(scheduling)
+    .with_settlement_retry(settlement);
+```
+
+四项调度参数均为非零值；running、per-subscription 不得超过全局 owned。owned 包括 receive 预留、排队、执行和结算；暂停 session 仍计订阅数。旧 `queue=0` 的直接交接不再有同义开关：可选 `owned=running=4`、`per_subscription=4` 来压低预取，但其中仍包括 receive/settlement，不能把它当旧语义的精确替代。新默认是 4/256/32/256；旧公开配置、builder 与 getter 没有兼容别名。
+
+### 采用有限结算重试与结构化诊断
+
+旧结算逻辑没有明确的公共总尝试/耗时预算；新配置默认 5 次（含首次）、5 秒、10 ms 初始退避和 1 秒上限。只有 `retryable()==Some(true)` 重试；`None` 默认停止，false 立即停止。handler 不因结算错误重跑，token/disposition 不变；已在途调用不受该预算强制中断。终止只停止所属订阅，保留首个原因。
+
+```rust
+// Before: error was a display string; do not classify by its text.
+if let Diagnostic::SettlementFailed { error, .. } = diagnostic {
+    eprintln!("{error}");
+}
+```
+
+```rust
+use std::error::Error;
+
+use qubit_event_bus::pipeline::Diagnostic;
+
+// After: borrow the real SpiError and its original source chain.
+match diagnostic {
+    Diagnostic::SettlementFailed { attempt, error, .. } => {
+        eprintln!("attempt={attempt}, retryable={:?}, source={:?}", error.retryable(), error.source());
+    }
+    Diagnostic::SettlementStopped { attempts, termination, error, .. } => {
+        eprintln!("stopped after {attempts}: {termination:?}, source={:?}", error.source());
+    }
+    _ => {}
+}
+```
+
+`SettlementFailed.error` 从字符串改为 `Arc<SpiError>`，新增 `attempt`；`SettlementStopped` 提供 attempts、termination 与同一结构化 error。保留 `terminal_failure()`，读取 bus/订阅的 `delivery_metrics()` 后修复原因，关闭旧订阅，再以同一 durable group 建立新订阅恢复未终结工作。provider 可能已应用结算，不能保证每次失败一定重投；local 重新订阅不能恢复丢弃消息。
+
+### 更新重发与关闭分支
+
+从“最后 ACK 无人接纳就整条重发”改为先检查 `receipt.duplicate_possible()`：为 true 时按 event ID 核对；为 false 且 `NoDestinations`/`NoneAccepted` 才考虑整条重发。部分接纳只修复被拒目标，拦截器 `Dropped` 不自动重发。`check_admission` 不检查历史。
+
+删除“Graceful 超时后 Immediate 救援”的示例；使用两次各带期限的 Graceful，把 `TimedOut` 当尚未完成，其他错误传播，最终 false 记录快照并交外部监督器。该策略不证明不合作 handler 会结束或进程会自动退出。完整可执行双语例子见[用户手册](user_guide.zh_CN.md)。Redis `XADD` Accepted 不承诺 fsync，已有组的 StartPosition 不重置 cursor，PEL 受 trimming/claim 策略影响。任务通知仍以 `state_version` 缺口触发权威查询，不能回滚已持久化状态。
+
+同步回调或异步应用需要不阻塞地发起停机时，改用 `EventBus::request_shutdown(mode)` 并保留 `EventBusShutdown` ticket。可在应用 executor 上调用 `wait_async().await`，或通过 `wait(Some(timeout))` 同步观察；取消异步观察或同步等待超时都不会取消清理。丢弃 ticket 只释放观察者。`AsyncEventBus` 仍使用调用方驱动的异步 `shutdown` API。详见[非阻塞地请求停机](user_guide.zh_CN.md#非阻塞地请求停机)。
+
+以下保留早期版本迁移步骤，供跨版本升级时逐项处理。
 
 ## 从 0.16 升级到 0.17
 

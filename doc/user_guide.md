@@ -39,7 +39,6 @@ This guide covers `qubit-event-bus` 0.18.0 on Rust 1.94 or later. It is for Rust
   - [Drain the queue during shutdown](#drain-the-queue-during-shutdown)
 - [Lifecycle, waiting, and shutdown](#lifecycle-waiting-and-shutdown)
   - [Shut down a sync bus](#shut-down-a-sync-bus)
-  - [Request shutdown and observe it asynchronously](#request-shutdown-and-observe-it-asynchronously)
   - [Wait for a topic to become idle](#wait-for-a-topic-to-become-idle)
   - [Shut down an async bus](#shut-down-an-async-bus)
 - [Errors, diagnostics, and troubleshooting](#errors-diagnostics-and-troubleshooting)
@@ -93,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    bus.shutdown(ShutdownMode::Graceful {
+    let _ = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
     Ok(())
@@ -101,20 +100,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 
-Version 0.18.0 is not yet published. With the application directory beside
-`rs-event-bus`, use a local checkout for both direct and transitive resolution:
+Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus" }
-
-[patch.crates-io]
-qubit-event-bus = { path = "../rs-event-bus" }
+qubit-event-bus = "0.18"
 ```
-
-Adjust the path for your layout. Only after publication can you remove the
-path/patch and use `qubit-event-bus = "0.18"` from the registry; see the
-[0.18 migration](migration.md#upgrade-from-017-to-018).
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
 
@@ -255,7 +246,11 @@ Publish `OrderCreated` only after `create_and_commit` returns successfully. The 
 use qubit_event_bus::model::AdmissionRequirement;
 
 let receipt = orders::service::create_order(repository, &order_bus, command)?;
-receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+if receipt.duplicate_possible() {
+    eprintln!("reconcile uncertain publication by event ID: {}", receipt.input_event_id().as_str());
+} else {
+    receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+}
 ```
 
 This check only means that at least one subscriber admitted the message and that no subscriber explicitly rejected it. It does **not** mean the audit record and the customer view have been written. The next section, [Check the publication result](#check-the-publication-result), shows what else the receipt contains and how to tell the failure cases apart. The order commit and the publication are separate operations. A process exit or a publish failure after the commit leaves an order with no event. If the audit record must be durable, write a pending event (an outbox row) in the same order transaction and let a background task publish and compensate. Retrying the whole order request does not close that gap.
@@ -341,32 +336,67 @@ When one order event goes to both audit and the customer view, the two condition
 
 After publishing, the order service checks the stricter condition and branches on the failure:
 
-```rust
-use qubit_event_bus::model::AdmissionCheckError;
-use qubit_event_bus::model::AdmissionRequirement;
+Check history for the whole logical publication before interpreting the final admission. These two compiled files define an application decision; they do not publish automatically. `Dropped` does not republish; `NoAcceptedDestination` belongs to `AdmissionCheckError`, not `AdmissionOutcome`.
 
-let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
-match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected) {
-    Ok(()) => {}
-    Err(AdmissionCheckError::RejectedDestinations { count }) => {
-        // Audit may already have admitted the event. Do not republish the whole event.
-        // Find the rejecting subscriber and repair only that part.
-        eprintln!("{count} subscribers rejected order {}", receipt.input_event_id().as_str());
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/republish_action.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Application decisions after examining publication evidence.
+
+/// A decision for the application; this enum performs no publication itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum RepublishAction {
+    /// Query by the original event ID or use an idempotent reconciliation path.
+    ReconcileByEventId,
+    /// No attempt admitted the event; a whole-event retry can be considered.
+    RepublishWhole,
+    /// Repair only rejected destinations; others have already accepted.
+    RetryRejectedDestinations,
+    /// Do not automatically repeat accepted, opaque, or intentionally dropped work.
+    NoRepublish,
+}
+```
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/receipt_safety.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Check retained history before the final attempt's admission summary.
+
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishReceipt;
+
+use crate::republish_action::RepublishAction;
+
+/// Chooses an application action without publishing or altering the receipt.
+#[must_use]
+#[inline]
+pub fn republish_action(receipt: &PublishReceipt) -> RepublishAction {
+    if receipt.duplicate_possible() {
+        return RepublishAction::ReconcileByEventId;
     }
-    Err(AdmissionCheckError::NoAcceptedDestination) => {
-        // Nobody subscribed, or destinations were found and none admitted the event.
-        // Republishing the whole event is safe.
-        eprintln!("no subscriber admitted the order event");
-    }
-    Err(AdmissionCheckError::VisibilityUnavailable) => {
-        // The transport did not list subscribers, so a rejection cannot be ruled out.
-        eprintln!("the receipt does not report per-subscriber admission");
-    }
-    Err(AdmissionCheckError::Dropped) => {
-        eprintln!("a publish interceptor dropped the order event before delivery");
+    match receipt.admission_outcome() {
+        AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
+            RepublishAction::RepublishWhole
+        }
+        AdmissionOutcome::PartiallyAccepted(_) => RepublishAction::RetryRejectedDestinations,
+        _ => RepublishAction::NoRepublish,
     }
 }
 ```
+
 
 `Filtered` on a receipt means the transport decided, during admission, that the message does not belong to that subscriber. It is not a rejection: if another subscriber admitted the message, both conditions pass. It is not an admission either: if every destination is `Filtered`, `accepted` is 0, the outcome is `NoneAccepted`, and both conditions return `NoAcceptedDestination`. A full queue is a rejection (`Rejected`). Do not treat the two as the same thing. Only a transport that can evaluate a filter during admission reports `Filtered`. The built-in local provider does not. On local, a subscription `filter` runs after the bus has already taken the message. A filtered order still shows as `Accepted` on the receipt; its handler is simply not called.
 
@@ -393,6 +423,27 @@ On a partial admission, do not republish the original event unchanged. Audit has
 
 The basic order integration ends here. The following sections are optional: extra publish metadata and ordering first, then subscriber failure handling and interception, then capacity, third-party implementations, async use, and shutdown.
 
+### Diagnose settlement termination and restore consumption
+
+Settlement retry is separate from rerunning a business handler. `SettlementRetryConfig::default()` permits 5 attempts including the first, a 5-second elapsed budget, 10 ms initial backoff, and a 1-second backoff cap. Only `SpiError::retryable() == Some(true)` retries. `Some(false)` stops immediately and `None` stops conservatively. Attempts use the same token and disposition; the handler is not rerun. A retry budget does not interrupt an in-flight blocking SPI call or a future that never becomes ready.
+
+On permanent failure, exhausted attempts/deadline, invalid token, panic, or timer/infrastructure failure, that subscription stops receiving and starting handlers. Its first `SubscriptionStopReason::Settlement` preserves event ID, disposition, attempts, termination and `Arc<SpiError>` with the source chain. Already-started handlers may finish; other subscriptions continue. Inspect the retained reason and snapshots:
+
+```rust
+if let Some(reason) = subscription.terminal_failure() {
+    eprintln!("stopped: {reason:?}");
+}
+let per_subscription = subscription.delivery_metrics();
+let global = bus.delivery_metrics();
+eprintln!("subscription={per_subscription:?}, global={global:?}");
+```
+
+The bus snapshot exposes `reserved_receives`, `queued`, `running_handlers`, `settling`, and `lane_waiting` (a subset of queued), plus settlement attempts/retries/terminal failures, completed/abandoned counts, handler and settlement duration totals/counts/maxima, and `oldest_owned_age`. Gauges and totals need not be a transactionally consistent cross-thread read. Closed handles keep their final subscription counts; the bus retains aggregate counters, not a permanent index of every event or key. Native payload size and codec allocations remain outside these count bounds.
+
+For an order consumer that stops, retain the reason and `Diagnostic::SettlementFailed` / `SettlementStopped`, fix the provider, codec, capacity, or policy, close the old subscription, then create a new subscription with the same durable group. Redis can claim outstanding PEL work under its configured policy; entries already ACKed cannot be recovered by replaying the failure alone. Local resubscription starts empty, so use application compensation. Async `run` reports `ReceiveError::Stopped`; rerunning that same stopped handle does not clear the reason. Merely cancelling a live `run` future pauses its owned tasks and timers; resume `run` or let shutdown take over.
+
+Diagnostic observers run synchronously on the emitting executor. Forward records through an application-owned bounded, nonblocking queue; panic isolation does not isolate a slow observer.
+
 ## Add message details when needed
 
 `PublishRequest::new(topic, payload)?` is enough to publish, and it generates an event id. Use the request builder when you need to choose the id, attach a request id for log correlation, or control processing order for one customer:
@@ -417,7 +468,7 @@ To publish several events of the same type, call `publish_all`. It tries each in
 
 ## Keep events for one object in order
 
-By default the bus does **not** promise that a subscriber handles events in publish order. The default `ordering_policy` is `OrderingPolicy::Unordered`. On the built-in local bus, both the sync and async buses allow up to 4 handlers to run at once. Two events received by the same subscriber can be in progress together, and a later publication can finish first. Other transports decide their own behavior. Do not assume order.
+By default the bus does **not** promise that a subscriber handles events in publish order. The default `ordering_policy` is `OrderingPolicy::None`. On the built-in local bus, both the sync and async buses allow up to 4 handlers to run at once. Two events received by the same subscriber can be in progress together, and a later publication can finish first. Other transports decide their own behavior. Do not assume order.
 
 Many cases depend on order. The customer-view module keeps “the latest order” for each customer. Customer `customer-7` places `order-42` and then `order-43`. If the two `OrderCreated` events run concurrently, `order-43` can be written first and then overwritten by `order-42`, so the view treats the earlier order as the latest. Balance changes and order-status transitions have the same problem whenever a later event depends on the earlier result.
 
@@ -450,8 +501,8 @@ let subscription = bus.subscribe(request, handler)?;
 
 With both sides configured, the customer-view subscription behaves as follows:
 
-- **Same key.** `order-42` and `order-43` for `customer-7` are handled one after another, in the order they entered this subscription. The handler for `order-43` starts only after the handler for `order-42` returns.
-- **Different keys.** An event for `customer-8` uses another lane and does not wait for `customer-7`. If a `customer-7` handler stalls, `customer-8` continues.
+- **Same key.** `order-42` and `order-43` for `customer-7` are handled one after another, in the order they entered this subscription. The handler for `order-43` starts only after `order-42` settles; termination does not start successors.
+- **Different keys.** An already-received, eligible `customer-8` event can progress independently when a handler slot is available. Receiving B requires owned capacity: an infinite upstream backlog of A, or exhausted capacity, can prevent B from being received. Round-robin fairness across subscriptions and keys applies only to eligible work while executors keep progressing.
 - **Other subscriptions.** Ordering applies only to a subscription that requested `PerKey`, and each subscription orders itself. If audit did not request `PerKey`, its `customer-7` events can still arrive out of order. Which of the two subscriptions runs first is not guaranteed.
 - **Other topics.** Lanes are per topic. Events with the same key on `orders.created` and on another topic are not ordered against each other. To order across event types, put those events on one topic, for example with an enum payload.
 
@@ -710,47 +761,41 @@ let local = LocalEventBusConfig::new()
 let bus = EventBus::local(local)?;
 ```
 
-`queue_capacity` limits how many messages **one subscriber** may have outstanding. The default is 1,024. `max_total_outstanding` limits outstanding deliveries **across every subscriber of this local instance**. The default is 65,536. A message that has been taken but not finished counts, and a retry keeps its slot. Both values must be greater than zero. The unit is a delivery, not a byte. When a queue is full, that subscriber may reject the message while others still accept it. Finishing a handler, or shutting down, releases the slot. Size these from measured handling speed and memory. A message count is not a memory budget.
+`queue_capacity` limits how many messages **one subscriber** may have outstanding. The default is 1,024. `max_total_outstanding` limits outstanding deliveries **across every subscriber of this local instance**. The default is 65,536. A message that has been taken but not finished counts, and a retry keeps its slot. Both values must be greater than zero. The unit is a delivery, not a byte. When a queue is full, that subscriber may reject the message while others still accept it. Terminal settlement or provider cleanup releases the outstanding slot; handler completion alone does not. Size these from measured handling speed and memory. A message count is not a memory budget.
 
-Besides the local outstanding limits, the bus object limits how many messages it takes on at once. A sync bus takes at most 4 by default, counting messages in progress and messages waiting to run. The handler wait queue has a separate capacity of 32, but the number that can actually wait is still bounded by that limit of 4. An async bus handles at most 4 messages at once by default. Change these through `EventBusFacadeConfig`. `Facade` in that type name is the API name; in this guide it means the bus-wide settings. This example raises the sync intake limit to 8 and the wait-queue capacity to 64:
+Both facades use `DeliverySchedulingConfig`: defaults are 4 running handlers, 256 owned deliveries globally, 32 owned deliveries per subscription, and 256 registered subscriptions. Owned includes a pre-receive reservation, queued, running, and settling work. Reservation happens before receive, with no extra pending message outside the limit. Same-key queues and settlement backoff do not consume handler slots; a lane stays owned until settlement succeeds or the subscription terminates. All four parameters are `NonZeroUsize`; running and per-subscription limits must not exceed the global owned limit.
 
 ```rust
+use std::num::NonZeroUsize;
+
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
-let local = LocalEventBusConfig::new()
-    .queue_capacity(2_048)
-    .max_total_outstanding(20_000);
-let bus_settings = EventBusFacadeConfig::new()
-    .with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(8, 64)?);
+let scheduling = DeliverySchedulingConfig::new(
+    NonZeroUsize::new(8).unwrap(),
+    NonZeroUsize::new(256).unwrap(),
+    NonZeroUsize::new(32).unwrap(),
+    NonZeroUsize::new(64).unwrap(),
+)?;
+let local = LocalEventBusConfig::new().queue_capacity(2_048).max_total_outstanding(20_000);
 let config = EventBusConfig::default()
     .with_provider_options(local.provider_options())
-    .with_facade_config(bus_settings);
+    .with_facade_config(EventBusFacadeConfig::new().with_delivery_scheduling(scheduling));
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-The first argument of `SyncDeliverySchedulerConfig::new` must be greater than zero. The second may be 0, which means a message can be handed only to an idle worker immediately. The sync facade also allows at most 256 live subscription receiver threads by default. Set `SyncDeliverySchedulerConfig::with_max_subscription_workers(NonZeroUsize::new(64).unwrap())` to choose another limit. A subscription over the limit fails before the provider is asked to create it. This bounds thread count; it does not reduce the cost of each blocking receiver. Consider the async bus when the application needs more subscriptions. Creating local through the registry requires passing `local.provider_options()` on `EventBusConfig`. Those options contain the keys `local.queue_capacity` and `local.max_total_outstanding`. An unknown key, a non-numeric value, or zero is rejected at creation. `EventBus::local` sets only the local outstanding capacity. To change handler concurrency, codecs, or interceptors, create the bus with `EventBusRegistry::with_local()`.
+The registration limit bounds sync receiver threads and async sessions; a paused async subscription still counts. Excess registration fails before provider subscription creation. Both capacity keys in `local.provider_options()` must be positive; unknown keys and nonnumeric values fail creation. `EventBus::local` sets provider capacity; use registry assembly for facade configuration.
 
 For encoded transports, `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))` sets two positive `NonZeroUsize` limits. Both default to 1,048,576 bytes; exactly the limit is allowed. Publishing checks completed codec output before calling the provider; receiving checks bytes before any codec callback. There is no unlimited setting. This does not cap allocations inside encoding or the transport client. Native Rust payloads have no byte-size check because their retained memory cannot be measured reliably by the facade. Local queue limits count deliveries, not bytes.
 
-The async bus uses `LocalEventBusConfig` as well. This example allows 8 messages in progress at once:
+The async bus reuses the same `config`, changing only assembly:
 
 ```rust
 use qubit_event_bus::AsyncEventBusRegistry;
-use qubit_event_bus::DeliveryAdmissionConfig;
-use qubit_event_bus::EventBusConfig;
-use qubit_event_bus::EventBusFacadeConfig;
-use qubit_event_bus::local::LocalEventBusConfig;
 
-let local = LocalEventBusConfig::new().queue_capacity(2_048);
-let bus_settings = EventBusFacadeConfig::new()
-    .with_delivery_admission(DeliveryAdmissionConfig::new(8)?);
-let config = EventBusConfig::default()
-    .with_provider_options(local.provider_options())
-    .with_facade_config(bus_settings);
 let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 ```
 
@@ -772,11 +817,10 @@ This crate currently ships only the `local` implementation, an in-process bus. I
 
 Suppose a crate connects to a message server. Add that crate as a dependency, then tell the bus to use it. One way is explicit registration: build `EventBusRegistry::new()`, call `register` with that implementation, then `create(&config)`. Sync implementations go in `EventBusRegistry`. Async implementations go in `AsyncEventBusRegistry`, and async creation uses `.await`. `provider_ids()` lists registered ids. `EventBusConfig::with_selection` selects one of them.
 
-Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked. Before publication,
-keep the same local path and `[patch.crates-io]` entry shown above:
+Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus", features = ["discovery"] }
+qubit-event-bus = { version = "0.18", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -796,6 +840,39 @@ let bus = registry.create(&EventBusConfig::default())?;
 Replace `provider_crate` and `your-provider-id` with the real crate name and the id from its documentation. If the program cannot find an implementation, inspect `provider_ids()` first. `discover()` fails when two implementations use the same selection name. The built-in `local` provider auto-registers only in the **synchronous** catalog. Async local has to be added explicitly with `AsyncEventBusRegistry::with_local()`. The sync and async catalogs are not interchangeable. Both local implementations use the id `local`, and they can also be selected as `memory` or `in-process`. Sync local can also be added explicitly with `EventBusRegistry::with_local()`.
 
 `EventBusConfig::with_provider_options` passes that implementation's own configuration. `with_facade_config` configures how the bus handles messages. `with_required_capabilities` states what the application requires. `RequiredCapabilities::new().durable()` means “messages must be persistable.” The built-in local provider cannot do that, so creation fails. The registry tries another candidate only **when the bus is created**. A publish or receive failure at runtime does not switch implementations. `ProviderOptions` can appear in debug output. Do not put a password or a token there.
+
+### Compare local and Redis capabilities
+
+These are the actual `EventBusCapabilities` values for both sync and async providers:
+
+| Capability | local (core 0.18) | Redis Streams (provider 0.6) |
+| --- | --- | --- |
+| `payload_modes` | `Native` | `Encoded` (register a codec) |
+| `durability` | `Ephemeral` | `Durable` |
+| `subscription_modes` | `EPHEMERAL` | `DURABLE` |
+| `consumer_groups` | `false` | `true` |
+| `replay` | `None` | `Position` |
+| `ordering` | `PerKey` | `None`; per-key requests are rejected |
+| `delayed_delivery` | `Native` | `None`; delay requests are rejected |
+| `settlement` | `AcceptRetryReject` | `AcceptRetryReject` |
+| `publish_guarantee` | `Accepted` | `Accepted` (successful `XADD`, not fsync) |
+| `publish_visibility` | `DestinationAdmissions` | `Opaque` |
+| Close / recovery | Close/drop can discard backlog; resubscription starts empty | Close/drop does not silently ACK; unsettled entries follow PEL claim/recovery policy |
+
+For Redis, `StartPosition` initializes a newly created durable group; it does not reset an existing group's cursor. PEL recovery can be affected by stream trimming and claim policy. A settlement error can arrive after Redis applied `XACK`, so failure does not prove an entry will be delivered again. Publish acceptance proves neither disk fsync nor handler completion. For order-transaction atomicity, implement an application outbox and idempotent consumers.
+
+### Run the Redis order examples
+
+The provider repository contains the real [sync source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs), [async source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs), [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.md), and [user guide](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.md). Run these from an `rs-event-bus-redis` 0.6 checkout against an explicitly chosen disposable Redis server:
+
+```bash
+export EVENT_BUS_REDIS_URL='redis://127.0.0.1:16379/'
+export EVENT_BUS_EXAMPLE_NAMESPACE="docs-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+cargo run --locked --all-features --example sync_orders -- "$EVENT_BUS_REDIS_URL" "$EVENT_BUS_EXAMPLE_NAMESPACE-sync"
+cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_URL" "$EVENT_BUS_EXAMPLE_NAMESPACE-async"
+```
+
+Each example registers `Utf8Codec` for `String` with `ContentType("text/plain")`, selects `redis-streams`, and supplies `redis.url` / `redis.namespace`. It creates durable group `billing` at `StartPosition::Earliest` before publishing. The sync example prints `consumed order event: order-42`; the async example prints `consumed order event: order-43`, then the user presses Enter to stop it. Wait for that delivery line before pressing Enter. Namespaces must be unique so an old group or record cannot affect the result. A missing codec fails configuration; a Redis connection failure is not admission. For automated verification, first run `cargo build --locked --all-features --examples`, then `cargo test --locked --all-features --test documentation_examples_tests` in the provider checkout: its disposable `RedisServer` fixture owns the server and namespace. Core documentation fixtures do not depend on Redis; these external files are links, never source-checker path exceptions.
 
 ### Write a transport yourself
 
@@ -883,6 +960,8 @@ This application module imports `OrderCreated` from the `orders::events` module 
 // =============================================================================
 //! Order-event codec compiled from the bilingual user guides.
 
+use std::io::Error;
+use std::str::from_utf8;
 use std::sync::Arc;
 
 use qubit_event_bus::CodecError;
@@ -905,12 +984,17 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
     }
 
     fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
-        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
+        let text = format!(
+            "{}\n{}\n{}",
+            value.order_id, value.customer_id, value.total_cents
+        );
         Ok(Arc::from(text.into_bytes()))
     }
 
     fn decode(&self, payload: &EncodedPayload) -> Result<OrderCreated, CodecError> {
-        let text = std::str::from_utf8(payload.bytes()).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        let text = from_utf8(payload.bytes()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })?;
         let mut lines = text.lines();
         let order_id = lines.next().unwrap_or("").to_owned();
         let customer_id = lines.next().unwrap_or("").to_owned();
@@ -918,10 +1002,14 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
             .next()
             .unwrap_or("")
             .parse::<u64>()
-            .map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+            .map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })?;
         if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
             return Err(CodecError::Decode {
-                source: Box::new(std::io::Error::other("expected order_id, customer_id, and total_cents")),
+                source: Box::new(Error::other(
+                    "expected order_id, customer_id, and total_cents",
+                )),
             });
         }
         Ok(OrderCreated {
@@ -985,6 +1073,7 @@ Pass `config` to the registry `create` for the encoded provider, the same way th
 // =============================================================================
 //! Asynchronous local delivery example compiled by the user-guide checks.
 
+use std::error::Error;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -993,16 +1082,20 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use tokio::main;
+use tokio::spawn;
+use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::timeout;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn Error>> {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
     let topic = Topic::<String>::new("orders.created")?;
     let mut subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let runner = tokio::spawn(async move {
+    let (sender, mut receiver) = unbounded_channel();
+    let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
@@ -1015,7 +1108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
         .await?;
-    let delivered = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await?;
+    let delivered = timeout(Duration::from_secs(3), receiver.recv()).await?;
     assert_eq!(delivered.as_deref(), Some("order-42"));
     bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -1082,7 +1175,9 @@ let notifier = NotificationPublisher::new(
     NonZeroUsize::new(1_024).expect("capacity is non-zero"),
     |outcome| match outcome {
         NotificationOutcome::Published(receipt) => {
-            if let Err(error) =
+            if receipt.duplicate_possible() {
+                eprintln!("reconcile uncertain event {}", receipt.input_event_id().as_str());
+            } else if let Err(error) =
                 receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
             {
                 eprintln!("order event {} admission problem: {error}", receipt.input_event_id().as_str());
@@ -1167,116 +1262,101 @@ Startup order is: create the bus, register every handler, then start accepting b
 
 ### Shut down a sync bus
 
-This is the shutdown path of the order service on the sync bus. `bus`, `audit_subscription`, `view_subscription`, and `notifier` are the handles created at startup and kept by the application. Run this from the outermost shutdown path of the program, for example after a termination signal:
+Stop business ingress first, then drain notification sources with a deadline. Avoid an unbounded subscription-cancel wait before the bounded shutdown. Call `try_shutdown` from the outer application shutdown path; the async equivalent is `try_shutdown_async` in the same compiled file. Both waits use `Graceful`, for 2 seconds then 1 second.
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Two bounded waits hand unresolved cleanup back to the application supervisor.
+
+use std::time::Duration;
+
+use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::error::ShutdownError;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
+
+/// Waits twice for graceful completion, without forcing running handlers to stop.
+///
+/// Returns `false` after both waits expire or the provider reports incomplete
+/// shutdown. The application should record metrics and hand control to its
+/// external supervisor. Errors other than a caller deadline are propagated.
+pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
+    match bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(2),
+    }) {
+        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
+        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    match bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }) {
+        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
+        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Applies the same bounded policy while the caller drives async shutdown.
+///
+/// Returns `false` if cleanup remains incomplete; other shutdown errors propagate.
+/// Cancelling this future leaves shutdown state for the coordinator to resume.
+pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownError> {
+    match bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(2),
+        })
+        .await
+    {
+        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
+        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    match bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(1),
+        })
+        .await
+    {
+        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
+        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+```
+
+`true` means a `Complete` report; `false` means cleanup remains incomplete after both waits. Record `bus.delivery_metrics()`, each subscription’s `terminal_failure()` and snapshot, and hand process policy to an external supervisor. `TimedOut` is a caller deadline; other errors propagate. `ShutdownReport::known_abandoned_deliveries` counts known abandonment, while `provider_may_have_abandoned_deliveries` warns of additional provider loss that cannot be counted precisely; local is ephemeral.
+
+Bounded waiting does not force process exit. The sync background coordinator may keep waiting for an uncooperative handler or SPI operation. `Immediate` also cannot interrupt running user code and is not a bounded timeout rescue. Waiting for this bus from its own handler can return `WouldDeadlock`.
+
+### Request shutdown without waiting
+
+`EventBus::request_shutdown(mode)` closes admission and returns an `EventBusShutdown` ticket while a background coordinator performs cleanup. This is safe to call from a handler; wait for the ticket only after returning from bus-owned work. `ticket.wait(Some(timeout))` bounds this caller's wait without cancelling shutdown, and `ticket.wait_async().await` observes completion without blocking a thread or requiring a runtime. Dropping the ticket only releases that observer; shutdown continues. A later request joins the active attempt, and an `Immediate` request can strengthen a graceful attempt. `Immediate` still cannot interrupt a running handler or provider call, and the background coordinator may continue waiting after a caller times out.
 
 ```rust
 use std::time::Duration;
 
-use qubit_event_bus::ShutdownError;
-use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::spi::ShutdownMode;
 
-// 1. Stop accepting new order requests first (the HTTP listener and similar are the application's job).
-// 2. Close the message sources: drain the notification queue, see the previous section.
-notifier.close_with_timeout(Duration::from_secs(30))?;
-// 3. Wait up to 10 seconds for OrderCreated deliveries the bus has already taken.
-let outcome = bus.wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))?;
-if outcome == WaitOutcome::TimedOut {
-    eprintln!("some OrderCreated handlers have not returned; continuing shutdown");
-}
-// 4. Cancel the subscriptions so no new message is taken from local.
-audit_subscription.cancel()?;
-view_subscription.cancel()?;
-// 5. Shut down the bus, waiting up to 30 seconds.
-match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) {
-    Ok(report) => {
-        println!(
-            "provider outcome {:?}, {} admitted deliveries abandoned",
-            report.outcome, report.known_abandoned_deliveries
-        );
-        if report.provider_may_have_abandoned_deliveries {
-            eprintln!("the transport may have dropped messages it cannot count");
-        }
-    }
-    Err(ShutdownError::TimedOut { timeout }) => {
-        // The bus is still cleaning up in the background and already rejects new operations.
-        // Calling shutdown again waits for the final report. Immediate returns queued messages
-        // instead of draining them, but still waits for running handlers to return.
-        eprintln!("graceful shutdown did not finish within {timeout:?}");
-        let ticket = bus.request_shutdown(ShutdownMode::Immediate)?;
-        let report = ticket.wait(Some(Duration::from_secs(30)))?;
-        eprintln!("final report: {report:?}");
+let ticket = bus.request_shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(5),
+})?;
+match ticket.wait(Some(Duration::from_secs(2))) {
+    Ok(report) => println!("shutdown outcome: {:?}", report.outcome),
+    Err(qubit_event_bus::ShutdownError::TimedOut { .. }) => {
+        // Keep or drop the ticket; the shutdown attempt continues either way.
     }
     Err(error) => return Err(error.into()),
 }
 ```
-
-On a normal shutdown of the order example, `report.outcome` is `ShutdownOutcome::Complete` and `known_abandoned_deliveries` is 0. `provider_may_have_abandoned_deliveries` is always `true` on the built-in local provider: local is not durable and cannot prove that no in-process message was lost at close. The flag is a reminder, not an error. A `known_abandoned_deliveries` greater than 0 means admitted messages were given up before a handler ran. The audit rows and customer-view entries for those orders have to come from the application's compensation path.
-
-`ShutdownMode::Graceful { timeout }` stops accepting new work and tries to finish work already received. A caller deadline returns `ShutdownError::TimedOut`; it does not mean the bus is closed. A sync bus may still be cleaning up in the background, and a later `shutdown` call observes the final `ShutdownReport`. `Immediate` cannot forcibly stop business code that is already running. Do not call `shutdown`, `wait_for_idle`, or `wait_for_received_deliveries` from a handler on this same bus when the call would wait for the bus to finish its own work. Those calls return `WouldDeadlock`. Start shutdown from the outermost shutdown path of the program.
-
-### Request shutdown and observe it asynchronously
-
-When an async application owns the synchronous `EventBus`, separate a short
-shutdown request from completion observation. This API belongs to `EventBus`,
-not `AsyncEventBus`; the latter still drives shutdown through its own future.
-
-```rust
-use std::time::Duration;
-
-use qubit_event_bus::{EventBus, EventBusShutdown, ShutdownError, ShutdownReport};
-use qubit_event_bus::spi::ShutdownMode;
-
-fn request_graceful(bus: &EventBus) -> Result<EventBusShutdown, ShutdownError> {
-    bus.request_shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(30),
-    })
-}
-
-async fn observe(ticket: &EventBusShutdown) -> Result<ShutdownReport, ShutdownError> {
-    ticket.wait_async().await
-}
-```
-
-Keep the ticket outside any cancellable observation future. `request_graceful`
-closes admission and starts or joins a background coordinator without waiting for
-handlers, workers, or the provider. `observe` only borrows the ticket: cancelling
-it removes its waker registration, and a later `observe(&ticket)` resumes
-observation without another request. `wait_async` neither blocks a thread nor
-creates a helper thread. Drive it on the application's executor with an explicit
-outer observation deadline; the 30-second mode timeout is passed to the provider
-and does not bound `wait_async`.
-
-A synchronous observer can call `ticket.wait(Some(Duration::from_secs(30)))`.
-An observer timeout does not consume the ticket or stop background shutdown.
-To escalate after a grace budget, request `bus.request_shutdown(ShutdownMode::Immediate)`
-and keep observing the original ticket; drop the extra ticket if it is not needed.
-Immediate only strengthens the active attempt. Each retained ticket binds one
-exact generation and retains its result even if a later start retry creates a
-new generation. Requests on a closed bus return the cached result immediately.
-Dropping a ticket releases its observation registration; dropping a bus handle
-does not automatically initiate shutdown.
-
-`request_shutdown` is safe from a bus callback because it does not wait for that
-callback. Synchronous `shutdown` and `ticket.wait` return `WouldDeadlock` there.
-An async callback must also avoid awaiting completion of work that includes
-itself. Outside callbacks, synchronous `shutdown(Immediate)` still waits for
-running handlers, coordinator joins, and provider shutdown without a caller
-deadline. Use request plus an explicitly bounded observer for cancellation,
-rollback, or Drop integrations; neither a deadline nor Immediate can kill blocked
-synchronous code.
-
-With IoC 0.3, the adapter saves a ticket in its graceful callback and requests
-Immediate in its abort callback. Its owned resource wait takes the saved ticket
-and awaits `wait_async` after releasing the slot lock. `WaitPolicy::bounded`
-provides grace and termination budgets. Cancelling the outer
-`ShutdownHandle::wait` preserves that owned resource wait; restoring observation
-does not replay requests. A termination timeout reports `incomplete` and permits
-shutdown to continue to dependencies. It confirms no forced resource termination
-and no continued availability of those dependencies to an unfinished consumer.
-For failure cleanup, inspect `BuildFailure::cause`, take its cleanup handle, and
-explicitly observe the Immediate cleanup report. See the
-[0.18 migration](migration.md#upgrade-from-017-to-018).
 
 ### Wait for a topic to become idle
 
@@ -1307,31 +1387,9 @@ if outcome == WaitOutcome::TimedOut {
 
 ### Shut down an async bus
 
-The async bus follows the same steps, with `.await` on the waits and the shutdown. The `subscription.run(...)` from [Asynchronous bus and subscriptions](#asynchronous-bus-and-subscriptions) is owned by a background task. `bus.shutdown` closes the subscription receiver, and `run` returns `Ok(())`, so the subscription handle does not have to be recovered first:
+Use `try_shutdown_async(&bus).await` from the complete compiled source above: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
 
-```rust
-use std::time::Duration;
-
-use qubit_event_bus::WaitOutcome;
-use qubit_event_bus::spi::ShutdownMode;
-
-// 1. Stop accepting new order requests.
-// 2. Wait for OrderCreated deliveries the bus has already taken.
-if let WaitOutcome::TimedOut = bus
-    .wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))
-    .await?
-{
-    eprintln!("some OrderCreated handlers have not finished; continuing shutdown");
-}
-// 3. Shut down the bus; the task running subscription.run(...) ends once its subscription closes.
-let report = bus
-    .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) })
-    .await?;
-println!("provider outcome {:?}", report.outcome);
-// 4. Wait for the run task with the executor's own mechanism, such as a Tokio JoinHandle.
-```
-
-If the application keeps the `AsyncSubscription` handle itself, `subscription.close().await` before the bus shutdown ends one subscription on its own. Async `shutdown` is driven by the returned future: dropping that future interrupts the shutdown, so await it to completion. The async bus has no `wait_for_idle`. `wait_for_received_deliveries` again waits only for deliveries the bus has taken, and async local discards still-queued messages when it closes.
+The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 
 ## Errors, diagnostics, and troubleshooting
 
@@ -1369,8 +1427,5 @@ with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
 metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
-inputs fail explicitly. This three-repository IoC/EventBus/consumer update does
-not upgrade the rs-task or rs-event-bus-redis 0.17 dependencies; the full
-five-repository gate needs their separate 0.18 migration before it can pass.
-The metadata check supplements each project's CI and does not prove delivery
-behavior by itself.
+inputs fail explicitly; this metadata check supplements each project's CI and
+does not prove delivery behavior by itself.

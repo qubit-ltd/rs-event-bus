@@ -5,6 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Demonstrates local EventBus subscription, publication, receipt,
+//! cancellation, and graceful shutdown in one minimal executable example.
 
 use std::sync::mpsc;
 use std::time::Duration;

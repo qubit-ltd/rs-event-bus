@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    bus.shutdown(ShutdownMode::Graceful {
+    let _ = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
     Ok(())
