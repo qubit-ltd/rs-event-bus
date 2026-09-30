@@ -25,7 +25,6 @@ pub use error::SpiError;
 pub use error::SubscribeError;
 pub use facade::AsyncEventBus;
 pub use facade::AsyncSubscription;
-pub use facade::DeliveryAdmissionConfig;
 pub use facade::DiagnosticObserverHandle;
 pub use facade::EventBus;
 pub use facade::EventBusFacadeConfig;
@@ -63,3 +62,6 @@ pub mod pipeline;
 pub mod registry;
 pub mod spi;
 mod util;
+
+#[cfg(test)]
+mod tests;

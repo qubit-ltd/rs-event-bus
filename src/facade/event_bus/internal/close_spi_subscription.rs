@@ -7,7 +7,9 @@
 // =============================================================================
 //! Closes a provider subscription at the receiver ownership boundary.
 
+use std::io::Error;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 
 use crate::error::SpiError;
 use crate::facade::event_bus::EventBusInner;
@@ -32,14 +34,14 @@ pub(in crate::facade) fn close_spi_subscription(
     subscriber_id: &SubscriberId,
     receiver: &mut dyn EventSubscriptionSpi,
 ) -> Result<(), SpiError> {
-    std::panic::catch_unwind(AssertUnwindSafe(|| receiver.close())).unwrap_or_else(|payload| {
+    catch_unwind(AssertUnwindSafe(|| receiver.close())).unwrap_or_else(|payload| {
         Err(SpiError::Operation {
             provider_id: inner.provider_id.as_str().into(),
             operation: "close_subscription",
             resource: Some(subscriber_id.as_str().into()),
             kind: "provider_panicked",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other(panic_message(payload.as_ref()))),
+            source: Box::new(Error::other(panic_message(payload.as_ref()))),
         })
     })
 }

@@ -43,12 +43,14 @@ pub(in crate::facade) mod waiting;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::model::SubscribeRequest;
-/// use qubit_event_bus::model::Topic;
 /// use qubit_event_bus::AsyncEventBus;
 /// use qubit_event_bus::DeliveryError;
+/// use qubit_event_bus::local::LocalEventBusConfig;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
 ///
-/// async fn consume(bus: &AsyncEventBus) -> Result<(), Box<dyn std::error::Error>> {
+/// async fn consume() -> Result<(), Box<dyn std::error::Error>> {
+///     let bus = AsyncEventBus::local(LocalEventBusConfig::default()).await?;
 ///     let topic = Topic::<String>::new("orders.created")?;
 ///     let request = SubscribeRequest::new("audit", topic)?;
 ///     let mut subscription = bus.subscribe(request).await?;
@@ -62,8 +64,8 @@ pub(in crate::facade) mod waiting;
 /// async fn audit(_order: &str) -> Result<(), DeliveryError> { Ok(()) }
 /// ```
 ///
-/// The caller supplies a facade created by an async provider and chooses how
-/// to drive this function. The event bus does not spawn a runtime task.
+/// The caller chooses how to drive this function. The event bus does not spawn
+/// a runtime task.
 #[derive(Clone)]
 pub struct AsyncEventBus {
     /// Shared provider, lifecycle, and pipeline state.

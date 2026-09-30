@@ -92,7 +92,7 @@ impl NotificationStatsSnapshot {
         self.publish_errors
     }
 
-    /// Returns the number of event request construction errors observed.
+    /// Returns the number of notification request construction errors observed.
     ///
     /// # Returns
     /// The number of notification request construction errors.

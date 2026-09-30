@@ -29,8 +29,10 @@ mod tests {
     use std::any::TypeId;
     use std::cmp::Ordering;
     use std::sync::Arc;
+    use std::sync::Condvar;
     use std::sync::Mutex;
     use std::time::Duration;
+    use std::time::Instant;
     use std::time::SystemTime;
 
     use qubit_id::Id;
@@ -42,6 +44,7 @@ mod tests {
     use super::bus_state::BusState;
     use super::delayed_queue_head::DelayedQueueHead;
     use super::topic_subscriptions::TopicSubscriptions;
+    use crate::local::async_signal::AsyncSignal;
     use crate::model::EventId;
     use crate::model::Headers;
     use crate::model::SubscriberId;
@@ -110,7 +113,7 @@ mod tests {
         ));
         state.enqueue_back(create_event("blocker", "key-b", Some(Duration::from_secs(60 * 60))));
 
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         for _ in 0..128 {
             let retry = state.pop_ready(now).expect("retry head is ready");
             assert_eq!("retry", retry.event_id());
@@ -126,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_delayed_queue_head_orders_equal_deadlines_by_sequence() {
-        let deadline = std::time::Instant::now();
+        let deadline = Instant::now();
         let first = DelayedQueueHead {
             deadline,
             sequence: 1,
@@ -161,8 +164,8 @@ mod tests {
             subscriber_id: SubscriberId::new("stale-subscriber").expect("valid subscriber ID"),
             capacity: 1,
             state: Mutex::new(LocalQueueState::default()),
-            ready: std::sync::Condvar::new(),
-            async_ready: crate::local::async_signal::AsyncSignal::default(),
+            ready: Condvar::new(),
+            async_ready: AsyncSignal::default(),
         });
         let mut bucket = TopicSubscriptions::default();
         bucket.queues.insert(id, Arc::downgrade(&queue));

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::task::Waker;
 
-use super::shutdown_coordinator::ShutdownResult;
+use super::shutdown_result::ShutdownResult;
 use crate::spi::ShutdownMode;
 
 /// One shutdown attempt and its result shared by concurrent callers.
@@ -36,6 +36,7 @@ impl ShutdownCoordinatorState {
     ///
     /// # Returns
     /// An inactive state ready for its first shutdown generation.
+    #[must_use = "Use the initialized shutdown coordinator state."]
     pub(super) fn new() -> Self {
         Self {
             active: false,

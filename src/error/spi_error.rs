@@ -89,7 +89,11 @@ impl SpiError {
     /// Returns explicit publish evidence or conservative uncertainty for
     /// generic failures. A generic Operation cannot prove that publishing
     /// had no external effect.
-    #[must_use]
+    ///
+    /// # Returns
+    /// Provider evidence for admission, or conservative uncertainty when no
+    /// publish-specific evidence was retained.
+    #[must_use = "inspect the admission evidence before retrying publication"]
     #[inline]
     pub fn publish_effect(&self) -> PublishEffect {
         match self {

@@ -15,6 +15,7 @@ use qubit_id::Id;
 
 use super::local_queue::LocalQueue;
 use super::topic_subscriptions::TopicSubscriptions;
+use crate::spi::ShutdownOutcome;
 use crate::spi::TopicAddress;
 
 /// Provider-wide routing table and shutdown state.
@@ -27,7 +28,7 @@ pub(in crate::local) struct BusState {
     /// Rejects new provider operations after shutdown begins.
     pub(in crate::local) closed: bool,
     /// Stable outcome returned by all later shutdown calls.
-    pub(in crate::local) shutdown_outcome: Option<crate::spi::ShutdownOutcome>,
+    pub(in crate::local) shutdown_outcome: Option<ShutdownOutcome>,
     /// Change counter that prevents missed graceful-shutdown notifications.
     pub(in crate::local) change_version: u64,
 }
@@ -41,6 +42,7 @@ impl BusState {
     ///
     /// # Returns
     /// Strong owners of currently live queues for the topic.
+    #[must_use]
     pub(in crate::local) fn live_queues_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<LocalQueue>> {
         let Some(bucket) = self.topics.get_mut(topic) else {
             return Vec::new();
@@ -64,6 +66,7 @@ impl BusState {
     ///
     /// # Returns
     /// Strong owners of all currently live subscription queues.
+    #[must_use]
     pub(in crate::local) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
         let topics = self.topics.keys().cloned().collect::<Vec<_>>();
         let mut queues = Vec::new();

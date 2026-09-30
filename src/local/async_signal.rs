@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
@@ -37,7 +38,7 @@ impl AsyncSignal {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let owned_waker = waker.clone();
         let replaced = {
-            let mut waiters = self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
             waiters.insert(id, owned_waker)
         };
         drop(replaced);
@@ -49,26 +50,13 @@ impl AsyncSignal {
         let waiters = self
             .waiters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .drain()
             .map(|(_, waker)| waker)
             .collect::<Vec<_>>();
         for waker in waiters {
             waker.wake();
         }
-    }
-
-    /// Returns the number of registered waiters for unit tests.
-    ///
-    /// # Returns
-    /// The current number of stored task wakers.
-    #[must_use]
-    #[cfg(test)]
-    fn waiter_count(&self) -> usize {
-        self.waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
     }
 }
 
@@ -79,7 +67,6 @@ mod tests {
     use std::sync::Weak;
     use std::task::RawWaker;
     use std::task::RawWakerVTable;
-    use std::task::Wake;
     use std::task::Waker;
 
     use super::AsyncSignal;
@@ -92,7 +79,9 @@ mod tests {
         if let Some(signal) = probe.signal.upgrade() {
             match signal.waiters.try_lock() {
                 Ok(_) | Err(TryLockError::Poisoned(_)) => {}
-                Err(TryLockError::WouldBlock) => panic!("external waker code called under registry lock"),
+                Err(TryLockError::WouldBlock) => {
+                    panic!("external waker code called under registry lock")
+                }
             }
         }
     }
@@ -125,50 +114,8 @@ mod tests {
 
     static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
-    #[derive(Default)]
-    struct CountWake(std::sync::atomic::AtomicUsize);
-    impl Wake for CountWake {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
     #[test]
-    fn test_registered_wakers_are_removed_and_notified_outside_the_registry_lock() {
-        let signal = AsyncSignal::default();
-        let counter = Arc::new(CountWake::default());
-        let waker = Waker::from(counter.clone());
-        let registration = signal.register(&waker);
-        assert_eq!(1, signal.waiter_count());
-        signal.notify_all();
-        assert_eq!(1, counter.0.load(std::sync::atomic::Ordering::Relaxed));
-        drop(registration);
-        assert_eq!(0, signal.waiter_count());
-    }
-
-    #[test]
-    fn test_dropping_a_pending_registration_cleans_it_up() {
-        let signal = AsyncSignal::default();
-        let counter = Arc::new(CountWake::default());
-        drop(signal.register(&Waker::from(counter)));
-        assert_eq!(0, signal.waiter_count());
-    }
-
-    #[test]
-    fn test_registered_waker_supports_wake_by_reference() {
-        let signal = AsyncSignal::default();
-        let counter = Arc::new(CountWake::default());
-        let waker = Waker::from(counter.clone());
-        let _registration = signal.register(&waker);
-        waker.wake_by_ref();
-        assert_eq!(1, counter.0.load(std::sync::atomic::Ordering::Relaxed));
-    }
-
-    #[test]
-    fn test_waker_clone_and_drop_are_outside_the_registry_lock() {
+    fn test_registered_waker_clone_and_drop_run_outside_registry_lock() {
         let signal = Arc::new(AsyncSignal::default());
         let probe = Arc::new(CloneDropProbe {
             signal: Arc::downgrade(&signal),
@@ -178,7 +125,6 @@ mod tests {
         let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
         let registration = signal.register(&waker);
         drop(registration);
-        assert_eq!(0, signal.waiter_count());
         drop(waker);
     }
 }

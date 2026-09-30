@@ -23,6 +23,7 @@
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[must_use]
 pub enum ShutdownOutcome {
     /// The provider completed its shutdown procedure.
     ///

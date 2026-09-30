@@ -7,6 +7,7 @@
 // =============================================================================
 //! Provider-identity proxy for a synchronous SPI output.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::SpiError;
@@ -27,7 +28,7 @@ pub(crate) struct IdentifiedEventBusSpi {
     /// Canonical identity snapshotted from provider metadata at registration.
     provider_id: ProviderId,
     /// Provider-owned implementation receiving all transport operations.
-    inner: std::sync::Arc<dyn EventBusSpi>,
+    inner: Arc<dyn EventBusSpi>,
     /// Capability snapshot checked before the facade was created.
     capabilities: EventBusCapabilities,
 }
@@ -44,7 +45,7 @@ impl IdentifiedEventBusSpi {
     /// An identity proxy that delegates to `inner`.
     pub(crate) fn new(
         provider_id: ProviderId,
-        inner: std::sync::Arc<dyn EventBusSpi>,
+        inner: Arc<dyn EventBusSpi>,
         capabilities: EventBusCapabilities,
     ) -> Self {
         Self {

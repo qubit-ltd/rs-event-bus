@@ -7,8 +7,16 @@
 // =============================================================================
 //! Handler and retry processing state, separate from the receiver owner.
 
+use std::future::Future;
+use std::future::pending as pending_future;
+use std::future::poll_fn;
+use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use qubit_id::Id;
 
@@ -21,6 +29,9 @@ use crate::error::DeliveryError;
 use crate::facade::async_subscription::dead_letter::publish_dead_letter_async;
 use crate::facade::async_subscription::delivery_task::notify_failure;
 use crate::facade::async_subscription::delivery_task::run_with_retry;
+use crate::model::AdmissionOutcome;
+use crate::model::DEAD_LETTER_HEADER;
+use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::Delivery;
 use crate::model::DeliveryContext;
 use crate::model::EventEnvelope;
@@ -28,23 +39,24 @@ use crate::model::FailureDirective;
 use crate::model::ProviderMessageMetadata;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
-use crate::model::Topic;
 use crate::pipeline::Diagnostic;
-use crate::pipeline::OrderingLaneKey;
+use crate::pipeline::dead_letter_envelope;
 use crate::spi::DeliveryDisposition;
 
 /// Processing context carried by one owned handler task.
 ///
 /// This type deliberately has no provider receiver or session task queues.
+///
+/// # Type Parameters
+///
+/// - `T`: Payload type delivered to the subscriber handler.
 pub(in crate::facade::async_subscription) struct DeliveryTaskContext<T: 'static> {
-    /// Shared provider identity, admission state, and diagnostic observers.
+    /// Shared provider identity, scheduling state, and diagnostic observers.
     pub(in crate::facade::async_subscription) inner: Arc<AsyncEventBusInner>,
     /// Bus-local identity used to select this subscription's ordering lane.
     pub(in crate::facade::async_subscription) id: Id,
     /// Logical subscriber identity included in delivery and failure metadata.
     pub(in crate::facade::async_subscription) subscriber_id: SubscriberId,
-    /// Typed topic used to interpret the decoded payload and ordering key.
-    pub(in crate::facade::async_subscription) topic: Topic<T>,
     /// Filtering, middleware, retry, and terminal failure policies.
     pub(in crate::facade::async_subscription) options: SubscribeOptions<T>,
     /// Shared cancellation, shutdown, and dead-letter failure signals.
@@ -68,7 +80,9 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// May invoke user callbacks, emit diagnostics, publish a dead-letter
     /// event, and record settlement or failure state on the pending
-    /// delivery.
+    /// delivery. Every actual handler factory has its own stop admission gate;
+    /// denied invocations return ownership without synthesizing an application
+    /// result, settlement intent, error callback, or dead-letter publication.
     pub(in crate::facade::async_subscription) async fn process_pending(&mut self, handler: SharedAsyncHandler<T>) {
         let Some(pending) = self.pending.as_ref() else {
             return;
@@ -78,16 +92,25 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             self.settle_pending(disposition, event.as_deref()).await;
             return;
         }
-        if let Some(error) = pending.decode_error.as_ref() {
-            self.record_failure_diagnostic(0, error.to_string().into());
-            self.settle_pending(DeliveryDisposition::Reject, None).await;
-            return;
-        }
         let Some(event) = pending.event.as_ref().cloned() else {
             return;
         };
+        if let Some(started) = &self.started
+            && !self.signals.mark_started(started)
+        {
+            return;
+        }
         if let Some(filter) = self.options.filter() {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(&event))) {
+            let filtered = catch_unwind(AssertUnwindSafe(|| filter(&event)));
+            if !self.signals.admit_handler()
+                || self
+                    .options
+                    .retry_cancellation_token()
+                    .is_some_and(|token| token.is_cancelled())
+            {
+                return;
+            }
+            match filtered {
                 Ok(false) => {
                     self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await;
                     return;
@@ -98,7 +121,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     let metadata = self.pending.as_ref().expect("pending delivery exists").metadata.clone();
                     let delivery = Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
                     let error = DeliveryError::Handler {
-                        source: Box::new(std::io::Error::other("subscriber filter panicked")),
+                        source: Box::new(Error::other("subscriber filter panicked")),
                     };
                     let directive = notify_failure(
                         &self.options,
@@ -115,24 +138,21 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let pending = self.pending.as_ref().expect("pending delivery exists");
         let context = self.context(pending.token.is_some(), pending.metadata.clone(), &event);
         let delivery = Delivery::new(event.clone(), context);
-        let _lane = if self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
-            let key = OrderingLaneKey::new(self.topic.name(), event.ordering_key(), self.id);
-            Some(self.inner.ordering_lanes.enqueue(key, ()).await)
-        } else {
-            None
-        };
-        if let Some(lane) = _lane
-            && let Some(pending) = self.pending.as_mut()
-        {
-            pending.lane = lane;
-        }
-        if let Some(started) = &self.started
-            && !self.signals.mark_started(started)
-        {
-            return;
-        }
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         let global_interceptors = self.inner.facade_config.async_subscriber_interceptors::<T>();
+        let denied = Arc::new(AtomicBool::new(false));
+        let rejected = denied.clone();
+        let signals = self.signals.clone();
+        let cancellation = self.options.retry_cancellation_token().cloned();
+        let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| {
+            if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
+                rejected.store(true, Ordering::Release);
+                // The owner observes denial in this same poll and drops the chain.
+                // No synthetic success or failure reaches middleware or failure policy.
+                return Box::pin(pending_future());
+            }
+            handler(delivery)
+        });
         let attempts = run_with_retry(
             self.options.clone(),
             delivery.clone(),
@@ -140,7 +160,21 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             &self.inner,
             global_interceptors,
         );
-        match BusContextFuture::new(bus_key, attempts).await {
+        let mut attempts = Box::pin(BusContextFuture::new(bus_key, attempts));
+        let outcome = poll_fn(|cx| {
+            let polled = attempts.as_mut().poll(cx);
+            if denied.load(Ordering::Acquire) {
+                Poll::Ready(None)
+            } else {
+                polled.map(Some)
+            }
+        })
+        .await;
+        drop(attempts);
+        let Some(outcome) = outcome else {
+            return;
+        };
+        match outcome {
             Ok(_) => self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await,
             Err((error, attempts, directive)) => self.finish_failure(delivery, *error, attempts, directive).await,
         }
@@ -157,6 +191,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// # Returns
     ///
     /// A delivery context tied to this subscription and provider.
+    #[inline]
+    #[must_use]
     fn context(
         &self,
         can_settle: bool,
@@ -166,7 +202,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let context = DeliveryContext::new(self.inner.provider_id.clone(), self.id, self.subscriber_id.clone())
             .with_provider_metadata(metadata)
             .with_settlement(can_settle);
-        if event.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE) {
+        if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
             context.as_dead_letter()
         } else {
             context
@@ -196,9 +232,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         self.record_failure_diagnostic(attempts, error.to_string().into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) =
-                    crate::pipeline::dead_letter_envelope(&delivery, &error, policy.topic_name())
-                {
+                if let Ok(Some(envelope)) = dead_letter_envelope(&delivery, &error, policy.topic_name()) {
                     match publish_dead_letter_async(
                         &self.inner,
                         &envelope,
@@ -209,10 +243,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     .await
                     {
                         Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                crate::model::AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
+                            if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
                                 self.inner.emit(&Diagnostic::InternalFailure {
                                     origin: "dead_letter_partial".into(),
                                     message: "dead-letter publication was partially accepted; it was not republished"
@@ -274,6 +305,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     ///
     /// Updates the pending delivery's settlement intent when a delivery is
     /// pending.
+    #[inline]
     async fn settle_pending(&mut self, disposition: DeliveryDisposition, _event: Option<&EventEnvelope<T>>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.settlement_intent = Some(disposition);
@@ -290,6 +322,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// # Side Effects
     ///
     /// Updates the pending delivery's failure diagnostic when one is pending.
+    #[inline]
     fn record_failure_diagnostic(&mut self, attempts: u32, error: Box<str>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.failure_diagnostic = Some((attempts, error));

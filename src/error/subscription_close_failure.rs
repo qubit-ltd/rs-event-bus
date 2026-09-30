@@ -74,6 +74,12 @@ impl SubscriptionCloseFailure {
 
 impl fmt::Display for SubscriptionCloseFailure {
     /// Formats the failed subscriber and its provider error.
+    ///
+    /// # Returns
+    /// The formatted subscriber identity and provider error.
+    ///
+    /// # Errors
+    /// Returns the formatter's error if writing either value fails.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -86,6 +92,9 @@ impl fmt::Display for SubscriptionCloseFailure {
 
 impl Error for SubscriptionCloseFailure {
     /// Exposes the original provider close error as the source.
+    ///
+    /// # Returns
+    /// `Some` containing the provider error retained by this failure record.
     #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.error)

@@ -19,6 +19,7 @@
 /// let summary = AdmissionSummary { accepted: 2, filtered: 1, rejected: 0 };
 /// assert_eq!(summary.accepted + summary.filtered + summary.rejected, 3);
 /// ```
+#[must_use = "inspect the per-destination admission outcomes"]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdmissionSummary {
     /// Number of destinations that accepted the event for dispatch.

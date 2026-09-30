@@ -7,8 +7,10 @@
 // =============================================================================
 //! Catches panics raised while polling an SPI future.
 
+use std::any::Any;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -40,7 +42,7 @@ impl<F: Future> CatchUnwindFuture<F> {
 
 impl<F: Future> Future for CatchUnwindFuture<F> {
     /// Provider output or the captured panic payload.
-    type Output = Result<F::Output, Box<dyn std::any::Any + Send>>;
+    type Output = Result<F::Output, Box<dyn Any + Send>>;
 
     /// Polls the provider future inside an unwind boundary.
     ///
@@ -52,7 +54,7 @@ impl<F: Future> Future for CatchUnwindFuture<F> {
     /// Pending, a successful provider output, or a captured panic payload.
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        match std::panic::catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(context))) {
+        match catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(context))) {
             Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
             Ok(Poll::Pending) => Poll::Pending,
             Err(payload) => Poll::Ready(Err(payload)),

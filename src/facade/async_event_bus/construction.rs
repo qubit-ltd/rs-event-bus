@@ -22,14 +22,13 @@ use crate::AsyncEventBusRegistry;
 use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
 use crate::facade::PublishMetrics;
-use crate::facade::async_admission::AsyncAdmission;
 use crate::facade::async_event_bus::AsyncEventBusInner;
 use crate::facade::async_event_bus::AsyncSignal;
 use crate::facade::async_event_bus::AsyncTracker;
 use crate::facade::async_event_bus::BusState;
+use crate::facade::internal::DeliverySchedulerCore;
 use crate::local::LocalEventBusConfig;
 use crate::model::ProviderId;
-use crate::pipeline::AsyncOrderingLanes;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::AsyncEventBusSpi;
 
@@ -141,7 +140,7 @@ impl AsyncEventBus {
             crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
                 spi.capabilities()
             })?;
-        let admission_limit = config.delivery_admission().max_in_flight();
+        let scheduler = Arc::new(DeliverySchedulerCore::new(config.delivery_scheduling()));
         Ok(Self {
             inner: Arc::new(AsyncEventBusInner {
                 spi,
@@ -167,10 +166,10 @@ impl AsyncEventBus {
                 abandoned_deliveries: AtomicU64::new(0),
                 observers: Mutex::new(Vec::new()),
                 tracker: Arc::new(AsyncTracker::default()),
-                ordering_lanes: AsyncOrderingLanes::new(),
-                admission: AsyncAdmission::new(admission_limit),
+                scheduler,
                 timer,
                 publish_metrics: PublishMetrics::default(),
+                delivery_metrics: Arc::default(),
             }),
         })
     }

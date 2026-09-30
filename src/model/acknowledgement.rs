@@ -40,6 +40,7 @@ impl Acknowledgement {
     ///
     /// # Returns
     /// A handle whose shared state is [`AcknowledgementState::Pending`].
+    #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -95,6 +96,7 @@ impl Acknowledgement {
     /// # Errors
     /// Returns [`AcknowledgementError::AlreadyCompleted`] if a NACK completed
     /// the handle first.
+    #[inline]
     pub fn ack(&self) -> Result<(), AcknowledgementError> {
         self.complete(ACKED)
     }
@@ -109,6 +111,7 @@ impl Acknowledgement {
     /// # Errors
     /// Returns [`AcknowledgementError::AlreadyCompleted`] if an ACK completed
     /// the handle first.
+    #[inline]
     pub fn nack(&self) -> Result<(), AcknowledgementError> {
         self.complete(NACKED)
     }

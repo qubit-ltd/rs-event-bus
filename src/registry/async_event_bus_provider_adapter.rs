@@ -46,6 +46,7 @@ impl AsyncEventBusProviderAdapter {
     /// # Panics
     /// Panics if the provider descriptor callback panics or its provider ID
     /// violates the facade's validated provider-ID invariants.
+    #[must_use]
     pub(crate) fn new(provider: Arc<AsyncEventBusProvider>) -> Self {
         let descriptor = provider.descriptor();
         let provider_id =

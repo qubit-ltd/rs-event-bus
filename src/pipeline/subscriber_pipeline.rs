@@ -14,11 +14,11 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-pub(crate) use internal::DeliveryFailureAction;
-pub(crate) use internal::DeliveryOutcome;
 use qubit_retry::RetryError;
 
 use self::internal::CatchUnwindFuture;
+pub(crate) use self::internal::DeliveryFailureAction;
+pub(crate) use self::internal::DeliveryOutcome;
 use crate::error::CapabilityError;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
@@ -178,18 +178,6 @@ impl SubscriberPipeline {
         Self::finish_attempt(mode, &delivery, result)
     }
 
-    /// Wraps one failed attempt as a `qubit-retry` input without losing source.
-    ///
-    /// # Parameters
-    /// - `error`: Delivery failure to retain as a retry error source.
-    ///
-    /// # Returns
-    /// A retry input tagged as a delivery attempt.
-    #[cfg(test)]
-    pub(crate) fn attempt_error(error: DeliveryError) -> DeliveryAttemptError {
-        DeliveryAttemptError::new("delivery", None, error)
-    }
-
     /// Preserves retry terminal metadata and its full source chain publicly.
     ///
     /// # Parameters
@@ -241,6 +229,7 @@ impl SubscriberPipeline {
     ///
     /// # Returns
     /// The corresponding action performed by the facade.
+    #[inline]
     pub(crate) fn failure_action(directive: FailureDirective) -> DeliveryFailureAction {
         match directive {
             FailureDirective::Retry => DeliveryFailureAction::RetryLocally,
@@ -260,6 +249,7 @@ impl SubscriberPipeline {
     /// # Returns
     /// The provider disposition required by the action, or `None` when no
     /// settlement applies.
+    #[inline]
     pub(crate) fn failure_disposition(
         action: DeliveryFailureAction,
         capability: SettlementCapabilities,
@@ -274,24 +264,6 @@ impl SubscriberPipeline {
                 DeliveryFailureAction::DeadLetter | DeliveryFailureAction::Discard,
                 SettlementCapabilities::AcceptRetryReject,
             ) => Some(DeliveryDisposition::Reject),
-        }
-    }
-
-    /// Maps successful handler completion to provider acceptance when possible.
-    ///
-    /// # Parameters
-    /// - `capability`: Provider settlement operations supported by the
-    ///   transport.
-    ///
-    /// # Returns
-    /// An acceptance disposition when the provider supports settlement.
-    #[cfg(test)]
-    pub(crate) fn success_disposition(capability: SettlementCapabilities) -> Option<DeliveryDisposition> {
-        match capability {
-            SettlementCapabilities::None => None,
-            SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject => {
-                Some(DeliveryDisposition::Accept)
-            }
         }
     }
 

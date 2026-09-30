@@ -70,6 +70,7 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     ///
     /// # Errors
     /// The future resolves with a structured provider operation failure.
+    #[must_use]
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
 
     /// Creates one asynchronous single-owner subscription receiver.
@@ -92,6 +93,7 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     ///
     /// # Errors
     /// The future resolves with a structured provider operation failure.
+    #[must_use]
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
@@ -114,5 +116,6 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     ///
     /// # Errors
     /// The future resolves with a structured provider operation failure.
+    #[must_use]
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
 }

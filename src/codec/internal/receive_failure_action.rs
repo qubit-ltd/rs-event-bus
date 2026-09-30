@@ -20,6 +20,14 @@ pub(crate) enum ReceiveFailureAction {
 /// Classifies a codec failure without inspecting error text or payload bytes.
 /// Decode failures reject; limits, metadata, native type and panic failures
 /// stop.
+///
+/// # Parameters
+/// - `error`: Codec failure returned while receiving a message.
+///
+/// # Returns
+/// `Reject` for deterministic decode failures; `StopUnsettled` for every other
+/// codec failure.
+#[must_use = "the receive failure action must control the receiver policy"]
 pub(crate) fn receive_failure_action(error: &CodecError) -> ReceiveFailureAction {
     match error {
         CodecError::Decode { .. } => ReceiveFailureAction::Reject,

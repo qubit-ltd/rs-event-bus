@@ -34,6 +34,8 @@ impl ShutdownLeaderGuard {
     ///
     /// # Returns
     /// A guard that releases leadership when dropped.
+    #[must_use]
+    #[inline]
     pub(in crate::facade::async_event_bus) fn new(inner: Arc<AsyncEventBusInner>) -> Self {
         Self(inner)
     }

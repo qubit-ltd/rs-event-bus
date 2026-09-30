@@ -53,7 +53,11 @@ pub enum ReceiveError {
     ),
     /// New receives stopped with a stable cause retained for recovery.
     #[error("{0}")]
-    Stopped(#[source] Arc<SubscriptionStopReason>),
+    Stopped(
+        /// Stable stop cause retained for diagnosis and recovery decisions.
+        #[source]
+        Arc<SubscriptionStopReason>,
+    ),
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,

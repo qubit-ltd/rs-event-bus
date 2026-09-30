@@ -8,6 +8,7 @@
 //! Single-owner synchronous receiver for a local subscription.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
@@ -15,7 +16,9 @@ use std::time::Instant;
 use super::local_event_bus_spi::invalid_token_error;
 use super::local_event_bus_spi::operation_error;
 use super::local_event_bus_spi::signal_changed;
+use super::state::LocalInFlight;
 use super::state::LocalQueue;
+use super::state::LocalSettlementHandle;
 use super::state::LocalSettlementState;
 use super::state::LocalSharedState;
 use crate::error::SpiError;
@@ -25,6 +28,7 @@ use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 
 /// Single-owner synchronous receiver for one local subscription.
+#[must_use = "dropping the subscription closes it"]
 pub(super) struct LocalEventSubscription {
     /// Shared bus state used for lifecycle notifications and unregistering.
     shared: Arc<LocalSharedState>,
@@ -41,6 +45,7 @@ impl LocalEventSubscription {
     ///
     /// # Returns
     /// A single-owner subscription receiver.
+    #[inline]
     pub(super) fn new(shared: Arc<LocalSharedState>, queue: Arc<LocalQueue>) -> Self {
         Self { shared, queue }
     }
@@ -73,13 +78,13 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 })?;
                 state.next_delivery_token = sequence;
                 let token = format!("{}:{sequence}", event.event_id()).into_boxed_str();
-                let settlement = Arc::new(std::sync::Mutex::new(LocalSettlementState {
+                let settlement = Arc::new(Mutex::new(LocalSettlementState {
                     token_id: token.clone(),
                     disposition: None,
                 }));
                 state.in_flight.insert(
                     token,
-                    super::state::LocalInFlight {
+                    LocalInFlight {
                         event: event.clone(),
                         settlement: settlement.clone(),
                     },
@@ -139,7 +144,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             ));
         }
         let settlement = token
-            .downcast_ref::<super::state::LocalSettlementHandle>()
+            .downcast_ref::<LocalSettlementHandle>()
             .ok_or_else(|| invalid_token_error(Some(self.queue.topic.as_str()), "unknown_token"))?
             .clone();
         let mut state = self.queue.lock();

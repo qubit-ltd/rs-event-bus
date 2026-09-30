@@ -148,6 +148,7 @@ const fn is_valid_content_type(value: &str) -> bool {
 ///
 /// # Returns
 /// `true` when nonempty and composed only of accepted ASCII token bytes.
+#[must_use]
 const fn valid_mime_token(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {

@@ -17,15 +17,23 @@ use super::SubscriberId;
 /// The original event is shared rather than cloned, so dead-lettering does not
 /// add a `Clone` requirement to the original payload type. Applications can
 /// subscribe to `DeadLetterEvent<T>` on the configured dead-letter topic and
-/// can register a codec for this type when using encoded transports.
+/// can register a codec for this type when using encoded transports. The
+/// facade creates this payload when a delivery reaches its terminal policy;
+/// consumers inspect the event received from that topic.
 ///
 /// # Examples
 ///
 /// ```
 /// use qubit_event_bus::model::DeadLetterEvent;
 ///
-/// fn inspect_dead_letter<T: 'static>(event: &DeadLetterEvent<T>) -> &str {
-///     event.reason()
+/// fn inspect_dead_letter<T: 'static>(event: &DeadLetterEvent<T>) {
+///     let original = event.original_event();
+///     let shared_original = event.original_event_arc();
+///     let subscriber = event.subscriber_id();
+///     let reason = event.reason();
+///
+///     assert!(std::sync::Arc::strong_count(&shared_original) >= 2);
+///     let _ = (original, subscriber, reason);
 /// }
 /// ```
 pub struct DeadLetterEvent<T: 'static> {
@@ -60,7 +68,6 @@ impl<T: 'static> DeadLetterEvent<T> {
     ///
     /// # Returns
     /// The original event borrowed from this dead-letter payload.
-    #[must_use = "the logical subscriber identifies which consumer failed"]
     #[inline]
     pub fn original_event(&self) -> &EventEnvelope<T> {
         &self.original_event
@@ -72,6 +79,7 @@ impl<T: 'static> DeadLetterEvent<T> {
     /// # Returns
     /// A cloned shared owner of the original event.
     #[must_use]
+    #[inline]
     pub fn original_event_arc(&self) -> Arc<EventEnvelope<T>> {
         Arc::clone(&self.original_event)
     }
@@ -94,6 +102,7 @@ impl<T: 'static> DeadLetterEvent<T> {
     /// # Returns
     /// The retained failure description.
     #[must_use]
+    #[inline]
     pub fn reason(&self) -> &str {
         &self.reason
     }

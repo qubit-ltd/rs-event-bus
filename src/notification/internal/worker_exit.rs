@@ -9,6 +9,7 @@
 
 /// Final outcome after worker processing and owned-resource cleanup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub(in crate::notification) enum WorkerExit {
     /// All accepted notifications and worker resources were drained.
     Drained,

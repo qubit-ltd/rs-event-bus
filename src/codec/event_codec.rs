@@ -23,14 +23,55 @@ use crate::spi::EncodedPayload;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::codec::EventCodec;
+/// use std::sync::Arc;
 ///
-/// fn round_trip<T: Send + Sync + 'static>(codec: &dyn EventCodec<T>, value: &T) {
-///     let bytes = codec.encode(value).expect("encoding succeeds");
-///     let payload = qubit_event_bus::spi::EncodedPayload::new(bytes, codec.content_type().clone(), codec.schema_id().cloned());
-///     codec.validate_metadata(&payload).expect("compatible metadata");
-///     let _decoded = codec.decode(&payload).expect("decoding succeeds");
+/// use qubit_event_bus::codec::EventCodec;
+/// use qubit_event_bus::error::CodecError;
+/// use qubit_event_bus::model::ContentType;
+/// use qubit_event_bus::model::SchemaId;
+/// use qubit_event_bus::spi::EncodedPayload;
+///
+/// struct StringCodec;
+///
+/// static CONTENT_TYPE: ContentType = ContentType::new_static("text/plain");
+///
+/// impl StringCodec {
+///     fn new() -> Self {
+///         Self
+///     }
 /// }
+///
+/// impl EventCodec<String> for StringCodec {
+///     fn content_type(&self) -> &ContentType {
+///         &CONTENT_TYPE
+///     }
+///
+///     fn schema_id(&self) -> Option<&SchemaId> {
+///         None
+///     }
+///
+///     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+///         Ok(Arc::from(value.as_bytes()))
+///     }
+///
+///     fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+///         String::from_utf8(payload.bytes().to_vec()).map_err(|error| CodecError::Decode {
+///             source: Box::new(error),
+///         })
+///     }
+/// }
+///
+/// let codec = StringCodec::new();
+/// let value = String::from("hello");
+/// let bytes = codec.encode(&value).expect("encoding succeeds");
+/// let payload = EncodedPayload::new(
+///     bytes,
+///     codec.content_type().clone(),
+///     codec.schema_id().cloned(),
+/// );
+/// codec.validate_metadata(&payload).expect("compatible metadata");
+/// let decoded = codec.decode(&payload).expect("decoding succeeds");
+/// assert_eq!(decoded, value);
 /// ```
 pub trait EventCodec<T>: Send + Sync + 'static {
     /// Returns the MIME content type assigned to encoded payloads.
@@ -63,7 +104,20 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     ///
     /// Exact text and Option equality is the default. Override this method to
     /// permit a documented set of compatible MIME texts or schema versions.
-    /// Returns MetadataMismatch on incompatibility without inspecting bytes.
+    ///
+    /// # Parameters
+    /// - `payload`: Encoded payload whose content type and optional schema ID
+    ///   must be compatible with this codec.
+    ///
+    /// # Returns
+    /// `Ok(())` when the payload metadata satisfies this codec's policy. The
+    /// default implementation requires exact content type and schema equality.
+    ///
+    /// # Errors
+    /// The default implementation returns [`CodecError::MetadataMismatch`]
+    /// when either metadata value differs. An override may return another
+    /// documented [`CodecError`] for incompatible metadata. The payload bytes
+    /// are not inspected.
     fn validate_metadata(&self, payload: &EncodedPayload) -> Result<(), CodecError> {
         if self.content_type() == payload.content_type() && self.schema_id() == payload.schema_id() {
             Ok(())

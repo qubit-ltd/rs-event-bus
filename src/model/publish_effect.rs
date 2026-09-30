@@ -28,6 +28,7 @@
 /// assert_eq!(failure.effect(), PublishEffect::NotAccepted);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
 pub enum PublishEffect {
     /// Evidence proves that the event was not admitted.
     NotAccepted,

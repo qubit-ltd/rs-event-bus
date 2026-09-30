@@ -7,17 +7,19 @@
 // =============================================================================
 //! Shareable native payload storage used by local queues.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::spi::TransportPayload;
 
 /// Cloneable transport payload forms used by the local queue.
+#[must_use]
 #[derive(Clone)]
 pub(in crate::local) enum SharedPayload {
     /// Native value shared without a payload clone or serialization.
     Native(
         /// Type-erased native allocation shared by queued and in-flight copies.
-        Arc<dyn std::any::Any + Send + Sync>,
+        Arc<dyn Any + Send + Sync>,
     ),
 }
 

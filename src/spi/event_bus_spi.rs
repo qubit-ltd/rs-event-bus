@@ -178,6 +178,7 @@ pub trait EventBusSpi: Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns a structured provider operation failure.
+    #[inline]
     fn wait_for_topic_idle(&self, _topic: &TopicAddress, _timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         Ok(None)
     }

@@ -19,6 +19,7 @@ use crate::model::Headers;
 use crate::model::ProviderMessageMetadata;
 use crate::spi::InboundMessage;
 use crate::spi::OrderingKey;
+use crate::spi::OutboundMessage;
 use crate::spi::SettlementToken;
 use crate::spi::TopicAddress;
 
@@ -68,16 +69,6 @@ impl LocalEvent {
         )
     }
 
-    /// Returns the event identity used to construct a per-delivery token key.
-    ///
-    /// # Returns
-    /// The event ID as a string slice.
-    #[must_use = "Use the returned event id."]
-    #[inline]
-    pub(in crate::local) fn event_id(&self) -> &str {
-        self.id.as_str()
-    }
-
     /// Copies outbound metadata and shares its native payload into queue form.
     ///
     /// # Parameters
@@ -86,7 +77,8 @@ impl LocalEvent {
     ///
     /// # Returns
     /// `Some` with a queued event, or `None` if a delay deadline overflows.
-    pub(in crate::local) fn transport(topic: TopicAddress, message: &crate::spi::OutboundMessage) -> Option<Self> {
+    #[must_use]
+    pub(in crate::local) fn transport(topic: TopicAddress, message: &OutboundMessage) -> Option<Self> {
         let not_before = match message.delay() {
             Some(delay) => Some(Instant::now().checked_add(delay)?),
             None => None,
@@ -100,5 +92,15 @@ impl LocalEvent {
             payload: SharedPayload::from_transport(message.payload()),
             not_before,
         })
+    }
+
+    /// Returns the event identity used to construct a per-delivery token key.
+    ///
+    /// # Returns
+    /// The event ID as a string slice.
+    #[must_use = "Use the returned event id."]
+    #[inline]
+    pub(in crate::local) fn event_id(&self) -> &str {
+        self.id.as_str()
     }
 }

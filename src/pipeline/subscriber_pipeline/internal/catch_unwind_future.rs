@@ -7,8 +7,11 @@
 // =============================================================================
 //! Converts panics from subscriber future polling to delivery errors.
 
+use std::any::Any;
 use std::future::Future;
+use std::io::Error;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -19,6 +22,7 @@ use crate::error::DeliveryError;
 ///
 /// # Type Parameters
 /// - `F`: delivery future whose polling is isolated.
+#[must_use]
 pub(in crate::pipeline::subscriber_pipeline) struct CatchUnwindFuture<F: Future> {
     /// Pinned middleware or handler future being polled.
     pub(in crate::pipeline::subscriber_pipeline) future: Pin<Box<F>>,
@@ -38,12 +42,12 @@ impl<F: Future<Output = Result<(), DeliveryError>>> Future for CatchUnwindFuture
     /// Pending or the handler result, with panics converted to handler errors.
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        match std::panic::catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(context))) {
+        match catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(context))) {
             Ok(Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
             Ok(Poll::Ready(Err(error))) => Poll::Ready(Err(error)),
             Ok(Poll::Pending) => Poll::Pending,
             Err(panic) => Poll::Ready(Err(DeliveryError::Handler {
-                source: Box::new(std::io::Error::other(panic_message(panic.as_ref()))),
+                source: Box::new(Error::other(panic_message(panic.as_ref()))),
             })),
         }
     }
@@ -56,7 +60,7 @@ impl<F: Future<Output = Result<(), DeliveryError>>> Future for CatchUnwindFuture
 ///
 /// # Returns
 /// A static message that does not expose an arbitrary panic object.
-fn panic_message(panic: &(dyn std::any::Any + Send)) -> &'static str {
+fn panic_message(panic: &(dyn Any + Send)) -> &'static str {
     if panic.is::<&'static str>() || panic.is::<String>() {
         "subscriber middleware or handler panicked"
     } else {

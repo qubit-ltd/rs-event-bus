@@ -84,6 +84,17 @@ impl AsyncEventBus {
         }
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = Id::new(raw_id);
+        if !self.inner.scheduler.register(id) {
+            return Err(SubscribeError::ResourceLimit {
+                resource: "subscriptions",
+                limit: self.inner.facade_config.delivery_scheduling().max_subscriptions().get(),
+            });
+        }
+        let mut registration = super::internal::scheduler_registration::SchedulerRegistration {
+            inner: self.inner.clone(),
+            id,
+            committed: false,
+        };
         let spi_request = SpiSubscriptionRequest::new(
             id,
             TopicAddress::new(topic.name())?,
@@ -138,6 +149,7 @@ impl AsyncEventBus {
             let _ = control.shutdown(ShutdownMode::Immediate).await;
             return Err(SubscribeError::Closed);
         }
+        registration.committed = true;
         Ok(subscription)
     }
 }

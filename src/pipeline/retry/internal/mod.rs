@@ -5,8 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Private permit ownership for bounded pipeline admission.
+//! Private attempt lifetime evidence for asynchronous publication retries.
 
-mod admission_permit;
+mod in_flight_publish;
 
-pub(crate) use admission_permit::AdmissionPermit;
+pub(super) use in_flight_publish::InFlightPublish;
