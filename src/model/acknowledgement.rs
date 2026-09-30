@@ -96,6 +96,7 @@ impl Acknowledgement {
     /// # Errors
     /// Returns [`AcknowledgementError::AlreadyCompleted`] if a NACK completed
     /// the handle first.
+    #[inline]
     pub fn ack(&self) -> Result<(), AcknowledgementError> {
         self.complete(ACKED)
     }
@@ -110,6 +111,7 @@ impl Acknowledgement {
     /// # Errors
     /// Returns [`AcknowledgementError::AlreadyCompleted`] if an ACK completed
     /// the handle first.
+    #[inline]
     pub fn nack(&self) -> Result<(), AcknowledgementError> {
         self.complete(NACKED)
     }

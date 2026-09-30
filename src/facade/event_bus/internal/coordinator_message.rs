@@ -7,8 +7,6 @@
 // =============================================================================
 //! Messages sent to the thread that owns a synchronous provider receiver.
 
-use std::sync::mpsc;
-
 use qubit_id::Id;
 
 use crate::model::EventId;
@@ -20,6 +18,8 @@ use crate::spi::SettlementToken;
 pub(in crate::facade) enum CoordinatorMessage {
     /// Settlement request to be executed by the receiver owner.
     Settlement {
+        /// Scheduler lease retained until owner completion.
+        lease_id: u64,
         /// Provider-issued token, if this delivery can be settled.
         token: Option<SettlementToken>,
         /// Terminal action requested by delivery policy.
@@ -32,12 +32,16 @@ pub(in crate::facade) enum CoordinatorMessage {
         subscription_id: Id,
         /// Logical subscriber used in provider error context.
         subscriber_id: SubscriberId,
-        /// Optional acknowledgement to unblock the handler task.
-        settled: Option<mpsc::SyncSender<()>>,
     },
+    /// A delivery was intentionally left unresolved and must not count as
+    /// completed.
+    Abandoned(
+        /// Owned lease whose provider recovery remains unresolved.
+        u64,
+    ),
     /// Notification that one scheduled handler task has completed.
-    TaskFinished(
+    HandlerFinished(
         /// Scheduler task ID removed from the active worker set.
-        usize,
+        u64,
     ),
 }

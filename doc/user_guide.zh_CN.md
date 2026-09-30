@@ -39,7 +39,6 @@
   - [停机时排空队列](#停机时排空队列)
 - [生命周期、等待与停机](#生命周期等待与停机)
   - [同步总线的停机流程](#同步总线的停机流程)
-  - [请求关闭并异步观察](#请求关闭并异步观察)
   - [等待某个主题空闲](#等待某个主题空闲)
   - [异步总线的停机流程](#异步总线的停机流程)
 - [错误、诊断与排障](#错误诊断与排障)
@@ -93,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    bus.shutdown(ShutdownMode::Graceful {
+    let _ = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
     Ok(())
@@ -101,19 +100,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 
-0.18.0 尚未发布。若应用目录与 `rs-event-bus` 检出目录并列，
-在应用的 `Cargo.toml` 中同时设置直接依赖和传递依赖的本地解析：
+在依赖中加入：
 
 ```toml
 [dependencies]
-qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus" }
-
-[patch.crates-io]
-qubit-event-bus = { path = "../rs-event-bus" }
+qubit-event-bus = "0.18"
 ```
-
-按实际目录调整路径。只有 0.18 发布后，才能移除 path/patch 并从注册表使用
-`qubit-event-bus = "0.18"`。详见[0.18 迁移说明](migration.zh_CN.md#从-017-升级到-018)。
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
 
@@ -254,7 +246,11 @@ pub fn create_order(
 use qubit_event_bus::model::AdmissionRequirement;
 
 let receipt = orders::service::create_order(repository, &order_bus, command)?;
-receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+if receipt.duplicate_possible() {
+    eprintln!("reconcile uncertain publication by event ID: {}", receipt.input_event_id().as_str());
+} else {
+    receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+}
 ```
 
 这项检查只能说明至少有一个订阅者接纳了消息，且没有订阅者明确拒绝；它**不能**说明审计记录和客户视图已经写入数据库。回执里还有哪些信息、失败时如何区分处理，见下一节[检查发布结果](#检查发布结果)。订单提交与事件发布是两个独立操作：提交后进程退出或发布失败，会留下没有事件的订单。若审计记录必须可靠保存，应在订单事务中同时写入一条待发布事件（outbox），由后台任务发布并补偿；重试整个下单请求不能弥补这一缺口。
@@ -340,30 +336,67 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 订单服务在发布后按较严的条件检查，并按失败原因决定怎么处理：
 
-```rust
-use qubit_event_bus::model::AdmissionCheckError;
-use qubit_event_bus::model::AdmissionRequirement;
+先检查整个逻辑发布过程的历史，再看最后一次接纳结果。下面两个文件可直接编译：`RepublishAction` 是应用自己的决策类型，不会自动重发。`Dropped` 不重发；`NoAcceptedDestination` 属于 `AdmissionCheckError`，不是 `AdmissionOutcome`。
 
-let receipt = bus.publish(PublishRequest::new(OrderCreated::TOPIC, event)?)?;
-match receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected) {
-    Ok(()) => {}
-    Err(AdmissionCheckError::RejectedDestinations { count }) => {
-        // 审计可能已经接纳。不要整条重发，先查出拒绝者，只补做被拒绝的部分。
-        eprintln!("{count} 个订阅者拒绝接纳订单 {}", receipt.input_event_id().as_str());
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/republish_action.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Application decisions after examining publication evidence.
+
+/// A decision for the application; this enum performs no publication itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum RepublishAction {
+    /// Query by the original event ID or use an idempotent reconciliation path.
+    ReconcileByEventId,
+    /// No attempt admitted the event; a whole-event retry can be considered.
+    RepublishWhole,
+    /// Repair only rejected destinations; others have already accepted.
+    RetryRejectedDestinations,
+    /// Do not automatically repeat accepted, opaque, or intentionally dropped work.
+    NoRepublish,
+}
+```
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/receipt_safety.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Check retained history before the final attempt's admission summary.
+
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::PublishReceipt;
+
+use crate::republish_action::RepublishAction;
+
+/// Chooses an application action without publishing or altering the receipt.
+#[must_use]
+#[inline]
+pub fn republish_action(receipt: &PublishReceipt) -> RepublishAction {
+    if receipt.duplicate_possible() {
+        return RepublishAction::ReconcileByEventId;
     }
-    Err(AdmissionCheckError::NoAcceptedDestination) => {
-        // 没人订阅，或找到了订阅者但无人接纳。可以整条重发。
-        eprintln!("订单事件未被任何订阅者接纳");
-    }
-    Err(AdmissionCheckError::VisibilityUnavailable) => {
-        // 传递实现没有列出订阅者，无法判断是否有人拒绝。
-        eprintln!("回执未提供各订阅者的接纳情况");
-    }
-    Err(AdmissionCheckError::Dropped) => {
-        eprintln!("发布拦截器在送达前丢弃了订单事件");
+    match receipt.admission_outcome() {
+        AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
+            RepublishAction::RepublishWhole
+        }
+        AdmissionOutcome::PartiallyAccepted(_) => RepublishAction::RetryRejectedDestinations,
+        _ => RepublishAction::NoRepublish,
     }
 }
 ```
+
 
 回执中的 `Filtered` 表示传递实现在接纳阶段就判定这条消息不属于该订阅者。它不算拒绝：只要另有订阅者接纳，两种条件都通过。但它也不算接纳：如果所有目标都是 `Filtered`，`accepted` 为 0，结果是 `NoneAccepted`，两种条件都返回 `NoAcceptedDestination`。队列已满属于拒绝（`Rejected`），与跳过不要混淆。注意，只有能在接纳阶段评估过滤条件的传递实现才会报告 `Filtered`；内置 local 不会。在 local 上，订阅选项里的 `filter` 是总线取到消息后才执行的：被过滤掉的订单在回执里仍显示为 `Accepted`，只是它的处理函数不会被调用。
 
@@ -390,6 +423,27 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 到这里，订单场景的基础接入已经完成。下面各节按需查阅：先是发布侧可附加的元数据和顺序保证，然后是订阅侧的失败处理、拦截过滤，最后是容量配置、第三方实现、异步用法和停机。
 
+### 排查结算终止并恢复消费
+
+结算重试不等于重跑业务 handler。`SettlementRetryConfig::default()` 最多尝试 5 次（含首次），总耗时预算 5 秒，首次退避 10 ms，上限 1 秒。只有 `SpiError::retryable() == Some(true)` 才重试；`Some(false)` 立即停止，`None` 保守停止。重试保留同一个 token 和 disposition，不重跑 handler。预算不强制中断正在阻塞的 SPI 调用，也不保证永不 ready 的 future 结束。
+
+永久错误、次数或时间预算耗尽、无效 token、panic、计时器或基础设施失败，会停止所属订阅接收和启动新 handler。首个 `SubscriptionStopReason::Settlement` 保留 event ID、disposition、attempts、termination 及带 source 链的 `Arc<SpiError>`。已启动的 handler 可继续结束，其他订阅照常推进。先取出终止原因与快照：
+
+```rust
+if let Some(reason) = subscription.terminal_failure() {
+    eprintln!("stopped: {reason:?}");
+}
+let per_subscription = subscription.delivery_metrics();
+let global = bus.delivery_metrics();
+eprintln!("subscription={per_subscription:?}, global={global:?}");
+```
+
+总线快照提供 `reserved_receives`、`queued`、`running_handlers`、`settling`、`lane_waiting`（queued 的子集），以及结算尝试/重试/终止、完成/临时消息放弃计数、handler 与结算耗时的次数/总和/最大值、`oldest_owned_age`。跨线程读取不保证所有字段构成同一个事务快照。关闭后的订阅 handle 保留最终计数，总线只保留聚合量，不建立每事件或每键的永久索引。数量上限也不是 Native payload 或 codec 分配的字节上限。
+
+订单消费者停止后，保存原因与 `Diagnostic::SettlementFailed` / `SettlementStopped`，修正 provider、codec、容量或策略，关闭旧订阅，再用同一持久消费组建立新订阅。Redis 按配置认领尚在 PEL 的工作；已经 ACK 的消息不能仅凭失败记录恢复。local 重新订阅从空队列开始，需要应用补偿。异步 `run` 返回 `ReceiveError::Stopped`，再次运行同一个已停止 handle 不会清除原因。取消仍活跃的 `run` future 则只是暂停，owned 任务和计时状态会保留，可恢复 `run` 或交给 shutdown 接管。
+
+诊断 observer 在发出事件的执行者上同步运行。应用应通过自己的有界、非阻塞队列转交记录；隔离 panic 不等于隔离耗时。
+
 ## 按需补充消息信息
 
 前面的 `PublishRequest::new(topic, payload)?` 已能完成发布，并会为事件生成 ID。需要自己指定 ID，或附上用于串联日志的请求编号、控制同一客户的处理顺序时，使用请求构造器（builder）：
@@ -414,7 +468,7 @@ let receipt = bus.publish(request)?;
 
 ## 保证同一对象的处理顺序
 
-默认情况下，总线**不保证**订阅者按发布顺序处理事件。订阅选项 `ordering_policy` 的默认值是 `OrderingPolicy::Unordered`：以内置 local 为例，同步和异步总线默认都允许最多 4 个处理函数同时执行，同一订阅者先后收到的两条事件可能并发处理，后发布的一条也可能先处理完。其他传递实现的行为由其自身决定，同样不能假设有序。
+默认情况下，总线**不保证**订阅者按发布顺序处理事件。订阅选项 `ordering_policy` 的默认值是 `OrderingPolicy::None`：以内置 local 为例，同步和异步总线默认都允许最多 4 个处理函数同时执行，同一订阅者先后收到的两条事件可能并发处理，后发布的一条也可能先处理完。其他传递实现的行为由其自身决定，同样不能假设有序。
 
 很多场景依赖顺序。例如客户视图模块为每个客户维护“最近一笔订单”。客户 `customer-7` 在短时间内先后下了 `order-42` 和 `order-43`，两条 `OrderCreated` 若被并发处理，`order-43` 可能先写入视图，随后被 `order-42` 覆盖，视图就把较早的订单当成了最近一笔。账户余额变更、订单状态流转等“后一条依赖前一条结果”的处理都有同样的问题。
 
@@ -447,8 +501,8 @@ let subscription = bus.subscribe(request, handler)?;
 
 两边都配置后，客户视图订阅的行为如下：
 
-- **同一个键**：键为 `customer-7` 的 `order-42` 和 `order-43` 按进入该订阅的先后逐条处理；`order-43` 的处理函数要等 `order-42` 的处理函数返回后才开始。
-- **不同的键**：键为 `customer-8` 的事件走另一条顺序通道，不必等待 `customer-7`。即使 `customer-7` 的某个处理函数卡住，`customer-8` 的事件仍会继续处理。
+- **同一个键**：键为 `customer-7` 的 `order-42` 和 `order-43` 按进入该订阅的先后逐条处理；`order-43` 的处理函数要等 `order-42` 完成结算后才开始；订阅终止时不会启动后继。
+- **不同的键**：键为 `customer-8` 的事件在已接收、可运行且有 handler 额度时，可独立于 `customer-7` 推进。接收 B 需要 owned 空间；A 的无限上游积压或占满额度时，不能保证尚未接收的 B 前进。调度仅在执行者持续推进的可运行集合内按订阅、键轮转。
 - **其他订阅**：保序只对请求了 `PerKey` 的订阅生效，每个订阅各自排序。审计模块如果没有请求 `PerKey`，它收到的 `customer-7` 事件仍可能乱序；两个订阅之间谁先处理也不作保证。
 - **其他主题**：顺序通道按主题划分，`orders.created` 与其他主题上同一个键的事件之间不保证顺序。需要跨事件类型保序时，应把这些事件放在同一主题中，例如用枚举类型作为载荷。
 
@@ -707,47 +761,41 @@ let local = LocalEventBusConfig::new()
 let bus = EventBus::local(local)?;
 ```
 
-`queue_capacity` 限制**每个订阅者**最多积压多少条消息，默认 1,024；`max_total_outstanding` 限制**这个 local 实例的所有订阅者合计**最多积压多少次投递，默认 65,536。已经取走但还没处理完的消息也算在内，重试期间仍占名额。两个值都要大于零。计数单位是消息投递次数，不是字节；队列满时，某个订阅者可能拒绝，其他订阅者仍可接收。处理结束或关闭会释放名额。请结合处理速度和内存实测调整，不能只看条数推断内存占用。
+`queue_capacity` 限制**每个订阅者**最多积压多少条消息，默认 1,024；`max_total_outstanding` 限制**这个 local 实例的所有订阅者合计**最多积压多少次投递，默认 65,536。已经取走但还没处理完的消息也算在内，重试期间仍占名额。两个值都要大于零。计数单位是消息投递次数，不是字节；队列满时，某个订阅者可能拒绝，其他订阅者仍可接收。终态结算或 provider 清理后释放名额，handler 返回本身不等于结算完成。请结合处理速度和内存实测调整，不能只看条数推断内存占用。
 
-除 local 的积压上限外，事件总线对象还限制自己同时接手多少条消息。同步总线默认最多接手 4 条（包括正在处理和等待处理的消息），处理函数等待队列另有容量 32；实际能排队多少仍受前面的 4 条上限约束。异步总线默认最多同时处理 4 条。需要修改这些值时，用 `EventBusFacadeConfig`。这个类型名中的 `Facade` 是 API 名称；在本文把它理解成“总线的通用设置”即可。例如把同步总线接手消息的上限设为 8、等待队列容量设为 64：
+同步和异步 facade 共用 `DeliverySchedulingConfig`：默认最多运行 4 个 handler、持有 256 条投递、每订阅持有 32 条投递、注册 256 个订阅。owned 包括 receive 前的预留、排队、执行中和结算中；接收前预留，绝不额外取一条越过额度。同键排队和结算退避不占 handler 执行额度，同键通道要到结算成功或订阅终止才释放。四个参数均为 `NonZeroUsize`，running 和 per-subscription 不得大于 owned。
 
 ```rust
+use std::num::NonZeroUsize;
+
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 
-let local = LocalEventBusConfig::new()
-    .queue_capacity(2_048)
-    .max_total_outstanding(20_000);
-let bus_settings = EventBusFacadeConfig::new()
-    .with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(8, 64)?);
+let scheduling = DeliverySchedulingConfig::new(
+    NonZeroUsize::new(8).unwrap(),
+    NonZeroUsize::new(256).unwrap(),
+    NonZeroUsize::new(32).unwrap(),
+    NonZeroUsize::new(64).unwrap(),
+)?;
+let local = LocalEventBusConfig::new().queue_capacity(2_048).max_total_outstanding(20_000);
 let config = EventBusConfig::default()
     .with_provider_options(local.provider_options())
-    .with_facade_config(bus_settings);
+    .with_facade_config(EventBusFacadeConfig::new().with_delivery_scheduling(scheduling));
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-`SyncDeliverySchedulerConfig::new` 的第一个值必须大于零；第二个值可以为 0，表示只能把消息立即交给空闲工作线程。同步 facade 默认最多创建 256 个活跃订阅接收线程。可以用 `SyncDeliverySchedulerConfig::with_max_subscription_workers(NonZeroUsize::new(64).unwrap())` 调整上限；超过上限时会在调用 provider 创建订阅前失败。此设置限制线程数，不会降低每个阻塞接收线程的开销；订阅量更大时可评估异步总线。使用注册表创建 local 时，要把 `local.provider_options()` 传给 `EventBusConfig`；它包含 `local.queue_capacity` 和 `local.max_total_outstanding` 两个配置键。未知的键、非数字值或零值会在创建时被拒绝。直接调用 `EventBus::local` 只能设置 local 的积压容量；要修改处理并发、编码器或拦截器，就通过 `EventBusRegistry::with_local()` 创建。
+注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个容量键必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 只设置 provider 容量；facade 配置通过 registry 装配。
 
 编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，本地队列仍按投递条数限流。
 
-异步总线也使用 `LocalEventBusConfig`。例如把同时处理的消息数设为 8：
+异步总线复用上面的 `config`，只更换装配入口：
 
 ```rust
 use qubit_event_bus::AsyncEventBusRegistry;
-use qubit_event_bus::DeliveryAdmissionConfig;
-use qubit_event_bus::EventBusConfig;
-use qubit_event_bus::EventBusFacadeConfig;
-use qubit_event_bus::local::LocalEventBusConfig;
 
-let local = LocalEventBusConfig::new().queue_capacity(2_048);
-let bus_settings = EventBusFacadeConfig::new()
-    .with_delivery_admission(DeliveryAdmissionConfig::new(8)?);
-let config = EventBusConfig::default()
-    .with_provider_options(local.provider_options())
-    .with_facade_config(bus_settings);
 let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 ```
 
@@ -769,11 +817,10 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 
 假设有人提供了连接消息服务器的实现，你的应用先把它的 crate 加进依赖，再让总线知道“要用这个实现”。一个做法是显式注册：建立 `EventBusRegistry::new()`，调用 `register(那个实现)`，再调用 `create(&config)` 创建总线。同步实现放在 `EventBusRegistry`，异步实现放在 `AsyncEventBusRegistry`；异步创建要 `.await`。可以用 `provider_ids()` 查看已注册实现的 ID，再用 `EventBusConfig::with_selection` 指定其中一个。
 
-有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接。尚未发布时，
-仍须保留上面的本地 path 和 `[patch.crates-io]`：
+有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.18.0", path = "../rs-event-bus", features = ["discovery"] }
+qubit-event-bus = { version = "0.18", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -793,6 +840,39 @@ let bus = registry.create(&EventBusConfig::default())?;
 把示例中的 `provider_crate` 和 `your-provider-id` 换成真实 crate 名称及其文档给出的 ID。如果程序找不到实现，先查看 `provider_ids()`；若两个实现使用同一选择名称，`discover()` 会报错。内置 `local` 只自动登记在**同步**目录；异步 local 要用 `AsyncEventBusRegistry::with_local()` 显式加入。同步与异步目录互不通用。两种 local 实现的 ID 都是 `local`，还可用 `memory` 或 `in-process` 选择。同步 local 也可通过 `EventBusRegistry::with_local()` 显式加入。
 
 `EventBusConfig::with_provider_options` 传递这个实现自己的配置，`with_facade_config` 配置总线的处理方式，`with_required_capabilities` 说明应用必须具备什么能力。例如 `RequiredCapabilities::new().durable()` 表示“消息必须能持久保存”；内置 local 做不到，创建时就会报错。注册表只会在**创建总线时**尝试其他候选；运行中发布或接收失败不会自动换实现。`ProviderOptions` 可能出现在调试输出中，不要放密码或 token。
+
+### 对照 local 与 Redis 的实际能力
+
+以下是同步和异步 provider 实际返回的 `EventBusCapabilities`：
+
+| 能力 | local（core 0.18） | Redis Streams（provider 0.6） |
+| --- | --- | --- |
+| `payload_modes` | `Native` | `Encoded`，须注册 codec |
+| `durability` | `Ephemeral` | `Durable` |
+| `subscription_modes` | `EPHEMERAL` | `DURABLE` |
+| `consumer_groups` | `false` | `true` |
+| `replay` | `None` | `Position` |
+| `ordering` | `PerKey` | `None`，拒绝按键保序请求 |
+| `delayed_delivery` | `Native` | `None`，拒绝延迟投递请求 |
+| `settlement` | `AcceptRetryReject` | `AcceptRetryReject` |
+| `publish_guarantee` | `Accepted` | `Accepted`，表示 `XADD` 成功，不保证 fsync |
+| `publish_visibility` | `DestinationAdmissions` | `Opaque` |
+| 关闭与恢复 | close/drop 可丢弃积压；重新订阅从空队列开始 | close/drop 不静默 ACK；未结算记录按 PEL 认领与恢复策略处理 |
+
+Redis 的 `StartPosition` 仅初始化新建持久消费组；已有组的 cursor 不会重置。stream trimming 和 claim 策略可能影响 PEL 恢复。结算错误也可能发生在 Redis 已应用 `XACK` 之后，因此不能把失败理解为一定重投。发布接纳既不保证磁盘 fsync，也不表示 handler 已完成。需要订单事务与事件可靠移交时，由应用实现 outbox，并让消费者幂等。
+
+### 运行 Redis 订单示例
+
+真实代码在 provider 仓库的[同步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs)、[异步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs)；装配细节见 [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.zh_CN.md) 与[用户手册](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.zh_CN.md)。在 `rs-event-bus-redis` 0.6 工作副本执行，URL 显式指向专用、可丢弃的 Redis 服务：
+
+```bash
+export EVENT_BUS_REDIS_URL='redis://127.0.0.1:16379/'
+export EVENT_BUS_EXAMPLE_NAMESPACE="docs-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+cargo run --locked --all-features --example sync_orders -- "$EVENT_BUS_REDIS_URL" "$EVENT_BUS_EXAMPLE_NAMESPACE-sync"
+cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_URL" "$EVENT_BUS_EXAMPLE_NAMESPACE-async"
+```
+
+两个示例为 `String` 注册 `Utf8Codec`（`ContentType("text/plain")`），选择 `redis-streams`，传入 `redis.url` 和 `redis.namespace`，先以 `StartPosition::Earliest` 创建持久组 `billing`，再发布事件。同步示例输出 `consumed order event: order-42`；异步示例输出 `consumed order event: order-43`，看到这行消费成功信息后再按 Enter 结束。每次使用唯一 namespace，避免旧组和旧记录干扰结果；缺少 codec 会导致配置失败，Redis 连接失败不能算接纳。自动验证在 provider 工作副本先运行 `cargo build --locked --all-features --examples`，再运行 `cargo test --locked --all-features --test documentation_examples_tests`，由专用 `RedisServer` fixture 管理服务与 namespace。core 文档 fixture 不引入 Redis 依赖，外部源码只作为链接，不能绕过 checker 的根目录保护。
 
 ### 自己开发一种传递实现
 
@@ -880,6 +960,8 @@ Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回
 // =============================================================================
 //! Order-event codec compiled from the bilingual user guides.
 
+use std::io::Error;
+use std::str::from_utf8;
 use std::sync::Arc;
 
 use qubit_event_bus::CodecError;
@@ -902,12 +984,17 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
     }
 
     fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
-        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
+        let text = format!(
+            "{}\n{}\n{}",
+            value.order_id, value.customer_id, value.total_cents
+        );
         Ok(Arc::from(text.into_bytes()))
     }
 
     fn decode(&self, payload: &EncodedPayload) -> Result<OrderCreated, CodecError> {
-        let text = std::str::from_utf8(payload.bytes()).map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+        let text = from_utf8(payload.bytes()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })?;
         let mut lines = text.lines();
         let order_id = lines.next().unwrap_or("").to_owned();
         let customer_id = lines.next().unwrap_or("").to_owned();
@@ -915,10 +1002,14 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
             .next()
             .unwrap_or("")
             .parse::<u64>()
-            .map_err(|source| CodecError::Decode { source: Box::new(source) })?;
+            .map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })?;
         if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
             return Err(CodecError::Decode {
-                source: Box::new(std::io::Error::other("expected order_id, customer_id, and total_cents")),
+                source: Box::new(Error::other(
+                    "expected order_id, customer_id, and total_cents",
+                )),
             });
         }
         Ok(OrderCreated {
@@ -979,6 +1070,7 @@ let config = EventBusConfig::default().with_facade_config(bus_settings);
 // =============================================================================
 //! Asynchronous local delivery example compiled by the user-guide checks.
 
+use std::error::Error;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -987,16 +1079,20 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use tokio::main;
+use tokio::spawn;
+use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::timeout;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn Error>> {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
     let topic = Topic::<String>::new("orders.created")?;
     let mut subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let runner = tokio::spawn(async move {
+    let (sender, mut receiver) = unbounded_channel();
+    let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
@@ -1009,7 +1105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
         .await?;
-    let delivered = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await?;
+    let delivered = timeout(Duration::from_secs(3), receiver.recv()).await?;
     assert_eq!(delivered.as_deref(), Some("order-42"));
     bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -1075,7 +1171,9 @@ let notifier = NotificationPublisher::new(
     NonZeroUsize::new(1_024).expect("capacity is non-zero"),
     |outcome| match outcome {
         NotificationOutcome::Published(receipt) => {
-            if let Err(error) =
+            if receipt.duplicate_possible() {
+                eprintln!("reconcile uncertain event {}", receipt.input_event_id().as_str());
+            } else if let Err(error) =
                 receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
             {
                 eprintln!("订单事件 {} 接纳异常：{error}", receipt.input_event_id().as_str());
@@ -1159,104 +1257,101 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 
 ### 同步总线的停机流程
 
-下面把订单服务的同步停机流程写出来。`bus`、`audit_subscription`、`view_subscription` 和 `notifier` 都是启动时创建并由应用保留的句柄；这段代码应放在程序最外层的关闭流程中，例如收到终止信号之后：
+先停止业务入口，再有界排空通知来源。不要为了取消订阅先无期限等待 handler；从最外层应用关闭流程调用以下 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。两个等待分别为 2 秒和 1 秒，只使用 `Graceful`。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Two bounded waits hand unresolved cleanup back to the application supervisor.
+
+use std::time::Duration;
+
+use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::error::ShutdownError;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
+
+/// Waits twice for graceful completion, without forcing running handlers to stop.
+///
+/// Returns `false` after both waits expire or the provider reports incomplete
+/// shutdown. The application should record metrics and hand control to its
+/// external supervisor. Errors other than a caller deadline are propagated.
+pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
+    match bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(2),
+    }) {
+        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
+        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    match bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }) {
+        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
+        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Applies the same bounded policy while the caller drives async shutdown.
+///
+/// Returns `false` if cleanup remains incomplete; other shutdown errors propagate.
+/// Cancelling this future leaves shutdown state for the coordinator to resume.
+pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownError> {
+    match bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(2),
+        })
+        .await
+    {
+        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
+        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    match bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(1),
+        })
+        .await
+    {
+        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
+        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+```
+
+`true` 表示报告为 `Complete`；`false` 表示两轮之后仍未完成，应记录 `bus.delivery_metrics()`、各订阅 `terminal_failure()` 与快照，由外部监督器决定进程如何处置。`TimedOut` 是调用方等待到期，其他错误继续返回给应用。`ShutdownReport` 中 `known_abandoned_deliveries` 统计已知放弃量，`provider_may_have_abandoned_deliveries` 提醒 provider 还有无法精确计数的损失可能；local 是临时实现。
+
+有界等待不等于强制退出：同步后台关闭线程可能继续等待不合作的 handler 或 SPI。`Immediate` 也不能中断正在运行的用户代码，不应作为超时后的有界救援。不要在同一总线 handler 内等待总线自身完成，相关调用会返回 `WouldDeadlock`。
+
+### 非阻塞地请求停机
+
+`EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
 
 ```rust
 use std::time::Duration;
 
-use qubit_event_bus::ShutdownError;
-use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::spi::ShutdownMode;
 
-// 1. 应用先停止接收新的下单请求（HTTP 监听器等由应用自己控制）。
-// 2. 关闭消息来源：排空通知队列，见上一节。
-notifier.close_with_timeout(Duration::from_secs(30))?;
-// 3. 等待总线已经取到的 OrderCreated 处理完，最多等 10 秒。
-let outcome = bus.wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))?;
-if outcome == WaitOutcome::TimedOut {
-    eprintln!("仍有 OrderCreated 处理函数未返回，继续停机");
-}
-// 4. 取消订阅：不再从 local 取新消息。
-audit_subscription.cancel()?;
-view_subscription.cancel()?;
-// 5. 关闭总线，最多等 30 秒。
-match bus.shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) }) {
-    Ok(report) => {
-        println!(
-            "provider 关闭结果 {:?}，放弃了 {} 条已接纳的投递",
-            report.outcome, report.known_abandoned_deliveries
-        );
-        if report.provider_may_have_abandoned_deliveries {
-            eprintln!("传递实现可能还丢弃了无法计数的消息");
-        }
-    }
-    Err(ShutdownError::TimedOut { timeout }) => {
-        // 总线仍在后台清理，并且已经拒绝新操作。再调一次 shutdown 可等到最终报告；
-        // 改用 Immediate 会把仍在排队的消息退回，但同样要等正在运行的处理函数返回。
-        eprintln!("平稳关闭在 {timeout:?} 内未完成");
-        let ticket = bus.request_shutdown(ShutdownMode::Immediate)?;
-        let report = ticket.wait(Some(Duration::from_secs(30)))?;
-        eprintln!("最终报告：{report:?}");
+let ticket = bus.request_shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(5),
+})?;
+match ticket.wait(Some(Duration::from_secs(2))) {
+    Ok(report) => println!("停机结果：{:?}", report.outcome),
+    Err(qubit_event_bus::ShutdownError::TimedOut { .. }) => {
+        // 保留或丢弃 ticket 均可；停机尝试会继续运行。
     }
     Err(error) => return Err(error.into()),
 }
 ```
-
-订单示例正常停机时，`report.outcome` 为 `ShutdownOutcome::Complete`，`known_abandoned_deliveries` 为 0。`provider_may_have_abandoned_deliveries` 在内置 local 上总是 `true`：local 是非持久实现，无法证明进程内没有消息随关闭丢失，这个标志只是提醒，不是错误。`known_abandoned_deliveries` 大于 0，说明有已经接纳但没来得及处理的消息被放弃了；这些订单的审计记录和客户视图需要由应用的补偿机制补齐。
-
-`ShutdownMode::Graceful { timeout }` 会停止接收新工作，并尽量完成已经接收的工作。调用方 deadline 到期会返回 `ShutdownError::TimedOut`，不表示 bus 已关闭；同步 bus 仍可能在后台清理，后续再次调用 `shutdown` 可观察最终 `ShutdownReport`。`Immediate` 无法强制终止已经运行的业务代码。不要在同一 bus 的 handler 中调用可能等待该 bus 自身工作的 `shutdown`、`wait_for_idle` 或 `wait_for_received_deliveries`；这些调用会返回 `WouldDeadlock`。应从程序最外层的关闭流程发起停机。
-
-### 请求关闭并异步观察
-
-异步应用如果使用同步 `EventBus`，可以先发起短暂的关闭请求，再异步观察完成。
-这组 API 属于 `EventBus`；`AsyncEventBus` 仍通过自身的关闭 future 驱动清理。
-
-```rust
-use std::time::Duration;
-
-use qubit_event_bus::{EventBus, EventBusShutdown, ShutdownError, ShutdownReport};
-use qubit_event_bus::spi::ShutdownMode;
-
-fn request_graceful(bus: &EventBus) -> Result<EventBusShutdown, ShutdownError> {
-    bus.request_shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(30),
-    })
-}
-
-async fn observe(ticket: &EventBusShutdown) -> Result<ShutdownReport, ShutdownError> {
-    ticket.wait_async().await
-}
-```
-
-把 ticket 保留在可取消的观察 future 外。`request_graceful` 关闭接纳入口，启动
-或加入后台协调器，不等待 handler、worker 或 provider。`observe` 只借用 ticket：
-取消时移除自己的 waker 登记；之后再调用 `observe(&ticket)` 就能继续观察，
-无须重发关闭请求。`wait_async` 不阻塞线程，也不创建辅助线程。应用应在自身
-executor 上驱动它，并明确设置外层观察期限；上面 30 秒的 mode timeout 传给
-provider，不限制 `wait_async`。
-
-同步观察可调用 `ticket.wait(Some(Duration::from_secs(30)))`。观察超时不会消费
-ticket，也不停止后台关闭。宽限期结束后，可调用
-`bus.request_shutdown(ShutdownMode::Immediate)` 加强当前关闭，并继续观察原
-ticket；不需要的新 ticket 可以直接丢弃。每个 ticket 绑定确切的关闭代次，后来
-启动重试产生新代时，原 ticket 仍保留原代的结果。对已关闭 bus 发起请求会立即
-返回缓存结果。丢弃 ticket 只释放观察登记，丢弃 bus 句柄不会自动发起关闭。
-
-`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用；同步
-`shutdown` 和 `ticket.wait` 在这种上下文里返回 `WouldDeadlock`。异步回调也不能
-等待包含自身工作的关闭完成。普通调用方执行同步 `shutdown(Immediate)` 时，
-仍会等待正在运行的 handler、协调线程 join 和 provider 关闭，且没有调用方期限。
-取消、回滚和 Drop 集成应使用请求加有界观察；期限和 Immediate 都不能杀死阻塞
-的同步代码。
-
-IoC 0.3 适配器在 graceful 回调中保存 ticket，abort 回调请求 Immediate；它拥有
-的资源 wait 取出原 ticket，释放槽锁后再调用 `wait_async`。
-`WaitPolicy::bounded` 为宽限和终止阶段提供预算。取消外层
-`ShutdownHandle::wait` 会保留已有资源 wait，恢复观察不会重复请求。
-终止超时通过 `incomplete` 报告，并允许继续关闭依赖；这不表示资源已被强行
-终止，也不能继续保证未结束消费者的依赖可用。构建失败时应检查
-`BuildFailure::cause`，取出 cleanup handle，再显式观察 Immediate 清理报告。
-迁移细节见 [0.18 迁移说明](migration.zh_CN.md#从-017-升级到-018)。
 
 ### 等待某个主题空闲
 
@@ -1287,31 +1382,9 @@ if outcome == WaitOutcome::TimedOut {
 
 ### 异步总线的停机流程
 
-异步总线的步骤相同，只是等待和关闭都要 `.await`。[异步总线与订阅](#异步总线与订阅)中的 `subscription.run(...)` 由一个后台任务持有，`bus.shutdown` 会关闭订阅接收端，`run` 随之返回 `Ok(())`，因此不必先取回订阅句柄：
+使用上面完整编译源中的 `try_shutdown_async(&bus).await`；两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
 
-```rust
-use std::time::Duration;
-
-use qubit_event_bus::WaitOutcome;
-use qubit_event_bus::spi::ShutdownMode;
-
-// 1. 停止接收新的下单请求。
-// 2. 等待总线已取到的 OrderCreated 处理完。
-if let WaitOutcome::TimedOut = bus
-    .wait_for_received_deliveries(&OrderCreated::TOPIC, Some(Duration::from_secs(10)))
-    .await?
-{
-    eprintln!("仍有 OrderCreated 处理函数未完成，继续停机");
-}
-// 3. 关闭总线；运行 subscription.run(...) 的任务会在订阅关闭后结束。
-let report = bus
-    .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(30) })
-    .await?;
-println!("provider 关闭结果 {:?}", report.outcome);
-// 4. 等待 run 任务结束，方式取决于所用执行器，例如 Tokio 的 JoinHandle。
-```
-
-如果应用自己保留了 `AsyncSubscription` 句柄，也可以在关闭总线前调用 `subscription.close().await` 单独结束某个订阅。异步 `shutdown` 由返回的 future 驱动：丢弃这个 future 会中断关闭过程，应等它完成。异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 同样只等待总线已取到的消息，异步 local 关闭时会丢弃仍在排队的消息。
+异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 
 ## 错误、诊断与排障
 
@@ -1348,6 +1421,4 @@ println!("provider 关闭结果 {:?}", report.outcome);
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.18；缺失输入会明确失败。本轮 IoC/EventBus/消费者的三仓更新不升级 rs-task 与
-rs-event-bus-redis 的 0.17 依赖，完整五仓门禁须待它们另行迁移到 0.18 后
-才能通过。metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.18；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

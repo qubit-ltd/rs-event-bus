@@ -8,5 +8,9 @@
 //! Private outbound values prepared for provider retries.
 
 mod prepared_outbound;
+mod prepared_publish;
+mod publish_preparation;
 
 pub(super) use prepared_outbound::PreparedOutbound;
+pub(super) use prepared_publish::PreparedPublish;
+pub(super) use publish_preparation::PublishPreparation;

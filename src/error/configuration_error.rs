@@ -7,6 +7,8 @@
 // =============================================================================
 //! Invalid event bus configuration and identifiers.
 
+use thiserror::Error;
+
 /// A caller-provided configuration value failed validation.
 ///
 /// # Examples
@@ -17,7 +19,7 @@
 /// let error = ConfigurationError::invalid_subscriber_id("_audit");
 /// assert!(matches!(error, ConfigurationError::InvalidSubscriberId { .. }));
 /// ```
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 #[must_use]
 pub enum ConfigurationError {
@@ -70,22 +72,5 @@ impl ConfigurationError {
     /// An error containing an owned copy of the invalid value.
     pub fn invalid_event_id(value: &str) -> Self {
         Self::InvalidEventId { value: value.into() }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ConfigurationError;
-
-    #[test]
-    fn test_invalid_subscriber_id_retains_the_rejected_value() {
-        let error = ConfigurationError::invalid_subscriber_id(" bad-id");
-        assert!(matches!(error, ConfigurationError::InvalidSubscriberId { value } if value.as_ref() == " bad-id"));
-    }
-
-    #[test]
-    fn test_invalid_event_id_retains_the_rejected_value() {
-        let error = ConfigurationError::invalid_event_id(" bad-event");
-        assert!(matches!(error, ConfigurationError::InvalidEventId { value } if value.as_ref() == " bad-event"));
     }
 }

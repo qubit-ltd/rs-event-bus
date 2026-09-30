@@ -28,12 +28,13 @@ use super::EventEnvelope;
 /// use qubit_event_bus::model::ProviderId;
 /// use qubit_event_bus::model::SubscriberId;
 /// use qubit_event_bus::model::Topic;
+/// use qubit_id::Id;
 ///
 /// let topic = Topic::<String>::new("orders.created").unwrap();
 /// let event = Arc::new(EventEnvelope::new(topic, "order-1".to_owned()).unwrap());
 /// let context = DeliveryContext::new(
 ///     ProviderId::new("local").unwrap(),
-///     qubit_id::Id::new(1),
+///     Id::new(1),
 ///     SubscriberId::new("audit").unwrap(),
 /// );
 /// let delivery = Delivery::new(event, context);
@@ -68,6 +69,7 @@ impl<T: 'static> Delivery<T> {
     ///
     /// # Returns
     /// A delivery with a fresh acknowledgement handle.
+    #[must_use = "Use the created delivery to process the received event."]
     pub fn new(event: Arc<EventEnvelope<T>>, context: DeliveryContext) -> Self {
         Self {
             event,
@@ -75,6 +77,24 @@ impl<T: 'static> Delivery<T> {
             acknowledgement: Acknowledgement::new(),
         }
     }
+
+    /// Creates a fresh per-attempt acknowledgement while retaining event
+    /// context.
+    ///
+    /// # Parameters
+    /// - `retry_attempt`: one-based facade attempt number for the new delivery.
+    ///
+    /// # Returns
+    /// A delivery over the same event with fresh attempt state.
+    #[must_use = "Use the new delivery for the retry attempt."]
+    pub(crate) fn next_attempt(&self, retry_attempt: u32) -> Self {
+        Self {
+            event: self.event.clone(),
+            context: self.context.clone().with_retry_attempt(retry_attempt),
+            acknowledgement: Acknowledgement::new(),
+        }
+    }
+
     /// Returns the payload without cloning it.
     ///
     /// # Returns
@@ -110,22 +130,6 @@ impl<T: 'static> Delivery<T> {
     #[inline]
     pub fn acknowledgement(&self) -> &Acknowledgement {
         &self.acknowledgement
-    }
-
-    /// Creates a fresh per-attempt acknowledgement while retaining event
-    /// context.
-    ///
-    /// # Parameters
-    /// - `retry_attempt`: one-based facade attempt number for the new delivery.
-    ///
-    /// # Returns
-    /// A delivery over the same event with fresh attempt state.
-    pub(crate) fn next_attempt(&self, retry_attempt: u32) -> Self {
-        Self {
-            event: self.event.clone(),
-            context: self.context.clone().with_retry_attempt(retry_attempt),
-            acknowledgement: Acknowledgement::new(),
-        }
     }
 
     /// Returns a shared owner for use by retry and dead-letter policies.

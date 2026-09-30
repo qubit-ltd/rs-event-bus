@@ -43,6 +43,7 @@ impl LocalQueue {
     /// # Returns
     /// The queue state guard, recovering the inner state if the mutex was
     /// poisoned.
+    #[must_use = "Use the guard to access the queue state while locked."]
     pub(in crate::local) fn lock(&self) -> MutexGuard<'_, LocalQueueState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }

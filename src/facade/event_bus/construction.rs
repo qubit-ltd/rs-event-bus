@@ -13,6 +13,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 
+use qubit_clock::MonotonicClock;
+use qubit_clock::StdMonotonicClock;
+
 use crate::EventBus;
 use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
@@ -99,18 +102,46 @@ impl EventBus {
         spi: Arc<dyn EventBusSpi>,
         config: EventBusFacadeConfig,
     ) -> Result<Self, crate::error::SpiError> {
+        Self::with_config_and_clock(provider_id, spi, config, Arc::new(StdMonotonicClock::new()))
+    }
+
+    /// Creates a facade with an injectable monotonic settlement clock.
+    /// Provider capability failures are returned as structured SPI errors.
+    /// Owners sample this clock after wakeups; advancing a manual clock alone
+    /// does not wake receiver threads.
+    ///
+    /// # Parameters
+    /// - `provider_id`: stable provider identity included in diagnostics.
+    /// - `spi`: backend whose receivers are each owned by one worker thread.
+    /// - `config`: validated scheduling, payload, and settlement policies.
+    /// - `clock`: monotonic source used for settlement budgets and delivery
+    ///   metrics.
+    ///
+    /// # Returns
+    /// A facade whose receiver owners share the injected clock.
+    ///
+    /// # Errors
+    /// Returns a structured SPI error if querying provider capabilities panics.
+    pub fn with_config_and_clock(
+        provider_id: ProviderId,
+        spi: Arc<dyn EventBusSpi>,
+        config: EventBusFacadeConfig,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Self, crate::error::SpiError> {
         let capabilities =
             crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
                 spi.capabilities()
             })?;
-        let scheduler = SyncDeliveryScheduler::new(config.sync_delivery_scheduler());
+        let scheduler = SyncDeliveryScheduler::new(config.delivery_scheduling());
         let subscription_worker_budget = Arc::new(SubscriptionWorkerBudget {
             active: AtomicUsize::new(0),
-            limit: config.sync_delivery_scheduler().max_subscription_workers().get(),
+            limit: config.delivery_scheduling().max_subscriptions().get(),
         });
         Ok(Self {
             inner: Arc::new(EventBusInner {
                 spi,
+                clock,
+                delivery_metrics: Arc::new(crate::facade::internal::DeliveryMetrics::default()),
                 capabilities,
                 provider_id: provider_id.clone(),
                 publisher: PublisherPipeline::new(
@@ -136,5 +167,19 @@ impl EventBus {
                 abandoned_deliveries: AtomicU64::new(0),
             }),
         })
+    }
+}
+
+impl EventBus {
+    /// Returns active delivery gauges and cumulative bus counters.
+    /// Snapshot clock failures stop affected subscriptions and are diagnosed;
+    /// the fallback preserves exact gauges with an unknown oldest age.
+    ///
+    /// # Returns
+    /// Current live delivery gauges combined with bus-wide cumulative counters.
+    #[must_use = "delivery metrics are the current bus diagnostics"]
+    #[inline]
+    pub fn delivery_metrics(&self) -> crate::facade::DeliveryMetricsSnapshot {
+        self.inner.delivery_metrics.snapshot(self.inner.delivery_gauges(None))
     }
 }

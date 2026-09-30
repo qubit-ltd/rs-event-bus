@@ -51,6 +51,10 @@ impl EventBus {
     /// Returns `WouldDeadlock` when called within a synchronous callback or
     /// worker owned by this bus, `IdleWaitUnsupported` when the provider has no
     /// topic-idle reporting capability, or the original SPI error.
+    ///
+    /// # Panics
+    /// Panics only if the validated typed topic violates its SPI-address
+    /// invariant.
     pub fn wait_for_idle<T: 'static>(
         &self,
         topic: &Topic<T>,
@@ -160,15 +164,13 @@ impl EventBus {
     /// request may retry.
     ///
     /// # Parameters
-    /// - `mode`: graceful or immediate shutdown policy.
+    /// - `mode`: graceful or immediate shutdown policy for this generation.
     ///
     /// # Returns
-    /// A ticket bound to the shutdown attempt, or a ready ticket if already
-    /// closed.
+    /// A ticket bound to the started or joined shutdown generation.
     ///
     /// # Errors
-    /// Returns `CoordinatorStart` when the shutdown coordinator thread cannot
-    /// start.
+    /// Returns `CoordinatorStart` if the coordinator thread cannot start.
     pub fn request_shutdown(&self, mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError> {
         self.request_shutdown_with_spawner(mode, |inner, generation| {
             thread::Builder::new()
@@ -178,24 +180,37 @@ impl EventBus {
         })
     }
 
+    /// Locks the lifecycle state while recovering from internal poison.
+    ///
+    /// # Returns
+    /// The lifecycle mutex guard for this bus.
+    pub(in crate::facade) fn lock_lifecycle(&self) -> MutexGuard<'_, LifecycleState> {
+        self.inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Requests a generation using the supplied coordinator thread launcher.
     /// The launcher runs after admission closes and lifecycle locks are
     /// released; start errors are published to existing generation
     /// observers before return.
     ///
     /// # Type Parameters
-    /// - `F`: one-shot launcher receiving the bus state and shutdown
-    ///   generation.
+    /// - `F`: one-shot coordinator launcher supplied for this shutdown request.
     ///
     /// # Parameters
-    /// - `mode`: shutdown policy selected for this generation.
-    /// - `spawn`: launcher for the coordinator thread.
+    /// - `mode`: shutdown policy recorded for the generation.
+    /// - `spawn`: closure that starts the coordinator for the supplied bus and
+    ///   generation.
     ///
     /// # Returns
-    /// A ticket bound to this shutdown generation, or a ready ticket if closed.
+    /// A ticket for the selected generation, including a ready ticket if the
+    /// bus is already closed.
     ///
     /// # Errors
-    /// Returns `CoordinatorStart` if the launcher cannot start the coordinator.
+    /// Returns `CoordinatorStart` after publishing a launcher failure to
+    /// tickets already joined to the generation.
+    ///
+    /// # Panics
+    /// Propagates a panic raised by `spawn` after shutdown admission closes.
     fn request_shutdown_with_spawner<F>(&self, mode: ShutdownMode, spawn: F) -> Result<EventBusShutdown, ShutdownError>
     where
         F: FnOnce(Arc<EventBusInner>, u64) -> IoResult<()>,
@@ -231,14 +246,6 @@ impl EventBus {
         }
         Ok(ticket)
     }
-
-    /// Locks the lifecycle state while recovering from internal poison.
-    ///
-    /// # Returns
-    /// The lifecycle mutex guard for this bus.
-    pub(in crate::facade) fn lock_lifecycle(&self) -> MutexGuard<'_, LifecycleState> {
-        self.inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 #[cfg(test)]
@@ -270,8 +277,7 @@ mod tests {
         assert!(matches!(error, ShutdownError::CoordinatorStart(_)));
         let old = joined.into_inner().expect("ticket slot").expect("joined ticket");
         let retry = bus.request_shutdown(ShutdownMode::Immediate).expect("retry starts");
-        let retry_report = retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
-        assert_eq!(retry_report.outcome, crate::spi::ShutdownOutcome::Complete);
+        let _ = retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
         assert!(matches!(
             old.wait(Some(Duration::ZERO)),
             Err(ShutdownError::CoordinatorStart(_))

@@ -134,6 +134,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// A builder with no topic or payload and default publish options.
+    #[inline]
     pub fn new() -> Self {
         Self {
             topic: None,
@@ -153,6 +154,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder; `Forbid` remains the default.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn duplicate_risk_policy(mut self, value: DuplicateRiskPolicy) -> Self {
         self.options.duplicate_risk_policy = value;
@@ -166,7 +168,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned topic."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn topic(mut self, value: Topic<T>) -> Self {
         self.topic = Some(value);
@@ -179,7 +181,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned payload."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn payload(mut self, value: T) -> Self {
         self.payload = Some(value);
@@ -192,7 +194,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
-    #[must_use = "Use the returned event id."]
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn event_id(mut self, value: EventId) -> Self {
         self.event_id = Some(value);
@@ -207,6 +209,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
@@ -223,6 +226,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn headers<I, K, V>(mut self, values: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -240,6 +244,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn ordering_key(mut self, value: impl Into<String>) -> Self {
         self.ordering_key = Some(value.into());
         self
@@ -251,6 +256,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn timestamp(mut self, value: SystemTime) -> Self {
         self.timestamp = Some(value);
@@ -263,6 +269,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn delay(mut self, value: Duration) -> Self {
         self.delay = Some(value);
@@ -275,6 +282,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn retry_policy(mut self, value: RetryPolicy) -> Self {
         self.options.retry_policy = Some(value);
@@ -290,6 +298,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn retry_rule<R>(mut self, value: R) -> Self
     where
         R: RetryRule<PublishAttemptError>,
@@ -304,6 +313,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn retry_cancellation_token(mut self, value: RetryCancellationToken) -> Self {
         self.options.retry_cancellation_token = Some(value);
@@ -325,6 +335,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static,
@@ -342,6 +353,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
         F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
@@ -356,6 +368,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     ///
     /// # Returns
     /// The updated builder.
+    #[must_use = "Use the returned builder."]
     #[inline]
     pub fn options(mut self, value: PublishOptions<T>) -> Self {
         self.options = value;

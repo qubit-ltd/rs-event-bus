@@ -191,7 +191,7 @@ impl EventBusCapabilities {
     /// Returns the subscription modes accepted by this provider.
     ///
     /// # Returns
-    /// The set of accepted durability modes.
+    /// The set of accepted subscription modes.
     #[inline]
     pub const fn subscription_modes(self) -> SubscriptionModes {
         self.subscription_modes

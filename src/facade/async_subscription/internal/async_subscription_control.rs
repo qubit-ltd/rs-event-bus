@@ -26,8 +26,12 @@ use super::SessionLease;
 use super::SessionSignals;
 use super::SessionSlot;
 use crate::error::ReceiveError;
+use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
+use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::async_event_bus::AsyncSignal;
+use crate::facade::internal::DeliveryMetrics;
+use crate::model::SubscriptionStopReason;
 use crate::pipeline::Diagnostic;
 use crate::spi::ShutdownMode;
 
@@ -46,6 +50,8 @@ pub(in crate::facade) struct AsyncSubscriptionControl<T: 'static> {
     pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
     /// Weak owner used to unregister this control from the bus.
     pub(in crate::facade::async_subscription) bus: Weak<AsyncEventBusInner>,
+    /// Final cumulative counters retained after receiver cleanup.
+    pub(in crate::facade) metrics: Arc<DeliveryMetrics>,
     /// Bus-local subscription identity.
     pub(in crate::facade::async_subscription) id: Id,
 }
@@ -59,14 +65,17 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// Shared control registered with the originating bus.
+    #[must_use = "the subscription control must be retained"]
     pub(in crate::facade::async_subscription) fn new(
         session: AsyncSession<T>,
         signals: Arc<SessionSignals>,
     ) -> Arc<Self> {
         let bus = Arc::downgrade(&session.inner);
         let id = session.id;
+        let metrics = session.metrics.clone();
         Arc::new(Self {
             signals,
+            metrics,
             slot: Mutex::new(SessionSlot {
                 session: Some(session),
                 active: false,
@@ -83,6 +92,7 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// `Some` with a lease while the control is live, or `None` after disposal.
+    #[must_use = "the session lease result must be handled"]
     pub(in crate::facade::async_subscription) async fn lease(&self) -> Option<SessionLease<'_, T>> {
         let registration = SignalRegistration::new(&self.available);
         let session = poll_fn(|cx| {
@@ -108,10 +118,47 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
 }
 
 impl<T: 'static> AsyncSubscriptionControl<T> {
+    /// Merges live scheduler gauges with retained final counters after close.
+    ///
+    /// # Returns
+    /// Subscription counters with active gauges, or zero gauges after disposal.
+    /// Clock errors publish the first stop cause and return accurate gauges
+    /// without age.
+    #[must_use = "delivery metrics are the current subscription diagnostics"]
+    #[inline]
+    pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
+        let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
+            let input = bus.scheduler.snapshot_input(Some(self.id));
+            let now = bus.timer.clock().now();
+            match input.at(now) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let message = error.to_string();
+                    let error = Arc::new(SpiError::Operation {
+                        provider_id: bus.provider_id.as_str().into(),
+                        operation: "delivery_metrics",
+                        resource: None,
+                        kind: "delivery_metrics_clock_failure",
+                        retryable: Some(false),
+                        source: Box::new(error),
+                    });
+                    if self.signals.fail_receive(SubscriptionStopReason::Provider { error }) {
+                        bus.emit(&Diagnostic::InternalFailure {
+                            origin: "delivery_metrics_clock".into(),
+                            message: message.into(),
+                        });
+                    }
+                    bus.scheduler.snapshot_gauges(Some(self.id))
+                }
+            }
+        });
+        self.metrics.snapshot(gauges)
+    }
+
     /// Stops the subscription and relinquishes its receiver on handle drop.
     ///
     /// This synchronous disposal cannot await provider close; bus shutdown or
-    /// explicit [`crate::facade::AsyncSubscription::close`] performs
+    /// explicit [`AsyncSubscription::close`] performs
     /// asynchronous cleanup.
     pub(in crate::facade::async_subscription) fn dispose(&self) {
         self.signals.stop(ShutdownMode::Immediate);
@@ -132,10 +179,26 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
 }
 
 impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<T> {
+    /// Wakes the executor that currently drives this session.
+    #[inline]
+    fn notify(&self) {
+        self.signals.signal().notify();
+    }
+    /// Stores a metrics clock error before any diagnostic callback can reenter.
+    ///
+    /// # Parameters
+    /// - `error`: Original clock failure retained as the provider stop source.
+    ///
+    /// # Returns
+    /// True only when this call publishes the first terminal cause.
+    fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
+        self.signals.fail_receive(SubscriptionStopReason::Provider { error })
+    }
     /// Stops the active or future runner.
     ///
     /// # Parameters
     /// - `mode`: shutdown policy applied to this subscription.
+    #[inline]
     fn stop(&self, mode: ShutdownMode) {
         self.signals.stop(mode);
     }
@@ -144,6 +207,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The stored close failure, or `None` before a close failure occurs.
+    #[inline]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>> {
         self.close_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }

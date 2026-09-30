@@ -18,6 +18,53 @@ use crate::facade::observer_entry::ObserverEntry;
 use crate::pipeline::DiagnosticObserver;
 
 impl AsyncEventBus {
+    /// Returns bounded active gauges and cumulative delivery lifecycle
+    /// counters. Clock failures are diagnosed and stop affected work;
+    /// gauges remain accurate.
+    ///
+    /// # Returns
+    /// Current bounded gauges and bus totals, omitting age if the clock failed.
+    #[must_use = "delivery metrics are the current bus diagnostics"]
+    #[inline]
+    pub fn delivery_metrics(&self) -> crate::facade::DeliveryMetricsSnapshot {
+        let input = self.inner.scheduler.snapshot_input(None);
+        let now = self.inner.timer.clock().now();
+        let gauges = match input.at(now) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let message = error.to_string();
+                let error = Arc::new(crate::error::SpiError::Operation {
+                    provider_id: self.inner.provider_id.as_str().into(),
+                    operation: "delivery_metrics",
+                    resource: None,
+                    kind: "delivery_metrics_clock_failure",
+                    retryable: Some(false),
+                    source: Box::new(error),
+                });
+                let controls: Vec<_> = self
+                    .inner
+                    .controls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .cloned()
+                    .collect();
+                let mut first = false;
+                for control in controls {
+                    first |= control.fail_metrics_clock(error.clone());
+                }
+                if first {
+                    self.inner.emit(&Diagnostic::InternalFailure {
+                        origin: "delivery_metrics_clock".into(),
+                        message: message.into(),
+                    });
+                }
+                self.inner.scheduler.snapshot_gauges(None)
+            }
+        };
+        self.inner.delivery_metrics.snapshot(gauges)
+    }
+
     /// Registers a synchronous diagnostic observer until the returned handle is
     /// dropped.
     ///

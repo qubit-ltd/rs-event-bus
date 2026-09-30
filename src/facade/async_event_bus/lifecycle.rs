@@ -26,8 +26,11 @@ use crate::facade::async_event_bus::waiting::await_until_deadline;
 use crate::facade::async_event_bus::waiting::wait_until;
 use crate::facade::async_event_bus::waiting::wait_until_deadline;
 use crate::facade::async_subscription::is_current_bus_poll;
+use crate::model::Topic;
+use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl AsyncEventBus {
     /// Waits until this facade has no delivery it has already received for the
@@ -51,7 +54,7 @@ impl AsyncEventBus {
     /// Returns a lifecycle error if the timer fails or waiting would deadlock.
     pub async fn wait_for_received_deliveries<T: 'static>(
         &self,
-        topic: &crate::model::Topic<T>,
+        topic: &Topic<T>,
         timeout: Option<Duration>,
     ) -> Result<WaitOutcome, LifecycleError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
@@ -178,12 +181,9 @@ impl AsyncEventBus {
                 }
                 let outcome = loop {
                     let requested_mode = self.requested_shutdown_mode(mode);
-                    let shutdown = crate::spi::panic_boundary::catch_spi_call(
-                        self.inner.provider_id.as_str(),
-                        "shutdown",
-                        None,
-                        || self.inner.spi.shutdown(requested_mode),
-                    )?;
+                    let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
+                        self.inner.spi.shutdown(requested_mode)
+                    })?;
                     let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
                     if requested_mode == ShutdownMode::Immediate {
                         let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
@@ -213,7 +213,7 @@ impl AsyncEventBus {
                 let report = ShutdownReport::new(
                     outcome,
                     self.inner.abandoned_deliveries.load(Ordering::Acquire),
-                    self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral
+                    self.inner.capabilities.durability() == DurabilityCapability::Ephemeral
                         || outcome == ShutdownOutcome::TimedOut,
                 );
                 *self
@@ -246,6 +246,7 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// Immediate mode if any caller requested it, otherwise `requested`.
+    #[inline]
     fn requested_shutdown_mode(&self, requested: ShutdownMode) -> ShutdownMode {
         if requested == ShutdownMode::Immediate || self.inner.shutdown_immediate.load(Ordering::Acquire) {
             ShutdownMode::Immediate

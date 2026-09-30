@@ -24,10 +24,12 @@ use crate::error::SpiError;
 /// after ownership transfers to the runner, the runner closes it on completion.
 /// Facades cannot await cleanup from `Drop`, so implementations must still
 /// safely release or detach resources if the receiver is dropped without close.
-/// Any delivery whose [`SettlementToken`] has not reached a terminal
-/// disposition must remain recoverable by the provider after receiver close or
-/// drop (for example, by broker redelivery or returning it to a local queue).
-/// Receiver cleanup must never implicitly acknowledge an unsettled delivery.
+/// For durable subscriptions, any delivery whose [`SettlementToken`] has not
+/// reached a terminal disposition must retain the provider's recovery semantics
+/// after receiver close or drop, for example through broker redelivery.
+/// Ephemeral subscriptions may discard buffered or unsettled deliveries on
+/// close or drop. Receiver cleanup must never implicitly acknowledge an
+/// unsettled durable delivery.
 ///
 /// # Examples
 ///
@@ -48,7 +50,9 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// next `receive` call. A provider whose receive operation is not
     /// inherently cancellation-safe must continuously consume in an
     /// internal task and buffer messages, placing the cancellable boundary
-    /// at the buffer read.
+    /// at the buffer read. This guarantee applies while retaining the receiver;
+    /// it does not require ephemeral messages to survive receiver close or
+    /// drop.
     ///
     /// # Parameters
     /// - `timeout`: maximum receive wait duration.
@@ -65,7 +69,7 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// Repeating the same token and disposition must be idempotent and return
     /// the same terminal result. Reusing the token with a different disposition
     /// must return a structured invalid-token error. If this future is
-    /// cancelled after the provider may have applied the disposition, callers
+    /// cancelled, the disposition may already have taken effect. Callers
     /// may retry with the same borrowed token and disposition; providers must
     /// make both in-progress and completed settlement attempts idempotent.
     /// Providers must synchronously derive any owned operation state before

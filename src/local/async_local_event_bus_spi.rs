@@ -125,19 +125,18 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     /// An immutable capability set matching the in-process mailbox behavior.
     #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
-        EventBusCapabilities::builder()
-            .payload_modes(PayloadModes::Native)
-            .settlement(SettlementCapabilities::AcceptRetryReject)
-            .ordering(OrderingCapability::PerKey)
-            .delayed_delivery(DelayedDeliveryCapability::Native)
-            .durability(DurabilityCapability::Ephemeral)
-            .subscription_modes(SubscriptionModes::EPHEMERAL)
-            .consumer_groups(false)
-            .replay(ReplayCapability::None)
-            .publish_guarantee(PublishGuarantee::Accepted)
-            .publish_visibility(PublishVisibility::DestinationAdmissions)
-            .build()
-            .expect("all asynchronous local capabilities are configured")
+        EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::AcceptRetryReject,
+            OrderingCapability::PerKey,
+            DelayedDeliveryCapability::Native,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::DestinationAdmissions,
+        )
     }
 
     /// Broadcasts a native event to every currently indexed topic mailbox.
@@ -353,7 +352,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                         wait_registration = Some(self.shared.changed.register(cx.waker()));
                         drop(bus);
                         if let Some(timer) = timer_future.as_mut()
-                            && let Poll::Ready(result) = Future::poll(timer.as_mut(), cx)
+                            && let Poll::Ready(result) = timer.as_mut().poll(cx)
                         {
                             return Poll::Ready(result.map(|()| ShutdownOutcome::TimedOut));
                         }

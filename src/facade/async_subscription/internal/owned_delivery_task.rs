@@ -32,8 +32,7 @@ pub(in crate::facade) struct OwnedDeliveryTask<T: 'static> {
 /// Drops queued handlers that have not started, counting ephemeral deliveries.
 ///
 /// # Type Parameters
-/// - `T`: Payload type carried by each pending delivery; the `T: 'static` bound
-///   lets the task future be retained independently of the caller's stack.
+/// - `T`: Payload retained by each delivery task.
 ///
 /// # Parameters
 ///

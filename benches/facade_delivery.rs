@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::thread::yield_now;
 use std::time::Instant;
 
 use qubit_event_bus::facade::AsyncEventBus;
@@ -45,7 +46,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
     loop {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::yield_now(),
+            Poll::Pending => yield_now(),
         }
     }
 }
@@ -61,11 +62,13 @@ fn sample() -> u128 {
     let requests = (0..ITERATIONS)
         .map(|value| PublishRequest::new(topic.clone(), value).unwrap())
         .collect::<Vec<_>>();
+    let mut successes = 0;
     let start = Instant::now();
     for request in requests {
-        let _ = block_on(bus.publish(black_box(request))).unwrap();
+        successes += usize::from(black_box(block_on(bus.publish(black_box(request)))).is_ok());
     }
     let elapsed = start.elapsed().as_nanos();
+    assert_eq!(successes, ITERATIONS, "publication sample failed");
     let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
     assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
@@ -73,6 +76,8 @@ fn sample() -> u128 {
     elapsed / ITERATIONS as u128
 }
 
+/// Prints raw sample means and their median and nearest-rank sample-mean p95.
+/// These are publication batches, not a per-delivery latency distribution.
 fn main() {
     for _ in 0..WARMUPS {
         black_box(sample());
@@ -81,6 +86,9 @@ fn main() {
     for _ in 0..SAMPLES {
         samples.push(sample());
     }
+    println!(
+        "async local publish raw_sample_mean_ns={samples:?} iterations={ITERATIONS} boundary=publish_no_subscribers"
+    );
     samples.sort_unstable();
     println!(
         "async local publish: median={} ns/op p95={} ns/op ({} operations/sample)",

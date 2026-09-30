@@ -5,125 +5,96 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Shared bounded dispatcher for synchronous subscription deliveries.
+//! Fixed handler pool and wake routing for the shared scheduling core.
 
 mod internal;
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
-use std::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
-use std::sync::PoisonError;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::thread::JoinHandle;
+use std::thread::Thread;
 
+use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
+use qubit_clock::TimeError;
 use qubit_id::Id;
 
-use self::internal::ScheduledJob;
-use self::internal::SchedulerReservation;
 use self::internal::SchedulerState;
-use crate::facade::SyncDeliverySchedulerConfig;
-use crate::pipeline::AdmissionTracker;
+use crate::facade::DeliveryMetricsSnapshot;
+use crate::facade::DeliverySchedulingConfig;
+use crate::facade::internal::DeliverySchedulerCore;
 use crate::pipeline::OrderingLaneKey;
 
-/// Bus-wide dispatcher with bounded admission and fair per-subscription queues.
+/// Shares metadata admission across receiver owners and executes granted jobs.
 pub(super) struct SyncDeliveryScheduler {
-    /// Immutable queue and worker limits.
-    config: SyncDeliverySchedulerConfig,
-    /// Shared bound for queued and active handler tasks.
-    admission: AdmissionTracker,
-    /// Queues, fairness order, and dispatcher lifecycle state.
+    /// Validated independent resource bounds.
+    config: DeliverySchedulingConfig,
+    /// Provider-independent ownership and lane state.
+    core: DeliverySchedulerCore,
+    /// Fixed pool queue and lifecycle.
     state: Mutex<SchedulerState>,
-    /// Wakes workers after reservations, cancellation, or shutdown changes.
+    /// Wakes idle handler threads for granted jobs or shutdown.
     changed: Condvar,
-    /// Handles for the fixed handler worker set.
+    /// Owner thread handles used for coalesced, lossless unparks.
+    owners: Mutex<HashMap<Id, Thread>>,
+    /// Registered identities, including owners that have not started yet.
+    registered: Mutex<HashSet<Id>>,
+    /// Handler worker handles retained until shutdown.
     workers: Mutex<Vec<JoinHandle<()>>>,
-    /// Worker index where tests inject a spawn failure.
+    /// Injects a worker spawn failure in internal lifecycle tests.
     #[cfg(test)]
     fail_spawn_at: AtomicUsize,
 }
 
 impl SyncDeliveryScheduler {
-    /// Creates an idle scheduler; worker threads are started lazily by
-    /// subscribe.
+    /// Creates an idle pool and empty scheduling core from validated bounds.
     ///
     /// # Parameters
-    /// - `config`: validated admission, worker, and handler queue limits.
+    /// - `config`: independent validated H/D/P/S resource bounds.
     ///
     /// # Returns
-    /// A shared scheduler with empty queues and no started workers.
-    ///
-    /// # Panics
-    /// Panics if `config.max_in_flight()` is zero, violating the validated
-    /// scheduler configuration invariant.
-    #[must_use = "retain the scheduler to coordinate deliveries"]
-    pub(super) fn new(config: SyncDeliverySchedulerConfig) -> Arc<Self> {
+    /// An idle shared scheduler with no allocated worker threads.
+    pub(super) fn new(config: DeliverySchedulingConfig) -> Arc<Self> {
         Arc::new(Self {
             config,
-            admission: AdmissionTracker::new(config.max_in_flight()).expect("validated scheduler config"),
-            state: Mutex::new(SchedulerState {
-                accepting: true,
-                ..SchedulerState::default()
-            }),
+            core: DeliverySchedulerCore::new(config),
+            state: Mutex::new(SchedulerState::default()),
             changed: Condvar::new(),
+            owners: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashSet::new()),
             workers: Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_spawn_at: AtomicUsize::new(usize::MAX),
         })
     }
 
-    /// Returns the number of cancellation tombstones retained for active
-    /// subscriptions.
-    ///
-    /// # Returns
-    /// The number of canceled subscriptions still registered.
-    #[cfg(test)]
-    #[must_use]
-    pub(super) fn cancelled_subscription_count(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .cancelled_subscriptions
-            .len()
-    }
-
-    /// Configures a synthetic thread-spawn failure for scheduler tests.
-    ///
-    /// # Parameters
-    /// - `worker_index`: zero-based worker index that fails to spawn.
-    #[cfg(test)]
-    #[inline]
-    pub(super) fn fail_spawn_at(&self, worker_index: usize) {
-        self.fail_spawn_at.store(worker_index, Ordering::Release);
-    }
-
-    /// Starts the fixed worker set once, returning a spawn failure to
-    /// subscribe.
-    ///
-    /// # Returns
-    /// Success after all workers start, or the first worker spawn error.
+    /// Starts exactly H reusable handler threads; unwinds partial startup on
+    /// failure.
     ///
     /// # Errors
-    /// Returns the operating-system error when a handler worker cannot start.
-    #[must_use = "handle a worker startup error"]
+    /// Returns the thread-spawn I/O error after stopping and joining any
+    /// partial pool.
+    ///
+    /// # Side Effects
+    /// Starts H threads and retains their join handles until shutdown.
     pub(super) fn start(self: &Arc<Self>) -> io::Result<()> {
-        let mut handles = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.started {
+        let mut handles = self.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !handles.is_empty() {
             return Ok(());
         }
-        state.started = true;
-        drop(state);
-        for index in 0..self.config.max_in_flight() {
+        for index in 0..self.config.max_running_handlers().get() {
             let scheduler = self.clone();
             #[cfg(test)]
-            let spawn_result = if self.fail_spawn_at.load(Ordering::Acquire) == index {
+            let result = if self.fail_spawn_at.load(Ordering::Acquire) == index {
                 Err(io::Error::other("synthetic scheduler worker spawn failure"))
             } else {
                 thread::Builder::new()
@@ -131,25 +102,24 @@ impl SyncDeliveryScheduler {
                     .spawn(move || scheduler.worker_loop())
             };
             #[cfg(not(test))]
-            let spawn_result = thread::Builder::new()
+            let result = thread::Builder::new()
                 .name(format!("event-bus-handler-{index}"))
                 .spawn(move || scheduler.worker_loop());
-            match spawn_result {
+            match result {
                 Ok(handle) => handles.push(handle),
                 Err(error) => {
-                    let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                    state.accepting = false;
-                    state.stopped = true;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .stopped = true;
                     self.changed.notify_all();
-                    drop(state);
                     for handle in handles.drain(..) {
                         let _ = handle.join();
                     }
-                    let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                    state.started = false;
-                    state.accepting = true;
-                    state.stopped = false;
-                    state.idle_workers = 0;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .stopped = false;
                     return Err(error);
                 }
             }
@@ -157,260 +127,537 @@ impl SyncDeliveryScheduler {
         Ok(())
     }
 
-    /// Attempts admission without blocking the subscription coordinator.
+    /// Configures the zero-based worker whose startup should fail.
     ///
     /// # Parameters
-    /// - `subscription_id`: subscription whose task requests admission.
-    /// - `ordering_key`: optional exclusive per-key lane for the task.
+    /// - `index`: zero-based worker index whose test-only spawn must fail.
+    #[cfg(test)]
+    pub(super) fn fail_spawn_at(&self, index: usize) {
+        self.fail_spawn_at.store(index, Ordering::Release);
+    }
+
+    /// Registers one identity before starting its receiver owner; false means
+    /// invariant failure or full capacity.
+    ///
+    /// # Parameters
+    /// - `id`: identity whose registration is serialized with cancellation and
+    ///   removal.
     ///
     /// # Returns
-    /// A queue and admission reservation, or `None` when capacity is
-    /// unavailable.
-    #[must_use = "submit or release the scheduler reservation"]
-    pub(super) fn try_reserve(
-        self: &Arc<Self>,
-        subscription_id: Id,
-        ordering_key: Option<OrderingLaneKey>,
-    ) -> Option<SchedulerReservation> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let queue_is_full = if self.config.handler_queue_capacity() == 0 {
-            state.idle_workers <= state.reserved_queue
-                || ordering_key.as_ref().is_some_and(|key| state.active_keys.contains(key))
-        } else {
-            state.queued + state.reserved_queue >= self.config.handler_queue_capacity()
-        };
-        if !state.accepting || state.cancelled_subscriptions.contains(&subscription_id) || queue_is_full {
-            return None;
+    /// True when admitted; false for duplicate identities or full subscription
+    /// capacity.
+    #[must_use]
+    pub(super) fn register(&self, id: Id) -> bool {
+        let mut identities = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registered = self.core.register(id);
+        if registered {
+            identities.insert(id);
         }
-        let permit = self.admission.try_acquire()?;
-        state.reserved_queue += 1;
-        Some(SchedulerReservation {
-            scheduler: self.clone(),
-            subscription_id,
-            ordering_key,
-            permit: Some(permit),
-            committed: false,
-        })
+        drop(identities);
+        self.route_notifications();
+        registered
     }
 
-    /// Stops future admission and optionally returns queued jobs for retry.
+    /// Attaches the current owner thread and activates dispatch before its
+    /// first loop.
     ///
     /// # Parameters
-    /// - `immediate`: whether queued jobs should be canceled for provider
-    ///   retry.
-    pub(super) fn stop_admission(&self, immediate: bool) {
-        let canceled = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.accepting = false;
-            state.stopping_immediate |= immediate;
-            if immediate {
-                state.queued = 0;
-                state.round_robin.clear();
-                state.queues.drain().flat_map(|(_, jobs)| jobs).collect::<Vec<_>>()
-            } else {
-                Vec::new()
+    /// - `id`: registered identity associated with the current receiver thread.
+    ///
+    /// # Side Effects
+    /// Activates dispatch and wakes owners affected by core admission.
+    pub(super) fn attach_owner(&self, id: Id) {
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, thread::current());
+        self.core.set_dispatch_active(id, true);
+        self.route_notifications();
+    }
+
+    /// Removes a receiver blocked inside SPI from the runnable owner rotation.
+    ///
+    /// # Parameters
+    /// - `id`: owner entering or leaving a potentially blocking SPI call.
+    /// - `active`: whether this owner can presently claim grants.
+    pub(super) fn set_dispatch_active(&self, id: Id, active: bool) {
+        self.core.set_dispatch_active(id, active);
+        self.route_notifications();
+    }
+
+    /// Routes all coalesced core notifications after the metadata lock is
+    /// released.
+    pub(super) fn route_notifications(&self) {
+        let notifications = self.core.take_notifications();
+        let owners = self.owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in notifications {
+            if let Some(owner) = owners.get(&id) {
+                owner.unpark();
             }
-        };
-        self.changed.notify_all();
-        for job in canceled {
-            let ScheduledJob { run, permit, .. } = job;
-            let _permit = permit;
-            let _ = catch_unwind(AssertUnwindSafe(|| run(true)));
-        }
-        self.changed.notify_all();
-    }
-
-    /// Stops admission and transfers queued cancellation to scheduler workers.
-    /// Never executes queued callbacks, settlements or provider code on the
-    /// caller's thread. Immediate requests monotonically strengthen shutdown.
-    ///
-    /// # Parameters
-    /// - `immediate`: whether queued work is canceled as part of shutdown.
-    pub(super) fn request_stop(&self, immediate: bool) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.accepting = false;
-        state.stopping_immediate |= immediate;
-        if state.stopping_immediate {
-            state.queued = 0;
-            state.round_robin.clear();
-            let canceled: Vec<_> = state.queues.drain().flat_map(|(_, jobs)| jobs).collect();
-            state.cancelled_jobs.extend(canceled);
-        }
-        self.changed.notify_all();
-    }
-
-    /// Requeues queued work owned by a canceled subscription.
-    ///
-    /// # Parameters
-    /// - `subscription_id`: subscription whose queued jobs are canceled.
-    pub(super) fn cancel_subscription(&self, subscription_id: Id) {
-        let canceled = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.cancelled_subscriptions.insert(subscription_id);
-            let jobs = state.queues.remove(&subscription_id).unwrap_or_default();
-            state.queued = state.queued.saturating_sub(jobs.len());
-            state.round_robin.retain(|id| *id != subscription_id);
-            jobs
-        };
-        self.changed.notify_all();
-        for job in canceled {
-            let ScheduledJob { run, permit, .. } = job;
-            let _permit = permit;
-            let _ = catch_unwind(AssertUnwindSafe(|| run(true)));
         }
     }
 
-    /// Removes a completed subscription from the cancellation registry after
-    /// its coordinator drains.
+    /// Wakes a receiver owner after its completion channel or cancellation
+    /// changes.
     ///
     /// # Parameters
-    /// - `subscription_id`: completed subscription whose tombstone is removed.
-    pub(super) fn finish_subscription(&self, subscription_id: Id) {
+    /// - `id`: receiver to unpark; missing or closed identities are ignored.
+    pub(super) fn notify(&self, id: Id) {
+        if let Some(owner) = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+        {
+            owner.unpark();
+        }
+    }
+
+    /// Registers receive demand and routes newly available capacity.
+    ///
+    /// # Parameters
+    /// - `id`: active subscription requesting at most one receive reservation.
+    pub(super) fn request_receive(&self, id: Id) {
+        self.core.request_receive(id);
+        self.route_notifications();
+    }
+    /// Claims the reserved receive lease, or None while capacity is
+    /// unavailable.
+    ///
+    /// # Parameters
+    /// - `id`: receiver claiming its pending credit.
+    ///
+    /// # Returns
+    /// Some lease when reserved; None while capacity or eligibility is
+    /// unavailable.
+    #[must_use]
+    pub(super) fn take_receive_reservation(&self, id: Id) -> Option<u64> {
+        let result = self.core.take_receive_reservation(id);
+        self.route_notifications();
+        result
+    }
+    /// Transfers a received message's credit to its optional ordering lane.
+    ///
+    /// # Parameters
+    /// - `lease`: claimed receive credit now retaining an owned payload.
+    /// - `lane`: optional ordering key whose FIFO covers handler and
+    ///   settlement.
+    pub(super) fn enqueue(&self, lease: u64, lane: Option<OrderingLaneKey>) {
+        self.core.enqueue(lease, lane);
+        self.route_notifications();
+    }
+    /// Claims a fair handler grant, or None while another owner or lane must
+    /// proceed.
+    ///
+    /// # Parameters
+    /// - `id`: receiver attempting to claim the next fair handler grant.
+    ///
+    /// # Returns
+    /// Some owned lease with H and lane authorization; None when no grant is
+    /// available.
+    #[must_use]
+    pub(super) fn take_ready(&self, id: Id) -> Option<u64> {
+        let result = self.core.take_ready(id);
+        self.route_notifications();
+        result
+    }
+    /// Returns execution capacity while retaining delivery ownership and its
+    /// lane.
+    ///
+    /// # Parameters
+    /// - `lease`: granted callback that has actually returned or unwound.
+    ///
+    /// # Side Effects
+    /// Returns H immediately and wakes other owners; retains the lane and owned
+    /// credit.
+    pub(super) fn handler_finished(&self, lease: u64) {
+        self.core.handler_finished(lease);
+        self.route_notifications();
+    }
+    /// Returns all remaining credits once the owner has released this delivery.
+    ///
+    /// # Parameters
+    /// - `lease`: delivery whose payload, token and tracking have been
+    ///   released.
+    ///
+    /// # Side Effects
+    /// Returns remaining ownership and lane credits; repeated calls are
+    /// harmless.
+    pub(super) fn complete(&self, lease: u64) {
+        self.core.complete(lease);
+        self.route_notifications();
+    }
+    /// Reports permanently exhausted lease identifiers without wrapping them.
+    #[must_use]
+    #[inline]
+    pub(super) fn lease_ids_exhausted(&self) -> bool {
+        self.core.lease_ids_exhausted()
+    }
+
+    /// Marks an actually claimed reservation with its same-domain ownership
+    /// origin.
+    ///
+    /// # Parameters
+    /// - `lease`: newly claimed receive credit.
+    /// - `now`: injected-clock instant sampled outside core locks.
+    pub(super) fn record_owned_start(&self, lease: u64, now: MonotonicInstant) {
+        self.core.record_owned_start(lease, now);
+        self.route_notifications();
+    }
+    /// Captures metadata before sampling the clock outside locks, avoiding
+    /// races with newer leases.
+    ///
+    /// # Parameters
+    /// - `scope`: subscription identity, or None for all active deliveries.
+    /// - `clock`: source sampled after capturing metadata under the core lock.
+    ///
+    /// # Returns
+    /// Exact captured gauges and the oldest owned age, if any.
+    ///
+    /// # Errors
+    /// Returns TimeError when sampled instants belong to different domains or
+    /// regress.
+    pub(super) fn snapshot(
+        &self,
+        scope: Option<Id>,
+        clock: &dyn MonotonicClock,
+    ) -> Result<DeliveryMetricsSnapshot, TimeError> {
+        let captured = self.core.snapshot_input(scope);
+        captured.at(clock.now())
+    }
+    /// Returns exact active gauges without computing a possibly invalid age.
+    ///
+    /// # Parameters
+    /// - `scope`: subscription identity, or None for the entire bus.
+    ///
+    /// # Returns
+    /// Captured live gauges with unknown age and zero cumulative counters.
+    pub(super) fn snapshot_gauges(&self, scope: Option<Id>) -> DeliveryMetricsSnapshot {
+        self.core.snapshot_gauges(scope)
+    }
+    /// Queues a decode rejection in its ordering lane without consuming a
+    /// handler slot.
+    ///
+    /// # Parameters
+    /// - `lease`: claimed receive credit whose decode rejection is ready.
+    /// - `lane`: optional key preserving FIFO through the entire rejection
+    ///   cycle.
+    pub(super) fn enqueue_settlement(&self, lease: u64, lane: Option<OrderingLaneKey>) {
+        self.core.enqueue_settlement(lease, lane);
+        self.route_notifications();
+    }
+    /// Claims lane authorization for owner settlement independently of handler
+    /// capacity.
+    ///
+    /// # Parameters
+    /// - `id`: owner requesting the next fair rejection lane.
+    ///
+    /// # Returns
+    /// Some lease authorized for settlement; None when no lane grant is
+    /// available.
+    #[must_use]
+    pub(super) fn take_settlement_ready(&self, id: Id) -> Option<u64> {
+        let result = self.core.take_settlement_ready(id);
+        self.route_notifications();
+        result
+    }
+
+    /// Enqueues a previously granted job without invoking application work
+    /// inline.
+    ///
+    /// # Parameters
+    /// - `run`: callback already holding an execution grant, invoked on the
+    ///   pool.
+    ///
+    /// # Side Effects
+    /// Wakes one worker; this method never waits for settlement or user code.
+    pub(super) fn submit(&self, run: impl FnOnce() + Send + 'static) {
         self.state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .cancelled_subscriptions
-            .remove(&subscription_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .jobs
+            .push_back(Box::new(run));
+        self.changed.notify_one();
     }
 
-    /// Joins the shared handler workers after all subscription coordinators
-    /// finish.
-    pub(super) fn join(&self) {
-        let mut handles = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        for handle in handles.drain(..) {
-            let _ = handle.join();
-        }
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).stopped = true;
-    }
-
-    /// Selects an eligible task using round-robin subscription fairness.
+    /// Stops new admission; receiver owners release unstarted deliveries
+    /// themselves.
     ///
     /// # Parameters
-    /// - `state`: mutable queue state selected while holding the scheduler
-    ///   lock.
+    /// - `immediate`: true cancels admission; false permits draining owned
+    ///   work.
     ///
-    /// # Returns
-    /// The next eligible job, or `None` when no queued job can run.
-    #[must_use]
-    fn take_ready(&self, state: &mut SchedulerState) -> Option<ScheduledJob> {
-        let rounds = state.round_robin.len();
-        for _ in 0..rounds {
-            let subscription_id = state.round_robin.pop_front()?;
-            let queue = state.queues.get_mut(&subscription_id)?;
-            let eligible_index = queue.iter().position(|job| {
-                job.ordering_key
-                    .as_ref()
-                    .is_none_or(|key| !state.active_keys.contains(key))
-            });
-            let Some(eligible_index) = eligible_index else {
-                state.round_robin.push_back(subscription_id);
-                continue;
-            };
-            let job = queue.remove(eligible_index)?;
-            if let Some(key) = job.ordering_key.as_ref() {
-                state.active_keys.insert(key.clone());
-            }
-            state.queued = state.queued.saturating_sub(1);
-            if queue.is_empty() {
-                state.queues.remove(&subscription_id);
-            } else {
-                state.round_robin.push_back(subscription_id);
-            }
-            return Some(job);
+    /// # Side Effects
+    /// Publishes shutdown policy before waking affected receiver owners.
+    pub(super) fn stop_admission(&self, immediate: bool) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.draining = true;
+            state.immediate |= immediate;
         }
-        None
+        let ids: Vec<_> = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect();
+        for id in ids {
+            if immediate {
+                self.cancel_subscription(id);
+            } else {
+                self.notify(id);
+            }
+        }
     }
 
-    /// Runs tasks until shutdown has stopped admission and drained the queue.
-    fn worker_loop(self: Arc<Self>) {
+    /// Begins shutdown without running delivery callbacks on the requesting
+    /// thread.
+    ///
+    /// Immediate cancellation is routed through receiver owners, which release
+    /// their own leases and retained payloads; granted handler work remains on
+    /// the fixed pool. Repeated requests may strengthen graceful drain to
+    /// immediate cancellation.
+    ///
+    /// # Parameters
+    /// - `immediate`: whether to cancel owned work that has not started.
+    ///
+    /// # Side Effects
+    /// Closes admission and wakes every registered receiver owner.
+    pub(super) fn request_stop(&self, immediate: bool) {
+        self.stop_admission(immediate);
+    }
+
+    /// Fences a canceled subscription and wakes its owner for retained-payload
+    /// cleanup.
+    ///
+    /// # Parameters
+    /// - `id`: still-registered owner to fence; historical identities are
+    ///   ignored.
+    ///
+    /// # Side Effects
+    /// Atomically coordinates the cancellation index with registration removal.
+    pub(super) fn cancel_subscription(&self, id: Id) {
+        let identities = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !identities.contains(&id) {
+            return;
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancelled
+            .insert(id);
+        self.core.stop_subscription(id);
+        drop(identities);
+        self.route_notifications();
+        self.notify(id);
+    }
+
+    /// Checks actual handler admission against cancellation and shutdown.
+    ///
+    /// # Parameters
+    /// - `id`: subscription attempting to start user code.
+    /// - `cancelled`: cancellation sampled under the subscription start gate.
+    ///
+    /// # Returns
+    /// True for active delivery work or already owned work during graceful
+    /// drain.
+    #[must_use]
+    pub(super) fn handler_may_start(&self, id: Id, cancelled: bool) -> bool {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        !state.immediate && !state.cancelled.contains(&id) && (!cancelled || state.draining)
+    }
+
+    /// Returns whether graceful shutdown may finish this owner's already
+    /// received work.
+    ///
+    /// # Parameters
+    /// - `id`: owner whose cancellation and graceful policy are being examined.
+    ///
+    /// # Returns
+    /// True only during graceful shutdown without individual or immediate
+    /// cancellation.
+    #[must_use]
+    pub(super) fn should_drain(&self, id: Id) -> bool {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.draining && !state.immediate && !state.cancelled.contains(&id)
+    }
+
+    /// Removes an empty registration after provider close and owner cleanup.
+    ///
+    /// # Parameters
+    /// - `id`: receiver that has closed and released all owned deliveries.
+    ///
+    /// # Panics
+    /// Debug builds assert that unregister succeeds; claimed leases must be
+    /// RAII-owned.
+    pub(super) fn finish_subscription(&self, id: Id) {
+        let mut identities = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.core.stop_subscription(id);
+        let removed = self.core.unregister(id);
+        debug_assert!(removed, "finished subscription must own no leases");
+        identities.remove(&id);
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancelled
+            .remove(&id);
+        drop(identities);
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        self.route_notifications();
+    }
+
+    /// Stops and joins the pool after all receiver owners have completed.
+    ///
+    /// # Side Effects
+    /// Blocks until all pool threads exit; call only after receiver owners
+    /// finish.
+    pub(super) fn join(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stopped = true;
+        self.changed.notify_all();
+        for handle in self
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
+            let _ = handle.join();
+        }
+    }
+
+    /// Runs granted callbacks and immediately returns the real worker thread to
+    /// the pool.
+    ///
+    /// # Side Effects
+    /// Waits for granted jobs, contains callback panics and exits when the pool
+    /// stops.
+    fn worker_loop(&self) {
         loop {
             let job = {
-                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let mut counted_idle = false;
+                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 loop {
-                    if let Some(job) = state.cancelled_jobs.pop_front().map(|job| (job, true)) {
-                        if counted_idle {
-                            state.idle_workers = state.idle_workers.saturating_sub(1);
-                        }
+                    if let Some(job) = state.jobs.pop_front() {
                         break Some(job);
                     }
-                    if let Some(job) = self.take_ready(&mut state) {
-                        if counted_idle {
-                            state.idle_workers = state.idle_workers.saturating_sub(1);
-                        }
-                        break Some((job, false));
-                    }
-                    if !state.accepting
-                        && state.queued == 0
-                        && state.reserved_queue == 0
-                        && state.cancelled_jobs.is_empty()
-                    {
-                        if counted_idle {
-                            state.idle_workers = state.idle_workers.saturating_sub(1);
-                        }
+                    if state.stopped {
                         break None;
                     }
-                    if !counted_idle {
-                        state.idle_workers += 1;
-                        counted_idle = true;
-                        self.changed.notify_all();
-                    }
-                    state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
             };
-            let Some((job, cancelled)) = job else {
+            let Some(job) = job else {
                 return;
             };
-            let ScheduledJob {
-                subscription_id: _,
-                ordering_key,
-                run,
-                permit,
-            } = job;
-            let _permit = permit;
-            let _ = catch_unwind(AssertUnwindSafe(|| run(cancelled)));
-            if let Some(key) = ordering_key {
-                self.state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .active_keys
-                    .remove(&key);
-            }
-            self.changed.notify_all();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
         }
     }
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/scheduler_race_tests.rs"]
-mod scheduler_race_tests;
-
-#[cfg(test)]
-mod shutdown_request_tests {
+mod scheduler_race_tests {
+    use std::num::NonZeroUsize;
     use std::sync::mpsc;
-    use std::thread;
     use std::time::Duration;
 
     use qubit_id::Id;
 
-    use super::SyncDeliveryScheduler;
-    use crate::facade::SyncDeliverySchedulerConfig;
+    use crate::facade::DeliverySchedulingConfig;
+    use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 
     #[test]
-    fn test_shutdown_request_never_runs_queued_cancellation_on_caller() {
-        let scheduler = SyncDeliveryScheduler::new(SyncDeliverySchedulerConfig::new(1, 1).expect("config"));
-        let reservation = scheduler.try_reserve(Id::new(1), None).expect("queued capacity");
-        let (tx, rx) = mpsc::channel();
-        reservation.submit(move |cancelled| tx.send((cancelled, thread::current().id())).expect("callback result"));
-        let caller = thread::current().id();
-        scheduler.request_stop(true);
-        assert!(rx.try_recv().is_err(), "request cannot execute a queued callback");
-        assert!(scheduler.try_reserve(Id::new(1), None).is_none());
-        let worker = scheduler.clone();
-        let handle = thread::spawn(move || worker.worker_loop());
-        let (cancelled, callback_thread) = rx.recv_timeout(Duration::from_secs(5)).expect("worker cancels");
-        assert!(cancelled);
-        assert_ne!(caller, callback_thread);
-        handle.join().expect("worker exits");
+    fn test_reservation_cancel_race_does_not_run_owner_settlement_inline() {
+        let one = NonZeroUsize::new(1).expect("positive limit");
+        let scheduler =
+            SyncDeliveryScheduler::new(DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"));
+        scheduler.start().expect("workers start");
+        let id = Id::new(44);
+        assert!(scheduler.register(id));
+        scheduler.attach_owner(id);
+        scheduler.request_receive(id);
+        let lease = scheduler.take_receive_reservation(id).expect("receive credit");
+        scheduler.enqueue(lease, None);
+        assert_eq!(scheduler.take_ready(id), Some(lease));
+        scheduler.cancel_subscription(id);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let submit_scheduler = scheduler.clone();
+        let submitter = std::thread::spawn(move || {
+            submit_scheduler.submit(move || {
+                started_tx.send(()).expect("observer alive");
+                release_rx.recv().expect("release callback");
+            });
+            returned_tx.send(()).expect("observer alive");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("callback starts");
+        let returned = returned_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        release_tx.send(()).expect("callback alive");
+        submitter.join().expect("submitter exits");
+        assert!(returned, "submission must leave the owner available for settlement");
+        scheduler.handler_finished(lease);
+        assert!(
+            !scheduler.core.unregister(id),
+            "cancellation and handler finish retain owned credit"
+        );
+        scheduler.complete(lease);
+        scheduler.finish_subscription(id);
+        scheduler.stop_admission(false);
+        scheduler.join();
+    }
+
+    #[test]
+    fn test_closed_subscription_recancellation_cannot_recreate_tombstones() {
+        let one = NonZeroUsize::new(1).expect("positive limit");
+        let scheduler =
+            SyncDeliveryScheduler::new(DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"));
+        for index in 1..=1000 {
+            let id = Id::new(index);
+            assert!(scheduler.register(id));
+            scheduler.cancel_subscription(id);
+            assert_eq!(scheduler.state.lock().expect("pool state").cancelled.len(), 1);
+            scheduler.finish_subscription(id);
+            scheduler.cancel_subscription(id);
+            assert!(
+                scheduler.state.lock().expect("pool state").cancelled.is_empty(),
+                "closed IDs cannot reenter cancellation metadata"
+            );
+        }
+        for index in 1001..=1100 {
+            let id = Id::new(index);
+            assert!(scheduler.register(id));
+            let gate = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    gate.wait();
+                    scheduler.cancel_subscription(id);
+                });
+                gate.wait();
+                scheduler.finish_subscription(id);
+            });
+            assert!(
+                scheduler.state.lock().expect("pool state").cancelled.is_empty(),
+                "finish and cancellation share one lifecycle fence"
+            );
+        }
     }
 }

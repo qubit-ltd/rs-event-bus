@@ -91,10 +91,10 @@ provider 通过 `EventBusCapabilities` 如实报告自己能做什么。facade �
 是 facade 与 provider 之间的传输层确认。三者解耦，避免"发布返回了 = 处理完了"
 这类误解。
 
-**(P7) 一切都有界。**
+**(P7) 工作数量有明确上限。**
 同步 handler 池、handler 队列、异步 admission、local 队列容量、provider 级
 outstanding 预算、通知发布器队列，全部有显式上限；超限时的行为（阻塞、
-拒绝、`Retry` 回退）都有明确定义，不会无界堆积。
+拒绝、`Retry` 回退）都有明确定义。数量边界不限制 Native payload 大小、codec 内部分配或用户/provider 代码耗时。
 
 **(P8) 失败必须可观测且被隔离。**
 用户代码（handler、filter、interceptor、error handler、retry rule、诊断观察者）
@@ -110,9 +110,8 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 本 crate **不重导出**这些类型，调用方按需依赖对应 crate，避免版本耦合。
 
 **(P10) 生命周期显式且幂等。**
-同步 `EventBus::request_shutdown(ShutdownMode)` 发起或加入关闭，返回
-`EventBusShutdown` ticket；`shutdown` 仍是阻塞便捷方法。重复请求和观察安全；
-停机后 API 返回 `Closed`；`Immediate` 可以加强正在进行的 `Graceful`；drop 订阅句柄
+`shutdown(ShutdownMode)` 是唯一停机入口，重复调用安全；停机后 API
+返回 `Closed`；`Immediate` 可以加强正在进行的 `Graceful`；drop 订阅句柄
 不等于取消订阅（同步侧），或者等于立即处置（异步侧），但两者都有明确定义。
 
 ### 1.3 非目标
@@ -139,8 +138,8 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
                 │                                  │
       ┌─────────▼──────────┐             ┌─────────▼──────────────┐
       │ EventBus (sync)    │             │ AsyncEventBus (async)  │
-      │ · OperationGate    │             │ · AsyncAdmission       │
-      │ · 每订阅协调线程    │             │ · AsyncOrderingLanes   │
+      │ · OperationGate    │             │ · scheduler core       │
+      │ · 每订阅协调线程    │             │ · owned leases         │
       │ · SyncDelivery-    │             │ · AsyncSubscription    │
       │   Scheduler 共享池 │             │   (session/lease)      │
       │ · ShutdownCoord.   │             │ · Timer 注入           │
@@ -184,8 +183,8 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 | `codec` | 编码能力接口与注册表 | `EventCodec<T>`、`CodecRegistry`、`ContentType`、`SchemaId`、`EncodedPayload`、`resolve_codec` |
 | `spi` | provider 契约 | `EventBusSpi`、`EventSubscriptionSpi`、`AsyncEventBusSpi`、`AsyncEventSubscriptionSpi`、`SpiFuture`、`OutboundMessage`、`InboundMessage`、`TransportPayload`、`ReceiveOutcome`、`SettlementToken`、`DeliveryDisposition`、`SpiSubscriptionRequest`、`EventBusCapabilities` 及各能力枚举、`ShutdownOutcome`、`DeliveryGap`、`conformance` |
 | `registry` | provider 目录与装配 | `EventBusSpec`、`EventBusProvider`/`AsyncEventBusProvider`（`qubit-spi` 定义 trait 的别名）、`EventBusRegistry`、`AsyncEventBusRegistry`、`EventBusConfig`、`RequiredCapabilities`、`EventBusProviderError`、内部 `EventBusProviderAdapter`/`IdentifiedEventBusSpi`、`sync_provider_inventory`/`async_provider_inventory`（discovery） |
-| `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`AdmissionTracker`、`OrderingLanes`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
-| `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`SyncDeliverySchedulerConfig`、`DeliveryAdmissionConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
+| `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`AdmissionTracker`、`OrderingLaneKey`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
+| `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`DeliverySchedulingConfig`、`SettlementRetryConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
 | `local` | 内置进程内 provider | `LocalEventBusConfig`、`LocalEventBusProvider`、`AsyncLocalEventBusProvider`、`LocalEventBusSpi`、`AsyncLocalEventBusSpi`、`LocalQueue`、`OutstandingBudget` |
 | `notification` | 在 `EventBus` 前面加一层永不阻塞的有界发布队列 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
 | `error` | 分层错误类型 | `EventBusError`、`PublishError`、`SubscribeError`、`DeliveryError`、`LifecycleError`、`ShutdownError`、`ProviderError`、`SpiError`、`CapabilityError`、`CodecError`、`ConfigurationError` |
@@ -298,9 +297,10 @@ handler 收到的是 `Delivery<T>`：
   facade 重试与 provider 重投在模型上**分开计数**，避免把两种语义混进一个数字。
 - `acknowledgement()` → 共享的 `Acknowledgement`，其上有 `ack()` / `nack()`。
 
-`Acknowledgement` 是一个原子的"**首个决定生效**"单元：`ack()`/`nack()` 只有
-第一次调用会写入，之后调用返回 `false` 且不改变状态。它被 `Delivery` 和
-facade 共同持有，handler 返回后 facade 读取它来决定 settlement（见 §7.4 ACK 矩阵）。
+`Acknowledgement` 原子保存首个决定，之后不改变状态。`ack()` 和 `nack()` 返回
+`Result<(), AcknowledgementError>`：重复相同决定幂等返回 `Ok(())`，相反决定返回
+`AcknowledgementError::AlreadyCompleted`。它被 `Delivery` 和 facade 共同持有，
+handler 返回后 facade 读取它来决定 settlement（见 §7.4 ACK 矩阵）。
 即使 handler 把 `Delivery` 移入别的线程再 ack，也只会有一种终态。
 
 ### 3.5 `PublishReceipt` 与接纳可见性
@@ -337,6 +337,8 @@ pub enum PublishAcknowledgement {
 确认；只有 `PublishVisibility::DestinationAdmissions` 才能提供目的地明细。
 `publish_all` 返回 `BatchPublishResult`，按输入顺序保留每个请求的
 `Result<PublishReceipt, PublishFailure>`，某一条失败不影响后续请求继续发布。
+
+任何整条重发决策都先看 `duplicate_possible()`；Unknown 历史不能被最后一次 `NoDestinations`/`NoneAccepted` 抹掉。历史不确定时按 event ID 核对；只有无历史风险且无人接纳才能考虑整条重发。部分接纳只修复拒绝目标，Dropped 不自动重发。`check_admission` 仍只判断最后 ACK。完整可执行决策见[用户手册](user_guide.zh_CN.md#检查发布结果)。
 
 ### 3.6 `DeadLetterEvent<T>`
 
@@ -458,8 +460,7 @@ pub struct SettlementToken {
 }
 ```
 
-- **不可 `Clone`**：一条消息只可能被 settle 一次（facade 侧保证），provider 不需要
-  应付并发 settle 同一 token。
+- **不可 `Clone`**：同一个 receiver owner 串行发起结算尝试；provider 无须应付同一 token 的并发 settle。
 - `belongs_to(subscription_id)`：facade 在 settle 前校验 token 归属；provider
   也可用 `SpiError::InvalidSettlementToken` 拒绝错配 token。
 - **幂等**：同一 `(token, disposition)` 重复 settle 必须返回 `Ok(())`（异步 facade
@@ -472,14 +473,12 @@ pub struct SettlementToken {
 
 ### 4.6 停机契约
 
-`shutdown(ShutdownMode)`，以及同步 facade 的 `request_shutdown(ShutdownMode)`：
+`shutdown(ShutdownMode)`：
 
-- `ShutdownMode::Graceful { timeout }`：将期限传给 provider。同步 `shutdown` 便捷方法
-  也用它限制自身的观察；独立请求返回的 ticket 可以另用 `wait` 期限或 `wait_async`
-  观察。观察超时返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指
-  provider 在自身宽限期结束后完成清理；
-- `ShutdownMode::Immediate`：请求取消，排队的 facade 工作以 `Retry` 归还，
-  等待已运行工作结束后再清理 provider；底层未处理消息按 provider 语义丢弃或保留；
+- `ShutdownMode::Graceful { timeout }`：为 facade 停机调用方设置 deadline。调用方超时
+  返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指 provider 在自身宽限期
+  结束后完成清理；
+- `ShutdownMode::Immediate`：请求立即停止接纳，按 provider 语义丢弃或保留未处理消息；仍可能等待在运行的 handler 或 SPI，不保证有界等待；
 - 幂等；停机后 `publish`/`subscribe` 返回 `kind` 为 closed 的 `SpiError::Operation`。
 
 facade 同一时刻最多只有一个 provider `shutdown` 调用在途；失败或取消后后续调用可重试。
@@ -529,18 +528,37 @@ facade 会在调用 `subscribe` 前拒绝不支持的模式。
 
 ---
 
+local/Redis 的逐项实际能力、PEL、cursor、fsync 与关闭恢复边界见[能力对照](user_guide.zh_CN.md#对照-local-与-redis-的实际能力)。local 为 Native/Ephemeral、PerKey、Native delay；Redis 为 Encoded/Durable、group 与 Position replay，但 ordering/delay 均为 None。
+
 ## 6. Registry、发现与 provider 装配
 
 ### 6.1 `EventBusSpec`：接入 `qubit-spi`
 
 ```rust
-pub struct EventBusSpec;                    // 同步与异步 provider 共用
+use std::sync::Arc;
+
+use qubit_event_bus::EventBusConfig;
+use qubit_event_bus::EventBusProviderError;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_spi::AsyncServiceSpec;
+use qubit_spi::ServiceSpec;
+use qubit_spi::SyncServiceSpec;
+
+pub struct EventBusSpec;
+
 impl ServiceSpec for EventBusSpec {
     type Config = EventBusConfig;
-    type Output = Arc<dyn EventBusSpi>;
     type Error = EventBusProviderError;
 }
-// EventBusSpec 的 AsyncServiceSpec 选择 Arc<dyn AsyncEventBusSpi>。
+
+impl SyncServiceSpec for EventBusSpec {
+    type Output = Arc<dyn EventBusSpi>;
+}
+
+impl AsyncServiceSpec for EventBusSpec {
+    type Output = Arc<dyn AsyncEventBusSpi>;
+}
 ```
 
 `EventBusProvider` / `AsyncEventBusProvider` 是 `qubit-spi` 定义 trait
@@ -636,8 +654,8 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **全局**发布拦截器，只能读写 headers（`PublishMetadata`），返回 `false` 丢弃消息 |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | 按 payload 类型注册的**全局同步**中间件 |
 | `async_subscriber_interceptors` | 同上，异步版本 | 全局异步中间件（仅 `AsyncEventBus` 使用） |
-| `sync_scheduler` | `SyncDeliverySchedulerConfig { max_in_flight: 4, handler_queue_capacity: 32, max_subscription_workers: 256 }` | 同步接手上限、handler 队列与接收线程预算 |
-| `delivery_admission` | `DeliveryAdmissionConfig { max_in_flight: 4 }` | 异步 facade 全局 in-flight 上限 |
+| `delivery_scheduling` | `DeliverySchedulingConfig`：running=4、owned=256、per-subscription=32、subscriptions=256 | 两种 facade 共用的独立数量上限 |
+| `settlement_retry` | `SettlementRetryConfig`：5 次、5 秒、10 ms 初始退避、1 秒上限 | 只重试明确可重试的结算错误 |
 | `payload_limits` | `PayloadLimits` | 编码发布和接收的独立正数上限，默认各 1,048,576 字节 |
 
 facade 创建时只读取一次 provider capabilities，并在后续校验中使用不可变快照。
@@ -647,6 +665,8 @@ facade 创建时只读取一次 provider capabilities，并在后续校验中使
 全局拦截器/中间件与请求级拦截器/中间件**叠加**而非替代：发布侧先跑请求级
 （typed），后跑全局（metadata）；消费侧全局中间件包在请求级中间件**外层**
 （先进入全局，再进入 typed，最后 handler）。
+
+四参数构造为 `DeliverySchedulingConfig::new(NonZeroUsize, NonZeroUsize, NonZeroUsize, NonZeroUsize)`，依次为 running、owned、per-subscription、subscriptions；running/per-subscription 不大于 owned。配置通过 `with_delivery_scheduling`、`with_settlement_retry` 设置，getter 分别为 `delivery_scheduling`、`settlement_retry`。
 
 ### 7.2 codec 解析
 
@@ -713,6 +733,8 @@ facade 创建时只读取一次 provider capabilities，并在后续校验中使
 内部用 `PipelineFailure { origin, error, publish_effect }` 携带失败**发生在哪一步**（拦截器、
 能力、编码、SPI、错误处理器…），便于测试断言与日志，对外返回保留原事件 ID、聚合效果和 `PublishError` 原因链的 `PublishFailure`。
 
+同步与异步发布共用 `prepare_publish`、`finish_publish_success`、`finish_publish_failure`：准备阶段只执行一次拦截器与编码，后续尝试保留 ID、字节和单调的 duplicate_possible 历史；SPI 调用与重试/取消驱动由两种适配器各自完成。
+
 ### 7.4 消费管线（`SubscriberPipeline`）：单条消息的处理
 
 以下逻辑封装在 `SubscriberPipeline<T>` 中，由同步 worker 与异步 run 循环调用：
@@ -720,7 +742,10 @@ facade 创建时只读取一次 provider capabilities，并在后续校验中使
 ```
 InboundMessage
   │ into_parts()
-  ├─ TransportPayload → Arc<T>（Native downcast / Encoded decode）── 失败 → Reject + DeliveryFailed(attempts=0)
+  ├─ Encoded：先校验接收字节上限，再校验元数据，最后 decode
+  │    ├─ 普通 CodecError::Decode → 按同键顺序结算 Reject（坏消息）
+  │    └─ 超限 / 元数据不匹配 / panic → StopUnsettled，停止订阅且保留未结算源
+  ├─ Native：downcast → Arc<T>；NativeTypeMismatch → StopUnsettled
   ├─ 重建 EventEnvelope<T>
   ├─ filter(&envelope)? ── false → settle Accept，结束
   │                     ── panic → 视为 handler 失败进入错误处理
@@ -836,58 +861,27 @@ EventBus (Arc<Inner>)
 | 线程 | 数量 | 职责 |
 | --- | --- | --- |
 | `event-bus-subscription-{id}` | 每个订阅一个 | 协调线程：循环 `receive(50 ms)`、解码/过滤、把 handler 任务交给调度器、**执行 settlement** |
-| `event-bus-handler-{i}` | `max_in_flight` 个（默认 4），首次 `subscribe` 时懒启动 | 执行中间件 + handler + 本地重试 + 错误处理器 + 死信发布 |
+| `event-bus-handler-{i}` | `max_running_handlers` 个（默认 4），首次 `subscribe` 时懒启动 | 执行中间件 + handler + 本地重试 + 错误处理器 + 死信发布 |
 | `event-bus-shutdown` | 停机时最多一个 | 后台执行 drain/join/provider shutdown |
 
 设计动机：`EventSubscriptionSpi` 是 `&mut self` 单所有者，所以每个订阅必须有
 **唯一**线程去 `receive` 与 `settle`；而 handler 可能很慢，如果每个订阅一个线程
 串行跑 handler，既没有并发也无法全局限流。于是把两者分离：协调线程只做
-I/O 与 settlement，handler 统一在有界共享池里跑，`max_in_flight` 即全局 in-flight 上限。
+I/O 与 settlement，handler 统一在有界共享池里跑，`max_running_handlers` 只限制执行中的 handler，owned 工作另有预算。
 
 ### 8.2 `SyncDeliveryScheduler`
 
-- 每个订阅一个 `VecDeque` 任务队列（`handler_queue_capacity`，默认 32）；
-  worker 以 round-robin 遍历订阅队列，避免一个高吞吐订阅饿死其他订阅。
-- `try_reserve()` 是准入：`queued < capacity` 才允许协调线程入队；否则协调线程把
-  消息留在 `pending`，**不再 `receive` 新消息**，形成对 provider 的自然背压
-  （local provider 的队列随之填满，最终反映到发布侧 `AdmissionOutcome`）。
-  `handler_queue_capacity = 0` 时退化为直接交接：只有空闲 worker 多于已预留任务且
-  key 不活跃时才接受。
-- **按 key 保序**：`OrderingPolicy::PerKey` 的任务带 `ordering_key`；调度器维护
-  `active_keys: HashSet<(subscription_id, key)>`。`take_ready()` 在遍历某订阅队列时
-  跳过 key 正活跃的任务，取第一个可执行的任务；因为队列本身 FIFO 且每次取"最前可执行"，
-  同一 key 的任务天然按到达顺序执行，不同 key 可并行。
-- `AdmissionTracker` 记录已发出的 permit，`wait_for_received_deliveries` 依赖它判断
-  facade 内是否还有未完成投递。
-- `cancel_subscription(id)`：取出该订阅所有排队任务，以 `cancelled = true` 运行
-  （直接生成 `Retry` settlement 交还 provider），保证取消时不丢消息。
-- `stop_admission(immediate)`：`Graceful` 保留已排队任务让其自然 drain；`Immediate`
-  清空队列并以 `cancelled` 方式让它们 `Retry`。
+同步和异步执行适配器共用只保存元数据的 `DeliverySchedulerCore`；receiver、payload 和 handler future 由各自 owner 持有。receive 之前原子预留全局与每订阅 owned 额度，超限停止接收。预留、排队、running、settling 在同一份 owned lease 内转移，不重复计数，也没有额度外的一条 pending。
+
+可运行集合先按订阅、再按键轮转。只有执行者真正取走 ready 候选时才占 handler 额度与 lane；同键排队和结算退避不占 handler 额度。handler 完成后释放执行额度，lane 要等结算成功或订阅终止才释放。`OrderingPolicy::None` 把各条投递视为独立候选；`PerKey` 按 `(topic, key, subscription_id)` 保持 FIFO，无键消息共享该订阅/topic 的 None lane。
+
+公平保证要求候选已接收且可运行、执行者持续推进；接收 B 仍需 owned 空间，不能越过 provider 中 A 的无限积压。H=4、D=256、S=256 时，running≤H、owned≤D、receiver≤S、lane≤D、waiter≤S。条数有限不等于 payload 字节数有限。
 
 ### 8.3 协调线程（`run_subscription_worker`）
 
-```
-loop {
-  if cancel_requested { 把 pending 以 Retry 归还；break }
-  apply 队列里由 handler 线程回传的 settlement（OwnerSettlementRouter）
-  if let Some(job) = pending.take() {
-     if let Some(r) = scheduler.try_reserve(...) { r.submit(job) } else { pending = Some(job); sleep 1ms; continue }
-  }
-  match receiver.receive(50ms) {
-     Message(m)  → process_inbound_parts → 生成 job → 尝试 reserve/submit，失败则放 pending
-     Gap(g)      → Diagnostic::ReceiveGap
-     TimedOut    → continue
-     Closed      → break
-     Err(e)      → Diagnostic::InternalFailure，关闭 receiver 并标记 stopped
-  }
-}
-drain 剩余 settlement → receiver.close() → 标记 stopped
-```
+每个 receiver 的 receive、settle、close 始终由同一个 owner 串行调用。owner 在接收前预留额度，保存 owned map 与 ready 队列；接收超时、Gap、Closed 归还预留。handler 通过 `OwnerSettlementRouter` 发送不可变的 token/disposition 意图及完成通知，不等待零容量结算回执；owner 关联两种通知，不因先后到达顺序提前释放消息。
 
-**settlement 回流**：handler 线程完成后不能直接调用 `receiver.settle`（它不持有
-`&mut` 接收器），而是把 `(token, disposition)` 通过 mpsc 发回协调线程；协调线程在
-每轮循环开头统一 `settle`。settlement 失败会发 `Diagnostic::SettlementFailed`，
-并在下一轮**再试一次**（依赖 §4.5 的幂等契约）。
+结算失败交给共享 `SettlementRetryState`；handler 不重跑，token/disposition 不变。首次永久失败、未知重试性、预算耗尽、panic、无效 token 或基础设施错误发布终止原因，停止所属订阅接收与启动新 handler。未启动的 durable 工作交 provider close 恢复；ephemeral 工作计弃置。已启动的 handler 可以结束，但终止后不再向该 receiver 发起新结算。close 错误另记，不覆盖首因。正在阻塞的 SPI 或 handler 不保证被强行终止。
 
 ### 8.4 `subscribe` 流程
 
@@ -929,45 +923,24 @@ bus 生命周期存活直到 `cancel()` 或 `shutdown()`。`cancel()` 先让调�
 
 ```
 request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
-  ├─ Closed → 读取缓存报告的就绪 ticket
-  ├─ lifecycle: Running → Closing；OperationGate::close_admission()
-  ├─ coordinator.begin(mode) → 确切代次；Immediate 加强现有 Graceful
-  ├─ scheduler.request_stop(immediate)；借用订阅 control 发出 request_cancel()
-  ├─ 当前代需要 leader 时启动一个 `event-bus-shutdown` 线程
-  │     启动失败 → Err(ShutdownError::CoordinatorStart)；已加入的 ticket 保留此错误
-  │     等待 OperationGate → 排空/取消队列任务 → 等待并 join worker
-  │     → scheduler.join() → spi.shutdown(mode) → 成功时缓存报告并标记 Closed
-  └─ 返回 Ok(绑定当前代的 ticket)，不等待 handler、join 或 SPI 完成
+  ├─ lifecycle: Running → Closing；关闭 OperationGate 接纳
+  ├─ coordinator.begin(mode) → 确切 generation；Immediate 可加强 Graceful
+  ├─ scheduler.request_stop(immediate)；向 subscription controls 发出取消请求
+  ├─ 当前 generation 需要 leader 时，启动一个 `event-bus-shutdown` 协调线程
+  │     等待 OperationGate → 完成/清理 owner 工作 → 等待并 join receiver owners
+  │     → scheduler.join() → spi.shutdown(mode) → 缓存报告并标为 Closed
+  └─ 立即返回 generation ticket，不等待 handler、join 或 SPI
 
-EventBusShutdown::wait(Some(timeout)) → 同步有界观察
-EventBusShutdown::wait_async()         → 运行时中立的 Waker 观察
-shutdown(mode)                        → request_shutdown(mode) + ticket.wait(mode timeout)
+EventBusShutdown::wait(Some(timeout)) → 有界阻塞观察
+EventBusShutdown::wait_async()         → runtime-neutral Waker 观察
+shutdown(mode)                         → request_shutdown(mode) + ticket.wait(mode timeout)
 ```
 
-- 请求只关闭接纳入口、加强停止信号、把待取消工作交给后台、启动协调器，不在
-  请求路径执行排队消息的 settlement/diagnostic 回调，不等 handler/provider，也
-  不 join 线程。因此可以在 bus 回调中发起请求。
-- 每张 ticket 保留确切代次的结果，直到 ticket Drop。多张 ticket 可加入同一代；
-  Immediate 加强当前关闭，使排队任务以 `Retry` 归还，已运行 handler 仍须结束。
-  协调线程启动失败时先把错误交给该代观察者，再允许后续请求重试；旧 ticket
-  不会误读新代的结果。
-- `wait_async` 在同一个状态锁内检查完成并登记 waker；waker 的 clone/drop/wake
-  都在锁外执行。取消 wait 只移除自身登记，ticket 仍保留结果，可以再次观察，
-  不会重发关闭请求或创建额外线程。
-- `wait(Some(timeout))` 只限制观察者。`shutdown(Graceful { timeout })` 用同一
-  timeout 限制同步观察，并把 mode 传给 provider；`shutdown(Immediate)` 没有
-  观察期限，仍会等待完成。观察到期返回 `ShutdownError::TimedOut`，后台清理
-  继续；SPI 的 `ShutdownOutcome::TimedOut` 表示 provider 已在宽限期后完成
-  清理。两种模式都不能杀死阻塞的同步代码。
-- 报告保留 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能
-  放弃无法计数工作的标志。当前协调器串行调用 provider，缓存报告的锁不覆盖
-  SPI shutdown 调用，因此后续请求仍可加强当前关闭。
-- 后台线程将 unwind panic 转为该代的失败，并发出 `Diagnostic::InternalFailure`；
-  观察者收到的是失败，不是关闭成功报告。
-- `EventBus` 是可克隆的 `Arc` 句柄，**Drop 不发起关闭**。后台 worker 可以持有
-  `Arc<EventBusInner>`；调用方必须显式请求关闭并观察完成。ticket Drop 只释放
-  观察登记，不取消后台关闭。
+`request_shutdown` 关闭接纳并向固定池 scheduler 发信号；不会在请求线程执行排队的 handler 或结算回调。scheduler 标记 graceful drain 或 immediate cancel，然后唤醒 receiver owner。owner 自行释放 delivery lease 和保留的 payload；已经获得许可的 handler 回调仍由固定线程池执行。独立协调线程等待并 join owners 和 pool worker，之后才进行唯一一次 provider shutdown。Immediate 可以加强当前 Graceful 代次，但不能中断已经开始的回调或 provider 调用。
 
+每个 ticket 保留一个确切代次的结果，直到 ticket 被丢弃。并发请求可加入当前代次；bus 已关闭时返回携带缓存报告的就绪 ticket。`wait` 超时只限制这次观察，后台清理继续。`wait_async` 为观察者注册独立、可取消的 waker，不阻塞线程也不要求特定运行时。取消观察 future 只移除自己的 waker 登记；保留 ticket 后可以再次观察。协调线程启动失败归属于该代次的 ticket，即使后续请求启动了新代也不改变旧结果。
+
+`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用。若同步 `shutdown` 或 `EventBusShutdown::wait` 必须等当前回调结束才会完成，则返回 `WouldDeadlock`。报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃未能精确计数工作的标志。`EventBus` 没有 `Drop` 停机逻辑；丢弃 bus 句柄或 ticket 都不会取消后台清理。
 
 ---
 
@@ -983,65 +956,24 @@ shutdown(mode)                        → request_shutdown(mode) + ticket.wait(m
   `wait_for_received_deliveries` 超时、停机 deadline）都通过 `Arc<dyn Timer>`。
   未提供时使用 `qubit_clock::StdTimer`。测试用 `tests/support/manual_async.rs` 的手动 timer
   可以确定性地推进时间。
-- **唤醒靠 `Waker`**：`AsyncSignal`（一次性/可重置通知）、`AsyncAdmission`、
-  `AsyncOrderingLanes` 都基于 `Waker` 注册与唤醒，不使用 channel 或线程。
+- **唤醒靠 `Waker`**：`AsyncSignal` 与共享调度核协调 `Waker` 注册与唤醒；owned lease 负责持有数量预算，不负责 spawn。
 - **SPI 调用全部 boxed `Send`** future，配合 `catch_spi_future` 捕获 provider panic。
 
-### 9.2 `AsyncAdmission`：全局 in-flight 限流
+### 9.2 共享 owned 与执行额度
 
-- 容量来自 `DeliveryAdmissionConfig::max_in_flight`（默认 4）。
-- `acquire()` 返回 future；没有空位时把 `Waker` 加入 **FIFO** 等待队列，释放 permit
-  时唤醒队首，保证公平、无饥饿。
-- permit 是 RAII 类型，drop 即释放。投递任务持有 permit 直到 handler 与 settlement
-  意图产生完成。
-- `AsyncTracker` 记录 in-flight 数，用于 `wait_for_received_deliveries` 与停机 drain。
+异步使用与 §8.2 相同的 `DeliverySchedulerCore` 和四参数配置。注册 session（包括暂停 session）计入 `max_subscriptions`，真正完成关闭/终止清理后才释放注册。每订阅最多一个 receive waiter；取消时移除，释放额度时唤醒。wake 注册后复查状态，避免丢失唤醒。
 
-### 9.3 `AsyncOrderingLanes`
+### 9.3 同键通道
 
-按 `(subscription_id, ordering_key)` 维护 lane：同 key 的投递任务在进入 handler 前
-`acquire` lane，前一个未释放时挂起并登记 `Waker`。释放时按 FIFO 唤醒下一个。
-`OrderingPolicy::Unordered` 的订阅不使用 lane。
+lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 handler 额度，前一条结算前后继不能越过。`OrderingPolicy::None` 使用独立 delivery 候选。公平条件与资源边界见 §8.2。
 
-### 9.4 `AsyncSubscription`：session、lease 与 run 的可恢复性
+### 9.4 `AsyncSubscription`：可恢复 session
 
-```
-AsyncSubscription<T>
- ├─ control: Arc<AsyncSubscriptionControl<T>>   停机信号 (SessionSignals)、runner 计数、SessionSlot
- └─ SessionSlot → Mutex<Option<AsyncSession<T>>>
-        AsyncSession
-         ├─ receiver: Option<Box<dyn AsyncEventSubscriptionSpi>>   单所有者接收器
-         ├─ pending / waiting_admission: Option<PendingDelivery>    至多一条已收未准入
-         ├─ tasks: Vec<OwnedDeliveryTask>                          正在执行的投递 future
-         ├─ completed: VecDeque<PendingDelivery>                    待 settle 的完成项
-         ├─ admission_waiter: Option<AsyncAdmissionFuture>
-         └─ handler: Option<SharedAsyncHandler<T>>                  run() 传入，暂停后保留
-```
+`AsyncSession` 独占 receiver，保存 `buffered`、`tasks`、`completed` 与结算期间产生的完成列表。`PendingDelivery` 持有 payload、token、不可变 disposition、结算计时状态和唯一 owned lease。未得到运行许可的 handler factory 不执行，已启动 future 保留在 session。
 
-`PendingDelivery` 是一条消息在 facade 内的完整生命周期记录：事件、token、
-`settlement_intent`、`settlement_failures`、待发的失败诊断、持有的 admission permit
-与 ordering lane guard。permit/guard 随 `PendingDelivery` 一起 drop 释放，
-因此不可能"忘记释放"。
+每轮先轮转 poll 已启动任务，再推进单个 receiver 操作，最后在有额度时 receive/dispatch。结算退避以及在途异步 settle 仍允许 poll 已启动 handler，但同一个 receiver 不并发 receive。丢弃 `run` future 是暂停：owned 工作、lane、token、计时状态仍归 session；恢复 run 或 shutdown 接管继续推进，不隐式 spawn。
 
-- `run()`：`lease()` 取出 `Session`（若已被另一个 `run` 持有则等待），执行 `run_loop`，
-  结束后如果订阅未处置，`Session` 放回 slot。因此：
-  - **drop `run()` 的 future = 暂停**：接收器留在 session 中，未 settle 的消息留在
-    provider（依赖 receive 的取消安全），再次调用 `run()` 从原状态继续；
-  - **停机可接管暂停中的 session**：`AsyncEventBus::shutdown` 对每个 control 调用
-    `shutdown(mode)`，它 `lease()` 到 session 后先把 pending 投递跑完（`Graceful`）
-    再 `close_inner()`。
-- `run_loop` 每轮：检查停机信号 → 处理 settlement 意图 → 若有 pending（已接收但未获
-  admission 的消息）先 `acquire` permit → 否则 `receive(Duration::MAX)`。
-  **每个订阅至多一条未准入消息**，这既是背压（不从 provider 拉更多），也让暂停/停机
-  时只需归还一条消息。
-- 投递任务（`OwnedDeliveryTask`）是 `'static` 的 owned future，由 `run_loop` 在
-  `tasks` 中逐个轮询（`select` 语义：任一任务完成、receive 返回或停止信号到来都会
-  产生一个 `AsyncRunnerEvent`）；handler 完成后 `PendingDelivery` 带着
-  `settlement_intent` 进入 `completed`，由 `run_loop` 在下一轮以 `&mut receiver`
-  执行 settle——与同步侧"回流到 owner 线程"是同一思想。
-- `close()`：停止 run（`Immediate`），`lease` 后 `receiver.close()`，从 bus 注销。
-- `Drop`：等价于 `dispose()`——立刻停止、丢弃 session（receiver 被 drop，provider 按
-  Ephemeral/Durable 语义处理）、注销 control。**与同步侧不同**：异步句柄 drop 即处置，
-  因为没有后台线程能替它继续消费。
+`close().await` 停止并关闭订阅；Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
 
 ### 9.5 `AsyncEventBus::subscribe` 与未启动订阅
 
@@ -1050,11 +982,13 @@ AsyncSubscription<T>
 provider 侧接收器被正确关闭、不留悬挂订阅。若 `subscribe` 完成时 bus 已不是 `Running`，
 接收器会被立即关闭并返回 `SubscribeError::Closed`。
 
-### 9.6 settlement 重试退避
+### 9.6 有限结算重试
 
-settlement 失败发 `Diagnostic::SettlementFailed` 并在意图队列保留；重试间隔为
-`10 ms × 2^n`，上限 1 s（指数最多 7），使用注入 `Timer`。重试依赖 §4.5 幂等契约；
-停机 `Immediate` 时放弃剩余意图并发 `SettlementUnavailable`。
+`SettlementRetryConfig::new(max_attempts, max_elapsed, initial_backoff, max_backoff)` 接收 `NonZeroU32` 和三个 `Duration`；默认 5 次（含首次）、5 秒、10 ms、1 秒。elapsed 与 initial 必须非零，max_backoff 不得小于 initial；允许一次尝试。
+
+共享状态为 `Ready → Attempting → Settled | Waiting(deadline) | Terminal`。只有 `retryable()==Some(true)` 可重试；false 与 None 分别立即终止为 `PermanentError`、`RetryabilityUnknown`。其他终止原因包括 `AttemptsExhausted`、`DeadlineExceeded`、`ProviderPanicked`、`InvalidToken`、`InfrastructureFailure`。第 n 次失败后等待 `min(initial * 2^(n-1), max)`，饱和计算，进入 SPI 前重新检查次数与单调时间预算；Timer 注册失败不增加 SPI 次数。
+
+每次失败发一条带 `attempt` 和 `Arc<SpiError>` 的 `SettlementFailed`，首个终止发 `SettlementStopped` 并保留 `terminal_failure()`。预算不打断在途调用；截止之后返回的成功仍是成功。取消导致的在途 attempt 已计数，暂停本身不终止，恢复后再判断预算。
 
 ### 9.7 停机
 
@@ -1073,6 +1007,8 @@ shutdown(mode: ShutdownMode).await
 ```
 
 `Immediate` 同样可以加强正在进行的 `Graceful`（control 的停止级别只升不降）。
+
+调用方有界等待不等于进程强制退出：两次 `Graceful` 分别设 timeout，处理 `ShutdownError::TimedOut`，最终未完成交外部监督器。`Immediate` 仍可能等待不合作 handler/SPI，不作为超时救援；取消 future 后由协调器恢复。可执行同步/异步示例见[用户手册](user_guide.zh_CN.md#同步总线的停机流程)。
 
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 
@@ -1121,8 +1057,9 @@ LocalQueueState
 `LocalEvent.payload` 是 `SharedPayload::Native(Arc<dyn Any>)`——同一个 `Arc`
 被广播给全部订阅队列，发布不复制 payload。
 
-- **lane 即顺序**：同 key 消息进入同一 lane 的队尾；一个 lane 只有队头可投递，
-  且投递中的消息 settle 前该 lane 不再出队——`PerKey` 顺序由此保证，无需额外锁。
+- **lane 保持接收次序**：同键消息进入同一队列，按队头顺序出队并遵守延迟。
+  `pop_ready` 取出一条后，只要队列未空便重新调度下一条，不等待前一条结算。
+  后继可以预先进入 facade-owned；PerKey handler 的先后与结算边界由 facade lane 保证。
 - **`Retry` 回队头**（`enqueue_front`），保持原顺序；`Accept`/`Reject` 释放 outstanding
   预算，`Retry` 不释放。
 - **延迟堆惰性清理**：lane 被消费或重排时旧堆项失效；当失效项超过 `max(live, 8)`
@@ -1182,10 +1119,10 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 ### 10.5 与 facade 的分工示例
 
 以一条 `PerKey` 延迟消息为例：facade 校验能力并把 `ordering_key`/`delay` 放进
-`OutboundMessage`；local 把它放进对应 lane 并压入延迟堆；到期后 `receive` 返回；
-同步 facade 的调度器再次以 `active_keys` 保证同 key 不并发（因为 local 已经保证同 key
-串行出队，这一层在 local 上是冗余的，但对不保证串行出队、只保证分区顺序的 provider
-是必要的）。
+`OutboundMessage`；local 将消息放进对应 lane 并安排延迟，到期后按队列顺序由 receive 返回。
+local 随后可以交出同键后继，不等前一条 settle。facade 可在 owned 额度内预取这些消息，
+但其 PerKey lane 会阻止前驱结算成功前启动后继；订阅终止时后继也不会启动。
+因此这层 facade 调度约束在 local 上同样必需，不能把接收 FIFO 当作 handler/settlement 串行。
 
 ### 10.6 资源与基准
 
@@ -1203,7 +1140,7 @@ cargo bench --bench facade_delivery
 ```
 
 同步 facade 为每个订阅创建一个阻塞接收线程，并在调用 provider 前执行
-`max_subscription_workers` 预算检查（默认 256）。handler 池大小由 `max_in_flight`
+`max_subscriptions` 预算检查（默认 256）。handler 池大小由 `max_running_handlers`
 决定；停机时还可能临时启动协调线程。异步 facade 不会为每个订阅创建线程；local
 provider 自身不创建线程。
 
@@ -1315,7 +1252,8 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 | `AdmissionRejected` | 发布回执中某目的地被拒绝（仅 `DestinationAdmissions` provider） |
 | `ReceiveGap` | provider `receive` 返回 `Gap` |
 | `DeliveryFailed` | 一条投递到达终态失败（含 attempts、`DeliveryFailureAction`、错误） |
-| `SettlementFailed` | `settle` 返回错误（会重试） |
+| `SettlementFailed` | 一次结算失败；保留结构化 error 与 attempt，是否重试由策略决定 |
+| `SettlementStopped` | 首个结算终止原因，停止所属订阅 |
 | `SettlementUnavailable` | 需要 settle 但能力不允许或已放弃（如 `Immediate` 停机） |
 | `InternalFailure` | facade 内部不应发生的错误（如协调线程 receive 返回 Err） |
 
@@ -1328,24 +1266,27 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 ---
 
+`delivery_metrics()` 返回 `DeliveryMetricsSnapshot`；订阅返回带 subscription/subscriber ID 的 `SubscriptionDeliveryMetricsSnapshot`。预留、排队、running、settling、lane_waiting、尝试/重试/终止、完成/放弃、耗时与最老 owned 年龄均可观察。快照不含 payload/token，不保存每键或每事件历史，跨线程不承诺事务一致。关闭后的 handle 保留最终订阅计数。observer 应经应用自己的有界非阻塞队列转出，panic 隔离不等于耗时隔离。恢复步骤和完整字段见[用户手册](user_guide.zh_CN.md#排查结算终止并恢复消费)。
+
 ## 14. 并发不变量汇总
 
 1. 任一 `EventSubscriptionSpi`/`AsyncEventSubscriptionSpi` 在任意时刻只有一个持有者
    在调用其方法（同步：协调线程；异步：持有 lease 的 `run`/`shutdown`）。
-2. 一条消息的 `SettlementToken` 最多产生一次成功 settlement；重试只会重复相同 disposition。
+2. 同一 token/disposition 可以幂等重试；多次调用可返回成功，但终态效果只应用一次。
 3. `Acknowledgement` 首个决定生效，之后不可变。
-4. 同一订阅、同一 `ordering_key` 的 handler 不会并发执行（同步：`active_keys`；
-   异步：`AsyncOrderingLanes`）。
-5. 同时运行的 handler 数 ≤ `max_in_flight`（同步池大小 / 异步 admission 容量）。
-6. 每个订阅至多一条"已从 provider 取出但尚未进入 handler"的消息（同步 `pending`，
-   异步 pending + 单 permit）。
+4. 同键 lane 持有到结算成功或订阅终止；后继不越过 FIFO。
+5. running≤max_running_handlers，owned≤max_owned_deliveries，每订阅 owned≤max_owned_per_subscription。
+6. receive 前预留 owned，注册订阅≤max_subscriptions；没有额度外的 pending。
 7. `publish`/`subscribe` 在 `Closing` 之后必返回 `Closed`；`shutdown` 幂等且
    provider shutdown 同一时刻最多有一个调用在途；失败或取消后可由后续调用重试。
 8. 回调 panic 被隔离；codec panic 停止该订阅，通知资源清理 panic 发布失败终态。
    进程 abort 或用户代码无限阻塞不能由库恢复或强制中断。
 9. 死信最多一级；死信头无法被外部设置或篡改。
-10. Durable provider 支持时，取消/停机将未开始任务以 `Retry` 归还；Ephemeral provider
-    可以丢弃未开始任务，facade 会报告已知放弃数量及无法精确统计的 provider 放弃标志。
+10. Durable 未终结工作依 provider close/recovery 协议保留；Ephemeral 可丢弃并计数，
+    facade 同时标明无法精确统计的 provider 放弃风险。Graceful 继续排空已 owned 工作；
+    terminal/cancel/Immediate 禁止启动新 handler。只有同步非 terminal 取消在能力允许时
+    可发出 Retry；异步非 Graceful 关闭释放未开始工作并关闭 receiver，不统一发送 Retry。
+    terminal 终止不再发起新结算，不把未运行的 handler 伪装成 Accept。
 11. 持有 facade 内部锁时不调用用户代码。诊断观察者先在 `observers` 锁内做成快照，
     `emit` 在释放锁之后才调用回调；handler、中间件和错误处理器运行在调度线程或
     异步投递任务上，不持有订阅目录、ordering lane 或 tracker 的锁。这样用户回调
@@ -1515,6 +1456,4 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.18；缺失输入会明确失败。本轮只协调 EventBus、IoC 和执行服务消费者；rs-task 与
-rs-event-bus-redis 仍须另行迁移 0.18 依赖，完整五仓门禁才能通过。metadata
-检查补充各项目 CI，不能单独证明投递行为。
+0.18；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

@@ -21,6 +21,7 @@ use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
 use super::conformance_report::push_hook;
 use super::conformance_report::settlement_case;
+use super::conformance_skip_reason::ConformanceSkipReason;
 use crate::model::SubscriptionDurability;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventBusSpi;
@@ -46,6 +47,8 @@ use crate::spi::ShutdownOutcome;
 ///
 /// # Panics
 /// Panics if the provider factory or an SPI method unwinds.
+#[must_use = "Inspect the conformance results."]
+#[inline]
 pub fn run_sync<F>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
@@ -69,6 +72,7 @@ where
 ///
 /// # Panics
 /// Panics if the provider factory or an SPI method unwinds.
+#[must_use = "Inspect the conformance results."]
 pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: ConformanceProfile) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
@@ -96,7 +100,7 @@ where
                 });
                 report.push(ConformanceCase::Skipped {
                     case_id: "publish-receive".into(),
-                    reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                    reason: ConformanceSkipReason::MissingFixture {
                         detail: "subscription could not be created".into(),
                     },
                 });
@@ -156,7 +160,7 @@ where
                         }
                         _ => ConformanceCase::Skipped {
                             case_id: "settlement-conflicting-disposition".into(),
-                            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+                            reason: ConformanceSkipReason::UnsupportedCapability {
                                 capability: "settlement",
                             },
                         },
@@ -174,7 +178,7 @@ where
         } else {
             report.push(ConformanceCase::Skipped {
                 case_id: "receive-payload".into(),
-                reason: super::conformance_skip_reason::ConformanceSkipReason::MissingFixture {
+                reason: ConformanceSkipReason::MissingFixture {
                     detail: "publish failed".into(),
                 },
             });
@@ -228,7 +232,7 @@ where
     if capabilities.settlement() == SettlementCapabilities::None {
         report.push(ConformanceCase::Skipped {
             case_id: "provider-settlement-idempotence".into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+            reason: ConformanceSkipReason::UnsupportedCapability {
                 capability: "settlement",
             },
         });
@@ -257,7 +261,7 @@ where
     } else {
         report.push(ConformanceCase::Skipped {
             case_id: "ephemeral-cleanup".into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+            reason: ConformanceSkipReason::UnsupportedCapability {
                 capability: "ephemeral-subscription",
             },
         });
@@ -274,7 +278,7 @@ where
     } else {
         report.push(ConformanceCase::Skipped {
             case_id: "durable-unsettled-recovery".into(),
-            reason: super::conformance_skip_reason::ConformanceSkipReason::UnsupportedCapability {
+            reason: ConformanceSkipReason::UnsupportedCapability {
                 capability: "durable-subscription",
             },
         });

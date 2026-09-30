@@ -64,6 +64,10 @@ pub struct PublishOptions<T: 'static> {
 
 impl<T: 'static> Default for PublishOptions<T> {
     /// Creates options without retry policies or callbacks.
+    ///
+    /// # Returns
+    /// An options value with default retry and callback settings.
+    #[inline]
     fn default() -> Self {
         Self {
             duplicate_risk_policy: DuplicateRiskPolicy::Forbid,
@@ -78,6 +82,9 @@ impl<T: 'static> Default for PublishOptions<T> {
 
 impl<T: 'static> Clone for PublishOptions<T> {
     /// Clones policy values and shares callback allocations.
+    ///
+    /// # Returns
+    /// A copy of the policy values with shared callback allocations.
     fn clone(&self) -> Self {
         Self {
             duplicate_risk_policy: self.duplicate_risk_policy,

@@ -5,7 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Tests public error source-chain preservation and retry conversion.
+//! Tests public error source-chain preservation, retry conversion, and cause
+//! behavior.
 
 use std::error::Error;
 use std::io::Error as IoError;

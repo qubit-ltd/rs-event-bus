@@ -20,7 +20,7 @@ use qubit_spi::ProviderMetadata;
 use qubit_spi::ServiceProvider;
 use qubit_spi::error::ProviderFailure;
 
-/// Provider wrapper that exposes the local SPI to inventory discovery tests.
+/// Local provider wrapper that exposes the SPI for cross-crate inventory discovery tests.
 pub struct FixtureProvider;
 
 impl ProviderMetadata for FixtureProvider {

@@ -30,7 +30,6 @@ use crate::spi::PublishVisibility;
 use crate::spi::ShutdownMode;
 use crate::spi::SpiSubscriptionRequest;
 use crate::spi::TopicAddress;
-use crate::spi::panic_boundary::catch_spi_call;
 
 impl AsyncEventBus {
     /// Creates an asynchronous provider subscription without spawning a task.
@@ -87,18 +86,28 @@ impl AsyncEventBus {
         }
         let raw_id = self.inner.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = Id::new(raw_id);
-        let spi_request = SpiSubscriptionRequest::builder()
-            .subscription_id(id)
-            .topic(TopicAddress::new(topic.name())?)
-            .subscriber_id(subscriber_id.clone())
-            .group(options.consumer_group().cloned())
-            .durability(options.durability())
-            .start_position(options.start_position().clone())
-            .provider_options(options.provider_options().clone())
-            .payload_type_id(topic.payload_type_id())
-            .build()
-            .expect("all provider subscription request fields are configured");
-        let subscribe = catch_spi_call(
+        if !self.inner.scheduler.register(id) {
+            return Err(SubscribeError::ResourceLimit {
+                resource: "subscriptions",
+                limit: self.inner.facade_config.delivery_scheduling().max_subscriptions().get(),
+            });
+        }
+        let mut registration = super::internal::scheduler_registration::SchedulerRegistration {
+            inner: self.inner.clone(),
+            id,
+            committed: false,
+        };
+        let spi_request = SpiSubscriptionRequest::new(
+            id,
+            TopicAddress::new(topic.name())?,
+            subscriber_id.clone(),
+            options.consumer_group().cloned(),
+            options.durability(),
+            options.start_position().clone(),
+            options.provider_options().clone(),
+            topic.payload_type_id(),
+        );
+        let subscribe = crate::spi::panic_boundary::catch_spi_call(
             self.inner.provider_id.as_str(),
             "subscribe",
             Some(subscriber_id.as_str()),
@@ -138,6 +147,7 @@ impl AsyncEventBus {
             let _ = control.shutdown(ShutdownMode::Immediate).await;
             return Err(SubscribeError::Closed);
         }
+        registration.committed = true;
         Ok(subscription)
     }
 }

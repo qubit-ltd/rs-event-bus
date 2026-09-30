@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Order fields carried by the user-guide wire format.
+//! Order fields carried by the user-guide wire format for the example application's committed event.
 
 /// Order fields carried by the user-guide wire format.
 pub struct OrderCreated {

@@ -61,27 +61,3 @@ impl std::fmt::Display for ConformanceSkipReason {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ConformanceSkipReason;
-
-    #[test]
-    fn test_skip_reasons_format_each_explanation_without_losing_context() {
-        assert_eq!(
-            ConformanceSkipReason::UnsupportedCapability { capability: "replay" }.to_string(),
-            "unsupported capability: replay"
-        );
-        assert_eq!(
-            ConformanceSkipReason::MissingFixture {
-                detail: "receive hook".into()
-            }
-            .to_string(),
-            "missing fixture: receive hook"
-        );
-        assert_eq!(
-            ConformanceSkipReason::NotApplicable { reason: "sync API" }.to_string(),
-            "not applicable: sync API"
-        );
-    }
-}

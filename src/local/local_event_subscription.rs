@@ -28,6 +28,7 @@ use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementToken;
 
 /// Single-owner synchronous receiver for one local subscription.
+#[must_use = "dropping the subscription closes it"]
 pub(super) struct LocalEventSubscription {
     /// Shared bus state used for lifecycle notifications and unregistering.
     shared: Arc<LocalSharedState>,
@@ -44,6 +45,7 @@ impl LocalEventSubscription {
     ///
     /// # Returns
     /// A single-owner subscription receiver.
+    #[inline]
     pub(super) fn new(shared: Arc<LocalSharedState>, queue: Arc<LocalQueue>) -> Self {
         Self { shared, queue }
     }

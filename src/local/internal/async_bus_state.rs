@@ -10,6 +10,7 @@
 use std::any::TypeId;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::mem::take;
 use std::sync::Arc;
 
 use qubit_id::Id;
@@ -83,6 +84,7 @@ impl AsyncBusState {
     /// # Panics
     /// Panics in debug builds if the subscription ID is already present in the
     /// topic index or the inserted mailbox is indexed under another topic.
+    #[must_use = "Use the result to detect duplicate mailbox registrations."]
     pub(in crate::local) fn insert_mailbox(&mut self, key: MailboxKey, mailbox: Arc<AsyncMailbox>) -> bool {
         if self.mailboxes.contains_key(&key) {
             return false;
@@ -108,6 +110,7 @@ impl AsyncBusState {
     /// # Panics
     /// Panics in debug builds if the primary mailbox entry has no matching
     /// topic-index entry.
+    #[must_use = "Use the result to determine whether this mailbox was removed."]
     pub(in crate::local) fn remove_mailbox_if_same(&mut self, key: MailboxKey, mailbox: &Arc<AsyncMailbox>) -> bool {
         let is_current = self
             .mailboxes
@@ -132,8 +135,9 @@ impl AsyncBusState {
     ///
     /// # Returns
     /// Strong owners of every previously registered mailbox.
+    #[must_use = "Use the returned mailboxes to complete their shutdown."]
     pub(in crate::local) fn drain_mailboxes(&mut self) -> Vec<Arc<AsyncMailbox>> {
         self.topic_members.clear();
-        std::mem::take(&mut self.mailboxes).into_values().collect()
+        take(&mut self.mailboxes).into_values().collect()
     }
 }

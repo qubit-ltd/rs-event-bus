@@ -255,8 +255,9 @@ fn sample(bytes: usize, failures: usize) -> (u128, usize, usize, bool) {
         .unwrap()
         .with_options(options);
     let start = Instant::now();
-    let _ = bus.publish(black_box(request)).unwrap();
+    let result = black_box(bus.publish(black_box(request)));
     let elapsed = start.elapsed().as_nanos();
+    let _ = result.unwrap();
     let addresses = provider.byte_addresses.lock().unwrap();
     let attempts = provider.attempts.load(Ordering::Acquire);
     let encodes = codec_calls.load(Ordering::Acquire);
@@ -300,6 +301,7 @@ fn run(bytes: usize, failures: usize) {
         encodes = sample_encodes;
         shared = sample_shared;
     }
+    eprintln!("encoded_sync_raw bytes={bytes} failures={failures} elapsed_ns={elapsed:?}");
     elapsed.sort_unstable();
     println!(
         "encoded_sync,{bytes},{failures},{attempts},{encodes},{shared},{},{}",
@@ -308,6 +310,7 @@ fn run(bytes: usize, failures: usize) {
     );
 }
 
+/// Runs the payload/retry matrix; encoding itself is the measured workload.
 fn main() {
     println!("scenario,bytes,failures,attempts,encodes,shared,median_ns,p95_ns");
     for bytes in SIZES {

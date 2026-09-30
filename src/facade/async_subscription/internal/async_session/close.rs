@@ -23,7 +23,7 @@ use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
-use crate::spi::panic_boundary;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Stops this receiver and asynchronously releases provider resources.
@@ -81,14 +81,15 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         control: &AsyncSubscriptionControl<T>,
     ) -> Result<(), Arc<SubscriptionCloseFailure>> {
         self.signals.stop(ShutdownMode::Immediate);
-        self.admission_waiter.take();
+        self.inner.scheduler.stop_subscription(self.id);
+        self.inner.notify_scheduler();
         let _close = {
             let state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
             (*state == BusState::Running).then(|| self.inner.tracker.close_started())
         };
         let close_result = {
             if let Some(receiver) = self.receiver.as_mut() {
-                let close = panic_boundary::catch_spi_call(
+                let close = catch_spi_call(
                     self.inner.provider_id.as_str(),
                     "close",
                     Some(self.subscriber_id.as_str()),
@@ -114,8 +115,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
             return Err(failure);
         }
-        self.abandon_pending();
+        self.abandon_queued_and_completed();
         self.receiver.take();
+        let _ = self.inner.scheduler.unregister(self.id);
+        self.inner.notify_scheduler();
         self.inner
             .controls
             .lock()
@@ -131,12 +134,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     pub(in crate::facade) fn record_abandoned_delivery(&self) {
         if self.inner.capabilities.durability() == DurabilityCapability::Ephemeral {
             self.inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+            self.metrics.record_abandoned_ephemeral();
         }
     }
 
-    /// Drops the current unstarted or unsettled delivery during Immediate stop.
-    pub(in crate::facade) fn abandon_pending(&mut self) {
-        if self.pending.take().is_some() {
+    /// Counts and releases unresolved buffered and completed deliveries.
+    pub(super) fn abandon_queued_and_completed(&mut self) {
+        let count = self.buffered.len() + self.completed.len() + self.completed_during_settlement.len();
+        self.buffered.clear();
+        self.completed.clear();
+        self.completed_during_settlement.clear();
+        for _ in 0..count {
             self.record_abandoned_delivery();
         }
     }
@@ -144,6 +152,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Drops queued handler futures that Immediate stop forbids from starting.
     pub(in crate::facade) fn discard_unstarted_tasks(&mut self) {
         let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
+        let before = self.tasks.len();
         discard_unstarted_tasks(&mut self.tasks, &self.inner.abandoned_deliveries, ephemeral);
+        if ephemeral {
+            for _ in self.tasks.len()..before {
+                self.metrics.record_abandoned_ephemeral();
+            }
+        }
     }
 }

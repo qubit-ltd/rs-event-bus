@@ -16,7 +16,31 @@ FIXTURES = (
     "rs-task/tests/fixtures/doc-examples",
     "rs-ioc/tests/fixtures/application_consumer_current",
     "rs-execution-services/tests/fixtures/ioc_application_consumer",
+    "rs-task/tests/fixtures/consumer",
+    "rs-task/tests/fixtures/provider",
+    "rs-ioc/tests/fixtures/macro_contracts",
+    "rs-ioc/tests/fixtures/ioc_cross_crate",
+    "rs-ioc/tests/fixtures/application_consumer_current",
+    "rs-ioc/tests/fixtures/ioc_bench",
+    "rs-execution-services/tests/fixtures/application_consumer",
+    "rs-execution-services/tests/fixtures/documentation_consumer",
 )
+NON_BUS_CONSUMERS = frozenset((
+    "rs-ioc",
+    "rs-execution-services",
+    "rs-task/tests/fixtures/consumer",
+    "rs-task/tests/fixtures/provider",
+    "rs-ioc/tests/fixtures/macro_contracts",
+    "rs-ioc/tests/fixtures/ioc_cross_crate",
+    "rs-ioc/tests/fixtures/ioc_bench",
+    "rs-execution-services/tests/fixtures/application_consumer",
+    "rs-execution-services/tests/fixtures/documentation_consumer",
+))
+
+
+def requires_bus(manifest, root):
+    """Require core only for roots and fixtures that consume the event bus."""
+    return manifest.parent.relative_to(root).as_posix() not in NON_BUS_CONSUMERS
 
 
 def validate_graph(graph, *, require_bus, expected_core=None):
@@ -84,7 +108,8 @@ def main():
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="")
-        require_bus = manifest.parent.name not in ("rs-ioc", "rs-execution-services")
+        require_bus = (True if args.ecosystem_root is None
+                       else requires_bus(manifest, root))
         try:
             validate_graph(json.loads(result.stdout), require_bus=require_bus,
                            expected_core=expected_core)

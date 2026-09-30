@@ -195,6 +195,7 @@ impl Default for LocalEventBusConfig {
     ///
     /// # Returns
     /// A configuration with capacities of 1,024 and 65,536 respectively.
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

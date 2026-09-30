@@ -96,6 +96,12 @@ pub enum PublishError {
 impl From<RetryError<PublishAttemptError>> for PublishError {
     /// Boxes the comparatively large retry report to keep this public error
     /// inexpensive to return by value.
+    ///
+    /// # Parameters
+    /// - `error`: Retry report containing the attempted publish failures.
+    ///
+    /// # Returns
+    /// A retry variant containing the report behind a box.
     fn from(error: RetryError<PublishAttemptError>) -> Self {
         Self::Retry(Box::new(error))
     }
@@ -105,7 +111,13 @@ impl PublishError {
     /// Classifies the terminal attempt while retaining structured source
     /// errors. Whole-publication aggregation is supplied by the retry
     /// pipeline.
-    #[must_use]
+    ///
+    /// # Returns
+    /// The effect of the terminal publication attempt, with uncertain
+    /// acceptance preserved when the original failure may have reached the
+    /// provider.
+    #[must_use = "publication admission evidence must be observed"]
+    #[inline]
     pub(crate) fn publish_effect(&self) -> PublishEffect {
         match self {
             Self::Spi(error) => error.publish_effect(),

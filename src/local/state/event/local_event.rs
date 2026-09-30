@@ -69,16 +69,6 @@ impl LocalEvent {
         )
     }
 
-    /// Returns the event identity used to construct a per-delivery token key.
-    ///
-    /// # Returns
-    /// The event ID as a string slice.
-    #[must_use = "Use the returned event id."]
-    #[inline]
-    pub(in crate::local) fn event_id(&self) -> &str {
-        self.id.as_str()
-    }
-
     /// Copies outbound metadata and shares its native payload into queue form.
     ///
     /// # Parameters
@@ -102,5 +92,15 @@ impl LocalEvent {
             payload: SharedPayload::from_transport(message.payload()),
             not_before,
         })
+    }
+
+    /// Returns the event identity used to construct a per-delivery token key.
+    ///
+    /// # Returns
+    /// The event ID as a string slice.
+    #[must_use = "Use the returned event id."]
+    #[inline]
+    pub(in crate::local) fn event_id(&self) -> &str {
+        self.id.as_str()
     }
 }

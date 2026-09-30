@@ -17,7 +17,8 @@ use crate::spi::ShutdownOutcome;
 /// # Examples
 ///
 /// ```
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # use std::error::Error;
+/// # fn main() -> Result<(), Box<dyn Error>> {
 /// use qubit_event_bus::local::LocalEventBusConfig;
 /// use qubit_event_bus::EventBus;
 /// use qubit_event_bus::spi::ShutdownMode;
@@ -53,6 +54,7 @@ impl ShutdownReport {
     ///
     /// # Returns
     /// A report combining provider outcome and facade-known cleanup details.
+    #[inline]
     pub(crate) fn new(
         outcome: ShutdownOutcome,
         known_abandoned_deliveries: u64,

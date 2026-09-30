@@ -7,9 +7,11 @@
 // =============================================================================
 //! Public contract tests for the bounded notification publisher.
 
+mod notification;
+
 use std::env;
-use std::hint;
-use std::io::Error as IoError;
+use std::hint::black_box;
+use std::io::Error;
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -385,7 +387,7 @@ fn test_notification_observer_drop_panic_releases_all_close_callers() {
             Topic::<String>::new_static("notification.drop-panic"),
             NonZeroUsize::new(1).expect("nonzero capacity"),
             move |_| {
-                hint::black_box(&captured);
+                black_box(&captured);
             },
         )
         .expect("publisher starts"),
@@ -451,7 +453,7 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
             Topic::<String>::new_static("notification.cleanup-timeout"),
             NonZeroUsize::new(1).expect("nonzero capacity"),
             move |_| {
-                hint::black_box(&captured);
+                black_box(&captured);
             },
         )
         .expect("publisher starts"),
@@ -605,7 +607,7 @@ impl EventBusSpi for GatedSpi {
             resource: None,
             kind: "unsupported",
             retryable: Some(false),
-            source: Box::new(IoError::other("subscriptions are unsupported")),
+            source: Box::new(Error::other("subscriptions are unsupported")),
         })
     }
 

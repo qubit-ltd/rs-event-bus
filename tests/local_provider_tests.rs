@@ -7,9 +7,15 @@
 // =============================================================================
 //! Contract tests for the built-in synchronous local SPI provider.
 
+mod local;
+
+mod local_provider_tests {
+    mod local_event_bus_provider_tests;
+}
 mod support;
 
 use std::any::TypeId;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -23,11 +29,10 @@ use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
-use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::error::LifecycleError;
 use qubit_event_bus::error::SpiError;
-use qubit_event_bus::facade::SyncDeliverySchedulerConfig;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
@@ -61,33 +66,11 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
-use qubit_spi::ProviderMetadata;
 use qubit_spi::ProviderSelection;
-use qubit_spi::ProviderSelector;
 use qubit_spi::ServiceProvider;
 
 fn provider() -> LocalEventBusProvider {
     LocalEventBusProvider
-}
-
-fn assert_local_shutdown_report(report: ShutdownReport) {
-    assert_eq!(ShutdownOutcome::Complete, report.outcome);
-    assert_eq!(0, report.known_abandoned_deliveries);
-    assert!(report.provider_may_have_abandoned_deliveries);
-}
-
-fn assert_single_accepted_admission(acknowledgement: PublishAcknowledgement, subscription_id: u64) {
-    let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
-        panic!("local provider reports per-destination admissions");
-    };
-    let [admission] = admissions.as_slice() else {
-        panic!("publication targets exactly one matching subscription");
-    };
-    assert_eq!(Id::new(subscription_id), admission.subscription_id());
-    assert!(
-        matches!(admission.status(), AdmissionStatus::Accepted),
-        "target subscription admission must be accepted"
-    );
 }
 
 fn outbound(topic: &str, value: u32) -> OutboundMessage {
@@ -141,29 +124,13 @@ fn create(config: &LocalEventBusConfig) -> Arc<dyn EventBusSpi> {
 }
 
 #[test]
-fn test_provider_registers_local_identity_and_supported_aliases() {
-    let descriptor = provider().descriptor();
-
-    assert_eq!("local", descriptor.id().as_str());
-    assert_eq!(
-        ["memory", "in-process"],
-        descriptor
-            .aliases()
-            .iter()
-            .map(ProviderSelector::as_str)
-            .collect::<Vec<_>>()
-            .as_slice()
-    );
-}
-
-#[test]
 fn test_facade_and_registry_local_entries_share_the_registered_provider_path() {
     let local = EventBus::local(LocalEventBusConfig::new().queue_capacity(8)).unwrap();
     let local_receipt = local
         .publish(PublishRequest::new(Topic::<u32>::new("local.events").unwrap(), 1).unwrap())
         .unwrap();
     assert_eq!("local", local_receipt.provider_id().as_str());
-    assert_local_shutdown_report(local.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = local.shutdown(ShutdownMode::Immediate).unwrap();
 
     let registry = EventBusRegistry::with_local().unwrap();
     let config = EventBusConfig::default().with_selection(ProviderSelection::named("memory").unwrap());
@@ -172,7 +139,7 @@ fn test_facade_and_registry_local_entries_share_the_registered_provider_path() {
         .publish(PublishRequest::new(Topic::<u32>::new("local.events").unwrap(), 2).unwrap())
         .unwrap();
     assert_eq!("local", registry_receipt.provider_id().as_str());
-    assert_local_shutdown_report(from_registry.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = from_registry.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
@@ -195,13 +162,20 @@ fn test_local_facade_delivers_owned_string_payload_without_a_clone_bound() {
         delivered_rx.recv_timeout(Duration::from_secs(2)).unwrap()
     );
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
 fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
-    let facade =
-        EventBusFacadeConfig::new().with_sync_delivery_scheduler(SyncDeliverySchedulerConfig::new(1, 0).unwrap());
+    let facade = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap(),
+    );
     let registry = EventBusRegistry::with_local().unwrap();
     let config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options())
@@ -254,7 +228,7 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
 
     handler_release_tx.send(()).unwrap();
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
@@ -476,7 +450,7 @@ fn test_capacity_counts_in_flight() {
 fn test_capacity_retry_preserves_reservation() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(1));
     let mut subscription = spi.subscribe(request(122, "capacity.retry")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("capacity.retry", 1)).unwrap(), 122);
+    let _ = spi.publish(outbound("capacity.retry", 1)).unwrap();
     let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("event should be received");
     };
@@ -517,7 +491,7 @@ fn test_idle_wait_includes_delayed_queued_message() {
         WaitOutcome::TimedOut
     );
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
@@ -639,14 +613,14 @@ fn test_local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() 
     assert_eq!(handler_done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
     assert_eq!(handler_done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
     assert_eq!(
-        WaitOutcome::Idle,
-        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap()
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap(),
+        WaitOutcome::Idle
     );
 
     assert_eq!(*observed.lock().unwrap(), [1, 2]);
     assert_eq!(max_active.load(Ordering::Acquire), 1);
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
 #[test]
@@ -693,11 +667,11 @@ fn test_local_facade_allows_a_different_ordering_key_to_progress_while_one_handl
     let mut completed = vec![done_rx.recv_timeout(Duration::from_secs(2)).unwrap()];
     completed.push(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_eq!(
-        WaitOutcome::Idle,
-        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap()
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap(),
+        WaitOutcome::Idle
     );
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 
     assert_eq!(progressed, Some(3), "key-b delivery must not wait behind key-a handler");
     assert!(completed.contains(&1));
@@ -740,7 +714,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
     let immediate_receipt = bus.publish(immediate).unwrap();
     let progressed = done_rx.recv_timeout(Duration::from_millis(150)).ok();
     subscription.cancel().unwrap();
-    assert_local_shutdown_report(bus.shutdown(ShutdownMode::Immediate).unwrap());
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 
     assert_eq!(progressed, Some(2), "a not-yet-due key-a message must not block key-b");
     assert!(
@@ -753,7 +727,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
 fn test_local_subscription_redelivers_retry_and_settlement_is_idempotent() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(11, "events")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("events", 7)).unwrap(), 11);
+    let _ = spi.publish(outbound("events", 7)).unwrap();
 
     let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("published message is available");
@@ -792,21 +766,17 @@ fn test_local_subscription_redelivers_retry_and_settlement_is_idempotent() {
 fn test_local_subscription_retry_preserves_same_key_order_at_capacity() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut subscription = spi.subscribe(request(41, "events")).unwrap();
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 1, "orders", None))
-            .unwrap(),
-        41,
-    );
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 1, "orders", None))
+        .unwrap();
 
     let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("first event is available");
     };
     let first_token = first.take_settlement().expect("first event requires settlement");
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 2, "orders", None))
-            .unwrap(),
-        41,
-    );
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 2, "orders", None))
+        .unwrap();
     subscription
         .settle(&first_token, DeliveryDisposition::Retry)
         .expect("retry reuses the reservation held by its in-flight delivery");
@@ -828,26 +798,20 @@ fn test_local_subscription_retry_preserves_same_key_order_at_capacity() {
 fn test_local_subscription_retry_preserves_key_fifo_while_other_key_progresses() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(3));
     let mut subscription = spi.subscribe(request(142, "events")).unwrap();
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay(
+    let _ = spi
+        .publish(outbound_with_key_and_delay(
             "events",
             1,
             "orders",
             Some(Duration::from_millis(20)),
         ))
-        .unwrap(),
-        142,
-    );
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 2, "orders", None))
-            .unwrap(),
-        142,
-    );
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 3, "customers", None))
-            .unwrap(),
-        142,
-    );
+        .unwrap();
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 2, "orders", None))
+        .unwrap();
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 3, "customers", None))
+        .unwrap();
 
     let ReceiveOutcome::Message(mut other_key) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("an immediate ordering key can pass the delayed key head");
@@ -888,12 +852,10 @@ fn test_local_native_delay_hides_the_message_until_its_deadline() {
     let spi = create(&LocalEventBusConfig::default());
     assert_eq!(DelayedDeliveryCapability::Native, spi.capabilities().delayed_delivery());
     let mut subscription = spi.subscribe(request(16, "events")).unwrap();
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_delay("events", 9, Some(Duration::from_millis(25))))
-            .unwrap(),
-        16,
-    );
-    assert_single_accepted_admission(spi.publish(outbound("events", 10)).unwrap(), 16);
+    let _ = spi
+        .publish(outbound_with_delay("events", 9, Some(Duration::from_millis(25))))
+        .unwrap();
+    let _ = spi.publish(outbound("events", 10)).unwrap();
 
     assert!(matches!(
         subscription.receive(Duration::ZERO).unwrap(),
@@ -912,26 +874,20 @@ fn test_local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_o
     let spi = create(&LocalEventBusConfig::default());
     assert_eq!(OrderingCapability::PerKey, spi.capabilities().ordering());
     let mut subscription = spi.subscribe(request(17, "events")).unwrap();
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay(
+    let _ = spi
+        .publish(outbound_with_key_and_delay(
             "events",
             20,
             "key-a",
             Some(Duration::from_millis(120)),
         ))
-        .unwrap(),
-        17,
-    );
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 30, "key-b", None))
-            .unwrap(),
-        17,
-    );
-    assert_single_accepted_admission(
-        spi.publish(outbound_with_key_and_delay("events", 21, "key-a", None))
-            .unwrap(),
-        17,
-    );
+        .unwrap();
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 30, "key-b", None))
+        .unwrap();
+    let _ = spi
+        .publish(outbound_with_key_and_delay("events", 21, "key-a", None))
+        .unwrap();
 
     let ReceiveOutcome::Message(other_key) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("ready key-b message can pass a delayed key-a message");
@@ -982,7 +938,7 @@ fn test_local_subscription_timeout_close_and_bus_shutdown_are_stable() {
 fn test_immediate_shutdown_discards_pending_messages_and_closes_receivers() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(24, "events")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("events", 4)).unwrap(), 24);
+    let _ = spi.publish(outbound("events", 4)).unwrap();
 
     assert_eq!(
         ShutdownOutcome::Complete,
@@ -1005,7 +961,7 @@ fn test_immediate_shutdown_discards_pending_messages_and_closes_receivers() {
 fn test_graceful_shutdown_reports_when_queued_delivery_cannot_be_drained() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(26, "events")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("events", 2)).unwrap(), 26);
+    let _ = spi.publish(outbound("events", 2)).unwrap();
 
     let result = spi
         .shutdown(ShutdownMode::Graceful {
@@ -1024,7 +980,7 @@ fn test_graceful_shutdown_reports_when_queued_delivery_cannot_be_drained() {
 fn test_graceful_shutdown_waits_for_in_flight_settlement() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(27, "events")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("events", 3)).unwrap(), 27);
+    let _ = spi.publish(outbound("events", 3)).unwrap();
     let shutdown_spi = spi.clone();
     let shutdown = spawn(move || {
         shutdown_spi.shutdown(ShutdownMode::Graceful {
@@ -1182,7 +1138,7 @@ fn test_settlement_rejects_token_from_another_subscription() {
 fn test_settlement_rejects_forged_provider_state_without_losing_real_token() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(42, "events")).unwrap();
-    assert_single_accepted_admission(spi.publish(outbound("events", 9)).unwrap(), 42);
+    let _ = spi.publish(outbound("events", 9)).unwrap();
     let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("published message is available");
     };

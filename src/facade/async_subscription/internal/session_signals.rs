@@ -41,7 +41,7 @@ impl SessionSignals {
     /// # Returns
     ///
     /// A reference-counted signal coordinator with no stop request recorded.
-    #[must_use]
+    #[must_use = "the session signal coordinator must be retained"]
     pub(in crate::facade) fn new() -> Arc<Self> {
         Arc::new(Self {
             stopped: false.into(),
@@ -136,7 +136,9 @@ impl SessionSignals {
     }
 
     /// Caches the first receive failure and stops unstarted user work.
-    /// Returns true only when the cause was first recorded.
+    ///
+    /// # Returns
+    /// `true` if this call records the first cause; otherwise, `false`.
     #[must_use]
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
         let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
@@ -190,5 +192,18 @@ impl SessionSignals {
         }
         started.store(true, Ordering::Release);
         true
+    }
+
+    /// Admits one actual handler factory invocation against the stop boundary.
+    ///
+    /// # Returns
+    /// True when this invocation linearizes before Immediate or terminal stop,
+    /// or while Graceful permits accepted deliveries to drain. The gate is
+    /// released before invoking user code; admission never covers later
+    /// retries.
+    #[must_use = "Only admitted handler invocations may enter user code."]
+    pub(in crate::facade::async_subscription) fn admit_handler(&self) -> bool {
+        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        !self.stopped.load(Ordering::Acquire) || self.stopping_gracefully()
     }
 }

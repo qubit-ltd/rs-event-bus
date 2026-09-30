@@ -78,7 +78,6 @@ impl PublishFailure {
     ///
     /// # Returns
     /// Whether external admission can be ruled out for the whole publication.
-    #[must_use]
     #[inline]
     pub fn effect(&self) -> PublishEffect {
         self.effect

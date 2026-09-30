@@ -25,7 +25,6 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// A point-in-time snapshot of publication counters.
-    #[inline]
     pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
         self.inner.publish_metrics.snapshot()
     }
@@ -108,8 +107,9 @@ impl AsyncEventBus {
 /// Maps a pipeline failure to public publish error variants.
 ///
 /// # Parameters
-/// - `event_id`: Identifier of the publication associated with the failure.
-/// - `failure`: Failure produced by publisher pipeline execution.
+/// - `event_id`: identity of the original publication used in the terminal
+///   failure.
+/// - `failure`: failure produced by publisher pipeline execution.
 ///
 /// # Returns
 /// The corresponding public publish error.

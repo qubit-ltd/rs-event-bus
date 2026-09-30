@@ -14,7 +14,7 @@ use std::sync::PoisonError;
 use std::task::Waker;
 
 /// Guard that unregisters one task waker when its wait is canceled or ends.
-#[must_use]
+#[must_use = "dropping the waiter immediately unregisters its waker"]
 pub(in crate::local) struct AsyncWaiter {
     /// Registration ID removed when this guard is dropped.
     id: u64,
@@ -31,6 +31,7 @@ impl AsyncWaiter {
     ///
     /// # Returns
     /// A guard that removes the registration on drop.
+    #[inline]
     pub(in crate::local) fn new(id: u64, waiters: Arc<Mutex<HashMap<u64, Waker>>>) -> Self {
         Self { id, waiters }
     }

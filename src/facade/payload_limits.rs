@@ -75,7 +75,9 @@ impl PayloadLimits {
 
 impl Default for PayloadLimits {
     /// Sets both encoded boundaries to one mebibyte.
-    #[inline]
+    ///
+    /// # Returns
+    /// Limits that allow one mebibyte for both publishing and receiving.
     fn default() -> Self {
         let limit = NonZeroUsize::new(1_048_576).expect("the default payload limit is positive");
         Self::new(limit, limit)

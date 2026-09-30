@@ -19,3 +19,6 @@ pub(crate) mod manual_async;
 mod panic_hook;
 #[allow(dead_code)]
 pub(crate) mod provider_shapes;
+
+#[allow(dead_code)]
+pub(crate) mod settlement_probe;

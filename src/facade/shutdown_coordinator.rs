@@ -7,7 +7,7 @@
 // =============================================================================
 //! Deadline-aware caller coordination for synchronous bus shutdown.
 
-use std::io::Error;
+use std::io::Error as IoError;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -18,8 +18,8 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Instant;
 
-use super::internal::ShutdownResult;
 use super::shutdown_coordinator_state::ShutdownCoordinatorState;
+use super::shutdown_result::ShutdownResult;
 use crate::error::SpiError;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
@@ -38,6 +38,7 @@ impl ShutdownCoordinator {
     /// # Returns
     /// A coordinator with no active generation or waiting callers.
     #[must_use]
+    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(ShutdownCoordinatorState::new()),
@@ -90,8 +91,8 @@ impl ShutdownCoordinator {
     /// Publishes provider completion, retaining its result for every ticket.
     ///
     /// # Parameters
-    /// - `generation`: shutdown attempt that produced the provider outcome.
-    /// - `result`: provider completion or failure to retain for its tickets.
+    /// - `generation`: attempt whose waiters should observe this result.
+    /// - `result`: provider outcome or failure to retain for that generation.
     pub(crate) fn finish(&self, generation: u64, result: Result<ShutdownOutcome, SpiError>) {
         self.complete(generation, ShutdownResult::Provider(result.map_err(Arc::new)));
     }
@@ -99,50 +100,25 @@ impl ShutdownCoordinator {
     /// Records a thread start error for this generation and allows retry.
     ///
     /// # Parameters
-    /// - `generation`: shutdown attempt whose worker failed to start.
-    /// - `error`: operating-system error returned by the thread launcher.
-    pub(crate) fn abort_start(&self, generation: u64, error: Error) {
+    /// - `generation`: attempt whose worker could not be started.
+    /// - `error`: operating system error to retain for current waiters.
+    pub(crate) fn abort_start(&self, generation: u64, error: IoError) {
         self.complete(generation, ShutdownResult::StartFailed(Arc::new(error)));
     }
 
-    /// Saves completion under the state lock, then invokes wakers outside it.
-    ///
-    /// # Parameters
-    /// - `generation`: attempt whose retained result and wakers are completed.
-    /// - `result`: shared completion value delivered to all tickets.
-    fn complete(&self, generation: u64, result: ShutdownResult) {
-        let wakers = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.generation != generation || !state.active {
-                return;
-            }
-            if state.waiters.contains_key(&generation) {
-                state.results.insert(generation, result);
-            }
-            state.active = false;
-            self.changed.notify_all();
-            state.wakers.remove(&generation).unwrap_or_default()
-        };
-        for waker in wakers.into_values() {
-            // One executor's broken observer must not strand the remaining tickets.
-            let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
-        }
-    }
-
     /// Waits for this exact generation without releasing the ticket's observer.
-    /// Never joins another attempt.
+    /// Returns a timeout flag and a retained result; never joins another
+    /// attempt.
     ///
     /// # Parameters
-    /// - `generation`: exact shutdown attempt to observe.
-    /// - `deadline`: optional instant after which this caller stops waiting.
+    /// - `generation`: attempt generation represented by the caller's ticket.
+    /// - `deadline`: optional absolute deadline; expiration leaves the ticket
+    ///   registered so the caller can observe a later completion.
     ///
     /// # Returns
-    /// - `(true, None)` when the deadline expires while this generation remains
-    ///   active.
-    /// - `(false, Some(result))` when this generation completed and its result
-    ///   remains retained for this ticket.
-    /// - `(false, None)` when no result remains retained for this generation.
-    #[must_use]
+    /// Whether the deadline elapsed and, after completion, the retained result
+    /// for this generation. A timeout returns `None` without releasing the
+    /// caller's ticket.
     pub(crate) fn wait(&self, generation: u64, deadline: Option<Instant>) -> (bool, Option<ShutdownResult>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         while state.active && state.generation == generation {
@@ -172,16 +148,14 @@ impl ShutdownCoordinator {
     /// callbacks.
     ///
     /// # Parameters
-    /// - `generation`: exact shutdown attempt to poll.
-    /// - `token`: registration ID used to replace or later unregister this
-    ///   future's waker.
-    /// - `cx`: task context whose waker is registered while the attempt is
+    /// - `generation`: attempt whose result the future is polling.
+    /// - `token`: registration identity reused while this future remains
     ///   pending.
+    /// - `cx`: task context supplying the observer waker.
     ///
     /// # Returns
-    /// `Ready(Some(result))` when completion is retained, `Ready(None)` when
-    /// the generation is no longer active without a result, or `Pending` while
-    /// the attempt remains active.
+    /// The retained result when complete, `None` for a stale generation, or
+    /// `Pending` after registering the current waker.
     pub(crate) fn poll_result(
         &self,
         generation: u64,
@@ -215,8 +189,8 @@ impl ShutdownCoordinator {
     /// The removed user waker is destroyed after releasing coordinator state.
     ///
     /// # Parameters
-    /// - `generation`: shutdown attempt containing the registration.
-    /// - `token`: registration ID returned while polling its future.
+    /// - `generation`: attempt containing the registration.
+    /// - `token`: registration identity returned to the polling future.
     pub(crate) fn unregister(&self, generation: u64, token: u64) {
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -237,7 +211,7 @@ impl ShutdownCoordinator {
     /// Retired results and user wakers are destroyed outside coordinator state.
     ///
     /// # Parameters
-    /// - `generation`: shutdown attempt whose ticket is being released.
+    /// - `generation`: attempt ticket being released.
     pub(crate) fn release(&self, generation: u64) {
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -254,6 +228,32 @@ impl ShutdownCoordinator {
             }
         };
         drop(retired);
+    }
+
+    /// Saves completion under the state lock, then invokes wakers outside it.
+    /// A stale or inactive generation is ignored. Waker callbacks run without
+    /// the state lock, and one panicking callback does not prevent others.
+    ///
+    /// # Parameters
+    /// - `generation`: active attempt that may accept the result.
+    /// - `result`: immutable completion shared with that generation's tickets.
+    fn complete(&self, generation: u64, result: ShutdownResult) {
+        let wakers = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.generation != generation || !state.active {
+                return;
+            }
+            if state.waiters.contains_key(&generation) {
+                state.results.insert(generation, result);
+            }
+            state.active = false;
+            self.changed.notify_all();
+            state.wakers.remove(&generation).unwrap_or_default()
+        };
+        for waker in wakers.into_values() {
+            // One executor's broken observer must not strand the remaining tickets.
+            let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
+        }
     }
 }
 
@@ -276,6 +276,7 @@ mod tests {
     use std::time::Instant;
 
     use super::ShutdownCoordinator;
+    use crate::facade::shutdown_result::ShutdownResult;
     use crate::spi::ShutdownMode;
     use crate::spi::ShutdownOutcome;
 
@@ -351,12 +352,12 @@ mod tests {
         assert_ne!(retry, generation);
         assert!(matches!(
             coordinator.poll_result(generation, &mut second, &cx),
-            Poll::Ready(Some(super::ShutdownResult::StartFailed(_)))
+            Poll::Ready(Some(ShutdownResult::StartFailed(_)))
         ));
         coordinator.finish(retry, Ok(ShutdownOutcome::Complete));
         assert!(matches!(
             coordinator.poll_result(generation, &mut second, &cx),
-            Poll::Ready(Some(super::ShutdownResult::StartFailed(_)))
+            Poll::Ready(Some(ShutdownResult::StartFailed(_)))
         ));
         coordinator.release(generation);
         coordinator.release(retry);

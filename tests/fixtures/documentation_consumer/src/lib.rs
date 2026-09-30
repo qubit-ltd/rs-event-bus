@@ -5,12 +5,11 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Consumer fixture that verifies the documented provider service surface.
+//! Compiled examples from the bilingual user guides.
 
-pub mod provider_spec;
-
-/// Codec from the user guides.
+pub mod bounded_shutdown;
 pub mod order_created_codec;
-
-/// Application domain used by the user-guide codec example.
 pub mod orders;
+pub mod provider_spec;
+pub mod receipt_safety;
+pub mod republish_action;

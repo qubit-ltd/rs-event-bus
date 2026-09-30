@@ -8,6 +8,9 @@
 //! Event bus subscribing operations.
 
 use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -19,29 +22,35 @@ use qubit_id::Id;
 use super::internal::close_spi_subscription;
 use crate::CapabilityError;
 use crate::ConfigurationError;
+use crate::DeliveryError;
 use crate::EventBus;
 use crate::IntoHandlerResult;
 use crate::SpiError;
 use crate::SubscribeError;
 use crate::SubscriberId;
 use crate::Subscription;
+use crate::codec::EventCodec;
 use crate::codec::resolve_codec;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::EventBusInner;
+use crate::facade::event_bus::internal::HandlerStartRejected;
 use crate::facade::event_bus::worker::run_subscription_worker;
 use crate::facade::internal::BusContextGuard;
+use crate::facade::internal::DeliveryMetrics;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::Delivery;
 use crate::model::OrderingPolicy;
+use crate::model::SubscribeOptions;
 use crate::model::SubscribeRequest;
+use crate::model::Topic;
 use crate::pipeline::SubscriberPipeline;
 use crate::spi::EventSubscriptionSpi;
 use crate::spi::PayloadModes;
 use crate::spi::PublishVisibility;
 use crate::spi::SpiSubscriptionRequest;
 use crate::spi::TopicAddress;
-use crate::spi::panic_boundary;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl EventBus {
     /// Creates a provider subscription and starts its SPI coordinator.
@@ -83,83 +92,19 @@ impl EventBus {
                 .subscription_worker_budget
                 .try_reserve()
                 .ok_or(SubscribeError::ResourceLimit {
-                    resource: "subscription_workers",
+                    resource: "subscriptions",
                     limit: self.inner.subscription_worker_budget.limit,
                 })?;
         let bus_identity = Arc::as_ptr(&self.inner) as usize;
         let _call_context = BusContextGuard::enter(bus_identity);
         let (subscriber_id, topic, options) = request.into_parts();
-        if !options.async_interceptors().is_empty() || self.inner.facade_config.has_async_subscriber_interceptors::<T>()
-        {
-            return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
-                field: "async_subscriber_interceptor",
-                message: "synchronous EventBus requires synchronous subscriber middleware".into(),
-            }));
-        }
-        let capabilities = self.inner.capabilities;
-        let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
-        SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
-            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
-                capability: "ordering.per_key",
-            }));
-        }
-        if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
-            return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
-        }
-        SubscriberPipeline::validate_subscription_capabilities(&options, capabilities)?;
-        if options.dead_letter().is_some_and(|policy| {
-            policy.admission_policy() == DeadLetterAdmissionPolicy::KnownDestination
-                && capabilities.publish_visibility() == PublishVisibility::Opaque
-        }) {
-            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
-                capability: "dead_letter.known_destination_admission",
-            }));
-        }
+        let codec = self.validate_subscription(&topic, &options)?;
         let id = self.next_subscription_id()?;
-        let address = TopicAddress::new(topic.name())?;
-        let spi_request = SpiSubscriptionRequest::builder()
-            .subscription_id(id)
-            .topic(address)
-            .subscriber_id(subscriber_id.clone())
-            .group(options.consumer_group().cloned())
-            .durability(options.durability())
-            .start_position(options.start_position().clone())
-            .provider_options(options.provider_options().clone())
-            .payload_type_id(topic.payload_type_id())
-            .build()
-            .expect("all provider subscription request fields are configured");
-        let spi_subscription = panic_boundary::catch_spi_call(
-            self.inner.provider_id.as_str(),
-            "subscribe",
-            Some(subscriber_id.as_str()),
-            || self.inner.spi.subscribe(spi_request),
-        )??;
+        let spi_subscription = self.create_spi_subscription(id, &subscriber_id, &topic, &options)?;
         let spi_subscription_slot = Arc::new(Mutex::new(Some(spi_subscription)));
-        if let Err(error) = self.inner.scheduler.start() {
-            let spi_subscription = spi_subscription_slot
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            return Err(cleanup_failed_worker_spawn(
-                &self.inner,
-                &subscriber_id,
-                spi_subscription,
-                error,
-            ));
-        }
-        let control = SubscriptionControl::new(id, subscriber_id.clone());
-        {
-            let _lifecycle = self.lock_lifecycle();
-            self.inner.tracker.worker_started();
-            self.inner
-                .subscriptions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(id, control.clone());
-        }
+        let control = self.register_subscription(id, &subscriber_id, &spi_subscription_slot)?;
         let inner = self.inner.clone();
-        let handler = Arc::new(move |delivery: Delivery<T>| handler(delivery).into_handler_result());
+        let handler = wrap_subscription_handler(&self.inner, control.clone(), handler);
         let thread_control = control.clone();
         let thread_topic = topic.clone();
         let thread_codec = codec.clone();
@@ -190,9 +135,15 @@ impl EventBus {
         match worker {
             Ok(worker) => {
                 control.set_worker(worker);
-                Ok(Subscription::new(control, bus_identity, self.inner.scheduler.clone()))
+                Ok(Subscription::new(
+                    control,
+                    bus_identity,
+                    self.inner.scheduler.clone(),
+                    Arc::downgrade(&self.inner),
+                ))
             }
             Err(error) => {
+                self.inner.scheduler.finish_subscription(id);
                 self.inner.tracker.worker_finished();
                 self.inner
                     .subscriptions
@@ -211,6 +162,160 @@ impl EventBus {
                 ))
             }
         }
+    }
+
+    /// Validates facade-specific subscription options and resolves its codec.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type received by the subscription.
+    ///
+    /// # Parameters
+    /// - `topic`: typed topic whose codec may be selected.
+    /// - `options`: middleware and delivery policies to validate.
+    ///
+    /// # Returns
+    /// The selected codec, or `None` when native payloads need no codec.
+    ///
+    /// # Errors
+    /// Returns a configuration or capability error when the synchronous
+    /// facade cannot honor the request.
+    fn validate_subscription<T: Send + Sync + 'static>(
+        &self,
+        topic: &Topic<T>,
+        options: &SubscribeOptions<T>,
+    ) -> Result<Option<Arc<dyn EventCodec<T>>>, SubscribeError> {
+        if !options.async_interceptors().is_empty() || self.inner.facade_config.has_async_subscriber_interceptors::<T>()
+        {
+            return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "async_subscriber_interceptor",
+                message: "synchronous EventBus requires synchronous subscriber middleware".into(),
+            }));
+        }
+        let capabilities = self.inner.capabilities;
+        let codec = resolve_codec(topic, self.inner.facade_config.codec_registry());
+        SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
+        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "ordering.per_key",
+            }));
+        }
+        if capabilities.payload_modes() == PayloadModes::Encoded && codec.is_none() {
+            return Err(SubscribeError::Capability(CapabilityError::CodecRequired));
+        }
+        SubscriberPipeline::validate_subscription_capabilities(options, capabilities)?;
+        if options.dead_letter().is_some_and(|policy| {
+            policy.admission_policy() == DeadLetterAdmissionPolicy::KnownDestination
+                && capabilities.publish_visibility() == PublishVisibility::Opaque
+        }) {
+            return Err(SubscribeError::Capability(CapabilityError::Unsupported {
+                capability: "dead_letter.known_destination_admission",
+            }));
+        }
+        Ok(codec)
+    }
+
+    /// Creates the provider subscription after facade validation succeeds.
+    ///
+    /// # Type Parameters
+    /// - `T`: payload type declared by the typed topic.
+    ///
+    /// # Parameters
+    /// - `id`: bus-local ID allocated for this subscription.
+    /// - `subscriber_id`: logical subscriber identity.
+    /// - `topic`: typed topic used to construct the provider address.
+    /// - `options`: provider-visible subscription settings.
+    ///
+    /// # Returns
+    /// The initialized provider receiver.
+    ///
+    /// # Errors
+    /// Returns topic-address validation or provider subscription errors.
+    fn create_spi_subscription<T: Send + Sync + 'static>(
+        &self,
+        id: Id,
+        subscriber_id: &SubscriberId,
+        topic: &Topic<T>,
+        options: &SubscribeOptions<T>,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SubscribeError> {
+        let address = TopicAddress::new(topic.name())?;
+        let spi_request = SpiSubscriptionRequest::new(
+            id,
+            address,
+            subscriber_id.clone(),
+            options.consumer_group().cloned(),
+            options.durability(),
+            options.start_position().clone(),
+            options.provider_options().clone(),
+            topic.payload_type_id(),
+        );
+        catch_spi_call(
+            self.inner.provider_id.as_str(),
+            "subscribe",
+            Some(subscriber_id.as_str()),
+            || self.inner.spi.subscribe(spi_request),
+        )?
+        .map_err(Into::into)
+    }
+
+    /// Starts and registers the subscription lifecycle before spawning its
+    /// worker.
+    ///
+    /// # Parameters
+    /// - `id`: bus-local subscription ID.
+    /// - `subscriber_id`: logical subscriber identity for cleanup errors.
+    /// - `spi_subscription_slot`: receiver slot retained for spawn rollback.
+    ///
+    /// # Returns
+    /// The control shared by the facade handle and its coordinator.
+    ///
+    /// # Errors
+    /// Returns an error after cleaning up the receiver when scheduler startup
+    /// or registration fails.
+    fn register_subscription(
+        &self,
+        id: Id,
+        subscriber_id: &SubscriberId,
+        spi_subscription_slot: &Arc<Mutex<Option<Box<dyn EventSubscriptionSpi>>>>,
+    ) -> Result<Arc<SubscriptionControl>, SubscribeError> {
+        if let Err(error) = self.inner.scheduler.start() {
+            let spi_subscription = spi_subscription_slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            return Err(cleanup_failed_worker_spawn(
+                &self.inner,
+                subscriber_id,
+                spi_subscription,
+                error,
+            ));
+        }
+        let control = SubscriptionControl::with_metrics(
+            id,
+            subscriber_id.clone(),
+            Arc::new(DeliveryMetrics::new_subscription(self.inner.delivery_metrics.clone())),
+        );
+        if !self.inner.scheduler.register(id) {
+            let receiver = spi_subscription_slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            return Err(cleanup_failed_worker_spawn(
+                &self.inner,
+                subscriber_id,
+                receiver,
+                Error::other("subscription scheduler registration invariant violated"),
+            ));
+        }
+        {
+            let _lifecycle = self.lock_lifecycle();
+            self.inner.tracker.worker_started();
+            self.inner
+                .subscriptions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(id, control.clone());
+        }
+        Ok(control)
     }
 
     /// Allocates one monotonically increasing, bus-local subscription ID.
@@ -232,6 +337,56 @@ impl EventBus {
                 })
             })
     }
+}
+
+/// Applies lifecycle checks and panic normalization around the user callback.
+///
+/// # Type Parameters
+/// - `T`: payload delivered to the callback.
+/// - `H`: user callback type.
+/// - `R`: callback result accepted by [`IntoHandlerResult`].
+///
+/// # Parameters
+/// - `inner`: shared bus state retained weakly by the wrapper.
+/// - `control`: subscription state used to gate and measure handler execution.
+/// - `handler`: user callback to invoke after the scheduler grants a delivery.
+///
+/// # Returns
+/// A shared callback that rejects cancelled starts, records duration, and
+/// resumes user panics after recording them.
+fn wrap_subscription_handler<T, H, R>(
+    inner: &Arc<EventBusInner>,
+    control: Arc<SubscriptionControl>,
+    handler: H,
+) -> Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>
+where
+    T: Send + Sync + 'static,
+    H: Fn(Delivery<T>) -> R + Send + Sync + 'static,
+    R: IntoHandlerResult + 'static,
+{
+    let handler_inner = Arc::downgrade(inner);
+    Arc::new(move |delivery: Delivery<T>| {
+        let inner = handler_inner
+            .upgrade()
+            .expect("receiver owner retains bus during handler execution");
+        let started = inner.clock.now();
+        if !control.try_start_handler(|cancelled| inner.scheduler.handler_may_start(control.id, cancelled)) {
+            return Err(DeliveryError::Handler {
+                source: Box::new(HandlerStartRejected),
+            });
+        }
+        let result = catch_unwind(AssertUnwindSafe(|| handler(delivery).into_handler_result()));
+        if let Err(error) = control
+            .delivery_metrics
+            .record_handler_duration(started, inner.clock.now())
+        {
+            inner.fail_clock(&control, "handler_clock", error);
+        }
+        match result {
+            Ok(result) => result,
+            Err(panic) => resume_unwind(panic),
+        }
+    })
 }
 
 /// Closes a provider receiver when its facade worker could not be spawned.

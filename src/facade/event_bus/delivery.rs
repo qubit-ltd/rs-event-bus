@@ -10,10 +10,12 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::Error;
-use std::panic;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -38,6 +40,7 @@ use crate::facade::event_bus::failure::finish_failed_delivery;
 use crate::facade::event_bus::failure::panic_message;
 use crate::facade::event_bus::failure::settle_rejected;
 use crate::facade::event_bus::failure::settle_token;
+use crate::facade::event_bus::internal::HandlerStartRejected;
 use crate::model::DEAD_LETTER_HEADER;
 use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::Delivery;
@@ -94,7 +97,7 @@ pub(in crate::facade) fn process_inbound<T>(
         message.into_parts();
     let fallback_event_id = event_id.clone();
     let fallback_topic = address.as_str().to_owned();
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         process_inbound_parts(
             inner,
             settler,
@@ -206,7 +209,7 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     event.ordering_key = ordering_key.map(|value| value.as_str().into());
     let event = Arc::new(event);
     if let Some(filter) = options.filter() {
-        let accepted = panic::catch_unwind(panic::AssertUnwindSafe(|| filter(&event)));
+        let accepted = catch_unwind(AssertUnwindSafe(|| filter(&event)));
         match accepted {
             Ok(false) => {
                 settle_token(
@@ -421,6 +424,9 @@ pub(in crate::facade) fn notify_error_handlers<T>(
     error: &DeliveryError,
     retry_enabled: bool,
 ) -> FailureDirective {
+    if HandlerStartRejected::is_rejection(error) {
+        return FailureDirective::Requeue;
+    }
     if options.error_handlers().is_empty() {
         return if options.retry_policy().is_some() {
             FailureDirective::Retry
@@ -430,7 +436,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
     }
     let mut directives = Vec::with_capacity(options.error_handlers().len());
     for handler in options.error_handlers() {
-        match panic::catch_unwind(panic::AssertUnwindSafe(|| handler(event, error))) {
+        match catch_unwind(AssertUnwindSafe(|| handler(event, error))) {
             Ok(directive) => directives.push(Ok(directive)),
             Err(payload) => {
                 inner.emit_internal("subscriber_error_handler", panic_message(payload.as_ref()).into());
@@ -466,11 +472,26 @@ where
     T: Send + Sync + 'static,
 {
     let handler = handler.clone();
-    SubscriberPipeline::attempt_sync(
+    let rejected = Arc::new(AtomicBool::new(false));
+    let handler_rejected = rejected.clone();
+    let outcome = SubscriberPipeline::attempt_sync(
         options.ack_mode(),
         delivery,
         global_interceptors,
         options.interceptors(),
-        move |delivery| handler(delivery),
-    )
+        move |delivery| {
+            let result = handler(delivery);
+            if result.as_ref().is_err_and(HandlerStartRejected::is_rejection) {
+                handler_rejected.store(true, Ordering::Release);
+            }
+            result
+        },
+    );
+    if rejected.load(Ordering::Acquire) {
+        DeliveryOutcome::Failure(DeliveryError::Handler {
+            source: Box::new(HandlerStartRejected),
+        })
+    } else {
+        outcome
+    }
 }

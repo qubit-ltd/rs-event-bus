@@ -5,8 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Minimal synchronous example using the local provider to publish, receive,
-//! and shut down.
+//! Demonstrates local subscription, publication, receipt, cancellation, and
+//! graceful shutdown with the synchronous provider.
 
 use std::sync::mpsc;
 use std::time::Duration;

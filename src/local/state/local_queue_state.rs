@@ -98,11 +98,10 @@ impl LocalQueueState {
     ///
     /// # Returns
     /// Events whose payload references must be released outside the queue lock.
-    #[must_use]
+    #[must_use = "Drop discarded event payloads after releasing the queue lock."]
     pub(in crate::local) fn clear_pending(&mut self) -> Vec<LocalEvent> {
         let mut discarded = self.lanes.drain().flat_map(|(_, lane)| lane.events).collect::<Vec<_>>();
         discarded.extend(self.in_flight.drain().map(|(_, flight)| flight.event));
-        self.lanes.clear();
         self.ready_lanes.clear();
         self.delayed_lanes.clear();
         self.pending_count = 0;

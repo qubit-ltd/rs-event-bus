@@ -20,9 +20,10 @@ use super::SubscriberId;
 /// use qubit_event_bus::model::AdmissionStatus;
 /// use qubit_event_bus::model::DestinationAdmission;
 /// use qubit_event_bus::model::SubscriberId;
+/// use qubit_id::Id;
 ///
 /// let admission = DestinationAdmission::new(
-///     qubit_id::Id::new(1),
+///     Id::new(1),
 ///     SubscriberId::new("audit").unwrap(),
 ///     AdmissionStatus::Accepted,
 /// );

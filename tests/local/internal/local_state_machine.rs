@@ -239,7 +239,7 @@ pub(crate) fn run(input: &[u8]) {
                     let receiver = subscription.receiver.as_mut().expect("receiver retained");
                     let timeout = if opcode == 7 { Duration::MAX } else { Duration::ZERO };
                     let result = {
-                        let mut future = std::pin::pin!(receiver.receive(timeout));
+                        let mut future = pin!(receiver.receive(timeout));
                         future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
                     };
                     match result {

@@ -455,7 +455,7 @@ fn run_async_routing_probe() -> io::Result<()> {
             }
             let elapsed = elapsed / 128;
             samples.push(elapsed);
-            block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+            let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
             drop(cold_receivers);
         }
         let mut measured = samples.split_off(WARMUPS);

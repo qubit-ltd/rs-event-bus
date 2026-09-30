@@ -18,11 +18,14 @@ use std::thread::JoinHandle;
 use qubit_id::Id;
 
 use crate::error::SubscriptionCloseFailure;
+use crate::facade::internal::DeliveryMetrics;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionStopReason;
 
 /// Coordination state shared by a subscription handle and its worker.
 pub(crate) struct SubscriptionControl {
+    /// Cumulative counters retained by the public handle after receiver close.
+    pub(in crate::facade) delivery_metrics: Arc<DeliveryMetrics>,
     /// Bus-local object ID used in provider settlement context.
     pub(in crate::facade) id: Id,
     /// Logical subscriber identity used by provider operations.
@@ -52,9 +55,29 @@ impl SubscriptionControl {
     ///
     /// # Returns
     /// A shared control block ready to receive its worker handle.
-    #[must_use = "retain the control block to coordinate the subscription"]
+    #[cfg(test)]
     pub(in crate::facade) fn new(id: Id, subscriber_id: SubscriberId) -> Arc<Self> {
+        Self::with_metrics(id, subscriber_id, Arc::new(DeliveryMetrics::default()))
+    }
+
+    /// Creates one control with its retained counters forwarding to the bus
+    /// accumulator.
+    ///
+    /// # Parameters
+    /// - `id`: active bus-local receiver identity.
+    /// - `subscriber_id`: logical subscriber name for provider diagnostics.
+    /// - `delivery_metrics`: fixed cumulative counters forwarding to the bus
+    ///   parent.
+    ///
+    /// # Returns
+    /// Shared control state independent of the public handle lifetime.
+    pub(in crate::facade) fn with_metrics(
+        id: Id,
+        subscriber_id: SubscriberId,
+        delivery_metrics: Arc<DeliveryMetrics>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            delivery_metrics,
             id,
             subscriber_id,
             cancelled: AtomicBool::new(false),
@@ -70,9 +93,8 @@ impl SubscriptionControl {
     /// Returns the first terminal receive cause, or None while healthy.
     ///
     /// # Returns
-    /// The first terminal receive cause, or `None` while the subscription is
-    /// healthy.
-    #[must_use = "observe the first terminal receive cause"]
+    /// Some canonical first cause after failure, or None while no terminal
+    /// cause exists.
     pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.terminal_failure
             .lock()
@@ -103,10 +125,15 @@ impl SubscriptionControl {
     }
 
     /// Caches a receive failure once and prevents subsequent receives.
+    /// Returns true only for the first cause, so callers emit one diagnostic.
+    ///
+    /// # Parameters
+    /// - `reason`: terminal source retained only if no previous cause was
+    ///   published.
     ///
     /// # Returns
-    /// `true` when this call stores the first cause; `false` when one was
-    /// already stored.
+    /// True only for the first cause; callers must fence scheduling before
+    /// diagnostics.
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
         let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
@@ -114,8 +141,22 @@ impl SubscriptionControl {
         if first {
             *stored = Some(Arc::new(reason));
         }
-        self.request_cancel();
+        self.cancelled.store(true, Ordering::Release);
         first
+    }
+
+    /// Linearizes one actual handler invocation with stop publication.
+    ///
+    /// # Parameters
+    /// - `allowed`: checks scheduler shutdown policy while the start gate is
+    ///   held.
+    ///
+    /// # Returns
+    /// True when this invocation is admitted; the lock is released before user
+    /// code.
+    pub(in crate::facade) fn try_start_handler(&self, allowed: impl FnOnce(bool) -> bool) -> bool {
+        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        self.terminal_failure().is_none() && allowed(self.is_cancelled())
     }
 
     /// Publishes the worker join handle after a successful thread spawn.
@@ -127,8 +168,12 @@ impl SubscriptionControl {
     }
 
     /// Requests worker cancellation without waiting for an executing handler.
-    #[inline]
+    ///
+    /// # Side Effects
+    /// Publishes cancellation under the same short gate as actual handler
+    /// admission. The gate is never held across user callbacks.
     pub(in crate::facade) fn request_cancel(&self) {
+        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         self.cancelled.store(true, Ordering::Release);
     }
 
