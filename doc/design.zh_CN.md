@@ -1509,9 +1509,9 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## 单仓验证与五仓整体验证
 
-`./project-ci-check.sh` 默认只检查当前 crate 的依赖解析 metadata；独立单仓用户
+`./scripts/project-ci-check.sh` 默认只检查当前 crate 的依赖解析 metadata；独立单仓用户
 无须下载全部下游。协调迁移时，运行
-`./project-ci-check.sh --ecosystem-root <repos-dir>`，目录下须包含
+`./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`，目录下须包含
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与

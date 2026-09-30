@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 project_root=$(cd "$script_dir/../.." && pwd -P)
+source "$project_root/.infra/tools/cleanup-build-artifacts.sh"
 config="$project_root/.infra/ci/tools.toml"
 install_root="$project_root/.infra/tools/bin"
 bin_dir="$install_root/bin"
@@ -61,6 +62,7 @@ if [ "$tool" = "rs-infra-ci" ]; then
     "$script_dir/infra-tool.sh" rs-infra-style --help >/dev/null
     "$script_dir/infra-tool.sh" rs-infra-verify --help >/dev/null
     "$script_dir/infra-tool.sh" rs-infra-coverage --help >/dev/null
+    "$script_dir/infra-tool.sh" rs-infra-dependency --help >/dev/null
 fi
 
-exec env RS_INFRA_BIN_DIR="$bin_dir" "$target" "$@"
+env RS_INFRA_BIN_DIR="$bin_dir" "$target" "$@"

@@ -138,8 +138,8 @@ Redis 按阶段分类：提交前打开连接失败和明确 server 拒绝为 `N
 
 ### 验证部署
 
-核心单仓运行 `./project-ci-check.sh` 检查自身 metadata。五仓协调迁移运行
-`./project-ci-check.sh --ecosystem-root <repos-dir>`，五个仓库及七个声明的
+核心单仓运行 `./scripts/project-ci-check.sh` 检查自身 metadata。五仓协调迁移运行
+`./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`，五个仓库及七个声明的
 消费 fixture 必须存在；门禁解析 locked/all-features metadata，拒绝混用旧
 minor。它不代替各项目 alignment、CI、conformance、codec 往返、持久恢复
 和故障注入检查。部署后先检查保留 wire 的消费结果、终止原因、发布效果、

@@ -1607,9 +1607,9 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## Validate a single crate or the coordinated ecosystem
 
-`./project-ci-check.sh` checks this crate's resolved dependency metadata on its own.
+`./scripts/project-ci-check.sh` checks this crate's resolved dependency metadata on its own.
 An independent single-crate checkout does not need every downstream repository.
-For a coordinated migration, run `./project-ci-check.sh --ecosystem-root <repos-dir>`
+For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
