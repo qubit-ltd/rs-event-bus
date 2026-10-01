@@ -15,8 +15,10 @@ use crate::EventBusError;
 use crate::PublishError;
 use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
+use crate::error::CheckedPublishError;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::internal::BusContextGuard;
+use crate::model::AdmissionRequirement;
 use crate::model::BatchPublishResult;
 use crate::model::EventId;
 use crate::model::PublishEffect;
@@ -25,6 +27,34 @@ use crate::model::PublishRequest;
 use crate::pipeline::PipelineFailure;
 
 impl EventBus {
+    /// Publishes once and requires the resulting receipt to satisfy `requirement`.
+    /// Admission failure retains the receipt; retrying may duplicate accepted deliveries.
+    ///
+    /// ```
+    /// # use qubit_event_bus::EventBus;
+    /// # use qubit_event_bus::CheckedPublishError;
+    /// # use qubit_event_bus::model::{AdmissionRequirement, PublishRequest};
+    /// # fn checked(bus: &EventBus, request: PublishRequest<String>) -> Result<(), CheckedPublishError> {
+    /// let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn publish_checked<T: Send + Sync + 'static>(
+        &self,
+        request: PublishRequest<T>,
+        requirement: AdmissionRequirement,
+    ) -> Result<PublishReceipt, CheckedPublishError> {
+        let receipt = self
+            .publish(request)
+            .map_err(CheckedPublishError::Publish)?;
+        match receipt.check_admission(requirement) {
+            Ok(()) => Ok(receipt),
+            Err(reason) => Err(CheckedPublishError::Admission {
+                receipt: Box::new(receipt),
+                reason,
+            }),
+        }
+    }
     /// Returns the shared publication counters for this facade and its clones.
     ///
     /// # Returns
@@ -100,7 +130,10 @@ impl EventBus {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = PublishRequest<T>>,
     {
-        let items = requests.into_iter().map(|request| self.publish(request)).collect();
+        let items = requests
+            .into_iter()
+            .map(|request| self.publish(request))
+            .collect();
         BatchPublishResult::new(items)
     }
 }
@@ -114,7 +147,10 @@ impl EventBus {
 /// # Returns
 /// The matching public publish error variant.
 #[must_use]
-pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
+pub(in crate::facade) fn publish_pipeline_error(
+    event_id: EventId,
+    failure: PipelineFailure,
+) -> PublishFailure {
     let effect = failure.publish_effect();
     let cause = match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),

@@ -9,6 +9,7 @@
 
 #![deny(missing_docs)]
 pub use error::CapabilityError;
+pub use error::CheckedPublishError;
 pub use error::CodecError;
 pub use error::ConfigurationError;
 pub use error::DeliveryError;

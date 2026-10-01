@@ -20,6 +20,7 @@ use super::DeadLetterPolicy;
 use super::Delivery;
 use super::EventEnvelope;
 use super::FailureDirective;
+use super::GapPolicy;
 use super::OrderingPolicy;
 use super::StartPosition;
 use super::SubscriptionDurability;
@@ -54,7 +55,8 @@ pub type SubscribeErrorHandler<T> =
 ///
 /// # Type Parameters
 /// - `T`: event payload type passed to the next middleware stage.
-pub type SubscriberNext<T> = Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
+pub type SubscriberNext<T> =
+    Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
 
 /// Synchronous typed subscriber middleware; invoke `next` to continue.
 ///
@@ -99,6 +101,8 @@ pub type AsyncSubscriberInterceptor<T> = dyn Fn(Delivery<T>, AsyncSubscriberNext
 /// ```
 #[must_use = "subscription options must be applied to a subscription request"]
 pub struct SubscribeOptions<T: 'static> {
+    /// Behavior when the provider reports that messages were missed.
+    pub(crate) gap_policy: GapPolicy,
     /// Handler acknowledgement behavior.
     pub(crate) ack_mode: AckMode,
     /// Optional predicate applied before invoking handler middleware.
@@ -133,6 +137,7 @@ impl<T: 'static> Default for SubscribeOptions<T> {
     /// Creates automatic-ACK ephemeral options that start with new events.
     fn default() -> Self {
         Self {
+            gap_policy: GapPolicy::Stop,
             ack_mode: AckMode::Auto,
             filter: None,
             retry_policy: None,
@@ -155,6 +160,7 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
     /// Clones policy values and shares callback and middleware allocations.
     fn clone(&self) -> Self {
         Self {
+            gap_policy: self.gap_policy,
             ack_mode: self.ack_mode,
             filter: self.filter.clone(),
             retry_policy: self.retry_policy.clone(),
@@ -174,6 +180,11 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
 }
 
 impl<T: 'static> SubscribeOptions<T> {
+    /// Returns the behavior used after a delivery gap.
+    #[inline]
+    pub fn gap_policy(&self) -> GapPolicy {
+        self.gap_policy
+    }
     /// Returns default options: automatic ACK, ephemeral, and new messages.
     ///
     /// # Returns
