@@ -6,19 +6,19 @@ dry_run=0
 if [ "${1:-}" = "--dry-run" ]; then dry_run=1; shift; fi
 [ "$#" -eq 0 ] || { echo "usage: $0 [--dry-run]" >&2; exit 2; }
 updates=()
-for role in ci coverage dependency pages style verify; do
+for role in ci coverage dependency pages style tools verify; do
     config="$project_root/.infra/$role/tool.toml"
     [ -f "$config" ] || continue
-    source_url=$(awk -F '\"' '/^[[:space:]]*source[[:space:]]*=/ { print $2; exit }' "$config")
-    current=$(awk -F '\"' '/^[[:space:]]*revision[[:space:]]*=/ { print $2; exit }' "$config")
+    source_url=$(awk -F '"' '/^[[:space:]]*source[[:space:]]*=/ { print $2; exit }' "$config")
+    current=$(awk -F '"' '/^[[:space:]]*revision[[:space:]]*=/ { print $2; exit }' "$config")
     latest=$(git ls-remote "$source_url" HEAD | awk 'NR == 1 { print $1 }')
     [[ "$latest" =~ ^[0-9a-f]{40}$ ]] || { echo "error: unable to resolve $role ($source_url)" >&2; exit 1; }
     if [ "$current" = "$latest" ]; then echo "infra: rs-infra-$role is current ($current)"; else echo "infra: rs-infra-$role $current -> $latest"; updates+=("$role=$latest"); fi
 done
 policy_config="$project_root/.infra/dependency/policy.toml"
 if [ -f "$policy_config" ]; then
-    policy_source=$(awk -F '\\"' '/^[[:space:]]*source[[:space:]]*=/ { print $2; exit }' "$policy_config")
-    policy_current=$(awk -F '\\"' '/^[[:space:]]*revision[[:space:]]*=/ { print $2; exit }' "$policy_config")
+    policy_source=$(awk -F '"' '/^[[:space:]]*source[[:space:]]*=/ { print $2; exit }' "$policy_config")
+    policy_current=$(awk -F '"' '/^[[:space:]]*revision[[:space:]]*=/ { print $2; exit }' "$policy_config")
     policy_latest=$(git ls-remote "$policy_source" HEAD | awk 'NR == 1 { print $1 }')
     [[ "$policy_latest" =~ ^[0-9a-f]{40}$ ]] || { echo "error: unable to resolve dependency policy ($policy_source)" >&2; exit 1; }
     if [ "$policy_current" = "$policy_latest" ]; then echo "infra: dependency policy is current ($policy_current)"; else echo "infra: dependency policy $policy_current -> $policy_latest"; updates+=("policy=$policy_latest"); fi
@@ -38,4 +38,5 @@ for line in os.environ["UPDATE_PAIRS"].splitlines():
     path.write_text(text)
 PYTHON_UPDATE
 fi
+"$project_root/.infra/bin/infra-tool.sh" rs-infra-tools sync-scripts --project "$project_root"
 echo "infra: update complete; ${#updates[@]} revision(s) updated"
