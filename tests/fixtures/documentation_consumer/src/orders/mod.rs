@@ -7,4 +7,5 @@
 // =============================================================================
 //! Application order domain.
 
+#[path = "events/mod.rs"]
 pub mod events;

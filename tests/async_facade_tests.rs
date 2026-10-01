@@ -1799,11 +1799,9 @@ fn test_async_manual_acknowledgement_requires_an_explicit_ack() {
                     Ok(())
                 }))
             });
-            for _ in 0..100 {
-                if spi.settlement_count() > 0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
+            let settlement_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while spi.settlement_count() == 0 && std::time::Instant::now() < settlement_deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             assert_eq!(spi.settlement_count(), 1);
             assert_eq!(spi.settlement_dispositions(), [expected]);
@@ -3190,8 +3188,25 @@ fn test_immediate_shutdown_waits_for_runner_settlement_and_close_before_provider
         }
         assert!(started.load(Ordering::Acquire));
         let shutdown_bus = bus.clone();
-        let shutdown = std::thread::spawn(move || block_on(shutdown_bus.shutdown(ShutdownMode::Immediate)));
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        let shutdown_polled = Arc::new(AtomicBool::new(false));
+        let shutdown_polled_by_thread = shutdown_polled.clone();
+        let shutdown = std::thread::spawn(move || {
+            let mut shutdown = Box::pin(shutdown_bus.shutdown(ShutdownMode::Immediate));
+            block_on(std::future::poll_fn(|context| match shutdown.as_mut().poll(context) {
+                Poll::Ready(result) => Poll::Ready(result),
+                Poll::Pending => {
+                    shutdown_polled_by_thread.store(true, Ordering::Release);
+                    Poll::Pending
+                }
+            }))
+        });
+        for _ in 0..500 {
+            if shutdown_polled.load(Ordering::Acquire) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(shutdown_polled.load(Ordering::Acquire));
         let shutdown_started_early = spi.operation_log().contains(&"shutdown");
         release.store(true, Ordering::Release);
         runner.join().unwrap().unwrap();

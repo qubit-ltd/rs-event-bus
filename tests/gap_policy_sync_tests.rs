@@ -2,6 +2,8 @@
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Sync subscription behavior for provider-reported delivery gaps.
 
@@ -13,12 +15,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::support::fake_spi::FakeEventBusSpi;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
+
+use crate::support::fake_spi::FakeEventBusSpi;
 
 #[test]
 fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
@@ -28,13 +31,10 @@ fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = calls.clone();
     let subscription = bus
-        .subscribe(
-            SubscribeRequest::new("gap-test", topic.clone()).unwrap(),
-            move |_| {
-                handler_calls.fetch_add(1, Ordering::SeqCst);
-                Ok::<(), qubit_event_bus::DeliveryError>(())
-            },
-        )
+        .subscribe(SubscribeRequest::new("gap-test", topic.clone()).unwrap(), move |_| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<(), qubit_event_bus::DeliveryError>(())
+        })
         .unwrap();
     spi.inject_gap();
 
@@ -43,10 +43,7 @@ fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
         if let Some(reason) = subscription.terminal_failure() {
             break reason;
         }
-        assert!(
-            Instant::now() < deadline,
-            "gap was not retained as terminal cause"
-        );
+        assert!(Instant::now() < deadline, "gap was not retained as terminal cause");
         std::thread::yield_now();
     };
     match reason.as_ref() {
@@ -62,7 +59,5 @@ fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     subscription.cancel().unwrap();
-    let _ = bus
-        .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
-        .unwrap();
+    let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
 }
