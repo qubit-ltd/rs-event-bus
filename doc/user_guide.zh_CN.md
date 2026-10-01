@@ -1401,6 +1401,12 @@ if outcome == WaitOutcome::TimedOut {
 
 用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果，不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、处理方 ID、重试次数和最终错误。
 
+## 投递缺口与接纳检查
+
+provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
+
+调用方要求目标接纳时使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。它只发布一次；条件不满足时，`CheckedPublishError::Admission` 保留完整回执。部分接纳表示部分目标可能已接收事件，重试可能造成重复。目标接纳不代表 handler 已完成或数据已持久化。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+
 ## 边界与实践清单
 
 - local 只适合允许进程退出时丢失消息、由应用自己补偿的进程内工作；它不提供持久恢复与跨进程通信。

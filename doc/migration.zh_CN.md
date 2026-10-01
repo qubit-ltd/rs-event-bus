@@ -234,3 +234,10 @@ Durable 订阅在 receiver close 或 drop 后，必须保留已接纳但尚未�
 
 完整契约和可运行示例见[用户手册](user_guide.zh_CN.md)、[设计文档](design.zh_CN.md)
 和 [API 文档](https://docs.rs/qubit-event-bus/0.16.0/qubit_event_bus/)。
+
+
+## 投递缺口与接纳检查
+
+provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
+
+调用方要求目标接纳时使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。它只发布一次；条件不满足时，`CheckedPublishError::Admission` 保留完整回执。部分接纳表示部分目标可能已接收事件，重试可能造成重复。目标接纳不代表 handler 已完成或数据已持久化。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。

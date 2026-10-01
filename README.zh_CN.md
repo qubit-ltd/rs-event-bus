@@ -243,6 +243,12 @@ let orders = OrderService::new(bus.clone());
 - [API 文档](https://docs.rs/qubit-event-bus)
 - [English README](README.md) · [English user guide](doc/user_guide.md)
 
+## 投递缺口与接纳检查
+
+provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
+
+调用方要求目标接纳时使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。它只发布一次；条件不满足时，`CheckedPublishError::Admission` 保留完整回执。接纳检查可区分不可见的接纳结果、拦截器丢弃、没有目标、没有目标接纳、有目标接纳和部分接纳。部分接纳表示部分目标可能已接收事件，重试可能造成重复。目标接纳不代表 handler 已完成或数据已持久化。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+
 ## 测试
 
 ```bash
