@@ -197,6 +197,12 @@ The coordinated versions are core 0.18, Redis 0.6, and task 0.9. Settlement retr
 - [API reference](https://docs.rs/qubit-event-bus)
 - [中文 README](README.zh_CN.md) · [中文用户手册](doc/user_guide.zh_CN.md)
 
+## Delivery gaps and admission checks
+
+Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode.
+
+Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` when the caller requires destination admission. It publishes once and returns the complete receipt in `CheckedPublishError::Admission` if the requirement fails. Checks distinguish opaque acceptance (visibility unavailable), interceptor drop, no destinations, no accepted destinations, accepted destinations, and partial acceptance. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Admission does not mean handler completion or durable storage. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
+
 ## Testing
 
 ```bash

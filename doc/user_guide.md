@@ -1403,6 +1403,12 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 
 `observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. It does not count message reception or successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
 
+## Delivery gaps and admission checks
+
+Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode.
+
+Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` when the caller requires destination admission. It publishes once and returns the complete receipt in `CheckedPublishError::Admission` if the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Admission does not mean handler completion or durable storage. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
+
 ## Boundaries and a practice checklist
 
 - local fits in-process work that may lose messages when the process exits and that the application compensates for. It does not provide durable recovery or cross-process communication.
