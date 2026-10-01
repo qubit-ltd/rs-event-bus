@@ -8,7 +8,7 @@ source "$project_root/.infra/lib/cleanup-build-artifacts.sh"
 tool="$1"
 shift
 case "$tool" in
-    rs-infra-ci|rs-infra-coverage|rs-infra-dependency|rs-infra-pages|rs-infra-style|rs-infra-verify) ;;
+    rs-infra-ci|rs-infra-coverage|rs-infra-dependency|rs-infra-pages|rs-infra-style|rs-infra-tools|rs-infra-verify) ;;
     *) echo "error: unknown infra tool '$tool'" >&2; exit 2 ;;
 esac
 role="${tool#rs-infra-}"
@@ -40,5 +40,5 @@ if [ "$tool" = "rs-infra-ci" ]; then
         "$script_dir/infra-tool.sh" "$dependency" --help >/dev/null
     done
 fi
-all_tool_bins="$project_root/.infra/ci/bin:$project_root/.infra/coverage/bin:$project_root/.infra/dependency/bin:$project_root/.infra/pages/bin:$project_root/.infra/style/bin:$project_root/.infra/verify/bin"
+all_tool_bins="$project_root/.infra/ci/bin:$project_root/.infra/coverage/bin:$project_root/.infra/dependency/bin:$project_root/.infra/pages/bin:$project_root/.infra/style/bin:$project_root/.infra/tools/bin:$project_root/.infra/verify/bin"
 env -u RS_INFRA_BIN_DIR PATH="$all_tool_bins:${PATH:-}" "$target" "$@"
