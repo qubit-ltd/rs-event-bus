@@ -37,8 +37,6 @@ if [ ! -x "$target" ] || [ "$installed" != "$revision" ]; then
 fi
 if [ "$tool" = "rs-infra-ci" ]; then
     for dependency in rs-infra-style rs-infra-verify rs-infra-coverage; do
-        dependency_role="${dependency#rs-infra-}"
-        [ -f "$project_root/.infra/$dependency_role/tool.toml" ] || continue
         "$script_dir/infra-tool.sh" "$dependency" --help >/dev/null
     done
 fi

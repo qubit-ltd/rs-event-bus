@@ -1,0 +1,5 @@
+# Pinned installation metadata for rs-infra-coverage.
+source = "https://github.com/qubit-ltd/rs-infra-coverage.git"
+revision = "672ac85f556e0de421fb5726c5048f1dd620b4dd"
+binary = "rs-infra-coverage"
+package = "qubit-infra-coverage"

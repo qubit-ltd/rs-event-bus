@@ -93,3 +93,7 @@ external/
 /.infra/*/bin/
 /.infra/*/.crates*
 /.infra/*/tool.revision*
+!/.infra/coverage/
+/.infra/coverage/*
+!/.infra/coverage/coverage.json
+!/.infra/coverage/tool.toml
