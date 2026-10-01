@@ -8,6 +8,7 @@
 //! Errors classified by event bus operation and layer.
 
 pub use self::capability_error::CapabilityError;
+pub use self::checked_publish_error::CheckedPublishError;
 pub use self::codec_error::CodecError;
 pub use self::configuration_error::ConfigurationError;
 pub use self::delivery_attempt_error::DeliveryAttemptError;
@@ -27,6 +28,7 @@ pub use self::subscription_close_errors::SubscriptionCloseErrors;
 pub use self::subscription_close_failure::SubscriptionCloseFailure;
 
 mod capability_error;
+mod checked_publish_error;
 mod codec_error;
 mod configuration_error;
 mod delivery_attempt_error;

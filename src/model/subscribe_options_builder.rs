@@ -20,6 +20,7 @@ use super::DeadLetterPolicy;
 use super::Delivery;
 use super::EventEnvelope;
 use super::FailureDirective;
+use super::GapPolicy;
 use super::OrderingPolicy;
 use super::ProviderOptions;
 use super::StartPosition;
@@ -53,6 +54,12 @@ pub struct SubscribeOptionsBuilder<T: 'static> {
 }
 
 impl<T: 'static> SubscribeOptionsBuilder<T> {
+    /// Sets whether receiving stops after a delivery gap.
+    #[must_use = "Use the returned builder."]
+    pub fn gap_policy(mut self, value: GapPolicy) -> Self {
+        self.options.gap_policy = value;
+        self
+    }
     /// Starts with automatic ACK, ephemeral durability, and new messages.
     ///
     /// # Returns
@@ -284,7 +291,9 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// The updated builder.
     #[must_use = "Use the returned builder."]
     pub fn provider_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.options.provider_options.insert(key.into(), value.into());
+        self.options
+            .provider_options
+            .insert(key.into(), value.into());
         self
     }
 

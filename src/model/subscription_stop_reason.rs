@@ -14,6 +14,7 @@ use crate::error::SpiError;
 use crate::model::EventId;
 use crate::model::SettlementTermination;
 use crate::spi::DeliveryDisposition;
+use crate::spi::DeliveryGap;
 
 /// Why new receives stopped; durable source deliveries remain unsettled.
 ///
@@ -42,6 +43,12 @@ use crate::spi::DeliveryDisposition;
 #[derive(Clone, Debug, thiserror::Error)]
 #[must_use]
 pub enum SubscriptionStopReason {
+    /// A provider reported that one or more deliveries were missed.
+    #[error("subscription stopped after delivery gap: {gap:?}")]
+    Gap {
+        /// Original gap metadata reported by the provider.
+        gap: Arc<DeliveryGap>,
+    },
     /// Codec or payload boundary failure after event identity was obtained.
     #[error("subscription stopped at event {event_id:?}: {error}")]
     Codec {
