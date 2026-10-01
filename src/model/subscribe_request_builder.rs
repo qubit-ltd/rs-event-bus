@@ -254,10 +254,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     #[must_use = "Use the returned async interceptor configuration."]
     pub fn async_interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(
-                Delivery<T>,
-                AsyncSubscriberNext<T>,
-            ) -> crate::spi::SpiFuture<'static, Result<(), DeliveryError>>
+        F: Fn(Delivery<T>, AsyncSubscriberNext<T>) -> crate::spi::SpiFuture<'static, Result<(), DeliveryError>>
             + Send
             + Sync
             + 'static,
@@ -340,9 +337,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     /// The updated builder.
     #[must_use = "Use the returned provider option configuration."]
     pub fn provider_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.options
-            .provider_options
-            .insert(key.into(), value.into());
+        self.options.provider_options.insert(key.into(), value.into());
         self
     }
     /// Merges provider options in iteration order, replacing earlier values by
@@ -388,12 +383,9 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
         let subscriber_id = self
             .subscriber_id
             .ok_or(SubscribeRequestBuildError::MissingField("subscriber_id"))?;
-        let topic = self
-            .topic
-            .ok_or(SubscribeRequestBuildError::MissingField("topic"))?;
+        let topic = self.topic.ok_or(SubscribeRequestBuildError::MissingField("topic"))?;
         if self.options.retry_policy.is_none()
-            && (self.options.retry_rule.is_some()
-                || self.options.retry_cancellation_token.is_some())
+            && (self.options.retry_rule.is_some() || self.options.retry_cancellation_token.is_some())
         {
             return Err(SubscribeRequestBuildError::InvalidRetryConfiguration);
         }
@@ -404,9 +396,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
                 || key.chars().any(char::is_control)
                 || value.chars().any(char::is_control)
             {
-                return Err(SubscribeRequestBuildError::InvalidProviderOption(
-                    key.clone(),
-                ));
+                return Err(SubscribeRequestBuildError::InvalidProviderOption(key.clone()));
             }
         }
         Ok(SubscribeRequest::from_validated_parts(

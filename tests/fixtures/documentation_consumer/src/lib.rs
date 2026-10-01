@@ -9,6 +9,7 @@
 
 pub mod bounded_shutdown;
 pub mod order_created_codec;
+#[path = "orders/mod.rs"]
 pub mod orders;
 pub mod provider_spec;
 pub mod receipt_safety;

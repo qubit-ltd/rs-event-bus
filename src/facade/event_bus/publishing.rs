@@ -27,8 +27,9 @@ use crate::model::PublishRequest;
 use crate::pipeline::PipelineFailure;
 
 impl EventBus {
-    /// Publishes once and requires the resulting receipt to satisfy `requirement`.
-    /// Admission failure retains the receipt; retrying may duplicate accepted deliveries.
+    /// Publishes once and requires the resulting receipt to satisfy
+    /// `requirement`. Admission failure retains the receipt; retrying may
+    /// duplicate accepted deliveries.
     ///
     /// ```
     /// # use qubit_event_bus::EventBus;
@@ -44,9 +45,7 @@ impl EventBus {
         request: PublishRequest<T>,
         requirement: AdmissionRequirement,
     ) -> Result<PublishReceipt, CheckedPublishError> {
-        let receipt = self
-            .publish(request)
-            .map_err(CheckedPublishError::Publish)?;
+        let receipt = self.publish(request).map_err(CheckedPublishError::Publish)?;
         match receipt.check_admission(requirement) {
             Ok(()) => Ok(receipt),
             Err(reason) => Err(CheckedPublishError::Admission {
@@ -130,10 +129,7 @@ impl EventBus {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = PublishRequest<T>>,
     {
-        let items = requests
-            .into_iter()
-            .map(|request| self.publish(request))
-            .collect();
+        let items = requests.into_iter().map(|request| self.publish(request)).collect();
         BatchPublishResult::new(items)
     }
 }
@@ -147,10 +143,7 @@ impl EventBus {
 /// # Returns
 /// The matching public publish error variant.
 #[must_use]
-pub(in crate::facade) fn publish_pipeline_error(
-    event_id: EventId,
-    failure: PipelineFailure,
-) -> PublishFailure {
+pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
     let effect = failure.publish_effect();
     let cause = match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),

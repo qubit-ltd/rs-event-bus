@@ -194,10 +194,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Returns a retained terminal processing cause or `ReceiveError::Closed`
     /// if an active receiver owner is unexpectedly absent. Handler and SPI
     /// futures are polled on this caller; no background task is created.
-    pub(in crate::facade) async fn run_loop(
-        &mut self,
-        handler: SharedAsyncHandler<T>,
-    ) -> Result<(), ReceiveError> {
+    pub(in crate::facade) async fn run_loop(&mut self, handler: SharedAsyncHandler<T>) -> Result<(), ReceiveError> {
         self.inner.scheduler.set_dispatch_active(self.id, true);
         self.inner.notify_scheduler();
         let mut turns = 0;
@@ -243,10 +240,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 if poll_tasks(&mut self.tasks, &mut self.completed, &self.inner, cx) {
                     return Poll::Ready(RunnerEvent::Changed);
                 }
-                if self.signals.is_stopped()
-                    && !self.signals.stopping_gracefully()
-                    && !buffered_empty
-                {
+                if self.signals.is_stopped() && !self.signals.stopping_gracefully() && !buffered_empty {
                     return Poll::Ready(RunnerEvent::Changed);
                 }
                 if (!self.signals.is_stopped() || self.signals.stopping_gracefully())
@@ -284,9 +278,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                             resource: None,
                             kind: "lease_ids_exhausted",
                             retryable: Some(false),
-                            source: Box::new(Error::other(
-                                "delivery lease identity space exhausted",
-                            )),
+                            source: Box::new(Error::other("delivery lease identity space exhausted")),
                         }),
                     });
                     return Poll::Ready(RunnerEvent::Changed);
@@ -311,16 +303,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     let provider_id = self.inner.provider_id.clone();
                     let resource = self.subscriber_id.as_str().to_owned();
                     let receiver = self.receiver.as_mut().ok_or(ReceiveError::Closed)?;
-                    let receive =
-                        catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
-                            receiver.receive(Duration::MAX)
-                        });
+                    let receive = catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
+                        receiver.receive(Duration::MAX)
+                    });
                     let mut receive = Box::pin(async {
                         match receive {
-                            Ok(future) => {
-                                catch_spi_future(future, &provider_id, "receive", Some(&resource))
-                                    .await
-                            }
+                            Ok(future) => catch_spi_future(future, &provider_id, "receive", Some(&resource)).await,
                             Err(error) => Err(error),
                         }
                     });
@@ -332,9 +320,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         if poll_tasks(&mut self.tasks, &mut self.completed, &self.inner, cx) {
                             return Poll::Ready(None);
                         }
-                        if self.signals.is_stopped()
-                            || poll_deadlines(&mut self.completed, &self.inner, cx)
-                        {
+                        if self.signals.is_stopped() || poll_deadlines(&mut self.completed, &self.inner, cx) {
                             return Poll::Ready(None);
                         }
                         grant = self.inner.scheduler.take_ready(self.id);
@@ -357,9 +343,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         self.dispatch_settlement(grant);
                     }
                     match outcome {
-                        Some(Ok(ReceiveOutcome::Message(message))) => {
-                            self.prepare_message(message, lease)
-                        }
+                        Some(Ok(ReceiveOutcome::Message(message))) => self.prepare_message(message, lease),
                         Some(Ok(ReceiveOutcome::Gap(gap))) => {
                             self.inner.emit(&Diagnostic::ReceiveGap {
                                 subscription_id: self.id,
@@ -368,9 +352,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                                 gap: gap.clone(),
                             });
                             if self.options.gap_policy() == crate::model::GapPolicy::Stop {
-                                let _ = self.signals.fail_receive(SubscriptionStopReason::Gap {
-                                    gap: Arc::new(gap),
-                                });
+                                let _ = self
+                                    .signals
+                                    .fail_receive(SubscriptionStopReason::Gap { gap: Arc::new(gap) });
                             }
                         }
                         Some(Ok(ReceiveOutcome::Closed)) => {
@@ -379,9 +363,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         }
                         Some(Err(error)) => {
                             let message = error.to_string();
-                            if self.signals.fail_receive(SubscriptionStopReason::Provider {
-                                error: Arc::new(error),
-                            }) {
+                            if self
+                                .signals
+                                .fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) })
+                            {
                                 self.inner.emit(&Diagnostic::InternalFailure {
                                     origin: "receive".into(),
                                     message: message.into(),
@@ -402,15 +387,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// - `handler`: Factory captured without invoking user code until task
     ///   polling.
     fn dispatch(&mut self, id: u64, handler: SharedAsyncHandler<T>) {
-        if let Some(index) = self
-            .buffered
-            .iter()
-            .position(|pending| pending.lease.id == id)
-        {
-            let pending = self
-                .buffered
-                .remove(index)
-                .expect("grant identifies queued delivery");
+        if let Some(index) = self.buffered.iter().position(|pending| pending.lease.id == id) {
+            let pending = self.buffered.remove(index).expect("grant identifies queued delivery");
             self.start_pending_task(pending, handler);
         }
     }
@@ -420,11 +398,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// # Parameters
     /// - `id`: Lease whose ordering lane was granted by the shared scheduler.
     fn dispatch_settlement(&mut self, id: u64) {
-        if let Some(index) = self
-            .buffered
-            .iter()
-            .position(|pending| pending.lease.id == id)
-        {
+        if let Some(index) = self.buffered.iter().position(|pending| pending.lease.id == id) {
             let pending = self
                 .buffered
                 .remove(index)
