@@ -26,7 +26,7 @@ cleanup_build_artifacts() {
         fi
     done
 
-    for path in "$project_root"/.infra/tools/bin/*.revision.tmp; do
+    for path in "$project_root"/.infra/*/tool.revision.tmp; do
         if [ -f "$path" ]; then
             command rm -f -- "$path" || {
                 echo "error: unable to clean transient infra marker: $path" >&2

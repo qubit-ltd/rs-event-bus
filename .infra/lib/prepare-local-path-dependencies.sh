@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-source "$project_root/.infra/tools/cleanup-build-artifacts.sh"
+source "$project_root/.infra/lib/cleanup-build-artifacts.sh"
 config="$project_root/.infra/ci/local-path-dependencies.tsv"
 [ -f "$config" ] || exit 0
 while IFS=$'\t' read -r relative_path repository_url branch; do

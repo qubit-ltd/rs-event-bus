@@ -90,3 +90,6 @@ external/
 # Force-add only reviewed, reproducible regression seeds.
 /fuzz/corpus/
 /fuzz/artifacts/
+/.infra/*/bin/
+/.infra/*/.crates*
+/.infra/*/tool.revision*

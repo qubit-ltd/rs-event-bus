@@ -178,8 +178,8 @@ jobs:
       - name: Validate Pages configuration
         id: pages-config
         run: |
-          jq -e '.deploy | type == "boolean"' .infra/ci/pages.json >/dev/null
-          echo "deploy=$(jq -r .deploy .infra/ci/pages.json)" >> "$GITHUB_OUTPUT"
+          jq -e '.deploy | type == "boolean"' .infra/pages/pages.json >/dev/null
+          echo "deploy=$(jq -r .deploy .infra/pages/pages.json)" >> "$GITHUB_OUTPUT"
       - name: Prepare local path dependencies
         run: ./.infra/bin/prepare-local-path-dependencies.sh
       - uses: actions/download-artifact@v8

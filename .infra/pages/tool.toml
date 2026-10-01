@@ -1,0 +1,5 @@
+# Pinned installation metadata for rs-infra-pages.
+source = "https://github.com/qubit-ltd/rs-infra-pages.git"
+revision = "24d2a605eacb6459579956cfb8b0914dd05cbcaf"
+binary = "rs-infra-pages"
+package = "qubit-infra-pages"
