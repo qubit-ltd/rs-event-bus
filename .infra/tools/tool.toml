@@ -1,5 +1,5 @@
 # Pinned installation metadata for rs-infra-tools.
 source = "https://github.com/qubit-ltd/rs-infra-tools.git"
-revision = "f8c17f0a17fd4a92fba9f451c71d11609e07312e"
+revision = "2c6b6f1fdd6bcdcd7e2fb01cf57129ffe8cf5607"
 binary = "rs-infra-tools"
 package = "qubit-infra-tools"
