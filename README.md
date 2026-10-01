@@ -31,6 +31,8 @@ qubit-event-bus = "0.18"
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Minimal local-provider example showing subscription, publication, and
+//! graceful shutdown.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -41,6 +43,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
@@ -49,11 +52,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
         sender.send(delivery.payload().clone()).unwrap();
     })?;
-    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    let _ = bus.shutdown(ShutdownMode::Graceful {
+    let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     Ok(())
 }
 ```
@@ -187,7 +193,7 @@ Both local providers bound queued and unsettled events per subscription (default
 
 Publication failures carry the original event ID, a structured cause, and `PublishEffect` in `PublishFailure`. The default `DuplicateRiskPolicy::Forbid` stops automatic retries when admission may have happened, even if a custom retry rule asks to continue. Encoded receivers validate size and exact content type/schema before decoding. Incompatible metadata, oversized input, or codec panic stops that subscription; repair the configuration or codec and create a new subscription to recover durable work. See the [migration guide](doc/migration.md) before upgrading providers or codecs.
 
-The coordinated versions are core 0.18, Redis 0.6, and task 0.9. Settlement retries have attempt and elapsed budgets; unknown retryability stops by default. Check history before republishing and return shutdown timeouts to the application. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
+The coordinated versions are core 0.18, Redis 0.6, and task 0.8. Settlement retries have attempt and elapsed budgets; unknown retryability stops by default. Check history before republishing and return shutdown timeouts to the application. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
 
 ## Learn more
 

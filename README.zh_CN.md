@@ -31,6 +31,8 @@ qubit-event-bus = "0.18"
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Minimal local-provider example showing subscription, publication, and
+//! graceful shutdown.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -41,6 +43,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
@@ -49,11 +52,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
         sender.send(delivery.payload().clone()).unwrap();
     })?;
-    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    let _ = bus.shutdown(ShutdownMode::Graceful {
+    let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;
+    assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+    assert!(shutdown_report.provider_may_have_abandoned_deliveries);
     Ok(())
 }
 ```
@@ -233,7 +239,7 @@ let orders = OrderService::new(bus.clone());
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。升级 provider 或 codec 前请阅读[迁移指南](doc/migration.zh_CN.md)。
 
-配套版本为 core 0.18、Redis 0.6、task 0.9。结算重试有次数和时间预算，未知重试性默认停止；重发前检查历史，停机超时交应用处置。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
+配套版本为 core 0.18、Redis 0.6、task 0.8。结算重试有次数和时间预算，未知重试性默认停止；重发前检查历史，停机超时交应用处置。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
