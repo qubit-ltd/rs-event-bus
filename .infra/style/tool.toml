@@ -1,5 +1,5 @@
 # Pinned installation metadata for rs-infra-style.
 source = "https://github.com/qubit-ltd/rs-infra-style.git"
-revision = "a8c684725727c8d05fdc41f05186da0063ce1bc6"
+revision = "78abb817084c3acd8173cb7bd4d4f561c3978939"
 binary = "rs-infra-style"
 package = "qubit-infra-style"
