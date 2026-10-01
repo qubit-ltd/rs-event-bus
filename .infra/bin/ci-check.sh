@@ -37,6 +37,6 @@ if [ "$explicit_only" = true ]; then
         fi
     done
 fi
-if [ "$coverage_selected" = true ]; then
+if [ "$coverage_selected" = true ] && [ -f "$project_root/target/infra/coverage/raw.json" ]; then
     "$project_root/.infra/lib/coverage-report.sh"
 fi
