@@ -15,7 +15,7 @@ role="${tool#rs-infra-}"
 tool_root="$project_root/.infra/$role"
 config="$tool_root/tool.toml"
 [ -f "$config" ] || { echo "error: missing tool configuration '$config'" >&2; exit 1; }
-value() { awk -F '\"' -v key="$1" '$0 ~ "^[[:space:]]*" key "[[:space:]]*=" { print $2; exit }' "$config"; }
+value() { awk -F '"' -v key="$1" '$0 ~ "^[[:space:]]*" key "[[:space:]]*=" { print $2; exit }' "$config"; }
 source=$(value source)
 revision=$(value revision)
 binary=$(value binary)
