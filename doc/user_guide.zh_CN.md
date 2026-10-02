@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.18.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.19.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.18"
+qubit-event-bus = "0.19"
 ```
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
@@ -826,7 +826,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.18", features = ["discovery"] }
+qubit-event-bus = { version = "0.19", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -851,7 +851,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 以下是同步和异步 provider 实际返回的 `EventBusCapabilities`：
 
-| 能力 | local（core 0.18） | Redis Streams（provider 0.6） |
+| 能力 | local（core 0.19） | Redis Streams（provider 0.7） |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded`，须注册 codec |
 | `durability` | `Ephemeral` | `Durable` |
@@ -869,7 +869,7 @@ Redis 的 `StartPosition` 仅初始化新建持久消费组；已有组的 curso
 
 ### 运行 Redis 订单示例
 
-真实代码在 provider 仓库的[同步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs)、[异步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs)；装配细节见 [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.zh_CN.md) 与[用户手册](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.zh_CN.md)。在 `rs-event-bus-redis` 0.6 工作副本执行，URL 显式指向专用、可丢弃的 Redis 服务：
+真实代码在 provider 仓库的[同步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs)、[异步示例](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs)；装配细节见 [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.zh_CN.md) 与[用户手册](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.zh_CN.md)。在 `rs-event-bus-redis` 0.7 工作副本执行，URL 显式指向专用、可丢弃的 Redis 服务：
 
 ```bash
 export EVENT_BUS_REDIS_URL='redis://127.0.0.1:16379/'
@@ -1060,12 +1060,13 @@ use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
 
 let mut codecs = CodecRegistry::new();
-codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)));
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)))
+    .expect("unique codec type");
 let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
 let config = EventBusConfig::default().with_facade_config(bus_settings);
 ```
 
-把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new("orders.created")?.with_shared_codec(...)` 挂到主题上。
+把 `config` 交给编码型 provider 的注册表 `create`，方式和前面把 facade 设置交给 local 一样。此时 `Topic::new("orders.created")` 会从总线找到 `OrderCreatedCodec`。如果手上已有 `Arc<dyn EventCodec<OrderCreated>>`，也可以用 `Topic::new("orders.created")?.with_shared_codec(...)` 挂到主题上。`CodecRegistry::register` 遇到已注册的载荷类型会返回错误；确实要替换时，应明确调用 `replace`。
 
 ## 异步总线与订阅
 
@@ -1363,6 +1364,8 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 }
 ```
 
+如果 IoC 容器把“停止”和“等待”分成两个回调，可在 stop 回调中调用 `request_shutdown`，并把返回的 ticket 保存在共享状态里；wait 回调再执行 `ticket.wait_async().await`。容器取消 wait future 时，保留同一个 `EventBusShutdown` 并再次轮询 `wait_async` 即可：取消只移除 waker 注册，不会取消停机。execution-services 的 [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 展示了这一适配方式。等待期间应让共享状态继续持有 ticket；它可重复观察，但没有实现 `Clone`。
+
 ### 等待某个主题空闲
 
 同步 `wait_for_idle(&topic, timeout)` 等待所用传递实现报告这个主题已没有排队或未处理完的消息；不支持这项查询时返回 `IdleWaitUnsupported`。`wait_for_received_deliveries` 只等待总线已经取到的消息。两者返回空闲，都不能代替检查数据库和失败记录。
@@ -1437,4 +1440,4 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.18；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.19；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

@@ -2,6 +2,17 @@
 
 [简体中文](migration.zh_CN.md) · [User guide](user_guide.md) · [Design](design.md)
 
+## Upgrade from 0.18 to 0.19
+
+`CodecRegistry::register` now returns `Result<(), CodecRegistrationError>` and rejects a second codec for the same payload type without changing the existing registration. Propagate or handle the result; call `replace` when replacement is intentional:
+
+```rust
+codecs.register::<OrderCreated>(codec)?;
+let previous = codecs.replace::<OrderCreated>(replacement);
+```
+
+`InboundMessage` carries optional `NonZeroU32` provider-attempt metadata through sync and async delivery contexts. Existing `new` and `into_parts` signatures are unchanged. Providers should set a count only when they can establish it; an unknown count remains `None`. The coordinated Redis provider reports `Some(1)` for new stream entries but currently leaves pending and claimed entries unknown. See the [Redis 0.7 migration guide](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/migration.md) and keep all ecosystem path dependencies on core 0.19.
+
 ## Upgrade from 0.17 to 0.18
 
 Coordinate `qubit-event-bus = "0.18.0"`, `qubit-event-bus-redis = "0.6.0"`, and `qubit-task = "0.9.0"`. Every root and consumer fixture must resolve one local core 0.18. IoC/execution-service fixture migration does not bump production versions. Update lockfiles and run the ecosystem metadata gate.

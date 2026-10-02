@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.18）
+# Qubit Event Bus 设计文档（0.19）
 
-> 本文档以 `qubit-event-bus` 0.18.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.19.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -195,7 +195,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.18.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.19.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -290,8 +290,7 @@ handler 收到的是 `Delivery<T>`：
 - `event()` / `payload()` / `payload_arc()`：只读访问 envelope。
 - `context()` → `DeliveryContext`：`provider_id`、`subscription_id`、`subscriber_id`、
   `retry_attempt`（facade 本地重试的第几次尝试，从 1 起）、`provider_attempt`
-  （为 provider 侧重投计数预留的可选字段；`InboundMessage` 目前没有对应来源，
-  两个 facade 都不会填充它）、`provider_metadata`（`BTreeMap<String, String>`，
+  （由 provider 提供的可选投递次数，随 `InboundMessage` 传递；无法确认次数时保持未设置）、`provider_metadata`（`BTreeMap<String, String>`，
   分区/偏移等非敏感元数据，原样来自 `InboundMessage`）、`can_settle`
   （本条消息是否带 settlement token）、`is_dead_letter()`（是否带死信保留头）。
   facade 重试与 provider 重投在模型上**分开计数**，避免把两种语义混进一个数字。
@@ -650,7 +649,7 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 
 | 项 | 类型 | 作用 |
 | --- | --- | --- |
-| `codecs` | `CodecRegistry` | 按 `TypeId` 注册 `Arc<dyn EventCodec<T>>`；`resolve_codec` 优先取 `Topic` 自带 codec，其次查注册表 |
+| `codecs` | `CodecRegistry` | 按 `TypeId` 注册 `Arc<dyn EventCodec<T>>`；重复载荷类型会返回 `CodecRegistrationError::DuplicatePayloadType`，原 codec 不变；显式替换使用 `replace`。`resolve_codec` 优先取 `Topic` 自带 codec，其次查注册表 |
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **全局**发布拦截器，只能读写 headers（`PublishMetadata`），返回 `false` 丢弃消息 |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | 按 payload 类型注册的**全局同步**中间件 |
 | `async_subscriber_interceptors` | 同上，异步版本 | 全局异步中间件（仅 `AsyncEventBus` 使用） |
@@ -1399,11 +1398,11 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
-- **`provider_attempt` 目前恒为 `None`**：`InboundMessage` 尚无 provider 重投计数来源。
+- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。Redis 新读到的 stream entry 报告 `Some(1)`；pending 和 claim 恢复路径暂不传递历史次数，因此保持 `None`。facade 本地重试仍单独记录在 `retry_attempt`。
 
 ---
 
-*本文档随 `qubit-event-bus` 0.18.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.19.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
 
 ## Provider specification compile probe
 
