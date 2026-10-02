@@ -167,7 +167,8 @@ pub(in crate::facade) fn process_inbound<T>(
 /// - `decoded`: payload or ordinary decode failure prepared by receiver owner.
 /// - `settlement`: provider token retained until terminal handling completes.
 /// - `provider_metadata`: non-sensitive provider metadata.
-/// - `provider_attempt`: positive attempt number reported by the provider, if known.
+/// - `provider_attempt`: positive attempt number reported by the provider, if
+///   known.
 ///
 /// # Side Effects
 /// May invoke the subscriber handler, emit diagnostics, and settle the
