@@ -7,6 +7,7 @@
 // =============================================================================
 //! Single-owner state retained from receive through delivery settlement.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::owned_delivery_lease::OwnedDeliveryLease;
@@ -35,6 +36,8 @@ pub(in crate::facade) struct PendingDelivery<T: 'static> {
     pub(in crate::facade) token: Option<SettlementToken>,
     /// Metadata observed when the provider delivered the event.
     pub(in crate::facade) metadata: ProviderMessageMetadata,
+    /// Positive attempt number reported by the provider, if known.
+    pub(in crate::facade) provider_attempt: Option<NonZeroU32>,
     /// Immutable settlement choice retained across provider settlement retries.
     pub(in crate::facade) settlement_intent: Option<DeliveryDisposition>,
     /// Persistent attempt accounting and monotonic retry deadline.
