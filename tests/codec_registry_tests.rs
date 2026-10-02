@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use qubit_event_bus::codec::CodecRegistrationError;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
@@ -63,7 +64,7 @@ fn test_codec_registry_returns_none_for_unregistered_payload_type() {
 fn test_codec_registry_returns_shared_codec_by_payload_type() {
     let mut registry = CodecRegistry::new();
     let codec = string_codec("text/plain");
-    registry.register(codec.clone());
+    registry.register(codec.clone()).expect("unique codec type");
 
     let retrieved = registry.get::<String>().expect("string codec is registered");
     assert!(Arc::ptr_eq(&codec, &retrieved));
@@ -72,11 +73,29 @@ fn test_codec_registry_returns_shared_codec_by_payload_type() {
 }
 
 #[test]
-fn test_codec_registry_replaces_codec_for_same_payload_type() {
+fn test_codec_registry_rejects_duplicate_and_explicitly_replaces_codec() {
     let mut registry = CodecRegistry::new();
-    registry.register(string_codec("text/plain"));
-    registry.register(string_codec("text/csv"));
+    let original = string_codec("text/plain");
+    let replacement = string_codec("text/csv");
+    registry
+        .register(original.clone())
+        .expect("first registration succeeds");
+
+    let error = registry
+        .register(replacement.clone())
+        .expect_err("duplicate payload type is rejected");
+    assert!(
+        matches!(error, CodecRegistrationError::DuplicatePayloadType { type_name } if type_name == "alloc::string::String")
+    );
+    let registered = registry.get::<String>().expect("original codec remains registered");
+    assert!(Arc::ptr_eq(&registered, &original));
+
+    let previous = registry
+        .replace(replacement.clone())
+        .expect("replacement returns previous codec");
+    assert!(Arc::ptr_eq(&previous, &original));
 
     let retrieved = registry.get::<String>().expect("replacement codec is registered");
+    assert!(Arc::ptr_eq(&retrieved, &replacement));
     assert_eq!(retrieved.content_type().as_str(), "text/csv");
 }

@@ -1571,7 +1571,9 @@ fn test_subscription_resolves_encoded_payload_codec_from_facade_registry() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)));
+    codecs
+        .register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)))
+        .expect("unique codec type");
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = EventBus::with_config(
         ProviderId::new("sync-test").expect("provider ID is valid"),
@@ -1635,9 +1637,11 @@ fn test_subscription_topic_codec_takes_precedence_over_facade_registry_codec() {
     let backend = Arc::new(TestBackend::new());
     backend.set_payload_mode(PayloadModes::Encoded);
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").expect(
-        "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test content type",
-    ))));
+    codecs
+        .register::<String>(Arc::new(PrefixCodec(ContentType::new("text/plain").expect(
+            "test_subscription_topic_codec_takes_precedence_over_facade_registry_codec: valid test content type",
+        ))))
+        .expect("unique codec type");
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = EventBus::with_config(
         ProviderId::new("sync-test").expect(

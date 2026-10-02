@@ -496,7 +496,9 @@ fn test_codec_registry_returns_typed_codec() -> Result<(), Box<dyn Error>> {
         }
     }
     let mut registry = CodecRegistry::new();
-    registry.register::<String>(Arc::new(TextCodec(ContentType::TEXT_PLAIN)));
+    registry
+        .register::<String>(Arc::new(TextCodec(ContentType::TEXT_PLAIN)))
+        .expect("unique codec type");
     let codec = registry.get::<String>().unwrap();
     assert_eq!(
         codec.decode(&EncodedPayload::new(

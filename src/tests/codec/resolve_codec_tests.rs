@@ -56,7 +56,9 @@ fn test_resolve_codec_prefers_topic_codec() {
         .expect("topic name is valid")
         .with_shared_codec(Arc::clone(&topic_codec));
     let mut registry = CodecRegistry::new();
-    registry.register(Arc::clone(&registry_codec));
+    registry
+        .register(Arc::clone(&registry_codec))
+        .expect("unique codec type");
 
     let resolved = resolve_codec(&topic, &registry).expect("topic codec is available");
 
@@ -68,7 +70,9 @@ fn test_resolve_codec_falls_back_to_registry() {
     let registry_codec = create_codec("application/registry-codec");
     let topic = Topic::<String>::new("orders.created").expect("topic name is valid");
     let mut registry = CodecRegistry::new();
-    registry.register(Arc::clone(&registry_codec));
+    registry
+        .register(Arc::clone(&registry_codec))
+        .expect("unique codec type");
 
     let resolved = resolve_codec(&topic, &registry).expect("registry codec is available");
 
