@@ -976,7 +976,12 @@ fn request(payload: String) -> PublishRequest<String> {
 fn test_sync_provider_attempt_is_stable_across_handler_retry() {
     let (bus, backend) = create_bus();
     let options = SubscribeOptions::builder()
-        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("valid retry policy"))
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .build()
+                .expect("valid retry policy"),
+        )
         .error_handler(|_, _| FailureDirective::Retry)
         .build();
     let (observed_tx, observed_rx) = mpsc::channel();
@@ -1031,10 +1036,21 @@ fn test_sync_provider_attempt_is_stable_across_handler_retry() {
         lock.lock().expect("queue lock").messages.push_back(message);
         ready.notify_one();
         if attempt.is_some() {
-            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"), Some(3));
-            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"), Some(3));
+            assert_eq!(
+                observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"),
+                Some(3)
+            );
+            assert_eq!(
+                observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"),
+                Some(3)
+            );
         } else {
-            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("unmarked delivery"), None);
+            assert_eq!(
+                observed_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("unmarked delivery"),
+                None
+            );
         }
     }
     subscription.cancel().expect("subscription cancels");

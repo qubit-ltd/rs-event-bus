@@ -1761,7 +1761,12 @@ fn test_async_provider_attempt_is_stable_across_handler_retry() {
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("valid provider"), spi.clone())
         .expect("valid provider capabilities");
     let options = SubscribeOptions::builder()
-        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("valid retry policy"))
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .build()
+                .expect("valid retry policy"),
+        )
         .error_handler(|_, _| FailureDirective::Retry)
         .build();
     let request = SubscribeRequest::new("async-provider-attempt", topic())
@@ -1809,10 +1814,21 @@ fn test_async_provider_attempt_is_stable_across_handler_retry() {
             };
             spi.enqueue(message);
             if attempt.is_some() {
-                assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"), Some(3));
-                assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"), Some(3));
+                assert_eq!(
+                    observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"),
+                    Some(3)
+                );
+                assert_eq!(
+                    observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"),
+                    Some(3)
+                );
             } else {
-                assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("unmarked delivery"), None);
+                assert_eq!(
+                    observed_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("unmarked delivery"),
+                    None
+                );
             }
         }
         let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("bus shuts down");
