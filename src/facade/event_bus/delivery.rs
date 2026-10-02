@@ -10,6 +10,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::Error;
+use std::num::NonZeroU32;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -93,6 +94,7 @@ pub(in crate::facade) fn process_inbound<T>(
 ) where
     T: Send + Sync + 'static,
 {
+    let provider_attempt = message.provider_attempt();
     let (address, event_id, timestamp, headers, ordering_key, _payload, mut settlement, provider_metadata) =
         message.into_parts();
     let fallback_event_id = event_id.clone();
@@ -114,6 +116,7 @@ pub(in crate::facade) fn process_inbound<T>(
             decoded,
             &mut settlement,
             provider_metadata,
+            provider_attempt,
         );
     }));
     if let Err(payload) = result {
@@ -164,6 +167,7 @@ pub(in crate::facade) fn process_inbound<T>(
 /// - `decoded`: payload or ordinary decode failure prepared by receiver owner.
 /// - `settlement`: provider token retained until terminal handling completes.
 /// - `provider_metadata`: non-sensitive provider metadata.
+/// - `provider_attempt`: positive attempt number reported by the provider, if known.
 ///
 /// # Side Effects
 /// May invoke the subscriber handler, emit diagnostics, and settle the
@@ -184,6 +188,7 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     decoded: Result<Arc<T>, CodecError>,
     settlement: &mut Option<SettlementToken>,
     provider_metadata: ProviderMessageMetadata,
+    provider_attempt: Option<NonZeroU32>,
 ) where
     T: Send + Sync + 'static,
 {
@@ -249,6 +254,11 @@ pub(in crate::facade) fn process_inbound_parts<T>(
     let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone())
         .with_provider_metadata(provider_metadata)
         .with_settlement(settlement.is_some());
+    let context = if let Some(attempt) = provider_attempt {
+        context.with_provider_attempt(attempt.get())
+    } else {
+        context
+    };
     let context = if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
         context.as_dead_letter()
     } else {

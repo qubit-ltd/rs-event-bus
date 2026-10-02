@@ -972,6 +972,75 @@ fn request(payload: String) -> PublishRequest<String> {
     PublishRequest::new(topic(), payload).expect("OS random source available")
 }
 
+#[test]
+fn test_sync_provider_attempt_is_stable_across_handler_retry() {
+    let (bus, backend) = create_bus();
+    let options = SubscribeOptions::builder()
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("valid retry policy"))
+        .error_handler(|_, _| FailureDirective::Retry)
+        .build();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("provider-attempt", topic())
+                .expect("valid subscriber")
+                .with_options(options),
+            move |delivery: Delivery<String>| {
+                observed_tx
+                    .send(delivery.context().provider_attempt())
+                    .expect("observer remains connected");
+                if handler_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(IoError::other("retry locally")),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .expect("subscription starts");
+    let queue = backend
+        .state
+        .lock()
+        .expect("backend state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("subscription queue")
+        .1
+        .clone();
+    for (id, attempt) in [("first", Some(3)), ("second", None)] {
+        let message = InboundMessage::new(
+            TopicAddress::new("sync.events").expect("valid topic"),
+            EventId::new(id).expect("valid event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Native(Arc::new(id.to_owned())),
+            Some(SettlementToken::new(subscription.id(), id)),
+            Default::default(),
+        );
+        let message = if let Some(attempt) = attempt {
+            message.with_provider_attempt(NonZeroU32::new(attempt).expect("positive attempt"))
+        } else {
+            message
+        };
+        let (lock, ready) = &*queue;
+        lock.lock().expect("queue lock").messages.push_back(message);
+        ready.notify_one();
+        if attempt.is_some() {
+            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"), Some(3));
+            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"), Some(3));
+        } else {
+            assert_eq!(observed_rx.recv_timeout(Duration::from_secs(2)).expect("unmarked delivery"), None);
+        }
+    }
+    subscription.cancel().expect("subscription cancels");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+}
+
 fn request_with_key(payload: &str, ordering_key: &str) -> PublishRequest<String> {
     PublishRequest::builder()
         .topic(topic())

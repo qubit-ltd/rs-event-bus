@@ -14,6 +14,7 @@ use std::any::Any;
 use std::any::TypeId;
 use std::future::pending;
 use std::io::Error;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::Poll;
@@ -346,6 +347,29 @@ fn test_inbound_message_can_transfer_native_payload_and_settlement_to_facade() {
     assert_eq!(payload.as_str(), "non-clone payload");
     assert!(settlement.expect("token is transferred").belongs_to(subscription_id));
     assert_eq!(metadata.get("partition").map(String::as_str), Some("4"));
+}
+
+#[test]
+fn test_inbound_message_provider_attempt_preserves_settlement_and_parts() {
+    let subscription_id = Id::new(30);
+    let mut message = InboundMessage::new(
+        TopicAddress::new("events.attempt").expect("valid topic"),
+        EventId::new("event-attempt").expect("valid event ID"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(3_u32)),
+        Some(SettlementToken::new(subscription_id, "attempt-token")),
+        ProviderMessageMetadata::new(),
+    );
+    assert_eq!(message.provider_attempt(), None);
+    assert!(message.take_settlement().is_some());
+    assert!(message.take_settlement().is_none());
+    let attempt = NonZeroU32::new(3).expect("positive attempt");
+    let message = message.with_provider_attempt(attempt);
+    assert_eq!(message.provider_attempt(), Some(attempt));
+    let (_, _, _, _, _, _, settlement, _) = message.into_parts();
+    assert!(settlement.is_none(), "taking the token remains permanent");
 }
 
 #[test]

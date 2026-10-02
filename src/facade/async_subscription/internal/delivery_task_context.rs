@@ -202,6 +202,11 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let context = DeliveryContext::new(self.inner.provider_id.clone(), self.id, self.subscriber_id.clone())
             .with_provider_metadata(metadata)
             .with_settlement(can_settle);
+        let context = if let Some(attempt) = self.pending.as_ref().and_then(|pending| pending.provider_attempt) {
+            context.with_provider_attempt(attempt.get())
+        } else {
+            context
+        };
         if event.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE) {
             context.as_dead_letter()
         } else {

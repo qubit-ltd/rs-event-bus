@@ -7,6 +7,7 @@
 // =============================================================================
 //! Message received from provider SPI.
 
+use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use super::OrderingKey;
@@ -60,6 +61,8 @@ pub struct InboundMessage {
     settlement: Option<SettlementToken>,
     /// Non-sensitive transport metadata associated with this delivery.
     provider_metadata: ProviderMessageMetadata,
+    /// Provider-reported attempt number, when the transport knows it.
+    provider_attempt: Option<NonZeroU32>,
 }
 
 impl InboundMessage {
@@ -97,6 +100,7 @@ impl InboundMessage {
             payload,
             settlement,
             provider_metadata,
+            provider_attempt: None,
         }
     }
     /// Returns the source topic.
@@ -172,6 +176,29 @@ impl InboundMessage {
         &self.provider_metadata
     }
 
+    /// Returns the provider-reported attempt for this delivery.
+    ///
+    /// # Returns
+    /// `Some` with a positive attempt number when supplied by the provider,
+    /// otherwise `None`. Local handler retries do not change this value.
+    #[must_use]
+    pub fn provider_attempt(&self) -> Option<NonZeroU32> {
+        self.provider_attempt
+    }
+
+    /// Sets the positive provider-reported attempt for this delivery.
+    ///
+    /// # Parameters
+    /// - `attempt`: attempt number supplied by the provider.
+    ///
+    /// # Returns
+    /// The message with its provider attempt set; other fields are retained.
+    #[must_use]
+    pub fn with_provider_attempt(mut self, attempt: NonZeroU32) -> Self {
+        self.provider_attempt = Some(attempt);
+        self
+    }
+
     /// Takes the provider settlement token, if present.
     ///
     /// # Returns
@@ -180,8 +207,8 @@ impl InboundMessage {
         self.settlement.take()
     }
 
-    /// Consumes the provider message and transfers every transport field to the
-    /// facade.
+    /// Consumes the provider message and transfers its original transport
+    /// fields to the facade. Read `provider_attempt` before consuming it.
     ///
     /// This is the ownership-taking receive path: it allows the facade to
     /// downcast a native `Arc<dyn Any>` without imposing `Clone` on payloads

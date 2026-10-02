@@ -141,6 +141,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         lease: super::super::owned_delivery_lease::OwnedDeliveryLease,
     ) {
         let tracking = self.inner.tracker.track(self.topic.name());
+        let provider_attempt = message.provider_attempt();
         let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
         let lane = (self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey).then(|| {
@@ -181,6 +182,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     event: None,
                     token,
                     metadata: provider_metadata,
+                    provider_attempt,
                     settlement_intent: Some(crate::spi::DeliveryDisposition::Reject),
                     settlement: super::super::settlement_progress::SettlementProgress::new(
                         self.inner.facade_config.settlement_retry(),
@@ -206,6 +208,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             event: Some(event),
             token,
             metadata: provider_metadata,
+            provider_attempt,
             settlement_intent: None,
             settlement: super::super::settlement_progress::SettlementProgress::new(
                 self.inner.facade_config.settlement_retry(),

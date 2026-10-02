@@ -284,6 +284,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     inner.scheduler.set_dispatch_active(control.id, true);
                     match result {
                         Ok(ReceiveOutcome::Message(message)) => {
+                            let provider_attempt = message.provider_attempt();
                             let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
                                 message.into_parts();
                             let decoded = decode_payload(
@@ -365,6 +366,11 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 token,
                                 metadata,
                             );
+                            let message = if let Some(attempt) = provider_attempt {
+                                message.with_provider_attempt(attempt)
+                            } else {
+                                message
+                            };
                             owned.insert(
                                 lease,
                                 OwnedSyncDelivery {
