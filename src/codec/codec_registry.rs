@@ -12,6 +12,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::CodecRegistrationError;
 use super::EventCodec;
 
 /// Stores at most one codec per Rust payload type.
@@ -56,7 +57,7 @@ impl CodecRegistry {
             .and_then(|value| value.downcast_ref::<Arc<dyn EventCodec<T>>>().cloned())
     }
 
-    /// Registers a codec, replacing any previous codec for `T`.
+    /// Registers a codec when no codec is already registered for `T`.
     ///
     /// # Type Parameters
     /// * `T` — payload type encoded and decoded by `codec`.
@@ -65,7 +66,39 @@ impl CodecRegistry {
     /// * `codec` — shared codec implementation to retain for `T`.
     ///
     /// The codec is shared with future lookups through [`Self::get`].
-    pub fn register<T: Send + Sync + 'static>(&mut self, codec: Arc<dyn EventCodec<T>>) {
-        self.codecs.insert(TypeId::of::<T>(), Box::new(codec));
+    ///
+    /// # Errors
+    /// Returns [`CodecRegistrationError::DuplicatePayloadType`] when a codec
+    /// for `T` is already registered; the existing codec remains unchanged.
+    pub fn register<T: Send + Sync + 'static>(
+        &mut self,
+        codec: Arc<dyn EventCodec<T>>,
+    ) -> Result<(), CodecRegistrationError> {
+        let type_id = TypeId::of::<T>();
+        if self.codecs.contains_key(&type_id) {
+            return Err(CodecRegistrationError::DuplicatePayloadType {
+                type_name: std::any::type_name::<T>(),
+            });
+        }
+        self.codecs.insert(type_id, Box::new(codec));
+        Ok(())
+    }
+
+    /// Replaces the codec registered for `T`.
+    ///
+    /// # Parameters
+    /// * `codec` — shared codec implementation to retain for `T`.
+    ///
+    /// # Returns
+    /// The previous codec, or `None` when `T` was not previously registered.
+    pub fn replace<T: Send + Sync + 'static>(
+        &mut self,
+        codec: Arc<dyn EventCodec<T>>,
+    ) -> Option<Arc<dyn EventCodec<T>>> {
+        self.codecs.insert(TypeId::of::<T>(), Box::new(codec)).map(|previous| {
+            *previous
+                .downcast::<Arc<dyn EventCodec<T>>>()
+                .expect("codec registry TypeId matches stored codec type")
+        })
     }
 }

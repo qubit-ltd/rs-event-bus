@@ -2461,7 +2461,9 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
         subscribe_calls: AtomicUsize::new(0),
     });
     let mut codecs = CodecRegistry::new();
-    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)));
+    codecs
+        .register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)))
+        .expect("unique codec type");
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
         .expect("valid provider capabilities");

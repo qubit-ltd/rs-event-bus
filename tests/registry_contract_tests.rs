@@ -442,9 +442,11 @@ fn test_registry_installs_configured_codec_registry_into_the_facade() {
         .expect("provider registration succeeds");
 
     let mut codecs = CodecRegistry::new();
-    codecs.register::<u32>(Arc::new(U32Codec {
-        content_type: ContentType::APPLICATION_OCTET_STREAM,
-    }));
+    codecs
+        .register::<u32>(Arc::new(U32Codec {
+            content_type: ContentType::APPLICATION_OCTET_STREAM,
+        }))
+        .expect("unique codec type");
     let config =
         EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
     let bus = registry
@@ -631,9 +633,11 @@ fn test_async_registry_installs_configured_codec_registry_into_the_facade() {
         .expect("async provider registration succeeds");
 
     let mut codecs = CodecRegistry::new();
-    codecs.register::<u32>(Arc::new(U32Codec {
-        content_type: ContentType::APPLICATION_OCTET_STREAM,
-    }));
+    codecs
+        .register::<u32>(Arc::new(U32Codec {
+            content_type: ContentType::APPLICATION_OCTET_STREAM,
+        }))
+        .expect("unique codec type");
     let config =
         EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
     let bus = block_on(registry.create_selected(
