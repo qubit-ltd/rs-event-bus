@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.18)
+# Qubit Event Bus Design (0.19)
 
-> This document describes `qubit-event-bus` 0.18.0 as implemented.
+> This document describes `qubit-event-bus` 0.19.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -212,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.18.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.19.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -308,8 +308,8 @@ A handler receives `Delivery<T>`:
 - `event()`, `payload()`, and `payload_arc()` expose the envelope read-only.
 - `context()` returns `DeliveryContext`: `provider_id`, `subscription_id`, `subscriber_id`,
   `retry_attempt` (the facade-local attempt, starting at 1), `provider_attempt`
-  (an optional field reserved for a provider redelivery count; `InboundMessage` has
-  no source for it today, and neither facade fills it), `provider_metadata`
+  (an optional provider-supplied delivery count carried by `InboundMessage`;
+  providers that cannot establish a count leave it unset), `provider_metadata`
   (`BTreeMap<String, String>` of non-sensitive data such as partition or offset,
   copied from `InboundMessage`), `can_settle` (whether this message carries a
   settlement token), and `is_dead_letter()` (whether the reserved dead-letter header
@@ -677,7 +677,7 @@ or `Registry::create`. It is frozen when the facade is created:
 
 | Item | Type | Role |
 | --- | --- | --- |
-| `codecs` | `CodecRegistry` | Registers `Arc<dyn EventCodec<T>>` by `TypeId`. `resolve_codec` prefers the codec carried by the `Topic`, then the registry |
+| `codecs` | `CodecRegistry` | Registers `Arc<dyn EventCodec<T>>` by `TypeId`; duplicate payload registration returns `CodecRegistrationError::DuplicatePayloadType` without replacing the original. `replace` performs explicit replacement. `resolve_codec` prefers the codec carried by the `Topic`, then the registry |
 | `publisher_interceptors` | `Vec<Arc<dyn Fn(&mut PublishMetadata) -> Result<bool, PublishError>>>` | **Global** publish interceptors. They may only read and write headers (`PublishMetadata`). Returning `false` drops the message |
 | `subscriber_interceptors` | `HashMap<TypeId, Vec<Arc<SubscriberInterceptor<T>>>>` | **Global synchronous** middleware registered per payload type |
 | `async_subscriber_interceptors` | Same shape, async | Global async middleware (used only by `AsyncEventBus`) |
@@ -1487,11 +1487,11 @@ is not a breaking change. Backend-specific extensions go through namespaced
 - **Synchronous retry occupies a handler thread.** `Retry` backoff sleeps on a pool thread, so a long backoff reduces effective concurrency. A long backoff should use `Requeue` and let the provider redeliver, or use the async facade.
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
-- **`provider_attempt` is always `None` today.** `InboundMessage` has no source for a provider redelivery count.
+- **`provider_attempt` is provider-specific and may be unknown.** The SPI transports a non-zero count when a provider can establish it. Redis reports `Some(1)` for a newly read stream entry; pending and claimed entries remain `None` because their prior delivery count is not currently propagated. Facade-local retries remain in `retry_attempt`.
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.18.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.19.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
 
 ## Provider specification compile probe
 

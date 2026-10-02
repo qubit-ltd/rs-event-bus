@@ -2,6 +2,17 @@
 
 [English](migration.md) · [用户手册](user_guide.zh_CN.md) · [设计](design.zh_CN.md)
 
+## 从 0.18 升级到 0.19
+
+`CodecRegistry::register` 现在返回 `Result<(), CodecRegistrationError>`。同一载荷类型再次注册会报错，且不会覆盖原 codec。调用方须传播或处理返回值；只有确实要替换时才调用 `replace`：
+
+```rust
+codecs.register::<OrderCreated>(codec)?;
+let previous = codecs.replace::<OrderCreated>(replacement);
+```
+
+`InboundMessage` 新增可选 `NonZeroU32` provider attempt 元数据，并沿同步、异步 delivery context 传递。既有 `new` 和 `into_parts` 签名保持不变。provider 只能在能确认次数时设置该字段，未知时保留 `None`。配套 Redis provider 对新 stream entry 报告 `Some(1)`，pending 和 claim 恢复消息当前仍未知。参阅 [Redis 0.7 迁移指南](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/migration.md)，并将生态内 path dependency 统一升级到 core 0.19。
+
 ## 从 0.17 升级到 0.18
 
 协调版本为 `qubit-event-bus = "0.18.0"`、`qubit-event-bus-redis = "0.6.0"`、`qubit-task = "0.9.0"`。所有根与消费 fixture 必须解析同一个本地 core 0.18；IoC/执行服务仅迁移 fixture，不提升生产版本。更新锁文件并运行 ecosystem metadata 门禁。

@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.18.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.19.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -110,7 +110,7 @@ Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.18"
+qubit-event-bus = "0.19"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -826,7 +826,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.18", features = ["discovery"] }
+qubit-event-bus = { version = "0.19", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -851,7 +851,7 @@ Replace `provider_crate` and `your-provider-id` with the real crate name and the
 
 These are the actual `EventBusCapabilities` values for both sync and async providers:
 
-| Capability | local (core 0.18) | Redis Streams (provider 0.6) |
+| Capability | local (core 0.19) | Redis Streams (provider 0.7) |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded` (register a codec) |
 | `durability` | `Ephemeral` | `Durable` |
@@ -869,7 +869,7 @@ For Redis, `StartPosition` initializes a newly created durable group; it does no
 
 ### Run the Redis order examples
 
-The provider repository contains the real [sync source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs), [async source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs), [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.md), and [user guide](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.md). Run these from an `rs-event-bus-redis` 0.6 checkout against an explicitly chosen disposable Redis server:
+The provider repository contains the real [sync source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/sync_orders.rs), [async source](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/examples/async_orders.rs), [README](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/README.md), and [user guide](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/user_guide.md). Run these from an `rs-event-bus-redis` 0.7 checkout against an explicitly chosen disposable Redis server:
 
 ```bash
 export EVENT_BUS_REDIS_URL='redis://127.0.0.1:16379/'
@@ -1060,12 +1060,13 @@ use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::model::ContentType;
 
 let mut codecs = CodecRegistry::new();
-codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)));
+codecs.register::<OrderCreated>(Arc::new(OrderCreatedCodec(ContentType::TEXT_PLAIN)))
+    .expect("unique codec type");
 let bus_settings = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
 let config = EventBusConfig::default().with_facade_config(bus_settings);
 ```
 
-Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new("orders.created")?.with_shared_codec(...)` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold.
+Pass `config` to the registry `create` for the encoded provider, the same way the local capacity example passes facade settings. `Topic::new("orders.created")` then finds `OrderCreatedCodec` from the bus. `Topic::new("orders.created")?.with_shared_codec(...)` can also attach an `Arc<dyn EventCodec<OrderCreated>>` that you already hold. `CodecRegistry::register` returns an error if this payload type already has a codec; use `replace` to make replacement explicit.
 
 ## Asynchronous bus and subscriptions
 
@@ -1365,6 +1366,8 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 }
 ```
 
+When an IoC container separates stopping from waiting, have its stop callback call `request_shutdown` and retain the returned ticket in shared managed state. The wait callback can call `ticket.wait_async().await`. If the container cancels that wait future, keep the same `EventBusShutdown` value and poll `wait_async` again; cancellation removes only the waker registration and does not cancel shutdown. The execution-services [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) demonstrates this adapter. Keep the ticket in shared state while the wait future is active; `EventBusShutdown` is reusable but is not `Clone`.
+
 ### Wait for a topic to become idle
 
 Sync `wait_for_idle(&topic, timeout)` waits until the transport reports that the topic has nothing queued or unfinished. A transport that cannot answer returns `IdleWaitUnsupported`. `wait_for_received_deliveries` waits only for messages the bus has already taken. Idle from either call does not replace a check of the database and of failure records.
@@ -1439,6 +1442,6 @@ For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
+metadata, and rejects a graph mixing old event-bus minors with 0.19. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
 does not prove delivery behavior by itself.
