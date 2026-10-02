@@ -67,8 +67,8 @@ def validate_graph(graph, *, require_bus, expected_core=None):
         identities = ", ".join(package["id"] for package in packages)
         raise ValueError(f"multiple qubit-event-bus packages: {identities}")
     package = packages[0]
-    if package["version"].split(".")[:2] != ["0", "18"]:
-        raise ValueError(f"expected qubit-event-bus 0.18.x, got {package['version']}")
+    if package["version"].split(".")[:2] != ["0", "19"]:
+        raise ValueError(f"expected qubit-event-bus 0.19.x, got {package['version']}")
     if expected_core is not None:
         expected = (expected_core / "Cargo.toml").resolve()
         actual = Path(package["manifest_path"]).resolve()
