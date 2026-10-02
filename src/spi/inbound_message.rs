@@ -193,7 +193,6 @@ impl InboundMessage {
     ///
     /// # Returns
     /// The message with its provider attempt set; other fields are retained.
-    #[must_use]
     pub fn with_provider_attempt(mut self, attempt: NonZeroU32) -> Self {
         self.provider_attempt = Some(attempt);
         self
