@@ -60,6 +60,10 @@ name = "local_threads"
 harness = false
 
 [[bench]]
+name = "retry_saturation"
+harness = false
+
+[[bench]]
 name = "encoded_publish"
 harness = false
 
