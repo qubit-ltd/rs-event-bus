@@ -45,6 +45,10 @@
 ///     receipt.check_admission(AdmissionRequirement::AtLeastOneAccepted),
 ///     Ok(()),
 /// );
+/// assert_eq!(
+///     receipt.check_admission(AdmissionRequirement::ProviderOrDestinationAccepted),
+///     Ok(()),
+/// );
 /// assert!(matches!(
 ///     receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected),
 ///     Err(AdmissionCheckError::RejectedDestinations { count: 1 }),
@@ -53,6 +57,9 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 pub enum AdmissionRequirement {
+    /// Accept either provider-level acknowledgement or at least one reported
+    /// destination acceptance; destination rejections may also be present.
+    ProviderOrDestinationAccepted,
     /// Require at least one destination to accept the event.
     AtLeastOneAccepted,
     /// Require at least one acceptance and no destination rejections.

@@ -23,6 +23,7 @@ use std::time::SystemTime;
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::CodecError;
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::ConfigurationError;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
@@ -40,6 +41,9 @@ use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::AckMode;
+use qubit_event_bus::model::AdmissionCheckError;
+use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
@@ -51,6 +55,8 @@ use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishMetadata;
+use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::StartPosition;
@@ -166,6 +172,148 @@ impl AsyncEventBusSpi for OrderingTestSpi {
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }
+}
+
+/// Reports an empty visible admission snapshot for checked publication tests.
+struct EmptyAdmissionSpi(FakeAsyncEventBusSpi);
+
+impl AsyncEventBusSpi for EmptyAdmissionSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::DestinationAdmissions,
+        )
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async move {
+            let _ = self.0.publish(message).await?;
+            Ok(PublishAcknowledgement::DestinationAdmissions(vec![]))
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        self.0.subscribe(request)
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.0.shutdown(mode)
+    }
+}
+
+/// Counts encoding attempts made after checked publish admission preflight.
+struct CheckedPublishCodec {
+    content_type: ContentType,
+    calls: Arc<AtomicUsize>,
+}
+
+impl EventCodec<String> for CheckedPublishCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.content_type
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(Arc::from(value.as_bytes()))
+    }
+
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })
+    }
+}
+
+#[test]
+fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Encoded,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
+    let provider_id = ProviderId::new("opaque-async-test").expect("valid provider");
+    let interceptor_calls = Arc::new(AtomicUsize::new(0));
+    let global_calls = interceptor_calls.clone();
+    let config = EventBusFacadeConfig::new().publisher_interceptor(move |_metadata: &mut PublishMetadata| {
+        global_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(true)
+    });
+    let bus = AsyncEventBus::with_config(provider_id.clone(), spi.clone(), config)
+        .expect("valid opaque provider");
+    let codec_calls = Arc::new(AtomicUsize::new(0));
+    let topic = Topic::new("async.checked.opaque")
+        .expect("valid topic")
+        .with_codec(CheckedPublishCodec {
+            content_type: ContentType::TEXT_PLAIN,
+            calls: codec_calls.clone(),
+        });
+
+    for requirement in [
+        AdmissionRequirement::AtLeastOneAccepted,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    ] {
+        let typed_calls = interceptor_calls.clone();
+        let options = PublishOptions::<String>::builder()
+            .interceptor(move |envelope| {
+                typed_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(Some(envelope))
+            })
+            .build();
+        let request = PublishRequest::new(topic.clone(), "order".to_owned())
+            .expect("valid request")
+            .with_options(options);
+        let event_id = request.envelope().id().clone();
+        let error = block_on(bus.publish_checked(request, requirement))
+            .expect_err("opaque provider cannot report destinations");
+        assert!(matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
+            if actual_event_id == event_id && actual_provider_id == provider_id));
+        assert_eq!(interceptor_calls.load(Ordering::Acquire), 0);
+        assert_eq!(codec_calls.load(Ordering::Acquire), 0);
+        assert!(!spi.operation_log().contains(&"publish"));
+        assert_eq!(bus.publish_metrics(), Default::default());
+    }
+
+    let receipt = block_on(bus.publish_checked(
+        PublishRequest::new(topic, "order".to_owned()).expect("valid request"),
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    ))
+    .expect("provider acceptance satisfies the new condition");
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
+    assert_eq!(spi.operation_log().iter().filter(|operation| **operation == "publish").count(), 1);
+
+    let visible_spi = Arc::new(EmptyAdmissionSpi(FakeAsyncEventBusSpi::new()));
+    let visible_bus = AsyncEventBus::from_spi(provider_id, visible_spi.clone()).expect("valid visible provider");
+    let error = block_on(visible_bus.publish_checked(
+        PublishRequest::new(Topic::<String>::new("async.checked.visible").unwrap(), "order".to_owned()).unwrap(),
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    ))
+    .expect_err("no destinations accepted");
+    assert!(matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
+        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert_eq!(visible_spi.0.operation_log().iter().filter(|operation| **operation == "publish").count(), 1);
 }
 
 #[test]

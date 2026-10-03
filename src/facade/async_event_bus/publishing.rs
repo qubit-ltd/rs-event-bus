@@ -21,11 +21,13 @@ use crate::model::PublishEffect;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
 use crate::pipeline::PipelineFailure;
+use crate::spi::PublishVisibility;
 
 impl AsyncEventBus {
     /// Publishes once and requires the resulting receipt to satisfy
-    /// `requirement`. Admission failure retains the receipt; retrying may
-    /// duplicate accepted deliveries.
+    /// `requirement`. Per-destination conditions fail without publishing when
+    /// the provider hides destination admissions. Other admission failures
+    /// retain the receipt; retrying may duplicate accepted deliveries.
     ///
     /// ```
     /// # use qubit_event_bus::AsyncEventBus;
@@ -41,6 +43,15 @@ impl AsyncEventBus {
         request: PublishRequest<T>,
         requirement: AdmissionRequirement,
     ) -> Result<PublishReceipt, CheckedPublishError> {
+        if matches!(self.inner.capabilities.publish_visibility(), PublishVisibility::Opaque)
+            && matches!(requirement, AdmissionRequirement::AtLeastOneAccepted
+                | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+        {
+            return Err(CheckedPublishError::UnsupportedVisibility {
+                event_id: request.envelope().id().clone(),
+                provider_id: self.inner.provider_id.clone(),
+            });
+        }
         let receipt = self.publish(request).await.map_err(CheckedPublishError::Publish)?;
         match receipt.check_admission(requirement) {
             Ok(()) => Ok(receipt),
