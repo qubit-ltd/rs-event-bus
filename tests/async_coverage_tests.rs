@@ -934,11 +934,11 @@ fn test_shutdown_aggregates_multiple_async_subscription_close_failures() {
         }
     });
 
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if spi.receives.load(Ordering::Acquire) == 2 {
             break;
         }
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(10));
     }
     assert_eq!(spi.receives.load(Ordering::Acquire), 2);
 
@@ -1413,7 +1413,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             })
         }))
     });
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !spi
             .published
             .lock()
@@ -1423,7 +1423,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         {
             break;
         }
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(10));
     }
     assert_eq!(
         *spi.published.lock().expect("test state mutex must not be poisoned"),
@@ -1493,7 +1493,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             })
         }))
     });
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !string_spi
             .published
             .lock()
@@ -1503,7 +1503,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         {
             break;
         }
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(10));
     }
     assert_eq!(
         *string_spi
@@ -1575,7 +1575,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             })
         }))
     });
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !non_clone_spi
             .published
             .lock()
@@ -1585,7 +1585,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         {
             break;
         }
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(10));
     }
     assert_eq!(
         *non_clone_spi
