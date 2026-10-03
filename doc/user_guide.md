@@ -110,7 +110,7 @@ Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.19"
+qubit-event-bus = "0.20"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -826,7 +826,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.19", features = ["discovery"] }
+qubit-event-bus = { version = "0.20", features = ["discovery"] }
 qubit-spi = "0.13"
 # Also add the chosen provider crate's real package name and version.
 ```
