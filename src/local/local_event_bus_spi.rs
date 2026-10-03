@@ -87,7 +87,11 @@ impl LocalEventBusSpi {
     pub fn new(config: &LocalEventBusConfig) -> Result<Self, ConfigurationError> {
         config.validate()?;
         Ok(Self {
-            shared: LocalSharedState::new(config.get_queue_capacity(), config.get_max_total_outstanding()),
+            shared: LocalSharedState::new(
+                config.get_queue_capacity(),
+                config.get_max_total_outstanding(),
+                config.get_max_total_outstanding_weight_bytes(),
+            ),
         })
     }
 }
@@ -179,11 +183,12 @@ impl EventBusSpi for LocalEventBusSpi {
     ///
     /// # Errors
     /// Returns a non-retryable operation error for an encoded payload, an
-    /// overflowing delay deadline, a closed provider, or a topic type conflict.
+    /// overflowing delay deadline, a closed provider, a topic type conflict,
+    /// or a missing native weight declaration when weight budgeting is enabled.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let topic = message.topic().clone();
         validate_message(&message, &topic)?;
-        let event = LocalEvent::transport(topic.clone(), &message)
+        let mut event = LocalEvent::transport(topic.clone(), &message)
             .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
         let payload_type_id = native_payload_type_id(message.payload());
         let queues = {
@@ -198,6 +203,17 @@ impl EventBusSpi for LocalEventBusSpi {
             }
             queues
         };
+        if self.shared.outstanding.requires_weight() {
+            if message.native_payload_weight_bytes().is_none() {
+                return Err(operation_error(
+                    "publish",
+                    Some(topic.as_str()),
+                    "missing_native_payload_weight",
+                ));
+            }
+        } else {
+            event.weight_bytes = 0;
+        }
         let mut admissions = Vec::new();
         let mut admitted_any = false;
         for queue in queues {
@@ -209,7 +225,7 @@ impl EventBusSpi for LocalEventBusSpi {
                 AdmissionStatus::Rejected("subscription is closed".into())
             } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
                 AdmissionStatus::Rejected("subscription queue is full".into())
-            } else if !self.shared.outstanding.try_acquire() {
+            } else if !self.shared.outstanding.try_acquire(event.weight_bytes) {
                 AdmissionStatus::Rejected("provider outstanding capacity is full".into())
             } else {
                 state.enqueue_back(event.clone());
@@ -386,9 +402,9 @@ impl EventBusSpi for LocalEventBusSpi {
         for queue in queues {
             let mut state = queue.lock();
             state.closed = true;
-            let released = state.pending_count() + state.in_flight.len();
             let discarded = state.clear_pending();
-            self.shared.outstanding.release(released);
+            let weight = discarded.iter().map(|event| event.weight_bytes).sum();
+            self.shared.outstanding.release(discarded.len(), weight);
             drop(state);
             drop(discarded);
             queue.ready.notify_all();

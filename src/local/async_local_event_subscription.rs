@@ -220,7 +220,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
             if disposition == DeliveryDisposition::Retry {
                 state.enqueue_front(delivery.event);
             } else {
-                self.shared.outstanding.release(1);
+                self.shared.outstanding.release(1, delivery.event.weight_bytes);
             }
             token_state.disposition = Some(disposition);
             drop(token_state);

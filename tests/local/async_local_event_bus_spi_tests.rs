@@ -138,3 +138,33 @@ fn test_local_state_machine_drop_restores_total_budget_seed() {
         [1, 0, 0],
     ]));
 }
+
+/// Checks native weight missing weight against this provider.
+#[test]
+fn test_native_weight_missing_weight() {
+    super::internal::weight_budget_contract::missing_weight(true);
+}
+
+/// Checks native weight partial fanout against this provider.
+#[test]
+fn test_native_weight_partial_fanout() {
+    super::internal::weight_budget_contract::partial_fanout(true);
+}
+
+/// Checks native weight settlement against this provider.
+#[test]
+fn test_native_weight_settlement() {
+    super::internal::weight_budget_contract::settlement(true);
+}
+
+/// Checks native weight cleanup against this provider.
+#[test]
+fn test_native_weight_cleanup() {
+    super::internal::weight_budget_contract::cleanup(true);
+}
+
+/// Checks native weight disabled against this provider.
+#[test]
+fn test_native_weight_disabled() {
+    super::internal::weight_budget_contract::disabled(true);
+}

@@ -8,3 +8,4 @@
 //! Shared deterministic state-machine driver for regression tests and fuzzing.
 
 pub(crate) mod local_state_machine;
+pub(super) mod weight_budget_contract;

@@ -36,6 +36,9 @@ pub(in crate::local) struct LocalEvent {
     pub(in crate::local) headers: Headers,
     /// Optional key retained for downstream delivery context.
     pub(in crate::local) ordering_key: Option<OrderingKey>,
+    /// Declared copy weight in bytes, normalized to zero when budgeting is
+    /// disabled.
+    pub(in crate::local) weight_bytes: usize,
     /// Shared native payload; local queues do not serialize it.
     pub(in crate::local) payload: SharedPayload,
     /// Earliest monotonic instant at which this event may be received.
@@ -90,6 +93,9 @@ impl LocalEvent {
             headers: message.headers().clone(),
             ordering_key: message.ordering_key().cloned(),
             payload: SharedPayload::from_transport(message.payload()),
+            weight_bytes: message
+                .native_payload_weight_bytes()
+                .map_or(0, std::num::NonZeroUsize::get),
             not_before,
         })
     }

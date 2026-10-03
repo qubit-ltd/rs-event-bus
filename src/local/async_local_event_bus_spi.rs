@@ -112,6 +112,7 @@ impl AsyncLocalEventBusSpi {
             shared: Arc::new(AsyncLocalShared::new(
                 config.get_queue_capacity(),
                 config.get_max_total_outstanding(),
+                config.get_max_total_outstanding_weight_bytes(),
                 timer,
             )),
         })
@@ -150,7 +151,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     ///
     /// # Errors
     /// Returns an SPI error for encoded payloads, closed state, type conflicts,
-    /// or an unrepresentable delay deadline.
+    /// an unrepresentable delay deadline, or a missing native weight
+    /// declaration when weight budgeting is enabled.
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let topic = message.topic().clone();
@@ -161,7 +163,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "unsupported_payload_mode",
                 ));
             }
-            let event = LocalEvent::transport(topic.clone(), &message)
+            let mut event = LocalEvent::transport(topic.clone(), &message)
                 .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
@@ -181,6 +183,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 }
                 bus.mailboxes_for_topic(&topic)
             };
+            if self.shared.outstanding.requires_weight() {
+                if message.native_payload_weight_bytes().is_none() {
+                    return Err(operation_error(
+                        "publish",
+                        Some(topic.as_str()),
+                        "missing_native_payload_weight",
+                    ));
+                }
+            } else {
+                event.weight_bytes = 0;
+            }
             let mut admissions = Vec::with_capacity(mailboxes.len());
             for mailbox in mailboxes {
                 let mut queue = mailbox.queue.lock();
@@ -188,7 +201,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     AdmissionStatus::Rejected("subscription is closed".into())
                 } else if queue.pending_count() + queue.in_flight.len() >= mailbox.queue.capacity {
                     AdmissionStatus::Rejected("subscription queue is full".into())
-                } else if !self.shared.outstanding.try_acquire() {
+                } else if !self.shared.outstanding.try_acquire(event.weight_bytes) {
                     AdmissionStatus::Rejected("provider outstanding capacity is full".into())
                 } else {
                     queue.enqueue_back(event.clone());
@@ -372,9 +385,10 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 for mailbox in &mailboxes {
                     let mut queue = mailbox.queue.lock();
                     queue.closed = true;
-                    let released = queue.pending_count() + queue.in_flight.len();
-                    discarded.extend(queue.clear_pending());
-                    self.shared.outstanding.release(released);
+                    let removed = queue.clear_pending();
+                    let weight = removed.iter().map(|event| event.weight_bytes).sum();
+                    self.shared.outstanding.release(removed.len(), weight);
+                    discarded.extend(removed);
                 }
                 bus.payload_types.clear();
                 bus.outcome = Some(result);
@@ -408,9 +422,9 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
         let mut bus = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut queue = mailbox.queue.lock();
         queue.closed = true;
-        let released = queue.pending_count() + queue.in_flight.len();
         let discarded = queue.clear_pending();
-        shared.outstanding.release(released);
+        let weight = discarded.iter().map(|event| event.weight_bytes).sum();
+        shared.outstanding.release(discarded.len(), weight);
         drop(queue);
         if bus.remove_mailbox_if_same(key, mailbox) && !bus.has_topic(&topic) {
             bus.payload_types.remove(&topic);

@@ -7,6 +7,7 @@
 // =============================================================================
 //! Shared provider state retained by local SPI handles.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -37,6 +38,7 @@ impl LocalSharedState {
     /// # Parameters
     /// - `capacity`: maximum queued and unsettled items for each subscription.
     /// - `max_total_outstanding`: provider-wide outstanding-delivery bound.
+    /// - `max_weight`: optional positive declared-weight budget in bytes.
     ///
     /// # Returns
     /// Shared provider state with no queues or deliveries.
@@ -44,14 +46,18 @@ impl LocalSharedState {
     /// # Panics
     /// Panics if `max_total_outstanding` is zero.
     #[must_use = "retain the shared state in provider handles"]
-    pub(in crate::local) fn new(capacity: usize, max_total_outstanding: usize) -> Arc<Self> {
+    pub(in crate::local) fn new(
+        capacity: usize,
+        max_total_outstanding: usize,
+        max_weight: Option<NonZeroUsize>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(BusState::default()),
             changed: Condvar::new(),
             async_changed: AsyncSignal::default(),
             shutdown_gate: Mutex::new(()),
             capacity,
-            outstanding: OutstandingBudget::new(max_total_outstanding),
+            outstanding: OutstandingBudget::new(max_total_outstanding, max_weight),
         })
     }
 }
