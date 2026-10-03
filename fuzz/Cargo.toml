@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 qubit-event-bus = { path = ".." }
 qubit-clock = "0.13"
-qubit-id = { version = "0.6", features = ["uuid"] }
+qubit-id = { version = "0.7", features = ["uuid"] }
 
 [[bin]]
 name = "transport_envelope"

@@ -17,7 +17,7 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.19"
+qubit-event-bus = "0.20"
 ```
 
 ## Quick start

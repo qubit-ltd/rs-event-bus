@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.19"
+qubit-event-bus = "0.20"
 ```
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
@@ -826,7 +826,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.19", features = ["discovery"] }
+qubit-event-bus = { version = "0.20", features = ["discovery"] }
 qubit-spi = "0.13"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
