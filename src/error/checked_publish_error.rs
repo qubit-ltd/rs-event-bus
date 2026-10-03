@@ -20,7 +20,9 @@ use crate::model::PublishReceipt;
 pub enum CheckedPublishError {
     /// Per-destination admission was requested from a provider that cannot
     /// report it; publication was not attempted.
-    #[error("provider {provider_id:?} cannot report destination admission for event {event_id:?}; publication was not attempted")]
+    #[error(
+        "provider {provider_id:?} cannot report destination admission for event {event_id:?}; publication was not attempted"
+    )]
     UnsupportedVisibility {
         /// Original event identifier before publisher interception.
         event_id: EventId,
