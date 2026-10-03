@@ -7,6 +7,7 @@
 // =============================================================================
 //! Per-publication retry policy and terminal failure observers.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use qubit_retry::RetryCancellationToken;
@@ -33,6 +34,11 @@ pub type PublishErrorHandler<T> = dyn Fn(&PublishFailureContext<T>, &PublishFail
 pub type PublisherInterceptor<T> =
     dyn Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static;
 
+/// Typed declaration callback retained by publication options.
+///
+/// `T` is the payload borrowed after publisher interceptors have run.
+type NativePayloadWeight<T> = dyn Fn(&T) -> NonZeroUsize + Send + Sync;
+
 /// Immutable options applied to one publication request.
 ///
 /// # Type Parameters
@@ -58,6 +64,8 @@ pub struct PublishOptions<T: 'static> {
     pub(crate) retry_cancellation_token: Option<RetryCancellationToken>,
     /// Terminal failure observers in registration order.
     pub(crate) error_handlers: Vec<Arc<PublishErrorHandler<T>>>,
+    /// Optional declared native payload weight calculated before retries.
+    pub(crate) native_payload_weight: Option<Arc<NativePayloadWeight<T>>>,
     /// Typed publication transformations in registration order.
     pub(crate) interceptors: Vec<Arc<PublisherInterceptor<T>>>,
 }
@@ -76,6 +84,7 @@ impl<T: 'static> Default for PublishOptions<T> {
             retry_cancellation_token: None,
             error_handlers: Vec::new(),
             interceptors: Vec::new(),
+            native_payload_weight: None,
         }
     }
 }
@@ -93,6 +102,7 @@ impl<T: 'static> Clone for PublishOptions<T> {
             retry_cancellation_token: self.retry_cancellation_token.clone(),
             error_handlers: self.error_handlers.clone(),
             interceptors: self.interceptors.clone(),
+            native_payload_weight: self.native_payload_weight.clone(),
         }
     }
 }
@@ -171,6 +181,17 @@ impl<T: 'static> PublishOptions<T> {
     pub fn error_handler_count(&self) -> usize {
         self.error_handlers.len()
     }
+    /// Returns the shared native payload weight callback.
+    ///
+    /// # Returns
+    /// `Some` for an explicit declaration callback, or `None` when no weight
+    /// is configured. Calling this accessor does not invoke the callback.
+    #[must_use]
+    #[inline]
+    pub fn native_payload_weight(&self) -> Option<&Arc<NativePayloadWeight<T>>> {
+        self.native_payload_weight.as_ref()
+    }
+
     /// Returns typed publisher interceptors in registration order.
     ///
     /// # Returns

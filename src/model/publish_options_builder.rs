@@ -7,6 +7,7 @@
 // =============================================================================
 //! Construction of reusable publication policy values.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use qubit_retry::RetryCancellationToken;
@@ -148,6 +149,30 @@ impl<T: 'static> PublishOptionsBuilder<T> {
         F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
+        self
+    }
+
+    /// Sets the callback declaring a native payload's weight in bytes.
+    ///
+    /// The callback runs once after publisher interceptors, before the first
+    /// provider attempt. Retries reuse that value. Encoded-only providers skip
+    /// this callback. A callback panic becomes a preflight
+    /// [`PublishError::InterceptorPanicked`] with scope `payload_weight`.
+    /// The declared weight is application metadata, not measured heap usage.
+    ///
+    /// # Type Parameters
+    /// - `F`: thread-safe callback borrowing the final typed payload.
+    ///
+    /// # Parameters
+    /// - `value`: callback returning a positive declared weight in bytes.
+    ///
+    /// # Returns
+    /// The updated builder; clones of the resulting options share the callback.
+    pub fn native_payload_weight<F>(mut self, value: F) -> Self
+    where
+        F: Fn(&T) -> NonZeroUsize + Send + Sync + 'static,
+    {
+        self.options.native_payload_weight = Some(Arc::new(value));
         self
     }
 

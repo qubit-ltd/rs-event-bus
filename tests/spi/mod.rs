@@ -7,3 +7,4 @@
 // =============================================================================
 mod async_event_bus_spi_tests;
 mod conformance;
+mod outbound_message_tests;

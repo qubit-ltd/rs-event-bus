@@ -7,6 +7,7 @@
 // =============================================================================
 //! Public publication-options builder contract tests.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -121,4 +122,20 @@ fn test_builder_preserves_interceptor_drop_and_error_results() {
         (options.interceptors()[1])(event()),
         Err(qubit_event_bus::PublishError::Closed),
     ));
+}
+
+/// Options clones retain the same typed weight callback allocation.
+#[test]
+fn test_native_payload_weight_default_and_shared_clone() {
+    assert!(PublishOptions::<String>::new().native_payload_weight().is_none());
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(|payload| NonZeroUsize::new(payload.len()).expect("nonempty test payload"))
+        .build();
+    let cloned = options.clone();
+    let weight = options.native_payload_weight().expect("configured callback");
+    assert!(Arc::ptr_eq(
+        weight,
+        cloned.native_payload_weight().expect("cloned callback")
+    ));
+    assert_eq!(weight(&String::from("payload")).get(), 7);
 }

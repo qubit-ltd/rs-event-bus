@@ -7,6 +7,7 @@
 // =============================================================================
 //! Fully validated outbound data retained across provider retry attempts.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -39,6 +40,8 @@ pub(in crate::pipeline::publisher) struct PreparedOutbound<T: 'static> {
     pub(in crate::pipeline::publisher) ordering_key: Option<OrderingKey>,
     /// Optional provider delivery delay.
     pub(in crate::pipeline::publisher) delay: Option<Duration>,
+    /// Declared native weight copied unchanged into every retry attempt.
+    pub(in crate::pipeline::publisher) native_payload_weight_bytes: Option<NonZeroUsize>,
     /// Native or encoded payload shared across attempts.
     pub(in crate::pipeline::publisher) payload: TransportPayload,
     /// Original typed event context used by error handlers.
@@ -55,7 +58,7 @@ impl<T: 'static> PreparedOutbound<T> {
             TransportPayload::Native(value) => TransportPayload::Native(value.clone()),
             TransportPayload::Encoded(value) => TransportPayload::Encoded(value.clone()),
         };
-        OutboundMessage::new(
+        let message = OutboundMessage::new(
             self.topic.clone(),
             self.event_id.clone(),
             self.timestamp,
@@ -63,6 +66,10 @@ impl<T: 'static> PreparedOutbound<T> {
             self.ordering_key.clone(),
             self.delay,
             payload,
-        )
+        );
+        match self.native_payload_weight_bytes {
+            Some(weight) => message.with_native_payload_weight_bytes(weight),
+            None => message,
+        }
     }
 }

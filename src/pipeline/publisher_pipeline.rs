@@ -230,10 +230,12 @@ impl PublisherPipeline {
     /// attempts.
     ///
     /// # Errors
-    /// Returns the original interceptor, capability, or codec failure.
+    /// Returns an interceptor failure (including a weight callback panic),
+    /// capability failure, or codec failure.
     ///
     /// # Side Effects
-    /// Invokes interceptors and, for encoded providers, the codec. Async
+    /// Invokes interceptors, the configured native weight callback, or the
+    /// codec for encoded providers. Async
     /// callers invoke this method only when their publication future is
     /// first polled.
     fn prepare_publish<T: Send + Sync + 'static>(
@@ -303,7 +305,24 @@ impl PublisherPipeline {
         }
         let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
-        let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes())?;
+        let native_weight = if capabilities.payload_modes() == PayloadModes::Encoded {
+            None
+        } else {
+            options
+                .native_payload_weight()
+                .map(|weigh| std::panic::catch_unwind(AssertUnwindSafe(|| weigh(envelope.payload()))))
+                .transpose()
+                .map_err(|panic| {
+                    failure(
+                        PipelineFailureOrigin::Interceptor,
+                        PublishError::InterceptorPanicked {
+                            scope: "payload_weight",
+                            message: panic_text(panic.as_ref()).into(),
+                        },
+                    )
+                })?
+        };
+        let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes(), native_weight)?;
         Ok(PublishPreparation::Ready(Box::new(PreparedPublish {
             input_event_id,
             options,
@@ -395,6 +414,8 @@ impl PublisherPipeline {
     ///
     /// - `envelope`: Event and metadata to preserve in the outbound message.
     /// - `modes`: Payload representations supported by the provider.
+    /// - `native_payload_weight_bytes`: Declared native weight, or `None` when
+    ///   absent.
     ///
     /// # Returns
     ///
@@ -408,6 +429,7 @@ impl PublisherPipeline {
         &self,
         envelope: EventEnvelope<T>,
         modes: PayloadModes,
+        native_payload_weight_bytes: Option<NonZeroUsize>,
     ) -> Result<PreparedOutbound<T>, PipelineFailure> {
         let failure_context = PublishFailureContext::from_envelope(envelope);
         let topic = TopicAddress::new(failure_context.topic().name())
@@ -452,6 +474,7 @@ impl PublisherPipeline {
             ordering_key,
             delay,
             payload: transport_payload,
+            native_payload_weight_bytes,
             failure_context,
         })
     }
