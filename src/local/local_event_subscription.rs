@@ -73,9 +73,14 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             }
             let now = Instant::now();
             if let Some(event) = state.pop_ready(now) {
-                let sequence = state.next_delivery_token.checked_add(1).ok_or_else(|| {
-                    operation_error("receive", Some(self.queue.topic.as_str()), "settlement_token_exhausted")
-                })?;
+                let Some(sequence) = state.next_delivery_token.checked_add(1) else {
+                    state.enqueue_front(event);
+                    return Err(operation_error(
+                        "receive",
+                        Some(self.queue.topic.as_str()),
+                        "settlement_token_exhausted",
+                    ));
+                };
                 state.next_delivery_token = sequence;
                 let token = format!("{}:{sequence}", event.event_id()).into_boxed_str();
                 let settlement = Arc::new(Mutex::new(LocalSettlementState {
@@ -229,5 +234,89 @@ impl Drop for LocalEventSubscription {
     /// Closes the receiver and releases any unsettled local deliveries.
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+
+    use std::any::TypeId;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::SystemTime;
+
+    use qubit_id::Id;
+
+    use crate::error::SpiError;
+    use crate::local::LocalEventBusConfig;
+    use crate::local::local_event_bus_spi::LocalEventBusSpi;
+    use crate::model::EventId;
+    use crate::model::ProviderOptions;
+    use crate::model::StartPosition;
+    use crate::model::SubscriberId;
+    use crate::model::SubscriptionDurability;
+    use crate::spi::EventBusSpi;
+    use crate::spi::OutboundMessage;
+    use crate::spi::SpiSubscriptionRequest;
+    use crate::spi::TopicAddress;
+    use crate::spi::TransportPayload;
+
+    /// Token exhaustion retains the pending event and its reservation until
+    /// close.
+    #[test]
+    fn test_token_exhaustion_preserves_pending_weight_until_close() {
+        let weight = NonZeroUsize::new(5).expect("positive weight");
+        let spi = LocalEventBusSpi::new(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
+            .expect("valid config");
+        let topic = TopicAddress::new("local.token.exhaustion").expect("valid topic");
+        let request = SpiSubscriptionRequest::new(
+            Id::new(1),
+            topic.clone(),
+            SubscriberId::new("exhausted").expect("valid subscriber"),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<u32>(),
+        );
+        let mut receiver = spi.subscribe(request).expect("subscription");
+        let message = OutboundMessage::new(
+            topic.clone(),
+            EventId::new("retained").expect("valid ID"),
+            SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(7_u32)),
+        )
+        .with_native_payload_weight_bytes(weight);
+        let _ = spi.publish(message).expect("admitted event");
+        let queue = spi.shared.state.lock().expect("bus lock").live_queues_for_topic(&topic)[0].clone();
+        queue.lock().next_delivery_token = u64::MAX;
+        for timeout in [Duration::ZERO, Duration::MAX] {
+            let result = receiver.receive(timeout);
+            let state = queue.lock();
+            assert_eq!(state.pending_count(), 1, "failed receive must retain the event");
+            assert!(state.in_flight.is_empty());
+            assert_eq!(state.next_delivery_token, u64::MAX);
+            drop(state);
+            assert!(matches!(
+                result,
+                Err(SpiError::Operation {
+                    operation: "receive",
+                    kind: "settlement_token_exhausted",
+                    retryable: Some(false),
+                    ..
+                })
+            ));
+        }
+        assert!(!spi.shared.outstanding.try_acquire(1), "pending event keeps its weight");
+        receiver.close().expect("close removes retained event");
+        assert!(
+            spi.shared.outstanding.try_acquire(weight.get()),
+            "close returns the entire reservation"
+        );
+        spi.shared.outstanding.release(1, weight.get());
     }
 }

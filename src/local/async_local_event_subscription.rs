@@ -24,6 +24,7 @@ use super::async_local_event_bus_spi::close_mailbox;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
 use super::local_event_bus_spi::invalid_token_error;
+use super::local_event_bus_spi::operation_error;
 use super::state::LocalInFlight;
 use super::state::LocalQueueState;
 use super::state::LocalSettlementHandle;
@@ -81,7 +82,8 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
     /// A message, timeout, or closed outcome from the mailbox.
     ///
     /// # Errors
-    /// Returns an SPI error if timer polling fails.
+    /// Returns an SPI error if timer polling fails or the delivery token
+    /// sequence is exhausted; exhaustion retains the queued event.
     fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         let queue = Arc::clone(&self.mailbox.queue);
         let subscription_id = self.subscription_id;
@@ -92,7 +94,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 if state.closed {
                     return Ok(ReceiveOutcome::Closed);
                 }
-                return Ok(pop_message(&mut state, subscription_id).unwrap_or(ReceiveOutcome::TimedOut));
+                return Ok(pop_message(&mut state, subscription_id)?.unwrap_or(ReceiveOutcome::TimedOut));
             }
             let started = Instant::now();
             let mut waiter = None;
@@ -103,8 +105,10 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 if state.closed {
                     return Poll::Ready(Ok(ReceiveOutcome::Closed));
                 }
-                if let Some(message) = pop_message(&mut state, subscription_id) {
-                    return Poll::Ready(Ok(message));
+                match pop_message(&mut state, subscription_id) {
+                    Ok(Some(message)) => return Poll::Ready(Ok(message)),
+                    Err(error) => return Poll::Ready(Err(error)),
+                    Ok(None) => {}
                 }
                 let remaining = if timeout == Duration::MAX {
                     None
@@ -265,12 +269,21 @@ impl Drop for AsyncLocalEventSubscription {
 /// - `subscription_id`: identity bound to the generated settlement token.
 ///
 /// # Returns
-/// `Some(ReceiveOutcome::Message)` when an event is ready and its settlement
-/// sequence can advance; otherwise `None`.
-#[must_use]
-fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Option<ReceiveOutcome> {
-    let event = state.pop_ready(Instant::now())?;
-    let next = state.next_delivery_token.checked_add(1)?;
+/// `Ok(Some(ReceiveOutcome::Message))` when an event is ready, or `Ok(None)`
+/// when no event is eligible.
+///
+/// # Errors
+/// Returns `settlement_token_exhausted` if no new token can be issued, keeping
+/// the event queued with its existing capacity reservation.
+fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Result<Option<ReceiveOutcome>, SpiError> {
+    let Some(event) = state.pop_ready(Instant::now()) else {
+        return Ok(None);
+    };
+    let Some(next) = state.next_delivery_token.checked_add(1) else {
+        let error = operation_error("receive", Some(event.topic.as_str()), "settlement_token_exhausted");
+        state.enqueue_front(event);
+        return Err(error);
+    };
     state.next_delivery_token = next;
     let token_id = format!("{}:{next}", event.event_id()).into_boxed_str();
     let settlement = Arc::new(Mutex::new(LocalSettlementState {
@@ -284,5 +297,106 @@ fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Option<Recei
             settlement: settlement.clone(),
         },
     );
-    Some(ReceiveOutcome::Message(event.into_inbound(subscription_id, settlement)))
+    Ok(Some(ReceiveOutcome::Message(
+        event.into_inbound(subscription_id, settlement),
+    )))
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+
+    use std::any::TypeId;
+    use std::future::Future;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    use std::time::Duration;
+    use std::time::SystemTime;
+
+    use qubit_id::Id;
+
+    use crate::error::SpiError;
+    use crate::local::AsyncLocalEventBusSpi;
+    use crate::local::LocalEventBusConfig;
+    use crate::model::EventId;
+    use crate::model::ProviderOptions;
+    use crate::model::StartPosition;
+    use crate::model::SubscriberId;
+    use crate::model::SubscriptionDurability;
+    use crate::spi::AsyncEventBusSpi;
+    use crate::spi::OutboundMessage;
+    use crate::spi::SpiSubscriptionRequest;
+    use crate::spi::TopicAddress;
+    use crate::spi::TransportPayload;
+
+    /// Polls operations arranged to complete immediately, including exhausted
+    /// receive.
+    fn ready<F: Future>(future: F) -> F::Output {
+        match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("exhausted receive must return an error immediately"),
+        }
+    }
+
+    /// Token exhaustion retains the pending event and its reservation until
+    /// close.
+    #[test]
+    fn test_token_exhaustion_preserves_pending_weight_until_close() {
+        let weight = NonZeroUsize::new(5).expect("positive weight");
+        let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
+            .expect("valid config");
+        let topic = TopicAddress::new("local.token.exhaustion").expect("valid topic");
+        let request = SpiSubscriptionRequest::new(
+            Id::new(1),
+            topic.clone(),
+            SubscriberId::new("exhausted").expect("valid subscriber"),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<u32>(),
+        );
+        let mut receiver = ready(spi.subscribe(request)).expect("subscription");
+        let message = OutboundMessage::new(
+            topic.clone(),
+            EventId::new("retained").expect("valid ID"),
+            SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(7_u32)),
+        )
+        .with_native_payload_weight_bytes(weight);
+        let _ = ready(spi.publish(message)).expect("admitted event");
+        let queue = spi.shared.state.lock().expect("bus lock").mailboxes_for_topic(&topic)[0]
+            .queue
+            .clone();
+        queue.lock().next_delivery_token = u64::MAX;
+        for timeout in [Duration::ZERO, Duration::MAX] {
+            let result = ready(receiver.receive(timeout));
+            let state = queue.lock();
+            assert_eq!(state.pending_count(), 1, "failed receive must retain the event");
+            assert!(state.in_flight.is_empty());
+            assert_eq!(state.next_delivery_token, u64::MAX);
+            drop(state);
+            assert!(matches!(
+                result,
+                Err(SpiError::Operation {
+                    operation: "receive",
+                    kind: "settlement_token_exhausted",
+                    retryable: Some(false),
+                    ..
+                })
+            ));
+        }
+        assert!(!spi.shared.outstanding.try_acquire(1), "pending event keeps its weight");
+        ready(receiver.close()).expect("close removes retained event");
+        assert!(
+            spi.shared.outstanding.try_acquire(weight.get()),
+            "close returns the entire reservation"
+        );
+        spi.shared.outstanding.release(1, weight.get());
+    }
 }
