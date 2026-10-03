@@ -253,7 +253,9 @@ let orders = OrderService::new(bus.clone());
 
 provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
 
-调用方要求目标接纳时使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。它只发布一次；条件不满足时，`CheckedPublishError::Admission` 保留完整回执。接纳检查可区分不可见的接纳结果、拦截器丢弃、没有目标、没有目标接纳、有目标接纳和部分接纳。部分接纳表示部分目标可能已接收事件，重试可能造成重复。目标接纳不代表 handler 已完成或数据已持久化。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+只有 provider 能报告 `DestinationAdmissions`（例如 local）时，才用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` 要求具体目标接纳。Redis 等不公开目标的 provider 遇到两种逐目标条件，会在发布前返回 `CheckedPublishError::UnsupportedVisibility`。对 Redis 应改用 `AdmissionRequirement::ProviderOrDestinationAccepted`：成功只代表 broker 接纳事件，不能说明订阅者已执行、数据已持久化或业务写入已完成。可见 provider 的接纳条件不满足时，`CheckedPublishError::Admission` 仍保留完整回执；部分目标已接纳时重试可能造成重复。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+
+local 可选用声明权重预算：为每种发布的原生载荷 `T` 配置 `PublishOptions<T>::builder().native_payload_weight(...)` 估算器，再设置 `LocalEventBusConfig::max_total_outstanding_weight_bytes(...)`。启用预算后，未提供权重的发布会在入队前被拒绝；扇出到多个目标时，每份已接纳的投递分别占用额度。额度按应用声明的字节数计算，不能当作进程真实内存上限。配置方法和边界见[本地容量说明](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
 
 ## 测试
 
