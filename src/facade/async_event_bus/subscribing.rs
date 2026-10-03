@@ -267,16 +267,26 @@ mod tests {
             .expect("valid provider capabilities");
         bus.inner.next_subscription_id.store(u64::MAX, Ordering::Release);
 
-        let result = drive_ready(bus.subscribe(
-            SubscribeRequest::new("overflow-subscriber", Topic::<u32>::new("overflow.topic").unwrap())
-                .expect("valid request"),
-        ));
-        assert!(matches!(result, Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
+        let result = drive_ready(
+            bus.subscribe(
+                SubscribeRequest::new("overflow-subscriber", Topic::<u32>::new("overflow.topic").unwrap())
+                    .expect("valid request"),
+            ),
+        );
+        assert!(
+            matches!(result, Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
             field: "subscription_id", message
-        })) if message.as_ref() == "bus-local subscription ID space is exhausted"));
+        })) if message.as_ref() == "bus-local subscription ID space is exhausted")
+        );
         assert_eq!(spi.calls.load(Ordering::Acquire), 0, "provider SPI must not be called");
         let exhausted_id = Id::new(u64::MAX);
-        assert!(bus.inner.scheduler.register(exhausted_id), "overflow ID must not be registered");
-        assert!(bus.inner.scheduler.unregister(exhausted_id), "probe registration is cleaned up");
+        assert!(
+            bus.inner.scheduler.register(exhausted_id),
+            "overflow ID must not be registered"
+        );
+        assert!(
+            bus.inner.scheduler.unregister(exhausted_id),
+            "probe registration is cleaned up"
+        );
     }
 }

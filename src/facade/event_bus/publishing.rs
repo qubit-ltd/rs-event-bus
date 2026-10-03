@@ -48,8 +48,10 @@ impl EventBus {
         requirement: AdmissionRequirement,
     ) -> Result<PublishReceipt, CheckedPublishError> {
         if matches!(self.inner.capabilities.publish_visibility(), PublishVisibility::Opaque)
-            && matches!(requirement, AdmissionRequirement::AtLeastOneAccepted
-                | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+            && matches!(
+                requirement,
+                AdmissionRequirement::AtLeastOneAccepted | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected
+            )
         {
             return Err(CheckedPublishError::UnsupportedVisibility {
                 event_id: request.envelope().id().clone(),

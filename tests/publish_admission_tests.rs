@@ -38,10 +38,10 @@ use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
-use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::PayloadModes;
@@ -349,9 +349,13 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
             .expect("valid request")
             .with_options(options);
         let event_id = request.envelope().id().clone();
-        let error = bus.publish_checked(request, requirement).expect_err("opaque provider cannot report destinations");
-        assert!(matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
-            if actual_event_id == event_id && actual_provider_id == provider_id));
+        let error = bus
+            .publish_checked(request, requirement)
+            .expect_err("opaque provider cannot report destinations");
+        assert!(
+            matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
+            if actual_event_id == event_id && actual_provider_id == provider_id)
+        );
         assert_eq!(interceptor_calls.load(Ordering::Acquire), 0);
         assert_eq!(codec_calls.load(Ordering::Acquire), 0);
         assert_eq!(provider.publish_calls.load(Ordering::Acquire), 0);
@@ -380,8 +384,10 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
             AdmissionRequirement::ProviderOrDestinationAccepted,
         )
         .expect_err("no destinations accepted");
-    assert!(matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
-        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert!(
+        matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
+        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations)
+    );
     assert_eq!(visible_provider.publish_calls.load(Ordering::Acquire), 1);
 }
 

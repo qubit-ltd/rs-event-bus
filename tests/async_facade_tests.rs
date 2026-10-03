@@ -22,8 +22,8 @@ use std::time::SystemTime;
 
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
-use qubit_event_bus::CodecError;
 use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::CodecError;
 use qubit_event_bus::ConfigurationError;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
@@ -261,8 +261,7 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
         global_calls.fetch_add(1, Ordering::AcqRel);
         Ok(true)
     });
-    let bus = AsyncEventBus::with_config(provider_id.clone(), spi.clone(), config)
-        .expect("valid opaque provider");
+    let bus = AsyncEventBus::with_config(provider_id.clone(), spi.clone(), config).expect("valid opaque provider");
     let codec_calls = Arc::new(AtomicUsize::new(0));
     let topic = Topic::new("async.checked.opaque")
         .expect("valid topic")
@@ -288,8 +287,10 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
         let event_id = request.envelope().id().clone();
         let error = block_on(bus.publish_checked(request, requirement))
             .expect_err("opaque provider cannot report destinations");
-        assert!(matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
-            if actual_event_id == event_id && actual_provider_id == provider_id));
+        assert!(
+            matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
+            if actual_event_id == event_id && actual_provider_id == provider_id)
+        );
         assert_eq!(interceptor_calls.load(Ordering::Acquire), 0);
         assert_eq!(codec_calls.load(Ordering::Acquire), 0);
         assert!(!spi.operation_log().contains(&"publish"));
@@ -302,18 +303,40 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
     ))
     .expect("provider acceptance satisfies the new condition");
     assert_eq!(receipt.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
-    assert_eq!(spi.operation_log().iter().filter(|operation| **operation == "publish").count(), 1);
+    assert_eq!(
+        spi.operation_log()
+            .iter()
+            .filter(|operation| **operation == "publish")
+            .count(),
+        1
+    );
 
     let visible_spi = Arc::new(EmptyAdmissionSpi(FakeAsyncEventBusSpi::new()));
     let visible_bus = AsyncEventBus::from_spi(provider_id, visible_spi.clone()).expect("valid visible provider");
-    let error = block_on(visible_bus.publish_checked(
-        PublishRequest::new(Topic::<String>::new("async.checked.visible").unwrap(), "order".to_owned()).unwrap(),
-        AdmissionRequirement::ProviderOrDestinationAccepted,
-    ))
+    let error = block_on(
+        visible_bus.publish_checked(
+            PublishRequest::new(
+                Topic::<String>::new("async.checked.visible").unwrap(),
+                "order".to_owned(),
+            )
+            .unwrap(),
+            AdmissionRequirement::ProviderOrDestinationAccepted,
+        ),
+    )
     .expect_err("no destinations accepted");
-    assert!(matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
-        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
-    assert_eq!(visible_spi.0.operation_log().iter().filter(|operation| **operation == "publish").count(), 1);
+    assert!(
+        matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
+        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations)
+    );
+    assert_eq!(
+        visible_spi
+            .0
+            .operation_log()
+            .iter()
+            .filter(|operation| **operation == "publish")
+            .count(),
+        1
+    );
 }
 
 #[test]
