@@ -87,3 +87,33 @@ fn test_full_subscription_queue_rejects_only_the_later_delivery() {
     };
     assert_eq!("first", message.id().as_str());
 }
+
+/// Checks native weight missing weight against this provider.
+#[test]
+fn test_native_weight_missing_weight() {
+    super::internal::weight_budget_contract::missing_weight(false);
+}
+
+/// Checks native weight partial fanout against this provider.
+#[test]
+fn test_native_weight_partial_fanout() {
+    super::internal::weight_budget_contract::partial_fanout(false);
+}
+
+/// Checks native weight settlement against this provider.
+#[test]
+fn test_native_weight_settlement() {
+    super::internal::weight_budget_contract::settlement(false);
+}
+
+/// Checks native weight cleanup against this provider.
+#[test]
+fn test_native_weight_cleanup() {
+    super::internal::weight_budget_contract::cleanup(false);
+}
+
+/// Checks native weight disabled against this provider.
+#[test]
+fn test_native_weight_disabled() {
+    super::internal::weight_budget_contract::disabled(false);
+}

@@ -7,6 +7,7 @@
 // =============================================================================
 //! Shared capacity, registry, notification, and timer state for the async bus.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -36,6 +37,7 @@ impl AsyncLocalShared {
     /// # Parameters
     /// - `capacity`: per-subscription queued and unsettled-message bound.
     /// - `max_total_outstanding`: provider-wide outstanding-message bound.
+    /// - `max_weight`: optional positive declared-weight budget in bytes.
     /// - `timer`: runtime-neutral timer used by async operations.
     ///
     /// # Returns
@@ -44,10 +46,15 @@ impl AsyncLocalShared {
     /// # Panics
     /// Panics if `max_total_outstanding` is zero.
     #[must_use]
-    pub(in crate::local) fn new(capacity: usize, max_total_outstanding: usize, timer: Arc<dyn Timer>) -> Self {
+    pub(in crate::local) fn new(
+        capacity: usize,
+        max_total_outstanding: usize,
+        max_weight: Option<NonZeroUsize>,
+        timer: Arc<dyn Timer>,
+    ) -> Self {
         Self {
             capacity,
-            outstanding: OutstandingBudget::new(max_total_outstanding),
+            outstanding: OutstandingBudget::new(max_total_outstanding, max_weight),
             state: Mutex::new(AsyncBusState::default()),
             changed: AsyncSignal::default(),
             timer,

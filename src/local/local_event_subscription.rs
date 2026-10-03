@@ -174,7 +174,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             state.enqueue_front(event.event);
             self.queue.ready.notify_one();
         } else {
-            self.shared.outstanding.release(1);
+            self.shared.outstanding.release(1, event.event.weight_bytes);
         }
         token_state.disposition = Some(disposition);
         drop(token_state);
@@ -198,9 +198,9 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             let mut state = self.queue.lock();
             if !state.closed {
                 state.closed = true;
-                let released = state.pending_count() + state.in_flight.len();
                 let discarded = state.clear_pending();
-                self.shared.outstanding.release(released);
+                let weight = discarded.iter().map(|event| event.weight_bytes).sum();
+                self.shared.outstanding.release(discarded.len(), weight);
                 self.queue.ready.notify_all();
                 drop(state);
                 drop(discarded);

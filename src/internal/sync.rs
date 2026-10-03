@@ -16,10 +16,6 @@ pub(crate) use std::sync::Condvar;
 pub(crate) use std::sync::Mutex;
 #[cfg(not(loom))]
 pub(crate) use std::sync::MutexGuard;
-#[cfg(not(loom))]
-pub(crate) use std::sync::atomic::AtomicUsize;
-#[cfg(not(loom))]
-pub(crate) use std::sync::atomic::Ordering;
 
 #[cfg(loom)]
 pub(crate) use loom::sync::Condvar;
@@ -27,7 +23,3 @@ pub(crate) use loom::sync::Condvar;
 pub(crate) use loom::sync::Mutex;
 #[cfg(loom)]
 pub(crate) use loom::sync::MutexGuard;
-#[cfg(loom)]
-pub(crate) use loom::sync::atomic::AtomicUsize;
-#[cfg(loom)]
-pub(crate) use loom::sync::atomic::Ordering;
