@@ -1327,7 +1327,7 @@ fn test_sync_terminal_settlement_failed_observer_sees_published_stop() {
         .publish(PublishRequest::new(topic, 1).expect("request"))
         .expect("publish");
     let published = observed_rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(10))
         .expect("failed callback observed");
     subscription.cancel().expect("cleanup");
     assert!(

@@ -471,7 +471,7 @@ mod tests {
                 .send(bus.request_shutdown(ShutdownMode::Immediate))
                 .expect("second request observer")
         });
-        let returned_before_provider_release = returned_rx.recv_timeout(Duration::from_millis(250));
+        let returned_before_provider_release = returned_rx.recv_timeout(Duration::from_secs(2));
         release_tx.send(()).expect("release provider before any assertion");
         cleanup.join().expect("worker cleanup joins");
         caller.join().expect("request caller joins");

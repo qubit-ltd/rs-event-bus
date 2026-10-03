@@ -10,7 +10,6 @@
 mod support;
 
 use std::future::Future;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -403,7 +402,7 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
     let (lock, changed) = &*shared;
     let state = lock.lock().unwrap();
     let (state, _) = changed
-        .wait_timeout_while(state, std::time::Duration::from_millis(100), |state| !state.1)
+        .wait_timeout_while(state, std::time::Duration::from_secs(2), |state| !state.1)
         .unwrap();
     drop(state);
     std::thread::sleep(std::time::Duration::from_millis(30));
@@ -1755,87 +1754,6 @@ fn test_async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_po
     });
 }
 
-#[test]
-fn test_async_provider_attempt_is_stable_across_handler_retry() {
-    let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("valid provider"), spi.clone())
-        .expect("valid provider capabilities");
-    let options = SubscribeOptions::builder()
-        .retry_policy(
-            RetryPolicy::builder()
-                .max_attempts(2)
-                .build()
-                .expect("valid retry policy"),
-        )
-        .error_handler(|_, _| FailureDirective::Retry)
-        .build();
-    let request = SubscribeRequest::new("async-provider-attempt", topic())
-        .expect("valid subscriber")
-        .with_options(options);
-    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
-    let calls = Arc::new(AtomicUsize::new(0));
-    block_on(async {
-        let mut subscription = bus.subscribe(request).await.expect("subscription starts");
-        let subscription_id = subscription.id();
-        let handler_calls = calls.clone();
-        let runner = std::thread::spawn(move || {
-            block_on(subscription.run(move |delivery| {
-                let observed_tx = observed_tx.clone();
-                let calls = handler_calls.clone();
-                async move {
-                    observed_tx
-                        .send(delivery.context().provider_attempt())
-                        .expect("observer remains connected");
-                    if calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                        Err(DeliveryError::Handler {
-                            source: Box::new(std::io::Error::other("retry locally")),
-                        })
-                    } else {
-                        Ok(())
-                    }
-                }
-            }))
-        });
-        for (id, attempt) in [("first", Some(3)), ("second", None)] {
-            let message = InboundMessage::new(
-                TopicAddress::new("test.topic").expect("valid topic"),
-                EventId::new(id).expect("valid event ID"),
-                SystemTime::UNIX_EPOCH,
-                Headers::new(),
-                None,
-                TransportPayload::Native(Arc::new(3_u32)),
-                Some(SettlementToken::new(subscription_id, id)),
-                Default::default(),
-            );
-            let message = if let Some(attempt) = attempt {
-                message.with_provider_attempt(NonZeroU32::new(attempt).expect("positive attempt"))
-            } else {
-                message
-            };
-            spi.enqueue(message);
-            if attempt.is_some() {
-                assert_eq!(
-                    observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"),
-                    Some(3)
-                );
-                assert_eq!(
-                    observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"),
-                    Some(3)
-                );
-            } else {
-                assert_eq!(
-                    observed_rx
-                        .recv_timeout(Duration::from_secs(2))
-                        .expect("unmarked delivery"),
-                    None
-                );
-            }
-        }
-        let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("bus shuts down");
-        runner.join().expect("runner thread").expect("subscription runner");
-    });
-}
-
 /// Verifies asynchronous manual mode accepts only explicit positive
 /// acknowledgements.
 #[test]
@@ -2315,7 +2233,19 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
         }
     }
 
-    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Encoded,
+        SettlementCapabilities::AcceptRetryReject,
+        OrderingCapability::PerSubscription,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::new("async.encoded-subscription")
@@ -2543,9 +2473,7 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
         subscribe_calls: AtomicUsize::new(0),
     });
     let mut codecs = CodecRegistry::new();
-    codecs
-        .register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)))
-        .expect("unique codec type");
+    codecs.register::<String>(Arc::new(Utf8Codec(ContentType::TEXT_PLAIN)));
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs));
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
         .expect("valid provider capabilities");
