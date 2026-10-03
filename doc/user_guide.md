@@ -340,6 +340,23 @@ When one order event goes to both audit and the customer view, the two condition
 - `AtLeastOneAccepted`: one admission is enough. If audit admits the event and the customer view rejects it because its queue is full, the check still passes.
 - `AtLeastOneAcceptedAndNoRejected`: at least one admission, and nobody rejected. The case above returns `RejectedDestinations`. The order example uses this condition.
 
+These two conditions require a provider that reports destination admissions. The order example uses local, which does. With an opaque provider such as Redis, `publish_checked` returns `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }` before interceptors, codec encoding, metrics, or the provider publish call. If the application only needs the provider to accept the event, use `ProviderOrDestinationAccepted` instead:
+
+```rust
+use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::model::{AdmissionRequirement, PublishReceipt, PublishRequest};
+
+fn publish_to_redis<T: Send + Sync + 'static>(
+    bus: &EventBus,
+    request: PublishRequest<T>,
+) -> Result<PublishReceipt, CheckedPublishError> {
+    bus.publish_checked(request, AdmissionRequirement::ProviderOrDestinationAccepted)
+}
+```
+
+For Redis, success means `XADD` was accepted by the broker; the returned receipt has opaque destination visibility. It does not prove a consumer ran, a business write completed, or Redis performed a disk fsync. On a provider with visible destinations, this new condition accepts any reported destination acceptance, even alongside rejections; `NoDestinations` and `NoneAccepted` return `CheckedPublishError::Admission` with the full receipt. `Dropped` also fails. Inspect the receipt and reconcile uncertain or partial work before retrying.
+
 After publishing, the order service checks the stricter condition and branches on the failure:
 
 Check history for the whole logical publication before interpreting the final admission. These two compiled files define an application decision; they do not publish automatically. `Dropped` does not republish; `NoAcceptedDestination` belongs to `AdmissionCheckError`, not `AdmissionOutcome`.
@@ -769,6 +786,27 @@ let bus = EventBus::local(local)?;
 
 `queue_capacity` limits how many messages **one subscriber** may have outstanding. The default is 1,024. `max_total_outstanding` limits outstanding deliveries **across every subscriber of this local instance**. The default is 65,536. A message that has been taken but not finished counts, and a retry keeps its slot. Both values must be greater than zero. The unit is a delivery, not a byte. When a queue is full, that subscriber may reject the message while others still accept it. Terminal settlement or provider cleanup releases the outstanding slot; handler completion alone does not. Size these from measured handling speed and memory. A message count is not a memory budget.
 
+To bound application-declared native payload weight as well as delivery count, opt in to `max_total_outstanding_weight_bytes` and supply a `native_payload_weight` callback for each concrete payload type you publish. For example, a `String` publisher can declare its UTF-8 length (at least one byte for an empty string):
+
+```rust
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
+
+let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
+let bus = EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(budget))?;
+let topic = Topic::<String>::new("orders.created")?;
+let options = PublishOptions::<String>::builder()
+    .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive weight"))
+    .build();
+let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
+let receipt = bus.publish(request)?;
+```
+
+The budget is disabled by default. The callback sees the payload after publisher interceptors and runs once before provider retries. When enabled, a native publish without a declared weight fails with a non-retryable provider error before any destination is enqueued. Each accepted fanout delivery consumes one copy of the declared weight; rejected destinations do not. A retry keeps its reservation until terminal settlement or cleanup. This is a declared accounting limit, not a measurement or upper bound of process memory: shared allocations, queues, handlers, and transport overhead still consume memory. Encoded providers use the separate encoded-payload byte limits.
+
 Both facades use `DeliverySchedulingConfig`: defaults are 4 running handlers, 256 owned deliveries globally, 32 owned deliveries per subscription, and 256 registered subscriptions. Owned includes a pre-receive reservation, queued, running, and settling work. Reservation happens before receive, with no extra pending message outside the limit. Same-key queues and settlement backoff do not consume handler slots; a lane stays owned until settlement succeeds or the subscription terminates. All four parameters are `NonZeroUsize`; running and per-subscription limits must not exceed the global owned limit.
 
 ```rust
@@ -793,9 +831,9 @@ let config = EventBusConfig::default()
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-The registration limit bounds sync receiver threads and async sessions; a paused async subscription still counts. Excess registration fails before provider subscription creation. Both capacity keys in `local.provider_options()` must be positive; unknown keys and nonnumeric values fail creation. `EventBus::local` sets provider capacity; use registry assembly for facade configuration.
+The registration limit bounds sync receiver threads and async sessions; a paused async subscription still counts. Excess registration fails before provider subscription creation. Both required capacity keys and the optional weight key in `local.provider_options()` must be positive; unknown keys and nonnumeric values fail creation. `EventBus::local` sets provider capacity; use registry assembly for facade configuration.
 
-For encoded transports, `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))` sets two positive `NonZeroUsize` limits. Both default to 1,048,576 bytes; exactly the limit is allowed. Publishing checks completed codec output before calling the provider; receiving checks bytes before any codec callback. There is no unlimited setting. This does not cap allocations inside encoding or the transport client. Native Rust payloads have no byte-size check because their retained memory cannot be measured reliably by the facade. Local queue limits count deliveries, not bytes.
+For encoded transports, `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))` sets two positive `NonZeroUsize` limits. Both default to 1,048,576 bytes; exactly the limit is allowed. Publishing checks completed codec output before calling the provider; receiving checks bytes before any codec callback. There is no unlimited setting. This does not cap allocations inside encoding or the transport client. Native Rust payloads have no automatically measured byte-size check because their retained memory cannot be measured reliably by the facade; the optional local weight budget instead uses the application's declaration. The local queue count limit still counts deliveries, not bytes.
 
 The async bus reuses the same `config`, changing only assembly:
 
@@ -1420,7 +1458,7 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 
 Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode.
 
-Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` when the caller requires destination admission. It publishes once and returns the complete receipt in `CheckedPublishError::Admission` if the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Admission does not mean handler completion or durable storage. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
+Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only when the provider exposes destination admission, as local does. For Redis, choose `ProviderOrDestinationAccepted`; per-destination conditions return `UnsupportedVisibility` before publishing. A visible provider retains the complete receipt in `CheckedPublishError::Admission` when the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Provider acceptance does not mean handler completion, disk fsync, or a successful business write. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
 
 ## Boundaries and a practice checklist
 

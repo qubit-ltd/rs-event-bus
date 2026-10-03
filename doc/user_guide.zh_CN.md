@@ -340,6 +340,23 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 - `AtLeastOneAccepted`：至少有一个订阅者接纳即可。审计接纳、客户视图因队列已满拒绝时，检查仍通过。
 - `AtLeastOneAcceptedAndNoRejected`：至少一个接纳，并且没有人拒绝。上面那种情况会返回 `RejectedDestinations`。前面订单示例用的就是这个条件。
 
+这两种条件需要 provider 报告每个目标的接纳情况。上面的订单示例使用 local，能提供这类回执；Redis 等不公开目标的 provider 会在发布前返回 `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }`，不会运行拦截器、编码器或 SPI 发布，也不会增加发布指标。如果业务只要求 provider 接纳事件，应改用 `ProviderOrDestinationAccepted`：
+
+```rust
+use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::model::{AdmissionRequirement, PublishReceipt, PublishRequest};
+
+fn publish_to_redis<T: Send + Sync + 'static>(
+    bus: &EventBus,
+    request: PublishRequest<T>,
+) -> Result<PublishReceipt, CheckedPublishError> {
+    bus.publish_checked(request, AdmissionRequirement::ProviderOrDestinationAccepted)
+}
+```
+
+对 Redis，成功表示 broker 接纳了 `XADD`；回执仍不公开具体目标。这不能证明消费者已执行、业务数据已写入，也不保证 Redis 已将数据 fsync 到磁盘。若 provider 提供逐目标结果，新条件允许至少一个目标接纳，即使同时有目标拒绝；`NoDestinations` 和 `NoneAccepted` 会带完整回执返回 `CheckedPublishError::Admission`，拦截器主动丢弃的发布也会失败。重试前应检查回执，先处理不确定或部分成功的结果。
+
 订单服务在发布后按较严的条件检查，并按失败原因决定怎么处理：
 
 先检查整个逻辑发布过程的历史，再看最后一次接纳结果。下面两个文件可直接编译：`RepublishAction` 是应用自己的决策类型，不会自动重发。`Dropped` 不重发；`NoAcceptedDestination` 属于 `AdmissionCheckError`，不是 `AdmissionOutcome`。
@@ -769,6 +786,27 @@ let bus = EventBus::local(local)?;
 
 `queue_capacity` 限制**每个订阅者**最多积压多少条消息，默认 1,024；`max_total_outstanding` 限制**这个 local 实例的所有订阅者合计**最多积压多少次投递，默认 65,536。已经取走但还没处理完的消息也算在内，重试期间仍占名额。两个值都要大于零。计数单位是消息投递次数，不是字节；队列满时，某个订阅者可能拒绝，其他订阅者仍可接收。终态结算或 provider 清理后释放名额，handler 返回本身不等于结算完成。请结合处理速度和内存实测调整，不能只看条数推断内存占用。
 
+如果还需要限制应用声明的原生载荷权重，可设置 `max_total_outstanding_weight_bytes`，并为每种具体载荷类型提供 `native_payload_weight` 回调。例如，发布 `String` 时可按 UTF-8 字节长度声明权重，空字符串至少按一个字节计算：
+
+```rust
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
+
+let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
+let bus = EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(budget))?;
+let topic = Topic::<String>::new("orders.created")?;
+let options = PublishOptions::<String>::builder()
+    .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive weight"))
+    .build();
+let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
+let receipt = bus.publish(request)?;
+```
+
+权重预算默认关闭。回调接收发布拦截器处理后的载荷，在 provider 首次尝试前执行一次，重试复用该值。启用后，原生载荷未声明权重时，provider 会在任何目标入队前返回不可重试错误。扇出投递按每个已接纳目标分别计费；拒绝的目标不占权重额度。重试期间保留额度，到终态结算或清理时释放。这只是应用声明的记账上限，**不是进程真实内存上限**：共享分配、队列、处理函数和传输层仍会占用内存。编码传输另受编码载荷字节限制。
+
 同步和异步 facade 共用 `DeliverySchedulingConfig`：默认最多运行 4 个 handler、持有 256 条投递、每订阅持有 32 条投递、注册 256 个订阅。owned 包括 receive 前的预留、排队、执行中和结算中；接收前预留，绝不额外取一条越过额度。同键排队和结算退避不占 handler 执行额度，同键通道要到结算成功或订阅终止才释放。四个参数均为 `NonZeroUsize`，running 和 per-subscription 不得大于 owned。
 
 ```rust
@@ -793,9 +831,9 @@ let config = EventBusConfig::default()
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个容量键必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 只设置 provider 容量；facade 配置通过 registry 装配。
+注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个必需容量键和可选权重键都必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 只设置 provider 容量；facade 配置通过 registry 装配。
 
-编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，本地队列仍按投递条数限流。
+编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，因此不提供自动测量的字节上限；上面的可选 local 权重预算依赖应用声明。本地队列的条数限制仍按投递次数计费。
 
 异步总线复用上面的 `config`，只更换装配入口：
 
@@ -1418,7 +1456,7 @@ if outcome == WaitOutcome::TimedOut {
 
 provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
 
-调用方要求目标接纳时使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。它只发布一次；条件不满足时，`CheckedPublishError::Admission` 保留完整回执。部分接纳表示部分目标可能已接收事件，重试可能造成重复。目标接纳不代表 handler 已完成或数据已持久化。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+只有 provider 能提供逐目标回执（如 local）时，才使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。Redis 应选择 `ProviderOrDestinationAccepted`；逐目标条件会在发布前返回 `UnsupportedVisibility`。可见 provider 的条件不满足时，`CheckedPublishError::Admission` 保留完整回执；部分目标已接纳时重试可能造成重复。provider 接纳不等于 handler 完成、磁盘 fsync 或业务写入成功。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
 
 ## 边界与实践清单
 
