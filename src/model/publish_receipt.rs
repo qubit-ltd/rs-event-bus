@@ -190,7 +190,8 @@ impl PublishReceipt {
     /// This checks admission, not handler completion. Returns
     /// [`AdmissionCheckError::Dropped`] when interception stopped dispatch,
     /// [`AdmissionCheckError::VisibilityUnavailable`] when a provider did not
-    /// identify destinations, and
+    /// identify destinations and `requirement` requires destination details,
+    /// and
     /// [`AdmissionCheckError::NoAcceptedDestination`] when none accepted.
     /// The stricter requirement returns
     /// [`AdmissionCheckError::RejectedDestinations`] if any reported
@@ -200,18 +201,25 @@ impl PublishReceipt {
     /// - `requirement`: minimum admission condition to enforce.
     ///
     /// # Returns
-    /// `Ok(())` when the visible admission result satisfies `requirement`.
+    /// `Ok(())` when the admission result satisfies `requirement`. Provider
+    /// acknowledgement alone satisfies `ProviderOrDestinationAccepted`.
     ///
     /// # Errors
     /// Returns [`AdmissionCheckError::Dropped`] if interception stopped
     /// dispatch, [`AdmissionCheckError::VisibilityUnavailable`] if the
-    /// provider hid destination details,
+    /// provider hid destination details required by `requirement`,
     /// [`AdmissionCheckError::NoAcceptedDestination`] if none accepted, or
     /// [`AdmissionCheckError::RejectedDestinations`] when the strict
     /// requirement observes any rejection.
     pub fn check_admission(&self, requirement: AdmissionRequirement) -> Result<(), AdmissionCheckError> {
         match self.admission_outcome() {
-            AdmissionOutcome::OpaqueAccepted => Err(AdmissionCheckError::VisibilityUnavailable),
+            AdmissionOutcome::OpaqueAccepted => {
+                if requirement == AdmissionRequirement::ProviderOrDestinationAccepted {
+                    Ok(())
+                } else {
+                    Err(AdmissionCheckError::VisibilityUnavailable)
+                }
+            }
             AdmissionOutcome::Dropped => Err(AdmissionCheckError::Dropped),
             AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
                 Err(AdmissionCheckError::NoAcceptedDestination)

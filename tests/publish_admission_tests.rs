@@ -11,20 +11,29 @@ use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
+use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::CodecError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::AdmissionCheckError;
 use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AdmissionSummary;
+use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
@@ -32,6 +41,7 @@ use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
 use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::PayloadModes;
@@ -47,12 +57,15 @@ use qubit_id::Id;
 
 struct AdmissionProvider {
     acknowledgements: Mutex<VecDeque<PublishAcknowledgement>>,
+    visibility: PublishVisibility,
+    payload_modes: PayloadModes,
+    publish_calls: AtomicUsize,
 }
 
 impl EventBusSpi for AdmissionProvider {
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
-            PayloadModes::Native,
+            self.payload_modes,
             SettlementCapabilities::None,
             OrderingCapability::None,
             DelayedDeliveryCapability::None,
@@ -61,11 +74,12 @@ impl EventBusSpi for AdmissionProvider {
             false,
             ReplayCapability::None,
             PublishGuarantee::Accepted,
-            PublishVisibility::DestinationAdmissions,
+            self.visibility,
         )
     }
 
     fn publish(&self, _: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+        self.publish_calls.fetch_add(1, Ordering::AcqRel);
         Ok(self
             .acknowledgements
             .lock()
@@ -98,6 +112,9 @@ fn provider_error(operation: &'static str) -> SpiError {
 fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([acknowledgement])),
+        visibility: PublishVisibility::DestinationAdmissions,
+        payload_modes: PayloadModes::Native,
+        publish_calls: AtomicUsize::new(0),
     });
     let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider)
         .expect("valid provider capabilities");
@@ -140,6 +157,7 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             None,
             Err(AdmissionCheckError::VisibilityUnavailable),
             Err(AdmissionCheckError::VisibilityUnavailable),
+            Ok(()),
         ),
         (
             "interceptor dropped",
@@ -147,11 +165,13 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             None,
             Err(AdmissionCheckError::Dropped),
             Err(AdmissionCheckError::Dropped),
+            Err(AdmissionCheckError::Dropped),
         ),
         (
             "empty snapshot",
             PublishAcknowledgement::DestinationAdmissions(vec![]),
             Some(AdmissionSummary::default()),
+            Err(AdmissionCheckError::NoAcceptedDestination),
             Err(AdmissionCheckError::NoAcceptedDestination),
             Err(AdmissionCheckError::NoAcceptedDestination),
         ),
@@ -163,6 +183,7 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 filtered: 1,
                 rejected: 0,
             }),
+            Err(AdmissionCheckError::NoAcceptedDestination),
             Err(AdmissionCheckError::NoAcceptedDestination),
             Err(AdmissionCheckError::NoAcceptedDestination),
         ),
@@ -179,6 +200,7 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             }),
             Err(AdmissionCheckError::NoAcceptedDestination),
             Err(AdmissionCheckError::NoAcceptedDestination),
+            Err(AdmissionCheckError::NoAcceptedDestination),
         ),
         (
             "accepted only",
@@ -188,6 +210,7 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
                 filtered: 0,
                 rejected: 0,
             }),
+            Ok(()),
             Ok(()),
             Ok(()),
         ),
@@ -204,10 +227,11 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             }),
             Ok(()),
             Err(AdmissionCheckError::RejectedDestinations { count: 1 }),
+            Ok(()),
         ),
     ];
 
-    for (name, acknowledgement, summary, at_least_one, no_rejected) in cases {
+    for (name, acknowledgement, summary, at_least_one, no_rejected, provider_or_destination) in cases {
         let receipt = receipt(acknowledgement.clone());
         assert_eq!(summary, receipt.admission_summary(), "{name}");
         assert_eq!(
@@ -218,6 +242,11 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
         assert_eq!(
             no_rejected,
             receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected),
+            "{name}"
+        );
+        assert_eq!(
+            provider_or_destination,
+            receipt.check_admission(AdmissionRequirement::ProviderOrDestinationAccepted),
             "{name}"
         );
         assert_eq!(
@@ -232,6 +261,9 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
 fn test_checked_publish_returns_the_receipt_when_admission_fails() {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
+        visibility: PublishVisibility::DestinationAdmissions,
+        payload_modes: PayloadModes::Native,
+        publish_calls: AtomicUsize::new(0),
     });
     let bus = EventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider).unwrap();
     let request = PublishRequest::new(Topic::<String>::new("orders.created").unwrap(), "order-2".to_owned()).unwrap();
@@ -245,6 +277,112 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
         }
         other => panic!("expected admission error with receipt, got {other:?}"),
     }
+}
+
+/// Counts codec work so an unsupported checked publish cannot encode a payload.
+struct CountingCodec {
+    content_type: ContentType,
+    calls: Arc<AtomicUsize>,
+}
+
+impl EventCodec<String> for CountingCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.content_type
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(Arc::from(value.as_bytes()))
+    }
+
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
+            source: Box::new(source),
+        })
+    }
+}
+
+#[test]
+fn test_checked_publish_opaque_preflight_has_no_side_effects() {
+    let provider_id = ProviderId::new("opaque-test").expect("valid provider ID");
+    let provider = Arc::new(AdmissionProvider {
+        acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::Accepted {
+            provider_message_id: None,
+            metadata: Default::default(),
+        }])),
+        visibility: PublishVisibility::Opaque,
+        payload_modes: PayloadModes::Encoded,
+        publish_calls: AtomicUsize::new(0),
+    });
+    let interceptor_calls = Arc::new(AtomicUsize::new(0));
+    let global_calls = interceptor_calls.clone();
+    let config = EventBusFacadeConfig::new().publisher_interceptor(move |_| {
+        global_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(true)
+    });
+    let bus = EventBus::with_config(provider_id.clone(), provider.clone(), config)
+        .expect("valid opaque provider capabilities");
+    let codec_calls = Arc::new(AtomicUsize::new(0));
+    let topic = Topic::new("orders.opaque")
+        .expect("valid topic")
+        .with_codec(CountingCodec {
+            content_type: ContentType::TEXT_PLAIN,
+            calls: codec_calls.clone(),
+        });
+
+    for requirement in [
+        AdmissionRequirement::AtLeastOneAccepted,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    ] {
+        let typed_calls = interceptor_calls.clone();
+        let options = PublishOptions::<String>::builder()
+            .interceptor(move |envelope| {
+                typed_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(Some(envelope))
+            })
+            .build();
+        let request = PublishRequest::new(topic.clone(), "order".to_owned())
+            .expect("valid request")
+            .with_options(options);
+        let event_id = request.envelope().id().clone();
+        let error = bus.publish_checked(request, requirement).expect_err("opaque provider cannot report destinations");
+        assert!(matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
+            if actual_event_id == event_id && actual_provider_id == provider_id));
+        assert_eq!(interceptor_calls.load(Ordering::Acquire), 0);
+        assert_eq!(codec_calls.load(Ordering::Acquire), 0);
+        assert_eq!(provider.publish_calls.load(Ordering::Acquire), 0);
+        assert_eq!(bus.publish_metrics(), Default::default());
+    }
+
+    let receipt = bus
+        .publish_checked(
+            PublishRequest::new(topic, "order".to_owned()).expect("valid request"),
+            AdmissionRequirement::ProviderOrDestinationAccepted,
+        )
+        .expect("provider acceptance satisfies the new condition");
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
+    assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
+
+    let visible_provider = Arc::new(AdmissionProvider {
+        acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
+        visibility: PublishVisibility::DestinationAdmissions,
+        payload_modes: PayloadModes::Native,
+        publish_calls: AtomicUsize::new(0),
+    });
+    let visible_bus = EventBus::from_spi(provider_id, visible_provider.clone()).expect("valid visible provider");
+    let error = visible_bus
+        .publish_checked(
+            PublishRequest::new(Topic::<String>::new("orders.visible").unwrap(), "order".to_owned()).unwrap(),
+            AdmissionRequirement::ProviderOrDestinationAccepted,
+        )
+        .expect_err("no destinations accepted");
+    assert!(matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
+        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert_eq!(visible_provider.publish_calls.load(Ordering::Acquire), 1);
 }
 
 #[test]

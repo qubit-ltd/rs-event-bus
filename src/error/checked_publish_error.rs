@@ -10,12 +10,23 @@
 
 use crate::error::PublishFailure;
 use crate::model::AdmissionCheckError;
+use crate::model::EventId;
+use crate::model::ProviderId;
 use crate::model::PublishReceipt;
 
-/// A failed publish or a receipt that did not satisfy the requested admission
-/// condition.
+/// A publication failure, unsupported admission visibility, or a receipt that
+/// did not satisfy the requested admission condition.
 #[derive(Debug, thiserror::Error)]
 pub enum CheckedPublishError {
+    /// Per-destination admission was requested from a provider that cannot
+    /// report it; publication was not attempted.
+    #[error("provider {provider_id:?} cannot report destination admission for event {event_id:?}; publication was not attempted")]
+    UnsupportedVisibility {
+        /// Original event identifier before publisher interception.
+        event_id: EventId,
+        /// Provider whose publication visibility is opaque.
+        provider_id: ProviderId,
+    },
     /// Publication itself failed before a receipt was produced.
     #[error(transparent)]
     Publish(#[from] PublishFailure),
