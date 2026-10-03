@@ -7,6 +7,8 @@
 // =============================================================================
 //! Configuration for the process-local transport.
 
+use std::num::NonZeroUsize;
+
 use crate::error::ConfigurationError;
 use crate::model::ProviderOptions;
 use crate::registry::EventBusConfig;
@@ -19,6 +21,9 @@ const DEFAULT_MAX_TOTAL_OUTSTANDING: usize = 65_536;
 const QUEUE_CAPACITY_OPTION: &str = "local.queue_capacity";
 /// Provider option key used to serialize the provider-wide delivery limit.
 const MAX_TOTAL_OUTSTANDING_OPTION: &str = "local.max_total_outstanding";
+
+/// Provider option key used to serialize the optional declared-weight budget.
+const MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION: &str = "local.max_total_outstanding_weight_bytes";
 
 /// Transport-specific configuration for the built-in in-process provider.
 ///
@@ -42,11 +47,14 @@ pub struct LocalEventBusConfig {
     queue_capacity: usize,
     /// Maximum outstanding delivery items shared by all provider subscriptions.
     max_total_outstanding: usize,
+    /// Optional provider-wide budget for declared native payload weight.
+    max_total_outstanding_weight_bytes: Option<NonZeroUsize>,
 }
 
 impl LocalEventBusConfig {
     /// Creates local configuration with 1,024 messages per subscription and
-    /// 65,536 outstanding delivery items per provider instance.
+    /// 65,536 outstanding delivery items per provider instance, without an
+    /// explicit declared-weight budget.
     ///
     /// # Returns
     /// A configuration with the documented local-provider defaults.
@@ -55,6 +63,7 @@ impl LocalEventBusConfig {
         Self {
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
             max_total_outstanding: DEFAULT_MAX_TOTAL_OUTSTANDING,
+            max_total_outstanding_weight_bytes: None,
         }
     }
 
@@ -79,21 +88,48 @@ impl LocalEventBusConfig {
         self.max_total_outstanding
     }
 
+    /// Returns the configured provider-wide declared-weight budget in bytes.
+    ///
+    /// # Returns
+    /// `Some` for an explicit positive budget, or `None` by default.
+    #[must_use]
+    #[inline]
+    pub const fn get_max_total_outstanding_weight_bytes(&self) -> Option<NonZeroUsize> {
+        self.max_total_outstanding_weight_bytes
+    }
+
+    /// Sets the provider-wide budget for declared native payload weight.
+    ///
+    /// # Parameters
+    /// - `capacity`: positive budget in bytes, independent of delivery counts.
+    ///
+    /// # Returns
+    /// The configuration with the declared-weight budget set.
+    #[inline]
+    pub const fn max_total_outstanding_weight_bytes(mut self, capacity: NonZeroUsize) -> Self {
+        self.max_total_outstanding_weight_bytes = Some(capacity);
+        self
+    }
+
     /// Returns namespaced provider options for
     /// [`EventBusConfig::with_provider_options`].
     ///
     /// # Returns
-    /// A provider-options map containing both local delivery limits.
+    /// A map containing both delivery limits and any explicit weight budget.
     #[must_use]
     pub fn provider_options(&self) -> ProviderOptions {
-        [
+        let mut options: ProviderOptions = [
             (QUEUE_CAPACITY_OPTION.to_owned(), self.queue_capacity.to_string()),
             (
                 MAX_TOTAL_OUTSTANDING_OPTION.to_owned(),
                 self.max_total_outstanding.to_string(),
             ),
         ]
-        .into()
+        .into();
+        if let Some(weight) = self.max_total_outstanding_weight_bytes {
+            options.insert(MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION.to_owned(), weight.to_string());
+        }
+        options
     }
 
     /// Sets the maximum number of queued or unsettled messages for each
@@ -176,6 +212,13 @@ impl LocalEventBusConfig {
                         field: MAX_TOTAL_OUTSTANDING_OPTION,
                         message: "must be a positive integer".into(),
                     })?;
+                }
+                MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION => {
+                    local.max_total_outstanding_weight_bytes =
+                        Some(value.parse().map_err(|_| ConfigurationError::InvalidField {
+                            field: MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION,
+                            message: "must be a positive integer".into(),
+                        })?);
                 }
                 _ => {
                     return Err(ConfigurationError::InvalidField {

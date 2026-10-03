@@ -7,6 +7,7 @@
 // =============================================================================
 //! Message sent from facade to provider SPI.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -54,6 +55,8 @@ pub struct OutboundMessage {
     ordering_key: Option<OrderingKey>,
     /// Requested delivery delay, or `None` for immediate eligibility.
     delay: Option<Duration>,
+    /// Optional application-declared native payload weight in bytes.
+    native_payload_weight_bytes: Option<NonZeroUsize>,
     /// Shared native allocation or encoded bytes to publish.
     payload: TransportPayload,
 }
@@ -71,7 +74,8 @@ impl OutboundMessage {
     /// - `payload`: native or encoded transport representation.
     ///
     /// # Returns
-    /// A type-erased message retaining the supplied event data.
+    /// A type-erased message retaining the supplied event data with no native
+    /// payload weight declaration.
     pub fn new(
         topic: TopicAddress,
         id: EventId,
@@ -89,6 +93,7 @@ impl OutboundMessage {
             ordering_key,
             delay,
             payload,
+            native_payload_weight_bytes: None,
         }
     }
     /// Returns the destination topic.
@@ -146,6 +151,30 @@ impl OutboundMessage {
     pub fn delay(&self) -> Option<Duration> {
         self.delay
     }
+    /// Returns the declared native payload weight in bytes.
+    ///
+    /// # Returns
+    /// `Some` for an explicit declaration, or `None` when absent. This is
+    /// application metadata and does not measure the payload's heap usage.
+    #[must_use]
+    #[inline]
+    pub fn native_payload_weight_bytes(&self) -> Option<NonZeroUsize> {
+        self.native_payload_weight_bytes
+    }
+
+    /// Attaches a declared native payload weight to this message.
+    ///
+    /// # Parameters
+    /// - `weight`: positive application-declared weight in bytes.
+    ///
+    /// # Returns
+    /// This message with the supplied weight replacing any earlier declaration.
+    #[inline]
+    pub fn with_native_payload_weight_bytes(mut self, weight: NonZeroUsize) -> Self {
+        self.native_payload_weight_bytes = Some(weight);
+        self
+    }
+
     /// Returns the payload.
     ///
     /// # Returns
