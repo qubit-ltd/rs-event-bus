@@ -2,6 +2,16 @@
 
 [简体中文](migration.zh_CN.md) · [User guide](user_guide.md) · [Design](design.md)
 
+## Upgrade from 0.19 to 0.20
+
+Use `qubit-event-bus = "0.20"` with Redis provider 0.7 and Task 0.10 when those crates are used. This release adds optional declared-weight accounting to the built-in local providers. It is disabled by default; applications that enable it must attach a positive `native_payload_weight` estimator to every native payload type they publish. Each accepted fanout copy reserves its declared weight until terminal settlement or cleanup. The value is application accounting, not a measurement of retained memory.
+
+`publish_checked` now rejects an unsupported per-destination visibility requirement before running publisher interceptors, codec callbacks, metrics, or the provider. For Redis, use `AdmissionRequirement::ProviderOrDestinationAccepted`; this confirms provider acceptance only. A visible local provider can use per-destination requirements such as `AtLeastOneAccepted`.
+
+The local provider now reports subscription-ID and settlement-token exhaustion as structured operation errors rather than wrapping identifiers or losing the queued event. Applications should continue to handle subscribe and receive errors. No wire-format migration is required; Redis wire version 1 and existing consumer groups remain unchanged. See the [Redis migration guide](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/migration.md) when upgrading the provider.
+
+The existing `GapPolicy` defaults to stopping a subscription after a provider-reported delivery gap. Choose `GapPolicy::Continue` only when the application accepts missed messages; inspect the gap diagnostic and use the provider's recovery process where available. Redis provider-attempt metadata is `Some(1)` for new entries and remains unknown (`None`) for pending or claimed entries.
+
 ## Upgrade from 0.18 to 0.19
 
 `CodecRegistry::register` now returns `Result<(), CodecRegistrationError>` and rejects a second codec for the same payload type without changing the existing registration. Propagate or handle the result; call `replace` when replacement is intentional:

@@ -2,6 +2,16 @@
 
 [English](migration.md) · [用户手册](user_guide.zh_CN.md) · [设计](design.zh_CN.md)
 
+## 从 0.19 升级到 0.20
+
+依赖使用 `qubit-event-bus = "0.20"`；若使用相关组件，配套 Redis provider 为 0.7、Task 为 0.10。此版本为内置 local provider 增加可选的原生载荷声明权重记账，默认关闭。启用后，每种发布的原生载荷都必须配置正数 `native_payload_weight` 估算器；每个已接纳的扇出副本都会占用相应额度，直到终态结算或清理。该值是应用声明的记账数据，不是进程保留内存的测量值。
+
+`publish_checked` 在 provider 无法提供逐目标接纳可见性时，会在 publisher interceptor、codec 回调、metrics 和 provider publish 之前返回不支持错误。Redis 应使用 `AdmissionRequirement::ProviderOrDestinationAccepted`；成功仅表示 provider 接纳。具备可见接纳信息的 local provider 可使用 `AtLeastOneAccepted` 等逐目标条件。
+
+local provider 现在会将订阅 ID 或 settlement token 耗尽报告为结构化操作错误，不再回绕标识或丢弃排队事件。应用仍应处理 subscribe 与 receive 错误。无需迁移消息格式；Redis wire version 1 与现有消费组保持不变。升级 provider 时另请阅读 [Redis 迁移指南](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/doc/migration.zh_CN.md)。
+
+现有 `GapPolicy` 默认在 provider 报告投递缺口后停止订阅。只有应用能够接受消息遗漏时才选择 `GapPolicy::Continue`；同时检查缺口诊断，并在 provider 支持时执行相应恢复流程。Redis 新读取的 entry 报告 provider attempt `Some(1)`；pending 或 claim 恢复消息的次数仍未知（`None`）。
+
 ## 从 0.18 升级到 0.19
 
 `CodecRegistry::register` 现在返回 `Result<(), CodecRegistrationError>`。同一载荷类型再次注册会报错，且不会覆盖原 codec。调用方须传播或处理返回值；只有确实要替换时才调用 `replace`：
