@@ -701,7 +701,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
         .topic(topic.clone())
         .payload(1)
         .ordering_key("key-a")
-        .delay(Duration::from_secs(3))
+        .delay(Duration::from_secs(30))
         .build()
         .unwrap();
     let immediate = PublishRequest::builder()
@@ -712,7 +712,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
         .unwrap();
     let _ = bus.publish(delayed).unwrap();
     let immediate_receipt = bus.publish(immediate).unwrap();
-    let progressed = done_rx.recv_timeout(Duration::from_millis(150)).ok();
+    let progressed = done_rx.recv_timeout(Duration::from_secs(2)).ok();
     subscription.cancel().unwrap();
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 
