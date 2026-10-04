@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.19.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.20.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -889,7 +889,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 以下是同步和异步 provider 实际返回的 `EventBusCapabilities`：
 
-| 能力 | local（core 0.19） | Redis Streams（provider 0.7） |
+| 能力 | local（core 0.20） | Redis Streams（provider 0.7） |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded`，须注册 codec |
 | `durability` | `Ephemeral` | `Durable` |
@@ -1478,4 +1478,4 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.19；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.20；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

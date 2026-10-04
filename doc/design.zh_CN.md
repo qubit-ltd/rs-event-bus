@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.19）
+# Qubit Event Bus 设计文档（0.20）
 
-> 本文档以 `qubit-event-bus` 0.19.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.20.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -195,7 +195,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.19.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.20.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -330,6 +330,10 @@ pub enum PublishAcknowledgement {
 - `check_admission(AdmissionRequirement)` 让调用方声明"我要求至少一个/全部目的地接纳"，
   返回 `Result<(), AdmissionCheckError>`（`VisibilityUnavailable`、`Dropped`、
   `NoAcceptedDestination`、`RejectedDestinations { .. }`）。
+- `publish_checked(request, requirement)` 把发布和接纳条件检查合在一起。如果 provider
+  无法提供所需的逐目标可见性，它会在 interceptor、codec 回调、metrics 和 SPI publish
+  之前拒绝请求。对 Redis 等不透明传输应使用 `ProviderOrDestinationAccepted`；它只表示
+  provider 接纳。
 
 这体现 P6：`publish` 返回 `Ok(receipt)` 只表示 provider 调用产生了回执，不一定表示
 目的地已接纳。`admission_outcome()` 区分已知接纳、部分接纳、无目的地、丢弃和 opaque
@@ -1073,10 +1077,17 @@ LocalQueueState
 | --- | --- | --- |
 | `queue_capacity` | 1024 | 每个订阅的 `pending + in_flight` 最大投递数 |
 | `max_total_outstanding` | 65 536 | provider 级 `OutstandingBudget`：全部订阅的排队 + in-flight 总数 |
+| `max_total_outstanding_weight_bytes` | 默认关闭 | 所有未完成投递副本的应用声明原生载荷权重总和 |
 
 发布时逐目的地判断：队列满或预算耗尽 → 该目的地拒绝（`AdmissionSummary` 中计为
 rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永不阻塞**，
 背压通过回执反映（P7）。
+
+启用可选权重上限后，每种原生载荷类型都要通过
+`PublishOptions<T>::native_payload_weight` 声明正数权重。facade 在 publisher interceptor
+之后、provider retries 之前运行估算器。每份已接纳的扇出副本独立占用权重；retry 会保留
+额度直到终态结算或清理。缺少声明时，消息在入队前被拒绝。该上限只记账应用声明的字节，
+不测量共享分配、handler 内存或进程实际总内存。
 
 ### 10.3 `LocalEventBusSpi`（同步）
 
@@ -1399,10 +1410,12 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
 - **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。Redis 新读到的 stream entry 报告 `Some(1)`；pending 和 claim 恢复路径暂不传递历史次数，因此保持 `None`。facade 本地重试仍单独记录在 `retry_attempt`。
+- Async local 在注册 mailbox 前拒绝订阅 ID 耗尽。同步和异步 local 在 settlement token
+  耗尽时保留可接收消息并返回结构化 receive 错误；不会回绕 token 计数或静默丢弃事件。
 
 ---
 
-*本文档随 `qubit-event-bus` 0.19.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.20.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
 
 ## Provider specification compile probe
 

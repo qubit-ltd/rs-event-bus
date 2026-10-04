@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.19.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.20.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -889,7 +889,7 @@ Replace `provider_crate` and `your-provider-id` with the real crate name and the
 
 These are the actual `EventBusCapabilities` values for both sync and async providers:
 
-| Capability | local (core 0.19) | Redis Streams (provider 0.7) |
+| Capability | local (core 0.20) | Redis Streams (provider 0.7) |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded` (register a codec) |
 | `durability` | `Ephemeral` | `Durable` |
@@ -1479,7 +1479,7 @@ An independent single-crate checkout does not need every downstream repository.
 For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
-and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.19. Missing
+and the seven declared event-bus consumer fixtures, resolves locked all-feature Cargo
+metadata, and rejects a graph mixing old event-bus minors with 0.20. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
 does not prove delivery behavior by itself.

@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.19)
+# Qubit Event Bus Design (0.20)
 
-> This document describes `qubit-event-bus` 0.19.0 as implemented.
+> This document describes `qubit-event-bus` 0.20.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -212,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.19.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.20.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -355,6 +355,11 @@ pub enum PublishAcknowledgement {
   destination, or every destination, to be accepted. It returns
   `Result<(), AdmissionCheckError>` (`VisibilityUnavailable`, `Dropped`,
   `NoAcceptedDestination`, `RejectedDestinations { .. }`).
+- `publish_checked(request, requirement)` combines publication and that
+  requirement check. If the provider cannot expose required destination
+  visibility, it rejects the request before interceptors, codec callbacks,
+  metrics, and SPI publication. For opaque transports such as Redis, use
+  `ProviderOrDestinationAccepted`; that means provider acceptance only.
 
 A successful `publish` call means the provider call completed and returned a receipt; it
 does not by itself mean acceptance. `admission_outcome()` may report accepted, partial,
@@ -1135,11 +1140,20 @@ broadcast into every subscription queue. Publish does not clone the payload.
 | --- | --- | --- |
 | `queue_capacity` | 1024 | Maximum `pending + in_flight` messages for one subscription |
 | `max_total_outstanding` | 65,536 | Provider-wide `OutstandingBudget`: queued plus in-flight across every subscription |
+| `max_total_outstanding_weight_bytes` | disabled | Optional sum of application-declared native payload weights across outstanding delivery copies |
 
 Publish decides per destination. A full queue or an exhausted budget rejects that
 destination (counted as rejected in `AdmissionSummary`, with a reason). A topic with
 no subscriptions is `NoDestinations`. Publish **never blocks**. Backpressure is
 visible on the receipt (P7).
+
+When the optional weight limit is enabled, each native payload type must declare a
+positive weight through `PublishOptions<T>::native_payload_weight`. The facade
+evaluates the estimator after publisher interceptors and before provider retries.
+Each accepted fanout copy reserves that weight; a retry retains it until terminal
+settlement or cleanup. Missing declarations reject publication before enqueueing.
+This limit accounts for application-declared bytes; it does not measure shared
+allocation size, handler memory, or total process memory.
 
 ### 10.3 `LocalEventBusSpi` (synchronous)
 
@@ -1488,10 +1502,14 @@ is not a breaking change. Backend-specific extensions go through namespaced
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
 - **`provider_attempt` is provider-specific and may be unknown.** The SPI transports a non-zero count when a provider can establish it. Redis reports `Some(1)` for a newly read stream entry; pending and claimed entries remain `None` because their prior delivery count is not currently propagated. Facade-local retries remain in `retry_attempt`.
+- Async local rejects subscription-ID exhaustion before registering a mailbox.
+  Sync and async local also preserve a ready message when settlement-token
+  allocation is exhausted and return a structured receive error; they never wrap
+  the token counter or silently drop that event.
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.19.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.20.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
 
 ## Provider specification compile probe
 
