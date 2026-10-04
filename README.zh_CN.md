@@ -237,14 +237,13 @@ let orders = OrderService::new(bus.clone());
 
 本库未内置 Tokio、crossbeam、flume、RabbitMQ、Kafka 或 Redis 适配器，也不保证消息持久化、跨进程投递、事务批量发布或恰好一次处理。两种 local provider 都限制每个订阅者的未完成消息数（默认 1024），并限制每个 provider 实例的总未完成投递数（默认 65,536）；限额满时回执会拒绝对应目标，Retry 保留额度直到 accept、reject、close 或 shutdown。限额统计投递条数，不统计 payload 字节。同步 facade 默认最多创建 256 个活跃订阅接收线程，可用 `EventBusFacadeConfig::with_delivery_scheduling` 配置 `DeliverySchedulingConfig` 的执行、全局持有、每订阅持有和订阅数量四项上限。订阅量较大时，在目标主机运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 实测，不把样本结果当作固定容量阈值。`EventBusFacadeConfig::with_payload_limits(PayloadLimits)` 分别设置编码发布和接收的正数上限，默认均为 1 MiB；原生 payload 的内存占用没有字节上限。异步 local 订阅 close/drop 会丢弃排队和未结算消息；同 ID 重订阅从空队列开始。持久 provider 按自身恢复协议处理。保留 `AsyncSubscription` 句柄但取消 `run` future，仍可在之后重新运行 facade 任务。详情见[用户手册](doc/user_guide.zh_CN.md#配置内置-local-事件总线)。
 
-发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。升级 provider 或 codec 前请阅读[迁移指南](doc/migration.zh_CN.md)。
+发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。
 
 配套版本为 core 0.20、Redis 0.7、task 0.10。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
 - [用户手册](doc/user_guide.zh_CN.md)
-- [迁移指南](doc/migration.zh_CN.md)
 - [架构设计](doc/design.zh_CN.md) · [SPI 设计](doc/design.zh_CN.md#4-provider-spi)
 - [API 文档](https://docs.rs/qubit-event-bus)
 - [English README](README.md) · [English user guide](doc/user_guide.md)

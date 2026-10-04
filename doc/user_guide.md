@@ -1470,7 +1470,7 @@ Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only wh
 
 ## Further reading
 
-- [README](../README.md) · [Migration guide](migration.md) · [API reference](https://docs.rs/qubit-event-bus)
+- [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
 ## Validate a single crate or the coordinated ecosystem
 

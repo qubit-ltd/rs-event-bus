@@ -1468,7 +1468,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ## 延伸阅读
 
-- [中文 README](../README.zh_CN.md) · [迁移指南](migration.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
 ## 单仓验证与五仓整体验证
 
