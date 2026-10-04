@@ -16,25 +16,10 @@ FIXTURES = (
     "rs-task/tests/fixtures/doc-examples",
     "rs-ioc/tests/fixtures/application_consumer_current",
     "rs-execution-services/tests/fixtures/ioc_application_consumer",
-    "rs-task/tests/fixtures/consumer",
-    "rs-task/tests/fixtures/provider",
-    "rs-ioc/tests/fixtures/macro_contracts",
-    "rs-ioc/tests/fixtures/ioc_cross_crate",
-    "rs-ioc/tests/fixtures/application_consumer_current",
-    "rs-ioc/tests/fixtures/ioc_bench",
-    "rs-execution-services/tests/fixtures/application_consumer",
-    "rs-execution-services/tests/fixtures/documentation_consumer",
 )
 NON_BUS_CONSUMERS = frozenset((
     "rs-ioc",
     "rs-execution-services",
-    "rs-task/tests/fixtures/consumer",
-    "rs-task/tests/fixtures/provider",
-    "rs-ioc/tests/fixtures/macro_contracts",
-    "rs-ioc/tests/fixtures/ioc_cross_crate",
-    "rs-ioc/tests/fixtures/ioc_bench",
-    "rs-execution-services/tests/fixtures/application_consumer",
-    "rs-execution-services/tests/fixtures/documentation_consumer",
 ))
 
 
