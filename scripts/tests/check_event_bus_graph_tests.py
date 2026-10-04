@@ -37,19 +37,27 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiple"):
             gate.validate_graph(metadata("0.19.0", "0.20.0"), require_bus=True)
 
-    def test_controlled_layout_covers_all_fifteen_fixtures(self):
-        self.assertEqual(len(gate.FIXTURES), 15)
-        self.assertIn("rs-ioc/tests/fixtures/application_consumer_current", gate.FIXTURES)
+    def test_controlled_layout_covers_exactly_the_seven_event_bus_consumers(self):
+        expected = (
+            "rs-event-bus/tests/fixtures/discovery_provider",
+            "rs-event-bus/tests/fixtures/discovery_consumer",
+            "rs-event-bus/tests/fixtures/documentation_consumer",
+            "rs-event-bus-redis/tests/fixtures/business_consumer",
+            "rs-task/tests/fixtures/doc-examples",
+            "rs-ioc/tests/fixtures/application_consumer_current",
+            "rs-execution-services/tests/fixtures/ioc_application_consumer",
+        )
+        self.assertEqual(gate.FIXTURES, expected)
+        self.assertEqual(len(set(gate.FIXTURES)), 7)
 
     def test_non_bus_fixtures_do_not_require_bus(self):
         root = Path("/layout")
-        for name in ("rs-task/tests/fixtures/consumer",
-                     "rs-ioc/tests/fixtures/macro_contracts",
-                     "rs-execution-services/tests/fixtures/documentation_consumer"):
+        for name in ("rs-ioc", "rs-execution-services"):
             with self.subTest(fixture=name):
                 self.assertFalse(gate.requires_bus(root / name / "Cargo.toml", root))
-        self.assertTrue(gate.requires_bus(
-            root / "rs-ioc/tests/fixtures/application_consumer_current/Cargo.toml", root))
+        for name in gate.FIXTURES:
+            with self.subTest(fixture=name):
+                self.assertTrue(gate.requires_bus(root / name / "Cargo.toml", root))
 
     def test_rejects_duplicate_registry_and_path_packages(self):
         graph = metadata("0.20.0", "0.20.0")
