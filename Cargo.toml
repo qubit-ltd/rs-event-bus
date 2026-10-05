@@ -32,6 +32,7 @@ doctest = true
 default = []
 discovery = ["qubit-spi/inventory"]
 conformance = []
+loom = ["dep:loom"]
 
 [dependencies]
 qubit-argument = { version = "0.4" }
@@ -43,12 +44,10 @@ qubit-metadata = { version = "0.6", default-features = false }
 qubit-retry = { version = "0.25", features = ["worker", "async"] }
 qubit-spi = "0.13"
 thiserror = "^2.0"
+loom = { version = "^0.7", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
-
-[dev-dependencies]
-loom = "^0.7"
 
 [[bench]]
 name = "local_scale"
