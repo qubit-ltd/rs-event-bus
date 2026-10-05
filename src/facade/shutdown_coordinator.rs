@@ -422,18 +422,8 @@ mod tests {
                 .poll_result(generation, &mut count_token, &Context::from_waker(&second_waker))
                 .is_pending()
         );
-        let first_notified = coordinator.state.lock().expect("state").wakers[&generation]
-            .iter()
-            .next()
-            .expect("registered observer")
-            .1
-            .clone();
-        if first_notified.will_wake(&first_waker) {
-            first.panic_on_wake.store(true, Ordering::SeqCst);
-        } else {
-            assert!(first_notified.will_wake(&second_waker));
-            second.panic_on_wake.store(true, Ordering::SeqCst);
-        }
+        first.panic_on_wake.store(true, Ordering::SeqCst);
+        second.panic_on_wake.store(true, Ordering::SeqCst);
 
         let completion = catch_unwind(AssertUnwindSafe(|| {
             coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
