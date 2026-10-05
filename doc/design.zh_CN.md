@@ -1331,7 +1331,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 ### 15.2 CI
 
-`.github/workflows/ci.yml` 使用仓库共享的 `rs-infra` 编排（`ci-check.sh`）：
+`.github/workflows/ci.yml` 使用仓库共享的 `rs-infra` 编排（`.infra/bin/ci-check.sh`）：
 依赖基线检查、rustfmt/clippy（含 coverage cfg）、feature 与依赖矩阵、
 `cargo +1.94.0 test --doc`、README 依赖版本校验，以及
 `RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc --all-features` 的严格文档构建。

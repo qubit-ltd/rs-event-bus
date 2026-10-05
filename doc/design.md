@@ -1417,7 +1417,7 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 
 ### 15.2 CI
 
-`.github/workflows/ci.yml` uses the repository's shared `rs-infra` orchestration (`ci-check.sh`):
+`.github/workflows/ci.yml` uses the repository's shared `rs-infra` orchestration (`.infra/bin/ci-check.sh`):
 dependency baseline, rustfmt and clippy (including the coverage cfg), the feature and
 dependency matrix, `cargo +1.94.0 test --doc`, the README dependency-version check, and
 a strict documentation build with
