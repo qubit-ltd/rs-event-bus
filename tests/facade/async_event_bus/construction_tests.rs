@@ -70,6 +70,29 @@ fn test_async_facade_constructors_initialize_provider_capabilities_once() {
 }
 
 #[test]
+fn test_async_facade_exposes_cached_provider_capabilities() {
+    let provider_id = ProviderId::new("cached-async").expect("valid provider ID");
+    let capabilities = crate::support::fake_spi::full_capabilities();
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
+    let bus = AsyncEventBus::from_spi(provider_id.clone(), spi.clone()).expect("facade constructs");
+    let clone = bus.clone();
+
+    assert_eq!(spi.capabilities_calls(), 1);
+    assert_eq!(bus.capabilities(), capabilities);
+    assert_eq!(bus.capabilities(), capabilities);
+    assert_eq!(clone.capabilities(), capabilities);
+    assert_eq!(bus.provider_id(), &provider_id);
+    assert_eq!(clone.provider_id(), &provider_id);
+    assert_eq!(spi.capabilities_calls(), 1);
+
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
+
+    assert_eq!(clone.capabilities(), capabilities);
+    assert_eq!(clone.provider_id(), &provider_id);
+    assert_eq!(spi.capabilities_calls(), 1);
+}
+
+#[test]
 fn test_async_local_constructor_returns_a_shutdown_capable_facade() {
     let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("local facade constructs");
     let outcome = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local facade shuts down");

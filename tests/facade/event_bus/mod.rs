@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+mod construction_tests;
 mod failure_tests;
 mod lifecycle_tests;
 mod subscribing_tests;

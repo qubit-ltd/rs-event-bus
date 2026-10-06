@@ -31,8 +31,30 @@ use crate::local::LocalEventBusConfig;
 use crate::model::ProviderId;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::AsyncEventBusSpi;
+use crate::spi::EventBusCapabilities;
 
 impl AsyncEventBus {
+    /// Returns the provider capability snapshot captured during construction.
+    ///
+    /// # Returns
+    /// The immutable capabilities reported by the provider when this facade
+    /// was created.
+    #[must_use]
+    #[inline]
+    pub fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities
+    }
+
+    /// Returns the stable identity assigned to this provider facade.
+    ///
+    /// # Returns
+    /// The provider identity supplied to the facade constructor.
+    #[must_use]
+    #[inline]
+    pub fn provider_id(&self) -> &ProviderId {
+        &self.inner.provider_id
+    }
+
     /// Asynchronously creates a facade using the built-in local provider.
     ///
     /// # Parameters

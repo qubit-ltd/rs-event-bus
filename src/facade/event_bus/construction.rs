@@ -33,9 +33,31 @@ use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
 use crate::local::LocalEventBusConfig;
 use crate::model::ProviderId;
 use crate::pipeline::PublisherPipeline;
+use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
 
 impl EventBus {
+    /// Returns the provider capability snapshot captured during construction.
+    ///
+    /// # Returns
+    /// The immutable capabilities reported by the provider when this facade
+    /// was created.
+    #[must_use]
+    #[inline]
+    pub fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities
+    }
+
+    /// Returns the stable identity assigned to this provider facade.
+    ///
+    /// # Returns
+    /// The provider identity supplied to the facade constructor.
+    #[must_use]
+    #[inline]
+    pub fn provider_id(&self) -> &ProviderId {
+        &self.inner.provider_id
+    }
+
     /// Creates a synchronous facade using the built-in local provider.
     ///
     /// This convenience path uses the same provider registry and SPI
