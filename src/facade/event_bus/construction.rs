@@ -42,7 +42,6 @@ impl EventBus {
     /// # Returns
     /// The immutable capabilities reported by the provider when this facade
     /// was created.
-    #[must_use]
     #[inline]
     pub fn capabilities(&self) -> EventBusCapabilities {
         self.inner.capabilities
@@ -52,7 +51,6 @@ impl EventBus {
     ///
     /// # Returns
     /// The provider identity supplied to the facade constructor.
-    #[must_use]
     #[inline]
     pub fn provider_id(&self) -> &ProviderId {
         &self.inner.provider_id

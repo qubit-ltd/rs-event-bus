@@ -31,9 +31,7 @@ fn test_sync_facade_exposes_cached_provider_capabilities() {
     assert_eq!(clone.provider_id(), &provider_id);
     assert_eq!(spi.capabilities_calls(), 1);
 
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 
     assert_eq!(clone.capabilities(), full_capabilities());
     assert_eq!(clone.provider_id(), &provider_id);
