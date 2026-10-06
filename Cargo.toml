@@ -41,7 +41,7 @@ qubit-collections = { version = "0.2" }
 qubit-executor = { version = "0.8" }
 qubit-id = { version = "0.7", features = ["uuid"] }
 qubit-metadata = { version = "0.6", default-features = false }
-qubit-retry = { version = "0.25", features = ["worker", "async"] }
+qubit-retry = { version = "0.26", path = "../rs-retry", features = ["worker", "async"] }
 qubit-spi = "0.13"
 thiserror = "^2.0"
 loom = { version = "^0.7", optional = true }

@@ -8,25 +8,48 @@
 //! Receiver-owned payload and settlement lifetime for one scheduler lease.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use qubit_clock::MonotonicInstant;
+use qubit_retry::RetrySession;
 
 use crate::error::CodecError;
+use crate::error::DeliveryAttemptError;
 use crate::error::SpiError;
 use crate::facade::DeliveryTrackerGuard;
 use crate::facade::event_bus::CoordinatorMessage;
 use crate::facade::internal::SettlementRetryState;
+use crate::model::Delivery;
+use crate::model::FailureDirective;
+use crate::pipeline::DeliveryOutcome;
 use crate::spi::InboundMessage;
+use crate::spi::SettlementToken;
 
 /// Keeps tracking and retry state alive until settlement or provider recovery.
 ///
 /// # Type Parameters
 /// - `'tracking`: lifetime of the scheduler lease's delivery tracker guard.
 /// - `T`: decoded event payload retained while settlement is pending.
-pub(in crate::facade) struct OwnedSyncDelivery<'tracking, T> {
-    /// Received payload awaiting a core grant; moved into its handler job once.
+pub(in crate::facade) struct OwnedSyncDelivery<'tracking, T: 'static> {
+    /// Received payload awaiting preparation by the receiver owner.
     pub(in crate::facade) inbound: Option<(InboundMessage, Result<Arc<T>, CodecError>)>,
+    /// Immutable decoded envelope and context retained across attempts.
+    pub(in crate::facade) delivery: Option<Delivery<T>>,
+    /// Opaque provider token retained only by the receiver owner.
+    pub(in crate::facade) token: Option<SettlementToken>,
+    /// Owned retry controller; never moved into pool jobs.
+    pub(in crate::facade) session: Option<RetrySession<DeliveryAttemptError>>,
+    /// Error directive read by the retry rule at each failure boundary.
+    pub(in crate::facade) directive: Arc<Mutex<Option<FailureDirective>>>,
+    /// Absolute same-clock deadline for the next attempt.
+    pub(in crate::facade) due: Option<MonotonicInstant>,
+    /// Number of attempts admitted so far.
+    pub(in crate::facade) attempts: u32,
+    /// Result waits for actual pool-job exit before changing owner state.
+    pub(in crate::facade) result: Option<(DeliveryOutcome, FailureDirective)>,
+    /// Whether a job currently owns this delivery's execution grant.
+    pub(in crate::facade) running: bool,
     /// First immutable settlement intent; the opaque token never gets cloned.
     pub(in crate::facade) settlement: Option<CoordinatorMessage>,
     /// True only after the job returned or unstarted work was canceled.

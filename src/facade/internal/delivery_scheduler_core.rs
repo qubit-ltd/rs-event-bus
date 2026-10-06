@@ -273,6 +273,56 @@ impl DeliverySchedulerCore {
         state.notify_ready();
     }
 
+    /// Marks `lease_id` as waiting after actual job exit released H. Duplicate
+    /// notifications are ignored; ownership and the ordering lane stay held.
+    pub(in crate::facade) fn finish_attempt_waiting(&self, lease_id: u64) {
+        let mut state = self.lock();
+        if let Some(record) = state.owned.get_mut(&lease_id)
+            && record.phase == OwnedDeliveryPhase::Settling
+        {
+            record.phase = OwnedDeliveryPhase::WaitingRetry;
+        }
+    }
+
+    /// Requeues a due retry at its lane's head under the same transition lock.
+    /// `lease_id` must be waiting; duplicates and stopped subscriptions do
+    /// nothing. No new owned credit is acquired and successors cannot overtake.
+    pub(in crate::facade) fn wake_retry(&self, lease_id: u64) {
+        let mut state = self.lock();
+        let Some(record) = state.owned.get(&lease_id) else {
+            return;
+        };
+        if record.phase != OwnedDeliveryPhase::WaitingRetry {
+            return;
+        }
+        let id = record.subscription_id;
+        let lane = record.lane.clone();
+        let Some(sub) = state.subscriptions.get_mut(&id) else {
+            return;
+        };
+        if sub.stopped {
+            return;
+        }
+        if let Some(key) = &lane {
+            sub.locked_lanes.remove(key);
+        }
+        if lane.is_some()
+            && let Some((_, queue)) = sub.lanes.iter_mut().find(|(key, _)| *key == lane)
+        {
+            queue.push_front(lease_id);
+        } else {
+            sub.lanes
+                .push_back((lane, std::collections::VecDeque::from([lease_id])));
+        }
+        state
+            .owned
+            .get_mut(&lease_id)
+            .expect("waiting lease remains owned")
+            .phase = OwnedDeliveryPhase::Queued;
+        state.refresh_ready(id);
+        state.notify_ready();
+    }
+
     /// Releases a lease, owned credit, and any running slot or lane exactly
     /// once.
     ///
@@ -508,6 +558,35 @@ mod tests {
         let lease = core.take_receive_reservation(sub).expect("receive credit available");
         core.enqueue(lease, key.map(|key| OrderingLaneKey::new("topic", Some(key), sub)));
         lease
+    }
+
+    #[test]
+    fn test_delivery_scheduler_retry_retains_credit_and_lane_and_releases_handler() {
+        let core = scheduler(1, 3, 3, 1);
+        let sub = Id::new(1);
+        assert!(core.register(sub));
+        core.set_dispatch_active(sub, true);
+        let first = queue(&core, sub, Some("a"));
+        let successor = queue(&core, sub, Some("a"));
+        let other = queue(&core, sub, Some("b"));
+        assert_eq!(core.take_ready(sub), Some(first));
+        core.handler_finished(first);
+        core.finish_attempt_waiting(first);
+        core.finish_attempt_waiting(first);
+        assert_eq!(core.snapshot_gauges(None).running_handlers, 0);
+        assert_eq!(core.lock().owned.len(), 3);
+        assert_eq!(core.take_ready(sub), Some(other));
+        core.complete(other);
+        assert_eq!(core.take_ready(sub), None);
+        core.wake_retry(first);
+        core.wake_retry(first);
+        assert_eq!(core.take_ready(sub), Some(first));
+        core.handler_finished(first);
+        assert_eq!(core.take_ready(sub), None);
+        core.complete(first);
+        assert_eq!(core.take_ready(sub), Some(successor));
+        core.complete(successor);
+        assert_invariants(&core);
     }
 
     #[test]

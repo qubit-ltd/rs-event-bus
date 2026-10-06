@@ -20,19 +20,27 @@ use std::thread::park_timeout;
 use std::time::Duration;
 
 use qubit_id::Id;
+use qubit_retry::RetrySessionStep;
 
 use crate::DeliveryError;
 use crate::Diagnostic;
 use crate::SubscriberId;
 use crate::codec::EventCodec;
 use crate::codec::decode_payload;
+use crate::error::DeliveryAttemptError;
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::CoordinatorMessage;
 use crate::facade::event_bus::EventBusInner;
-use crate::facade::event_bus::delivery::process_inbound;
+use crate::facade::event_bus::delivery::new_retry_session;
+use crate::facade::event_bus::delivery::notify_error_handlers;
+use crate::facade::event_bus::delivery::prepare_delivery;
+use crate::facade::event_bus::delivery::run_delivery_attempt;
+use crate::facade::event_bus::delivery::terminal_retry_error;
+use crate::facade::event_bus::failure::finish_failed_delivery;
 use crate::facade::event_bus::failure::panic_message;
+use crate::facade::event_bus::failure::settle_token;
 use crate::facade::event_bus::internal::OwnedSyncDelivery;
 use crate::facade::event_bus::internal::OwnerSettlementRouter;
 use crate::facade::event_bus::internal::close_spi_subscription;
@@ -41,10 +49,12 @@ use crate::facade::internal::SettlementRetryDecision;
 use crate::facade::internal::SettlementRetryState;
 use crate::facade::lifecycle::receive_poll_interval;
 use crate::model::Delivery;
+use crate::model::FailureDirective;
 use crate::model::SettlementTermination;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriptionStopReason;
 use crate::model::Topic;
+use crate::pipeline::DeliveryOutcome;
 use crate::pipeline::OrderingLaneKey;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventSubscriptionSpi;
@@ -99,6 +109,15 @@ pub(in crate::facade) fn run_subscription_worker<T>(
         loop {
             while let Ok(message) = receiver.try_recv() {
                 match message {
+                    CoordinatorMessage::AttemptFinished {
+                        lease_id,
+                        outcome,
+                        directive,
+                    } => {
+                        if let Some(delivery) = owned.get_mut(&lease_id) {
+                            delivery.result = Some((outcome, directive));
+                        }
+                    }
                     CoordinatorMessage::Abandoned(lease) => {
                         if let Some(delivery) = owned.get_mut(&lease) {
                             delivery.abandoned = true;
@@ -107,6 +126,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     CoordinatorMessage::HandlerFinished(lease) => {
                         if let Some(delivery) = owned.get_mut(&lease) {
                             delivery.handler_finished = true;
+                            delivery.running = false;
                         }
                     }
                     message @ CoordinatorMessage::Settlement { lease_id, .. } => {
@@ -145,6 +165,33 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         } else {
                             count_abandoned(&inner, control.id);
                         }
+                    } else if !delivery.running
+                        && !delivery.abandoned
+                        && delivery.result.is_none()
+                        && delivery.settlement.is_none()
+                        && let Some(prepared) = delivery.delivery.as_ref()
+                    {
+                        delivery.due = None;
+                        delivery.handler_finished = true;
+                        let event = prepared.event_arc();
+                        delivery.settlement = if delivery.token.is_some()
+                            && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+                        {
+                            Some(CoordinatorMessage::Settlement {
+                                lease_id: lease,
+                                token: delivery.token.take(),
+                                disposition: DeliveryDisposition::Retry,
+                                event_id: event.id().clone(),
+                                topic: topic.name().into(),
+                                subscription_id: control.id,
+                                subscriber_id: subscriber_id.clone(),
+                            })
+                        } else {
+                            count_abandoned(&inner, control.id);
+                            delivery.abandoned = true;
+                            None
+                        };
+                        delivery.result = None;
                     }
                 }
             }
@@ -153,6 +200,82 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             let mut completed = Vec::new();
             let mut wait = receive_poll_interval();
             if !terminal {
+                for (&lease, delivery) in &mut owned {
+                    let router = OwnerSettlementRouter {
+                        lease_id: lease,
+                        sender: sender.clone(),
+                        inner: Arc::downgrade(&inner),
+                    };
+                    if delivery.handler_finished
+                        && let Some((outcome, directive)) = delivery.result.take()
+                    {
+                        *delivery.directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(directive);
+                        let terminal_result = if stopping {
+                            Some(match outcome {
+                                DeliveryOutcome::Success => Ok(()),
+                                DeliveryOutcome::Failure(error) => Err((
+                                    error,
+                                    if directive == FailureDirective::Retry {
+                                        FailureDirective::Requeue
+                                    } else {
+                                        directive
+                                    },
+                                )),
+                            })
+                        } else if let Some(session) = &mut delivery.session {
+                            let result = match outcome {
+                                DeliveryOutcome::Success => Ok(()),
+                                DeliveryOutcome::Failure(error) => Err(DeliveryAttemptError::new(
+                                    "delivery",
+                                    Some(directive == FailureDirective::Retry),
+                                    error,
+                                )),
+                            };
+                            match session.record_result(result) {
+                                RetrySessionStep::Complete(_) => Some(Ok(())),
+                                RetrySessionStep::Failed(error) => {
+                                    Some(Err(terminal_retry_error(&inner, error, directive)))
+                                }
+                                RetrySessionStep::RetryAt(due) => {
+                                    delivery.due = Some(due);
+                                    inner.scheduler.finish_attempt_waiting(lease);
+                                    None
+                                }
+                            }
+                        } else {
+                            Some(match outcome {
+                                DeliveryOutcome::Success => Ok(()),
+                                DeliveryOutcome::Failure(error) => Err((
+                                    error,
+                                    if directive == FailureDirective::Retry {
+                                        FailureDirective::Discard
+                                    } else {
+                                        directive
+                                    },
+                                )),
+                            })
+                        };
+                        if let Some(result) = terminal_result {
+                            finish_attempt(&inner, &router, &control, &subscriber_id, &options, delivery, result);
+                        }
+                    }
+                    if let Some(due) = delivery.due
+                        && !stopping
+                    {
+                        let now = inner.clock.now();
+                        let cancelled = options
+                            .retry_cancellation_token()
+                            .is_some_and(qubit_retry::RetryCancellationToken::is_cancelled);
+                        let remaining = due.duration_since(now).unwrap_or(Duration::ZERO);
+                        if cancelled || remaining.is_zero() {
+                            delivery.due = None;
+                            delivery.handler_finished = false;
+                            inner.scheduler.wake_retry(lease);
+                        } else {
+                            wait = wait.min(remaining);
+                        }
+                    }
+                }
                 if !stopping {
                     while let Some(lease) = inner.scheduler.take_settlement_ready(control.id) {
                         if let Some(delivery) = owned.get_mut(&lease) {
@@ -161,7 +284,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     }
                 }
                 for (&lease, delivery) in &mut owned {
-                    if !delivery.handler_finished || (!delivery.settlement_granted && !stopping) {
+                    if !delivery.handler_finished
+                        || delivery.due.is_some()
+                        || (!delivery.settlement_granted && !stopping)
+                    {
                         continue;
                     }
                     if delivery.settlement.is_none() {
@@ -207,16 +333,93 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         fail_internal(&inner, &control, "missing_owned_delivery");
                         break;
                     };
-                    let Some((message, decoded)) = delivery.inbound.take() else {
-                        fail_internal(&inner, &control, "missing_owned_payload");
-                        break;
+                    let router = OwnerSettlementRouter {
+                        lease_id: lease,
+                        sender: sender.clone(),
+                        inner: Arc::downgrade(&inner),
                     };
+                    if let Some((message, decoded)) = delivery.inbound.take() {
+                        let provider_attempt = message.provider_attempt();
+                        let (address, event_id, timestamp, headers, ordering_key, _, token, metadata) =
+                            message.into_parts();
+                        delivery.token = token;
+                        delivery.delivery = prepare_delivery(
+                            &inner,
+                            &router,
+                            control.id,
+                            &subscriber_id,
+                            &topic,
+                            &options,
+                            address,
+                            event_id,
+                            timestamp,
+                            headers,
+                            ordering_key,
+                            decoded,
+                            &mut delivery.token,
+                            metadata,
+                            provider_attempt,
+                        );
+                        if delivery.delivery.is_none() {
+                            inner.scheduler.handler_finished(lease);
+                            let _ = sender.send(CoordinatorMessage::HandlerFinished(lease));
+                            continue;
+                        }
+                        match new_retry_session(&inner, &options, delivery.directive.clone()) {
+                            Ok(session) => delivery.session = session,
+                            Err(error) => {
+                                inner.scheduler.handler_finished(lease);
+                                finish_attempt(
+                                    &inner,
+                                    &router,
+                                    &control,
+                                    &subscriber_id,
+                                    &options,
+                                    delivery,
+                                    Err((error, FailureDirective::Discard)),
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    let attempt = if let Some(session) = &mut delivery.session {
+                        match session.begin_attempt() {
+                            Ok(attempt) => attempt.get(),
+                            Err(error) => {
+                                let directive = delivery
+                                    .directive
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .unwrap_or(FailureDirective::Discard);
+                                let result = terminal_retry_error(&inner, error, directive);
+                                inner.scheduler.handler_finished(lease);
+                                finish_attempt(
+                                    &inner,
+                                    &router,
+                                    &control,
+                                    &subscriber_id,
+                                    &options,
+                                    delivery,
+                                    Err(result),
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        1
+                    };
+                    delivery.attempts = attempt;
+                    delivery.handler_finished = false;
+                    delivery.running = true;
+                    let task_delivery = delivery
+                        .delivery
+                        .as_ref()
+                        .expect("prepared delivery")
+                        .next_attempt(attempt);
                     let task_inner = inner.clone();
                     let task_control = control.clone();
-                    let task_topic = topic.clone();
                     let task_options = options.clone();
                     let task_handler = handler.clone();
-                    let task_subscriber = subscriber_id.clone();
                     let task_sender = sender.clone();
                     inner.scheduler.submit(move || {
                         let _completion = crate::facade::event_bus::internal::HandlerCompletionGuard::new(
@@ -226,40 +429,47 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             task_sender.clone(),
                         );
                         let _context = BusContextGuard::enter(bus_identity);
-                        let router = OwnerSettlementRouter {
-                            lease_id: lease,
-                            sender: task_sender.clone(),
-                            inner: Arc::downgrade(&task_inner),
-                        };
-                        let result = catch_unwind(AssertUnwindSafe(|| {
-                            if !task_control.try_start() {
-                                count_abandoned(&task_inner, task_control.id);
-                            } else if task_control.is_cancelled() && !task_inner.scheduler.should_drain(task_control.id)
-                            {
-                                requeue_unstarted_message_via_owner(
-                                    &task_inner,
-                                    &router,
-                                    task_control.id,
-                                    &task_subscriber,
-                                    message,
-                                );
-                            } else {
-                                process_inbound(
-                                    &task_inner,
-                                    &router,
-                                    task_control.id,
-                                    &task_subscriber,
-                                    &task_topic,
+                        let event = task_delivery.event_arc();
+                        let outcome = if !task_control.try_start()
+                            || (task_control.is_cancelled() && !task_inner.scheduler.should_drain(task_control.id))
+                        {
+                            DeliveryOutcome::Failure(DeliveryError::Handler {
+                                source: Box::new(crate::facade::event_bus::internal::HandlerStartRejected),
+                            })
+                        } else {
+                            let interceptors = task_inner.facade_config.subscriber_interceptors::<T>();
+                            match catch_unwind(AssertUnwindSafe(|| {
+                                run_delivery_attempt(
                                     &task_options,
+                                    task_delivery,
                                     &task_handler,
-                                    message,
-                                    decoded,
-                                );
+                                    attempt,
+                                    &interceptors,
+                                )
+                            })) {
+                                Ok(outcome) => outcome,
+                                Err(payload) => DeliveryOutcome::Failure(DeliveryError::Handler {
+                                    source: Box::new(std::io::Error::other(
+                                        panic_message(payload.as_ref()).to_string(),
+                                    )),
+                                }),
                             }
-                        }));
-                        if let Err(payload) = result {
-                            task_inner.emit_internal("delivery_worker", panic_message(payload.as_ref()).into());
-                        }
+                        };
+                        let directive = match &outcome {
+                            DeliveryOutcome::Success => FailureDirective::Discard,
+                            DeliveryOutcome::Failure(error) => notify_error_handlers(
+                                &task_inner,
+                                &task_options,
+                                &event,
+                                error,
+                                task_options.retry_policy().is_some(),
+                            ),
+                        };
+                        let _ = task_sender.send(CoordinatorMessage::AttemptFinished {
+                            lease_id: lease,
+                            outcome,
+                            directive,
+                        });
                     });
                 }
                 if receive_closed && owned.is_empty() {
@@ -327,6 +537,14 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                         _lease: lease_guard,
                                         _tracker: inner.tracker.track_delivery(topic.name()),
                                         inbound: None,
+                                        delivery: None,
+                                        token: None,
+                                        session: None,
+                                        directive: Arc::new(std::sync::Mutex::new(None)),
+                                        due: None,
+                                        attempts: 0,
+                                        result: None,
+                                        running: false,
                                         settlement: None,
                                         handler_finished: true,
                                         settlement_granted: false,
@@ -377,6 +595,14 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                     _lease: lease_guard,
                                     _tracker: inner.tracker.track_delivery(topic.name()),
                                     inbound: Some((message, decoded)),
+                                    delivery: None,
+                                    token: None,
+                                    session: None,
+                                    directive: Arc::new(std::sync::Mutex::new(None)),
+                                    due: None,
+                                    attempts: 0,
+                                    result: None,
+                                    running: false,
                                     settlement: None,
                                     handler_finished: false,
                                     settlement_granted: true,
@@ -436,11 +662,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
         inner.emit_internal("subscription_worker", panic_message(payload.as_ref()).into());
         // Preserve payload/tracker lifetime even when an injected clock or an
         // internal operation unwinds while pool callbacks are still running.
-        while owned
-            .values()
-            .any(|delivery| delivery.inbound.is_none() && !delivery.handler_finished)
-        {
+        while owned.values().any(|delivery| delivery.running) {
             match receiver.recv() {
+                Ok(CoordinatorMessage::AttemptFinished { .. }) => {}
                 Ok(CoordinatorMessage::Abandoned(lease)) => {
                     if let Some(delivery) = owned.get_mut(&lease) {
                         delivery.abandoned = true;
@@ -449,6 +673,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                 Ok(CoordinatorMessage::HandlerFinished(lease)) => {
                     if let Some(delivery) = owned.get_mut(&lease) {
                         delivery.handler_finished = true;
+                        delivery.running = false;
                     }
                 }
                 Ok(message @ CoordinatorMessage::Settlement { lease_id, .. }) => {
@@ -474,11 +699,60 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     }
     // Provider close is the recovery boundary for every unresolved token.
     for (_, delivery) in owned.drain() {
-        if delivery.settlement.is_some() || delivery.inbound.is_some() {
+        if !delivery.abandoned
+            && (delivery.settlement.is_some()
+                || delivery.inbound.is_some()
+                || delivery.token.is_some()
+                || delivery.due.is_some())
+        {
             count_abandoned(&inner, control.id);
         }
         drop(delivery);
     }
+}
+
+/// Applies a terminal attempt result on the receiver owner. The opaque token
+/// moves only to this owner's settlement channel. Completion is queued after
+/// settlement intent so the next loop cannot drop the lease too early.
+fn finish_attempt<T: Send + Sync + 'static>(
+    inner: &Arc<EventBusInner>,
+    router: &OwnerSettlementRouter,
+    control: &SubscriptionControl,
+    subscriber_id: &SubscriberId,
+    options: &SubscribeOptions<T>,
+    delivery: &mut OwnedSyncDelivery<'_, T>,
+    result: Result<(), (DeliveryError, FailureDirective)>,
+) {
+    let event = delivery
+        .delivery
+        .as_ref()
+        .expect("terminal prepared delivery")
+        .event_arc();
+    match result {
+        Ok(()) => settle_token(
+            inner,
+            router,
+            delivery.token.take(),
+            DeliveryDisposition::Accept,
+            &event,
+            control.id,
+            subscriber_id,
+        ),
+        Err((error, directive)) => finish_failed_delivery(
+            inner,
+            router,
+            delivery.token.take(),
+            event,
+            control.id,
+            subscriber_id,
+            options,
+            error,
+            delivery.attempts,
+            directive,
+        ),
+    }
+    delivery.handler_finished = false;
+    let _ = router.sender.send(CoordinatorMessage::HandlerFinished(router.lease_id));
 }
 
 /// Extracts the immutable disposition for duplicate-intent invariant checks.
@@ -889,37 +1163,4 @@ fn canceled_intent(
         requested: DeliveryDisposition::Retry,
     });
     None
-}
-
-/// Routes canceled granted work to its owner without blocking the actual pool
-/// worker.
-///
-/// # Parameters
-/// - `inner`: bus capabilities and counters.
-/// - `router`: nonblocking channel to the original receiver.
-/// - `subscription_id`: receiver that issued the token.
-/// - `subscriber_id`: subscriber identity for diagnostics.
-/// - `message`: granted payload stopped before pipeline execution.
-///
-/// # Side Effects
-/// Sends Retry or explicit abandonment; never calls the provider from the pool.
-pub(in crate::facade) fn requeue_unstarted_message_via_owner(
-    inner: &EventBusInner,
-    router: &OwnerSettlementRouter,
-    subscription_id: Id,
-    subscriber_id: &SubscriberId,
-    message: InboundMessage,
-) {
-    if let Some(CoordinatorMessage::Settlement {
-        token,
-        disposition,
-        event_id,
-        topic,
-        ..
-    }) = canceled_intent(inner, router.lease_id, subscription_id, subscriber_id, message)
-    {
-        router.settle(token, disposition, event_id, &topic, subscription_id, subscriber_id);
-    } else {
-        router.abandon(subscription_id);
-    }
 }

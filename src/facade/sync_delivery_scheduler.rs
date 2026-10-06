@@ -277,15 +277,20 @@ impl SyncDeliveryScheduler {
         self.core.handler_finished(lease);
         self.route_notifications();
     }
-    /// Returns all remaining credits once the owner has released this delivery.
-    ///
-    /// # Parameters
-    /// - `lease`: delivery whose payload, token and tracking have been
-    ///   released.
-    ///
-    /// # Side Effects
-    /// Returns remaining ownership and lane credits; repeated calls are
-    /// harmless.
+    /// Preserves `lease` and its lane while the owner waits between attempts.
+    pub(super) fn finish_attempt_waiting(&self, lease: u64) {
+        self.core.finish_attempt_waiting(lease);
+        self.route_notifications();
+    }
+
+    /// Requeues the existing due `lease` and wakes the next eligible owner.
+    pub(super) fn wake_retry(&self, lease: u64) {
+        self.core.wake_retry(lease);
+        self.route_notifications();
+    }
+
+    /// Returns `lease` ownership and lane credits after its resources are
+    /// released. Repeated calls are harmless and wake eligible owners.
     pub(super) fn complete(&self, lease: u64) {
         self.core.complete(lease);
         self.route_notifications();

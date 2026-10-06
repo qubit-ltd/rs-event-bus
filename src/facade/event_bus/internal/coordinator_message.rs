@@ -10,12 +10,23 @@
 use qubit_id::Id;
 
 use crate::model::EventId;
+use crate::model::FailureDirective;
 use crate::model::SubscriberId;
+use crate::pipeline::DeliveryOutcome;
 use crate::spi::DeliveryDisposition;
 use crate::spi::SettlementToken;
 
 /// Work routed to the receiver-owning subscription coordinator.
 pub(in crate::facade) enum CoordinatorMessage {
+    /// One completed attempt; contains no provider settlement token.
+    AttemptFinished {
+        /// Stable owned delivery identity.
+        lease_id: u64,
+        /// Middleware and handler result for this attempt.
+        outcome: DeliveryOutcome,
+        /// Error-handler decision, evaluated exactly once for a failure.
+        directive: FailureDirective,
+    },
     /// Settlement request to be executed by the receiver owner.
     Settlement {
         /// Scheduler lease retained until owner completion.

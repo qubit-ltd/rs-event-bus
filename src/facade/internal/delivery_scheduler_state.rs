@@ -104,7 +104,9 @@ impl DeliverySchedulerState {
             }
             let gauge = match record.phase {
                 OwnedDeliveryPhase::ReservedReceive => &mut snapshot.reserved_receives,
-                OwnedDeliveryPhase::Queued | OwnedDeliveryPhase::QueuedSettlement => &mut snapshot.queued,
+                OwnedDeliveryPhase::Queued
+                | OwnedDeliveryPhase::QueuedSettlement
+                | OwnedDeliveryPhase::WaitingRetry => &mut snapshot.queued,
                 OwnedDeliveryPhase::Running => &mut snapshot.running_handlers,
                 OwnedDeliveryPhase::Settling => &mut snapshot.settling,
             };
@@ -247,8 +249,10 @@ impl DeliverySchedulerState {
         ) {
             sub.remove_queued(lease);
         }
-        if matches!(record.phase, OwnedDeliveryPhase::Running | OwnedDeliveryPhase::Settling)
-            && let Some(lane) = record.lane
+        if matches!(
+            record.phase,
+            OwnedDeliveryPhase::Running | OwnedDeliveryPhase::Settling | OwnedDeliveryPhase::WaitingRetry
+        ) && let Some(lane) = record.lane
         {
             sub.locked_lanes.remove(&lane);
         }

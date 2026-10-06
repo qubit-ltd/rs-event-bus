@@ -8,4 +8,5 @@
 mod construction_tests;
 mod failure_tests;
 mod lifecycle_tests;
+mod retry_tests;
 mod subscribing_tests;
