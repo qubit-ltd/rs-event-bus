@@ -207,6 +207,7 @@ pub(crate) fn outbound_message() -> OutboundMessage {
 #[derive(Clone)]
 pub(crate) struct FakeEventBusSpi {
     capabilities: EventBusCapabilities,
+    capabilities_calls: Arc<AtomicUsize>,
     queues: Arc<Mutex<Vec<(Id, SyncQueue)>>>,
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
@@ -221,6 +222,7 @@ impl FakeEventBusSpi {
     pub(crate) fn with_capabilities(capabilities: EventBusCapabilities) -> Self {
         Self {
             capabilities,
+            capabilities_calls: Arc::new(AtomicUsize::new(0)),
             queues: Arc::default(),
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
@@ -231,6 +233,9 @@ impl FakeEventBusSpi {
     #[must_use]
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
+    }
+    pub(crate) fn capabilities_calls(&self) -> usize {
+        self.capabilities_calls.load(Ordering::Acquire)
     }
     #[must_use]
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
@@ -319,6 +324,7 @@ fn inbound_from_outbound(
 
 impl EventBusSpi for FakeEventBusSpi {
     fn capabilities(&self) -> EventBusCapabilities {
+        self.capabilities_calls.fetch_add(1, Ordering::AcqRel);
         self.capabilities
     }
 
