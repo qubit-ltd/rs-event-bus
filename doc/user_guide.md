@@ -1312,14 +1312,17 @@ For the synchronous order subscribers created earlier, keep their handles in app
 use std::time::Duration;
 use qubit_event_bus::spi::ShutdownMode;
 
-audit_subscription.cancel()?;
-view_subscription.cancel()?;
-bus.shutdown(ShutdownMode::Graceful {
+let audit_cancel_result = audit_subscription.cancel();
+let view_cancel_result = view_subscription.cancel();
+let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
     timeout: Duration::from_secs(3),
-})?;
+});
+audit_cancel_result?;
+view_cancel_result?;
+shutdown_result?;
 ```
 
-Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. The bounded shutdown helper below handles bus shutdown timeouts.
+The snippet attempts both cancellations and bus shutdown even if an earlier step fails, then returns the first error in that order. Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. The bounded shutdown helper below handles bus shutdown timeouts.
 
 ### Shut down a sync bus
 

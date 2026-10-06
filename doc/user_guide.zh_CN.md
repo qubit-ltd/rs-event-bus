@@ -1310,14 +1310,17 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 use std::time::Duration;
 use qubit_event_bus::spi::ShutdownMode;
 
-audit_subscription.cancel()?;
-view_subscription.cancel()?;
-bus.shutdown(ShutdownMode::Graceful {
+let audit_cancel_result = audit_subscription.cancel();
+let view_cancel_result = view_subscription.cancel();
+let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
     timeout: Duration::from_secs(3),
-})?;
+});
+audit_cancel_result?;
+view_cancel_result?;
+shutdown_result?;
 ```
 
-仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。下文的有界停机 helper 处理总线关闭超时。
+片段会尝试两次取消和总线关闭，即使先前步骤失败；随后按上述顺序返回第一个错误。仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。下文的有界停机 helper 处理总线关闭超时。
 
 ### 同步总线的停机流程
 
