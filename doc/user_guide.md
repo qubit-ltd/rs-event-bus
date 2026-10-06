@@ -1185,7 +1185,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await`, or dropping the handle, ends the subscription. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
+At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await` ends the subscription and reports provider close errors. Dropping the handle requests disposal but cannot await provider close or report its errors; explicitly await `close()` when those errors matter. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
 
 ### Recover a stopped encoded subscription
 
@@ -1305,6 +1305,21 @@ Worker completion includes resource cleanup, including user-owned observer captu
 ## Lifecycle, waiting, and shutdown
 
 Startup order is: create the bus, register every handler, then start accepting business requests. During shutdown, stop new business requests first, then close message sources such as the notification publisher, and then deal with subscriptions and the bus. Cancel a sync subscription with `cancel()`, and an async subscription with `close().await`. If already-received messages should be finished when possible, the order of cancelling subscriptions and shutting down the bus depends on the transport and has to be verified on that transport. Cancelling a subscription does not mean the business write succeeded.
+
+For the synchronous order subscribers created earlier, keep their handles in application state and close them before the bus:
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+
+audit_subscription.cancel()?;
+view_subscription.cancel()?;
+bus.shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(3),
+})?;
+```
+
+Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. The bounded shutdown helper below handles bus shutdown timeouts.
 
 ### Shut down a sync bus
 
@@ -1435,7 +1450,26 @@ if outcome == WaitOutcome::TimedOut {
 
 ### Shut down an async bus
 
-Use `try_shutdown_async(&bus).await` from the complete compiled source above: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
+The async runner must be driven while the application receives events. On a stop signal, end that `run` future, await the handle's close, then shut down the bus. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+
+let run_result = tokio::select! {
+    result = subscription.run(handler) => Some(result),
+    _ = shutdown_signal => None,
+};
+let close_result = subscription.close().await;
+let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(3),
+}).await;
+close_result?;
+shutdown_result?;
+if let Some(result) = run_result { result?; }
+```
+
+The excerpt attempts both cleanup steps even if `run` or `close` fails; applications that need every error should record each result before returning. `close().await` exposes provider close errors. Dropping `AsyncSubscription` requests disposal but cannot report errors from asynchronous close, so it is unsuitable when the application needs that result. Use `try_shutdown_async(&bus).await` from the complete compiled source above when bounded retries are needed: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 

@@ -225,6 +225,8 @@ let orders = OrderService::new(bus.clone());
 
 `OrderService` 是应用中的示意类型，上面仅展示启动装配片段。若 provider 位于独立 crate，应用需依赖该 crate，并在装配模块写入 `use provider_crate as _;`，让它链接进可执行程序。应用应持有总线和订阅句柄；关闭时先取消订阅，再关闭总线。发现机制和配置边界见[用户手册](doc/user_guide.zh_CN.md)。
 
+停机时，对每个同步句柄调用 `Subscription::cancel()`，再关闭总线；仅丢弃同步句柄不会取消订阅。异步总线需在后台任务中驱动 `AsyncSubscription::run()`，停机时等待句柄的 `close().await`，然后关闭总线。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)显式等待 `close()`。
+
 ## 能力与边界
 
 - `Topic<T>`、`PublishRequest<T>`、`SubscribeRequest<T>` 将事件主题、发布和订阅保持为类型化 API。

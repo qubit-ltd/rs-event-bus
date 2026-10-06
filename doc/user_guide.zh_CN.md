@@ -1185,7 +1185,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行；调用 `close().await` 或丢弃句柄则结束订阅。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
+应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
 ### 恢复因编码边界失败而停止的订阅
 
@@ -1303,6 +1303,21 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 ## 生命周期、等待与停机
 
 启动顺序是：创建总线 → 登记所有处理函数 → 开始接收业务请求。停机时先停止新业务请求，再关闭通知发布器等消息来源，最后处理订阅和总线。同步订阅用 `cancel()`，异步订阅用 `close().await`。如果需要尽量完成已经接收的消息，要根据所用传递实现决定取消订阅和关闭总线的先后顺序，并在该实现上验证；取消订阅本身不表示业务已经写入成功。
+
+前面建立的同步订单订阅应由应用保存句柄，停机时先取消，再关闭总线：
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+
+audit_subscription.cancel()?;
+view_subscription.cancel()?;
+bus.shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(3),
+})?;
+```
+
+仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。下文的有界停机 helper 处理总线关闭超时。
 
 ### 同步总线的停机流程
 
@@ -1433,7 +1448,26 @@ if outcome == WaitOutcome::TimedOut {
 
 ### 异步总线的停机流程
 
-使用上面完整编译源中的 `try_shutdown_async(&bus).await`；两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
+应用运行期间要持续驱动异步 `run`。收到停止信号后，先结束该 `run` future，等待句柄关闭，再关闭总线。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
+
+```rust
+use std::time::Duration;
+use qubit_event_bus::spi::ShutdownMode;
+
+let run_result = tokio::select! {
+    result = subscription.run(handler) => Some(result),
+    _ = shutdown_signal => None,
+};
+let close_result = subscription.close().await;
+let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
+    timeout: Duration::from_secs(3),
+}).await;
+close_result?;
+shutdown_result?;
+if let Some(result) = run_result { result?; }
+```
+
+即使 `run` 或 `close` 出错，片段也会尝试两个清理步骤；若应用要保留全部错误，应在返回前逐项记录结果。显式等待 `close().await` 才能获取 provider 关闭错误。丢弃 `AsyncSubscription` 会请求处置，却不能返回异步关闭错误；需要处理该错误时不可只依赖 drop。需要有界重试时，使用上面完整编译源中的 `try_shutdown_async(&bus).await`，其中两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 

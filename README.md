@@ -157,6 +157,8 @@ fn publish_order_created(
 
 At startup, call both subscription functions and keep their `Subscription` handles in application state; cancel them during shutdown. After a successful order commit, call `publish_order_created`. Its receipt reports provider admission, not successful audit or view writes. The `AuditLog` and `CustomerOrderView` traits are application interfaces; connect them to your actual stores. See the [user guide](doc/user_guide.md) for admission failures and delivery policy.
 
+For shutdown, call `Subscription::cancel()` on each sync handle, then shut down the bus; dropping a sync handle does not cancel it. With the async facade, drive `AsyncSubscription::run()` in a background task, await `close()` on its handle, then shut down the bus. Async handle drop requests disposal but cannot return an asynchronous provider close error. See the [lifecycle guide](doc/user_guide.md#lifecycle-waiting-and-shutdown) when that error must be observed.
+
 ### Assemble one shared bus at startup
 
 Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is automatically submitted to the synchronous catalog. `AsyncEventBusRegistry::discover()` does not include the async local provider; register it explicitly with `AsyncEventBusRegistry::with_local()`. In the application's startup wiring, select the sync provider before creating one bus and pass cloned handles to services:
