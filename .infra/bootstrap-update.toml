@@ -1,0 +1,1 @@
+profiles = ["ci-default", "dependency-policy-default", "pages-default", "style-exceptions-default"]
