@@ -80,6 +80,7 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -96,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sender.send(delivery.payload().clone()).unwrap();
         },
     )?;
-    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish_checked(
+        PublishRequest::new(topic, "order-42".to_owned())?,
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    )?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -205,6 +209,8 @@ let order_bus = bus.clone(); // inject into the order service; keep bus and both
 
 `audit_store` and `view_store` are storage objects the application has already built. The `Subscription` returned by `subscribe` is the subscription handle. Hold it, and call `cancel()` during shutdown. Dropping a synchronous subscription handle does not cancel the subscription. The closure passed to `bus.subscribe` is the handler. It calls the store when an event arrives. A store error is returned to the bus, and the subscription policy decides whether to retry or record the failure. See [Handle failures and retries](#handle-failures-and-retries).
 
+A synchronous local subscription uses one OS receiver thread. The default limit is 256 live subscriptions, and handlers run on a separate shared pool. The async local provider does not create one receiver thread per subscription; the application must drive `AsyncSubscription::run`.
+
 ### Publish after the transaction commits
 
 ```rust
@@ -250,6 +256,8 @@ pub fn create_order(
 ```
 
 Publish `OrderCreated` only after `create_and_commit` returns successfully. The caller should also check the receipt and record the event id, the order id, and the failure reason:
+
+`publish` returning `Ok(receipt)` means it obtained a receipt; inspect that receipt to learn the provider's admission result. Prefer `publish_checked(request, AdmissionRequirement::ProviderOrDestinationAccepted)` when the caller needs a checked admission result. If the requirement fails, `CheckedPublishError::Admission` retains the receipt so the application can inspect partial or rejected admission. For Redis, this requirement means only that the broker accepted the event; it does not mean a consumer ran or completed a business write.
 
 ```rust
 use qubit_event_bus::model::AdmissionRequirement;
@@ -1555,7 +1563,7 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 | `IdleWaitUnsupported` | The transport cannot report whether the whole topic is idle. Record completion in business code. Work the bus has already taken is not all of the work. |
 | Graceful shutdown times out | Check for a handler or a transport read or write that never returns, and for unfinished messages. Ask for the shutdown result again later. |
 
-`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. It does not count message reception or successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
+`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. Its `cancelled` counter counts async publish futures that were first polled and then dropped before returning; it does not mean the provider failed to accept the event, because a dropped call may already have been accepted. It does not count message reception or successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
 
 ## Delivery gaps and admission checks
 

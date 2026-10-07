@@ -21,6 +21,7 @@ use std::time::Duration;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -80,7 +81,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }))
     });
 
-    let _ = block_on(bus.publish(PublishRequest::new(topic, "order-42".to_owned())?))?;
+    let _ = block_on(bus.publish_checked(
+        PublishRequest::new(topic, "order-42".to_owned())?,
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    ))?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(2))?, "order-42");
     let shutdown_report = block_on(bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(2),

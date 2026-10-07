@@ -80,6 +80,7 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -96,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sender.send(delivery.payload().clone()).unwrap();
         },
     )?;
-    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish_checked(
+        PublishRequest::new(topic, "order-42".to_owned())?,
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    )?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -205,6 +209,8 @@ let order_bus = bus.clone(); // 注入订单服务；应用保留 bus 与订阅�
 
 `audit_store` 和 `view_store` 是应用构造好的存储访问对象。`subscribe` 返回的 `Subscription` 是订阅句柄，应用应持有它并在关闭时调用 `cancel()`；仅丢弃同步订阅句柄不会取消订阅。传给 `bus.subscribe` 的闭包是处理函数，收到事件后调用相应的存储；存储失败时返回错误，由订阅策略决定重试还是记录失败，见[处理失败和重试](#处理失败和重试)。
 
+同步 local 订阅每个占用一个 OS 接收线程，默认最多允许 256 个活跃订阅；处理函数由另一个共享线程池执行。异步 local provider 不会为每个订阅创建接收线程，但应用必须驱动 `AsyncSubscription::run`。
+
 ### 提交事务后发布
 
 ```rust
@@ -250,6 +256,8 @@ pub fn create_order(
 ```
 
 `create_and_commit` 成功返回后才发布 `OrderCreated`。调用方还应检查回执，并记录事件 ID、订单 ID 与失败原因：
+
+`publish` 返回 `Ok(receipt)` 只表示调用拿到了回执；要了解 provider 的接纳结果，还需检查回执。调用方需要确认接纳结果时，优先使用 `publish_checked(request, AdmissionRequirement::ProviderOrDestinationAccepted)`。接纳条件不满足时，`CheckedPublishError::Admission` 仍保留回执，应用可据此检查部分接纳或拒绝情况。对于 Redis，这项要求只表示 broker 接纳了事件，不表示消费者已经运行或业务写入已经完成。
 
 ```rust
 use qubit_event_bus::model::AdmissionRequirement;
@@ -1553,7 +1561,7 @@ if let Some(result) = run_result { result?; }
 | `IdleWaitUnsupported` | 所用实现不能报告整个主题是否空闲；可以由业务代码记录完成状态，不能把总线已取到的工作当作全部工作。 |
 | 平稳关闭超时 | 查是否有处理函数或底层读写一直没返回、是否还有未完成的消息；稍后再获取关闭结果。 |
 
-用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果，不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、处理方 ID、重试次数和最终错误。
+用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、处理方 ID、重试次数和最终错误。
 
 ## 投递缺口与接纳检查
 

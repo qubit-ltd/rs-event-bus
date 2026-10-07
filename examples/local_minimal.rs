@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -29,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
+    let _ = bus.publish_checked(
+        PublishRequest::new(topic, "order-42".to_owned())?,
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    )?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(2))?, "order-42");
     subscription.cancel()?;
     let report = bus.shutdown(ShutdownMode::Graceful {
