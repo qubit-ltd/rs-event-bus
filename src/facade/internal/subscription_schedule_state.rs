@@ -60,15 +60,11 @@ impl SubscriptionScheduleState {
             return None;
         }
         self.lanes.iter().position(|(lane, queue)| {
-            lane.as_ref()
-                .is_none_or(|key| !self.locked_lanes.contains(key))
-                && queue
-                    .front()
-                    .and_then(|lease| owned.get(lease))
-                    .is_some_and(|record| {
-                        record.phase == OwnedDeliveryPhase::QueuedSettlement
-                            || (handler_available && record.phase == OwnedDeliveryPhase::Queued)
-                    })
+            lane.as_ref().is_none_or(|key| !self.locked_lanes.contains(key))
+                && queue.front().and_then(|lease| owned.get(lease)).is_some_and(|record| {
+                    record.phase == OwnedDeliveryPhase::QueuedSettlement
+                        || (handler_available && record.phase == OwnedDeliveryPhase::Queued)
+                })
         })
     }
 

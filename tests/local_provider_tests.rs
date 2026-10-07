@@ -89,12 +89,7 @@ fn outbound_with_delay(topic: &str, value: u32, delay: Option<Duration>) -> Outb
     )
 }
 
-fn outbound_with_key_and_delay(
-    topic: &str,
-    value: u32,
-    key: &str,
-    delay: Option<Duration>,
-) -> OutboundMessage {
+fn outbound_with_key_and_delay(topic: &str, value: u32, key: &str, delay: Option<Duration>) -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new(topic).unwrap(),
         EventId::new(format!("event-{value}")).unwrap(),
@@ -110,11 +105,7 @@ fn request(id: u64, topic: &str) -> SpiSubscriptionRequest {
     request_with_payload_type(id, topic, TypeId::of::<u32>())
 }
 
-fn request_with_payload_type(
-    id: u64,
-    topic: &str,
-    payload_type_id: TypeId,
-) -> SpiSubscriptionRequest {
+fn request_with_payload_type(id: u64, topic: &str, payload_type_id: TypeId) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(id),
         TopicAddress::new(topic).unwrap(),
@@ -142,8 +133,7 @@ fn test_facade_and_registry_local_entries_share_the_registered_provider_path() {
     let _ = local.shutdown(ShutdownMode::Immediate).unwrap();
 
     let registry = EventBusRegistry::with_local().unwrap();
-    let config =
-        EventBusConfig::default().with_selection(ProviderSelection::named("memory").unwrap());
+    let config = EventBusConfig::default().with_selection(ProviderSelection::named("memory").unwrap());
     let from_registry = registry.create(&config).unwrap();
     let registry_receipt = from_registry
         .publish(PublishRequest::new(Topic::<u32>::new("local.events").unwrap(), 2).unwrap())
@@ -188,11 +178,7 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
     );
     let registry = EventBusRegistry::with_local().unwrap();
     let config = EventBusConfig::default()
-        .with_provider_options(
-            LocalEventBusConfig::new()
-                .queue_capacity(1)
-                .provider_options(),
-        )
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options())
         .with_facade_config(facade);
     let bus = registry.create(&config).unwrap();
     let topic = Topic::<u32>::new("local.admission").unwrap();
@@ -201,8 +187,7 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
     let handler_release_rx = Mutex::new(handler_release_rx);
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("blocked-subscriber", topic.clone())
-                .expect("valid subscriber ID"),
+            SubscribeRequest::new("blocked-subscriber", topic.clone()).expect("valid subscriber ID"),
             move |_| {
                 handler_entered_tx.send(()).unwrap();
                 handler_release_rx.lock().unwrap().recv().unwrap();
@@ -224,12 +209,8 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
         }
     });
 
-    let _ = bus
-        .publish(PublishRequest::new(topic.clone(), 1).unwrap())
-        .unwrap();
-    handler_entered_rx
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 1).unwrap()).unwrap();
+    handler_entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let rejected = (2..=8)
         .map(|value| bus.publish(PublishRequest::new(topic.clone(), value).unwrap()).unwrap())
         .find(|receipt| {
@@ -240,8 +221,7 @@ fn test_local_facade_reports_rejected_admission_in_receipt_and_diagnostic() {
             )))
         })
         .expect("bounded local/provider and facade buffers eventually reject a destination");
-    let (event_id, subscriber_id, reason) =
-        diagnostic_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (event_id, subscriber_id, reason) = diagnostic_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(event_id, *rejected.input_event_id());
     assert_eq!(subscriber_id.as_str(), "blocked-subscriber");
     assert_eq!(reason.as_ref(), "subscription queue is full");
@@ -263,20 +243,14 @@ fn test_local_provider_admits_only_matching_topic_subscriptions_and_reports_capa
         panic!("local provider reports per-destination admission");
     };
     assert_eq!(1, first_admission.len());
-    assert!(matches!(
-        first_admission[0].status(),
-        AdmissionStatus::Accepted
-    ));
+    assert!(matches!(first_admission[0].status(), AdmissionStatus::Accepted));
 
     let second_admission = spi.publish(outbound("orders.created", 2)).unwrap();
     let PublishAcknowledgement::DestinationAdmissions(second_admission) = second_admission else {
         panic!("local provider reports per-destination admission");
     };
     assert_eq!(1, second_admission.len());
-    assert!(matches!(
-        second_admission[0].status(),
-        AdmissionStatus::Rejected(_)
-    ));
+    assert!(matches!(second_admission[0].status(), AdmissionStatus::Rejected(_)));
     assert!(matches!(
         first.receive(Duration::ZERO).unwrap(),
         ReceiveOutcome::Message(_)
@@ -299,11 +273,7 @@ fn test_topic_routing_ignores_unrelated_subscriptions() {
         for offset in (1..=2).rev() {
             let id_number = (topic_index * 2 + offset) as u64;
             let id = Id::new(id_number);
-            subscriptions.push((
-                topic_index,
-                id,
-                spi.subscribe(request(id_number, &topic)).unwrap(),
-            ));
+            subscriptions.push((topic_index, id, spi.subscribe(request(id_number, &topic)).unwrap()));
         }
     }
 
@@ -319,10 +289,7 @@ fn test_topic_routing_ignores_unrelated_subscriptions() {
             Id::new((TARGET_TOPIC * 2 + 1) as u64),
             Id::new((TARGET_TOPIC * 2 + 2) as u64)
         ],
-        admissions
-            .iter()
-            .map(|item| item.subscription_id())
-            .collect::<Vec<_>>()
+        admissions.iter().map(|item| item.subscription_id()).collect::<Vec<_>>()
     );
     assert!(
         admissions
@@ -350,17 +317,9 @@ fn test_topic_routing_ignores_unrelated_subscriptions() {
 fn test_topic_type_rebind_after_last_subscription_closes() {
     let spi = create(&LocalEventBusConfig::default());
     let mut first = spi
-        .subscribe(request_with_payload_type(
-            101,
-            "typed.topic",
-            TypeId::of::<u32>(),
-        ))
+        .subscribe(request_with_payload_type(101, "typed.topic", TypeId::of::<u32>()))
         .unwrap();
-    let conflict = match spi.subscribe(request_with_payload_type(
-        102,
-        "typed.topic",
-        TypeId::of::<String>(),
-    )) {
+    let conflict = match spi.subscribe(request_with_payload_type(102, "typed.topic", TypeId::of::<String>())) {
         Ok(_) => panic!("the same topic name cannot have conflicting native payload types"),
         Err(error) => error,
     };
@@ -374,11 +333,7 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
     first.close().unwrap();
 
     let mut replacement = spi
-        .subscribe(request_with_payload_type(
-            103,
-            "typed.topic",
-            TypeId::of::<String>(),
-        ))
+        .subscribe(request_with_payload_type(103, "typed.topic", TypeId::of::<String>()))
         .expect("a topic may use a new payload type after its last subscriber closes");
     let message = OutboundMessage::new(
         TopicAddress::new("typed.topic").unwrap(),
@@ -389,8 +344,7 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
         None,
         TransportPayload::Native(Arc::new(String::from("replacement payload"))),
     );
-    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(message).unwrap()
-    else {
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(message).unwrap() else {
         panic!("local provider returns destination admissions");
     };
     assert_eq!(1, admissions.len());
@@ -402,10 +356,7 @@ fn test_topic_type_rebind_after_last_subscription_closes() {
     let TransportPayload::Native(payload) = received.payload() else {
         panic!("replacement payload must remain native");
     };
-    assert_eq!(
-        "replacement payload",
-        payload.downcast_ref::<String>().unwrap()
-    );
+    assert_eq!("replacement payload", payload.downcast_ref::<String>().unwrap());
 }
 
 #[test]
@@ -417,8 +368,7 @@ fn test_dropped_subscription_id_can_be_reused_across_topics() {
     let mut replacement = spi
         .subscribe(request(176, "stale.after"))
         .expect("a dropped subscription no longer reserves its provider-wide ID");
-    let PublishAcknowledgement::DestinationAdmissions(admissions) =
-        spi.publish(outbound("stale.after", 42)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(outbound("stale.after", 42)).unwrap()
     else {
         panic!("local provider returns destination admissions");
     };
@@ -486,10 +436,7 @@ fn test_capacity_counts_in_flight() {
     assert!(matches!(rejected[0].status(), AdmissionStatus::Rejected(_)));
 
     subscription
-        .settle(
-            message.take_settlement().as_ref().unwrap(),
-            DeliveryDisposition::Accept,
-        )
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
     let PublishAcknowledgement::DestinationAdmissions(accepted) =
         spi.publish(outbound("capacity.inflight", 3)).unwrap()
@@ -507,17 +454,13 @@ fn test_capacity_retry_preserves_reservation() {
     let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("event should be received");
     };
-    let PublishAcknowledgement::DestinationAdmissions(rejected) =
-        spi.publish(outbound("capacity.retry", 2)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.retry", 2)).unwrap()
     else {
         panic!("local provider returns destination admissions");
     };
     assert!(matches!(rejected[0].status(), AdmissionStatus::Rejected(_)));
     subscription
-        .settle(
-            message.take_settlement().as_ref().unwrap(),
-            DeliveryDisposition::Retry,
-        )
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Retry)
         .unwrap();
     assert!(matches!(
         subscription.receive(Duration::ZERO).unwrap(),
@@ -555,12 +498,9 @@ fn test_idle_wait_includes_delayed_queued_message() {
 fn test_idle_wait_includes_in_flight_message() {
     let spi = create(&LocalEventBusConfig::default());
     let mut receiver = spi.subscribe(request(131, "idle.inflight")).unwrap();
-    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.inflight").unwrap();
-    let _ = bus
-        .publish(PublishRequest::new(topic.clone(), 7).unwrap())
-        .unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 7).unwrap()).unwrap();
     let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
         panic!("published message is available");
     };
@@ -570,14 +510,10 @@ fn test_idle_wait_includes_in_flight_message() {
         WaitOutcome::TimedOut
     );
     receiver
-        .settle(
-            message.take_settlement().as_ref().unwrap(),
-            DeliveryDisposition::Accept,
-        )
+        .settle(message.take_settlement().as_ref().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
     assert_eq!(
-        bus.wait_for_idle(&topic, Some(Duration::from_secs(1)))
-            .unwrap(),
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(1))).unwrap(),
         WaitOutcome::Idle
     );
 }
@@ -586,12 +522,9 @@ fn test_idle_wait_includes_in_flight_message() {
 fn test_idle_wait_wakes_when_subscription_closes() {
     let spi = create(&LocalEventBusConfig::new().queue_capacity(2));
     let mut receiver = spi.subscribe(request(132, "idle.close")).unwrap();
-    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.close").unwrap();
-    let _ = bus
-        .publish(PublishRequest::new(topic.clone(), 8).unwrap())
-        .unwrap();
+    let _ = bus.publish(PublishRequest::new(topic.clone(), 8).unwrap()).unwrap();
     assert_eq!(
         bus.wait_for_idle(&topic, Some(Duration::ZERO)).unwrap(),
         WaitOutcome::TimedOut
@@ -602,17 +535,12 @@ fn test_idle_wait_wakes_when_subscription_closes() {
     let waiter_topic = topic.clone();
     let waiter = spawn(move || {
         started_tx.send(()).unwrap();
-        result_tx
-            .send(waiter_bus.wait_for_idle(&waiter_topic, None))
-            .unwrap();
+        result_tx.send(waiter_bus.wait_for_idle(&waiter_topic, None)).unwrap();
     });
     started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     receiver.close().unwrap();
     assert_eq!(
-        result_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .unwrap(),
+        result_rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
         WaitOutcome::Idle
     );
     waiter.join().unwrap();
@@ -621,8 +549,7 @@ fn test_idle_wait_wakes_when_subscription_closes() {
 #[test]
 fn test_idle_wait_is_unsupported_for_generic_provider() {
     let spi = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::from_spi(ProviderId::new("fake").unwrap(), spi)
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let topic = Topic::<u32>::new("idle.unsupported").unwrap();
 
     assert!(matches!(
@@ -659,10 +586,7 @@ fn test_local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() 
             move |delivery: Delivery<u32>| {
                 let current = active_by_handler.fetch_add(1, Ordering::AcqRel) + 1;
                 maximum_by_handler.fetch_max(current, Ordering::AcqRel);
-                observed_by_handler
-                    .lock()
-                    .unwrap()
-                    .push(*delivery.payload());
+                observed_by_handler.lock().unwrap().push(*delivery.payload());
                 if *delivery.payload() == 1 {
                     first_started_tx.send(()).unwrap();
                     release_first_rx.lock().unwrap().recv().unwrap();
@@ -682,27 +606,14 @@ fn test_local_facade_serializes_same_ordering_key_and_preserves_enqueue_order() 
             .unwrap();
         let _ = bus.publish(request).unwrap();
         if value == 1 {
-            first_started_rx
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
+            first_started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         }
     }
     release_first_tx.send(()).unwrap();
+    assert_eq!(handler_done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+    assert_eq!(handler_done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
     assert_eq!(
-        handler_done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        handler_done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        bus.wait_for_idle(&topic, Some(Duration::from_secs(2)))
-            .unwrap(),
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap(),
         WaitOutcome::Idle
     );
 
@@ -756,18 +667,13 @@ fn test_local_facade_allows_a_different_ordering_key_to_progress_while_one_handl
     let mut completed = vec![done_rx.recv_timeout(Duration::from_secs(2)).unwrap()];
     completed.push(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_eq!(
-        bus.wait_for_idle(&topic, Some(Duration::from_secs(2)))
-            .unwrap(),
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap(),
         WaitOutcome::Idle
     );
     subscription.cancel().unwrap();
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 
-    assert_eq!(
-        progressed,
-        Some(3),
-        "key-b delivery must not wait behind key-a handler"
-    );
+    assert_eq!(progressed, Some(3), "key-b delivery must not wait behind key-a handler");
     assert!(completed.contains(&1));
     assert!(completed.contains(&2));
 }
@@ -810,11 +716,7 @@ fn test_local_facade_delayed_message_does_not_block_immediate_message_on_another
     subscription.cancel().unwrap();
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 
-    assert_eq!(
-        progressed,
-        Some(2),
-        "a not-yet-due key-a message must not block key-b"
-    );
+    assert_eq!(progressed, Some(2), "a not-yet-due key-a message must not block key-b");
     assert!(
         matches!(immediate_receipt.acknowledgement(), PublishAcknowledgement::DestinationAdmissions(items)
         if matches!(items.as_slice(), [item] if matches!(item.status(), AdmissionStatus::Accepted)))
@@ -831,19 +733,12 @@ fn test_local_subscription_redelivers_retry_and_settlement_is_idempotent() {
         panic!("published message is available");
     };
     let token = message.take_settlement().unwrap();
-    subscription
-        .settle(&token, DeliveryDisposition::Retry)
-        .unwrap();
-    subscription
-        .settle(&token, DeliveryDisposition::Retry)
-        .unwrap();
-    let conflict = subscription
-        .settle(&token, DeliveryDisposition::Accept)
-        .unwrap_err();
+    subscription.settle(&token, DeliveryDisposition::Retry).unwrap();
+    subscription.settle(&token, DeliveryDisposition::Retry).unwrap();
+    let conflict = subscription.settle(&token, DeliveryDisposition::Accept).unwrap_err();
     assert_eq!("invalid_settlement_token", conflict.kind());
 
-    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("retry disposition requeues the same event");
     };
     assert_eq!("event-7", redelivery.id().as_str());
@@ -878,9 +773,7 @@ fn test_local_subscription_retry_preserves_same_key_order_at_capacity() {
     let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("first event is available");
     };
-    let first_token = first
-        .take_settlement()
-        .expect("first event requires settlement");
+    let first_token = first.take_settlement().expect("first event requires settlement");
     let _ = spi
         .publish(outbound_with_key_and_delay("events", 2, "orders", None))
         .unwrap();
@@ -888,16 +781,12 @@ fn test_local_subscription_retry_preserves_same_key_order_at_capacity() {
         .settle(&first_token, DeliveryDisposition::Retry)
         .expect("retry reuses the reservation held by its in-flight delivery");
 
-    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("retried event is immediately available");
     };
     assert_eq!("event-1", redelivery.id().as_str());
     subscription
-        .settle(
-            &redelivery.take_settlement().unwrap(),
-            DeliveryDisposition::Accept,
-        )
+        .settle(&redelivery.take_settlement().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
     let ReceiveOutcome::Message(second) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("same-key successor follows its retried predecessor");
@@ -924,40 +813,31 @@ fn test_local_subscription_retry_preserves_key_fifo_while_other_key_progresses()
         .publish(outbound_with_key_and_delay("events", 3, "customers", None))
         .unwrap();
 
-    let ReceiveOutcome::Message(mut other_key) = subscription.receive(Duration::ZERO).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut other_key) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("an immediate ordering key can pass the delayed key head");
     };
     assert_eq!("event-3", other_key.id().as_str());
-    let other_token = other_key
-        .take_settlement()
-        .expect("delivery requires settlement");
+    let other_token = other_key.take_settlement().expect("delivery requires settlement");
     subscription
         .settle(&other_token, DeliveryDisposition::Accept)
         .expect("other key completes independently");
 
-    let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::from_secs(1)).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::from_secs(1)).unwrap() else {
         panic!("the delayed order becomes ready");
     };
     assert_eq!("event-1", first.id().as_str());
-    let first_token = first
-        .take_settlement()
-        .expect("delivery requires settlement");
+    let first_token = first.take_settlement().expect("delivery requires settlement");
     subscription
         .settle(&first_token, DeliveryDisposition::Retry)
         .expect("retry restores the first event to its key lane");
 
-    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut redelivery) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("the retried event is available");
     };
     assert_eq!("event-1", redelivery.id().as_str());
     subscription
         .settle(
-            &redelivery
-                .take_settlement()
-                .expect("redelivery requires settlement"),
+            &redelivery.take_settlement().expect("redelivery requires settlement"),
             DeliveryDisposition::Accept,
         )
         .unwrap();
@@ -970,17 +850,10 @@ fn test_local_subscription_retry_preserves_key_fifo_while_other_key_progresses()
 #[test]
 fn test_local_native_delay_hides_the_message_until_its_deadline() {
     let spi = create(&LocalEventBusConfig::default());
-    assert_eq!(
-        DelayedDeliveryCapability::Native,
-        spi.capabilities().delayed_delivery()
-    );
+    assert_eq!(DelayedDeliveryCapability::Native, spi.capabilities().delayed_delivery());
     let mut subscription = spi.subscribe(request(16, "events")).unwrap();
     let _ = spi
-        .publish(outbound_with_delay(
-            "events",
-            9,
-            Some(Duration::from_millis(25)),
-        ))
+        .publish(outbound_with_delay("events", 9, Some(Duration::from_millis(25))))
         .unwrap();
     let _ = spi.publish(outbound("events", 10)).unwrap();
 
@@ -989,9 +862,7 @@ fn test_local_native_delay_hides_the_message_until_its_deadline() {
         ReceiveOutcome::TimedOut
     ));
     for expected in [9, 10] {
-        let ReceiveOutcome::Message(message) =
-            subscription.receive(Duration::from_secs(1)).unwrap()
-        else {
+        let ReceiveOutcome::Message(message) = subscription.receive(Duration::from_secs(1)).unwrap() else {
             panic!("local queue delivers each event after the preceding delayed event");
         };
         assert_eq!(format!("event-{expected}"), message.id().as_str());
@@ -1027,9 +898,7 @@ fn test_local_spi_delayed_key_does_not_block_ready_other_key_but_keeps_its_own_o
         ReceiveOutcome::TimedOut
     ));
     for expected in [20, 21] {
-        let ReceiveOutcome::Message(message) =
-            subscription.receive(Duration::from_secs(1)).unwrap()
-        else {
+        let ReceiveOutcome::Message(message) = subscription.receive(Duration::from_secs(1)).unwrap() else {
             panic!("key-a successor waits for its delayed predecessor");
         };
         assert_eq!(format!("event-{expected}"), message.id().as_str());
@@ -1119,31 +988,21 @@ fn test_graceful_shutdown_waits_for_in_flight_settlement() {
         })
     });
 
-    let ReceiveOutcome::Message(mut message) =
-        subscription.receive(Duration::from_secs(1)).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::from_secs(1)).unwrap() else {
         panic!("graceful shutdown keeps an in-flight delivery available for settlement");
     };
     subscription
-        .settle(
-            &message.take_settlement().unwrap(),
-            DeliveryDisposition::Accept,
-        )
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
     assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
 }
 
 #[test]
 fn test_local_config_rejects_zero_capacity_and_provider_options() {
-    assert!(
-        LocalEventBusConfig::new()
-            .queue_capacity(0)
-            .validate()
-            .is_err()
-    );
+    assert!(LocalEventBusConfig::new().queue_capacity(0).validate().is_err());
 
-    let invalid = EventBusConfig::default()
-        .with_provider_options([("local.queue_capacity".to_owned(), "0".to_owned())].into());
+    let invalid =
+        EventBusConfig::default().with_provider_options([("local.queue_capacity".to_owned(), "0".to_owned())].into());
     assert!(provider().create_configured(&invalid).is_err());
 }
 
@@ -1164,16 +1023,10 @@ fn test_local_config_total_outstanding_round_trips_and_rejects_invalid_values() 
     let valid = EventBusConfig::default().with_provider_options(configured.provider_options());
     assert!(provider().create_configured(&valid).is_ok());
 
-    assert!(
-        LocalEventBusConfig::new()
-            .max_total_outstanding(0)
-            .validate()
-            .is_err()
-    );
+    assert!(LocalEventBusConfig::new().max_total_outstanding(0).validate().is_err());
     for value in ["0", "not-a-number"] {
-        let invalid = EventBusConfig::default().with_provider_options(
-            [("local.max_total_outstanding".to_owned(), value.to_owned())].into(),
-        );
+        let invalid = EventBusConfig::default()
+            .with_provider_options([("local.max_total_outstanding".to_owned(), value.to_owned())].into());
         assert!(
             provider().create_configured(&invalid).is_err(),
             "accepted invalid total capacity {value}"
@@ -1183,11 +1036,7 @@ fn test_local_config_total_outstanding_round_trips_and_rejects_invalid_values() 
 
 #[test]
 fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
-    let spi = create(
-        &LocalEventBusConfig::new()
-            .queue_capacity(2)
-            .max_total_outstanding(1),
-    );
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
     let mut first = spi.subscribe(request(701, "capacity.first")).unwrap();
     let mut second = spi.subscribe(request(702, "capacity.second")).unwrap();
 
@@ -1196,13 +1045,9 @@ fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
     else {
         panic!("local provider reports per destination admission");
     };
-    assert!(matches!(
-        first_admission[0].status(),
-        AdmissionStatus::Accepted
-    ));
+    assert!(matches!(first_admission[0].status(), AdmissionStatus::Accepted));
 
-    let PublishAcknowledgement::DestinationAdmissions(rejected) =
-        spi.publish(outbound("capacity.second", 2)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.second", 2)).unwrap()
     else {
         panic!("local provider reports per destination admission");
     };
@@ -1216,8 +1061,7 @@ fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
     };
     let token = message.take_settlement().unwrap();
     first.settle(&token, DeliveryDisposition::Retry).unwrap();
-    let PublishAcknowledgement::DestinationAdmissions(rejected) =
-        spi.publish(outbound("capacity.second", 3)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(rejected) = spi.publish(outbound("capacity.second", 3)).unwrap()
     else {
         panic!("local provider reports per destination admission");
     };
@@ -1227,37 +1071,27 @@ fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
         panic!("retried message remains available");
     };
     first
-        .settle(
-            &retried.take_settlement().unwrap(),
-            DeliveryDisposition::Accept,
-        )
+        .settle(&retried.take_settlement().unwrap(), DeliveryDisposition::Accept)
         .unwrap();
-    let PublishAcknowledgement::DestinationAdmissions(accepted) =
-        spi.publish(outbound("capacity.second", 4)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.second", 4)).unwrap()
     else {
         panic!("local provider reports per destination admission");
     };
     assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
 
-    let ReceiveOutcome::Message(mut second_message) = second.receive(Duration::ZERO).unwrap()
-    else {
+    let ReceiveOutcome::Message(mut second_message) = second.receive(Duration::ZERO).unwrap() else {
         panic!("accepted message is available for rejection");
     };
     second
-        .settle(
-            &second_message.take_settlement().unwrap(),
-            DeliveryDisposition::Reject,
-        )
+        .settle(&second_message.take_settlement().unwrap(), DeliveryDisposition::Reject)
         .unwrap();
-    let PublishAcknowledgement::DestinationAdmissions(accepted) =
-        spi.publish(outbound("capacity.first", 5)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.first", 5)).unwrap()
     else {
         panic!("local provider reports per destination admission");
     };
     assert!(matches!(accepted[0].status(), AdmissionStatus::Accepted));
     first.close().unwrap();
-    let PublishAcknowledgement::DestinationAdmissions(accepted) =
-        spi.publish(outbound("capacity.second", 6)).unwrap()
+    let PublishAcknowledgement::DestinationAdmissions(accepted) = spi.publish(outbound("capacity.second", 6)).unwrap()
     else {
         panic!("local provider reports per destination admission");
     };
@@ -1266,11 +1100,7 @@ fn test_provider_total_capacity_counts_in_flight_until_terminal_settlement() {
 
 #[test]
 fn test_provider_total_capacity_preserves_partial_destination_admissions() {
-    let spi = create(
-        &LocalEventBusConfig::new()
-            .queue_capacity(2)
-            .max_total_outstanding(1),
-    );
+    let spi = create(&LocalEventBusConfig::new().queue_capacity(2).max_total_outstanding(1));
     let _first = spi.subscribe(request(711, "capacity.partial")).unwrap();
     let _second = spi.subscribe(request(712, "capacity.partial")).unwrap();
 
@@ -1304,9 +1134,7 @@ fn test_settlement_rejects_token_from_another_subscription() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(31, "events")).unwrap();
     let foreign = SettlementToken::new(Id::new(32), "event-x".to_owned());
-    let error: SpiError = subscription
-        .settle(&foreign, DeliveryDisposition::Accept)
-        .unwrap_err();
+    let error: SpiError = subscription.settle(&foreign, DeliveryDisposition::Accept).unwrap_err();
     assert_eq!("invalid_settlement_token", error.kind());
 }
 
@@ -1318,16 +1146,12 @@ fn test_settlement_rejects_forged_provider_state_without_losing_real_token() {
     let ReceiveOutcome::Message(mut message) = subscription.receive(Duration::ZERO).unwrap() else {
         panic!("published message is available");
     };
-    let token = message
-        .take_settlement()
-        .expect("message requires settlement");
+    let token = message.take_settlement().expect("message requires settlement");
     let forged = SettlementToken::new(Id::new(42), "forged state".to_owned());
 
     let error = subscription
         .settle(&forged, DeliveryDisposition::Accept)
         .expect_err("a matching subscription ID does not validate forged provider state");
     assert_eq!("invalid_settlement_token", error.kind());
-    subscription
-        .settle(&token, DeliveryDisposition::Accept)
-        .unwrap();
+    subscription.settle(&token, DeliveryDisposition::Accept).unwrap();
 }

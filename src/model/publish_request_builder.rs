@@ -233,11 +233,8 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         K: Into<String>,
         V: Into<String>,
     {
-        self.headers.extend(
-            values
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into())),
-        );
+        self.headers
+            .extend(values.into_iter().map(|(key, value)| (key.into(), value.into())));
         self
     }
     /// Replaces the ordering key. Validation occurs in `build`.
@@ -359,10 +356,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     #[must_use = "Use the returned builder."]
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
         self
@@ -415,19 +409,12 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
     /// # Errors
     /// Returns the same validation errors as [`Self::build`], or wraps a
     /// failure returned by `generate`.
-    fn build_with_event_id_generator<F>(
-        self,
-        generate: F,
-    ) -> Result<PublishRequest<T>, PublishRequestBuildError>
+    fn build_with_event_id_generator<F>(self, generate: F) -> Result<PublishRequest<T>, PublishRequestBuildError>
     where
         F: FnOnce() -> Result<EventId, EventIdGenerationError>,
     {
-        let topic = self
-            .topic
-            .ok_or(PublishRequestBuildError::MissingField("topic"))?;
-        let payload = self
-            .payload
-            .ok_or(PublishRequestBuildError::MissingField("payload"))?;
+        let topic = self.topic.ok_or(PublishRequestBuildError::MissingField("topic"))?;
+        let payload = self.payload.ok_or(PublishRequestBuildError::MissingField("payload"))?;
         for (key, value) in &self.headers {
             if key.eq_ignore_ascii_case(DEAD_LETTER_HEADER)
                 || key.is_empty()
@@ -447,8 +434,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
             return Err(PublishRequestBuildError::InvalidOrderingKey);
         }
         if self.options.retry_policy.is_none()
-            && (self.options.retry_rule.is_some()
-                || self.options.retry_cancellation_token.is_some())
+            && (self.options.retry_rule.is_some() || self.options.retry_cancellation_token.is_some())
         {
             return Err(PublishRequestBuildError::InvalidRetryConfiguration);
         }
@@ -508,23 +494,18 @@ mod tests {
             .topic(Topic::<String>::new("orders.created").expect("valid test topic"))
             .payload("payload".to_owned())
             .build_with_event_id_generator(|| {
-                Err(EventIdGenerationError::new(
-                    IdGenerationError::HostOutOfRange { host: 1, max: 0 },
-                ))
+                Err(EventIdGenerationError::new(IdGenerationError::HostOutOfRange {
+                    host: 1,
+                    max: 0,
+                }))
             });
         let error = match result {
             Err(error) => error,
             Ok(_) => panic!("injected generation failure should be returned"),
         };
 
-        let generation_error =
-            Error::source(&error).expect("builder error should expose generation error");
-        let generator_error =
-            Error::source(generation_error).expect("generation error should expose source");
-        assert!(
-            generator_error
-                .to_string()
-                .contains("host id 1 is out of range")
-        );
+        let generation_error = Error::source(&error).expect("builder error should expose generation error");
+        let generator_error = Error::source(generation_error).expect("generation error should expose source");
+        assert!(generator_error.to_string().contains("host id 1 is out of range"));
     }
 }

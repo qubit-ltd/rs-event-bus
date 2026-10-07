@@ -50,10 +50,7 @@ impl OperationGate {
     pub(in crate::facade) fn wait_for_idle(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         while state.active != 0 {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+            state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
     }
 

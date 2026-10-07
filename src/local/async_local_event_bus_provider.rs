@@ -69,16 +69,12 @@ impl AsyncServiceProvider<EventBusSpec> for AsyncLocalEventBusProvider {
     fn create_configured<'a>(
         &'a self,
         config: &'a EventBusConfig,
-    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>>
-    {
+    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
         Box::pin(async move {
-            let local = LocalEventBusConfig::from_provider_options(config).map_err(|error| {
-                ProviderFailure::invalid_configuration(EventBusProviderError::provider(error))
-            })?;
+            let local = LocalEventBusConfig::from_provider_options(config)
+                .map_err(|error| ProviderFailure::invalid_configuration(EventBusProviderError::provider(error)))?;
             let spi = AsyncLocalEventBusSpi::with_timer(&local, Arc::new(StdTimer::new()))
-                .map_err(|error| {
-                    ProviderFailure::invalid_configuration(EventBusProviderError::provider(error))
-                })?;
+                .map_err(|error| ProviderFailure::invalid_configuration(EventBusProviderError::provider(error)))?;
             Ok(Arc::new(spi) as Arc<dyn AsyncEventBusSpi>)
         })
     }

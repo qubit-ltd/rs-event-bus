@@ -85,10 +85,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Errors
     /// The future returns the SPI failure produced by the wrapped provider.
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.inner.publish(message)
     }
 
@@ -119,10 +116,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Errors
     /// The future returns the SPI failure produced by the wrapped provider.
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }
 }

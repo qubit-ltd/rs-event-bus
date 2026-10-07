@@ -42,10 +42,7 @@ impl EventBus {
     /// Returns [`CapabilityError::CodecRequired`] when the provider accepts
     /// only encoded payloads and neither the topic nor facade registry has
     /// a codec.
-    pub fn check_publish_codec<T: Send + Sync + 'static>(
-        &self,
-        topic: &Topic<T>,
-    ) -> Result<(), CapabilityError> {
+    pub fn check_publish_codec<T: Send + Sync + 'static>(&self, topic: &Topic<T>) -> Result<(), CapabilityError> {
         crate::codec::check_publish_codec(
             self.inner.capabilities.payload_modes(),
             topic,
@@ -72,22 +69,18 @@ impl EventBus {
         request: PublishRequest<T>,
         requirement: AdmissionRequirement,
     ) -> Result<PublishReceipt, CheckedPublishError> {
-        if matches!(
-            self.inner.capabilities.publish_visibility(),
-            PublishVisibility::Opaque
-        ) && matches!(
-            requirement,
-            AdmissionRequirement::AtLeastOneAccepted
-                | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected
-        ) {
+        if matches!(self.inner.capabilities.publish_visibility(), PublishVisibility::Opaque)
+            && matches!(
+                requirement,
+                AdmissionRequirement::AtLeastOneAccepted | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected
+            )
+        {
             return Err(CheckedPublishError::UnsupportedVisibility {
                 event_id: request.envelope().id().clone(),
                 provider_id: self.inner.provider_id.clone(),
             });
         }
-        let receipt = self
-            .publish(request)
-            .map_err(CheckedPublishError::Publish)?;
+        let receipt = self.publish(request).map_err(CheckedPublishError::Publish)?;
         match receipt.check_admission(requirement) {
             Ok(()) => Ok(receipt),
             Err(reason) => Err(CheckedPublishError::Admission {
@@ -172,10 +165,7 @@ impl EventBus {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = PublishRequest<T>>,
     {
-        let items = requests
-            .into_iter()
-            .map(|request| self.publish(request))
-            .collect();
+        let items = requests.into_iter().map(|request| self.publish(request)).collect();
         BatchPublishResult::new(items)
     }
 }
@@ -188,10 +178,7 @@ impl EventBus {
 ///
 /// # Returns
 /// The matching public publish error variant.
-pub(in crate::facade) fn publish_pipeline_error(
-    event_id: EventId,
-    failure: PipelineFailure,
-) -> PublishFailure {
+pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
     let effect = failure.publish_effect();
     let cause = match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),

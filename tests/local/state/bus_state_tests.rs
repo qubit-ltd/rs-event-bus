@@ -34,11 +34,8 @@ use qubit_spi::ServiceProvider;
 #[test]
 fn test_dropped_destination_is_not_reused_when_topic_state_is_rebuilt() {
     let provider = LocalEventBusProvider;
-    let config = EventBusConfig::default()
-        .with_provider_options(LocalEventBusConfig::new().provider_options());
-    let spi = provider
-        .create_configured(&config)
-        .expect("valid local configuration");
+    let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
+    let spi = provider.create_configured(&config).expect("valid local configuration");
     let topic = TopicAddress::new("state.lifecycle").expect("valid topic");
     let stale = spi
         .subscribe(subscription_request(201, topic.clone()))
@@ -58,8 +55,7 @@ fn test_dropped_destination_is_not_reused_when_topic_state_is_rebuilt() {
         TransportPayload::Native(Arc::new(42_u32)),
     );
 
-    let PublishAcknowledgement::DestinationAdmissions(admissions) =
-        spi.publish(message).expect("publish succeeds")
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(message).expect("publish succeeds")
     else {
         panic!("local provider returns destination admissions");
     };

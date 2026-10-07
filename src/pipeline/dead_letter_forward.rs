@@ -37,31 +37,23 @@ use crate::pipeline::retry::uncertainty_allows_retry;
 /// # Errors
 ///
 /// Returns an error when the policy cannot produce a valid retry configuration.
-pub(crate) fn retry_config(
-    policy: &RetryPolicy,
-) -> Result<RetryConfig<DeadLetterForwardError>, RetryPolicyError> {
+pub(crate) fn retry_config(policy: &RetryPolicy) -> Result<RetryConfig<DeadLetterForwardError>, RetryPolicyError> {
     RetryConfig::builder()
         .policy(policy.clone())
         .fallback(RetryFallback::Abort)
-        .rule(
-            |failure: &AttemptFailure<DeadLetterForwardError>, _: &RetryContext| {
-                let effect = match failure.as_error() {
-                    Some(DeadLetterForwardError::Publish(error)) => error.effect(),
-                    Some(DeadLetterForwardError::NotAdmitted(
-                        AdmissionOutcome::NoneAccepted(_)
-                        | AdmissionOutcome::NoDestinations
-                        | AdmissionOutcome::Dropped,
-                    )) => PublishEffect::NotAccepted,
-                    Some(DeadLetterForwardError::NotAdmitted(_)) | None => {
-                        PublishEffect::MayHaveBeenAccepted
-                    }
-                };
-                if uncertainty_allows_retry(effect, DuplicateRiskPolicy::Forbid) {
-                    RetryDecision::Retry
-                } else {
-                    RetryDecision::Abort
-                }
-            },
-        )
+        .rule(|failure: &AttemptFailure<DeadLetterForwardError>, _: &RetryContext| {
+            let effect = match failure.as_error() {
+                Some(DeadLetterForwardError::Publish(error)) => error.effect(),
+                Some(DeadLetterForwardError::NotAdmitted(
+                    AdmissionOutcome::NoneAccepted(_) | AdmissionOutcome::NoDestinations | AdmissionOutcome::Dropped,
+                )) => PublishEffect::NotAccepted,
+                Some(DeadLetterForwardError::NotAdmitted(_)) | None => PublishEffect::MayHaveBeenAccepted,
+            };
+            if uncertainty_allows_retry(effect, DuplicateRiskPolicy::Forbid) {
+                RetryDecision::Retry
+            } else {
+                RetryDecision::Abort
+            }
+        })
         .build()
 }

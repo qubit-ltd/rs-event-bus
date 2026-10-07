@@ -73,11 +73,9 @@ impl BatchPublishResult {
             .filter(|item| match item {
                 Ok(receipt) => match receipt.acknowledgement() {
                     PublishAcknowledgement::Accepted { .. } => true,
-                    PublishAcknowledgement::DestinationAdmissions(destinations) => {
-                        destinations.iter().any(|destination| {
-                            matches!(destination.status(), AdmissionStatus::Accepted)
-                        })
-                    }
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
+                        .iter()
+                        .any(|destination| matches!(destination.status(), AdmissionStatus::Accepted)),
                     PublishAcknowledgement::DroppedByInterceptor => false,
                 },
                 Err(_) => false,
@@ -114,11 +112,9 @@ impl BatchPublishResult {
             .filter(|item| match item {
                 Err(_) => true,
                 Ok(receipt) => match receipt.acknowledgement() {
-                    PublishAcknowledgement::DestinationAdmissions(destinations) => {
-                        destinations.iter().any(|destination| {
-                            matches!(destination.status(), AdmissionStatus::Rejected(_))
-                        })
-                    }
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
+                        .iter()
+                        .any(|destination| matches!(destination.status(), AdmissionStatus::Rejected(_))),
                     _ => false,
                 },
             })

@@ -37,8 +37,7 @@ fn subscription_request(id: u64, topic: &str) -> SpiSubscriptionRequest {
 
 #[test]
 fn test_stale_subscription_identity_can_be_reused_after_receiver_drop() {
-    let config = EventBusConfig::default()
-        .with_provider_options(LocalEventBusConfig::new().provider_options());
+    let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
     let spi = LocalEventBusProvider
         .create_configured(&config)
         .expect("valid local configuration");

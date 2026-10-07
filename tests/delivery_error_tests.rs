@@ -24,10 +24,7 @@ fn test_delivery_error_handler_preserves_original_source() {
         source: Box::new(IoError::other("handler rejected event")),
     };
 
-    assert_eq!(
-        error.to_string(),
-        "event handler failed: handler rejected event"
-    );
+    assert_eq!(error.to_string(), "event handler failed: handler rejected event");
     assert_eq!(
         Error::source(&error).map(ToString::to_string).as_deref(),
         Some("handler rejected event")
@@ -39,14 +36,8 @@ fn test_delivery_error_codec_conversion_preserves_codec_failure() {
     let codec_error = CodecError::NativeTypeMismatch;
     let error = DeliveryError::from(codec_error);
 
-    assert_eq!(
-        error.to_string(),
-        "native payload type does not match subscribed topic"
-    );
-    assert!(matches!(
-        &error,
-        DeliveryError::Codec(CodecError::NativeTypeMismatch)
-    ));
+    assert_eq!(error.to_string(), "native payload type does not match subscribed topic");
+    assert!(matches!(&error, DeliveryError::Codec(CodecError::NativeTypeMismatch)));
     assert!(Error::source(&error).is_none());
 }
 
@@ -102,9 +93,7 @@ fn test_delivery_error_retry_retains_terminal_report_and_attempt_source() {
     let retry_source = Error::source(&error).expect("retry report should be retained as source");
     assert_eq!(retry_source.to_string(), retry_message);
     assert_eq!(
-        Error::source(retry_source)
-            .map(ToString::to_string)
-            .as_deref(),
+        Error::source(retry_source).map(ToString::to_string).as_deref(),
         Some("delivery attempt failed (handler): delivery refused")
     );
 }

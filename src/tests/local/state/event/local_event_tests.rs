@@ -34,8 +34,7 @@ use crate::spi::TransportPayload;
 
 #[test]
 fn test_published_event_keeps_identity_and_native_payload() {
-    let config = EventBusConfig::default()
-        .with_provider_options(LocalEventBusConfig::new().provider_options());
+    let config = EventBusConfig::default().with_provider_options(LocalEventBusConfig::new().provider_options());
     let spi = LocalEventBusProvider
         .create_configured(&config)
         .expect("valid local configuration");
@@ -63,15 +62,12 @@ fn test_published_event_keeps_identity_and_native_payload() {
         TransportPayload::Native(Arc::new(31_u32)),
     );
 
-    let PublishAcknowledgement::DestinationAdmissions(admissions) =
-        spi.publish(outbound).expect("publish succeeds")
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = spi.publish(outbound).expect("publish succeeds")
     else {
         panic!("local provider reports destination admissions");
     };
     assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
-    let ReceiveOutcome::Message(message) =
-        receiver.receive(Duration::ZERO).expect("receive succeeds")
-    else {
+    let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).expect("receive succeeds") else {
         panic!("published event is available immediately");
     };
     assert_eq!(event_id.as_str(), message.id().as_str());

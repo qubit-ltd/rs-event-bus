@@ -40,9 +40,7 @@ pub(crate) fn was_accepted(
         (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::TransportAccepted) => {
             matches!(
                 capabilities.publish_guarantee(),
-                PublishGuarantee::Accepted
-                    | PublishGuarantee::Confirmed
-                    | PublishGuarantee::DurablyStored
+                PublishGuarantee::Accepted | PublishGuarantee::Confirmed | PublishGuarantee::DurablyStored
             )
         }
         (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::KnownDestination)

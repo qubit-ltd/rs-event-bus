@@ -15,10 +15,7 @@ fn test_interceptor_drop_is_distinct_from_an_empty_destination_report() {
     let dropped = PublishAcknowledgement::DroppedByInterceptor;
     let no_destinations = PublishAcknowledgement::DestinationAdmissions(Vec::new());
 
-    assert!(
-        dropped.is_dropped(),
-        "interceptor drops must be reported as dropped"
-    );
+    assert!(dropped.is_dropped(), "interceptor drops must be reported as dropped");
     assert_eq!(
         dropped.admission_outcome(),
         AdmissionOutcome::Dropped,

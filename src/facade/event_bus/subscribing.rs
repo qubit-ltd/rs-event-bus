@@ -80,34 +80,27 @@ impl EventBus {
     /// # Panics
     /// Panics if the SPI subscription request is incomplete or the worker
     /// cannot take ownership of its initialized provider receiver.
-    pub fn subscribe<T, H, R>(
-        &self,
-        request: SubscribeRequest<T>,
-        handler: H,
-    ) -> Result<Subscription, SubscribeError>
+    pub fn subscribe<T, H, R>(&self, request: SubscribeRequest<T>, handler: H) -> Result<Subscription, SubscribeError>
     where
         T: Send + Sync + 'static,
         H: Fn(Delivery<T>) -> R + Send + Sync + 'static,
         R: IntoHandlerResult + 'static,
     {
-        let _operation = self
-            .inner
-            .operations
-            .enter()
-            .ok_or(SubscribeError::Closed)?;
-        let worker_permit = self.inner.subscription_worker_budget.try_reserve().ok_or(
-            SubscribeError::ResourceLimit {
-                resource: "subscriptions",
-                limit: self.inner.subscription_worker_budget.limit,
-            },
-        )?;
+        let _operation = self.inner.operations.enter().ok_or(SubscribeError::Closed)?;
+        let worker_permit =
+            self.inner
+                .subscription_worker_budget
+                .try_reserve()
+                .ok_or(SubscribeError::ResourceLimit {
+                    resource: "subscriptions",
+                    limit: self.inner.subscription_worker_budget.limit,
+                })?;
         let bus_identity = Arc::as_ptr(&self.inner) as usize;
         let _call_context = BusContextGuard::enter(bus_identity);
         let (subscriber_id, topic, options) = request.into_parts();
         let codec = self.validate_subscription(&topic, &options)?;
         let id = self.next_subscription_id()?;
-        let spi_subscription =
-            self.create_spi_subscription(id, &subscriber_id, &topic, &options)?;
+        let spi_subscription = self.create_spi_subscription(id, &subscriber_id, &topic, &options)?;
         let spi_subscription_slot = Arc::new(Mutex::new(Some(spi_subscription)));
         let control = self.register_subscription(id, &subscriber_id, &spi_subscription_slot)?;
         let inner = self.inner.clone();
@@ -191,26 +184,17 @@ impl EventBus {
         topic: &Topic<T>,
         options: &SubscribeOptions<T>,
     ) -> Result<Option<Arc<dyn EventCodec<T>>>, SubscribeError> {
-        if !options.async_interceptors().is_empty()
-            || self
-                .inner
-                .facade_config
-                .has_async_subscriber_interceptors::<T>()
+        if !options.async_interceptors().is_empty() || self.inner.facade_config.has_async_subscriber_interceptors::<T>()
         {
-            return Err(SubscribeError::Configuration(
-                ConfigurationError::InvalidField {
-                    field: "async_subscriber_interceptor",
-                    message: "synchronous EventBus requires synchronous subscriber middleware"
-                        .into(),
-                },
-            ));
+            return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "async_subscriber_interceptor",
+                message: "synchronous EventBus requires synchronous subscriber middleware".into(),
+            }));
         }
         let capabilities = self.inner.capabilities;
         let codec = resolve_codec(topic, self.inner.facade_config.codec_registry());
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == OrderingPolicy::PerKey
-            && !capabilities.ordering().supports_per_key()
-        {
+        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "ordering.per_key",
             }));
@@ -308,9 +292,7 @@ impl EventBus {
         let control = SubscriptionControl::with_metrics(
             id,
             subscriber_id.clone(),
-            Arc::new(DeliveryMetrics::new_subscription(
-                self.inner.delivery_metrics.clone(),
-            )),
+            Arc::new(DeliveryMetrics::new_subscription(self.inner.delivery_metrics.clone())),
         );
         if !self.inner.scheduler.register(id) {
             let receiver = spi_subscription_slot
@@ -346,9 +328,7 @@ impl EventBus {
     fn next_subscription_id(&self) -> Result<Id, SubscribeError> {
         self.inner
             .next_subscription_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_add(1))
             .map(Id::new)
             .map_err(|_| {
                 SubscribeError::Configuration(ConfigurationError::InvalidField {
@@ -390,9 +370,7 @@ where
             .upgrade()
             .expect("receiver owner retains bus during handler execution");
         let started = inner.clock.now();
-        if !control
-            .try_start_handler(|cancelled| inner.scheduler.handler_may_start(control.id, cancelled))
-        {
+        if !control.try_start_handler(|cancelled| inner.scheduler.handler_may_start(control.id, cancelled)) {
             return Err(DeliveryError::Handler {
                 source: Box::new(HandlerStartRejected),
             });
@@ -429,8 +407,7 @@ pub(in crate::facade) fn cleanup_failed_worker_spawn(
     spawn_error: Error,
 ) -> SubscribeError {
     if let Some(mut spi_subscription) = spi_subscription
-        && let Err(close_error) =
-            close_spi_subscription(inner, subscriber_id, &mut *spi_subscription)
+        && let Err(close_error) = close_spi_subscription(inner, subscriber_id, &mut *spi_subscription)
     {
         inner.emit_internal("subscription_spawn_close", close_error.to_string());
         inner

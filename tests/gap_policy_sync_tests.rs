@@ -34,13 +34,10 @@ fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = calls.clone();
     let subscription = bus
-        .subscribe(
-            SubscribeRequest::new("gap-test", topic.clone()).unwrap(),
-            move |_| {
-                handler_calls.fetch_add(1, Ordering::SeqCst);
-                Ok::<(), DeliveryError>(())
-            },
-        )
+        .subscribe(SubscribeRequest::new("gap-test", topic.clone()).unwrap(), move |_| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<(), DeliveryError>(())
+        })
         .unwrap();
     spi.inject_gap();
 
@@ -49,10 +46,7 @@ fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
         if let Some(reason) = subscription.terminal_failure() {
             break reason;
         }
-        assert!(
-            Instant::now() < deadline,
-            "gap was not retained as terminal cause"
-        );
+        assert!(Instant::now() < deadline, "gap was not retained as terminal cause");
         std::thread::yield_now();
     };
     match reason.as_ref() {

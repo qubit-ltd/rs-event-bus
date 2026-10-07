@@ -36,9 +36,7 @@ impl OwnerSettlementRouter {
     /// # Parameters
     /// - `subscription_id`: owner to wake for unresolved provider recovery.
     pub(in crate::facade) fn abandon(&self, subscription_id: Id) {
-        let _ = self
-            .sender
-            .send(CoordinatorMessage::Abandoned(self.lease_id));
+        let _ = self.sender.send(CoordinatorMessage::Abandoned(self.lease_id));
         if let Some(inner) = self.inner.upgrade() {
             inner.scheduler.notify(subscription_id);
         }

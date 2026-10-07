@@ -204,8 +204,7 @@ impl DeliverySchedulerState {
             }
             let Some(lease) = self.next_lease else {
                 self.receive_waiters.push_front(id);
-                self.notifications
-                    .extend(self.receive_waiters.iter().copied());
+                self.notifications.extend(self.receive_waiters.iter().copied());
                 break;
             };
             self.next_lease = lease.checked_add(1);
@@ -252,9 +251,7 @@ impl DeliverySchedulerState {
         }
         if matches!(
             record.phase,
-            OwnedDeliveryPhase::Running
-                | OwnedDeliveryPhase::Settling
-                | OwnedDeliveryPhase::WaitingRetry
+            OwnedDeliveryPhase::Running | OwnedDeliveryPhase::Settling | OwnedDeliveryPhase::WaitingRetry
         ) && let Some(lane) = record.lane
         {
             sub.locked_lanes.remove(&lane);
@@ -283,8 +280,7 @@ mod tests {
     /// Creates scheduler state with one queued, dispatchable delivery.
     fn state_with_queued_delivery(id: Id, lease: u64) -> DeliverySchedulerState {
         let one = NonZeroUsize::new(1).expect("positive limit");
-        let config =
-            DeliverySchedulingConfig::new(one, one, one, one).expect("valid scheduler config");
+        let config = DeliverySchedulingConfig::new(one, one, one, one).expect("valid scheduler config");
         let mut state = DeliverySchedulerState::new(config);
         state.subscriptions.insert(
             id,
@@ -344,11 +340,7 @@ mod tests {
         state.refresh_ready(first);
         assert_eq!(state.ready, VecDeque::from([first, second]));
 
-        state
-            .subscriptions
-            .get_mut(&first)
-            .expect("owner exists")
-            .stopped = true;
+        state.subscriptions.get_mut(&first).expect("owner exists").stopped = true;
         state.refresh_ready(first);
         assert_eq!(state.ready, VecDeque::from([second]));
     }

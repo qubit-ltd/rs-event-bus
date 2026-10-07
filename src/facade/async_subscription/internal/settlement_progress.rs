@@ -76,8 +76,7 @@ impl SettlementProgress {
     /// origin.
     #[inline]
     pub(in crate::facade) fn elapsed(&self, timer: &dyn Timer) -> Result<Duration, TimeError> {
-        self.started_at.map_or(Ok(Duration::ZERO), |start| {
-            timer.clock().now().duration_since(start)
-        })
+        self.started_at
+            .map_or(Ok(Duration::ZERO), |start| timer.clock().now().duration_since(start))
     }
 }

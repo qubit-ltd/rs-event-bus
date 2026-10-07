@@ -33,15 +33,9 @@ fn test_close_waits_for_accepted_work_and_reports_observer_panics_separately() {
     )
     .expect("worker should start");
 
-    publisher
-        .try_publish("first".to_owned())
-        .expect("first item queues");
-    publisher
-        .try_publish("second".to_owned())
-        .expect("second item queues");
-    publisher
-        .close()
-        .expect("close should observe worker completion");
+    publisher.try_publish("first".to_owned()).expect("first item queues");
+    publisher.try_publish("second".to_owned()).expect("second item queues");
+    publisher.close().expect("close should observe worker completion");
 
     assert_eq!(2, observed.load(Ordering::SeqCst));
     assert_eq!(2, publisher.stats().observer_panicked());

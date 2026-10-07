@@ -107,10 +107,7 @@ impl CoverageSpi {
     }
 
     /// Creates a provider with selected ordering and close-failure behavior.
-    fn new_with_ordering(
-        close_fails: bool,
-        ordering: OrderingCapability,
-    ) -> (Self, Receiver<String>) {
+    fn new_with_ordering(close_fails: bool, ordering: OrderingCapability) -> (Self, Receiver<String>) {
         let (close_attempts, close_rx) = mpsc::channel();
         (
             Self {
@@ -141,9 +138,7 @@ impl CoverageSpi {
 
     /// Makes the next subscribe call return a configured provider error.
     fn fail_next_subscribe(&self) {
-        self.state
-            .fail_next_subscribe
-            .store(true, Ordering::Release);
+        self.state.fail_next_subscribe.store(true, Ordering::Release);
     }
 
     /// Makes the next shutdown call return a configured provider error.
@@ -206,20 +201,17 @@ impl EventBusSpi for CoverageSpi {
 
     /// Registers a bounded receiver, unless the next subscription failure is
     /// armed.
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         if self.state.fail_next_subscribe.swap(false, Ordering::AcqRel) {
             return Err(spi_error("subscribe", "configured_failure"));
         }
         let subscriber_id = request.subscriber_id().as_str().to_owned();
         let (sender, receiver) = mpsc::sync_channel(16);
-        self.state
-            .receivers
-            .lock()
-            .expect("receiver registry lock")
-            .push((subscriber_id.clone(), request.topic().clone(), sender));
+        self.state.receivers.lock().expect("receiver registry lock").push((
+            subscriber_id.clone(),
+            request.topic().clone(),
+            sender,
+        ));
         Ok(Box::new(CoverageSubscription {
             subscriber_id,
             receiver,
@@ -260,11 +252,7 @@ impl EventSubscriptionSpi for CoverageSubscription {
     /// Marks the receiver closed, records the attempt, and optionally fails it.
     fn close(&mut self) -> Result<(), SpiError> {
         self.closed = true;
-        if self
-            .close_attempts
-            .send(self.subscriber_id.clone())
-            .is_err()
-        {
+        if self.close_attempts.send(self.subscriber_id.clone()).is_err() {
             return Ok(());
         }
         if self.close_fails {
@@ -324,10 +312,7 @@ fn request(payload: &str) -> PublishRequest<String> {
 }
 
 /// Builds a facade with explicit running and owned delivery limits.
-fn create_bus(
-    max_running_handlers: usize,
-    max_owned_deliveries: usize,
-) -> (EventBus, CoverageSpi, Receiver<String>) {
+fn create_bus(max_running_handlers: usize, max_owned_deliveries: usize) -> (EventBus, CoverageSpi, Receiver<String>) {
     create_bus_with_close_mode(max_running_handlers, max_owned_deliveries, false)
 }
 
@@ -339,12 +324,9 @@ fn create_bus_with_close_mode(
 ) -> (EventBus, CoverageSpi, Receiver<String>) {
     let (spi, close_rx) = CoverageSpi::new(close_fails);
     let scheduler = DeliverySchedulingConfig::new(
-        NonZeroUsize::new(max_running_handlers)
-            .expect("test running-handler limit must be positive"),
-        NonZeroUsize::new(max_owned_deliveries)
-            .expect("test owned-delivery limit must be positive"),
-        NonZeroUsize::new(max_owned_deliveries)
-            .expect("test reserved-receive limit must be positive"),
+        NonZeroUsize::new(max_running_handlers).expect("test running-handler limit must be positive"),
+        NonZeroUsize::new(max_owned_deliveries).expect("test owned-delivery limit must be positive"),
+        NonZeroUsize::new(max_owned_deliveries).expect("test reserved-receive limit must be positive"),
         NonZeroUsize::new(2).expect("test per-subscription limit must be positive"),
     )
     .expect("test scheduler limits are valid");
@@ -452,10 +434,7 @@ fn test_publish_all_keeps_later_results_after_a_provider_failure() {
     assert_eq!(1, result.accepted_count());
     assert_eq!(1, result.failure_count());
     assert!(matches!(
-        result.items()[0]
-            .as_ref()
-            .expect_err("first publication fails")
-            .cause(),
+        result.items()[0].as_ref().expect_err("first publication fails").cause(),
         PublishError::Spi(SpiError::Operation {
             operation: "publish",
             kind: "configured_failure",
@@ -472,8 +451,7 @@ fn test_publish_all_keeps_later_results_after_a_provider_failure() {
 fn test_provider_subscribe_failure_does_not_poison_later_subscription() {
     let (bus, spi, _) = create_bus(1, 1);
     spi.fail_next_subscribe();
-    let failed_request =
-        SubscribeRequest::new("provider-subscribe-failure", topic()).expect("valid subscriber ID");
+    let failed_request = SubscribeRequest::new("provider-subscribe-failure", topic()).expect("valid subscriber ID");
     let Err(error) = bus.subscribe(failed_request, |_| {}) else {
         panic!("configured provider failure is propagated");
     };
@@ -488,8 +466,7 @@ fn test_provider_subscribe_failure_does_not_poison_later_subscription() {
 
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("provider-subscribe-recovery", topic())
-                .expect("valid subscriber ID"),
+            SubscribeRequest::new("provider-subscribe-recovery", topic()).expect("valid subscriber ID"),
             |_| {},
         )
         .expect("a failed admission leaves the facade usable");
@@ -566,8 +543,7 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
         .subscribe(
             SubscribeRequest::new("reentrant-lifecycle", topic()).expect("valid subscriber ID"),
             move |_| {
-                let wait = callback_bus
-                    .wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1)));
+                let wait = callback_bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(1)));
                 let shutdown = callback_bus.shutdown(ShutdownMode::Immediate);
                 result_tx
                     .send((wait, shutdown))
@@ -576,9 +552,7 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
         )
         .expect("subscription starts");
 
-    let _ = bus
-        .publish(request("reentrant"))
-        .expect("publish reaches callback");
+    let _ = bus.publish(request("reentrant")).expect("publish reaches callback");
     let (wait, shutdown) = result_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("callback reports both lifecycle outcomes");
@@ -595,9 +569,7 @@ fn test_callback_reentrant_wait_and_shutdown_return_would_deadlock() {
         }))
     ));
 
-    subscription
-        .cancel()
-        .expect("external caller cancels worker");
+    subscription.cancel().expect("external caller cancels worker");
     let _ = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("bus shuts down after callback exits");
@@ -619,9 +591,7 @@ fn test_dropping_diagnostic_handle_stops_future_close_failure_notifications() {
             |_| {},
         )
         .expect("first subscription starts");
-    let error = first
-        .cancel()
-        .expect_err("configured provider close error is surfaced");
+    let error = first.cancel().expect_err("configured provider close error is surfaced");
     assert!(matches!(error, LifecycleError::SubscriptionClose(_)));
     assert_eq!(1, observed.load(Ordering::Acquire));
 
@@ -632,10 +602,7 @@ fn test_dropping_diagnostic_handle_stops_future_close_failure_notifications() {
             |_| {},
         )
         .expect("second subscription starts");
-    assert!(matches!(
-        second.cancel(),
-        Err(LifecycleError::SubscriptionClose(_))
-    ));
+    assert!(matches!(second.cancel(), Err(LifecycleError::SubscriptionClose(_))));
     assert_eq!(1, observed.load(Ordering::Acquire));
     assert!(matches!(
         bus.shutdown(ShutdownMode::Immediate),
@@ -657,9 +624,7 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
                 .expect("valid subscriber ID")
                 .with_options(keyed_options()),
             move |_| {
-                first_started_tx
-                    .send(())
-                    .expect("first observer remains alive");
+                first_started_tx.send(()).expect("first observer remains alive");
                 first_release
                     .lock()
                     .expect("release gate lock")
@@ -673,11 +638,7 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
             SubscribeRequest::new("lane-second", topic())
                 .expect("valid subscriber ID")
                 .with_options(keyed_options()),
-            move |_| {
-                second_started_tx
-                    .send(())
-                    .expect("second observer remains alive")
-            },
+            move |_| second_started_tx.send(()).expect("second observer remains alive"),
         )
         .expect("second subscription starts");
 
@@ -690,9 +651,7 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("same key in another subscription is a separate lane");
-    release_tx
-        .send(())
-        .expect("first handler gate remains alive");
+    release_tx.send(()).expect("first handler gate remains alive");
 
     assert_eq!(
         WaitOutcome::Idle,
@@ -701,9 +660,7 @@ fn test_same_ordering_key_is_independent_between_subscriptions() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
@@ -722,9 +679,7 @@ fn test_same_ordering_key_is_independent_between_topics() {
                 .expect("valid subscriber ID")
                 .with_options(keyed_options()),
             move |_| {
-                first_started_tx
-                    .send(())
-                    .expect("first observer remains alive");
+                first_started_tx.send(()).expect("first observer remains alive");
                 first_release_gate
                     .lock()
                     .expect("release gate lock")
@@ -739,37 +694,25 @@ fn test_same_ordering_key_is_independent_between_topics() {
                 .expect("valid subscriber ID")
                 .with_options(keyed_options()),
             move |_| {
-                second_started_tx
-                    .send(())
-                    .expect("second observer remains alive");
+                second_started_tx.send(()).expect("second observer remains alive");
             },
         )
         .expect("second subscription starts");
 
     let _ = bus
-        .publish(keyed_request_for(
-            first_topic,
-            "first-topic-event",
-            "same-key",
-        ))
+        .publish(keyed_request_for(first_topic, "first-topic-event", "same-key"))
         .expect("publish to first topic");
     first_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("first topic handler starts");
     let _ = bus
-        .publish(keyed_request_for(
-            second_topic,
-            "second-topic-event",
-            "same-key",
-        ))
+        .publish(keyed_request_for(second_topic, "second-topic-event", "same-key"))
         .expect("publish to second topic");
     second_started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("same key in another topic has an independent lane");
 
-    release_tx
-        .send(())
-        .expect("first topic handler gate remains alive");
+    release_tx.send(()).expect("first topic handler gate remains alive");
     assert_eq!(
         WaitOutcome::Idle,
         bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
@@ -782,9 +725,7 @@ fn test_same_ordering_key_is_independent_between_topics() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
@@ -801,9 +742,7 @@ fn test_running_and_owned_capacity_are_shared_across_subscriptions() {
         .subscribe(
             SubscribeRequest::new("capacity-first", topic()).expect("valid subscriber ID"),
             move |_| {
-                first_started_tx
-                    .send("first")
-                    .expect("handler observer remains alive");
+                first_started_tx.send("first").expect("handler observer remains alive");
                 first_release
                     .lock()
                     .expect("release gate lock")
@@ -841,16 +780,12 @@ fn test_running_and_owned_capacity_are_shared_across_subscriptions() {
         metrics.reserved_receives + metrics.queued + metrics.running_handlers + metrics.settling,
         1
     );
-    release_tx
-        .send(())
-        .expect("active handler gate remains alive");
+    release_tx.send(()).expect("active handler gate remains alive");
     let second_started = started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("the other subscription proceeds after capacity is released");
     assert_ne!(first_started, second_started);
-    release_tx
-        .send(())
-        .expect("second handler gate remains alive");
+    release_tx.send(()).expect("second handler gate remains alive");
 
     assert_eq!(
         WaitOutcome::Idle,
@@ -859,9 +794,7 @@ fn test_running_and_owned_capacity_are_shared_across_subscriptions() {
     );
     first.cancel().expect("first subscription closes");
     second.cancel().expect("second subscription closes");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]
@@ -878,9 +811,7 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
         .subscribe(
             SubscribeRequest::new("timeout-close-a", topic()).expect("valid subscriber ID"),
             move |_| {
-                first_started_tx
-                    .send(())
-                    .expect("handler observer remains alive");
+                first_started_tx.send(()).expect("handler observer remains alive");
                 first_release
                     .lock()
                     .expect("release gate lock")
@@ -893,9 +824,7 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
         .subscribe(
             SubscribeRequest::new("timeout-close-b", topic()).expect("valid subscriber ID"),
             move |_| {
-                second_started_tx
-                    .send(())
-                    .expect("handler observer remains alive");
+                second_started_tx.send(()).expect("handler observer remains alive");
                 second_release
                     .lock()
                     .expect("release gate lock")
@@ -925,11 +854,7 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
         .shutdown(ShutdownMode::Graceful { timeout: grace })
         .expect_err("blocked handlers exceed the graceful deadline");
     assert!(matches!(timeout, ShutdownError::TimedOut { timeout } if timeout == grace));
-    assert_eq!(
-        0,
-        spi.shutdown_calls(),
-        "provider shutdown waits until workers close"
-    );
+    assert_eq!(0, spi.shutdown_calls(), "provider shutdown waits until workers close");
 
     release_tx.send(()).expect("release first blocked handler");
     release_tx.send(()).expect("release second blocked handler");
@@ -940,14 +865,8 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
             .expect("both provider receivers attempt close after handler completion");
         *closed.entry(subscriber).or_default() += 1;
     }
-    assert_eq!(
-        1,
-        closed.get("timeout-close-a").copied().unwrap_or_default()
-    );
-    assert_eq!(
-        1,
-        closed.get("timeout-close-b").copied().unwrap_or_default()
-    );
+    assert_eq!(1, closed.get("timeout-close-a").copied().unwrap_or_default());
+    assert_eq!(1, closed.get("timeout-close-b").copied().unwrap_or_default());
 
     let error = bus
         .shutdown(ShutdownMode::Immediate)
@@ -956,18 +875,11 @@ fn test_graceful_timeout_can_be_recovered_and_aggregates_later_close_failures() 
         panic!("expected aggregated subscription close errors");
     };
     assert_eq!(2, errors.len());
-    let mut subscriber_ids: Vec<_> = errors
-        .iter()
-        .map(|failure| failure.subscriber_id().as_str())
-        .collect();
+    let mut subscriber_ids: Vec<_> = errors.iter().map(|failure| failure.subscriber_id().as_str()).collect();
     subscriber_ids.sort_unstable();
-    assert_eq!(
-        ["timeout-close-a", "timeout-close-b"],
-        subscriber_ids.as_slice()
-    );
+    assert_eq!(["timeout-close-a", "timeout-close-b"], subscriber_ids.as_slice());
     assert!(errors.iter().all(|failure| {
-        failure.error().provider_id() == PROVIDER_ID
-            && failure.error().operation() == "close_subscription"
+        failure.error().provider_id() == PROVIDER_ID && failure.error().operation() == "close_subscription"
     }));
     assert_eq!(1, spi.shutdown_calls());
 }

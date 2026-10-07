@@ -114,12 +114,7 @@ where
         )
         .await;
     }
-    push_async_hook(
-        &mut report,
-        "receive-cancellation",
-        hooks.receive_cancellation.as_ref(),
-    )
-    .await;
+    push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
     if capabilities.settlement() == SettlementCapabilities::None {
         report.push(ConformanceCase::Skipped {
             case_id: "settlement-cancellation".into(),
@@ -135,12 +130,7 @@ where
         )
         .await;
     }
-    push_async_hook(
-        &mut report,
-        "close-cancellation",
-        hooks.close_cancellation.as_ref(),
-    )
-    .await;
+    push_async_hook(&mut report, "close-cancellation", hooks.close_cancellation.as_ref()).await;
     push_async_hook(
         &mut report,
         "shutdown-cancellation",
@@ -151,12 +141,7 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Ephemeral)
     {
-        push_async_hook(
-            &mut report,
-            "ephemeral-cleanup",
-            hooks.ephemeral_cleanup.as_ref(),
-        )
-        .await;
+        push_async_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref()).await;
     } else {
         report.push(ConformanceCase::Skipped {
             case_id: "ephemeral-cleanup".into(),
@@ -202,10 +187,7 @@ async fn run_payload_case(
     report: &mut ConformanceReport,
 ) {
     let capabilities = spi.capabilities();
-    let mut subscription = match spi
-        .subscribe(probe_request(1, capabilities.durability()))
-        .await
-    {
+    let mut subscription = match spi.subscribe(probe_request(1, capabilities.durability())).await {
         Ok(subscription) => {
             report.push(ConformanceCase::Passed {
                 case_id: "subscribe".into(),
@@ -223,14 +205,7 @@ async fn run_payload_case(
                     detail: "subscription could not be created".into(),
                 },
             });
-            record_async_shutdown(
-                report,
-                spi.as_ref(),
-                "shutdown",
-                "immediate shutdown",
-                "async shutdown",
-            )
-            .await;
+            record_async_shutdown(report, spi.as_ref(), "shutdown", "immediate shutdown", "async shutdown").await;
             return;
         }
     };
@@ -248,26 +223,17 @@ async fn run_payload_case(
                 } else {
                     ConformanceCase::Failed {
                         case_id: "receive-payload".into(),
-                        detail: "received payload mode or type does not match the declaration"
-                            .into(),
+                        detail: "received payload mode or type does not match the declaration".into(),
                     }
                 });
                 let token = message.take_settlement();
                 report.push(
-                    async_settlement_idempotence_case(
-                        subscription.as_mut(),
-                        capabilities.settlement(),
-                        token.as_ref(),
-                    )
-                    .await,
+                    async_settlement_idempotence_case(subscription.as_mut(), capabilities.settlement(), token.as_ref())
+                        .await,
                 );
                 report.push(
-                    async_conflicting_settlement_case(
-                        subscription.as_mut(),
-                        capabilities.settlement(),
-                        token.as_ref(),
-                    )
-                    .await,
+                    async_conflicting_settlement_case(subscription.as_mut(), capabilities.settlement(), token.as_ref())
+                        .await,
                 );
             }
             Ok(_) => report.push(ConformanceCase::Failed {
@@ -288,13 +254,7 @@ async fn run_payload_case(
         });
     }
 
-    record_async_subscription_close(
-        report,
-        subscription.as_mut(),
-        "close",
-        "async receiver close",
-    )
-    .await;
+    record_async_subscription_close(report, subscription.as_mut(), "close", "async receiver close").await;
     record_async_subscription_close(
         report,
         subscription.as_mut(),
@@ -302,14 +262,7 @@ async fn run_payload_case(
         "repeated async receiver close",
     )
     .await;
-    record_async_shutdown(
-        report,
-        spi.as_ref(),
-        "shutdown",
-        "immediate shutdown",
-        "async shutdown",
-    )
-    .await;
+    record_async_shutdown(report, spi.as_ref(), "shutdown", "immediate shutdown", "async shutdown").await;
     record_async_shutdown(
         report,
         spi.as_ref(),
@@ -365,19 +318,13 @@ async fn async_repeat_accept_case(
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,
 ) -> ConformanceCase {
-    if let Err(error) = subscription
-        .settle(token, DeliveryDisposition::Accept)
-        .await
-    {
+    if let Err(error) = subscription.settle(token, DeliveryDisposition::Accept).await {
         return ConformanceCase::Failed {
             case_id: "settlement-idempotence".into(),
             detail: format!("accept settlement failed: {error}"),
         };
     }
-    match subscription
-        .settle(token, DeliveryDisposition::Accept)
-        .await
-    {
+    match subscription.settle(token, DeliveryDisposition::Accept).await {
         Ok(()) => ConformanceCase::Passed {
             case_id: "settlement-idempotence".into(),
         },
@@ -419,10 +366,7 @@ async fn async_conflicting_settlement_case(
             },
         };
     };
-    match subscription
-        .settle(token, DeliveryDisposition::Reject)
-        .await
-    {
+    match subscription.settle(token, DeliveryDisposition::Reject).await {
         Err(error) if error.kind() == "invalid_settlement_token" => ConformanceCase::Passed {
             case_id: "settlement-conflicting-disposition".into(),
         },
@@ -505,11 +449,7 @@ fn push_async_result(report: &mut ConformanceReport, case_id: &str, result: Resu
 /// - `report`: report receiving the result.
 /// - `case_id`: stable case identifier.
 /// - `hook`: optional provider-specific check.
-async fn push_async_hook(
-    report: &mut ConformanceReport,
-    case_id: &str,
-    hook: Option<&AsyncConformanceCheck>,
-) {
+async fn push_async_hook(report: &mut ConformanceReport, case_id: &str, hook: Option<&AsyncConformanceCheck>) {
     match hook {
         Some(check) => push_async_result(report, case_id, check().await),
         None => report.push(ConformanceCase::Skipped {

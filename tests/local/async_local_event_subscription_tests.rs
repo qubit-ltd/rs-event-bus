@@ -38,10 +38,7 @@ use crate::support;
 /// during this deterministic probe.
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
+    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("probe operation unexpectedly pending"),
     }
@@ -77,8 +74,7 @@ fn test_shutdown_waker_can_reenter_publish() {
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).unwrap());
     let bus = AsyncEventBus::from_spi(ProviderId::new("local").unwrap(), spi.clone()).unwrap();
     let topic = Topic::<String>::new("review.reentrant").unwrap();
-    let subscription =
-        ready(bus.subscribe(SubscribeRequest::new("consumer", topic).unwrap())).unwrap();
+    let subscription = ready(bus.subscribe(SubscribeRequest::new("consumer", topic).unwrap())).unwrap();
     let reenter = Arc::new(Reenter {
         bus: bus.clone(),
         calls: AtomicUsize::new(0),
@@ -86,12 +82,7 @@ fn test_shutdown_waker_can_reenter_publish() {
     });
     let waker = Waker::from(reenter.clone());
     let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
-    assert!(
-        runner
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
+    assert!(runner.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     let mode = match case.as_str() {
         "immediate" => ShutdownMode::Immediate,
         "graceful" => ShutdownMode::Graceful {
@@ -100,10 +91,7 @@ fn test_shutdown_waker_can_reenter_publish() {
         _ => panic!("unknown isolated case"),
     };
     reenter.shutdown_started.store(true, Ordering::SeqCst);
-    assert_eq!(
-        ShutdownOutcome::Complete,
-        ready(spi.shutdown(mode)).unwrap()
-    );
+    assert_eq!(ShutdownOutcome::Complete, ready(spi.shutdown(mode)).unwrap());
     assert!(reenter.calls.load(Ordering::SeqCst) >= 1);
     drop(runner);
     let report = ready(bus.shutdown(ShutdownMode::Immediate)).unwrap();

@@ -142,31 +142,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ) {
         let tracking = self.inner.tracker.track(self.topic.name());
         let provider_attempt = message.provider_attempt();
-        let (
-            address,
-            event_id,
-            timestamp,
-            headers,
-            ordering_key,
-            transport_payload,
-            token,
-            provider_metadata,
-        ) = message.into_parts();
-        let lane =
-            (self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey).then(|| {
-                crate::pipeline::OrderingLaneKey::new(
-                    self.topic.name(),
-                    ordering_key.as_ref().map(|key| key.as_str()),
-                    self.id,
-                )
-            });
+        let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
+            message.into_parts();
+        let lane = (self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey).then(|| {
+            crate::pipeline::OrderingLaneKey::new(
+                self.topic.name(),
+                ordering_key.as_ref().map(|key| key.as_str()),
+                self.id,
+            )
+        });
         let payload = match decode_payload(
             self.codec.as_ref(),
             &transport_payload,
-            self.inner
-                .facade_config
-                .payload_limits()
-                .max_receive_bytes(),
+            self.inner.facade_config.payload_limits().max_receive_bytes(),
         ) {
             Ok(payload) => payload,
             Err(error) => {
@@ -206,8 +194,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 return;
             }
         };
-        let mut event =
-            EventEnvelope::with_id_and_shared_payload(self.topic.clone(), payload, event_id);
+        let mut event = EventEnvelope::with_id_and_shared_payload(self.topic.clone(), payload, event_id);
         event.timestamp = timestamp;
         event.headers = headers;
         event.ordering_key = ordering_key.map(|key| key.as_str().into());

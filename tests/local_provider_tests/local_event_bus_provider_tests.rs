@@ -37,7 +37,5 @@ fn test_default_configuration_creates_a_native_local_spi() {
         .create_configured(&EventBusConfig::default())
         .expect("default provider config is valid");
     assert_eq!(PayloadModes::Native, spi.capabilities().payload_modes());
-    let _ = spi
-        .shutdown(ShutdownMode::Immediate)
-        .expect("local SPI closes");
+    let _ = spi.shutdown(ShutdownMode::Immediate).expect("local SPI closes");
 }

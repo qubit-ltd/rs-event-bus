@@ -16,17 +16,10 @@ fn test_clones_observe_one_terminal_decision_and_reject_conflicts() {
     let original = Acknowledgement::new();
     let clone = original.clone();
 
-    clone
-        .ack()
-        .expect("first ACK should complete the shared state");
-    original
-        .ack()
-        .expect("repeating the same decision should succeed");
+    clone.ack().expect("first ACK should complete the shared state");
+    original.ack().expect("repeating the same decision should succeed");
 
     assert_eq!(original.state(), AcknowledgementState::Acknowledged);
     assert!(clone.is_completed());
-    assert!(matches!(
-        clone.nack(),
-        Err(AcknowledgementError::AlreadyCompleted)
-    ));
+    assert!(matches!(clone.nack(), Err(AcknowledgementError::AlreadyCompleted)));
 }

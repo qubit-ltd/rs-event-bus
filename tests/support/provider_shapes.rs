@@ -134,10 +134,7 @@ impl EventBusSpi for ChannelShapedEventBusSpi {
         })
     }
 
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(provider_error("subscribe", "provider_closed"));
         }
@@ -176,10 +173,7 @@ impl EventSubscriptionSpi for ChannelSubscription {
             return Ok(ReceiveOutcome::Closed);
         }
         if self.gap.swap(false, Ordering::AcqRel) {
-            return Ok(ReceiveOutcome::Gap(DeliveryGap::new(
-                "channel lag",
-                Some(1),
-            )));
+            return Ok(ReceiveOutcome::Gap(DeliveryGap::new("channel lag", Some(1))));
         }
         if timeout.is_zero() {
             match self.receiver.try_recv() {

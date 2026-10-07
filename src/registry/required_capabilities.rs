@@ -297,14 +297,8 @@ impl RequiredCapabilities {
 /// `true` when `actual` includes every behavior required by `required`.
 fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
     match required {
-        PayloadModes::Native => matches!(
-            actual,
-            PayloadModes::Native | PayloadModes::NativeAndEncoded
-        ),
-        PayloadModes::Encoded => matches!(
-            actual,
-            PayloadModes::Encoded | PayloadModes::NativeAndEncoded
-        ),
+        PayloadModes::Native => matches!(actual, PayloadModes::Native | PayloadModes::NativeAndEncoded),
+        PayloadModes::Encoded => matches!(actual, PayloadModes::Encoded | PayloadModes::NativeAndEncoded),
         PayloadModes::NativeAndEncoded => actual == PayloadModes::NativeAndEncoded,
     }
 }
@@ -324,9 +318,7 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
             actual,
             SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject
         ),
-        SettlementCapabilities::AcceptRetryReject => {
-            actual == SettlementCapabilities::AcceptRetryReject
-        }
+        SettlementCapabilities::AcceptRetryReject => actual == SettlementCapabilities::AcceptRetryReject,
     }
 }
 
@@ -341,10 +333,7 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
 fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> bool {
     match required {
         ReplayCapability::None => true,
-        ReplayCapability::Position => matches!(
-            actual,
-            ReplayCapability::Position | ReplayCapability::Timestamp
-        ),
+        ReplayCapability::Position => matches!(actual, ReplayCapability::Position | ReplayCapability::Timestamp),
         ReplayCapability::Timestamp => actual == ReplayCapability::Timestamp,
     }
 }

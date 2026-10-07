@@ -32,9 +32,7 @@ use crate::model::SchemaId;
 #[must_use]
 pub enum CodecError {
     /// Encoded payload exceeds the facade's configured byte limit.
-    #[error(
-        "{direction:?} encoded event payload is {actual} bytes, exceeding the {limit}-byte limit"
-    )]
+    #[error("{direction:?} encoded event payload is {actual} bytes, exceeding the {limit}-byte limit")]
     PayloadTooLarge {
         /// Boundary whose positive byte limit was exceeded.
         direction: PayloadDirection,

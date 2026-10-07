@@ -86,11 +86,7 @@ impl AsyncEventBus {
             active: AtomicBool::new(true),
             callback: Arc::new(observer),
         });
-        let mut entries = self
-            .inner
-            .observers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut entries = self.inner.observers.lock().unwrap_or_else(PoisonError::into_inner);
         entries.retain(|entry| entry.strong_count() > 0);
         entries.push(Arc::downgrade(&entry));
         DiagnosticObserverHandle::new(entry)

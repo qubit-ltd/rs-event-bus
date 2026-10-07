@@ -127,8 +127,7 @@ mod tests {
         assert_registry_unlocked(probe);
     }
 
-    static PROBE_VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
+    static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[test]
     fn test_waker_callbacks_are_outside_the_registry_lock() {

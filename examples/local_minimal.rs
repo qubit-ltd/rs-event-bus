@@ -23,12 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::default())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            let _ = sender.send(delivery.payload().clone());
-        },
-    )?;
+    let subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        let _ = sender.send(delivery.payload().clone());
+    })?;
 
     let _ = bus.publish_checked(
         PublishRequest::new(topic, "order-42".to_owned())?,

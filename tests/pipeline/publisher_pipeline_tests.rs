@@ -58,12 +58,11 @@ fn test_typed_and_global_interceptors_run_in_order_before_drop() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let typed_order = order.clone();
     let global_order = order.clone();
-    let config =
-        EventBusFacadeConfig::new().publisher_interceptor(move |metadata: &mut PublishMetadata| {
-            global_order.lock().unwrap().push("global");
-            assert_eq!(metadata.header("origin"), Some("typed"));
-            Ok(false)
-        });
+    let config = EventBusFacadeConfig::new().publisher_interceptor(move |metadata: &mut PublishMetadata| {
+        global_order.lock().unwrap().push("global");
+        assert_eq!(metadata.header("origin"), Some("typed"));
+        Ok(false)
+    });
     let registry = EventBusRegistry::with_local().expect("local provider registers");
     let event_config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().provider_options())
@@ -74,9 +73,7 @@ fn test_typed_and_global_interceptors_run_in_order_before_drop() {
     let options = PublishOptions::<u32>::builder()
         .interceptor(move |mut envelope| {
             typed_order.lock().unwrap().push("typed");
-            envelope
-                .set_header("origin", "typed")
-                .expect("valid header");
+            envelope.set_header("origin", "typed").expect("valid header");
             Ok(Some(envelope))
         })
         .build();
@@ -141,10 +138,7 @@ impl EventBusSpi for WeightProbe {
     }
 
     /// Subscriptions are outside the publication metadata contract.
-    fn subscribe(
-        &self,
-        _: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         unreachable!("weight probe only publishes")
     }
 
@@ -164,11 +158,8 @@ fn test_native_payload_weight_after_interceptors_is_retained_across_retries() {
             fail_first: true,
             messages: Mutex::new(Vec::new()),
         });
-        let bus = EventBus::from_spi(
-            ProviderId::new("weight-probe").expect("valid provider"),
-            probe.clone(),
-        )
-        .expect("facade starts");
+        let bus = EventBus::from_spi(ProviderId::new("weight-probe").expect("valid provider"), probe.clone())
+            .expect("facade starts");
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = calls.clone();
         let options = PublishOptions::<String>::builder()
@@ -209,15 +200,10 @@ fn test_native_payload_weight_after_interceptors_is_retained_across_retries() {
             let TransportPayload::Native(payload) = message.payload() else {
                 panic!("native payload expected")
             };
-            assert_eq!(
-                payload.downcast_ref::<String>().expect("string payload"),
-                "transformed"
-            );
+            assert_eq!(payload.downcast_ref::<String>().expect("string payload"), "transformed");
         }
         drop(messages);
-        let _ = bus
-            .shutdown(ShutdownMode::Immediate)
-            .expect("shutdown succeeds");
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
     }
 }
 
@@ -229,11 +215,8 @@ fn test_native_payload_weight_panic_is_preflight_failure() {
         fail_first: false,
         messages: Mutex::new(Vec::new()),
     });
-    let bus = EventBus::from_spi(
-        ProviderId::new("weight-probe").expect("valid provider"),
-        probe.clone(),
-    )
-    .expect("facade starts");
+    let bus = EventBus::from_spi(ProviderId::new("weight-probe").expect("valid provider"), probe.clone())
+        .expect("facade starts");
     let options = PublishOptions::<u32>::builder()
         .native_payload_weight(|_| panic!("weight panic"))
         .build();
@@ -249,9 +232,7 @@ fn test_native_payload_weight_panic_is_preflight_failure() {
     );
     assert_eq!(failure.effect(), PublishEffect::NotAccepted);
     assert!(probe.messages.lock().expect("probe lock").is_empty());
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("shutdown succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 }
 
 /// Encoded transports skip native estimation even when the callback would
@@ -263,11 +244,8 @@ fn test_native_payload_weight_is_skipped_for_encoded_transport() {
         fail_first: false,
         messages: Mutex::new(Vec::new()),
     });
-    let bus = EventBus::from_spi(
-        ProviderId::new("weight-probe").expect("valid provider"),
-        probe.clone(),
-    )
-    .expect("facade starts");
+    let bus = EventBus::from_spi(ProviderId::new("weight-probe").expect("valid provider"), probe.clone())
+        .expect("facade starts");
     let options = PublishOptions::<u32>::builder()
         .native_payload_weight(|_| panic!("encoded provider must skip weight"))
         .build();
@@ -277,8 +255,7 @@ fn test_native_payload_weight_is_skipped_for_encoded_transport() {
                 Topic::new("weights.encoded")
                     .expect("valid topic")
                     .with_codec(WeightCodec {
-                        content_type: ContentType::new("application/octet-stream")
-                            .expect("valid content type"),
+                        content_type: ContentType::new("application/octet-stream").expect("valid content type"),
                     }),
                 7,
             )
@@ -289,14 +266,9 @@ fn test_native_payload_weight_is_skipped_for_encoded_transport() {
     let messages = probe.messages.lock().expect("probe lock");
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].native_payload_weight_bytes(), None);
-    assert!(matches!(
-        messages[0].payload(),
-        TransportPayload::Encoded(_)
-    ));
+    assert!(matches!(messages[0].payload(), TransportPayload::Encoded(_)));
     drop(messages);
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("shutdown succeeds");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 }
 
 /// Minimal codec used to observe successful encoded transport admission.

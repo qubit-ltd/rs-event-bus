@@ -158,11 +158,7 @@ fn settlement_token_key(token: &SettlementToken) -> String {
     token
         .downcast_ref::<String>()
         .cloned()
-        .or_else(|| {
-            token
-                .downcast_ref::<&str>()
-                .map(|value| (*value).to_owned())
-        })
+        .or_else(|| token.downcast_ref::<&str>().map(|value| (*value).to_owned()))
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
@@ -250,10 +246,7 @@ impl FakeEventBusSpi {
         let queues = self.queues.lock().unwrap().clone();
         for (_, queue) in queues {
             let (lock, ready) = &*queue;
-            lock.lock()
-                .unwrap()
-                .messages
-                .push_back(message_for_copy(&message));
+            lock.lock().unwrap().messages.push_back(message_for_copy(&message));
             ready.notify_one();
         }
     }
@@ -360,10 +353,7 @@ impl EventBusSpi for FakeEventBusSpi {
         })
     }
 
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.calls.lock().unwrap().push("subscribe");
         let queue = Arc::new((
             Mutex::new(QueueState {
@@ -452,11 +442,7 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
         }
         Ok(ReceiveOutcome::TimedOut)
     }
-    fn settle(
-        &mut self,
-        token: &SettlementToken,
-        disposition: DeliveryDisposition,
-    ) -> Result<(), SpiError> {
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("settle");
         if !token.belongs_to(self.id) {
             return Err(spi_error("settle"));
@@ -688,10 +674,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         );
         self.capabilities
     }
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.lock().unwrap().push("publish");
         if take(&mut *self.fail_next_publish.lock().unwrap()) {
             return Box::pin(async { Err(spi_error("publish")) });
@@ -831,10 +814,7 @@ impl FakeAsyncEventSubscriptionSpi {
 }
 
 impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
-    fn receive<'a>(
-        &'a mut self,
-        timeout: Duration,
-    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.calls.lock().unwrap().push("receive");
         if take(&mut self.queue.lock().unwrap().panic_next_receive) {
             return Box::pin(async {
@@ -864,9 +844,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 Ok(())
             });
         }
-        let result = if !token.belongs_to(self.id)
-            || matches!(self.settlement, SettlementCapabilities::None)
-        {
+        let result = if !token.belongs_to(self.id) || matches!(self.settlement, SettlementCapabilities::None) {
             Err(spi_error("settle"))
         } else {
             let mut state = self.queue.lock().unwrap();
@@ -960,10 +938,7 @@ impl Future for ReceiveFuture {
                 None
             } else if state.gaps > 0 {
                 state.gaps -= 1;
-                Some(Ok(ReceiveOutcome::Gap(DeliveryGap::new(
-                    "fake gap",
-                    Some(1),
-                ))))
+                Some(Ok(ReceiveOutcome::Gap(DeliveryGap::new("fake gap", Some(1)))))
             } else if state.closed {
                 Some(Ok(ReceiveOutcome::Closed))
             } else if timeout.is_zero() {

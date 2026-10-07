@@ -66,21 +66,14 @@ impl EventBus {
                 operation: "wait_for_idle",
             });
         }
-        let address =
-            TopicAddress::new(topic.name()).expect("typed topic names are valid SPI addresses");
+        let address = TopicAddress::new(topic.name()).expect("typed topic names are valid SPI addresses");
         catch_spi_call(
             self.inner.provider_id.as_str(),
             "wait_for_topic_idle",
             Some(address.as_str()),
             || self.inner.spi.wait_for_topic_idle(&address, timeout),
         )??
-        .map(|idle| {
-            if idle {
-                WaitOutcome::Idle
-            } else {
-                WaitOutcome::TimedOut
-            }
-        })
+        .map(|idle| if idle { WaitOutcome::Idle } else { WaitOutcome::TimedOut })
         .ok_or(LifecycleError::IdleWaitUnsupported)
     }
 
@@ -153,10 +146,7 @@ impl EventBus {
     pub fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let identity = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_context(identity) {
-            return Err(LifecycleError::WouldDeadlock {
-                operation: "shutdown",
-            }
-            .into());
+            return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
         }
         let timeout = match mode {
             ShutdownMode::Graceful { timeout } => Some(timeout),
@@ -196,10 +186,7 @@ impl EventBus {
     /// # Returns
     /// The lifecycle mutex guard for this bus.
     pub(in crate::facade) fn lock_lifecycle(&self) -> MutexGuard<'_, LifecycleState> {
-        self.inner
-            .lifecycle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Requests a generation using the supplied coordinator thread launcher.
@@ -225,11 +212,7 @@ impl EventBus {
     ///
     /// # Panics
     /// Propagates a panic raised by `spawn` after shutdown admission closes.
-    fn request_shutdown_with_spawner<F>(
-        &self,
-        mode: ShutdownMode,
-        spawn: F,
-    ) -> Result<EventBusShutdown, ShutdownError>
+    fn request_shutdown_with_spawner<F>(&self, mode: ShutdownMode, spawn: F) -> Result<EventBusShutdown, ShutdownError>
     where
         F: FnOnce(Arc<EventBusInner>, u64) -> IoResult<()>,
     {
@@ -253,16 +236,13 @@ impl EventBus {
             self.inner.shutdown_coordinator.mode(generation),
             ShutdownMode::Immediate
         ));
-        self.inner
-            .signal_subscriptions(SubscriptionControl::request_cancel);
+        self.inner.signal_subscriptions(SubscriptionControl::request_cancel);
         if start && let Err(error) = spawn(self.inner.clone(), generation) {
             let returned = error.raw_os_error().map_or_else(
                 || IoError::new(error.kind(), error.to_string()),
                 IoError::from_raw_os_error,
             );
-            self.inner
-                .shutdown_coordinator
-                .abort_start(generation, error);
+            self.inner.shutdown_coordinator.abort_start(generation, error);
             return Err(ShutdownError::CoordinatorStart(returned));
         }
         Ok(ticket)
@@ -290,34 +270,23 @@ mod tests {
         let joined = Mutex::new(None);
         let error = bus
             .request_shutdown_with_spawner(ShutdownMode::Immediate, |_, _| {
-                *joined.lock().expect("ticket slot") = Some(
-                    bus.request_shutdown(ShutdownMode::Immediate)
-                        .expect("join ticket"),
-                );
+                *joined.lock().expect("ticket slot") =
+                    Some(bus.request_shutdown(ShutdownMode::Immediate).expect("join ticket"));
                 Err(Error::other("injected coordinator start failure"))
             })
             .err()
             .expect("start failure");
         assert!(matches!(error, ShutdownError::CoordinatorStart(_)));
-        let old = joined
-            .into_inner()
-            .expect("ticket slot")
-            .expect("joined ticket");
-        let retry = bus
-            .request_shutdown(ShutdownMode::Immediate)
-            .expect("retry starts");
-        let _ = retry
-            .wait(Some(Duration::from_secs(5)))
-            .expect("retry completes");
+        let old = joined.into_inner().expect("ticket slot").expect("joined ticket");
+        let retry = bus.request_shutdown(ShutdownMode::Immediate).expect("retry starts");
+        let _ = retry.wait(Some(Duration::from_secs(5))).expect("retry completes");
         assert!(matches!(
             old.wait(Some(Duration::ZERO)),
             Err(ShutdownError::CoordinatorStart(_))
         ));
         let mut future = Box::pin(old.wait_async());
         assert!(matches!(
-            future
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
+            future.as_mut().poll(&mut Context::from_waker(Waker::noop())),
             Poll::Ready(Err(ShutdownError::CoordinatorStart(_)))
         ));
     }

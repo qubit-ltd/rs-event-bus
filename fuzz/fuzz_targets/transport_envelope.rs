@@ -54,8 +54,7 @@ fuzz_target!(|input: &[u8]| {
         std::str::from_utf8(header_value),
     ) {
         let id = EventId::new("fuzz-event").unwrap();
-        let mut envelope =
-            EventEnvelope::with_id_and_shared_payload(topic, Arc::new(Vec::new()), id);
+        let mut envelope = EventEnvelope::with_id_and_shared_payload(topic, Arc::new(Vec::new()), id);
         let _ = envelope.set_header("fuzz.value", header_value);
         for reserved in [DEAD_LETTER_HEADER, "X-QUBIT-EVENT-BUS-DEAD-LETTER"] {
             assert!(envelope.set_header(reserved, "secret-marker").is_err());

@@ -48,11 +48,7 @@ impl EventBusCapabilitiesBuildError {
 
 impl Display for EventBusCapabilitiesBuildError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
-        write!(
-            formatter,
-            "missing capability field `{}`",
-            self.missing_field
-        )
+        write!(formatter, "missing capability field `{}`", self.missing_field)
     }
 }
 

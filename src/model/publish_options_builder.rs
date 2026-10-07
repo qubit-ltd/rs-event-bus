@@ -146,10 +146,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     /// The updated builder.
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
         self

@@ -31,8 +31,7 @@ use qubit_spi::error::ProviderFailureKind;
 #[test]
 fn test_async_provider_registry_attaches_successful_provider_identity() {
     let registry = AsyncEventBusRegistry::with_local().expect("local provider registers");
-    let bus = block_on(registry.create(&EventBusConfig::default()))
-        .expect("local async provider creates");
+    let bus = block_on(registry.create(&EventBusConfig::default())).expect("local async provider creates");
     let receipt = block_on(
         bus.publish(
             PublishRequest::new(
@@ -51,9 +50,8 @@ fn test_async_provider_registry_attaches_successful_provider_identity() {
 #[test]
 fn test_async_provider_registry_rejects_missing_capabilities_during_creation() {
     let registry = AsyncEventBusRegistry::with_local().expect("local provider registers");
-    let config = EventBusConfig::default().with_required_capabilities(
-        RequiredCapabilities::new().with_durability(DurabilityCapability::Durable),
-    );
+    let config = EventBusConfig::default()
+        .with_required_capabilities(RequiredCapabilities::new().with_durability(DurabilityCapability::Durable));
 
     let error = match block_on(registry.create(&config)) {
         Ok(_) => panic!("ephemeral local provider does not satisfy durable retention"),

@@ -21,19 +21,9 @@ fn test_capability_error_codec_required_display_and_error_chain() {
 
 #[test]
 fn test_capability_error_unsupported_display_field_and_error_chain() {
-    let error = CapabilityError::Unsupported {
-        capability: "ordering",
-    };
+    let error = CapabilityError::Unsupported { capability: "ordering" };
 
-    assert_eq!(
-        error.to_string(),
-        "unsupported event bus capability: ordering"
-    );
-    assert!(matches!(
-        error,
-        CapabilityError::Unsupported {
-            capability: "ordering"
-        }
-    ));
+    assert_eq!(error.to_string(), "unsupported event bus capability: ordering");
+    assert!(matches!(error, CapabilityError::Unsupported { capability: "ordering" }));
     assert!(Error::source(&error).is_none());
 }

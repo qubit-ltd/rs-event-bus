@@ -60,9 +60,7 @@ impl Drop for HandlerCompletionGuard {
     /// exits.
     fn drop(&mut self) {
         self.scheduler.handler_finished(self.lease);
-        let _ = self
-            .sender
-            .send(CoordinatorMessage::HandlerFinished(self.lease));
+        let _ = self.sender.send(CoordinatorMessage::HandlerFinished(self.lease));
         self.scheduler.notify(self.subscription);
     }
 }

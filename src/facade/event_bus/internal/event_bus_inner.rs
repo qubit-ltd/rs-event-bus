@@ -114,10 +114,7 @@ impl EventBusInner {
     /// diagnostics.
     #[must_use = "delivery gauges are the current bus snapshot"]
     #[inline]
-    pub(in crate::facade) fn delivery_gauges(
-        &self,
-        scope: Option<Id>,
-    ) -> crate::facade::DeliveryMetricsSnapshot {
+    pub(in crate::facade) fn delivery_gauges(&self, scope: Option<Id>) -> crate::facade::DeliveryMetricsSnapshot {
         match self.scheduler.snapshot(scope, self.clock.as_ref()) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -135,9 +132,7 @@ impl EventBusInner {
                     .into_iter()
                     .filter(|control| scope.is_none_or(|id| id == control.id))
                 {
-                    if control.fail_receive(crate::model::SubscriptionStopReason::Provider {
-                        error: error.clone(),
-                    }) {
+                    if control.fail_receive(crate::model::SubscriptionStopReason::Provider { error: error.clone() }) {
                         first_failures += 1;
                     }
                     self.scheduler.cancel_subscription(control.id);
@@ -176,9 +171,7 @@ impl EventBusInner {
             retryable: Some(false),
             source: Box::new(error),
         });
-        let first = control.fail_receive(crate::model::SubscriptionStopReason::Provider {
-            error: error.clone(),
-        });
+        let first = control.fail_receive(crate::model::SubscriptionStopReason::Provider { error: error.clone() });
         self.scheduler.cancel_subscription(control.id);
         if first {
             self.emit_internal(operation, error.to_string());
@@ -191,10 +184,7 @@ impl EventBusInner {
     /// Strong callback owners retained for one diagnostic emission.
     #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self
-            .observers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
         observers.retain(|entry| entry.strong_count() > 0);
         observers
             .iter()
@@ -247,10 +237,7 @@ impl EventBusInner {
     where
         F: FnMut(&SubscriptionControl),
     {
-        let subscriptions = self
-            .subscriptions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let subscriptions = self.subscriptions.lock().unwrap_or_else(PoisonError::into_inner);
         for control in subscriptions.values() {
             signal(control);
         }
@@ -263,17 +250,11 @@ impl EventBusInner {
     /// Some with all failures, or None if no close failure was recorded.
     #[must_use = "Inspect the recorded subscription close failures."]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let mut snapshot = self
-            .close_error_snapshot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
             return Some(errors.clone());
         }
-        let failures = self
-            .close_errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
         if failures.is_empty() {
             return None;
         }
@@ -292,15 +273,8 @@ impl EventBusInner {
     ///
     /// # Errors
     /// Returns an SPI error when the worker thread panicked.
-    pub(in crate::facade) fn join_control(
-        &self,
-        control: &Arc<SubscriptionControl>,
-    ) -> Result<(), SpiError> {
-        let worker = control
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+    pub(in crate::facade) fn join_control(&self, control: &Arc<SubscriptionControl>) -> Result<(), SpiError> {
+        let worker = control.worker.lock().unwrap_or_else(PoisonError::into_inner).take();
         if let Some(worker) = worker {
             worker.join().map_err(|_| SpiError::Operation {
                 provider_id: self.provider_id.as_str().into(),
@@ -321,17 +295,16 @@ impl EventBusInner {
     pub(in crate::facade) fn run_shutdown(self: Arc<Self>, generation: u64) {
         let bus_identity = Arc::as_ptr(&self) as usize;
         let _context = BusContextGuard::enter(bus_identity);
-        let result = catch_unwind(AssertUnwindSafe(|| self.perform_shutdown(generation)))
-            .unwrap_or_else(|panic| {
-                Err(SpiError::Operation {
-                    provider_id: self.provider_id.as_str().into(),
-                    operation: "shutdown_coordinator",
-                    resource: None,
-                    kind: "coordinator_panicked",
-                    retryable: None,
-                    source: Box::new(Error::other(panic_message(panic.as_ref()))),
-                })
-            });
+        let result = catch_unwind(AssertUnwindSafe(|| self.perform_shutdown(generation))).unwrap_or_else(|panic| {
+            Err(SpiError::Operation {
+                provider_id: self.provider_id.as_str().into(),
+                operation: "shutdown_coordinator",
+                resource: None,
+                kind: "coordinator_panicked",
+                retryable: None,
+                source: Box::new(Error::other(panic_message(panic.as_ref()))),
+            })
+        });
         let failure_message = result.as_ref().err().map(ToString::to_string);
         self.shutdown_coordinator.finish(generation, result);
         if let Some(message) = failure_message {
@@ -367,10 +340,7 @@ impl EventBusInner {
         let mode = self.shutdown_coordinator.mode(generation);
         let outcome = self.shutdown_provider_once(mode)?;
         if self.tracker.workers_are_idle() {
-            *self
-                .lifecycle
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = LifecycleState::Closed;
+            *self.lifecycle.lock().unwrap_or_else(PoisonError::into_inner) = LifecycleState::Closed;
         }
         Ok(outcome)
     }
@@ -389,25 +359,15 @@ impl EventBusInner {
         // Only perform_shutdown on the single active coordinator generation
         // calls this method. The coordinator owns provider-call serialization;
         // this mutex protects only the cached report, never provider code.
-        let cached = self
-            .shutdown_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .report;
+        let cached = self.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner).report;
         if let Some(report) = cached {
             return Ok(report.outcome);
         }
-        let outcome = catch_spi_call(self.provider_id.as_str(), "shutdown", None, || {
-            self.spi.shutdown(mode)
-        })??;
-        self.shutdown_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .report = Some(ShutdownReport::new(
+        let outcome = catch_spi_call(self.provider_id.as_str(), "shutdown", None, || self.spi.shutdown(mode))??;
+        self.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner).report = Some(ShutdownReport::new(
             outcome,
             self.abandoned_deliveries.load(Ordering::Acquire),
-            self.capabilities.durability() == DurabilityCapability::Ephemeral
-                || outcome == ShutdownOutcome::TimedOut,
+            self.capabilities.durability() == DurabilityCapability::Ephemeral || outcome == ShutdownOutcome::TimedOut,
         ));
         Ok(outcome)
     }
@@ -456,10 +416,7 @@ mod tests {
         fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
             self.delegate.publish(message)
         }
-        fn subscribe(
-            &self,
-            request: SpiSubscriptionRequest,
-        ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
             self.delegate.subscribe(request)
         }
         fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -488,9 +445,7 @@ mod tests {
             Arc::new(provider),
         )
         .expect("facade");
-        let ticket = bus
-            .request_shutdown(ShutdownMode::Immediate)
-            .expect("first ticket");
+        let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("first ticket");
         provider_entered_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("provider shutdown entered");
@@ -502,15 +457,8 @@ mod tests {
         let cleanup = thread::spawn(move || {
             let mut lifecycle = cleanup_inner.lifecycle.lock().expect("worker lifecycle");
             cleanup_entered_tx.send(()).expect("cleanup observer");
-            let report = cleanup_inner
-                .shutdown_gate
-                .lock()
-                .expect("worker report")
-                .report;
-            if *lifecycle == LifecycleState::Closing
-                && cleanup_inner.tracker.workers_are_idle()
-                && report.is_some()
-            {
+            let report = cleanup_inner.shutdown_gate.lock().expect("worker report").report;
+            if *lifecycle == LifecycleState::Closing && cleanup_inner.tracker.workers_are_idle() && report.is_some() {
                 *lifecycle = LifecycleState::Closed;
             }
         });
@@ -524,9 +472,7 @@ mod tests {
                 .expect("second request observer")
         });
         let returned_before_provider_release = returned_rx.recv_timeout(Duration::from_secs(2));
-        release_tx
-            .send(())
-            .expect("release provider before any assertion");
+        release_tx.send(()).expect("release provider before any assertion");
         cleanup.join().expect("worker cleanup joins");
         caller.join().expect("request caller joins");
         let first_report = ticket
@@ -559,9 +505,7 @@ mod tests {
         impl Error for BlockingErrorDrop {}
         impl Drop for BlockingErrorDrop {
             fn drop(&mut self) {
-                self.entered
-                    .send(thread::current().id())
-                    .expect("error-drop observer");
+                self.entered.send(thread::current().id()).expect("error-drop observer");
                 self.release
                     .lock()
                     .expect("error-drop release")
@@ -572,10 +516,7 @@ mod tests {
 
         let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
         let id = Id::new(999);
-        let control = SubscriptionControl::new(
-            id,
-            SubscriberId::new("terminal-error-drop").expect("subscriber ID"),
-        );
+        let control = SubscriptionControl::new(id, SubscriberId::new("terminal-error-drop").expect("subscriber ID"));
         let (drop_entered_tx, drop_entered_rx) = mpsc::channel();
         let (drop_release_tx, drop_release_rx) = mpsc::channel();
         control.fail_receive(SubscriptionStopReason::Provider {
@@ -593,11 +534,7 @@ mod tests {
         });
         // The registry is the only remaining control owner, as after a public
         // handle and worker ownership have left. No test keeps an extra Arc.
-        bus.inner
-            .subscriptions
-            .lock()
-            .expect("registry")
-            .insert(id, control);
+        bus.inner.subscriptions.lock().expect("registry").insert(id, control);
         let (signal_entered_tx, signal_entered_rx) = mpsc::channel();
         let (signal_release_tx, signal_release_rx) = mpsc::channel();
         let (returned_tx, returned_rx) = mpsc::channel();
@@ -608,9 +545,7 @@ mod tests {
             request_bus.inner.signal_subscriptions(|control| {
                 control.request_cancel();
                 signal_entered_tx.send(()).expect("signal observer");
-                signal_release_rx
-                    .recv()
-                    .expect("resume cancellation signal");
+                signal_release_rx.recv().expect("resume cancellation signal");
             });
             returned_tx
                 .send(request_bus.request_shutdown(ShutdownMode::Immediate))
@@ -645,9 +580,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("terminal error Drop entered");
         let returned_before_drop_release = returned_rx.recv_timeout(Duration::from_millis(250));
-        drop_release_tx
-            .send(())
-            .expect("release custom Drop before assertions");
+        drop_release_tx.send(()).expect("release custom Drop before assertions");
         cleanup.join().expect("cleanup joins");
         requester.join().expect("request joins");
         let returned_before_release = returned_before_drop_release.is_ok();

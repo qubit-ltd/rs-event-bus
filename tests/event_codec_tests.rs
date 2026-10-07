@@ -61,8 +61,8 @@ impl EventCodec<String> for CompatibleTextCodec {
     }
 
     fn validate_metadata(&self, payload: &EncodedPayload) -> Result<(), CodecError> {
-        let content_type_matches = payload.content_type() == &self.content_type
-            || payload.content_type() == &self.compatible_content_type;
+        let content_type_matches =
+            payload.content_type() == &self.content_type || payload.content_type() == &self.compatible_content_type;
         if content_type_matches && payload.schema_id().is_none() {
             Ok(())
         } else {
@@ -123,22 +123,15 @@ fn test_event_codec_default_validation_reports_metadata_mismatch() {
 
     assert_eq!(expected_content_type.as_str(), "text/plain");
     assert_eq!(actual_content_type.as_str(), "application/octet-stream");
-    assert_eq!(
-        expected_schema_id.as_ref().map(SchemaId::as_str),
-        Some("string-v1")
-    );
-    assert_eq!(
-        actual_schema_id.as_ref().map(SchemaId::as_str),
-        Some("string-v2")
-    );
+    assert_eq!(expected_schema_id.as_ref().map(SchemaId::as_str), Some("string-v1"));
+    assert_eq!(actual_schema_id.as_ref().map(SchemaId::as_str), Some("string-v2"));
 }
 
 #[test]
 fn test_event_codec_override_accepts_compatible_content_type() {
     let codec = CompatibleTextCodec {
         content_type: ContentType::new("text/plain").expect("codec content type is valid"),
-        compatible_content_type: ContentType::new("text/x-string")
-            .expect("compatible content type is valid"),
+        compatible_content_type: ContentType::new("text/x-string").expect("compatible content type is valid"),
     };
     let payload = encoded_payload("text/x-string", None);
 
@@ -151,8 +144,7 @@ fn test_event_codec_override_accepts_compatible_content_type() {
 fn test_event_codec_override_reports_unsupported_metadata() {
     let codec = CompatibleTextCodec {
         content_type: ContentType::new("text/plain").expect("codec content type is valid"),
-        compatible_content_type: ContentType::new("text/x-string")
-            .expect("compatible content type is valid"),
+        compatible_content_type: ContentType::new("text/x-string").expect("compatible content type is valid"),
     };
     let payload = encoded_payload("application/json", None);
 

@@ -134,17 +134,9 @@ fn test_spi_subscription_request_builder_reports_first_missing_field_in_order() 
             0,
         ),
         ("topic", "missing subscription request field `topic`", 1),
-        (
-            "subscriber_id",
-            "missing subscription request field `subscriber_id`",
-            2,
-        ),
+        ("subscriber_id", "missing subscription request field `subscriber_id`", 2),
         ("group", "missing subscription request field `group`", 3),
-        (
-            "durability",
-            "missing subscription request field `durability`",
-            4,
-        ),
+        ("durability", "missing subscription request field `durability`", 4),
         (
             "start_position",
             "missing subscription request field `start_position`",
@@ -171,9 +163,7 @@ fn test_spi_subscription_request_builder_reports_first_missing_field_in_order() 
             builder = builder.topic(TopicAddress::new("contract.builder").expect("valid topic"));
         }
         if configured_fields > 2 {
-            builder = builder.subscriber_id(
-                SubscriberId::new("builder-subscriber").expect("valid subscriber ID"),
-            );
+            builder = builder.subscriber_id(SubscriberId::new("builder-subscriber").expect("valid subscriber ID"));
         }
         if configured_fields > 3 {
             builder = builder.group(None);
@@ -213,26 +203,14 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
     );
 
     assert_eq!(capabilities.payload_modes(), PayloadModes::NativeAndEncoded);
-    assert_eq!(
-        capabilities.settlement(),
-        SettlementCapabilities::AcceptRetryReject
-    );
+    assert_eq!(capabilities.settlement(), SettlementCapabilities::AcceptRetryReject);
     assert_eq!(capabilities.ordering(), OrderingCapability::PerKey);
-    assert_eq!(
-        capabilities.delayed_delivery(),
-        DelayedDeliveryCapability::Native
-    );
+    assert_eq!(capabilities.delayed_delivery(), DelayedDeliveryCapability::Native);
     assert_eq!(capabilities.durability(), DurabilityCapability::Durable);
-    assert_eq!(
-        capabilities.subscription_modes(),
-        SubscriptionModes::DURABLE
-    );
+    assert_eq!(capabilities.subscription_modes(), SubscriptionModes::DURABLE);
     assert!(capabilities.consumer_groups());
     assert_eq!(capabilities.replay(), ReplayCapability::Timestamp);
-    assert_eq!(
-        capabilities.publish_guarantee(),
-        PublishGuarantee::DurablyStored
-    );
+    assert_eq!(capabilities.publish_guarantee(), PublishGuarantee::DurablyStored);
     assert_eq!(
         capabilities.publish_visibility(),
         PublishVisibility::DestinationAdmissions
@@ -242,40 +220,16 @@ fn test_backend_capabilities_preserve_declared_dimensions() {
 #[test]
 fn test_event_bus_capabilities_builder_reports_first_missing_field_in_order() {
     let cases = [
-        (
-            "payload_modes",
-            "missing capability field `payload_modes`",
-            0,
-        ),
+        ("payload_modes", "missing capability field `payload_modes`", 0),
         ("settlement", "missing capability field `settlement`", 1),
         ("ordering", "missing capability field `ordering`", 2),
-        (
-            "delayed_delivery",
-            "missing capability field `delayed_delivery`",
-            3,
-        ),
+        ("delayed_delivery", "missing capability field `delayed_delivery`", 3),
         ("durability", "missing capability field `durability`", 4),
-        (
-            "subscription_modes",
-            "missing capability field `subscription_modes`",
-            5,
-        ),
-        (
-            "consumer_groups",
-            "missing capability field `consumer_groups`",
-            6,
-        ),
+        ("subscription_modes", "missing capability field `subscription_modes`", 5),
+        ("consumer_groups", "missing capability field `consumer_groups`", 6),
         ("replay", "missing capability field `replay`", 7),
-        (
-            "publish_guarantee",
-            "missing capability field `publish_guarantee`",
-            8,
-        ),
-        (
-            "publish_visibility",
-            "missing capability field `publish_visibility`",
-            9,
-        ),
+        ("publish_guarantee", "missing capability field `publish_guarantee`", 8),
+        ("publish_visibility", "missing capability field `publish_visibility`", 9),
     ];
 
     for (expected_field, expected_display, configured_fields) in cases {
@@ -377,14 +331,10 @@ fn test_inbound_message_can_transfer_native_payload_and_settlement_to_facade() {
         Headers::new(),
         None,
         TransportPayload::Native(native),
-        Some(SettlementToken::new(
-            subscription_id,
-            "provider-owned token",
-        )),
+        Some(SettlementToken::new(subscription_id, "provider-owned token")),
         ProviderMessageMetadata::from([("partition".to_owned(), "4".to_owned())]),
     );
-    let (topic, event_id, timestamp, headers, ordering_key, payload, settlement, metadata) =
-        message.into_parts();
+    let (topic, event_id, timestamp, headers, ordering_key, payload, settlement, metadata) = message.into_parts();
     assert_eq!(topic.as_str(), "events.transfer");
     assert_eq!(event_id.as_str(), "event-transfer");
     assert_eq!(timestamp, SystemTime::UNIX_EPOCH);
@@ -395,11 +345,7 @@ fn test_inbound_message_can_transfer_native_payload_and_settlement_to_facade() {
     };
     let payload = Arc::downcast::<String>(payload).expect("facade can downcast without cloning T");
     assert_eq!(payload.as_str(), "non-clone payload");
-    assert!(
-        settlement
-            .expect("token is transferred")
-            .belongs_to(subscription_id)
-    );
+    assert!(settlement.expect("token is transferred").belongs_to(subscription_id));
     assert_eq!(metadata.get("partition").map(String::as_str), Some("4"));
 }
 
@@ -433,10 +379,7 @@ fn test_async_settlement_can_retry_same_token_after_future_cancellation() {
     }
 
     impl AsyncEventSubscriptionSpi for Provider {
-        fn receive<'a>(
-            &'a mut self,
-            _: Duration,
-        ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        fn receive<'a>(&'a mut self, _: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
             Box::pin(async { Ok(ReceiveOutcome::Closed) })
         }
 
@@ -517,16 +460,10 @@ fn local_ephemeral_request(id: u64) -> SpiSubscriptionRequest {
 
 #[test]
 fn test_local_receive_cancellation_preserves_next_message_on_same_receiver() {
-    let spi = Arc::new(
-        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"),
-    );
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("local").expect("valid provider ID"),
-        spi.clone(),
-    )
-    .expect("valid provider");
-    let mut receiver =
-        block_on(spi.subscribe(local_ephemeral_request(810))).expect("receiver created");
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("valid provider ID"), spi.clone())
+        .expect("valid provider");
+    let mut receiver = block_on(spi.subscribe(local_ephemeral_request(810))).expect("receiver created");
     let mut pending = Box::pin(receiver.receive(Duration::MAX));
     assert!(matches!(poll_once(pending.as_mut()), Poll::Pending));
     drop(pending);
@@ -540,8 +477,7 @@ fn test_local_receive_cancellation_preserves_next_message_on_same_receiver() {
         ),
     )
     .expect("publish accepted");
-    let ReceiveOutcome::Message(mut message) =
-        block_on(receiver.receive(Duration::ZERO)).expect("receive succeeds")
+    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).expect("receive succeeds")
     else {
         panic!("cancelled receive must not prevent later delivery")
     };
@@ -555,16 +491,10 @@ fn test_local_receive_cancellation_preserves_next_message_on_same_receiver() {
 
 #[test]
 fn test_local_ephemeral_drop_can_discard_unsettled_delivery() {
-    let spi = Arc::new(
-        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"),
-    );
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("local").expect("valid provider ID"),
-        spi.clone(),
-    )
-    .expect("valid provider");
-    let mut first =
-        block_on(spi.subscribe(local_ephemeral_request(811))).expect("receiver created");
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("valid provider ID"), spi.clone())
+        .expect("valid provider");
+    let mut first = block_on(spi.subscribe(local_ephemeral_request(811))).expect("receiver created");
     let _ = block_on(
         bus.publish(
             PublishRequest::new(
@@ -575,15 +505,13 @@ fn test_local_ephemeral_drop_can_discard_unsettled_delivery() {
         ),
     )
     .expect("publish accepted");
-    let ReceiveOutcome::Message(mut message) =
-        block_on(first.receive(Duration::ZERO)).expect("receive succeeds")
+    let ReceiveOutcome::Message(mut message) = block_on(first.receive(Duration::ZERO)).expect("receive succeeds")
     else {
         panic!("accepted delivery available")
     };
     assert!(message.take_settlement().is_some());
     drop(first);
-    let mut second =
-        block_on(spi.subscribe(local_ephemeral_request(812))).expect("fresh receiver created");
+    let mut second = block_on(spi.subscribe(local_ephemeral_request(812))).expect("fresh receiver created");
     assert!(matches!(
         block_on(second.receive(Duration::ZERO)).expect("receive succeeds"),
         ReceiveOutcome::TimedOut
@@ -604,9 +532,7 @@ fn test_spi_idle_wait_defaults_to_unsupported() {
     let topic = TopicAddress::new("contract.idle").expect("valid topic");
 
     assert_eq!(
-        provider
-            .wait_for_topic_idle(&topic, Some(Duration::ZERO))
-            .unwrap(),
+        provider.wait_for_topic_idle(&topic, Some(Duration::ZERO)).unwrap(),
         None
     );
 }

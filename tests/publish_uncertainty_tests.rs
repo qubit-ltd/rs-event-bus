@@ -116,10 +116,7 @@ impl Scripted {
     /// can acknowledge, remain pending, or return the configured terminal
     /// acknowledgement.
     fn attempt(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
-        let mut calls = self
-            .calls
-            .lock()
-            .expect("attempt: calls mutex must not be poisoned");
+        let mut calls = self.calls.lock().expect("attempt: calls mutex must not be poisoned");
         let first = calls.is_empty();
         calls.push(message);
         drop(calls);
@@ -181,10 +178,7 @@ impl EventBusSpi for Scripted {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.attempt(message)
     }
-    fn subscribe(
-        &self,
-        _: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         unreachable!()
     }
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -210,10 +204,7 @@ impl AsyncEventBusSpi for Scripted {
             support::fake_spi::full_capabilities()
         }
     }
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let prior_attempt = !self
                 .calls
@@ -254,9 +245,7 @@ fn request(policy: DuplicateRiskPolicy) -> PublishRequest<String> {
                 .build()
                 .expect("request: retry policy must satisfy its attempt limit"),
         )
-        .retry_rule(
-            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
-        )
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .build()
         .expect("request: publish request configuration must pass validation")
 }
@@ -264,13 +253,10 @@ fn request(policy: DuplicateRiskPolicy) -> PublishRequest<String> {
 fn test_sync_forbid_is_a_hard_gate() {
     let spi = Arc::new(Scripted::new(true));
     let bus = EventBus::from_spi(
-        ProviderId::new("scripted")
-            .expect("test_sync_forbid_is_a_hard_gate: test provider identity must be valid"),
+        ProviderId::new("scripted").expect("test_sync_forbid_is_a_hard_gate: test provider identity must be valid"),
         spi.clone(),
     )
-    .expect(
-        "test_sync_forbid_is_a_hard_gate: facade must accept the scripted provider capabilities",
-    );
+    .expect("test_sync_forbid_is_a_hard_gate: facade must accept the scripted provider capabilities");
     let failure = bus
         .publish(request(DuplicateRiskPolicy::Forbid))
         .expect_err("uncertainty stops retries");
@@ -292,9 +278,7 @@ fn test_sync_allow_keeps_prior_unknown_on_failure() {
         spi.clone(),
     )
     .expect("test_sync_allow_keeps_prior_unknown_on_failure: facade must accept the scripted provider capabilities");
-    let failure = bus
-        .publish(request(DuplicateRiskPolicy::AllowDuplicates))
-        .unwrap_err();
+    let failure = bus.publish(request(DuplicateRiskPolicy::AllowDuplicates)).unwrap_err();
     assert_eq!(failure.effect(), PublishEffect::MayHaveBeenAccepted);
     assert_eq!(
         spi.calls
@@ -322,16 +306,12 @@ fn test_sync_allow_success_reports_duplicates_and_stable_metadata() {
 fn test_async_forbid_is_a_hard_gate() {
     let spi = Arc::new(Scripted::new(true));
     let bus = AsyncEventBus::from_spi(
-        ProviderId::new("scripted")
-            .expect("test_async_forbid_is_a_hard_gate: test provider identity must be valid"),
+        ProviderId::new("scripted").expect("test_async_forbid_is_a_hard_gate: test provider identity must be valid"),
         spi.clone(),
     )
-    .expect(
-        "test_async_forbid_is_a_hard_gate: facade must accept the scripted provider capabilities",
-    );
-    let failure =
-        support::manual_async::block_on(bus.publish(request(DuplicateRiskPolicy::Forbid)))
-            .expect_err("uncertainty stops retries");
+    .expect("test_async_forbid_is_a_hard_gate: facade must accept the scripted provider capabilities");
+    let failure = support::manual_async::block_on(bus.publish(request(DuplicateRiskPolicy::Forbid)))
+        .expect_err("uncertainty stops retries");
     assert_eq!(failure.effect(), PublishEffect::MayHaveBeenAccepted);
     assert_eq!(
         spi.calls
@@ -351,8 +331,7 @@ fn test_async_allow_keeps_prior_unknown_on_failure() {
     )
     .expect("test_async_allow_keeps_prior_unknown_on_failure: facade must accept the scripted provider capabilities");
     let failure =
-        support::manual_async::block_on(bus.publish(request(DuplicateRiskPolicy::AllowDuplicates)))
-            .unwrap_err();
+        support::manual_async::block_on(bus.publish(request(DuplicateRiskPolicy::AllowDuplicates))).unwrap_err();
     assert_eq!(failure.effect(), PublishEffect::MayHaveBeenAccepted);
 }
 #[test]
@@ -385,9 +364,7 @@ fn test_generic_publish_error_is_conservatively_unknown() {
         "test_generic_publish_error_is_conservatively_unknown: facade must accept the scripted provider capabilities",
     );
     assert_eq!(
-        bus.publish(request(DuplicateRiskPolicy::Forbid))
-            .unwrap_err()
-            .effect(),
+        bus.publish(request(DuplicateRiskPolicy::Forbid)).unwrap_err().effect(),
         PublishEffect::MayHaveBeenAccepted
     );
     assert_eq!(
@@ -410,9 +387,7 @@ fn test_provider_panic_is_conservatively_unknown() {
     )
     .expect("test_provider_panic_is_conservatively_unknown: facade must accept the scripted provider capabilities");
     assert_eq!(
-        bus.publish(request(DuplicateRiskPolicy::Forbid))
-            .unwrap_err()
-            .effect(),
+        bus.publish(request(DuplicateRiskPolicy::Forbid)).unwrap_err().effect(),
         PublishEffect::MayHaveBeenAccepted
     );
     assert_eq!(
@@ -451,9 +426,7 @@ fn test_error_handler_panic_preserves_original_failure_identity_and_effect() {
     let PublishError::ErrorHandlerPanicked { source, .. } = failure.cause() else {
         panic!("handler panic wrapper")
     };
-    let original = source
-        .downcast_ref::<PublishFailure>()
-        .expect("original failure");
+    let original = source.downcast_ref::<PublishFailure>().expect("original failure");
     assert_eq!(original.event_id(), &id);
     assert_eq!(original.effect(), PublishEffect::MayHaveBeenAccepted);
     assert!(matches!(original.cause(), PublishError::Retry(_)));
@@ -511,9 +484,7 @@ impl DeadLetterSpi {
     fn new() -> Self {
         Self {
             sync: support::fake_spi::FakeEventBusSpi::with_capabilities(durable_capabilities()),
-            asynchronous: support::fake_spi::FakeAsyncEventBusSpi::with_capabilities(
-                durable_capabilities(),
-            ),
+            asynchronous: support::fake_spi::FakeAsyncEventBusSpi::with_capabilities(durable_capabilities()),
             attempts: AtomicUsize::new(0),
         }
     }
@@ -541,10 +512,7 @@ impl EventBusSpi for DeadLetterSpi {
             self.sync.publish(message)
         }
     }
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.sync.subscribe(request)
     }
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -555,10 +523,7 @@ impl AsyncEventBusSpi for DeadLetterSpi {
     fn capabilities(&self) -> EventBusCapabilities {
         self.asynchronous.capabilities()
     }
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         if message.topic().as_str() == "uncertain.dead" {
             Box::pin(async { Err(self.lost_response()) })
         } else {
@@ -571,10 +536,7 @@ impl AsyncEventBusSpi for DeadLetterSpi {
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         self.asynchronous.subscribe(request)
     }
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.asynchronous.shutdown(mode)
     }
 }
@@ -657,9 +619,10 @@ fn test_async_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
             .await
             .expect("test_async_uncertain_dlq_stops_without_settling_source_or_blind_retry: dead-letter source subscription must register successfully");
         spi.asynchronous
-            .enqueue(support::fake_spi::inbound_message(Some(
-                SettlementToken::new(subscription.id(), "source-token"),
-            )));
+            .enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+                subscription.id(),
+                "source-token",
+            ))));
         let failure = subscription
             .run(|_| async {
                 Err(DeliveryError::Handler {
@@ -668,10 +631,7 @@ fn test_async_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            failure,
-            ReceiveError::DeadLetterForwardFailed { .. }
-        ));
+        assert!(matches!(failure, ReceiveError::DeadLetterForwardFailed { .. }));
         assert_eq!(spi.attempts.load(Ordering::SeqCst), 1);
         assert!(spi.asynchronous.settlement_dispositions().is_empty());
         let _ = bus.shutdown(ShutdownMode::Immediate).await.expect(
@@ -751,10 +711,7 @@ fn pending_request(
     observed: Arc<Mutex<Option<PublishEffect>>>,
 ) -> PublishRequest<String> {
     PublishRequest::builder()
-        .topic(
-            Topic::new("pending.uncertain")
-                .expect("pending_request: test topic name must be valid"),
-        )
+        .topic(Topic::new("pending.uncertain").expect("pending_request: test topic name must be valid"))
         .payload("provider may already have admitted this".to_owned())
         .retry_policy(
             RetryPolicy::builder()
@@ -766,8 +723,7 @@ fn pending_request(
         .error_handler(move |_, failure| {
             *observed
                 .lock()
-                .expect("pending_request: observed mutex must not be poisoned") =
-                Some(failure.effect())
+                .expect("pending_request: observed mutex must not be poisoned") = Some(failure.effect())
         })
         .build()
         .expect("pending_request: configured request must build successfully")
@@ -971,10 +927,7 @@ impl AsyncEventBusSpi for AckFailureSpi {
     fn capabilities(&self) -> EventBusCapabilities {
         support::fake_spi::full_capabilities()
     }
-    fn publish<'a>(
-        &'a self,
-        _: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
             if first && self.rejects_first {
@@ -1048,8 +1001,7 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
         .build()
         .expect("assert_ack_followed_by_clock_failure_effect: configured test request must pass builder validation");
     let id = request.envelope().id().clone();
-    let failure =
-        support::manual_async::block_on(bus.publish(request)).expect_err("clock failure after ACK");
+    let failure = support::manual_async::block_on(bus.publish(request)).expect_err("clock failure after ACK");
     assert!(matches!(failure.cause(), PublishError::Retry(_)));
     assert_eq!(failure.event_id(), &id);
     let expected_effect = if no_destinations {
@@ -1059,15 +1011,12 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
     };
     assert_eq!(failure.effect(), expected_effect);
     assert_eq!(
-        *observed.lock().expect(
-            "assert_ack_followed_by_clock_failure_effect: observed mutex must not be poisoned"
-        ),
+        *observed
+            .lock()
+            .expect("assert_ack_followed_by_clock_failure_effect: observed mutex must not be poisoned"),
         Some((id, expected_effect))
     );
-    assert_eq!(
-        spi.calls.load(Ordering::SeqCst),
-        if rejects_first { 2 } else { 1 }
-    );
+    assert_eq!(spi.calls.load(Ordering::SeqCst), if rejects_first { 2 } else { 1 });
 }
 #[test]
 fn test_first_ack_followed_by_clock_failure_is_not_misclassified_as_rejection() {
@@ -1109,10 +1058,7 @@ impl qubit_event_bus::codec::EventCodec<String> for CountingTextCodec {
 
 /// Publishes through either facade after an unknown attempt and verifies that
 /// terminal admission details cannot erase earlier uncertainty.
-fn assert_unknown_then_admissions(
-    asynchronous: bool,
-    statuses: Vec<qubit_event_bus::model::AdmissionStatus>,
-) {
+fn assert_unknown_then_admissions(asynchronous: bool, statuses: Vec<qubit_event_bus::model::AdmissionStatus>) {
     let acknowledgement = PublishAcknowledgement::DestinationAdmissions(
         statuses
             .into_iter()
@@ -1144,23 +1090,15 @@ fn assert_unknown_then_admissions(
     let topic = Topic::new("unknown.admissions")
         .expect("encoded topic")
         .with_codec(CountingTextCodec {
-            content_type: qubit_event_bus::model::ContentType::new("text/plain")
-                .expect("content type"),
+            content_type: qubit_event_bus::model::ContentType::new("text/plain").expect("content type"),
             encodes: encodes.clone(),
         });
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("stable encoded admission".to_owned())
         .duplicate_risk_policy(DuplicateRiskPolicy::AllowDuplicates)
-        .retry_policy(
-            RetryPolicy::builder()
-                .max_attempts(2)
-                .build()
-                .expect("retry policy"),
-        )
-        .retry_rule(
-            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
-        )
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"))
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .interceptor(move |envelope| {
             typed.fetch_add(1, Ordering::SeqCst);
             Ok(Some(envelope))
@@ -1172,20 +1110,12 @@ fn assert_unknown_then_admissions(
         .expect("publish request");
     let id = request.envelope().id().clone();
     let receipt = if asynchronous {
-        let bus = AsyncEventBus::with_config(
-            ProviderId::new("scripted").expect("provider"),
-            spi.clone(),
-            config,
-        )
-        .expect("async facade");
+        let bus = AsyncEventBus::with_config(ProviderId::new("scripted").expect("provider"), spi.clone(), config)
+            .expect("async facade");
         support::manual_async::block_on(bus.publish(request)).expect("terminal acknowledgement")
     } else {
-        let bus = EventBus::with_config(
-            ProviderId::new("scripted").expect("provider"),
-            spi.clone(),
-            config,
-        )
-        .expect("sync facade");
+        let bus = EventBus::with_config(ProviderId::new("scripted").expect("provider"), spi.clone(), config)
+            .expect("sync facade");
         bus.publish(request).expect("terminal acknowledgement")
     };
     assert!(receipt.duplicate_possible());
@@ -1223,18 +1153,14 @@ fn test_async_unknown_then_no_destinations_keeps_duplicates() {
 fn test_sync_unknown_then_all_rejected_keeps_duplicates() {
     assert_unknown_then_admissions(
         false,
-        vec![qubit_event_bus::model::AdmissionStatus::Rejected(
-            "full".into(),
-        )],
+        vec![qubit_event_bus::model::AdmissionStatus::Rejected("full".into())],
     );
 }
 #[test]
 fn test_async_unknown_then_all_rejected_keeps_duplicates() {
     assert_unknown_then_admissions(
         true,
-        vec![qubit_event_bus::model::AdmissionStatus::Rejected(
-            "full".into(),
-        )],
+        vec![qubit_event_bus::model::AdmissionStatus::Rejected("full".into())],
     );
 }
 #[test]
@@ -1266,12 +1192,10 @@ fn assert_terminal_source_chain(asynchronous: bool) {
     let id = request.envelope().id().clone();
     let failure = if asynchronous {
         let bus =
-            AsyncEventBus::from_spi(ProviderId::new("scripted").expect("provider"), spi.clone())
-                .expect("async facade");
+            AsyncEventBus::from_spi(ProviderId::new("scripted").expect("provider"), spi.clone()).expect("async facade");
         support::manual_async::block_on(bus.publish(request)).expect_err("retry exhausted")
     } else {
-        let bus = EventBus::from_spi(ProviderId::new("scripted").expect("provider"), spi.clone())
-            .expect("sync facade");
+        let bus = EventBus::from_spi(ProviderId::new("scripted").expect("provider"), spi.clone()).expect("sync facade");
         bus.publish(request).expect_err("retry exhausted")
     };
     assert_eq!(failure.event_id(), &id);
@@ -1323,8 +1247,7 @@ fn test_unpolled_async_publish_defers_interceptors_and_codec() {
     let topic = Topic::new("lazy.prepare")
         .expect("encoded topic")
         .with_codec(CountingTextCodec {
-            content_type: qubit_event_bus::model::ContentType::new("text/plain")
-                .expect("content type"),
+            content_type: qubit_event_bus::model::ContentType::new("text/plain").expect("content type"),
             encodes: encodes.clone(),
         });
     let request = PublishRequest::builder()

@@ -19,9 +19,7 @@ pub(in crate::facade::async_subscription) struct RunStateGuard<'a, T: 'static> {
 
 impl<'a, T: 'static> RunStateGuard<'a, T> {
     /// Creates a guard for a control already transitioned to `Running`.
-    pub(in crate::facade::async_subscription) fn new(
-        control: &'a AsyncSubscriptionControl<T>,
-    ) -> Self {
+    pub(in crate::facade::async_subscription) fn new(control: &'a AsyncSubscriptionControl<T>) -> Self {
         Self { control }
     }
 }

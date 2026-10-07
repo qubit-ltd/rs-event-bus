@@ -88,11 +88,7 @@ impl ConformanceReport {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(
-            failures.is_empty(),
-            "SPI conformance failures: {}",
-            failures.join("; ")
-        );
+        assert!(failures.is_empty(), "SPI conformance failures: {}", failures.join("; "));
     }
 
     /// Appends a case result after previously recorded cases.
@@ -146,16 +142,10 @@ impl ConformanceReport {
 #[must_use]
 pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, TransportPayload)> {
     match mode {
-        PayloadModes::Native => vec![(
-            "declared-native-publish",
-            TransportPayload::Native(Arc::new(0_u8)),
-        )],
+        PayloadModes::Native => vec![("declared-native-publish", TransportPayload::Native(Arc::new(0_u8)))],
         PayloadModes::Encoded => vec![("declared-encoded-publish", encoded_probe())],
         PayloadModes::NativeAndEncoded => vec![
-            (
-                "declared-native-publish",
-                TransportPayload::Native(Arc::new(0_u8)),
-            ),
+            ("declared-native-publish", TransportPayload::Native(Arc::new(0_u8))),
             ("declared-encoded-publish", encoded_probe()),
         ],
     }
@@ -200,16 +190,12 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
 ///
 /// # Returns
 /// A request subscribed to the conformance probe topic.
-pub(super) fn probe_request(
-    subscription_id: u64,
-    durability: DurabilityCapability,
-) -> SpiSubscriptionRequest {
+pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapability) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::builder()
         .subscription_id(Id::new(subscription_id))
         .topic(TopicAddress::new("spi.conformance.probe").expect("static topic is valid"))
         .subscriber_id(
-            SubscriberId::new(format!("spi-conformance-{subscription_id}"))
-                .expect("probe subscriber ID is valid"),
+            SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
         )
         .group(None)
         .durability(match durability {
@@ -293,11 +279,7 @@ pub(super) fn settlement_case(
 ///
 /// # Returns
 /// A passed or failed conformance case.
-pub(super) fn publish_case(
-    case_id: &str,
-    result: Result<(), SpiError>,
-    model: &str,
-) -> ConformanceCase {
+pub(super) fn publish_case(case_id: &str, result: Result<(), SpiError>, model: &str) -> ConformanceCase {
     match result {
         Ok(()) => ConformanceCase::Passed {
             case_id: case_id.into(),

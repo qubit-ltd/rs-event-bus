@@ -58,11 +58,8 @@ fn outbound(topic: TopicAddress, id: &str, value: u32) -> OutboundMessage {
 
 #[test]
 fn test_full_subscription_queue_rejects_only_the_later_delivery() {
-    let config = EventBusConfig::default().with_provider_options(
-        LocalEventBusConfig::new()
-            .queue_capacity(1)
-            .provider_options(),
-    );
+    let config = EventBusConfig::default()
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options());
     let spi = LocalEventBusProvider
         .create_configured(&config)
         .expect("valid local configuration");
@@ -84,11 +81,7 @@ fn test_full_subscription_queue_rejects_only_the_later_delivery() {
         panic!("local SPI reports destination admissions");
     };
     assert_eq!(1, first.len(), "the first publish targets one subscription");
-    assert_eq!(
-        1,
-        second.len(),
-        "the second publish targets one subscription"
-    );
+    assert_eq!(1, second.len(), "the second publish targets one subscription");
     assert!(
         matches!(first[0].status(), AdmissionStatus::Accepted),
         "the first delivery is admitted"
@@ -97,10 +90,7 @@ fn test_full_subscription_queue_rejects_only_the_later_delivery() {
         matches!(second[0].status(), AdmissionStatus::Rejected(_)),
         "only the later delivery is rejected when the queue is full"
     );
-    let ReceiveOutcome::Message(message) = receiver
-        .receive(Duration::ZERO)
-        .expect("queued message is received")
-    else {
+    let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).expect("queued message is received") else {
         panic!("the accepted message remains available");
     };
     assert_eq!("first", message.id().as_str());

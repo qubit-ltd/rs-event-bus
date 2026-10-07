@@ -48,10 +48,7 @@ fn test_codec_error_metadata_mismatch_display_reports_expected_and_received_valu
 fn test_codec_error_native_type_mismatch_display_explains_contract_failure() {
     let error = CodecError::NativeTypeMismatch;
 
-    assert_eq!(
-        error.to_string(),
-        "native payload type does not match subscribed topic"
-    );
+    assert_eq!(error.to_string(), "native payload type does not match subscribed topic");
 }
 
 #[test]

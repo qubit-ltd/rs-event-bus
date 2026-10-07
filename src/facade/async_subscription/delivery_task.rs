@@ -96,8 +96,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
     global_interceptors: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
 ) -> Result<u32, RetryFailure> {
     let Some(policy) = options.retry_policy().cloned() else {
-        let outcome =
-            run_one_attempt(&options, delivery.clone(), handler, 1, &global_interceptors).await;
+        let outcome = run_one_attempt(&options, delivery.clone(), handler, 1, &global_interceptors).await;
         return match outcome {
             DeliveryOutcome::Success => Ok(1),
             DeliveryOutcome::Failure(error) => {
@@ -156,19 +155,10 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
         let global_interceptors = global_interceptors.clone();
         Box::pin(async move {
             let attempt = attempts.fetch_add(1, Ordering::AcqRel) + 1;
-            match run_one_attempt(
-                &options,
-                delivery.clone(),
-                handler,
-                attempt,
-                &global_interceptors,
-            )
-            .await
-            {
+            match run_one_attempt(&options, delivery.clone(), handler, attempt, &global_interceptors).await {
                 DeliveryOutcome::Success => Ok(()),
                 DeliveryOutcome::Failure(error) => {
-                    let requested =
-                        notify_failure(&options, delivery.event(), &error, true, &inner);
+                    let requested = notify_failure(&options, delivery.event(), &error, true, &inner);
                     *directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(requested);
                     Err(DeliveryAttemptError::new(
                         "delivery",
@@ -194,11 +184,7 @@ pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
                 });
             }
             let terminal = choose_terminal_directive(error.reason(), requested);
-            Err((
-                Box::new(DeliveryError::Retry(Box::new(error))),
-                count,
-                terminal,
-            ))
+            Err((Box::new(DeliveryError::Retry(Box::new(error))), count, terminal))
         }
     }
 }

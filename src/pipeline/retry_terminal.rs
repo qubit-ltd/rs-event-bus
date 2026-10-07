@@ -45,10 +45,7 @@ pub(crate) fn is_retry_rule_failure(reason: &RetryErrorReason) -> bool {
 /// A terminal facade action: `Requeue` for a rule panic, `Discard` for an
 /// exhausted or otherwise terminated requested retry, or the original action.
 #[inline]
-pub(crate) fn terminal_directive(
-    reason: &RetryErrorReason,
-    requested: FailureDirective,
-) -> FailureDirective {
+pub(crate) fn terminal_directive(reason: &RetryErrorReason, requested: FailureDirective) -> FailureDirective {
     if is_retry_rule_failure(reason) {
         FailureDirective::Requeue
     } else if requested == FailureDirective::Retry {

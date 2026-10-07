@@ -37,8 +37,7 @@ pub(crate) fn catch_spi_call<T>(
     resource: Option<&str>,
     call: impl FnOnce() -> T,
 ) -> Result<T, SpiError> {
-    catch_unwind(AssertUnwindSafe(call))
-        .map_err(|payload| provider_panic(provider_id, operation, resource, payload))
+    catch_unwind(AssertUnwindSafe(call)).map_err(|payload| provider_panic(provider_id, operation, resource, payload))
 }
 
 /// Converts a Rust panic payload into the stable provider failure shape.

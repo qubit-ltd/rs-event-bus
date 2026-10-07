@@ -45,9 +45,7 @@ fn test_retry_directive_retries_only_when_policy_is_configured() {
         )
         .unwrap();
 
-    let _ = bus
-        .publish(PublishRequest::new(topic, 7_u32).unwrap())
-        .unwrap();
+    let _ = bus.publish(PublishRequest::new(topic, 7_u32).unwrap()).unwrap();
 
     attempt_rx
         .recv_timeout(Duration::from_secs(2))
@@ -82,9 +80,7 @@ fn test_retry_directive_without_policy_does_not_schedule_another_attempt() {
         )
         .unwrap();
 
-    let _ = bus
-        .publish(PublishRequest::new(topic, 9_u32).unwrap())
-        .unwrap();
+    let _ = bus.publish(PublishRequest::new(topic, 9_u32).unwrap()).unwrap();
 
     attempt_rx
         .recv_timeout(Duration::from_secs(2))

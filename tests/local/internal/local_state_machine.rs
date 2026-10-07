@@ -78,12 +78,7 @@ impl Subscription {
         if self.closed {
             0
         } else {
-            self.pending.len()
-                + self
-                    .tokens
-                    .iter()
-                    .filter(|record| record.disposition.is_none())
-                    .count()
+            self.pending.len() + self.tokens.iter().filter(|record| record.disposition.is_none()).count()
         }
     }
 
@@ -105,10 +100,7 @@ impl Subscription {
         let token = message
             .take_settlement()
             .expect("local delivery owns one settlement token");
-        assert!(
-            message.take_settlement().is_none(),
-            "token ownership transfers once"
-        );
+        assert!(message.take_settlement().is_none(), "token ownership transfers once");
         assert!(token.belongs_to(self.id));
         self.tokens.push(TokenRecord {
             event,
@@ -121,10 +113,7 @@ impl Subscription {
 /// Polls an immediate public SPI operation once; Pending is a contract failure.
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
+    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("bounded operation must complete without a runtime or wait"),
     }
@@ -175,17 +164,13 @@ pub(crate) fn run(input: &[u8]) {
         timer,
     )
     .expect("positive bounded local capacities");
-    let mut subscriptions: Vec<Option<Subscription>> =
-        (0..MAX_SUBSCRIPTIONS).map(|_| None).collect();
+    let mut subscriptions: Vec<Option<Subscription>> = (0..MAX_SUBSCRIPTIONS).map(|_| None).collect();
     let mut next_id = 1_u64;
     let mut publications = 0;
     let mut elapsed = Duration::ZERO;
     let mut shutdown = false;
 
-    for chunk in input[..input.len().min(MAX_INPUT)]
-        .chunks(64)
-        .take(MAX_OPERATIONS)
-    {
+    for chunk in input[..input.len().min(MAX_INPUT)].chunks(64).take(MAX_OPERATIONS) {
         let opcode = chunk[0] % 11;
         let index = usize::from(*chunk.get(1).unwrap_or(&0)) % MAX_SUBSCRIPTIONS;
         let argument = usize::from(*chunk.get(2).unwrap_or(&0));
@@ -223,11 +208,7 @@ pub(crate) fn run(input: &[u8]) {
                     else {
                         panic!("local provider reports per-destination admission");
                     };
-                    let mut outstanding: usize = subscriptions
-                        .iter()
-                        .flatten()
-                        .map(Subscription::outstanding)
-                        .sum();
+                    let mut outstanding: usize = subscriptions.iter().flatten().map(Subscription::outstanding).sum();
                     let live = subscriptions
                         .iter()
                         .flatten()
@@ -240,8 +221,7 @@ pub(crate) fn run(input: &[u8]) {
                             .flatten()
                             .find(|subscription| subscription.id == destination.subscription_id())
                             .expect("admission belongs to a live receiver");
-                        let available = subscription.outstanding() < QUEUE_CAPACITY
-                            && outstanding < TOTAL_CAPACITY;
+                        let available = subscription.outstanding() < QUEUE_CAPACITY && outstanding < TOTAL_CAPACITY;
                         assert_eq!(
                             destination.status() == &AdmissionStatus::Accepted,
                             available,
@@ -257,21 +237,13 @@ pub(crate) fn run(input: &[u8]) {
             2 | 7 => {
                 if let Some(subscription) = subscriptions[index].as_mut() {
                     let receiver = subscription.receiver.as_mut().expect("receiver retained");
-                    let timeout = if opcode == 7 {
-                        Duration::MAX
-                    } else {
-                        Duration::ZERO
-                    };
+                    let timeout = if opcode == 7 { Duration::MAX } else { Duration::ZERO };
                     let result = {
                         let mut future = pin!(receiver.receive(timeout));
-                        future
-                            .as_mut()
-                            .poll(&mut Context::from_waker(Waker::noop()))
+                        future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
                     };
                     match result {
-                        Poll::Ready(Ok(ReceiveOutcome::Message(message))) => {
-                            subscription.received(message)
-                        }
+                        Poll::Ready(Ok(ReceiveOutcome::Message(message))) => subscription.received(message),
                         Poll::Ready(Ok(ReceiveOutcome::TimedOut)) => {
                             assert!(subscription.pending.is_empty())
                         }
@@ -328,18 +300,16 @@ pub(crate) fn run(input: &[u8]) {
                     let mut receiver = subscriptions[index]
                         .as_mut()
                         .and_then(|subscription| subscription.receiver.take());
-                    if let (Some(receiver), Some(owner)) =
-                        (receiver.as_mut(), subscriptions[source].as_ref())
+                    if let (Some(receiver), Some(owner)) = (receiver.as_mut(), subscriptions[source].as_ref())
                         && let Some(record) = owner.tokens.first()
                     {
                         assert!(
-                            !record.token.belongs_to(
-                                subscriptions[index].as_ref().expect("target exists").id
-                            )
+                            !record
+                                .token
+                                .belongs_to(subscriptions[index].as_ref().expect("target exists").id)
                         );
                         assert!(
-                            ready(receiver.settle(&record.token, DeliveryDisposition::Accept))
-                                .is_err(),
+                            ready(receiver.settle(&record.token, DeliveryDisposition::Accept)).is_err(),
                             "foreign settlement must not release another owner's capacity"
                         );
                     }
@@ -350,14 +320,8 @@ pub(crate) fn run(input: &[u8]) {
             }
             8 => {
                 if let Some(subscription) = subscriptions[index].as_mut() {
-                    ready(
-                        subscription
-                            .receiver
-                            .as_mut()
-                            .expect("receiver retained")
-                            .close(),
-                    )
-                    .expect("idempotent close");
+                    ready(subscription.receiver.as_mut().expect("receiver retained").close())
+                        .expect("idempotent close");
                     subscription.closed = true;
                     subscription.pending.clear();
                     // Unsettled tokens remain owned but close discards their
@@ -371,9 +335,7 @@ pub(crate) fn run(input: &[u8]) {
             }
             10 => {
                 if argument % 2 == 0 {
-                    clock
-                        .advance(Duration::from_millis(1))
-                        .expect("bounded manual advance");
+                    clock.advance(Duration::from_millis(1)).expect("bounded manual advance");
                     elapsed += Duration::from_millis(1);
                 } else {
                     assert!(matches!(
@@ -396,9 +358,12 @@ pub(crate) fn run(input: &[u8]) {
             .map(Subscription::outstanding)
             .sum();
         assert!(outstanding <= TOTAL_CAPACITY);
-        assert!(subscriptions.iter().flatten().all(
-            |subscription| subscription.closed || subscription.outstanding() <= QUEUE_CAPACITY
-        ));
+        assert!(
+            subscriptions
+                .iter()
+                .flatten()
+                .all(|subscription| subscription.closed || subscription.outstanding() <= QUEUE_CAPACITY)
+        );
     }
     drop(subscriptions);
 }

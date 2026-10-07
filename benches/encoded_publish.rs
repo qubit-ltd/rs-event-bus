@@ -138,9 +138,7 @@ impl EventBusSpi for BenchSpi {
         }
         if self
             .failures_left
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
-                left.checked_sub(1)
-            })
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
             .is_ok()
         {
             return Err(SpiError::Publish {
@@ -168,10 +166,7 @@ impl EventBusSpi for BenchSpi {
     ///
     /// # Errors
     /// Always returns an unsupported-operation SPI error.
-    fn subscribe(
-        &self,
-        _: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Err(SpiError::Operation {
             provider_id: "bench".into(),
             operation: "subscribe",
@@ -192,11 +187,7 @@ impl EventBusSpi for BenchSpi {
     ///
     /// # Errors
     /// This benchmark implementation does not fail.
-    fn wait_for_topic_idle(
-        &self,
-        _: &TopicAddress,
-        _: Option<Duration>,
-    ) -> Result<Option<bool>, SpiError> {
+    fn wait_for_topic_idle(&self, _: &TopicAddress, _: Option<Duration>) -> Result<Option<bool>, SpiError> {
         Ok(Some(true))
     }
 
@@ -274,10 +265,7 @@ fn sample(bytes: usize, failures: usize) -> (u128, usize, usize, bool) {
     assert_eq!(encodes, 1);
     assert!(!addresses.is_empty());
     let shared = addresses.iter().all(|address| *address == addresses[0]);
-    assert!(
-        shared,
-        "provider retries must share the encoded byte allocation"
-    );
+    assert!(shared, "provider retries must share the encoded byte allocation");
     (elapsed, attempts, encodes, shared)
 }
 

@@ -28,10 +28,9 @@ use qubit_retry::RetryPolicy;
 
 #[test]
 fn test_terminal_handler_failure_is_forwarded_as_dead_letter_once() {
-    let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(8))
-        .expect("valid local event bus configuration");
-    let dead_letter_topic =
-        Topic::<DeadLetterEvent<String>>::new("failure.dead").expect("valid dead-letter topic");
+    let bus =
+        EventBus::local(LocalEventBusConfig::new().queue_capacity(8)).expect("valid local event bus configuration");
+    let dead_letter_topic = Topic::<DeadLetterEvent<String>>::new("failure.dead").expect("valid dead-letter topic");
     let (dead_letter_tx, dead_letter_rx) = mpsc::channel();
     let dead_letter_subscription = bus
         .subscribe(
@@ -64,10 +63,7 @@ fn test_terminal_handler_failure_is_forwarded_as_dead_letter_once() {
                 .expect("valid retry policy"),
         )
         .error_handler(|_, _| FailureDirective::DeadLetter)
-        .dead_letter(
-            DeadLetterPolicy::with_topic_name("failure.dead")
-                .expect("valid dead-letter destination"),
-        )
+        .dead_letter(DeadLetterPolicy::with_topic_name("failure.dead").expect("valid dead-letter destination"))
         .build();
     let source_subscription = bus
         .subscribe(
@@ -83,10 +79,7 @@ fn test_terminal_handler_failure_is_forwarded_as_dead_letter_once() {
         .expect("source subscription starts");
 
     let _ = bus
-        .publish(
-            PublishRequest::new(source_topic, "original payload".to_owned())
-                .expect("valid source message"),
-        )
+        .publish(PublishRequest::new(source_topic, "original payload".to_owned()).expect("valid source message"))
         .expect("source message publishes");
 
     let (payload, subscriber_id, reason) = dead_letter_rx
@@ -100,13 +93,9 @@ fn test_terminal_handler_failure_is_forwarded_as_dead_letter_once() {
     assert!(!reason.is_empty());
     assert_eq!(attempts, 1);
 
-    source_subscription
-        .cancel()
-        .expect("source subscription cancels");
+    source_subscription.cancel().expect("source subscription cancels");
     dead_letter_subscription
         .cancel()
         .expect("dead-letter subscription cancels");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("event bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("event bus shuts down");
 }

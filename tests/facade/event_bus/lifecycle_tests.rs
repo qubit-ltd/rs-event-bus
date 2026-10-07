@@ -20,16 +20,14 @@ use qubit_event_bus::spi::ShutdownMode;
 
 #[test]
 fn test_wait_for_idle_from_owned_handler_returns_would_deadlock() {
-    let bus = EventBus::local(LocalEventBusConfig::default())
-        .expect("valid local event bus configuration");
+    let bus = EventBus::local(LocalEventBusConfig::default()).expect("valid local event bus configuration");
     let topic = Topic::<String>::new("lifecycle.wait-idle-reentrant").expect("valid topic");
     let callback_bus = bus.clone();
     let callback_topic = topic.clone();
     let (result_tx, result_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
-            SubscribeRequest::new("lifecycle-wait-idle", topic.clone())
-                .expect("valid subscriber request"),
+            SubscribeRequest::new("lifecycle-wait-idle", topic.clone()).expect("valid subscriber request"),
             move |_| {
                 result_tx
                     .send(callback_bus.wait_for_idle(&callback_topic, Some(Duration::from_secs(1))))
@@ -51,7 +49,5 @@ fn test_wait_for_idle_from_owned_handler_returns_would_deadlock() {
         })
     ));
     subscription.cancel().expect("subscription cancels");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }

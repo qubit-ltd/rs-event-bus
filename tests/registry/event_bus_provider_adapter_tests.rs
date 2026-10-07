@@ -27,22 +27,17 @@ fn test_sync_provider_registry_attaches_successful_provider_identity() {
         .expect("local provider creates");
     let topic = Topic::<String>::new("adapter.sync").expect("topic is valid");
     let request = PublishRequest::new(topic, "payload".to_owned()).expect("request is valid");
-    let receipt = bus
-        .publish(request)
-        .expect("local provider accepts publication");
+    let receipt = bus.publish(request).expect("local provider accepts publication");
 
     assert_eq!("local", receipt.provider_id().as_str());
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("event bus shuts down");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("event bus shuts down");
 }
 
 #[test]
 fn test_sync_provider_registry_rejects_missing_capabilities_during_creation() {
     let registry = EventBusRegistry::with_local().expect("local provider registers");
-    let config = EventBusConfig::default().with_required_capabilities(
-        RequiredCapabilities::new().with_durability(DurabilityCapability::Durable),
-    );
+    let config = EventBusConfig::default()
+        .with_required_capabilities(RequiredCapabilities::new().with_durability(DurabilityCapability::Durable));
 
     let error = match registry.create(&config) {
         Ok(_) => panic!("ephemeral local provider does not satisfy durable retention"),

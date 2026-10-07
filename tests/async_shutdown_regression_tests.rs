@@ -83,10 +83,7 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
         self.capabilities
     }
 
-    fn publish<'a>(
-        &'a self,
-        _: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async { Ok(PublishAcknowledgement::DroppedByInterceptor) })
     }
 
@@ -106,10 +103,7 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
         })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<SpiShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<SpiShutdownOutcome, SpiError>> {
         self.calls.lock().expect("calls lock").push(mode);
         Box::pin(async move {
             if matches!(mode, ShutdownMode::Graceful { .. }) {
@@ -123,22 +117,14 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
 #[test]
 fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
     let provider = Arc::new(ShutdownGateSpi::new());
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("shutdown-gate").expect("provider ID"),
-        provider.clone(),
-    )
-    .expect("facade");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-gate").expect("provider ID"), provider.clone())
+        .expect("facade");
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waker = Waker::from(counter.clone());
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(30),
     }));
-    assert!(
-        graceful
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
+    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     assert_eq!(
         vec![ShutdownMode::Graceful {
             timeout: Duration::from_secs(30)
@@ -154,12 +140,7 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
             .is_pending()
     );
     assert!(counter.0.load(Ordering::SeqCst) > 0);
-    assert!(
-        graceful
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_ready()
-    );
+    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_ready());
     assert_eq!(
         vec![
             ShutdownMode::Graceful {

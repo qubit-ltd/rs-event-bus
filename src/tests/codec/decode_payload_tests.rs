@@ -55,11 +55,7 @@ impl EventCodec<String> for TrackingCodec {
 }
 
 /// Creates a codec and shared callback counters for one isolated test.
-fn create_tracking_codec() -> (
-    Arc<dyn EventCodec<String>>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
+fn create_tracking_codec() -> (Arc<dyn EventCodec<String>>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let validation_calls = Arc::new(AtomicUsize::new(0));
     let decode_calls = Arc::new(AtomicUsize::new(0));
     let codec = Arc::new(TrackingCodec {
@@ -100,12 +96,8 @@ fn test_decode_payload_rejects_oversized_before_codec_callbacks() {
         None,
     ));
 
-    let error = decode_payload(
-        Some(&codec),
-        &payload,
-        NonZeroUsize::new(4).expect("limit is positive"),
-    )
-    .expect_err("payload above the configured receive limit is rejected");
+    let error = decode_payload(Some(&codec), &payload, NonZeroUsize::new(4).expect("limit is positive"))
+        .expect_err("payload above the configured receive limit is rejected");
 
     assert!(matches!(
         error,

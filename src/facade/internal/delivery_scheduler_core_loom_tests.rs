@@ -36,21 +36,15 @@ fn check_model(model: impl Fn() + Send + Sync + 'static) {
 /// Creates a one-handler scheduler without sampling a real or synthetic clock.
 fn scheduler(owned: usize, subscriptions: usize) -> Arc<DeliverySchedulerCore> {
     let positive = |value| NonZeroUsize::new(value).expect("positive model limit");
-    let config = DeliverySchedulingConfig::new(
-        positive(1),
-        positive(owned),
-        positive(owned),
-        positive(subscriptions),
-    )
-    .expect("valid model limits");
+    let config = DeliverySchedulingConfig::new(positive(1), positive(owned), positive(owned), positive(subscriptions))
+        .expect("valid model limits");
     Arc::new(DeliverySchedulerCore::new(config))
 }
 
 /// Claims a real owned credit before the caller selects its enqueue kind.
 fn reserve(core: &DeliverySchedulerCore, id: Id) -> u64 {
     core.request_receive(id);
-    core.take_receive_reservation(id)
-        .expect("model has owned capacity")
+    core.take_receive_reservation(id).expect("model has owned capacity")
 }
 
 /// Counts all live ownership phases without including subset lane gauges.
@@ -144,10 +138,7 @@ fn test_loom_scheduler_stop_fences_handler_and_settlement_grants() {
         granting.join().expect("grant racer exits");
         assert_eq!(owned_count(core.snapshot_gauges(None)), 2);
         assert_eq!(core.snapshot_gauges(None).running_handlers, 0);
-        assert!(
-            !core.unregister(id),
-            "stop retains the two claimed deliveries"
-        );
+        assert!(!core.unregister(id), "stop retains the two claimed deliveries");
         core.complete(handler);
         core.complete(settlement);
         assert_eq!(owned_count(core.snapshot_gauges(None)), 0);
@@ -248,9 +239,7 @@ fn test_loom_scheduler_settlement_lane_release_wakes_without_handler_capacity() 
         let releasing = thread::spawn(move || releasing_core.complete(first));
         let draining_core = Arc::clone(&core);
         let draining = thread::spawn(move || draining_core.take_notifications());
-        releasing
-            .join()
-            .expect("settlement lane release racer exits");
+        releasing.join().expect("settlement lane release racer exits");
         let mut notifications = draining.join().expect("notification drain racer exits");
         notifications.extend(core.take_notifications());
         assert!(

@@ -55,11 +55,8 @@ const DELAY: Duration = Duration::from_secs(3600);
 /// # Returns
 /// A provider SPI configured with the requested queue capacity.
 fn create(capacity: usize) -> Arc<dyn EventBusSpi> {
-    let config = EventBusConfig::default().with_provider_options(
-        LocalEventBusConfig::new()
-            .queue_capacity(capacity)
-            .provider_options(),
-    );
+    let config = EventBusConfig::default()
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(capacity).provider_options());
     LocalEventBusProvider.create_configured(&config).unwrap()
 }
 
@@ -134,12 +131,8 @@ fn consume(receiver: &mut dyn EventSubscriptionSpi) {
     let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
         panic!("expected a ready message");
     };
-    let token = message
-        .take_settlement()
-        .expect("local message has a settlement token");
-    receiver
-        .settle(&token, DeliveryDisposition::Accept)
-        .unwrap();
+    let token = message.take_settlement().expect("local message has a settlement token");
+    receiver.settle(&token, DeliveryDisposition::Accept).unwrap();
 }
 
 /// Reduces independent operation timings to sum and nearest-rank p95.
@@ -173,11 +166,8 @@ fn publish_sample(topics: usize, subscribers: usize, target: usize) -> (u128, u6
         for subscriber in 0..subscribers {
             receivers.push((
                 topic,
-                bus.subscribe(request(
-                    (topic * subscribers + subscriber + 1) as u64,
-                    &name,
-                ))
-                .unwrap(),
+                bus.subscribe(request((topic * subscribers + subscriber + 1) as u64, &name))
+                    .unwrap(),
             ));
         }
     }
@@ -231,11 +221,7 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
         }
         for id in blocked_prefix..depth {
             let key = format!("ready-{}", id - blocked_prefix);
-            assert_accepted(
-                bus.publish(outbound("receive-topic", id, Some(&key), None))
-                    .unwrap(),
-                1,
-            );
+            assert_accepted(bus.publish(outbound("receive-topic", id, Some(&key), None)).unwrap(), 1);
         }
     }
     let mut timings = Vec::with_capacity(EVENTS);
@@ -261,12 +247,8 @@ fn receive_sample(depth: usize, ready_keys: usize) -> (u128, u64) {
                     .is_some_and(|index| index < ready_keys),
                 "received a blocked or unknown ordering key"
             );
-            let token = message
-                .take_settlement()
-                .expect("local message has a settlement token");
-            receiver
-                .settle(&token, DeliveryDisposition::Accept)
-                .unwrap();
+            let token = message.take_settlement().expect("local message has a settlement token");
+            receiver.settle(&token, DeliveryDisposition::Accept).unwrap();
             assert_accepted(
                 bus.publish(outbound("receive-topic", depth + id, Some(&key), None))
                     .unwrap(),
@@ -302,9 +284,7 @@ fn end_to_end_sample() -> (u128, u64) {
         let ReceiveOutcome::Message(mut message) = outcome.unwrap() else {
             panic!("expected a ready message");
         };
-        let token = message
-            .take_settlement()
-            .expect("local message has a settlement token");
+        let token = message.take_settlement().expect("local message has a settlement token");
 
         let started = Instant::now();
         let settlement = receiver.settle(&token, DeliveryDisposition::Accept);
@@ -346,17 +326,10 @@ fn main() {
     );
     println!("scenario,iteration,events,elapsed_ns,p95_ns");
     if selection == "publish" || selection == "all" {
-        for (topics, subscribers, target) in [
-            (1, 1, 0),
-            (1, 16, 0),
-            (1, 128, 0),
-            (32, 16, 0),
-            (32, 16, 31),
-        ] {
-            run(
-                &format!("publish_t{topics}_s{subscribers}_target{target}"),
-                || publish_sample(topics, subscribers, target),
-            );
+        for (topics, subscribers, target) in [(1, 1, 0), (1, 16, 0), (1, 128, 0), (32, 16, 0), (32, 16, 31)] {
+            run(&format!("publish_t{topics}_s{subscribers}_target{target}"), || {
+                publish_sample(topics, subscribers, target)
+            });
         }
         run("end_to_end_t1_s1", end_to_end_sample);
     }

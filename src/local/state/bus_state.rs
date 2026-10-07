@@ -43,10 +43,7 @@ impl BusState {
     /// # Returns
     /// Strong owners of currently live queues for the topic.
     #[must_use]
-    pub(in crate::local) fn live_queues_for_topic(
-        &mut self,
-        topic: &TopicAddress,
-    ) -> Vec<Arc<LocalQueue>> {
+    pub(in crate::local) fn live_queues_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<LocalQueue>> {
         let Some(bucket) = self.topics.get_mut(topic) else {
             return Vec::new();
         };
@@ -86,11 +83,7 @@ impl BusState {
     /// - `id`: stale subscription identifier to remove.
     pub(in crate::local) fn remove_stale_id(&mut self, id: Id) {
         for bucket in self.topics.values_mut() {
-            if bucket
-                .queues
-                .get(&id)
-                .is_some_and(|queue| queue.strong_count() == 0)
-            {
+            if bucket.queues.get(&id).is_some_and(|queue| queue.strong_count() == 0) {
                 bucket.queues.remove(&id);
                 if bucket.queues.is_empty() {
                     bucket.payload_type_id = None;

@@ -91,10 +91,7 @@ mod tests {
 
         assert_eq!("orders.created", inbound.topic().as_str());
         assert_eq!("event-1", inbound.id().as_str());
-        assert_eq!(
-            Some("order-1"),
-            inbound.ordering_key().map(OrderingKey::as_str)
-        );
+        assert_eq!(Some("order-1"), inbound.ordering_key().map(OrderingKey::as_str));
         assert!(
             matches!(inbound.payload(), TransportPayload::Native(payload) if payload.downcast_ref::<u32>() == Some(&42))
         );
@@ -114,11 +111,7 @@ mod tests {
             "key-a",
             Some(Duration::from_secs(2 * 60 * 60)),
         ));
-        state.enqueue_back(create_event(
-            "blocker",
-            "key-b",
-            Some(Duration::from_secs(60 * 60)),
-        ));
+        state.enqueue_back(create_event("blocker", "key-b", Some(Duration::from_secs(60 * 60))));
 
         let now = Instant::now();
         for _ in 0..128 {
@@ -128,8 +121,7 @@ mod tests {
             assert_eq!(3, state.pending_count());
             assert_eq!(1, state.delayed_live_count);
             assert!(
-                state.delayed_lanes.len()
-                    <= state.delayed_live_count + state.delayed_live_count.max(8),
+                state.delayed_lanes.len() <= state.delayed_live_count + state.delayed_live_count.max(8),
                 "delayed heap metadata stays bounded by live lanes and fixed slack"
             );
         }

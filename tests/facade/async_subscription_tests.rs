@@ -75,13 +75,11 @@ fn test_public_ordering_handoff_allows_reentrant_snapshot_waker() {
     let topic = Topic::<u32>::new("ordering.migration").unwrap();
     let subscription = block_on(
         bus.subscribe(
-            SubscribeRequest::new("ordered", topic.clone())
-                .unwrap()
-                .with_options(
-                    SubscribeOptions::builder()
-                        .ordering_policy(OrderingPolicy::PerKey)
-                        .build(),
-                ),
+            SubscribeRequest::new("ordered", topic.clone()).unwrap().with_options(
+                SubscribeOptions::builder()
+                    .ordering_policy(OrderingPolicy::PerKey)
+                    .build(),
+            ),
         ),
     )
     .unwrap();

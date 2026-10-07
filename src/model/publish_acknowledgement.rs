@@ -79,9 +79,7 @@ impl PublishAcknowledgement {
         match self {
             Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,
             Self::DroppedByInterceptor => AdmissionOutcome::Dropped,
-            Self::DestinationAdmissions(destinations) if destinations.is_empty() => {
-                AdmissionOutcome::NoDestinations
-            }
+            Self::DestinationAdmissions(destinations) if destinations.is_empty() => AdmissionOutcome::NoDestinations,
             Self::DestinationAdmissions(destinations) => {
                 let mut summary = AdmissionSummary::default();
                 for destination in destinations {

@@ -77,10 +77,7 @@ impl OutstandingBudget {
     pub(super) fn try_acquire(&self, weight: usize) -> bool {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let next_count = state
-            .count_used
-            .checked_add(1)
-            .filter(|count| *count <= self.max_count);
+        let next_count = state.count_used.checked_add(1).filter(|count| *count <= self.max_count);
         let next_weight = state
             .weight_used
             .checked_add(weight)
@@ -108,10 +105,7 @@ impl OutstandingBudget {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(state.count_used >= count, "outstanding budget underflow");
-        assert!(
-            state.weight_used >= weight,
-            "outstanding weight budget underflow"
-        );
+        assert!(state.weight_used >= weight, "outstanding weight budget underflow");
         state.count_used -= count;
         state.weight_used -= weight;
     }

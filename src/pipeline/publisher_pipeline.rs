@@ -126,9 +126,7 @@ impl PublisherPipeline {
             PublishPreparation::Dropped(receipt) => return Ok(receipt),
             PublishPreparation::Ready(prepared) => *prepared,
         };
-        let PreparedPublish {
-            options, outbound, ..
-        } = &prepared;
+        let PreparedPublish { options, outbound, .. } = &prepared;
         let seen_unknown = Cell::new(false);
         let seen_admission = Cell::new(false);
         let result = retry::publish_sync(
@@ -143,18 +141,10 @@ impl PublisherPipeline {
             &seen_admission,
         );
         match result {
-            Ok(acknowledgement) => Ok(self.finish_publish_success(
-                prepared,
-                acknowledgement,
-                seen_unknown.get(),
-                observers,
-            )),
-            Err(error) => Err(self.finish_publish_failure(
-                &prepared,
-                error,
-                seen_unknown.get(),
-                seen_admission.get(),
-            )),
+            Ok(acknowledgement) => {
+                Ok(self.finish_publish_success(prepared, acknowledgement, seen_unknown.get(), observers))
+            }
+            Err(error) => Err(self.finish_publish_failure(&prepared, error, seen_unknown.get(), seen_admission.get())),
         }
     }
 
@@ -193,9 +183,7 @@ impl PublisherPipeline {
             PublishPreparation::Dropped(receipt) => return Ok(receipt),
             PublishPreparation::Ready(prepared) => *prepared,
         };
-        let PreparedPublish {
-            options, outbound, ..
-        } = &prepared;
+        let PreparedPublish { options, outbound, .. } = &prepared;
         let seen_unknown = Arc::new(AtomicBool::new(false));
         let seen_admission = Arc::new(AtomicBool::new(false));
         let result = retry::publish_async(
@@ -257,8 +245,8 @@ impl PublisherPipeline {
     ) -> Result<PublishPreparation<T>, PipelineFailure> {
         let (mut envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();
-        let is_dead_letter = envelope.header(crate::model::DEAD_LETTER_HEADER)
-            == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
+        let is_dead_letter =
+            envelope.header(crate::model::DEAD_LETTER_HEADER) == Some(crate::model::DEAD_LETTER_HEADER_VALUE);
         for interceptor in options.interceptors() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interceptor(envelope))) {
                 Ok(Ok(Some(next))) => {
@@ -267,8 +255,7 @@ impl PublisherPipeline {
                             PipelineFailureOrigin::Interceptor,
                             crate::error::ConfigurationError::InvalidField {
                                 field: "event_id",
-                                message: "typed publisher interceptor cannot change event identity"
-                                    .into(),
+                                message: "typed publisher interceptor cannot change event identity".into(),
                             },
                         ));
                     }
@@ -323,9 +310,7 @@ impl PublisherPipeline {
         } else {
             options
                 .native_payload_weight()
-                .map(|weigh| {
-                    std::panic::catch_unwind(AssertUnwindSafe(|| weigh(envelope.payload())))
-                })
+                .map(|weigh| std::panic::catch_unwind(AssertUnwindSafe(|| weigh(envelope.payload()))))
                 .transpose()
                 .map_err(|panic| {
                     failure(
@@ -337,8 +322,7 @@ impl PublisherPipeline {
                     )
                 })?
         };
-        let outbound =
-            self.prepare_outbound_for(envelope, capabilities.payload_modes(), native_weight)?;
+        let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes(), native_weight)?;
         Ok(PublishPreparation::Ready(Box::new(PreparedPublish {
             input_event_id,
             options,
@@ -461,15 +445,10 @@ impl PublisherPipeline {
                 TransportPayload::Native(failure_context.payload_arc() as Arc<dyn Any + Send + Sync>)
             }
             PayloadModes::Encoded => {
-                let codec = codec.ok_or_else(|| {
-                    failure(
-                        PipelineFailureOrigin::Capability,
-                        CapabilityError::CodecRequired,
-                    )
-                })?;
-                let bytes =
-                    crate::codec::call_codec("encode", || codec.encode(failure_context.payload()))
-                        .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                let codec =
+                    codec.ok_or_else(|| failure(PipelineFailureOrigin::Capability, CapabilityError::CodecRequired))?;
+                let bytes = crate::codec::call_codec("encode", || codec.encode(failure_context.payload()))
+                    .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
                 if bytes.len() > self.max_encoded_payload_bytes.get() {
                     return Err(failure(
                         PipelineFailureOrigin::Codec,
@@ -480,12 +459,10 @@ impl PublisherPipeline {
                         },
                     ));
                 }
-                let content_type =
-                    crate::codec::call_codec("content_type", || Ok(codec.content_type().clone()))
-                        .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
-                let schema_id =
-                    crate::codec::call_codec("schema_id", || Ok(codec.schema_id().cloned()))
-                        .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                let content_type = crate::codec::call_codec("content_type", || Ok(codec.content_type().clone()))
+                    .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
+                let schema_id = crate::codec::call_codec("schema_id", || Ok(codec.schema_id().cloned()))
+                    .map_err(|error| failure(PipelineFailureOrigin::Codec, error))?;
                 TransportPayload::Encoded(EncodedPayload::new(bytes, content_type, schema_id))
             }
         };
@@ -585,8 +562,7 @@ fn notify_publish_error_handlers<T: 'static>(
     terminal_error: PublishError,
     effect: crate::model::PublishEffect,
 ) -> PublishError {
-    let terminal_error =
-        crate::error::PublishFailure::new(context.event_id().clone(), effect, terminal_error);
+    let terminal_error = crate::error::PublishFailure::new(context.event_id().clone(), effect, terminal_error);
     let mut panic_message = None;
     for handler in handlers {
         match std::panic::catch_unwind(AssertUnwindSafe(|| handler(context, &terminal_error))) {
@@ -660,9 +636,7 @@ fn validate_transport_metadata(
     ordering_key: Option<&str>,
     capabilities: crate::spi::EventBusCapabilities,
 ) -> Result<(), PipelineFailure> {
-    if delay.is_some()
-        && capabilities.delayed_delivery() == crate::spi::DelayedDeliveryCapability::None
-    {
+    if delay.is_some() && capabilities.delayed_delivery() == crate::spi::DelayedDeliveryCapability::None {
         return Err(failure(
             PipelineFailureOrigin::Capability,
             CapabilityError::Unsupported {
@@ -673,9 +647,7 @@ fn validate_transport_metadata(
     if ordering_key.is_some() && capabilities.ordering() == crate::spi::OrderingCapability::None {
         return Err(failure(
             PipelineFailureOrigin::Capability,
-            CapabilityError::Unsupported {
-                capability: "ordering",
-            },
+            CapabilityError::Unsupported { capability: "ordering" },
         ));
     }
     Ok(())

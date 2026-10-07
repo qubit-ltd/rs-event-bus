@@ -113,20 +113,12 @@ fn test_async_shutdown_registrations_cancel_independently_and_ticket_reuses_resu
 
     drop(cancelled);
     gate.release();
-    wake_rx
-        .recv_timeout(LIMIT)
-        .expect("remaining observer is woken");
-    assert!(matches!(
-        poll(observer.as_mut(), &waker),
-        Poll::Ready(Ok(_))
-    ));
+    wake_rx.recv_timeout(LIMIT).expect("remaining observer is woken");
+    assert!(matches!(poll(observer.as_mut(), &waker), Poll::Ready(Ok(_))));
     drop(observer);
     assert!(ticket.wait(Some(LIMIT)).is_ok());
 
     let mut completed = Box::pin(ticket.wait_async());
-    assert!(matches!(
-        poll(completed.as_mut(), Waker::noop()),
-        Poll::Ready(Ok(_))
-    ));
+    assert!(matches!(poll(completed.as_mut(), Waker::noop()), Poll::Ready(Ok(_))));
     drop(completed);
 }

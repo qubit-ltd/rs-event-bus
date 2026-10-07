@@ -41,13 +41,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         &mut self,
         control: &AsyncSubscriptionControl<T>,
     ) -> Result<(), LifecycleError> {
-        if *self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            == BusState::Closed
-        {
+        if *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed {
             return Ok(());
         }
         self.signals.stop(ShutdownMode::Immediate);
@@ -90,11 +84,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         self.inner.scheduler.stop_subscription(self.id);
         self.inner.notify_scheduler();
         let _close = {
-            let state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
             (*state == BusState::Running).then(|| self.inner.tracker.close_started())
         };
         let close_result = {
@@ -122,9 +112,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             }
         };
         if let Err(error) = close_result {
-            let failure = self
-                .inner
-                .record_close_error(control, &self.subscriber_id, error);
+            let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
             return Err(failure);
         }
         self.abandon_queued_and_completed();
@@ -145,17 +133,14 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// does not promise recovery.
     pub(in crate::facade) fn record_abandoned_delivery(&self) {
         if self.inner.capabilities.durability() == DurabilityCapability::Ephemeral {
-            self.inner
-                .abandoned_deliveries
-                .fetch_add(1, Ordering::AcqRel);
+            self.inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
             self.metrics.record_abandoned_ephemeral();
         }
     }
 
     /// Counts and releases unresolved buffered and completed deliveries.
     pub(super) fn abandon_queued_and_completed(&mut self) {
-        let count =
-            self.buffered.len() + self.completed.len() + self.completed_during_settlement.len();
+        let count = self.buffered.len() + self.completed.len() + self.completed_during_settlement.len();
         self.buffered.clear();
         self.completed.clear();
         self.completed_during_settlement.clear();

@@ -103,12 +103,10 @@ impl CodecRegistry {
         &mut self,
         codec: Arc<dyn EventCodec<T>>,
     ) -> Option<Arc<dyn EventCodec<T>>> {
-        self.codecs
-            .insert(TypeId::of::<T>(), Box::new(codec))
-            .map(|previous| {
-                *previous
-                    .downcast::<Arc<dyn EventCodec<T>>>()
-                    .expect("codec registry TypeId matches stored codec type")
-            })
+        self.codecs.insert(TypeId::of::<T>(), Box::new(codec)).map(|previous| {
+            *previous
+                .downcast::<Arc<dyn EventCodec<T>>>()
+                .expect("codec registry TypeId matches stored codec type")
+        })
     }
 }

@@ -82,11 +82,7 @@ impl PublishMetadata {
     /// Returns [`ConfigurationError::InvalidField`] if the key is empty,
     /// contains unsupported characters, names the reserved dead-letter header,
     /// or the value contains a control character.
-    pub fn set_header(
-        &mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Result<(), ConfigurationError> {
+    pub fn set_header(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<(), ConfigurationError> {
         let key = key.into();
         let value = value.into();
         if key.eq_ignore_ascii_case(super::DEAD_LETTER_HEADER)

@@ -241,9 +241,7 @@ mod tests {
             release_rx.recv().expect("test releases worker completion");
             worker_control.mark_finished();
         });
-        started_rx
-            .recv()
-            .expect("worker reached the completion gate");
+        started_rx.recv().expect("worker reached the completion gate");
 
         release_tx.send(()).expect("worker remains active");
         control.wait_finished();

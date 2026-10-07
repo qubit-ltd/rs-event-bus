@@ -46,8 +46,7 @@ fn test_subscription_capacity_rejects_at_limit_and_reuses_cancelled_slot() {
     let mut subscriptions = (0..8)
         .map(|index| {
             bus.subscribe(
-                SubscribeRequest::new(&format!("capacity-{index}"), topic.clone())
-                    .expect("request is valid"),
+                SubscribeRequest::new(&format!("capacity-{index}"), topic.clone()).expect("request is valid"),
                 |_: Delivery<u32>| (),
             )
             .expect("subscription fits under the capacity limit")
@@ -79,9 +78,7 @@ fn test_subscription_capacity_rejects_at_limit_and_reuses_cancelled_slot() {
     subscriptions.push(replacement);
 
     for subscription in subscriptions {
-        subscription
-            .cancel()
-            .expect("subscription cancellation succeeds");
+        subscription.cancel().expect("subscription cancellation succeeds");
     }
     let report = bus
         .shutdown(ShutdownMode::Graceful {

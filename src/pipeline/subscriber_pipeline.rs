@@ -48,8 +48,7 @@ pub(crate) struct SubscriberPipeline;
 ///
 /// # Type Parameters
 /// - `T`: Payload type carried by each delivery.
-type SyncDeliveryHandler<T> =
-    dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync + 'static;
+type SyncDeliveryHandler<T> = dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync + 'static;
 /// Runtime-neutral future callback invoked at the end of an async subscriber
 /// chain.
 ///
@@ -86,11 +85,7 @@ impl SubscriberPipeline {
     where
         H: Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync + 'static,
     {
-        let chain = global
-            .iter()
-            .chain(typed.iter())
-            .cloned()
-            .collect::<Vec<_>>();
+        let chain = global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>();
         sync_next(0, chain, Arc::new(handler))(delivery)
     }
 
@@ -121,11 +116,7 @@ impl SubscriberPipeline {
     where
         H: Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync + 'static,
     {
-        let chain = global
-            .iter()
-            .chain(typed.iter())
-            .cloned()
-            .collect::<Vec<_>>();
+        let chain = global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>();
         let next = async_next(0, chain, Arc::new(handler));
         catch_async_panic(next(delivery))
     }
@@ -224,12 +215,12 @@ impl SubscriberPipeline {
             (AckMode::Auto, Ok(())) => DeliveryOutcome::Success,
             (AckMode::Manual, Ok(())) => match delivery.acknowledgement().state() {
                 AcknowledgementState::Acknowledged => DeliveryOutcome::Success,
-                AcknowledgementState::Pending => DeliveryOutcome::Failure(ack_state_error(
-                    "manual acknowledgement remained pending",
-                )),
-                AcknowledgementState::NegativelyAcknowledged => DeliveryOutcome::Failure(
-                    ack_state_error("delivery was negatively acknowledged"),
-                ),
+                AcknowledgementState::Pending => {
+                    DeliveryOutcome::Failure(ack_state_error("manual acknowledgement remained pending"))
+                }
+                AcknowledgementState::NegativelyAcknowledged => {
+                    DeliveryOutcome::Failure(ack_state_error("delivery was negatively acknowledged"))
+                }
             },
         }
     }
@@ -272,9 +263,7 @@ impl SubscriberPipeline {
             (DeliveryFailureAction::Requeue, SettlementCapabilities::AcceptRetryReject) => {
                 Some(DeliveryDisposition::Retry)
             }
-            (DeliveryFailureAction::RetryLocally, SettlementCapabilities::AcceptRetryReject) => {
-                None
-            }
+            (DeliveryFailureAction::RetryLocally, SettlementCapabilities::AcceptRetryReject) => None,
             (
                 DeliveryFailureAction::DeadLetter | DeliveryFailureAction::Discard,
                 SettlementCapabilities::AcceptRetryReject,
@@ -332,10 +321,7 @@ impl SubscriberPipeline {
         options: &SubscribeOptions<T>,
         capabilities: EventBusCapabilities,
     ) -> Result<(), CapabilityError> {
-        if !capabilities
-            .subscription_modes()
-            .supports(options.durability())
-        {
+        if !capabilities.subscription_modes().supports(options.durability()) {
             return Err(CapabilityError::Unsupported {
                 capability: "subscription_durability",
             });
@@ -358,9 +344,7 @@ impl SubscriberPipeline {
                 ReplayCapability::Position | ReplayCapability::Timestamp
             )
         {
-            return Err(CapabilityError::Unsupported {
-                capability: "replay",
-            });
+            return Err(CapabilityError::Unsupported { capability: "replay" });
         }
         Ok(())
     }
@@ -417,10 +401,8 @@ fn async_next<T: 'static>(
 ) -> Arc<AsyncDeliveryHandler<T>> {
     Arc::new(move |delivery| {
         if index == chain.len() {
-            let future =
-                catch_unwind(AssertUnwindSafe(|| handler(delivery))).unwrap_or_else(|panic| {
-                    Box::pin(async move { Err(panic_to_delivery_error(panic)) })
-                });
+            let future = catch_unwind(AssertUnwindSafe(|| handler(delivery)))
+                .unwrap_or_else(|panic| Box::pin(async move { Err(panic_to_delivery_error(panic)) }));
             return catch_async_panic(future);
         }
         let next = async_next(index + 1, chain.clone(), handler.clone());

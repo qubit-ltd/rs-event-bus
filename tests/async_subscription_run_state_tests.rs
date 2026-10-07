@@ -37,12 +37,9 @@ fn setup() -> (AsyncEventBus, Arc<FakeAsyncEventBusSpi>) {
 }
 
 fn subscribe(bus: &AsyncEventBus) -> AsyncSubscription<u32> {
-    block_on(
-        bus.subscribe(
-            SubscribeRequest::new("run-state", Topic::<u32>::new("test.topic").expect("topic"))
-                .expect("request"),
-        ),
-    )
+    block_on(bus.subscribe(
+        SubscribeRequest::new("run-state", Topic::<u32>::new("test.topic").expect("topic")).expect("request"),
+    ))
     .expect("subscription")
 }
 
@@ -57,10 +54,7 @@ fn unpolled_run_does_not_change_state_and_first_poll_marks_running() {
     let (bus, _fake) = setup();
     let subscription = subscribe(&bus);
     let run = pending_run(&subscription);
-    assert_eq!(
-        subscription.run_state(),
-        AsyncSubscriptionRunState::Unstarted
-    );
+    assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Unstarted);
     let mut run = Box::pin(run);
     assert!(matches!(poll_once(run.as_mut()), Poll::Pending));
     assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Running);

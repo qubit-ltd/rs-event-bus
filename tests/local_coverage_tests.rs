@@ -57,8 +57,7 @@ fn subscribe(spi: &dyn EventBusSpi, id: u64, topic: &str) -> Box<dyn EventSubscr
     spi.subscribe(SpiSubscriptionRequest::new(
         Id::new(id),
         TopicAddress::new(topic).expect("test topic is valid"),
-        SubscriberId::new(format!("coverage-subscriber-{id}"))
-            .expect("test subscriber ID is valid"),
+        SubscriberId::new(format!("coverage-subscriber-{id}")).expect("test subscriber ID is valid"),
         None,
         SubscriptionDurability::Ephemeral,
         StartPosition::New,
@@ -108,13 +107,9 @@ fn test_close_removes_subscription_route_and_discards_pending_messages() {
         [admission] if matches!(admission.status(), AdmissionStatus::Accepted)
     ));
 
-    subscription
-        .close()
-        .expect("close releases the local queue");
+    subscription.close().expect("close releases the local queue");
     assert!(matches!(
-        subscription
-            .receive(Duration::ZERO)
-            .expect("closed receive succeeds"),
+        subscription.receive(Duration::ZERO).expect("closed receive succeeds"),
         ReceiveOutcome::Closed
     ));
     let after_close = spi
@@ -133,9 +128,7 @@ fn test_immediate_shutdown_wakes_a_blocked_receiver() {
         let mut subscription = subscription;
         started_tx.send(()).expect("test receiver remains alive");
         let outcome = subscription.receive(Duration::from_secs(30));
-        outcome_tx
-            .send(outcome)
-            .expect("test receiver remains alive");
+        outcome_tx.send(outcome).expect("test receiver remains alive");
     });
 
     started_rx
@@ -201,8 +194,7 @@ fn test_capacity_is_per_subscription_and_includes_in_flight_messages() {
             .expect("publication returns per-destination outcomes"),
     );
     assert!(next_admissions.iter().all(|admission| {
-        matches!(admission.status(), AdmissionStatus::Accepted)
-            == (admission.subscription_id() == Id::new(3))
+        matches!(admission.status(), AdmissionStatus::Accepted) == (admission.subscription_id() == Id::new(3))
     }));
     assert!(matches!(
         first
@@ -271,13 +263,7 @@ fn test_settlement_rejects_wrong_provider_token_state_without_consuming_real_tok
     let spi = create_local(1);
     let mut subscription = subscribe(spi.as_ref(), 6, "coverage.forged-token");
     let _ = spi
-        .publish(outbound(
-            "coverage.forged-token",
-            "valid-token",
-            7,
-            None,
-            None,
-        ))
+        .publish(outbound("coverage.forged-token", "valid-token", 7, None, None))
         .expect("publication succeeds");
     let ReceiveOutcome::Message(mut message) = subscription
         .receive(Duration::ZERO)
@@ -285,9 +271,7 @@ fn test_settlement_rejects_wrong_provider_token_state_without_consuming_real_tok
     else {
         panic!("published event is received");
     };
-    let real_token = message
-        .take_settlement()
-        .expect("event has a provider token");
+    let real_token = message.take_settlement().expect("event has a provider token");
     let forged_token = SettlementToken::new(Id::new(6), String::from("forged provider state"));
 
     let error = subscription
@@ -370,13 +354,7 @@ fn test_receive_uses_earliest_partition_deadline_without_overtaking_same_key() {
         ))
         .expect("shorter-delayed independent partition is admitted");
     let _ = spi
-        .publish(outbound(
-            "coverage.partition-deadlines",
-            "unkeyed-ready",
-            4,
-            None,
-            None,
-        ))
+        .publish(outbound("coverage.partition-deadlines", "unkeyed-ready", 4, None, None))
         .expect("unkeyed message is admitted");
 
     let ReceiveOutcome::Message(unkeyed) = subscription

@@ -27,8 +27,7 @@ fn test_default_gap_policy_stops_async_run_with_the_gap_reason() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("gap-test").unwrap(), spi.clone()).unwrap();
     let topic = Topic::<u32>::new("gap.events").unwrap();
-    let subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("gap-test", topic).unwrap())).unwrap();
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("gap-test", topic).unwrap())).unwrap();
     spi.inject_gap();
 
     let error = block_on(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }))

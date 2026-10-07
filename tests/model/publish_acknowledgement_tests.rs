@@ -31,10 +31,7 @@ fn test_opaque_acceptance_and_interceptor_drop_have_distinct_classifications() {
     };
     let dropped = PublishAcknowledgement::DroppedByInterceptor;
 
-    assert_eq!(
-        accepted.admission_outcome(),
-        AdmissionOutcome::OpaqueAccepted
-    );
+    assert_eq!(accepted.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
     assert!(!accepted.is_dropped());
     assert_eq!(dropped.admission_outcome(), AdmissionOutcome::Dropped);
     assert!(dropped.is_dropped());
@@ -44,10 +41,7 @@ fn test_opaque_acceptance_and_interceptor_drop_have_distinct_classifications() {
 fn test_empty_destination_snapshot_is_not_treated_as_rejection() {
     let acknowledgement = PublishAcknowledgement::DestinationAdmissions(Vec::new());
 
-    assert_eq!(
-        acknowledgement.admission_outcome(),
-        AdmissionOutcome::NoDestinations
-    );
+    assert_eq!(acknowledgement.admission_outcome(), AdmissionOutcome::NoDestinations);
     assert!(!acknowledgement.is_dropped());
 }
 

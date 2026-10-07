@@ -35,11 +35,8 @@ mod support;
 #[test]
 fn test_async_retry_rule_panic_requeues_delivery() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("test").expect("valid provider ID"),
-        spi.clone(),
-    )
-    .expect("fake provider constructs the facade");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("test").expect("valid provider ID"), spi.clone())
+        .expect("fake provider constructs the facade");
     let topic = Topic::<u32>::new("test.retry-rule-panic").expect("valid topic");
     let options = SubscribeOptions::builder()
         .retry_policy(
@@ -48,18 +45,14 @@ fn test_async_retry_rule_panic_requeues_delivery() {
                 .build()
                 .expect("valid retry policy"),
         )
-        .retry_rule(
-            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| {
-                panic!("synthetic retry rule panic")
-            },
-        )
+        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| panic!("synthetic retry rule panic"))
         .build();
     let request = SubscribeRequest::new("retry-rule-panic", topic.clone())
         .expect("valid subscriber ID")
         .with_options(options);
     let mut subscription = block_on(bus.subscribe(request)).expect("subscription is supported");
-    let _ = block_on(bus.publish(PublishRequest::new(topic, 42_u32).expect("valid request")))
-        .expect("publish is accepted");
+    let _ =
+        block_on(bus.publish(PublishRequest::new(topic, 42_u32).expect("valid request"))).expect("publish is accepted");
     let mut run = Box::pin(subscription.run(|_| async {
         Err(DeliveryError::Handler {
             source: Box::new(Error::other("synthetic handler failure")),
@@ -72,10 +65,7 @@ fn test_async_retry_rule_panic_requeues_delivery() {
             break;
         }
     }
-    assert!(
-        run_pending,
-        "runner remains active after settling the failed delivery"
-    );
+    assert!(run_pending, "runner remains active after settling the failed delivery");
     assert_eq!(
         spi.settlement_dispositions(),
         vec![DeliveryDisposition::Retry],

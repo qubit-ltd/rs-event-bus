@@ -292,9 +292,7 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
     /// The updated builder.
     #[must_use = "Use the returned builder."]
     pub fn provider_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.options
-            .provider_options
-            .insert(key.into(), value.into());
+        self.options.provider_options.insert(key.into(), value.into());
         self
     }
 

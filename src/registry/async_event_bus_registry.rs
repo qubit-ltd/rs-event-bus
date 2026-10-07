@@ -139,10 +139,7 @@ impl AsyncEventBusRegistry {
     /// # Errors
     /// Returns a registry mutation error if registration is sealed or the
     /// provider selector conflicts with an existing entry.
-    pub fn register_shared(
-        &self,
-        provider: Arc<AsyncEventBusProvider>,
-    ) -> Result<(), RegistryMutationError> {
+    pub fn register_shared(&self, provider: Arc<AsyncEventBusProvider>) -> Result<(), RegistryMutationError> {
         let adapter: Arc<dyn AsyncProviderDefinition<EventBusSpec>> =
             Arc::new(AsyncEventBusProviderAdapter::new(provider));
         self.providers.register_shared(adapter)
@@ -198,10 +195,7 @@ impl AsyncEventBusRegistry {
     ///
     /// # Errors
     /// Returns a registry mutation error when the registry has been sealed.
-    pub fn set_default_selection(
-        &self,
-        selection: ProviderSelection,
-    ) -> Result<(), RegistryMutationError> {
+    pub fn set_default_selection(&self, selection: ProviderSelection) -> Result<(), RegistryMutationError> {
         self.providers.set_default_selection(selection)
     }
 
@@ -229,10 +223,7 @@ impl AsyncEventBusRegistry {
         if let Some(selection) = config.selection() {
             return self.create_selected(selection, config).await;
         }
-        let resolver = self
-            .providers
-            .resolve()
-            .map_err(provider_resolution_error)?;
+        let resolver = self.providers.resolve().map_err(provider_resolution_error)?;
         let spi = resolver
             .create_configured(config)
             .await
@@ -291,10 +282,7 @@ impl Default for AsyncEventBusRegistry {
 /// # Panics
 /// Panics if a provider adapter violates its invariant and omits the canonical
 /// provider ID.
-fn facade(
-    spi: Arc<dyn AsyncEventBusSpi>,
-    config: &EventBusConfig,
-) -> Result<AsyncEventBus, ProviderError> {
+fn facade(spi: Arc<dyn AsyncEventBusSpi>, config: &EventBusConfig) -> Result<AsyncEventBus, ProviderError> {
     let provider_id: FacadeProviderId = spi
         .provider_id()
         .expect("registered provider adapters attach a canonical provider ID");

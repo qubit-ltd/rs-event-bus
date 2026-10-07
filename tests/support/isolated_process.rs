@@ -37,10 +37,7 @@ pub(crate) fn run_case_with_timeout(test_name: &str, case: &str, timeout: Durati
         .expect("isolated test process starts");
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child
-            .try_wait()
-            .expect("isolated process status is available")
-        {
+        if let Some(status) = child.try_wait().expect("isolated process status is available") {
             assert!(status.success(), "isolated case {case} failed: {status}");
             return;
         }

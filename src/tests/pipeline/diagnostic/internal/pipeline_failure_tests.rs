@@ -21,10 +21,7 @@ fn test_failure_preserves_origin_cause_and_admission_evidence() {
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
     assert_eq!(failure.publish_effect(), PublishEffect::MayHaveBeenAccepted);
     assert!(
-        matches!(
-            failure.error(),
-            EventBusError::Publish(PublishError::Closed)
-        ),
+        matches!(failure.error(), EventBusError::Publish(PublishError::Closed)),
         "the failure should retain the original publish error"
     );
     assert!(

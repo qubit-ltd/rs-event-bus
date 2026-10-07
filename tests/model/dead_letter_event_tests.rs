@@ -29,8 +29,7 @@ struct NonClonePayload(u8);
 fn test_dead_letter_topic_exposes_original_payload_and_terminal_reason() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(4)).expect("local bus");
     let source = Topic::<NonClonePayload>::new("model.dead.source").expect("valid topic");
-    let dead_topic =
-        Topic::<DeadLetterEvent<NonClonePayload>>::new("model.dead.records").expect("valid topic");
+    let dead_topic = Topic::<DeadLetterEvent<NonClonePayload>>::new("model.dead.records").expect("valid topic");
     let (sender, receiver) = mpsc::channel();
     let dead_subscription = bus
         .subscribe(
@@ -49,9 +48,7 @@ fn test_dead_letter_topic_exposes_original_payload_and_terminal_reason() {
                 .subscriber_id(SubscriberId::new("model-dead-source").expect("valid subscriber ID"))
                 .topic(source.clone())
                 .error_handler(|_, _| FailureDirective::DeadLetter)
-                .dead_letter(
-                    DeadLetterPolicy::with_topic_name("model.dead.records").expect("valid policy"),
-                )
+                .dead_letter(DeadLetterPolicy::with_topic_name("model.dead.records").expect("valid policy"))
                 .build()
                 .expect("valid request"),
             |_| -> Result<(), DeliveryError> {
@@ -78,8 +75,6 @@ fn test_dead_letter_topic_exposes_original_payload_and_terminal_reason() {
     assert_eq!(payload, 9);
     assert!(reason.contains("model dead-letter failure"));
     source_subscription.cancel().expect("source cancellation");
-    dead_subscription
-        .cancel()
-        .expect("dead-letter cancellation");
+    dead_subscription.cancel().expect("dead-letter cancellation");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shutdown");
 }

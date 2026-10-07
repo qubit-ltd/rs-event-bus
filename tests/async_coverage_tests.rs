@@ -180,10 +180,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
         )
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
         self.payload_was_encoded
             .lock()
@@ -220,10 +217,7 @@ impl AsyncEventBusSpi for PublisherCoverageSpi {
         Box::pin(async { unreachable!("publisher coverage SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -284,8 +278,7 @@ fn test_async_publisher_retries_a_retryable_failure_then_succeeds() {
     let receipt = block_on(bus.publish(request)).expect("second async attempt should succeed");
     assert_eq!(receipt.input_event_id().as_str().len(), 36);
     assert_eq!(spi.attempts.load(Ordering::Acquire), 2);
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
 }
 
 #[test]
@@ -317,8 +310,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(bus.publish_metrics().opaque_accepted, 2);
     assert_eq!(bus.publish_metrics().cancelled, 0);
 
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     let closed = block_on(
         bus.publish(
             PublishRequest::builder()
@@ -334,8 +326,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(clone.publish_metrics().cancelled, 0);
 
     let dropped_bus = AsyncEventBus::with_config(
-        ProviderId::new("async-publisher-metrics-dropped")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-dropped").expect("static test provider ID must be valid"),
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
         EventBusFacadeConfig::new().publisher_interceptor(|_| Ok(false)),
     )
@@ -358,30 +349,23 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     let mixed_ack = PublishAcknowledgement::DestinationAdmissions(vec![
         DestinationAdmission::new(
             Id::new(10),
-            SubscriberId::new("accepted-async-metrics")
-                .expect("static subscriber ID must be valid"),
+            SubscriberId::new("accepted-async-metrics").expect("static subscriber ID must be valid"),
             AdmissionStatus::Accepted,
         ),
         DestinationAdmission::new(
             Id::new(11),
-            SubscriberId::new("filtered-async-metrics")
-                .expect("static subscriber ID must be valid"),
+            SubscriberId::new("filtered-async-metrics").expect("static subscriber ID must be valid"),
             AdmissionStatus::Filtered,
         ),
         DestinationAdmission::new(
             Id::new(12),
-            SubscriberId::new("rejected-async-metrics")
-                .expect("static subscriber ID must be valid"),
+            SubscriberId::new("rejected-async-metrics").expect("static subscriber ID must be valid"),
             AdmissionStatus::Rejected("injected rejection".into()),
         ),
     ]);
     let destination_bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-destinations")
-            .expect("static test provider ID must be valid"),
-        Arc::new(
-            PublisherCoverageSpi::new(PayloadModes::Native, 0, false)
-                .with_acknowledgement(mixed_ack),
-        ),
+        ProviderId::new("async-publisher-metrics-destinations").expect("static test provider ID must be valid"),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_acknowledgement(mixed_ack)),
     )
     .expect("valid provider capabilities");
     let _ = block_on(
@@ -400,8 +384,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(destination_metrics.rejected_destinations, 1);
 
     let empty_bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-empty")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-empty").expect("static test provider ID must be valid"),
         Arc::new(
             PublisherCoverageSpi::new(PayloadModes::Native, 0, false)
                 .with_acknowledgement(PublishAcknowledgement::DestinationAdmissions(Vec::new())),
@@ -429,10 +412,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
             AdmissionRequirement::ProviderOrDestinationAccepted,
         ),
     );
-    assert!(matches!(
-        rejected,
-        Err(CheckedPublishError::Admission { .. })
-    ));
+    assert!(matches!(rejected, Err(CheckedPublishError::Admission { .. })));
     let checked_metrics = empty_bus.publish_metrics();
     assert_eq!(checked_metrics.attempts, 2);
     assert_eq!(checked_metrics.zero_destinations, 2);
@@ -440,8 +420,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(checked_metrics.cancelled, 0);
 
     let failing_bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-error")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-error").expect("static test provider ID must be valid"),
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, true)),
     )
     .expect("valid provider capabilities");
@@ -463,8 +442,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert_eq!(failure_metrics.cancelled, 0);
 
     let concurrent_bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-concurrent")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-concurrent").expect("static test provider ID must be valid"),
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
     )
     .expect("valid provider capabilities");
@@ -496,8 +474,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
 fn test_async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled() {
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false).with_pending());
     let bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-cancelled")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-cancelled").expect("static test provider ID must be valid"),
         spi,
     )
     .expect("valid provider capabilities");
@@ -530,8 +507,7 @@ fn test_async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled
 #[test]
 fn test_async_publisher_metrics_ignore_unpolled_future() {
     let bus = AsyncEventBus::from_spi(
-        ProviderId::new("async-publisher-metrics-unpolled")
-            .expect("static test provider ID must be valid"),
+        ProviderId::new("async-publisher-metrics-unpolled").expect("static test provider ID must be valid"),
         Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
     )
     .expect("valid provider capabilities");
@@ -553,22 +529,18 @@ fn test_async_publisher_metrics_ignore_unpolled_future() {
 
 #[test]
 fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
-    let config =
-        EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
-            assert_eq!(
-                metadata.headers().get("origin").map(String::as_str),
-                Some("application")
-            );
-            assert_eq!(metadata.header("trace"), None);
-            metadata.set_header("trace", "global-1")?;
-            assert!(metadata.set_header("bad key", "value").is_err());
-            assert_eq!(
-                metadata.remove_header("origin").as_deref(),
-                Some("application")
-            );
-            assert!(metadata.remove_header(DEAD_LETTER_HEADER).is_none());
-            Ok(true)
-        });
+    let config = EventBusFacadeConfig::new().publisher_interceptor(|metadata: &mut PublishMetadata| {
+        assert_eq!(
+            metadata.headers().get("origin").map(String::as_str),
+            Some("application")
+        );
+        assert_eq!(metadata.header("trace"), None);
+        metadata.set_header("trace", "global-1")?;
+        assert!(metadata.set_header("bad key", "value").is_err());
+        assert_eq!(metadata.remove_header("origin").as_deref(), Some("application"));
+        assert!(metadata.remove_header(DEAD_LETTER_HEADER).is_none());
+        Ok(true)
+    });
     let spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false));
     let bus = AsyncEventBus::with_config(
         ProviderId::new("async-global-interceptor").expect("static test provider ID must be valid"),
@@ -585,8 +557,7 @@ fn test_async_global_publisher_interceptor_edits_only_validated_headers() {
 
     let _ = block_on(bus.publish(request)).expect("global interceptor allows publish");
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
 }
 
 #[test]
@@ -639,8 +610,7 @@ fn test_async_string_delivery_runs_error_handler_and_terminates_failure() {
             .expect("expected test signal must arrive before timeout"),
         "body"
     );
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     runner
         .join()
         .expect("subscription runner thread must not panic")
@@ -662,10 +632,7 @@ fn test_failed_timer_registration_surfaces_after_a_failed_settlement() {
     let request = SubscribeRequest::new("timer-failure", topic()).expect("valid subscriber ID");
 
     let error = block_on(async {
-        let subscription = bus
-            .subscribe(request)
-            .await
-            .expect("async subscription must start");
+        let subscription = bus.subscribe(request).await.expect("async subscription must start");
         spi.fail_next_settle();
         spi.enqueue(inbound_message(Some(SettlementToken::new(
             subscription.id(),
@@ -744,17 +711,13 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let encoded_topic = Topic::new("async.encoded")
         .expect("static codec content type must be valid")
         .with_codec(StringCodec {
-            content_type: ContentType::new("text/plain")
-                .expect("static codec content type must be valid"),
+            content_type: ContentType::new("text/plain").expect("static codec content type must be valid"),
             fail_encode: false,
         });
 
-    let _ = block_on(
-        bus.publish(
-            PublishRequest::new(encoded_topic, "wire payload".to_owned())
-                .expect("test publish request must be valid"),
-        ),
-    )
+    let _ = block_on(bus.publish(
+        PublishRequest::new(encoded_topic, "wire payload".to_owned()).expect("test publish request must be valid"),
+    ))
     .expect("codec should encode successfully");
     assert_eq!(
         *spi.payload_was_encoded
@@ -763,8 +726,7 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
         [true]
     );
     assert_eq!(spi.attempts.load(Ordering::Acquire), 1);
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
 
     let failing_spi = Arc::new(PublisherCoverageSpi::new(PayloadModes::Encoded, 0, false));
     let failing_bus = AsyncEventBus::from_spi(
@@ -775,24 +737,16 @@ fn test_async_encoded_publisher_sends_encoded_payload_and_skips_spi_on_codec_fai
     let failing_topic = Topic::new("async.codec.failure")
         .expect("static codec content type must be valid")
         .with_codec(StringCodec {
-            content_type: ContentType::new("text/plain")
-                .expect("static codec content type must be valid"),
+            content_type: ContentType::new("text/plain").expect("static codec content type must be valid"),
             fail_encode: true,
         });
-    let error = block_on(
-        failing_bus.publish(
-            PublishRequest::new(failing_topic, "cannot encode".to_owned())
-                .expect("test publish request must be valid"),
-        ),
-    )
+    let error = block_on(failing_bus.publish(
+        PublishRequest::new(failing_topic, "cannot encode".to_owned()).expect("test publish request must be valid"),
+    ))
     .expect_err("codec failure must be returned as a publish error");
-    assert!(matches!(
-        error.cause(),
-        PublishError::Codec(CodecError::Encode { .. })
-    ));
+    assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
     assert_eq!(failing_spi.attempts.load(Ordering::Acquire), 0);
-    let _ = block_on(failing_bus.shutdown(ShutdownMode::Immediate))
-        .expect("event bus shutdown must complete");
+    let _ = block_on(failing_bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
 }
 
 #[test]
@@ -842,24 +796,20 @@ fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_meta
         .build()
         .expect("test publish request must be valid");
 
-    let error =
-        block_on(bus.publish(request)).expect_err("terminal provider failure must be returned");
+    let error = block_on(bus.publish(request)).expect_err("terminal provider failure must be returned");
     assert!(
         matches!(error.cause(), PublishError::Retry(_)),
         "unexpected publish error: {error:?}"
     );
     assert_eq!(
-        *observed
-            .lock()
-            .expect("test state mutex must not be poisoned"),
+        *observed.lock().expect("test state mutex must not be poisoned"),
         Some((
             "preserved payload".to_owned(),
             "trace-async-1".to_owned(),
             "account-async-1".to_owned(),
         ))
     );
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
 }
 
 /// Provider double whose first receiver close fails and later attempts succeed.
@@ -876,10 +826,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         full_capabilities()
     }
 
-    fn publish<'a>(
-        &'a self,
-        _message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async {
             Ok(PublishAcknowledgement::Accepted {
                 provider_message_id: None,
@@ -907,10 +854,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -925,10 +869,7 @@ struct CloseFailingReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
-    fn receive<'a>(
-        &'a mut self,
-        _timeout: Duration,
-    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.receives.fetch_add(1, Ordering::AcqRel);
         Box::pin(CancellableReceive {
             dropped: self.receive_future_drops.clone(),
@@ -999,10 +940,7 @@ fn test_explicit_subscription_close_returns_a_single_close_failure() {
 
     block_on(async {
         let mut subscription = bus
-            .subscribe(
-                SubscribeRequest::new("single-close-failure", topic())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("single-close-failure", topic()).expect("valid subscriber ID"))
             .await
             .expect("async subscription must be created");
         let error = subscription
@@ -1067,10 +1005,7 @@ fn test_shutdown_aggregates_multiple_async_subscription_close_failures() {
         panic!("shutdown must aggregate all subscription close failures");
     };
     assert_eq!(errors.len(), 2);
-    let subscriber_ids: Vec<_> = errors
-        .iter()
-        .map(|failure| failure.subscriber_id().as_str())
-        .collect();
+    let subscriber_ids: Vec<_> = errors.iter().map(|failure| failure.subscriber_id().as_str()).collect();
     assert!(subscriber_ids.contains(&"close-failure-a"));
     assert!(subscriber_ids.contains(&"close-failure-b"));
 }
@@ -1095,9 +1030,7 @@ fn test_publish_and_subscribe_are_rejected_after_async_shutdown() {
             .expect_err("publish after shutdown must be rejected");
         assert!(matches!(publish_error.cause(), PublishError::Closed));
         let subscribe_result = bus
-            .subscribe(
-                SubscribeRequest::new("after-shutdown", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("after-shutdown", topic()).expect("valid subscriber ID"))
             .await;
         let subscribe_error = match subscribe_result {
             Ok(_) => panic!("subscribe after shutdown must be rejected"),
@@ -1170,10 +1103,8 @@ fn test_shutdown_cancels_pending_receive_before_closing_receiver() {
     )
     .expect("valid provider capabilities");
     let subscription =
-        block_on(bus.subscribe(
-            SubscribeRequest::new("cancel-receive", topic()).expect("valid subscriber ID"),
-        ))
-        .expect("async subscription must be created");
+        block_on(bus.subscribe(SubscribeRequest::new("cancel-receive", topic()).expect("valid subscriber ID")))
+            .expect("async subscription must be created");
     let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
     for _ in 0..100 {
         if spi.receives.load(Ordering::Acquire) != 0 {
@@ -1212,23 +1143,16 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
 
     let (active_subscription, mut idle_subscription) = block_on(async {
         let active = bus
-            .subscribe(
-                SubscribeRequest::new("active-during-close", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("active-during-close", topic()).expect("valid subscriber ID"))
             .await
             .expect("async subscription must be created");
         let idle = bus
-            .subscribe(
-                SubscribeRequest::new("idle-during-close", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("idle-during-close", topic()).expect("valid subscriber ID"))
             .await
             .expect("async subscription must be created");
         (active, idle)
     });
-    assert_eq!(
-        idle_subscription.subscriber_id().as_str(),
-        "idle-during-close"
-    );
+    assert_eq!(idle_subscription.subscriber_id().as_str(), "idle-during-close");
     assert!(idle_subscription.id().value() > 0);
     spi.enqueue(inbound_message(Some(SettlementToken::new(
         active_subscription.id(),
@@ -1249,8 +1173,7 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
                     if release.load(Ordering::Acquire) {
                         Poll::Ready(Ok(()))
                     } else {
-                        *waker.lock().expect("test state mutex must not be poisoned") =
-                            Some(cx.waker().clone());
+                        *waker.lock().expect("test state mutex must not be poisoned") = Some(cx.waker().clone());
                         Poll::Pending
                     }
                 })
@@ -1290,9 +1213,7 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
         waker.wake();
     }
     assert_eq!(
-        block_on(shutdown)
-            .expect("async shutdown must complete")
-            .outcome,
+        block_on(shutdown).expect("async shutdown must complete").outcome,
         ShutdownOutcome::Complete
     );
     runner
@@ -1315,10 +1236,9 @@ fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume(
     let release_handler = Arc::new(AtomicBool::new(false));
     let handler_waker = Arc::new(Mutex::new(None::<Waker>));
 
-    let subscription = block_on(bus.subscribe(
-        SubscribeRequest::new("graceful-timeout", topic()).expect("valid subscriber ID"),
-    ))
-    .expect("async subscription must be created");
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("graceful-timeout", topic()).expect("valid subscriber ID")))
+            .expect("async subscription must be created");
     spi.enqueue(inbound_message(Some(SettlementToken::new(
         subscription.id(),
         "graceful-timeout-event",
@@ -1337,8 +1257,7 @@ fn test_graceful_shutdown_timeout_is_reported_and_immediate_shutdown_can_resume(
                     if release.load(Ordering::Acquire) {
                         Poll::Ready(Ok(()))
                     } else {
-                        *waker.lock().expect("test state mutex must not be poisoned") =
-                            Some(cx.waker().clone());
+                        *waker.lock().expect("test state mutex must not be poisoned") = Some(cx.waker().clone());
                         Poll::Pending
                     }
                 })
@@ -1412,15 +1331,9 @@ impl AsyncEventBusSpi for DeadLetterCaptureSpi {
         )
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
-        let is_dead_letter = message
-            .headers()
-            .get(DEAD_LETTER_HEADER)
-            .map(|value| value.as_ref())
-            == Some(DEAD_LETTER_HEADER_VALUE);
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        let is_dead_letter =
+            message.headers().get(DEAD_LETTER_HEADER).map(|value| value.as_ref()) == Some(DEAD_LETTER_HEADER_VALUE);
         self.published
             .lock()
             .expect("test state mutex must not be poisoned")
@@ -1449,10 +1362,7 @@ impl AsyncEventBusSpi for DeadLetterCaptureSpi {
         })
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        _mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -1465,10 +1375,7 @@ struct DeadLetterCaptureReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
-    fn receive<'a>(
-        &'a mut self,
-        _timeout: Duration,
-    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         let messages = self.messages.clone();
         let receive_wakers = self.receive_wakers.clone();
         Box::pin(async move {
@@ -1480,9 +1387,7 @@ impl AsyncEventSubscriptionSpi for DeadLetterCaptureReceiver {
                 {
                     return Poll::Ready(Ok(ReceiveOutcome::Message(message)));
                 }
-                let mut wakers = receive_wakers
-                    .lock()
-                    .expect("test state mutex must not be poisoned");
+                let mut wakers = receive_wakers.lock().expect("test state mutex must not be poisoned");
                 if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
                     wakers.push(cx.waker().clone());
                 }
@@ -1517,8 +1422,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
     let options = SubscribeOptions::<u32>::builder()
         .error_handler(|_, _| FailureDirective::DeadLetter)
         .dead_letter(
-            DeadLetterPolicy::with_topic_name("async.dead")
-                .expect("configured dead-letter destination must be valid"),
+            DeadLetterPolicy::with_topic_name("async.dead").expect("configured dead-letter destination must be valid"),
         )
         .build();
 
@@ -1540,10 +1444,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             Headers::new(),
             None,
             TransportPayload::Native(Arc::new(9_u32)),
-            Some(SettlementToken::new(
-                subscription.id(),
-                "dead-letter-source-token",
-            )),
+            Some(SettlementToken::new(subscription.id(), "dead-letter-source-token")),
             Default::default(),
         ));
     for waker in std::mem::take(
@@ -1574,15 +1475,12 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         sleep(Duration::from_millis(10));
     }
     assert_eq!(
-        *spi.published
-            .lock()
-            .expect("test state mutex must not be poisoned"),
+        *spi.published.lock().expect("test state mutex must not be poisoned"),
         [("async.dead".to_owned(), true)],
         "dead-letter publication must use the configured topic and reserved marker"
     );
     assert_eq!(spi.settlements.load(Ordering::Acquire), 1);
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     runner
         .join()
         .expect("subscription runner thread must not panic")
@@ -1605,8 +1503,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         string_bus.subscribe(
             SubscribeRequest::new(
                 "dead-letter-string-source",
-                Topic::<String>::new("async.coverage.string")
-                    .expect("static test topic must be valid"),
+                Topic::<String>::new("async.coverage.string").expect("static test topic must be valid"),
             )
             .expect("valid subscriber ID")
             .with_options(string_options),
@@ -1618,8 +1515,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         .lock()
         .expect("test state mutex must not be poisoned")
         .push_back(InboundMessage::new(
-            TopicAddress::new("async.coverage.string")
-                .expect("static SPI topic address must be valid"),
+            TopicAddress::new("async.coverage.string").expect("static SPI topic address must be valid"),
             EventId::new("dead-letter-string-event").expect("static event ID must be valid"),
             std::time::SystemTime::UNIX_EPOCH,
             Headers::new(),
@@ -1665,8 +1561,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             .expect("test state mutex must not be poisoned"),
         [("async.dead.string".to_owned(), true)]
     );
-    let _ = block_on(string_bus.shutdown(ShutdownMode::Immediate))
-        .expect("event bus shutdown must complete");
+    let _ = block_on(string_bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     string_runner
         .join()
         .expect("subscription runner thread must not panic")
@@ -1702,8 +1597,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
         .lock()
         .expect("test state mutex must not be poisoned")
         .push_back(InboundMessage::new(
-            TopicAddress::new("async.coverage.non-clone")
-                .expect("static SPI topic address must be valid"),
+            TopicAddress::new("async.coverage.non-clone").expect("static SPI topic address must be valid"),
             EventId::new("dead-letter-non-clone-event").expect("static event ID must be valid"),
             std::time::SystemTime::UNIX_EPOCH,
             Headers::new(),
@@ -1749,8 +1643,7 @@ fn test_async_dead_letter_publish_uses_configured_destination_and_reserved_marke
             .expect("test state mutex must not be poisoned"),
         [("async.dead.non-clone".to_owned(), true)]
     );
-    let _ = block_on(non_clone_bus.shutdown(ShutdownMode::Immediate))
-        .expect("event bus shutdown must complete");
+    let _ = block_on(non_clone_bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     non_clone_runner
         .join()
         .expect("subscription runner thread must not panic")
@@ -1841,10 +1734,7 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
     let (calls, dispositions, failed) = run_case(true);
     assert_eq!(calls, 0, "a panicking filter must not invoke the handler");
     assert_eq!(dispositions, [DeliveryDisposition::Reject]);
-    assert!(
-        failed,
-        "filter panics are reported through delivery diagnostics"
-    );
+    assert!(failed, "filter panics are reported through delivery diagnostics");
 }
 
 #[test]
@@ -1893,8 +1783,7 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
     }
     assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     assert!(internal_failure.load(Ordering::Acquire));
-    let _ =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
     runner
         .join()
         .expect("subscription runner thread must not panic")

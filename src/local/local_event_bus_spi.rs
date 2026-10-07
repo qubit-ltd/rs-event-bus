@@ -111,19 +111,11 @@ impl EventBusSpi for LocalEventBusSpi {
     ///
     /// # Errors
     /// This implementation never returns a provider error.
-    fn wait_for_topic_idle(
-        &self,
-        topic: &TopicAddress,
-        timeout: Option<Duration>,
-    ) -> Result<Option<bool>, SpiError> {
+    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         let started = Instant::now();
         loop {
             let (version, queues) = {
-                let mut state = self
-                    .shared
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 let queues = state.live_queues_for_topic(topic);
                 (state.change_version, queues)
             };
@@ -135,30 +127,17 @@ impl EventBusSpi for LocalEventBusSpi {
                 return Ok(Some(true));
             }
             let Some(timeout) = timeout else {
-                let state = self
-                    .shared
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.change_version != version {
                     continue;
                 }
-                drop(
-                    self.shared
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(PoisonError::into_inner),
-                );
+                drop(self.shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner));
                 continue;
             };
             let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
                 return Ok(Some(false));
             };
-            let state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.change_version != version {
                 continue;
             }
@@ -210,35 +189,18 @@ impl EventBusSpi for LocalEventBusSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let topic = message.topic().clone();
         validate_message(&message, &topic)?;
-        let mut event = LocalEvent::transport(topic.clone(), &message).ok_or_else(|| {
-            operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow")
-        })?;
+        let mut event = LocalEvent::transport(topic.clone(), &message)
+            .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
         let payload_type_id = native_payload_type_id(message.payload());
         let queues = {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.closed {
-                return Err(operation_error(
-                    "publish",
-                    Some(topic.as_str()),
-                    "provider_closed",
-                ));
+                return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
             }
             let queues = state.live_queues_for_topic(&topic);
             let bucket = state.topics.get(&topic);
-            if bucket.is_some_and(|bucket| {
-                bucket
-                    .payload_type_id
-                    .is_some_and(|type_id| type_id != payload_type_id)
-            }) {
-                return Err(operation_error(
-                    "publish",
-                    Some(topic.as_str()),
-                    "topic_type_conflict",
-                ));
+            if bucket.is_some_and(|bucket| bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)) {
+                return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
             }
             queues
         };
@@ -273,11 +235,7 @@ impl EventBusSpi for LocalEventBusSpi {
             if wake_async {
                 queue.async_ready.notify_all();
             }
-            admissions.push(DestinationAdmission::new(
-                queue.id,
-                queue.subscriber_id.clone(),
-                status,
-            ));
+            admissions.push(DestinationAdmission::new(queue.id, queue.subscriber_id.clone(), status));
         }
         if admitted_any {
             signal_changed(&self.shared);
@@ -299,10 +257,7 @@ impl EventBusSpi for LocalEventBusSpi {
     /// Returns an operation error for a closed provider, unsupported
     /// durability, group or start position, a topic type conflict, or a
     /// duplicate live ID.
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         let id = request.subscription_id();
         let queue = Arc::new(LocalQueue {
             id,
@@ -313,11 +268,7 @@ impl EventBusSpi for LocalEventBusSpi {
             ready: Default::default(),
             async_ready: Default::default(),
         });
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.closed {
             return Err(operation_error(
                 "subscribe",
@@ -370,10 +321,7 @@ impl EventBusSpi for LocalEventBusSpi {
         state.subscription_ids.insert(id);
         drop(state);
         drop(live_queues);
-        Ok(Box::new(LocalEventSubscription::new(
-            self.shared.clone(),
-            queue,
-        )))
+        Ok(Box::new(LocalEventSubscription::new(self.shared.clone(), queue)))
     }
 
     /// Closes admission and discards remaining queues after the drain period.
@@ -394,11 +342,7 @@ impl EventBusSpi for LocalEventBusSpi {
     /// # Errors
     /// This implementation does not return an SPI error.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        let _gate = self
-            .shared
-            .shutdown_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(outcome) = self
             .shared
             .state
@@ -408,11 +352,7 @@ impl EventBusSpi for LocalEventBusSpi {
         {
             return Ok(outcome);
         }
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .closed = true;
+        self.shared.state.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
         signal_changed(&self.shared);
 
         let outcome = match mode {
@@ -421,11 +361,7 @@ impl EventBusSpi for LocalEventBusSpi {
                 let started = Instant::now();
                 loop {
                     let (version, queues) = {
-                        let mut state = self
-                            .shared
-                            .state
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner);
+                        let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                         let version = state.change_version;
                         let queues = state.live_queues();
                         (version, queues)
@@ -440,11 +376,7 @@ impl EventBusSpi for LocalEventBusSpi {
                     let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
                         break ShutdownOutcome::TimedOut;
                     };
-                    let state = self
-                        .shared
-                        .state
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                     if state.change_version != version {
                         continue;
                     }
@@ -461,11 +393,7 @@ impl EventBusSpi for LocalEventBusSpi {
         };
 
         let queues = {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.live_queues()
         };
         for queue in queues {
@@ -539,11 +467,7 @@ fn native_payload_type_id(payload: &TransportPayload) -> TypeId {
 ///
 /// # Returns
 /// A non-retryable operation error tagged with provider ID `local`.
-pub(super) fn operation_error(
-    operation: &'static str,
-    resource: Option<&str>,
-    kind: &'static str,
-) -> SpiError {
+pub(super) fn operation_error(operation: &'static str, resource: Option<&str>, kind: &'static str) -> SpiError {
     SpiError::Operation {
         provider_id: "local".into(),
         operation,

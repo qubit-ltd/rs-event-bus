@@ -82,10 +82,8 @@ impl<T: 'static> Drop for AsyncSession<T> {
     /// dropped.
     fn drop(&mut self) {
         self.inner.scheduler.stop_subscription(self.id);
-        let abandoned = self.buffered.len()
-            + self.tasks.len()
-            + self.completed.len()
-            + self.completed_during_settlement.len();
+        let abandoned =
+            self.buffered.len() + self.tasks.len() + self.completed.len() + self.completed_during_settlement.len();
         if self.inner.capabilities.durability() == DurabilityCapability::Ephemeral {
             self.inner
                 .abandoned_deliveries

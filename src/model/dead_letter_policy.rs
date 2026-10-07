@@ -139,10 +139,7 @@ impl DeadLetterPolicy {
     /// Returns [`ConfigurationError::InvalidField`] with field `dead_letter`
     /// when `topic_name` is blank, has surrounding whitespace, or contains a
     /// control character.
-    pub fn with_admission(
-        topic_name: &str,
-        admission: DeadLetterAdmissionPolicy,
-    ) -> Result<Self, ConfigurationError> {
+    pub fn with_admission(topic_name: &str, admission: DeadLetterAdmissionPolicy) -> Result<Self, ConfigurationError> {
         if !is_nonblank_without_controls(topic_name) {
             return Err(ConfigurationError::InvalidField {
                 field: "dead_letter",

@@ -32,9 +32,7 @@ fn test_subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
     subscription.cancel().expect("first cancel joins worker");
     assert!(subscription.is_cancelled());
     assert_eq!(object_id, subscription.id());
-    subscription
-        .cancel()
-        .expect("repeated cancel remains idempotent");
+    subscription.cancel().expect("repeated cancel remains idempotent");
     let _ = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("bus shuts down after explicit cancellation");

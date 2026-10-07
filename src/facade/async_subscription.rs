@@ -51,8 +51,7 @@ pub(super) use internal::is_current_bus_poll;
 ///
 /// # Type Parameters
 /// - `T`: payload type accepted by the handler.
-type AsyncHandler<T> =
-    dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
+type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
 /// Shared owner of a subscriber handler callback.
 ///
 /// # Type Parameters
@@ -268,9 +267,12 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Panics if the session lease invariant is violated internally.
     pub async fn close(&mut self) -> Result<(), LifecycleError> {
         self.control.mark_stopped();
-        if self.control.bus.upgrade().is_none_or(|inner| {
-            *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running
-        }) {
+        if self
+            .control
+            .bus
+            .upgrade()
+            .is_none_or(|inner| *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running)
+        {
             return Ok(());
         }
         self.control.signals.stop(ShutdownMode::Immediate);

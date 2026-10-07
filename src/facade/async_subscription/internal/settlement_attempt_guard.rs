@@ -52,9 +52,7 @@ impl Drop for SettlementAttemptGuard<'_> {
         });
         match self.progress.elapsed(self.timer.as_ref()) {
             Ok(elapsed) => {
-                if let SettlementRetryDecision::RetryAfter(delay) =
-                    self.progress.retry.after_error(&error, elapsed)
-                {
+                if let SettlementRetryDecision::RetryAfter(delay) = self.progress.retry.after_error(&error, elapsed) {
                     self.progress.due = elapsed.saturating_add(delay);
                 }
             }

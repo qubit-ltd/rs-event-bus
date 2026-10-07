@@ -14,9 +14,7 @@ use crate::model::Topic;
 
 #[test]
 fn test_request_identity_and_manual_ack_policy_remain_together() {
-    let options = SubscribeOptions::<u64>::builder()
-        .ack_mode(AckMode::Manual)
-        .build();
+    let options = SubscribeOptions::<u64>::builder().ack_mode(AckMode::Manual).build();
     let request = SubscribeRequest::new(
         "internal-model-reader",
         Topic::<u64>::new("model.internal.subscribe").expect("valid topic"),

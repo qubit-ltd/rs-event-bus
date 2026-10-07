@@ -39,19 +39,12 @@ fn test_event_bus_error_configuration_conversion_retains_field() {
 
 #[test]
 fn test_event_bus_error_capability_conversion_retains_capability_name() {
-    let error = EventBusError::from(CapabilityError::Unsupported {
-        capability: "ordering",
-    });
+    let error = EventBusError::from(CapabilityError::Unsupported { capability: "ordering" });
 
-    assert_eq!(
-        error.to_string(),
-        "unsupported event bus capability: ordering"
-    );
+    assert_eq!(error.to_string(), "unsupported event bus capability: ordering");
     assert!(matches!(
         &error,
-        EventBusError::Capability(CapabilityError::Unsupported {
-            capability: "ordering"
-        })
+        EventBusError::Capability(CapabilityError::Unsupported { capability: "ordering" })
     ));
     assert!(Error::source(&error).is_none());
 }
@@ -60,14 +53,8 @@ fn test_event_bus_error_capability_conversion_retains_capability_name() {
 fn test_event_bus_error_codec_conversion_retains_codec_source() {
     let error = EventBusError::from(CodecError::NativeTypeMismatch);
 
-    assert_eq!(
-        error.to_string(),
-        "native payload type does not match subscribed topic"
-    );
-    assert!(matches!(
-        &error,
-        EventBusError::Codec(CodecError::NativeTypeMismatch)
-    ));
+    assert_eq!(error.to_string(), "native payload type does not match subscribed topic");
+    assert!(matches!(&error, EventBusError::Codec(CodecError::NativeTypeMismatch)));
     assert!(Error::source(&error).is_none());
 }
 
@@ -76,10 +63,7 @@ fn test_event_bus_error_publish_conversion_retains_pipeline_error() {
     let error = EventBusError::from(PublishError::Closed);
 
     assert_eq!(error.to_string(), "cannot publish after event bus shutdown");
-    assert!(matches!(
-        &error,
-        EventBusError::Publish(PublishError::Closed)
-    ));
+    assert!(matches!(&error, EventBusError::Publish(PublishError::Closed)));
     assert!(Error::source(&error).is_none());
 }
 
@@ -108,14 +92,8 @@ fn test_event_bus_error_publish_failure_conversion_retains_identity_and_cause() 
 fn test_event_bus_error_subscribe_conversion_retains_closed_state() {
     let error = EventBusError::from(SubscribeError::Closed);
 
-    assert_eq!(
-        error.to_string(),
-        "cannot subscribe after event bus shutdown"
-    );
-    assert!(matches!(
-        &error,
-        EventBusError::Subscribe(SubscribeError::Closed)
-    ));
+    assert_eq!(error.to_string(), "cannot subscribe after event bus shutdown");
+    assert!(matches!(&error, EventBusError::Subscribe(SubscribeError::Closed)));
     assert!(Error::source(&error).is_none());
 }
 
@@ -124,10 +102,7 @@ fn test_event_bus_error_receive_conversion_retains_closed_state() {
     let error = EventBusError::from(ReceiveError::Closed);
 
     assert_eq!(error.to_string(), "cannot receive after subscription close");
-    assert!(matches!(
-        &error,
-        EventBusError::Receive(ReceiveError::Closed)
-    ));
+    assert!(matches!(&error, EventBusError::Receive(ReceiveError::Closed)));
     assert!(Error::source(&error).is_none());
 }
 
@@ -138,18 +113,12 @@ fn test_event_bus_error_delivery_conversion_retains_handler_cause() {
     };
     let error = EventBusError::from(delivery);
 
-    assert_eq!(
-        error.to_string(),
-        "event handler failed: handler rejected event"
-    );
+    assert_eq!(error.to_string(), "event handler failed: handler rejected event");
     assert_eq!(
         Error::source(&error).map(ToString::to_string).as_deref(),
         Some("handler rejected event")
     );
-    assert!(matches!(
-        &error,
-        EventBusError::Delivery(DeliveryError::Handler { .. })
-    ));
+    assert!(matches!(&error, EventBusError::Delivery(DeliveryError::Handler { .. })));
 }
 
 #[test]
@@ -169,10 +138,7 @@ fn test_event_bus_error_lifecycle_conversion_retains_closed_state() {
     let error = EventBusError::from(LifecycleError::Closed);
 
     assert_eq!(error.to_string(), "event bus is closed");
-    assert!(matches!(
-        &error,
-        EventBusError::Lifecycle(LifecycleError::Closed)
-    ));
+    assert!(matches!(&error, EventBusError::Lifecycle(LifecycleError::Closed)));
     assert!(Error::source(&error).is_none());
 }
 

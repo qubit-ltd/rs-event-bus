@@ -50,8 +50,7 @@ pub(in crate::facade) struct AsyncSubscriptionControl<T: 'static> {
     /// Wakes callers waiting for the session lease.
     pub(in crate::facade::async_subscription) available: AsyncSignal,
     /// Canonical provider receiver close failure.
-    pub(in crate::facade::async_subscription) close_error:
-        Mutex<Option<Arc<SubscriptionCloseFailure>>>,
+    pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
     /// Weak owner used to unregister this control from the bus.
     pub(in crate::facade::async_subscription) bus: Weak<AsyncEventBusInner>,
     /// Final cumulative counters retained after receiver cleanup.
@@ -172,9 +171,7 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// without age.
     #[must_use = "delivery metrics are the current subscription diagnostics"]
     #[inline]
-    pub(in crate::facade::async_subscription) fn delivery_metrics(
-        &self,
-    ) -> DeliveryMetricsSnapshot {
+    pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
         let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
             let input = bus.scheduler.snapshot_input(Some(self.id));
             let now = bus.timer.clock().now();
@@ -190,10 +187,7 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
                         retryable: Some(false),
                         source: Box::new(error),
                     });
-                    if self
-                        .signals
-                        .fail_receive(SubscriptionStopReason::Provider { error })
-                    {
+                    if self.signals.fail_receive(SubscriptionStopReason::Provider { error }) {
                         self.mark_stopped();
                         bus.emit(&Diagnostic::InternalFailure {
                             origin: "delivery_metrics_clock".into(),
@@ -218,11 +212,7 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
         let session = {
             let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
             slot.disposed = true;
-            if slot.active {
-                None
-            } else {
-                slot.session.take()
-            }
+            if slot.active { None } else { slot.session.take() }
         };
         if let Some(bus) = self.bus.upgrade() {
             bus.controls
@@ -250,9 +240,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// True only when this call publishes the first terminal cause.
     #[inline]
     fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
-        let published = self
-            .signals
-            .fail_receive(SubscriptionStopReason::Provider { error });
+        let published = self.signals.fail_receive(SubscriptionStopReason::Provider { error });
         self.mark_stopped();
         published
     }
@@ -272,10 +260,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// The stored close failure, or `None` before a close failure occurs.
     #[inline]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>> {
-        self.close_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.close_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Stores the first close failure for later shutdown callers.
@@ -285,14 +270,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The first stored failure.
-    fn store_close_error(
-        &self,
-        failure: Arc<SubscriptionCloseFailure>,
-    ) -> Arc<SubscriptionCloseFailure> {
-        let mut stored = self
-            .close_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure> {
+        let mut stored = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
         stored.get_or_insert(failure).clone()
     }
 

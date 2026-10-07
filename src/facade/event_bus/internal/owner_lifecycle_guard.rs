@@ -36,10 +36,7 @@ impl OwnerLifecycleGuard {
     /// # Returns
     /// A guard dropped after the owner's delivery map.
     #[inline]
-    pub(in crate::facade) fn new(
-        inner: Arc<EventBusInner>,
-        control: Arc<SubscriptionControl>,
-    ) -> Self {
+    pub(in crate::facade) fn new(inner: Arc<EventBusInner>, control: Arc<SubscriptionControl>) -> Self {
         Self { inner, control }
     }
 }
@@ -59,11 +56,7 @@ impl Drop for OwnerLifecycleGuard {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.control.id);
-        let mut lifecycle = self
-            .inner
-            .lifecycle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut lifecycle = self.inner.lifecycle.lock().unwrap_or_else(PoisonError::into_inner);
         if *lifecycle == LifecycleState::Closing
             && self.inner.tracker.workers_are_idle()
             && self
@@ -79,10 +72,8 @@ impl Drop for OwnerLifecycleGuard {
         drop(lifecycle);
         self.control.mark_finished();
         if cleanup.is_err() {
-            self.inner.emit_internal(
-                "owner_cleanup",
-                "scheduler registration cleanup panicked".into(),
-            );
+            self.inner
+                .emit_internal("owner_cleanup", "scheduler registration cleanup panicked".into());
         }
     }
 }

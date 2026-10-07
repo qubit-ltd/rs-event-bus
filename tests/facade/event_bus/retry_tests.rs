@@ -54,9 +54,7 @@ fn sample() -> io::Result<Duration> {
         .with_facade_config(facade);
     let bus = registry.create(&config).map_err(io::Error::other)?;
     let result = run_sample(&bus);
-    let shutdown_result = bus
-        .shutdown(ShutdownMode::Immediate)
-        .map_err(io::Error::other);
+    let shutdown_result = bus.shutdown(ShutdownMode::Immediate).map_err(io::Error::other);
     match (result, shutdown_result) {
         (Ok(wait), Ok(_)) => Ok(wait),
         (Err(error), _) => Err(error),
@@ -78,12 +76,10 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
         .build();
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}"))
-            .map_err(io::Error::other)?;
-        let request =
-            SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
-                .map_err(io::Error::other)?
-                .with_options(retry_options.clone());
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
+        let request = SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
+            .map_err(io::Error::other)?
+            .with_options(retry_options.clone());
         let barrier = barrier.clone();
         let first_attempt = Arc::new(AtomicBool::new(true));
         let _ = bus
@@ -101,29 +97,21 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     }
 
     let (started_tx, started_rx) = mpsc::channel();
-    let independent_topic =
-        Topic::<u8>::new("retry-saturation.independent").map_err(io::Error::other)?;
+    let independent_topic = Topic::<u8>::new("retry-saturation.independent").map_err(io::Error::other)?;
     let independent_request =
-        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone())
-            .map_err(io::Error::other)?;
+        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone()).map_err(io::Error::other)?;
     let _ = bus
         .subscribe(independent_request, move |_| {
-            started_tx
-                .send(Instant::now())
-                .map_err(|error| DeliveryError::Handler {
-                    source: Box::new(io::Error::other(error.to_string())),
-                })
+            started_tx.send(Instant::now()).map_err(|error| DeliveryError::Handler {
+                source: Box::new(io::Error::other(error.to_string())),
+            })
         })
         .map_err(io::Error::other)?;
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}"))
-            .map_err(io::Error::other)?;
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
         let _ = bus
-            .publish(
-                qubit_event_bus::model::PublishRequest::new(topic, index as u8)
-                    .map_err(io::Error::other)?,
-            )
+            .publish(qubit_event_bus::model::PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
     }
 
@@ -131,24 +119,16 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     thread::sleep(PUBLISH_OFFSET);
     let publish_started = Instant::now();
     let _ = bus
-        .publish(
-            qubit_event_bus::model::PublishRequest::new(independent_topic, 0)
-                .map_err(io::Error::other)?,
-        )
+        .publish(qubit_event_bus::model::PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
-    let handler_started = started_rx
-        .recv_timeout(SAMPLE_TIMEOUT)
-        .map_err(io::Error::other)?;
+    let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(io::Error::other)?;
     Ok(handler_started.duration_since(publish_started))
 }
 
 #[test]
 fn test_retry_backoff_releases_four_handler_slots() {
     let wait = sample().expect("saturation sample completes");
-    assert!(
-        wait < Duration::from_millis(200),
-        "independent handler waited {wait:?}"
-    );
+    assert!(wait < Duration::from_millis(200), "independent handler waited {wait:?}");
 }
 
 use std::sync::Mutex;
@@ -205,10 +185,7 @@ impl EventBusSpi for TrackedSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.delegate.publish(message)
     }
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(TrackedSubscription {
             delegate: self.delegate.subscribe(request)?,
             log: self.log.clone(),
@@ -226,26 +203,17 @@ impl EventSubscriptionSpi for TrackedSubscription {
         assert_eq!(owner, thread::current().id());
         self.delegate.receive(timeout)
     }
-    fn settle(
-        &mut self,
-        token: &SettlementToken,
-        disposition: DeliveryDisposition,
-    ) -> Result<(), SpiError> {
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         assert_eq!(
             self.owner,
             Some(thread::current().id()),
             "only the receiving owner settles"
         );
         self.log.calls.lock().expect("token log").push((
-            token
-                .downcast_ref::<String>()
-                .expect("fake token identity")
-                .clone(),
+            token.downcast_ref::<String>().expect("fake token identity").clone(),
             disposition,
         ));
-        if self.log.fail_permanently.load(Ordering::Acquire)
-            || self.log.fail_once.swap(false, Ordering::AcqRel)
-        {
+        if self.log.fail_permanently.load(Ordering::Acquire) || self.log.fail_once.swap(false, Ordering::AcqRel) {
             return Err(SpiError::Operation {
                 provider_id: "retry-test".into(),
                 operation: "settle",
@@ -273,8 +241,7 @@ fn tracked_bus() -> (EventBus, Arc<TokenLog>) {
         log: log.clone(),
     });
     (
-        EventBus::from_spi(ProviderId::new("retry-test").expect("provider ID"), spi)
-            .expect("fake bus"),
+        EventBus::from_spi(ProviderId::new("retry-test").expect("provider ID"), spi).expect("fake bus"),
         log,
     )
 }
@@ -374,10 +341,7 @@ fn test_retry_same_key_waits_for_final_settlement_and_reuses_token() {
             timeout: Duration::from_secs(2),
         })
         .expect("shutdown");
-    assert_eq!(
-        *observed.lock().expect("observations"),
-        vec![(1, 1), (1, 2), (2, 1)]
-    );
+    assert_eq!(*observed.lock().expect("observations"), vec![(1, 1), (1, 2), (2, 1)]);
     let calls = log.calls.lock().expect("token calls");
     assert_eq!(calls.len(), 3);
     assert_eq!(
@@ -519,12 +483,10 @@ fn terminal_retry(panic_handler: bool, panic_rule: bool, decision: RetryDecision
                 .build()
                 .expect("policy"),
         )
-        .retry_rule(
-            move |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| {
-                assert!(!panic_rule, "rule panic");
-                decision
-            },
-        )
+        .retry_rule(move |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| {
+            assert!(!panic_rule, "rule panic");
+            decision
+        })
         .error_handler(move |_, _| {
             error_calls.fetch_add(1, Ordering::AcqRel);
             FailureDirective::Retry
@@ -543,8 +505,7 @@ fn terminal_retry(panic_handler: bool, panic_rule: bool, decision: RetryDecision
         .expect("subscription");
     publish_key(&bus, &topic, 1);
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(2))
-            .expect("failure diagnostic"),
+        rx.recv_timeout(Duration::from_secs(2)).expect("failure diagnostic"),
         attempts
     );
     wait_for(|| log.settled.load(Ordering::Acquire) == 1);
@@ -605,9 +566,7 @@ fn test_retry_immediate_shutdown_retains_running_slot_until_job_exit() {
     started_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("handler started");
-    let ticket = bus
-        .request_shutdown(ShutdownMode::Immediate)
-        .expect("shutdown request");
+    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("shutdown request");
     assert_eq!(
         bus.delivery_metrics().running_handlers,
         1,
@@ -617,18 +576,13 @@ fn test_retry_immediate_shutdown_retains_running_slot_until_job_exit() {
     wait_for(|| bus.delivery_metrics().reserved_receives == 0);
     thread::sleep(Duration::from_millis(80));
     release_tx.send(()).expect("release job");
-    let _ = ticket
-        .wait(Some(Duration::from_secs(3)))
-        .expect("shutdown completes");
+    let _ = ticket.wait(Some(Duration::from_secs(3))).expect("shutdown completes");
     assert_eq!(
         log.settled.load(Ordering::Acquire),
         1,
         "failed running attempt is requeued once on stop"
     );
-    assert_eq!(
-        log.calls.lock().expect("token calls")[0].1,
-        DeliveryDisposition::Retry
-    );
+    assert_eq!(log.calls.lock().expect("token calls")[0].1, DeliveryDisposition::Retry);
     assert_idle(&bus);
 }
 

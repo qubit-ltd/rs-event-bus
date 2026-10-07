@@ -50,16 +50,11 @@ fn test_builder_keeps_retry_policy_cancellation_and_duplicate_risk_settings() {
                 .build()
                 .expect("retry policy should be valid"),
         )
-        .retry_rule(
-            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
-        )
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
         .retry_cancellation_token(cancellation.clone())
         .build();
 
-    assert_eq!(
-        options.duplicate_risk_policy(),
-        DuplicateRiskPolicy::AllowDuplicates
-    );
+    assert_eq!(options.duplicate_risk_policy(), DuplicateRiskPolicy::AllowDuplicates);
     assert!(options.retry_policy().is_some());
     assert!(options.retry_rule().is_some());
     assert!(options.retry_cancellation_token().is_some());
@@ -133,20 +128,12 @@ fn test_builder_preserves_interceptor_drop_and_error_results() {
 /// Options clones retain the same typed weight callback allocation.
 #[test]
 fn test_native_payload_weight_default_and_shared_clone() {
-    assert!(
-        PublishOptions::<String>::new()
-            .native_payload_weight()
-            .is_none()
-    );
+    assert!(PublishOptions::<String>::new().native_payload_weight().is_none());
     let options = PublishOptions::<String>::builder()
-        .native_payload_weight(|payload| {
-            NonZeroUsize::new(payload.len()).expect("nonempty test payload")
-        })
+        .native_payload_weight(|payload| NonZeroUsize::new(payload.len()).expect("nonempty test payload"))
         .build();
     let cloned = options.clone();
-    let weight = options
-        .native_payload_weight()
-        .expect("configured callback");
+    let weight = options.native_payload_weight().expect("configured callback");
     assert!(Arc::ptr_eq(
         weight,
         cloned.native_payload_weight().expect("cloned callback")

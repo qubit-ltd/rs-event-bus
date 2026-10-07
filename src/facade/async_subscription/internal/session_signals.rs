@@ -70,10 +70,7 @@ impl SessionSignals {
     #[must_use = "Use the returned query result."]
     pub(in crate::facade) fn stopping_gracefully(&self) -> bool {
         matches!(
-            *self
-                .stop_mode
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
+            *self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner),
             Some(ShutdownMode::Graceful { .. })
         )
     }
@@ -128,14 +125,8 @@ impl SessionSignals {
     /// Records the strongest requested mode, marks the session stopped, and
     /// wakes waiters.
     pub(in crate::facade) fn stop(&self, mode: ShutdownMode) {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut stop_mode = self
-            .stop_mode
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut stop_mode = self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner);
         if !matches!(*stop_mode, Some(ShutdownMode::Immediate)) || mode == ShutdownMode::Immediate {
             *stop_mode = Some(mode);
         }
@@ -151,23 +142,14 @@ impl SessionSignals {
     /// `true` if this call records the first cause; otherwise, `false`.
     #[must_use]
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut stored = self
-            .terminal_failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
         let first = stored.is_none();
         if first {
             *stored = Some(Arc::new(reason));
         }
         drop(stored);
-        *self
-            .stop_mode
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(ShutdownMode::Immediate);
+        *self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner) = Some(ShutdownMode::Immediate);
         self.stopped.store(true, Ordering::Release);
         self.signal.notify();
         first
@@ -185,10 +167,7 @@ impl SessionSignals {
     /// Stores a terminal receive error, requests an immediate stop, and wakes
     /// waiters.
     pub(in crate::facade) fn fail_dead_letter_forward(&self, event_id: EventId, message: Box<str>) {
-        *self
-            .terminal_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) =
+        *self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(ReceiveError::DeadLetterForwardFailed { event_id, message });
         self.stop(ShutdownMode::Immediate);
     }
@@ -208,10 +187,7 @@ impl SessionSignals {
     /// Sets `started` to `true` when the start is admitted.
     #[must_use]
     pub(in crate::facade) fn mark_started(&self, started: &AtomicBool) -> bool {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stopped.load(Ordering::Acquire) && !self.stopping_gracefully() {
             return false;
         }
@@ -229,10 +205,7 @@ impl SessionSignals {
     /// retries.
     #[must_use = "Only admitted handler invocations may enter user code."]
     pub(in crate::facade::async_subscription) fn admit_handler(&self) -> bool {
-        let _start_gate = self
-            .start_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         !self.stopped.load(Ordering::Acquire) || self.stopping_gracefully()
     }
 }

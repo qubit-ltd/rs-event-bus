@@ -30,9 +30,7 @@ fn test_caller_supplied_event_identity_survives_pipeline_failure() {
         .build()
         .expect("caller request must be valid");
     let options = PublishOptions::<String>::builder()
-        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> {
-            panic!("interceptor failed")
-        })
+        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> { panic!("interceptor failed") })
         .build();
     let request = request.with_options(options);
 
@@ -41,9 +39,6 @@ fn test_caller_supplied_event_identity_survives_pipeline_failure() {
         .expect_err("interceptor panic must fail publication");
 
     assert_eq!(failure.event_id(), &event_id);
-    assert!(matches!(
-        failure.cause(),
-        PublishError::InterceptorPanicked { .. }
-    ));
+    assert!(matches!(failure.cause(), PublishError::InterceptorPanicked { .. }));
     let _ = bus.shutdown(ShutdownMode::Immediate);
 }

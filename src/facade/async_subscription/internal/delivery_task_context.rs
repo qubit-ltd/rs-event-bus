@@ -83,10 +83,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// delivery. Every actual handler factory has its own stop admission gate;
     /// denied invocations return ownership without synthesizing an application
     /// result, settlement intent, error callback, or dead-letter publication.
-    pub(in crate::facade::async_subscription) async fn process_pending(
-        &mut self,
-        handler: SharedAsyncHandler<T>,
-    ) {
+    pub(in crate::facade::async_subscription) async fn process_pending(&mut self, handler: SharedAsyncHandler<T>) {
         let Some(pending) = self.pending.as_ref() else {
             return;
         };
@@ -115,24 +112,14 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             }
             match filtered {
                 Ok(false) => {
-                    self.settle_pending(DeliveryDisposition::Accept, Some(&event))
-                        .await;
+                    self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await;
                     return;
                 }
                 Ok(true) => {}
                 Err(_) => {
-                    let can_settle = self
-                        .pending
-                        .as_ref()
-                        .is_some_and(|pending| pending.token.is_some());
-                    let metadata = self
-                        .pending
-                        .as_ref()
-                        .expect("pending delivery exists")
-                        .metadata
-                        .clone();
-                    let delivery =
-                        Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
+                    let can_settle = self.pending.as_ref().is_some_and(|pending| pending.token.is_some());
+                    let metadata = self.pending.as_ref().expect("pending delivery exists").metadata.clone();
+                    let delivery = Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
                     let error = DeliveryError::Handler {
                         source: Box::new(Error::other("subscriber filter panicked")),
                     };
@@ -152,20 +139,13 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let context = self.context(pending.token.is_some(), pending.metadata.clone(), &event);
         let delivery = Delivery::new(event.clone(), context);
         let bus_key = Arc::as_ptr(&self.inner) as usize;
-        let global_interceptors = self
-            .inner
-            .facade_config
-            .async_subscriber_interceptors::<T>();
+        let global_interceptors = self.inner.facade_config.async_subscriber_interceptors::<T>();
         let denied = Arc::new(AtomicBool::new(false));
         let rejected = denied.clone();
         let signals = self.signals.clone();
         let cancellation = self.options.retry_cancellation_token().cloned();
         let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| {
-            if cancellation
-                .as_ref()
-                .is_some_and(|token| token.is_cancelled())
-                || !signals.admit_handler()
-            {
+            if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
                 rejected.store(true, Ordering::Release);
                 // The owner observes denial in this same poll and drops the chain.
                 // No synthetic success or failure reaches middleware or failure policy.
@@ -195,14 +175,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             return;
         };
         match outcome {
-            Ok(_) => {
-                self.settle_pending(DeliveryDisposition::Accept, Some(&event))
-                    .await
-            }
-            Err((error, attempts, directive)) => {
-                self.finish_failure(delivery, *error, attempts, directive)
-                    .await
-            }
+            Ok(_) => self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await,
+            Err((error, attempts, directive)) => self.finish_failure(delivery, *error, attempts, directive).await,
         }
     }
 
@@ -225,18 +199,10 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         metadata: ProviderMessageMetadata,
         event: &EventEnvelope<T>,
     ) -> DeliveryContext {
-        let context = DeliveryContext::new(
-            self.inner.provider_id.clone(),
-            self.id,
-            self.subscriber_id.clone(),
-        )
-        .with_provider_metadata(metadata)
-        .with_settlement(can_settle);
-        let context = if let Some(attempt) = self
-            .pending
-            .as_ref()
-            .and_then(|pending| pending.provider_attempt)
-        {
+        let context = DeliveryContext::new(self.inner.provider_id.clone(), self.id, self.subscriber_id.clone())
+            .with_provider_metadata(metadata)
+            .with_settlement(can_settle);
+        let context = if let Some(attempt) = self.pending.as_ref().and_then(|pending| pending.provider_attempt) {
             context.with_provider_attempt(attempt.get())
         } else {
             context
@@ -271,9 +237,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         self.record_failure_diagnostic(attempts, error.to_string().into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) =
-                    dead_letter_envelope(&delivery, &error, policy.topic_name())
-                {
+                if let Ok(Some(envelope)) = dead_letter_envelope(&delivery, &error, policy.topic_name()) {
                     match publish_dead_letter_async(
                         &self.inner,
                         &envelope,
@@ -284,10 +248,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     .await
                     {
                         Ok(receipt) => {
-                            if matches!(
-                                receipt.admission_outcome(),
-                                AdmissionOutcome::PartiallyAccepted(_)
-                            ) {
+                            if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
                                 self.inner.emit(&Diagnostic::InternalFailure {
                                     origin: "dead_letter_partial".into(),
                                     message: "dead-letter publication was partially accepted; it was not republished"
@@ -300,10 +261,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                                 origin: "dead_letter_publish".into(),
                                 message: message.clone().into(),
                             });
-                            self.signals.fail_dead_letter_forward(
-                                delivery.event().id().clone(),
-                                message.into(),
-                            );
+                            self.signals
+                                .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
                             return;
                         }
                     }
@@ -335,8 +294,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             }
         };
         if let Some(disposition) = disposition {
-            self.settle_pending(disposition, Some(delivery.event()))
-                .await;
+            self.settle_pending(disposition, Some(delivery.event())).await;
         }
     }
 
@@ -353,11 +311,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// Updates the pending delivery's settlement intent when a delivery is
     /// pending.
     #[inline]
-    async fn settle_pending(
-        &mut self,
-        disposition: DeliveryDisposition,
-        _event: Option<&EventEnvelope<T>>,
-    ) {
+    async fn settle_pending(&mut self, disposition: DeliveryDisposition, _event: Option<&EventEnvelope<T>>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.settlement_intent = Some(disposition);
         }

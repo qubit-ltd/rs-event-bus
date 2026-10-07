@@ -133,10 +133,7 @@ mod spawn_failure_tests {
             unreachable!("spawn cleanup does not publish")
         }
 
-        fn subscribe(
-            &self,
-            _: SpiSubscriptionRequest,
-        ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
             unreachable!("spawn cleanup uses a directly constructed receiver")
         }
 
@@ -213,10 +210,7 @@ mod spawn_failure_tests {
             unreachable!("spawn failure test does not publish")
         }
 
-        fn subscribe(
-            &self,
-            _: SpiSubscriptionRequest,
-        ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
             Ok(Box::new(CloseCounter {
                 calls: self.close_calls.clone(),
                 fail: true,
@@ -262,10 +256,7 @@ mod spawn_failure_tests {
         assert!(matches!(error, SubscribeError::Spi(_)));
         assert_eq!(close_calls.load(Ordering::Acquire), 1);
         let source = Error::source(&error).expect("spawn source retained");
-        assert_eq!(
-            source.to_string(),
-            "synthetic scheduler worker spawn failure"
-        );
+        assert_eq!(source.to_string(), "synthetic scheduler worker spawn failure");
 
         bus.inner.scheduler.fail_spawn_at(usize::MAX);
         let retry_request = SubscribeRequest::new(
@@ -279,9 +270,7 @@ mod spawn_failure_tests {
         let shutdown_error = bus
             .shutdown(ShutdownMode::Immediate)
             .expect_err("cleanup close failure remains observable");
-        assert!(
-            matches!(shutdown_error, ShutdownError::SubscriptionClose(errors) if errors.len() == 2)
-        );
+        assert!(matches!(shutdown_error, ShutdownError::SubscriptionClose(errors) if errors.len() == 2));
         assert_eq!(close_calls.load(Ordering::Acquire), 2);
     }
 }

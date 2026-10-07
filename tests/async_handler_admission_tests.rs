@@ -109,24 +109,13 @@ fn middleware_gate(stop: Stop, retry: bool) {
         })
         .retry_cancellation_token(cancellation.clone());
     if retry {
-        options = options.retry_policy(
-            RetryPolicy::builder()
-                .max_attempts(2)
-                .build()
-                .expect("retry policy"),
-        );
+        options = options.retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"));
     }
-    let request = SubscribeRequest::new(
-        "handler-gate",
-        Topic::<u32>::new("orders.created").expect("topic"),
-    )
-    .expect("request")
-    .with_options(options.build());
+    let request = SubscribeRequest::new("handler-gate", Topic::<u32>::new("orders.created").expect("topic"))
+        .expect("request")
+        .with_options(options.build());
     let mut sub = block_on(bus.subscribe(request)).expect("subscribe");
-    fake.enqueue(inbound_message(Some(SettlementToken::new(
-        sub.id(),
-        "token",
-    ))));
+    fake.enqueue(inbound_message(Some(SettlementToken::new(sub.id(), "token"))));
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let mut run = Box::pin(sub.run(move |_| {
@@ -184,10 +173,7 @@ fn middleware_gate(stop: Stop, retry: bool) {
                 break;
             }
         }
-        assert!(
-            completed,
-            "shutdown must finish after the gated handler resumes"
-        );
+        assert!(completed, "shutdown must finish after the gated handler resumes");
     } else {
         let replaced = replacements.clone();
         let mut resumed = Box::pin(sub.run(move |_| {
@@ -232,16 +218,10 @@ fn middleware_gate(stop: Stop, retry: bool) {
     block_on(sub.close()).expect("cleanup receiver");
     let snapshot = sub.delivery_metrics().metrics;
     assert_eq!(
-        snapshot.reserved_receives
-            + snapshot.queued
-            + snapshot.running_handlers
-            + snapshot.settling,
+        snapshot.reserved_receives + snapshot.queued + snapshot.running_handlers + snapshot.settling,
         0
     );
-    assert_eq!(
-        snapshot.handler_duration_count,
-        (prior + usize::from(admitted)) as u64
-    );
+    assert_eq!(snapshot.handler_duration_count, (prior + usize::from(admitted)) as u64);
 }
 
 #[test]
@@ -283,11 +263,8 @@ fn test_graceful_stop_drains_local_retry_attempt() {
 fn test_filter_stop_cannot_authorize_handler_or_settlement() {
     for accepted in [true, false] {
         let fake = Arc::new(FakeAsyncEventBusSpi::new());
-        let bus = AsyncEventBus::from_spi(
-            ProviderId::new("filter-gate").expect("provider"),
-            fake.clone(),
-        )
-        .expect("bus");
+        let bus =
+            AsyncEventBus::from_spi(ProviderId::new("filter-gate").expect("provider"), fake.clone()).expect("bus");
         let filter_bus = bus.clone();
         let options = SubscribeOptions::builder()
             .filter(move |_| {
@@ -296,17 +273,11 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
                 accepted
             })
             .build();
-        let request = SubscribeRequest::new(
-            "filter-gate",
-            Topic::<u32>::new("orders.created").expect("topic"),
-        )
-        .expect("request")
-        .with_options(options);
+        let request = SubscribeRequest::new("filter-gate", Topic::<u32>::new("orders.created").expect("topic"))
+            .expect("request")
+            .with_options(options);
         let sub = block_on(bus.subscribe(request)).expect("subscribe");
-        fake.enqueue(inbound_message(Some(SettlementToken::new(
-            sub.id(),
-            "token",
-        ))));
+        fake.enqueue(inbound_message(Some(SettlementToken::new(sub.id(), "token"))));
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
         block_on(sub.run(move |_| {

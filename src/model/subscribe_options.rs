@@ -55,8 +55,7 @@ pub type SubscribeErrorHandler<T> =
 ///
 /// # Type Parameters
 /// - `T`: event payload type passed to the next middleware stage.
-pub type SubscriberNext<T> =
-    Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
+pub type SubscriberNext<T> = Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
 
 /// Synchronous typed subscriber middleware; invoke `next` to continue.
 ///

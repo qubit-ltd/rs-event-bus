@@ -81,9 +81,7 @@ const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
         let second = bytes[index + 1];
         let third = bytes[index + 2];
         (
-            (((first & 0x0F) as u32) << 12)
-                | (((second & 0x3F) as u32) << 6)
-                | (third & 0x3F) as u32,
+            (((first & 0x0F) as u32) << 12) | (((second & 0x3F) as u32) << 6) | (third & 0x3F) as u32,
             3,
         )
     } else {

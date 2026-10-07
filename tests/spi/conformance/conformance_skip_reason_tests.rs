@@ -14,10 +14,7 @@ use qubit_event_bus::spi::conformance::ConformanceSkipReason;
 #[test]
 fn test_skip_reasons_format_each_explanation_without_losing_context() {
     assert_eq!(
-        ConformanceSkipReason::UnsupportedCapability {
-            capability: "replay"
-        }
-        .to_string(),
+        ConformanceSkipReason::UnsupportedCapability { capability: "replay" }.to_string(),
         "unsupported capability: replay"
     );
     assert_eq!(

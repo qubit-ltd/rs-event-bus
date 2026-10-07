@@ -170,8 +170,7 @@ fn sample(subscription_count: usize) -> Sample {
             }
         };
         match bus.subscribe(
-            SubscribeRequest::new(subscriber_id.as_str(), topic.clone())
-                .expect("validated subscriber ID"),
+            SubscribeRequest::new(subscriber_id.as_str(), topic.clone()).expect("validated subscriber ID"),
             |_| {},
         ) {
             Ok(subscription) => subscriptions.push(subscription),
@@ -234,9 +233,8 @@ fn sample_async(subscription_count: usize) -> Sample {
     let topic = Topic::<u32>::new("thread-profile.async-empty").expect("benchmark topic is valid");
     let mut subscriptions = Vec::with_capacity(subscription_count);
     for index in 0..subscription_count {
-        let request =
-            SubscribeRequest::new(&format!("async-thread-profile-{index}"), topic.clone())
-                .expect("subscriber ID is valid");
+        let request = SubscribeRequest::new(&format!("async-thread-profile-{index}"), topic.clone())
+            .expect("subscriber ID is valid");
         match block_on(bus.subscribe(request)) {
             Ok(subscription) => subscriptions.push(subscription),
             Err(_) => {
@@ -344,27 +342,23 @@ fn run_async_churn_probe() -> io::Result<()> {
     let topic = Topic::<u32>::new("thread-profile.async-churn").map_err(io::Error::other)?;
     let started = Instant::now();
     for index in 0..100 {
-        let request = SubscribeRequest::new(&format!("async-churn-{index}"), topic.clone())
-            .map_err(io::Error::other)?;
+        let request =
+            SubscribeRequest::new(&format!("async-churn-{index}"), topic.clone()).map_err(io::Error::other)?;
         let subscription = block_on(bus.subscribe(request)).map_err(io::Error::other)?;
         drop(subscription);
     }
     let elapsed = started.elapsed().as_nanos();
     let threads = process_thread_count()?;
-    let receipt = block_on(bus.publish(PublishRequest::new(topic, 1).map_err(io::Error::other)?))
-        .map_err(io::Error::other)?;
+    let receipt =
+        block_on(bus.publish(PublishRequest::new(topic, 1).map_err(io::Error::other)?)).map_err(io::Error::other)?;
     let admissions = match receipt.acknowledgement() {
         PublishAcknowledgement::DestinationAdmissions(admissions) => admissions.len(),
         _ => {
-            return Err(io::Error::other(
-                "local provider did not report destination admissions",
-            ));
+            return Err(io::Error::other("local provider did not report destination admissions"));
         }
     };
     if admissions != 0 {
-        return Err(io::Error::other(
-            "dropped async subscriptions remained publish targets",
-        ));
+        return Err(io::Error::other("dropped async subscriptions remained publish targets"));
     }
     println!(
         "async_churn,100,{},admissions={},threads={}",
@@ -372,15 +366,12 @@ fn run_async_churn_probe() -> io::Result<()> {
         admissions,
         optional_number(threads)
     );
-    let shutdown_report =
-        block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
+    let shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).map_err(io::Error::other)?;
     if shutdown_report.outcome != ShutdownOutcome::Complete
         || shutdown_report.known_abandoned_deliveries != 0
         || !shutdown_report.provider_may_have_abandoned_deliveries
     {
-        return Err(io::Error::other(
-            "async churn shutdown reported incomplete cleanup",
-        ));
+        return Err(io::Error::other("async churn shutdown reported incomplete cleanup"));
     }
     Ok(())
 }
@@ -396,8 +387,7 @@ fn run_async_routing_probe() -> io::Result<()> {
     for cold_topics in [0_usize, 127, 1023] {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUPS + SAMPLES {
-            let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new())
-                .map_err(io::Error::other)?;
+            let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).map_err(io::Error::other)?;
             let hot = TopicAddress::new("bench.hot").map_err(io::Error::other)?;
             let mut hot_receiver = block_on(spi.subscribe(SpiSubscriptionRequest::new(
                 Id::new(1),
@@ -454,16 +444,14 @@ fn run_async_routing_probe() -> io::Result<()> {
                         "hot topic publish was not admitted to one destination",
                     ));
                 }
-                let outcome =
-                    block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
+                let outcome = block_on(hot_receiver.receive(Duration::ZERO)).map_err(io::Error::other)?;
                 let ReceiveOutcome::Message(mut inbound) = outcome else {
                     return Err(io::Error::other("hot topic message was not received"));
                 };
                 let token = inbound
                     .take_settlement()
                     .ok_or_else(|| io::Error::other("missing settlement token"))?;
-                block_on(hot_receiver.settle(&token, DeliveryDisposition::Accept))
-                    .map_err(io::Error::other)?;
+                block_on(hot_receiver.settle(&token, DeliveryDisposition::Accept)).map_err(io::Error::other)?;
             }
             let elapsed = elapsed / 128;
             samples.push(elapsed);
@@ -596,19 +584,12 @@ fn wait_with_timeout(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 ///
 /// # Errors
 /// Returns process creation, waiting, or output collection failures.
-fn run_isolated_sample(
-    subscription_count: usize,
-    asynchronous: bool,
-) -> io::Result<(bool, String)> {
+fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Result<(bool, String)> {
     let executable = env::current_exe()?;
     let mut child = Command::new(executable)
         .arg("--sample")
         .arg(subscription_count.to_string())
-        .args(if asynchronous {
-            vec!["--async"]
-        } else {
-            Vec::new()
-        })
+        .args(if asynchronous { vec!["--async"] } else { Vec::new() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -692,13 +673,9 @@ fn main() {
         process::exit(2);
     }
 
-    println!(
-        "mode,subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads"
-    );
+    println!("mode,subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
     for subscription_count in COUNTS {
-        if let Err(error) =
-            run(subscription_count, false).and_then(|()| run(subscription_count, true))
-        {
+        if let Err(error) = run(subscription_count, false).and_then(|()| run(subscription_count, true)) {
             eprintln!("thread-profile benchmark failed: {error}");
             process::exit(1);
         }

@@ -70,10 +70,7 @@ fn test_simple_and_builder_requests_construct_expected_values() -> Result<(), Bo
 
     let subscribe = SubscribeRequest::new("audit", topic)?;
     assert_eq!(subscribe.options().ack_mode(), AckMode::Auto);
-    assert_eq!(
-        subscribe.options().durability(),
-        SubscriptionDurability::Ephemeral
-    );
+    assert_eq!(subscribe.options().durability(), SubscriptionDurability::Ephemeral);
     assert_eq!(subscribe.options().start_position(), &StartPosition::New);
     Ok(())
 }
@@ -81,9 +78,7 @@ fn test_simple_and_builder_requests_construct_expected_values() -> Result<(), Bo
 #[test]
 fn test_option_builders_replace_then_append_handlers_in_call_order() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
-    let options = PublishOptions::<String>::builder()
-        .error_handler(|_, _| ())
-        .build();
+    let options = PublishOptions::<String>::builder().error_handler(|_, _| ()).build();
     let request = PublishRequest::builder()
         .topic(topic.clone())
         .payload("one".to_owned())
@@ -93,9 +88,7 @@ fn test_option_builders_replace_then_append_handlers_in_call_order() -> Result<(
         .build()?;
     assert_eq!(request.options().error_handler_count(), 2);
 
-    let subscribe_options = SubscribeOptions::<String>::builder()
-        .ack_mode(AckMode::Manual)
-        .build();
+    let subscribe_options = SubscribeOptions::<String>::builder().ack_mode(AckMode::Manual).build();
     let subscriber = SubscribeRequest::builder()
         .subscriber_id(SubscriberId::new("audit")?)
         .topic(topic)
@@ -114,17 +107,13 @@ fn test_retry_policy_from_direct_dependency_reaches_both_builders() -> Result<()
         .topic(topic.clone())
         .payload("one".into())
         .retry_policy(policy.clone())
-        .retry_rule(
-            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
-        )
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
         .build()?;
     let subscribe = SubscribeRequest::builder()
         .subscriber_id(SubscriberId::new("audit")?)
         .topic(topic)
         .retry_policy(policy)
-        .retry_rule(
-            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
-        )
+        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
         .build()?;
     assert_eq!(
         publish
@@ -207,8 +196,7 @@ fn test_request_builders_validate_required_fields_and_metadata() -> Result<(), B
 }
 
 #[test]
-fn test_generated_publish_request_ids_are_uuid_v4_and_custom_ids_are_preserved()
--> Result<(), Box<dyn Error>> {
+fn test_generated_publish_request_ids_are_uuid_v4_and_custom_ids_are_preserved() -> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let generated = PublishRequest::new(topic.clone(), "one".to_owned())?;
     let generated_id = generated.envelope().id().as_str();
@@ -232,10 +220,7 @@ fn test_acknowledgement_first_terminal_decision_wins() {
     let clone = ack.clone();
     assert!(ack.ack().is_ok());
     assert!(clone.ack().is_ok());
-    assert!(matches!(
-        clone.nack(),
-        Err(AcknowledgementError::AlreadyCompleted)
-    ));
+    assert!(matches!(clone.nack(), Err(AcknowledgementError::AlreadyCompleted)));
     assert!(ack.is_acked());
     let nack = Acknowledgement::new();
     assert!(!nack.is_nacked());
@@ -244,15 +229,11 @@ fn test_acknowledgement_first_terminal_decision_wins() {
     assert!(nack.nack().is_ok());
     assert!(nack.is_nacked());
     assert!(nack.is_completed());
-    assert!(matches!(
-        nack.ack(),
-        Err(AcknowledgementError::AlreadyCompleted)
-    ));
+    assert!(matches!(nack.ack(), Err(AcknowledgementError::AlreadyCompleted)));
 }
 
 #[test]
-fn test_batch_counts_admission_drop_and_failure_without_handler_completion()
--> Result<(), Box<dyn Error>> {
+fn test_batch_counts_admission_drop_and_failure_without_handler_completion() -> Result<(), Box<dyn Error>> {
     let id_1 = EventId::new("event-1")?;
     let id_2 = EventId::new("event-2")?;
     let provider = ProviderId::new("local")?;
@@ -265,12 +246,7 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion()
             metadata: Default::default(),
         },
     );
-    let dropped = PublishReceipt::new(
-        id_2,
-        None,
-        provider,
-        PublishAcknowledgement::DroppedByInterceptor,
-    );
+    let dropped = PublishReceipt::new(id_2, None, provider, PublishAcknowledgement::DroppedByInterceptor);
     let batch = BatchPublishResult::new(vec![
         Ok(accepted),
         Ok(dropped),
@@ -290,12 +266,9 @@ fn test_batch_counts_admission_drop_and_failure_without_handler_completion()
 }
 
 #[test]
-fn test_batch_counts_destination_admissions_without_claiming_handler_completion()
--> Result<(), Box<dyn Error>> {
+fn test_batch_counts_destination_admissions_without_claiming_handler_completion() -> Result<(), Box<dyn Error>> {
     let provider = ProviderId::new("local")?;
-    let receipt = |name: &str,
-                   acknowledgement: PublishAcknowledgement|
-     -> Result<PublishReceipt, Box<dyn Error>> {
+    let receipt = |name: &str, acknowledgement: PublishAcknowledgement| -> Result<PublishReceipt, Box<dyn Error>> {
         let id = EventId::new(name)?;
         Ok(PublishReceipt::new(
             id.clone(),
@@ -304,16 +277,14 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
             acknowledgement,
         ))
     };
-    let admission = |number: u64,
-                     subscriber: &str,
-                     status: AdmissionStatus|
-     -> Result<DestinationAdmission, Box<dyn Error>> {
-        Ok(DestinationAdmission::new(
-            Id::new(number),
-            SubscriberId::new(subscriber)?,
-            status,
-        ))
-    };
+    let admission =
+        |number: u64, subscriber: &str, status: AdmissionStatus| -> Result<DestinationAdmission, Box<dyn Error>> {
+            Ok(DestinationAdmission::new(
+                Id::new(number),
+                SubscriberId::new(subscriber)?,
+                status,
+            ))
+        };
     let batch = BatchPublishResult::new(vec![
         Ok(receipt(
             "broker",
@@ -324,11 +295,7 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
         )?),
         Ok(receipt(
             "local-accepted",
-            PublishAcknowledgement::DestinationAdmissions(vec![admission(
-                1,
-                "accepted",
-                AdmissionStatus::Accepted,
-            )?]),
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, "accepted", AdmissionStatus::Accepted)?]),
         )?),
         Ok(receipt(
             "local-empty",
@@ -351,11 +318,7 @@ fn test_batch_counts_destination_admissions_without_claiming_handler_completion(
         )?),
         Ok(receipt(
             "local-filtered",
-            PublishAcknowledgement::DestinationAdmissions(vec![admission(
-                5,
-                "filtered",
-                AdmissionStatus::Filtered,
-            )?]),
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(5, "filtered", AdmissionStatus::Filtered)?]),
         )?),
         Ok(PublishReceipt::new(
             EventId::new("dropped")?,
@@ -400,8 +363,7 @@ fn test_topic_identity_ignores_codec_instance() -> Result<(), Box<dyn Error>> {
         }
     }
     let native = Topic::<String>::new("orders.created")?;
-    let encoded =
-        Topic::<String>::new("orders.created")?.with_codec(StringCodec(ContentType::TEXT_PLAIN));
+    let encoded = Topic::<String>::new("orders.created")?.with_codec(StringCodec(ContentType::TEXT_PLAIN));
     assert_eq!(native, encoded);
     assert!(native.codec().is_none());
     assert!(encoded.codec().is_some());
@@ -558,11 +520,7 @@ fn test_non_clone_payload_can_be_published_and_delivery_cloned() -> Result<(), B
     let topic = Topic::<NonClone>::new("orders.created")?;
     let request = PublishRequest::new(topic, NonClone(42))?;
     let event = Arc::new(request.into_parts().0);
-    let context = DeliveryContext::new(
-        ProviderId::new("local")?,
-        Id::new(9),
-        SubscriberId::new("audit")?,
-    );
+    let context = DeliveryContext::new(ProviderId::new("local")?, Id::new(9), SubscriberId::new("audit")?);
     let delivery = Delivery::new(event, context);
     let clone = delivery.clone();
     assert_eq!(clone.payload().0, 42);

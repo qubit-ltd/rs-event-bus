@@ -60,9 +60,7 @@ impl ConfigurationError {
     /// # Returns
     /// An error containing an owned copy of the invalid value.
     pub fn invalid_subscriber_id(value: &str) -> Self {
-        Self::InvalidSubscriberId {
-            value: value.into(),
-        }
+        Self::InvalidSubscriberId { value: value.into() }
     }
 
     /// Reports an event ID that failed validation.
@@ -73,8 +71,6 @@ impl ConfigurationError {
     /// # Returns
     /// An error containing an owned copy of the invalid value.
     pub fn invalid_event_id(value: &str) -> Self {
-        Self::InvalidEventId {
-            value: value.into(),
-        }
+        Self::InvalidEventId { value: value.into() }
     }
 }

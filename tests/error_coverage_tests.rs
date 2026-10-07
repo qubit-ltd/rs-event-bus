@@ -52,10 +52,7 @@ impl EventBusSpi for CloseFailureProvider {
         })
     }
 
-    fn subscribe(
-        &self,
-        request: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(CloseFailureSubscription {
             subscriber_id: request.subscriber_id().as_str().to_owned(),
         }))
@@ -86,10 +83,7 @@ impl EventSubscriptionSpi for CloseFailureSubscription {
             resource: Some(self.subscriber_id.clone().into()),
             kind: "close_failed",
             retryable: Some(false),
-            source: Box::new(IoError::other(format!(
-                "cannot close {}",
-                self.subscriber_id
-            ))),
+            source: Box::new(IoError::other(format!("cannot close {}", self.subscriber_id))),
         })
     }
 }
@@ -115,12 +109,8 @@ fn test_close_errors_aggregate_failures_and_preserve_the_source_chain() {
         )
         .expect("second subscription starts");
 
-    assert!(
-        matches!(first.cancel(), Err(LifecycleError::SubscriptionClose(errors)) if errors.len() == 1)
-    );
-    assert!(
-        matches!(second.cancel(), Err(LifecycleError::SubscriptionClose(errors)) if errors.len() == 1)
-    );
+    assert!(matches!(first.cancel(), Err(LifecycleError::SubscriptionClose(errors)) if errors.len() == 1));
+    assert!(matches!(second.cancel(), Err(LifecycleError::SubscriptionClose(errors)) if errors.len() == 1));
 
     let error = bus
         .shutdown(ShutdownMode::Immediate)
@@ -132,35 +122,20 @@ fn test_close_errors_aggregate_failures_and_preserve_the_source_chain() {
     let mut failures = errors.iter();
     let first = failures.next().expect("first close failure is retained");
     let second = failures.next().expect("second close failure is retained");
-    assert!(
-        failures.next().is_none(),
-        "the aggregate has exactly two failures"
-    );
+    assert!(failures.next().is_none(), "the aggregate has exactly two failures");
     assert_eq!(first.subscriber_id().as_str(), "first");
     assert_eq!(second.subscriber_id().as_str(), "second");
     assert_eq!(first.error().kind(), "close_failed");
     assert_eq!(second.error().resource(), Some("second"));
-    assert!(
-        errors
-            .to_string()
-            .contains("2 subscription close failure(s)")
-    );
+    assert!(errors.to_string().contains("2 subscription close failure(s)"));
 
-    let first_source = errors
-        .source()
-        .expect("aggregate exposes first close failure");
+    let first_source = errors.source().expect("aggregate exposes first close failure");
     assert_eq!(
         first_source.to_string(),
         "subscription first: provider close-failure failed close (close_failed): cannot close first"
     );
-    let spi_source = first_source
-        .source()
-        .expect("close failure exposes SPI error");
-    assert!(
-        spi_source
-            .to_string()
-            .contains("provider close-failure failed close")
-    );
+    let spi_source = first_source.source().expect("close failure exposes SPI error");
+    assert!(spi_source.to_string().contains("provider close-failure failed close"));
     assert_eq!(
         spi_source.source().map(ToString::to_string).as_deref(),
         Some("cannot close first")
@@ -186,9 +161,7 @@ fn test_error_variants_expose_stable_lifecycle_contracts() {
         "delivery has already been settled"
     );
 
-    let deadlock = LifecycleError::WouldDeadlock {
-        operation: "shutdown",
-    };
+    let deadlock = LifecycleError::WouldDeadlock { operation: "shutdown" };
     assert!(deadlock.to_string().contains("shutdown would deadlock"));
     let timeout = ShutdownError::TimedOut {
         timeout: Duration::from_millis(25),
@@ -200,10 +173,7 @@ fn test_error_variants_expose_stable_lifecycle_contracts() {
 fn test_sync_spi_default_identity_and_trait_object_contract() {
     let provider = support::fake_spi::FakeEventBusSpi::new();
     let erased: Arc<dyn EventBusSpi> = Arc::new(provider);
-    assert!(
-        erased.provider_id().is_none(),
-        "provider identity defaults to absent"
-    );
+    assert!(erased.provider_id().is_none(), "provider identity defaults to absent");
     assert_eq!(erased.capabilities().payload_modes(), PayloadModes::Native);
 
     fn accepts_object_safe_spi(_: &dyn EventBusSpi) {}

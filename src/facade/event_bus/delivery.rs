@@ -148,13 +148,7 @@ where
                 let error = DeliveryError::Handler {
                     source: Box::new(Error::other("subscriber filter panicked")),
                 };
-                let directive = notify_error_handlers(
-                    inner,
-                    options,
-                    &event,
-                    &error,
-                    options.retry_policy().is_some(),
-                );
+                let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 finish_failed_delivery(
                     inner,
                     settler,
@@ -172,13 +166,9 @@ where
         }
     }
 
-    let context = DeliveryContext::new(
-        inner.provider_id.clone(),
-        subscription_id,
-        subscriber_id.clone(),
-    )
-    .with_provider_metadata(provider_metadata)
-    .with_settlement(settlement.is_some());
+    let context = DeliveryContext::new(inner.provider_id.clone(), subscription_id, subscriber_id.clone())
+        .with_provider_metadata(provider_metadata)
+        .with_settlement(settlement.is_some());
     let context = if let Some(attempt) = provider_attempt {
         context.with_provider_attempt(attempt.get())
     } else {
@@ -290,10 +280,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
         match catch_unwind(AssertUnwindSafe(|| handler(event, error))) {
             Ok(directive) => directives.push(Ok(directive)),
             Err(payload) => {
-                inner.emit_internal(
-                    "subscriber_error_handler",
-                    panic_message(payload.as_ref()).into(),
-                );
+                inner.emit_internal("subscriber_error_handler", panic_message(payload.as_ref()).into());
                 directives.push(Err(()));
             }
         }
@@ -334,10 +321,7 @@ where
         options.interceptors(),
         move |delivery| {
             let result = handler(delivery);
-            if result
-                .as_ref()
-                .is_err_and(HandlerStartRejected::is_rejection)
-            {
+            if result.as_ref().is_err_and(HandlerStartRejected::is_rejection) {
                 handler_rejected.store(true, Ordering::Release);
             }
             result
