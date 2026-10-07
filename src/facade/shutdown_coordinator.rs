@@ -16,11 +16,12 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::task::Context;
 use std::task::Poll;
-use std::time::Instant;
+use std::time::Duration;
 
 use super::shutdown_coordinator_state::ShutdownCoordinatorState;
 use super::shutdown_result::ShutdownResult;
 use crate::error::SpiError;
+use crate::facade::internal::FiniteWait;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
@@ -30,6 +31,9 @@ pub(crate) struct ShutdownCoordinator {
     state: Mutex<ShutdownCoordinatorState>,
     /// Wakes callers when a shutdown attempt completes or fails to start.
     changed: Condvar,
+    /// Synchronizes tests with a waiter immediately before its condvar wait.
+    #[cfg(test)]
+    wait_timeout_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 impl ShutdownCoordinator {
@@ -43,7 +47,15 @@ impl ShutdownCoordinator {
         Self {
             state: Mutex::new(ShutdownCoordinatorState::new()),
             changed: Condvar::new(),
+            #[cfg(test)]
+            wait_timeout_barrier: Mutex::new(None),
         }
+    }
+
+    /// Installs a one-shot test synchronization point before a timed wait.
+    #[cfg(test)]
+    fn set_wait_timeout_barrier(&self, barrier: Arc<std::sync::Barrier>) {
+        *self.wait_timeout_barrier.lock().unwrap_or_else(PoisonError::into_inner) = Some(barrier);
     }
 
     /// Starts an attempt or joins the active attempt, strengthening its mode.
@@ -112,35 +124,43 @@ impl ShutdownCoordinator {
     ///
     /// # Parameters
     /// - `generation`: attempt generation represented by the caller's ticket.
-    /// - `deadline`: optional absolute deadline; expiration leaves the ticket
+    /// - `timeout`: relative observation budget; expiration leaves the ticket
     ///   registered so the caller can observe a later completion.
     ///
     /// # Returns
-    /// Whether the deadline elapsed and, after completion, the retained result
+    /// Whether the timeout elapsed and, after completion, the retained result
     /// for this generation. A timeout returns `None` without releasing the
     /// caller's ticket.
     #[must_use]
-    pub(crate) fn wait(&self, generation: u64, deadline: Option<Instant>) -> (bool, Option<ShutdownResult>) {
+    pub(crate) fn wait(&self, generation: u64, timeout: Option<Duration>) -> (bool, Option<ShutdownResult>) {
+        let budget = timeout.map(FiniteWait::new);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while state.active && state.generation == generation {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+        loop {
+            if !state.active || state.generation != generation {
+                return (false, state.results.get(&generation).cloned());
+            }
+            if let Some(budget) = &budget {
+                let Some(remaining) = budget.remaining() else {
                     return (true, None);
+                };
+                #[cfg(test)]
+                if let Some(barrier) = self
+                    .wait_timeout_barrier
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    barrier.wait();
                 }
-                let (next, timed) = self
+                let (next, _) = self
                     .changed
                     .wait_timeout(state, remaining)
                     .unwrap_or_else(PoisonError::into_inner);
                 state = next;
-                if timed.timed_out() && state.active && state.generation == generation {
-                    return (true, None);
-                }
             } else {
                 state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
             }
         }
-        (false, state.results.get(&generation).cloned())
     }
 
     /// Atomically checks completion and installs or refreshes one future waker.
@@ -264,6 +284,7 @@ mod tests {
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::sync::Weak;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -274,7 +295,6 @@ mod tests {
     use std::task::Wake;
     use std::task::Waker;
     use std::time::Duration;
-    use std::time::Instant;
 
     use super::ShutdownCoordinator;
     use crate::facade::shutdown_result::ShutdownResult;
@@ -325,15 +345,50 @@ mod tests {
     }
 
     #[test]
-    fn test_expired_deadline_preserves_ticket_while_attempt_continues() {
+    fn test_zero_timeout_preserves_ticket_while_attempt_continues() {
         let coordinator = ShutdownCoordinator::new();
         let (_, generation) = coordinator.begin(ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),
         });
-        let (timed_out, result) = coordinator.wait(generation, Some(Instant::now() - Duration::from_millis(1)));
+        let (timed_out, result) = coordinator.wait(generation, Some(Duration::ZERO));
         assert!(timed_out);
         assert!(result.is_none());
         coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
+    }
+
+    #[test]
+    fn test_max_timeout_wait_is_woken_by_completion() {
+        let coordinator = Arc::new(ShutdownCoordinator::new());
+        let (_, generation) = coordinator.begin(ShutdownMode::Immediate);
+        let barrier = Arc::new(Barrier::new(2));
+        coordinator.set_wait_timeout_barrier(barrier.clone());
+        let (tx, rx) = mpsc::channel();
+        let waiter = {
+            let coordinator = coordinator.clone();
+            std::thread::spawn(move || {
+                tx.send(coordinator.wait(generation, Some(Duration::MAX)))
+                    .expect("send wait result");
+            })
+        };
+
+        barrier.wait();
+        let finisher = {
+            let coordinator = coordinator.clone();
+            std::thread::spawn(move || {
+                coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
+            })
+        };
+
+        let (timed_out, result) = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("completion wakes waiter");
+        assert!(!timed_out);
+        assert!(matches!(
+            result,
+            Some(ShutdownResult::Provider(Ok(ShutdownOutcome::Complete)))
+        ));
+        waiter.join().expect("waiter joins");
+        finisher.join().expect("finisher joins");
     }
     #[test]
     fn test_async_registration_cancel_and_failed_generation_survives_retry() {

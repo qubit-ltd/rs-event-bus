@@ -993,7 +993,9 @@ request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
   │     → scheduler.join() → spi.shutdown(mode) → cache report and mark Closed
   └─ return the generation ticket without waiting for handlers, joins, or SPI
 
-EventBusShutdown::wait(Some(timeout)) → bounded blocking observation
+EventBusShutdown::wait(Some(timeout)) → bounded blocking observation using a
+  relative monotonic elapsed-time budget; a condition-variable wait slice ending
+  only triggers a recheck and does not end the total budget
 EventBusShutdown::wait_async()         → runtime-neutral Waker observation
 shutdown(mode)                         → request_shutdown(mode) + ticket.wait(mode timeout)
 ```

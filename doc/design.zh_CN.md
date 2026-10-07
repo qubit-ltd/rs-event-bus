@@ -936,7 +936,8 @@ request_shutdown(mode: ShutdownMode) -> Result<EventBusShutdown, ShutdownError>
   │     → scheduler.join() → spi.shutdown(mode) → 缓存报告并标为 Closed
   └─ 立即返回 generation ticket，不等待 handler、join 或 SPI
 
-EventBusShutdown::wait(Some(timeout)) → 有界阻塞观察
+EventBusShutdown::wait(Some(timeout)) → 使用单调经过时长计算相对观察预算的有界阻塞观察；
+  条件变量等待片段结束后只会重新检查总预算，不会结束整个预算
 EventBusShutdown::wait_async()         → runtime-neutral Waker 观察
 shutdown(mode)                         → request_shutdown(mode) + ticket.wait(mode timeout)
 ```

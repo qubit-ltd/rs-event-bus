@@ -12,7 +12,6 @@ use std::io::Error;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::time::Duration;
-use std::time::Instant;
 
 use crate::LifecycleError;
 use crate::ShutdownError;
@@ -55,7 +54,8 @@ impl EventBusShutdown {
     /// failures. Bus-owned callbacks/workers receive `WouldDeadlock`.
     ///
     /// # Parameters
-    /// - `timeout`: Maximum duration to wait; `None` waits without a deadline.
+    /// - `timeout`: Maximum relative duration to wait; `None` waits
+    ///   indefinitely.
     ///
     /// # Returns
     /// The report for this shutdown generation, with facade-known abandoned
@@ -63,7 +63,7 @@ impl EventBusShutdown {
     ///
     /// # Errors
     /// Returns `WouldDeadlock` from a bus callback or worker, `TimedOut` when
-    /// the observer deadline expires, or a coordinator-start, provider, or
+    /// the observation budget expires, or a coordinator-start, provider, or
     /// subscription-close failure.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<ShutdownReport, ShutdownError> {
         if is_current_bus_context(Arc::as_ptr(&self.inner) as usize) {
@@ -72,11 +72,10 @@ impl EventBusShutdown {
         let Some(generation) = self.generation else {
             return self.report();
         };
-        let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
-        let (timed_out, result) = self.inner.shutdown_coordinator.wait(generation, deadline);
+        let (timed_out, result) = self.inner.shutdown_coordinator.wait(generation, timeout);
         if timed_out {
             return Err(ShutdownError::TimedOut {
-                timeout: timeout.expect("deadline requires timeout"),
+                timeout: timeout.expect("timed-out wait requires a finite budget"),
             });
         }
         self.resolve(result)

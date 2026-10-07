@@ -10,17 +10,21 @@
 #[path = "tracker/internal/mod.rs"]
 mod internal;
 
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
 use std::time::Duration;
-use std::time::Instant;
 
 pub(crate) use internal::DeliveryTrackerGuard;
 
 use self::internal::TrackerState;
 use crate::facade::WaitOutcome;
+use crate::facade::internal::FiniteWait;
 
 /// Tracks worker and received-delivery lifetimes without invoking user code.
 pub(crate) struct LifecycleTracker {
@@ -28,6 +32,9 @@ pub(crate) struct LifecycleTracker {
     state: Mutex<TrackerState>,
     /// Wakes callers waiting for worker or delivery counts to change.
     changed: Condvar,
+    /// Synchronizes tests immediately before a finite condition-variable wait.
+    #[cfg(test)]
+    test_wait_barrier: Mutex<Option<Arc<Barrier>>>,
 }
 
 impl LifecycleTracker {
@@ -39,6 +46,8 @@ impl LifecycleTracker {
         Self {
             state: Mutex::new(TrackerState::default()),
             changed: Condvar::new(),
+            #[cfg(test)]
+            test_wait_barrier: Mutex::new(None),
         }
     }
 
@@ -76,29 +85,27 @@ impl LifecycleTracker {
     ///
     /// # Returns
     /// Idle when the topic has no tracked work, or TimedOut when its deadline
-    /// expires.
+    /// expires. Completion takes priority when the timeout is zero.
     pub(crate) fn wait_for_idle(&self, topic: &str, timeout: Option<Duration>) -> WaitOutcome {
-        let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
+        let budget = timeout.map(FiniteWait::new);
         let mut state = self.lock_state();
         loop {
             if state.in_flight_by_topic.get(topic).copied().unwrap_or_default() == 0 {
                 return WaitOutcome::Idle;
             }
-            let Some(deadline) = deadline else {
+            if let Some(budget) = &budget {
+                let Some(slice) = budget.remaining() else {
+                    return WaitOutcome::TimedOut;
+                };
+                #[cfg(test)]
+                self.wait_test_barrier();
+                let (next_state, _) = self
+                    .changed
+                    .wait_timeout(state, slice)
+                    .unwrap_or_else(PoisonError::into_inner);
+                state = next_state;
+            } else {
                 state = self.wait(state);
-                continue;
-            };
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return WaitOutcome::TimedOut;
-            }
-            let (next_state, result) = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(PoisonError::into_inner);
-            state = next_state;
-            if result.timed_out() && state.in_flight_by_topic.get(topic).copied().unwrap_or_default() != 0 {
-                return WaitOutcome::TimedOut;
             }
         }
     }
@@ -112,27 +119,27 @@ impl LifecycleTracker {
     /// True when all workers have exited, or false when the deadline expires.
     #[must_use = "check that all subscription workers exited before continuing"]
     pub(crate) fn wait_for_workers(&self, timeout: Option<Duration>) -> bool {
-        let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
+        let budget = timeout.map(FiniteWait::new);
         let mut state = self.lock_state();
-        while state.active_workers != 0 {
-            let Some(deadline) = deadline else {
-                state = self.wait(state);
-                continue;
-            };
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return false;
+        loop {
+            if state.active_workers == 0 {
+                return true;
             }
-            let (next_state, result) = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(PoisonError::into_inner);
-            state = next_state;
-            if result.timed_out() && state.active_workers != 0 {
-                return false;
+            if let Some(budget) = &budget {
+                let Some(slice) = budget.remaining() else {
+                    return false;
+                };
+                #[cfg(test)]
+                self.wait_test_barrier();
+                let (next_state, _) = self
+                    .changed
+                    .wait_timeout(state, slice)
+                    .unwrap_or_else(PoisonError::into_inner);
+                state = next_state;
+            } else {
+                state = self.wait(state);
             }
         }
-        true
     }
 
     /// Returns true when all subscription workers have exited.
@@ -176,5 +183,114 @@ impl LifecycleTracker {
     /// Tracker state reacquired after a notification or poison recovery.
     fn wait<'a>(&self, state: MutexGuard<'a, TrackerState>) -> MutexGuard<'a, TrackerState> {
         self.changed.wait(state).unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Blocks at a test barrier while the caller still holds tracker state.
+    #[cfg(test)]
+    fn wait_test_barrier(&self) {
+        let barrier = self
+            .test_wait_barrier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::LifecycleTracker;
+    use crate::facade::WaitOutcome;
+
+    #[test]
+    fn test_wait_for_idle_zero_timeout_checks_completion_first() {
+        let tracker = LifecycleTracker::new();
+        let delivery = tracker.track_delivery("orders");
+
+        assert_eq!(
+            tracker.wait_for_idle("orders", Some(Duration::ZERO)),
+            WaitOutcome::TimedOut
+        );
+
+        drop(delivery);
+        assert_eq!(tracker.wait_for_idle("orders", Some(Duration::ZERO)), WaitOutcome::Idle);
+    }
+
+    #[test]
+    fn test_wait_for_workers_zero_timeout_checks_completion_first() {
+        let tracker = LifecycleTracker::new();
+        tracker.worker_started();
+
+        assert!(!tracker.wait_for_workers(Some(Duration::ZERO)));
+
+        tracker.worker_finished();
+        assert!(tracker.wait_for_workers(Some(Duration::ZERO)));
+    }
+
+    #[test]
+    fn test_wait_for_idle_returns_after_delivery_completion_notification() {
+        let tracker = Arc::new(LifecycleTracker::new());
+        let delivery = tracker.track_delivery("orders");
+        let barrier = Arc::new(Barrier::new(2));
+        *tracker
+            .test_wait_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter_tracker = Arc::clone(&tracker);
+        let waiter = thread::spawn(move || {
+            let result = waiter_tracker.wait_for_idle("orders", Some(Duration::MAX));
+            result_tx.send(result).expect("main thread is receiving");
+        });
+
+        barrier.wait();
+        thread::scope(|scope| {
+            let notifier = scope.spawn(move || drop(delivery));
+            assert_eq!(
+                result_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("waiter completes after delivery notification"),
+                WaitOutcome::Idle
+            );
+            notifier.join().expect("delivery notifier completes");
+        });
+        waiter.join().expect("waiter thread completes");
+    }
+
+    #[test]
+    fn test_wait_for_workers_returns_after_worker_completion_notification() {
+        let tracker = Arc::new(LifecycleTracker::new());
+        tracker.worker_started();
+        let barrier = Arc::new(Barrier::new(2));
+        *tracker
+            .test_wait_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter_tracker = Arc::clone(&tracker);
+        let waiter = thread::spawn(move || {
+            let result = waiter_tracker.wait_for_workers(Some(Duration::MAX));
+            result_tx.send(result).expect("main thread is receiving");
+        });
+
+        barrier.wait();
+        let notifier_tracker = Arc::clone(&tracker);
+        let notifier = thread::spawn(move || notifier_tracker.worker_finished());
+
+        assert!(
+            result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("waiter completes after worker notification")
+        );
+        notifier.join().expect("worker notifier completes");
+        waiter.join().expect("waiter thread completes");
     }
 }

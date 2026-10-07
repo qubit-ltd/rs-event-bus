@@ -143,6 +143,29 @@ fn test_pending_observers_cancel_independently_and_timeout_preserves_ticket() {
 }
 
 #[test]
+fn test_max_timeout_waits_for_completion_and_ticket_remains_reusable() {
+    let (bus, gate, _subscription) = blocked_bus();
+    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("ticket");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let waiter = spawn(move || {
+        started_tx.send(()).expect("send started signal");
+        let first = ticket.wait(Some(Duration::MAX));
+        let second = ticket.wait(Some(Duration::MAX));
+        result_tx.send((first, second)).expect("send wait results");
+    });
+
+    started_rx.recv_timeout(LIMIT).expect("ticket waiter starts");
+    gate.release();
+
+    let (first, second) = result_rx.recv_timeout(LIMIT).expect("ticket waiter completes");
+    waiter.join().expect("ticket waiter joins");
+    let report = first.expect("completion within finite budget");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(second.expect("reused ticket"), report);
+}
+
+#[test]
 fn test_finish_before_first_poll_and_closed_ready_ticket() {
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
     let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("ticket");
