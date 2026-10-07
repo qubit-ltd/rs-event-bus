@@ -11,11 +11,16 @@ use std::sync::Arc;
 
 use qubit_clock::MonotonicClock;
 use qubit_clock::StdMonotonicClock;
+use qubit_event_bus::error::ConfigurationError;
+use qubit_event_bus::error::FacadeBuildError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::SubscriberNext;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 
@@ -26,19 +31,42 @@ use crate::support::manual_async::block_on;
 fn test_async_facade_capability_panic_is_a_terminal_spi_error() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.panic_on_capabilities();
-    let result =
-        AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
+    let result = AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
     match result {
-        Err(SpiError::Operation {
+        Err(FacadeBuildError::Spi(SpiError::Operation {
             operation: "capabilities",
             kind: "provider_panicked",
             retryable: Some(false),
             ..
-        }) => {}
+        })) => {}
         Err(error) => panic!("unexpected SPI error: {error}"),
         Ok(_) => panic!("capabilities panic must fail facade construction"),
     }
     assert_eq!(spi.capabilities_calls(), 1);
+}
+
+/// Rejects a sync middleware map before querying the asynchronous SPI.
+#[test]
+fn test_async_facade_rejects_sync_middleware_before_querying_capabilities() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new()
+        .async_subscriber_interceptor(|delivery: Delivery<u64>, next: AsyncSubscriberNext<u64>| next(delivery))
+        .subscriber_interceptor(|delivery: Delivery<u32>, next: SubscriberNext<u32>| next(delivery));
+
+    let result = AsyncEventBus::with_config(
+        ProviderId::new("invalid-async").expect("valid provider ID"),
+        spi.clone(),
+        config,
+    );
+
+    assert!(matches!(
+        result,
+        Err(FacadeBuildError::Configuration(ConfigurationError::InvalidField {
+            field: "sync_subscriber_interceptor",
+            ..
+        }))
+    ));
+    assert_eq!(spi.capabilities_calls(), 0);
 }
 
 #[test]
@@ -55,12 +83,8 @@ fn test_async_facade_constructors_initialize_provider_capabilities_once() {
             EventBusFacadeConfig::default(),
         )
         .expect("with_config constructs the facade"),
-        AsyncEventBus::with_timer(
-            ProviderId::new("with-timer").unwrap(),
-            spi.clone(),
-            timer.clone(),
-        )
-        .expect("with_timer constructs the facade"),
+        AsyncEventBus::with_timer(ProviderId::new("with-timer").unwrap(), spi.clone(), timer.clone())
+            .expect("with_timer constructs the facade"),
         AsyncEventBus::with_config_and_timer(
             ProviderId::new("with-config-and-timer").unwrap(),
             spi.clone(),
@@ -99,8 +123,7 @@ fn test_async_facade_exposes_cached_provider_capabilities() {
 
 #[test]
 fn test_async_local_constructor_returns_a_shutdown_capable_facade() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default()))
-        .expect("local facade constructs");
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("local facade constructs");
     let outcome = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local facade shuts down");
 
     assert_eq!(outcome.outcome, ShutdownOutcome::Complete);

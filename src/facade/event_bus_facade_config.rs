@@ -16,6 +16,7 @@ use super::PayloadLimits;
 use super::SettlementRetryConfig;
 use super::internal::ErasedMiddlewareList;
 use crate::codec::CodecRegistry;
+use crate::error::ConfigurationError;
 use crate::error::DeliveryError;
 use crate::error::PublishError;
 use crate::model::AsyncSubscriberInterceptor;
@@ -31,8 +32,7 @@ use crate::spi::SpiFuture;
 /// installed in a newly-created facade.
 ///
 /// Middleware is registered per payload type. A facade rejects middleware
-/// configured for the other execution model when a matching subscription is
-/// created, rather than silently skipping or adapting it.
+/// configured for the other execution model when the facade is constructed.
 ///
 /// # Examples
 ///
@@ -80,6 +80,40 @@ impl Default for EventBusFacadeConfig {
 }
 
 impl EventBusFacadeConfig {
+    /// Validates that no asynchronous subscriber middleware is installed for a
+    /// synchronous facade.
+    ///
+    /// # Errors
+    /// Returns the invalid middleware field when any payload type has an
+    /// asynchronous chain.
+    pub(crate) fn validate_for_sync(&self) -> Result<(), ConfigurationError> {
+        if self.async_subscriber_interceptors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigurationError::InvalidField {
+                field: "async_subscriber_interceptor",
+                message: "asynchronous subscriber middleware requires an async facade".into(),
+            })
+        }
+    }
+
+    /// Validates that no synchronous subscriber middleware is installed for an
+    /// asynchronous facade.
+    ///
+    /// # Errors
+    /// Returns the invalid middleware field when any payload type has a
+    /// synchronous chain.
+    pub(crate) fn validate_for_async(&self) -> Result<(), ConfigurationError> {
+        if self.sync_subscriber_interceptors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigurationError::InvalidField {
+                field: "sync_subscriber_interceptor",
+                message: "synchronous subscriber middleware requires a sync facade".into(),
+            })
+        }
+    }
+
     /// Creates facade configuration with an empty codec registry.
     ///
     /// # Returns
@@ -224,9 +258,9 @@ impl EventBusFacadeConfig {
     /// `T`.
     ///
     /// The middleware wraps request-specific typed middleware and the handler.
-    /// It runs only after the subscription filter accepts a delivery. A sync
-    /// [`crate::facade::EventBus`] rejects configuration containing async
-    /// middleware for the same payload type.
+    /// It runs only after the subscription filter accepts a delivery.
+    /// [`crate::facade::AsyncEventBus`] rejects this configuration at
+    /// construction.
     ///
     /// # Type Parameters
     /// - `T`: the payload type accepted by this middleware.
@@ -259,8 +293,8 @@ impl EventBusFacadeConfig {
     /// Appends facade-wide runtime-neutral async subscriber middleware for `T`.
     ///
     /// The middleware wraps request-specific typed middleware and the handler,
-    /// and runs only after filtering accepts a delivery. An async facade
-    /// rejects sync middleware configured for the same payload type.
+    /// and runs only after filtering accepts a delivery.
+    /// [`crate::facade::EventBus`] rejects this configuration at construction.
     ///
     /// # Type Parameters
     /// - `T`: the payload type accepted by this middleware.
@@ -318,9 +352,7 @@ impl EventBusFacadeConfig {
     /// # Returns
     /// The registered callbacks in append order, or an empty vector.
     #[must_use = "Use the returned asynchronous middleware chain."]
-    pub(crate) fn async_subscriber_interceptors<T: 'static>(
-        &self,
-    ) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
+    pub(crate) fn async_subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
         self.async_subscriber_interceptors
             .get(&TypeId::of::<T>())
             .and_then(|list| list.downcast_ref::<Vec<Arc<AsyncSubscriberInterceptor<T>>>>())
@@ -338,8 +370,7 @@ impl EventBusFacadeConfig {
     #[must_use]
     #[inline]
     pub(crate) fn has_sync_subscriber_interceptors<T: 'static>(&self) -> bool {
-        self.sync_subscriber_interceptors
-            .contains_key(&TypeId::of::<T>())
+        self.sync_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }
 
     /// Checks whether any asynchronous middleware was registered for `T`.
@@ -353,7 +384,6 @@ impl EventBusFacadeConfig {
     #[must_use]
     #[inline]
     pub(crate) fn has_async_subscriber_interceptors<T: 'static>(&self) -> bool {
-        self.async_subscriber_interceptors
-            .contains_key(&TypeId::of::<T>())
+        self.async_subscriber_interceptors.contains_key(&TypeId::of::<T>())
     }
 }

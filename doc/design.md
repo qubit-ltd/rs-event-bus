@@ -204,7 +204,7 @@ are defined.
 | `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `DeliverySchedulingConfig`, `SettlementRetryConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
 | `local` | Built-in in-process provider | `LocalEventBusConfig`, `LocalEventBusProvider`, `AsyncLocalEventBusProvider`, `LocalEventBusSpi`, `AsyncLocalEventBusSpi`, `LocalQueue`, `OutstandingBudget` |
 | `notification` | A bounded, never-blocking publish queue in front of `EventBus` | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
-| `error` | Layered error types | `EventBusError`, `PublishError`, `SubscribeError`, `DeliveryError`, `LifecycleError`, `ShutdownError`, `ProviderError`, `SpiError`, `CapabilityError`, `CodecError`, `ConfigurationError` |
+| `error` | Layered error types | `EventBusError`, `PublishError`, `SubscribeError`, `DeliveryError`, `LifecycleError`, `ShutdownError`, `ProviderError`, `FacadeBuildError`, `SpiError`, `CapabilityError`, `CodecError`, `ConfigurationError` |
 
 Dependencies point `facade → pipeline → {model, codec, spi, error}`,
 `registry → spi`, and `local → spi`. `pipeline` and `spi` do not know about the
@@ -690,10 +690,13 @@ or `Registry::create`. It is frozen when the facade is created:
 | `settlement_retry` | `SettlementRetryConfig`: 5 attempts, 5 seconds, initial backoff 10 ms, cap 1 second | Retry only explicitly retryable settlement failures |
 | `payload_limits` | `PayloadLimits` | Independent positive encoded publish/receive byte limits, each 1,048,576 by default |
 
-The facade reads provider capabilities once during construction and keeps that
-immutable snapshot for later validation. If `capabilities()` panics during direct
-construction, the constructor returns a terminal `SpiError` classified as
-`provider_panicked`.
+The facade validates all configured subscriber middleware before reading provider
+capabilities. A synchronous facade rejects any async subscriber middleware, and an
+asynchronous facade rejects any sync subscriber middleware. Direct constructors
+return `FacadeBuildError::Configuration` for this mismatch. Request-level
+middleware is still checked when subscribing. The facade then reads capabilities
+once and keeps an immutable snapshot. A capability call failure or panic returns
+`FacadeBuildError::Spi`; the panic is classified as terminal `provider_panicked`.
 
 Global interceptors and middleware are **added to** request-level ones. On publish,
 typed request interceptors run first and global metadata interceptors run after them.
@@ -1313,6 +1316,7 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 | `LifecycleError` | `wait_for_*`, `cancel`, shutdown internals | `Timer(TimeError)`, `WouldDeadlock { operation }`, `Closed`, `IdleWaitUnsupported`, `Spi`, `SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
 | `ShutdownError` | `request_shutdown`, ticket waits, `shutdown` | `TimedOut { .. }`, `CoordinatorStart(io::Error)`, `Lifecycle(LifecycleError)` (including `WouldDeadlock`), `Spi`, `SubscriptionClose` |
 | `ProviderError` | registry | `Resolution` (provider not found, or an illegal selection), `Creation` (provider construction failed, or `RequiredCapabilities` are missing) |
+| `FacadeBuildError` | direct facade constructors | `Configuration(ConfigurationError)` for incompatible middleware, `Spi(SpiError)` for capability query failures; registry `Creation` retains this error as its source |
 | `EventBusProviderError` | provider authors | The error wrapper a provider `create` returns, aggregated by `qubit-spi` |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`, `Operation { provider_id, operation, resource, kind, retryable, source }`, `InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | construction or validation | see each type |

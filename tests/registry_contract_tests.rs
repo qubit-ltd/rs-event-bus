@@ -32,8 +32,12 @@ use qubit_event_bus::RequiredCapabilities;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
+use qubit_event_bus::error::ConfigurationError;
+use qubit_event_bus::error::FacadeBuildError;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
@@ -94,9 +98,9 @@ impl ServiceProvider<EventBusSpec> for StubProvider {
     ) -> Result<Arc<dyn EventBusSpi>, ProviderFailure<EventBusProviderError>> {
         self.creates.fetch_add(1, Ordering::SeqCst);
         if self.create_unavailable {
-            return Err(ProviderFailure::unavailable(
-                EventBusProviderError::provider(Error::other("backend unavailable")),
-            ));
+            return Err(ProviderFailure::unavailable(EventBusProviderError::provider(
+                Error::other("backend unavailable"),
+            )));
         }
         Ok(Arc::new(StubSpi {
             capabilities: self.capabilities,
@@ -133,10 +137,7 @@ impl EventBusSpi for StubSpi {
         })
     }
 
-    fn subscribe(
-        &self,
-        _: SpiSubscriptionRequest,
-    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Err(SpiError::Operation {
             provider_id: "stub".into(),
             operation: "subscribe",
@@ -198,9 +199,8 @@ fn test_registry_per_key_capability_accepts_per_subscription_and_rejects_per_par
             .expect("provider registration succeeds");
         let result = registry.create_selected(
             &ProviderSelection::named("ordering-test").expect("valid selection"),
-            &EventBusConfig::default().with_required_capabilities(
-                RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey),
-            ),
+            &EventBusConfig::default()
+                .with_required_capabilities(RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey)),
         );
         if accepted {
             assert!(
@@ -280,16 +280,13 @@ fn test_registry_falls_back_when_created_spi_lacks_required_capability() {
     let selection = ProviderSelection::chain(["ephemeral", "durable"])
         .expect("selection is valid")
         .with_fallback_policy(FallbackPolicy::OnAbsence);
-    let config =
-        EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
+    let config = EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
     let bus = registry
         .create_selected(&selection, &config)
         .expect("capability mismatch advances to the next provider");
     let request = PublishRequest::new(Topic::<u32>::new("test.topic").expect("topic is valid"), 42)
         .expect("event ID generation succeeds");
-    let receipt = bus
-        .publish(request)
-        .expect("selected SPI accepts publication");
+    let receipt = bus.publish(request).expect("selected SPI accepts publication");
     assert_eq!(1, ephemeral_creates.load(Ordering::SeqCst));
     assert_eq!(1, durable_creates.load(Ordering::SeqCst));
     assert_eq!("durable", receipt.provider_id().as_str());
@@ -391,9 +388,7 @@ fn test_unavailable_provider_falls_back_only_during_creation() {
         .expect("unavailable creation advances to the next provider");
     let request = PublishRequest::new(Topic::<u32>::new("test.topic").expect("topic is valid"), 42)
         .expect("event ID generation succeeds");
-    let receipt = bus
-        .publish(request)
-        .expect("fallback provider accepts publication");
+    let receipt = bus.publish(request).expect("fallback provider accepts publication");
 
     assert_eq!(1, unavailable_creates.load(Ordering::SeqCst));
     assert_eq!(1, success_creates.load(Ordering::SeqCst));
@@ -415,14 +410,56 @@ fn test_creation_failure_is_distinct_from_provider_resolution_failure() {
         })
         .expect("provider registration succeeds");
     let selection = ProviderSelection::named("ephemeral-only").expect("selection is valid");
-    let config =
-        EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
+    let config = EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
 
     let error = match registry.create_selected(&selection, &config) {
         Ok(_) => panic!("unsupported provider must fail creation"),
         Err(error) => error,
     };
     assert!(matches!(error, ProviderError::Creation { .. }));
+}
+
+/// Keeps facade configuration errors reachable through the registry source
+/// chain.
+#[test]
+fn test_registry_preserves_facade_configuration_error_source_chain() {
+    let registry = EventBusRegistry::new();
+    registry
+        .register(StubProvider {
+            id: "invalid-facade",
+            aliases: &[],
+            capabilities: capabilities(DurabilityCapability::Ephemeral),
+            creates: Arc::new(AtomicUsize::new(0)),
+            publish_fails: false,
+            create_unavailable: false,
+        })
+        .expect("provider registration succeeds");
+    let facade = EventBusFacadeConfig::new()
+        .async_subscriber_interceptor(|delivery: Delivery<u32>, next: AsyncSubscriberNext<u32>| next(delivery));
+    let config = EventBusConfig::default().with_facade_config(facade);
+
+    let error = match registry.create(&config) {
+        Ok(_) => panic!("invalid facade configuration must fail creation"),
+        Err(error) => error,
+    };
+    let ProviderError::Creation { source } = error else {
+        panic!("facade configuration failure must be classified as creation");
+    };
+    let build_error = source
+        .downcast_ref::<FacadeBuildError>()
+        .expect("creation source retains facade build error");
+    assert!(matches!(
+        build_error,
+        FacadeBuildError::Configuration(ConfigurationError::InvalidField {
+            field: "async_subscriber_interceptor",
+            ..
+        })
+    ));
+    assert!(
+        std::error::Error::source(build_error)
+            .expect("configuration source is retained")
+            .is::<ConfigurationError>()
+    );
 }
 
 #[test]
@@ -457,8 +494,8 @@ fn test_registry_installs_configured_codec_registry_into_the_facade() {
             content_type: ContentType::APPLICATION_OCTET_STREAM,
         }))
         .expect("unique codec type");
-    let config = EventBusConfig::default()
-        .with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
+    let config =
+        EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
     let bus = registry
         .create_selected(
             &ProviderSelection::named("encoded").expect("selector is valid"),
@@ -492,8 +529,7 @@ impl AsyncServiceProvider<EventBusSpec> for StubAsyncProvider {
     fn create_configured<'a>(
         &'a self,
         _: &'a EventBusConfig,
-    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>>
-    {
+    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
         self.creates.fetch_add(1, Ordering::SeqCst);
         let capabilities = self.capabilities;
         let encoded_messages = self.encoded_messages.clone();
@@ -517,10 +553,7 @@ impl AsyncEventBusSpi for StubAsyncSpi {
         self.capabilities
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         if matches!(message.payload(), TransportPayload::Encoded(_)) {
             self.encoded_messages.fetch_add(1, Ordering::SeqCst);
         }
@@ -580,8 +613,7 @@ fn test_async_registry_fallback_retains_the_successful_provider_identity() {
     let selection = ProviderSelection::chain(["async-ephemeral", "async-durable"])
         .expect("selection is valid")
         .with_fallback_policy(FallbackPolicy::OnAbsence);
-    let config =
-        EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
+    let config = EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
     let bus = block_on(registry.create_selected(&selection, &config))
         .expect("capability mismatch advances to the next async provider");
     let request = PublishRequest::new(Topic::<u32>::new("test.topic").expect("topic is valid"), 42)
@@ -653,8 +685,8 @@ fn test_async_registry_installs_configured_codec_registry_into_the_facade() {
             content_type: ContentType::APPLICATION_OCTET_STREAM,
         }))
         .expect("unique codec type");
-    let config = EventBusConfig::default()
-        .with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
+    let config =
+        EventBusConfig::default().with_facade_config(EventBusFacadeConfig::new().with_codec_registry(Arc::new(codecs)));
     let bus = block_on(registry.create_selected(
         &ProviderSelection::named("async-encoded").expect("selector is valid"),
         &config,

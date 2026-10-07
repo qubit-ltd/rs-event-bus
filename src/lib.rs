@@ -15,6 +15,7 @@ pub use error::ConfigurationError;
 pub use error::DeliveryError;
 pub use error::EventBusError;
 pub use error::EventIdGenerationError;
+pub use error::FacadeBuildError;
 pub use error::LifecycleError;
 pub use error::ProviderError;
 pub use error::PublishError;

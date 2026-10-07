@@ -27,6 +27,7 @@ use qubit_event_bus::CodecError;
 use qubit_event_bus::ConfigurationError;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
+use qubit_event_bus::FacadeBuildError;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
@@ -158,10 +159,7 @@ impl AsyncEventBusSpi for OrderingTestSpi {
         self.capabilities
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.inner.publish(message)
     }
 
@@ -173,10 +171,7 @@ impl AsyncEventBusSpi for OrderingTestSpi {
         self.inner.subscribe(request)
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }
 }
@@ -200,10 +195,7 @@ impl AsyncEventBusSpi for EmptyAdmissionSpi {
         )
     }
 
-    fn publish<'a>(
-        &'a self,
-        message: OutboundMessage,
-    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let _ = self.0.publish(message).await?;
             Ok(PublishAcknowledgement::DestinationAdmissions(vec![]))
@@ -217,10 +209,7 @@ impl AsyncEventBusSpi for EmptyAdmissionSpi {
         self.0.subscribe(request)
     }
 
-    fn shutdown<'a>(
-        &'a self,
-        mode: ShutdownMode,
-    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.0.shutdown(mode)
     }
 }
@@ -270,14 +259,11 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
     let provider_id = ProviderId::new("opaque-async-test").expect("valid provider");
     let interceptor_calls = Arc::new(AtomicUsize::new(0));
     let global_calls = interceptor_calls.clone();
-    let config = EventBusFacadeConfig::new().publisher_interceptor(
-        move |_metadata: &mut PublishMetadata| {
-            global_calls.fetch_add(1, Ordering::AcqRel);
-            Ok(true)
-        },
-    );
-    let bus = AsyncEventBus::with_config(provider_id.clone(), spi.clone(), config)
-        .expect("valid opaque provider");
+    let config = EventBusFacadeConfig::new().publisher_interceptor(move |_metadata: &mut PublishMetadata| {
+        global_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(true)
+    });
+    let bus = AsyncEventBus::with_config(provider_id.clone(), spi.clone(), config).expect("valid opaque provider");
     let codec_calls = Arc::new(AtomicUsize::new(0));
     let topic = Topic::new("async.checked.opaque")
         .expect("valid topic")
@@ -321,10 +307,7 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
         AdmissionRequirement::ProviderOrDestinationAccepted,
     ))
     .expect("provider acceptance satisfies the new condition");
-    assert_eq!(
-        receipt.admission_outcome(),
-        AdmissionOutcome::OpaqueAccepted
-    );
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
     assert_eq!(
         spi.operation_log()
             .iter()
@@ -334,8 +317,7 @@ fn test_async_checked_publish_opaque_preflight_has_no_side_effects() {
     );
 
     let visible_spi = Arc::new(EmptyAdmissionSpi(FakeAsyncEventBusSpi::new()));
-    let visible_bus =
-        AsyncEventBus::from_spi(provider_id, visible_spi.clone()).expect("valid visible provider");
+    let visible_bus = AsyncEventBus::from_spi(provider_id, visible_spi.clone()).expect("valid visible provider");
     let error = block_on(
         visible_bus.publish_checked(
             PublishRequest::new(
@@ -371,11 +353,8 @@ fn test_async_per_key_capability_is_checked_before_spi_subscribe() {
         (OrderingCapability::PerSubscription, true),
     ] {
         let spi = Arc::new(OrderingTestSpi::new(capability));
-        let bus = AsyncEventBus::from_spi(
-            ProviderId::new("ordering-test").expect("valid provider"),
-            spi.clone(),
-        )
-        .expect("valid provider capabilities");
+        let bus = AsyncEventBus::from_spi(ProviderId::new("ordering-test").expect("valid provider"), spi.clone())
+            .expect("valid provider capabilities");
         let options = SubscribeOptions::<u32>::builder()
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
@@ -402,15 +381,11 @@ fn test_async_per_key_capability_is_checked_before_spi_subscribe() {
     }
 
     let spi = Arc::new(OrderingTestSpi::new(OrderingCapability::None));
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("ordering-test").expect("valid provider"),
-        spi.clone(),
-    )
-    .expect("valid provider capabilities");
-    let mut subscription = block_on(
-        bus.subscribe(SubscribeRequest::new("unordered", topic()).expect("valid subscriber")),
-    )
-    .expect("default unordered subscription works without ordering capability");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("ordering-test").expect("valid provider"), spi.clone())
+        .expect("valid provider capabilities");
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("unordered", topic()).expect("valid subscriber")))
+            .expect("default unordered subscription works without ordering capability");
     assert_eq!(spi.subscribe_calls.load(Ordering::Acquire), 1);
     block_on(subscription.close()).expect("subscription closes");
 }
@@ -446,11 +421,8 @@ fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
 
     for (options, capability) in requests {
         let spi = Arc::new(OrderingTestSpi::new(OrderingCapability::None));
-        let bus = AsyncEventBus::from_spi(
-            ProviderId::new("capability-test").expect("valid provider"),
-            spi.clone(),
-        )
-        .expect("valid provider capabilities");
+        let bus = AsyncEventBus::from_spi(ProviderId::new("capability-test").expect("valid provider"), spi.clone())
+            .expect("valid provider capabilities");
         let result = block_on(
             bus.subscribe(
                 SubscribeRequest::new("capability-check", topic())
@@ -459,9 +431,7 @@ fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
             ),
         );
         match result {
-            Err(SubscribeError::Capability(CapabilityError::Unsupported {
-                capability: actual,
-            })) => {
+            Err(SubscribeError::Capability(CapabilityError::Unsupported { capability: actual })) => {
                 assert_eq!(actual, capability);
             }
             Ok(mut subscription) => {
@@ -486,11 +456,8 @@ fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
         PublishVisibility::Opaque,
     );
     let spi = Arc::new(OrderingTestSpi::with_capabilities(capabilities));
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("capability-test").expect("valid provider"),
-        spi.clone(),
-    )
-    .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("capability-test").expect("valid provider"), spi.clone())
+        .expect("valid provider capabilities");
     let mut subscription = block_on(
         bus.subscribe(
             SubscribeRequest::new("capability-supported", topic())
@@ -498,9 +465,7 @@ fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
                 .with_options(
                     SubscribeOptions::<u32>::builder()
                         .durability(SubscriptionDurability::Durable)
-                        .consumer_group(
-                            ConsumerGroup::new("workers").expect("valid consumer group"),
-                        )
+                        .consumer_group(ConsumerGroup::new("workers").expect("valid consumer group"))
                         .start_position(StartPosition::At("offset-1".into()))
                         .build(),
                 ),
@@ -514,8 +479,8 @@ fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
 #[test]
 fn test_async_subscription_is_created_without_spawning_until_run_is_driven() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new("async-test", topic()).expect("valid subscriber ID");
 
     block_on(async {
@@ -539,8 +504,8 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
         )
         .expect("scheduling"),
     );
-    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config)
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config).expect("valid provider capabilities");
     let shared = Arc::new((
         std::sync::Mutex::new((false, false, 0_usize, Vec::<Waker>::new())),
         std::sync::Condvar::new(),
@@ -555,10 +520,7 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
             .subscribe(SubscribeRequest::new("second", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 5).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 5).unwrap()).await.unwrap();
         (first, second)
     });
 
@@ -635,10 +597,7 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     first_runner.join().unwrap().unwrap();
     second_runner.join().unwrap().unwrap();
-    assert_eq!(
-        observed_concurrency, 1,
-        "bus-wide cap must include all subscriptions"
-    );
+    assert_eq!(observed_concurrency, 1, "bus-wide cap must include all subscriptions");
 }
 
 #[test]
@@ -653,21 +612,14 @@ fn test_async_admission_waiter_keeps_polling_existing_tasks_until_a_slot_is_rele
         )
         .expect("scheduling"),
     );
-    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config)
-        .expect("valid provider capabilities");
-    let subscription = block_on(bus.subscribe(
-        SubscribeRequest::new("admission-progress", topic()).expect("valid subscriber ID"),
-    ))
-    .unwrap();
+    let bus =
+        AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi, config).expect("valid provider capabilities");
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("admission-progress", topic()).expect("valid subscriber ID")))
+            .unwrap();
     block_on(async {
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 1).unwrap())
-            .await
-            .unwrap();
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 2).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 1).unwrap()).await.unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 2).unwrap()).await.unwrap();
     });
     let state = Arc::new(std::sync::Mutex::new((false, 0_usize, Vec::<Waker>::new())));
     let handler_state = state.clone();
@@ -746,18 +698,12 @@ fn test_idle_async_subscription_does_not_consume_handler_capacity() {
             .unwrap();
         let idle = bus
             .subscribe(
-                SubscribeRequest::new(
-                    "idle",
-                    Topic::<u32>::new("idle.topic").expect("valid idle topic"),
-                )
-                .expect("valid subscriber ID"),
+                SubscribeRequest::new("idle", Topic::<u32>::new("idle.topic").expect("valid idle topic"))
+                    .expect("valid subscriber ID"),
             )
             .await
             .unwrap();
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 7).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap();
         (active, idle)
     });
     let active_started = Arc::new(AtomicBool::new(false));
@@ -768,8 +714,7 @@ fn test_idle_async_subscription_does_not_consume_handler_capacity() {
             async { Ok::<(), DeliveryError>(()) }
         }))
     });
-    let idle_runner =
-        std::thread::spawn(move || block_on(idle.run(|_| async { Ok::<(), DeliveryError>(()) })));
+    let idle_runner = std::thread::spawn(move || block_on(idle.run(|_| async { Ok::<(), DeliveryError>(()) })));
 
     for _ in 0..100 {
         if active_started.load(Ordering::Acquire) {
@@ -781,10 +726,7 @@ fn test_idle_async_subscription_does_not_consume_handler_capacity() {
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     active_runner.join().unwrap().unwrap();
     idle_runner.join().unwrap().unwrap();
-    assert!(
-        was_dispatched,
-        "an idle receive must not hold a handler execution slot"
-    );
+    assert!(was_dispatched, "an idle receive must not hold a handler execution slot");
 }
 
 #[test]
@@ -799,8 +741,7 @@ fn test_async_received_wait_includes_deliveries_queued_for_admission() {
         )
         .expect("scheduling"),
     );
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
+    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
     let topic = Topic::<usize>::new("received-admission.topic").unwrap();
     let sub_a = block_on(async {
         bus.subscribe(SubscribeRequest::new("received-a", topic.clone()).unwrap())
@@ -843,9 +784,7 @@ fn test_async_received_wait_includes_deliveries_queued_for_admission() {
         }
     }
     assert_eq!(started_a.load(Ordering::Acquire), 1);
-    let sub_b =
-        block_on(bus.subscribe(SubscribeRequest::new("received-b", topic.clone()).unwrap()))
-            .unwrap();
+    let sub_b = block_on(bus.subscribe(SubscribeRequest::new("received-b", topic.clone()).unwrap())).unwrap();
     let _ = block_on(bus.publish(PublishRequest::new(topic.clone(), 2).unwrap())).unwrap();
     let mut run_b = Box::pin(sub_b.run(|_| async { Ok(()) }));
     for _ in 0..8 {
@@ -866,8 +805,8 @@ fn test_async_received_wait_includes_deliveries_queued_for_admission() {
 #[test]
 fn test_async_subscription_runs_different_ordering_keys_concurrently() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -927,17 +866,13 @@ fn test_async_subscription_runs_different_ordering_keys_concurrently() {
     }
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     runner.join().unwrap().unwrap();
-    assert_eq!(
-        observed, 2,
-        "different ordering keys should make progress in parallel"
-    );
+    assert_eq!(observed, 2, "different ordering keys should make progress in parallel");
 }
 
 #[test]
 fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi)
-        .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -1003,8 +938,8 @@ fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
 #[test]
 fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -1017,9 +952,10 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
     )
     .unwrap();
     for payload in [1, 2] {
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), format!("immediate-lane-{payload}")),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            format!("immediate-lane-{payload}"),
+        ))));
     }
     let state = Arc::new(std::sync::Mutex::new((false, 0_usize, Vec::<Waker>::new())));
     let handler_state = state.clone();
@@ -1050,14 +986,9 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
     assert_eq!(state.lock().unwrap().1, 1);
 
     let shutdown_bus = bus.clone();
-    let shutdown =
-        std::thread::spawn(move || block_on(shutdown_bus.shutdown(ShutdownMode::Immediate)));
+    let shutdown = std::thread::spawn(move || block_on(shutdown_bus.shutdown(ShutdownMode::Immediate)));
     std::thread::sleep(std::time::Duration::from_millis(30));
-    assert_eq!(
-        state.lock().unwrap().1,
-        1,
-        "Immediate must not start lane-waiting work"
-    );
+    assert_eq!(state.lock().unwrap().1, 1, "Immediate must not start lane-waiting work");
     let wakers = {
         let mut state = state.lock().unwrap();
         state.0 = true;
@@ -1083,8 +1014,8 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
 #[test]
 fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
@@ -1097,9 +1028,10 @@ fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes(
     )
     .unwrap();
     for payload in [1_u32, 2_u32] {
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), format!("immediate-race-{payload}")),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            format!("immediate-race-{payload}"),
+        ))));
     }
     let calls = Arc::new(AtomicUsize::new(0));
     let release_first = Arc::new(AtomicBool::new(false));
@@ -1129,13 +1061,7 @@ fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes(
     }));
     for _ in 0..100 {
         let _ = crate::support::manual_async::poll_once(run.as_mut());
-        if calls.load(Ordering::Acquire) == 1
-            && spi
-                .operation_log()
-                .iter()
-                .filter(|op| **op == "receive")
-                .count()
-                >= 2
+        if calls.load(Ordering::Acquire) == 1 && spi.operation_log().iter().filter(|op| **op == "receive").count() >= 2
         {
             break;
         }
@@ -1169,24 +1095,18 @@ fn test_immediate_shutdown_does_not_start_lane_waiter_when_predecessor_finishes(
         1,
         "queued lane work must not start after Immediate"
     );
-    assert_eq!(
-        spi.settlement_count(),
-        1,
-        "only the started delivery should be settled"
-    );
+    assert_eq!(spi.settlement_count(), 1, "only the started delivery should be settled");
 }
 
 #[test]
 fn test_shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("dropped-before-run", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("dropped-before-run", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         drop(subscription);
@@ -1200,15 +1120,12 @@ fn test_shutdown_skips_an_unstarted_subscription_dropped_by_its_owner() {
 fn test_cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_retry() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_close();
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
 
     block_on(async {
         let _subscription = bus
-            .subscribe(
-                SubscribeRequest::new("cancel-pending-close", topic())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("cancel-pending-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
 
@@ -1224,26 +1141,20 @@ fn test_cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_ret
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 
-    assert_eq!(
-        spi.operation_log(),
-        ["subscribe", "close", "close", "shutdown"]
-    );
+    assert_eq!(spi.operation_log(), ["subscribe", "close", "close", "shutdown"]);
 }
 
 #[test]
 fn test_graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_close();
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let timeout = std::time::Duration::from_millis(100);
 
     block_on(async {
         let _subscription = bus
-            .subscribe(
-                SubscribeRequest::new("graceful-pending-close", topic())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("graceful-pending-close", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
 
@@ -1257,24 +1168,22 @@ fn test_graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 
-    assert_eq!(
-        spi.operation_log(),
-        ["subscribe", "close", "close", "shutdown"]
-    );
+    assert_eq!(spi.operation_log(), ["subscribe", "close", "close", "shutdown"]);
 }
 
 #[test]
 fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let (subscribe_sender, subscribe_receiver) = std::sync::mpsc::channel();
     let subscribing_bus = bus.clone();
     let subscriber = std::thread::spawn(move || {
-        let result = block_on(subscribing_bus.subscribe(
-            SubscribeRequest::new("subscribe-shutdown-race", topic()).expect("valid subscriber ID"),
-        ));
+        let result = block_on(
+            subscribing_bus
+                .subscribe(SubscribeRequest::new("subscribe-shutdown-race", topic()).expect("valid subscriber ID")),
+        );
         let _ = subscribe_sender.send(result);
     });
     for _ in 0..100 {
@@ -1315,28 +1224,21 @@ fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
         "provider shutdown must wait for in-flight subscribe cleanup"
     );
     let operations = spi.operation_log();
-    let close = operations
-        .iter()
-        .position(|operation| *operation == "close")
-        .unwrap();
+    let close = operations.iter().position(|operation| *operation == "close").unwrap();
     let shutdown = operations
         .iter()
         .position(|operation| *operation == "shutdown")
         .unwrap();
-    assert!(
-        close < shutdown,
-        "late receiver must close before provider shutdown"
-    );
+    assert!(close < shutdown, "late receiver must close before provider shutdown");
 }
 
 #[test]
 fn test_cancelling_pending_subscribe_releases_admission_for_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
-    let request =
-        SubscribeRequest::new("cancel-pending-subscribe", topic()).expect("valid subscriber ID");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let request = SubscribeRequest::new("cancel-pending-subscribe", topic()).expect("valid subscriber ID");
     let mut subscribe = Box::pin(bus.subscribe(request));
     assert!(matches!(
         crate::support::manual_async::poll_once(subscribe.as_mut()),
@@ -1360,8 +1262,8 @@ fn test_cancelling_pending_subscribe_releases_admission_for_shutdown() {
 #[test]
 fn test_asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider_subscription() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let options = SubscribeOptions::<u32>::builder()
         .interceptor(|delivery, next| next(delivery))
         .build();
@@ -1385,15 +1287,13 @@ fn test_asynchronous_facade_rejects_sync_subscriber_interceptors_before_provider
 #[test]
 fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let observed = Arc::new(AtomicBool::new(false));
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("self-shutdown", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("self-shutdown", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1412,11 +1312,9 @@ fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
                         let would_deadlock = |result| {
                             matches!(
                                 result,
-                                Poll::Ready(Err(ShutdownError::Lifecycle(
-                                    LifecycleError::WouldDeadlock {
-                                        operation: "shutdown"
-                                    }
-                                )))
+                                Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                                    operation: "shutdown"
+                                })))
                             )
                         };
                         let graceful_rejected = would_deadlock(graceful.as_mut().poll(context));
@@ -1444,8 +1342,8 @@ fn test_async_handler_cannot_await_either_shutdown_mode_on_its_own_bus() {
 #[test]
 fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let handler_started = Arc::new(AtomicBool::new(false));
     let release_handler = Arc::new(AtomicBool::new(false));
     let handler_waker = Arc::new(std::sync::Mutex::new(None::<Waker>));
@@ -1453,10 +1351,7 @@ fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("idle-timeout", delivered_topic.clone())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("idle-timeout", delivered_topic.clone()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1492,10 +1387,8 @@ fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
         let (wake_sender, wake_receiver) = std::sync::mpsc::channel();
         let waker = Waker::from(Arc::new(WakeOnSignal(wake_sender)));
         let mut context = Context::from_waker(&waker);
-        let mut waiting = Box::pin(bus.wait_for_received_deliveries(
-            &delivered_topic,
-            Some(std::time::Duration::from_millis(15)),
-        ));
+        let mut waiting =
+            Box::pin(bus.wait_for_received_deliveries(&delivered_topic, Some(std::time::Duration::from_millis(15))));
         let first_poll_pending = matches!(waiting.as_mut().poll(&mut context), Poll::Pending);
         let timer_woke = wake_receiver
             .recv_timeout(std::time::Duration::from_millis(200))
@@ -1511,14 +1404,8 @@ fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
         runner.join().unwrap().unwrap();
 
         assert!(first_poll_pending);
-        assert!(
-            timer_woke,
-            "timeout must wake the waiter without another bus signal"
-        );
-        assert!(matches!(
-            timeout_result,
-            Some(Poll::Ready(Ok(WaitOutcome::TimedOut)))
-        ));
+        assert!(timer_woke, "timeout must wake the waiter without another bus signal");
+        assert!(matches!(timeout_result, Some(Poll::Ready(Ok(WaitOutcome::TimedOut)))));
     });
 }
 
@@ -1526,12 +1413,8 @@ fn test_async_idle_wait_timeout_wakes_without_other_bus_activity() {
 fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();
-    let bus = AsyncEventBus::with_timer(
-        ProviderId::new("fake").unwrap(),
-        spi.clone(),
-        clock.new_timer(),
-    )
-    .expect("valid provider capabilities");
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
     let delivered_topic = topic();
     let started = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
@@ -1539,10 +1422,7 @@ fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("manual-timeout", delivered_topic.clone())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("manual-timeout", delivered_topic.clone()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(crate::support::fake_spi::inbound_message(None));
@@ -1578,10 +1458,8 @@ fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         let (cancel_sender, _cancel_receiver) = std::sync::mpsc::channel();
         let cancel_waker = Waker::from(Arc::new(WakeOnSignal(cancel_sender)));
         let mut cancel_context = Context::from_waker(&cancel_waker);
-        let mut cancelled_wait = Box::pin(bus.wait_for_received_deliveries(
-            &delivered_topic,
-            Some(std::time::Duration::from_secs(60)),
-        ));
+        let mut cancelled_wait =
+            Box::pin(bus.wait_for_received_deliveries(&delivered_topic, Some(std::time::Duration::from_secs(60))));
         assert!(matches!(
             cancelled_wait.as_mut().poll(&mut cancel_context),
             Poll::Pending
@@ -1597,10 +1475,9 @@ fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         let bus_for_wait = bus.clone();
         let topic_for_wait = delivered_topic.clone();
         let waiter = std::thread::spawn(move || {
-            block_on(bus_for_wait.wait_for_received_deliveries(
-                &topic_for_wait,
-                Some(std::time::Duration::from_secs(30)),
-            ))
+            block_on(
+                bus_for_wait.wait_for_received_deliveries(&topic_for_wait, Some(std::time::Duration::from_secs(30))),
+            )
         });
         assert!(clock.wait_for_waiters(1, std::time::Duration::from_secs(1)));
         assert_eq!(clock.pending_waiters(), 1);
@@ -1623,12 +1500,11 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = diagnostics.clone();
-    let _observer = bus
-        .observe_diagnostics(move |diagnostic| captured.lock().unwrap().push(diagnostic.clone()));
+    let _observer = bus.observe_diagnostics(move |diagnostic| captured.lock().unwrap().push(diagnostic.clone()));
 
     block_on(async {
         let subscription = bus
@@ -1676,8 +1552,7 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
 #[test]
 fn test_async_dropping_diagnostic_observer_releases_its_callback_capture() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi)
-        .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let captured = Arc::new(());
     let weak = Arc::downgrade(&captured);
     let handle = bus.observe_diagnostics(move |_| {
@@ -1694,12 +1569,11 @@ fn test_async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = diagnostics.clone();
-    let _observer = bus
-        .observe_diagnostics(move |diagnostic| captured.lock().unwrap().push(diagnostic.clone()));
+    let _observer = bus.observe_diagnostics(move |diagnostic| captured.lock().unwrap().push(diagnostic.clone()));
 
     block_on(async {
         let subscription = bus
@@ -1754,8 +1628,8 @@ fn test_async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
 #[test]
 fn test_inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let mut headers = Headers::new();
     headers.insert("x-qubit-event-bus-dead-letter".into(), "v1".into());
     let options = SubscribeOptions::builder()
@@ -1779,10 +1653,7 @@ fn test_inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish(
             headers,
             None,
             TransportPayload::Native(Arc::new(42_u32)),
-            Some(SettlementToken::new(
-                subscription.id(),
-                "marked-dead-letter",
-            )),
+            Some(SettlementToken::new(subscription.id(), "marked-dead-letter")),
             Default::default(),
         ));
         let observed = Arc::new(AtomicBool::new(false));
@@ -1806,13 +1677,7 @@ fn test_inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish(
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
         assert!(observed.load(Ordering::SeqCst));
-        assert_eq!(
-            spi.operation_log()
-                .iter()
-                .filter(|call| **call == "publish")
-                .count(),
-            0
-        );
+        assert_eq!(spi.operation_log().iter().filter(|call| **call == "publish").count(), 0);
         assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     });
 }
@@ -1820,8 +1685,8 @@ fn test_inbound_dead_letter_marker_prevents_recursive_async_dead_letter_publish(
 #[test]
 fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_cancels_receive() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new("async-run", topic()).expect("valid subscriber ID");
     let delivered = Arc::new(AtomicUsize::new(0));
 
@@ -1839,10 +1704,7 @@ fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_canc
             }))
         });
 
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if delivered.load(Ordering::Acquire) == 1 {
                 break;
@@ -1851,9 +1713,7 @@ fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_canc
         }
         assert_eq!(delivered.load(Ordering::Acquire), 1);
         assert_eq!(
-            bus.wait_for_received_deliveries(&topic(), None)
-                .await
-                .unwrap(),
+            bus.wait_for_received_deliveries(&topic(), None).await.unwrap(),
             WaitOutcome::Idle
         );
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
@@ -1864,22 +1724,20 @@ fn test_async_run_processes_deliveries_on_the_callers_executor_and_shutdown_canc
 #[test]
 fn test_async_middleware_wraps_the_handler_in_registration_order() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = order.clone();
     let options = SubscribeOptions::builder()
-        .async_interceptor(
-            move |delivery: Delivery<u32>, next: AsyncSubscriberNext<u32>| {
-                let seen = seen.clone();
-                Box::pin(async move {
-                    seen.lock().unwrap().push("before");
-                    next(delivery).await?;
-                    seen.lock().unwrap().push("after");
-                    Ok(())
-                }) as SpiFuture<'static, Result<(), DeliveryError>>
-            },
-        )
+        .async_interceptor(move |delivery: Delivery<u32>, next: AsyncSubscriberNext<u32>| {
+            let seen = seen.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push("before");
+                next(delivery).await?;
+                seen.lock().unwrap().push("after");
+                Ok(())
+            }) as SpiFuture<'static, Result<(), DeliveryError>>
+        })
         .build();
     let request = SubscribeRequest::new("async-middleware", topic())
         .expect("valid subscriber ID")
@@ -1897,10 +1755,7 @@ fn test_async_middleware_wraps_the_handler_in_registration_order() {
                 }
             }))
         });
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if order.lock().unwrap().len() == 3 {
                 break;
@@ -1963,10 +1818,7 @@ fn test_async_facade_global_middleware_wraps_typed_middleware_and_handler() {
                 }
             }))
         });
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if calls.lock().unwrap().len() == 5 {
                 break;
@@ -1993,33 +1845,21 @@ fn test_async_facade_rejects_sync_global_subscriber_middleware() {
     let config = EventBusFacadeConfig::new()
         .subscriber_interceptor(|_delivery: Delivery<u32>, _next: SubscriberNext<u32>| Ok(()));
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
-        .expect("valid provider capabilities");
-    block_on(async {
-        let result = bus
-            .subscribe(
-                SubscribeRequest::new("bad-async-global", topic()).expect("valid subscriber ID"),
-            )
-            .await;
-        assert!(matches!(
-            result,
-            Err(SubscribeError::Configuration(
-                ConfigurationError::InvalidField {
-                    field: "sync_subscriber_interceptor",
-                    ..
-                }
-            ))
-        ));
-        assert!(spi.operation_log().is_empty());
-        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
-    });
+    let result = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config);
+    assert!(matches!(
+        result,
+        Err(FacadeBuildError::Configuration(ConfigurationError::InvalidField {
+            field: "sync_subscriber_interceptor",
+            ..
+        }))
+    ));
+    assert_eq!(spi.capabilities_calls(), 0);
 }
 
 #[test]
 fn test_async_handler_future_panic_is_reported_and_does_not_escape_the_runner() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi)
-        .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let failed = Arc::new(AtomicBool::new(false));
     let observed = failed.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
@@ -2036,10 +1876,7 @@ fn test_async_handler_future_panic_is_reported_and_does_not_escape_the_runner() 
                 panic!("handler future panic");
             }))
         });
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if failed.load(Ordering::Acquire) {
                 break;
@@ -2055,8 +1892,7 @@ fn test_async_handler_future_panic_is_reported_and_does_not_escape_the_runner() 
 #[test]
 fn test_async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_policy() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi)
-        .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi).expect("valid provider capabilities");
     let attempts = Arc::new(AtomicUsize::new(0));
     let options = SubscribeOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
@@ -2083,10 +1919,7 @@ fn test_async_retry_reinvokes_the_handler_and_uses_the_configured_qubit_retry_po
                 }
             }))
         });
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         for _ in 0..100 {
             if attempts.load(Ordering::Acquire) == 2 {
                 break;
@@ -2130,9 +1963,10 @@ fn test_async_manual_acknowledgement_requires_an_explicit_ack() {
                 )
                 .await
                 .unwrap();
-            spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-                SettlementToken::new(subscription.id(), subscriber),
-            )));
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+                subscription.id(),
+                subscriber,
+            ))));
             let runner = std::thread::spawn(move || {
                 block_on(subscription.run(move |delivery| async move {
                     match action {
@@ -2160,8 +1994,8 @@ fn test_async_manual_acknowledgement_requires_an_explicit_ack() {
 #[test]
 fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let before = calls.clone();
     let after = calls.clone();
@@ -2171,9 +2005,7 @@ fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     let handler_log = calls.clone();
     let options = SubscribeOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .retry_rule(
-            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry,
-        )
+        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .async_interceptor(move |delivery, next: AsyncSubscriberNext<u32>| {
             before.lock().unwrap().push("before");
             let after = after.clone();
@@ -2197,17 +2029,17 @@ fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
             )
             .await
             .unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "middleware-retry"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "middleware-retry",
+        ))));
         let runner = std::thread::spawn(move || {
             block_on(subscription.run(move |_| {
                 let attempt = attempts_by_handler.fetch_add(1, Ordering::AcqRel);
-                handler_log.lock().unwrap().push(if attempt == 0 {
-                    "handler-1"
-                } else {
-                    "handler-2"
-                });
+                handler_log
+                    .lock()
+                    .unwrap()
+                    .push(if attempt == 0 { "handler-1" } else { "handler-2" });
                 async move {
                     if attempt == 0 {
                         Err(DeliveryError::Handler {
@@ -2232,15 +2064,7 @@ fn test_async_interceptor_and_error_handler_wrap_each_failed_retry_attempt() {
     });
     assert_eq!(
         *calls.lock().unwrap(),
-        [
-            "before",
-            "handler-1",
-            "after",
-            "error",
-            "before",
-            "handler-2",
-            "after"
-        ]
+        ["before", "handler-1", "after", "error", "before", "handler-2", "after"]
     );
 }
 
@@ -2275,9 +2099,10 @@ fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes
             if fail_dead_letter_publish {
                 spi.fail_next_publish();
             }
-            spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-                SettlementToken::new(subscription.id(), "directive-event"),
-            )));
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+                subscription.id(),
+                "directive-event",
+            ))));
             let runner = std::thread::spawn(move || {
                 block_on(subscription.run(|_| async {
                     Err(DeliveryError::Handler {
@@ -2291,10 +2116,7 @@ fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes
                 }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            assert!(
-                spi.settlement_count() > 0,
-                "directive reaches provider settlement"
-            );
+            assert!(spi.settlement_count() > 0, "directive reaches provider settlement");
             let dispositions = spi.settlement_dispositions();
             let operations = spi.operation_log();
             let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
@@ -2336,8 +2158,8 @@ fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes
 #[test]
 fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     block_on(async {
         let options = SubscribeOptions::<u32>::builder()
             .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
@@ -2353,9 +2175,10 @@ fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled()
             .await
             .unwrap();
         spi.fail_next_publish();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "unsettled-source-token"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "unsettled-source-token",
+        ))));
         let error = subscription
             .run(|_| async {
                 Err(DeliveryError::Handler {
@@ -2364,10 +2187,7 @@ fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled()
             })
             .await
             .expect_err("exhausted forwarding reports a terminal receive error");
-        assert!(matches!(
-            error,
-            ReceiveError::DeadLetterForwardFailed { .. }
-        ));
+        assert!(matches!(error, ReceiveError::DeadLetterForwardFailed { .. }));
         assert!(
             spi.settlement_dispositions().is_empty(),
             "the source token remains unsettled"
@@ -2379,8 +2199,8 @@ fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled()
 #[test]
 fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_resume() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new("async-resume", topic()).expect("valid subscriber ID");
     let first_started = Arc::new(AtomicBool::new(false));
     let allow_completion = Arc::new(AtomicBool::new(false));
@@ -2388,10 +2208,7 @@ fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_res
 
     block_on(async {
         let subscription = bus.subscribe(request).await.unwrap();
-        let _ = bus
-            .publish(PublishRequest::new(topic(), 42).unwrap())
-            .await
-            .unwrap();
+        let _ = bus.publish(PublishRequest::new(topic(), 42).unwrap()).await.unwrap();
         let first_started_by_handler = first_started.clone();
         let allow_completion_by_handler = allow_completion.clone();
         let handler_calls_by_handler = handler_calls.clone();
@@ -2456,8 +2273,8 @@ fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_res
 #[test]
 fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let handler_started = Arc::new(AtomicBool::new(false));
 
     block_on(async {
@@ -2465,9 +2282,10 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
             .subscribe(SubscribeRequest::new("drop-paused", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "drop-recovery"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "drop-recovery",
+        ))));
         let started = handler_started.clone();
         let mut run = Box::pin(subscription.run(move |_| {
             let started = started.clone();
@@ -2488,11 +2306,7 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
         drop(subscription);
     });
 
-    assert_eq!(
-        spi.settlement_count(),
-        0,
-        "drop must not settle the delivery"
-    );
+    assert_eq!(spi.settlement_count(), 0, "drop must not settle the delivery");
     assert_eq!(
         spi.receiver_drop_recoveries(),
         1,
@@ -2504,18 +2318,18 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
 #[test]
 fn test_dropping_subscription_during_shutdown_takeover_releases_the_active_session() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let started = Arc::new(AtomicBool::new(false));
     let finish = Arc::new(AtomicBool::new(false));
     let handler_wakers = Arc::new(std::sync::Mutex::new(Vec::<Waker>::new()));
-    let subscription = block_on(bus.subscribe(
-        SubscribeRequest::new("drop-during-takeover", topic()).expect("valid subscriber ID"),
-    ))
-    .unwrap();
-    spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-        SettlementToken::new(subscription.id(), "drop-takeover"),
-    )));
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("drop-during-takeover", topic()).expect("valid subscriber ID")))
+            .unwrap();
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "drop-takeover",
+    ))));
 
     let started_by_handler = started.clone();
     let finish_by_handler = finish.clone();
@@ -2610,8 +2424,8 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
         PublishVisibility::Opaque,
     );
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let topic = Topic::new("async.encoded-subscription")
         .unwrap()
         .with_codec(Utf8Codec(ContentType::TEXT_PLAIN));
@@ -2619,9 +2433,7 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("encoded-subscription", topic).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("encoded-subscription", topic).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.enqueue(InboundMessage::new(
@@ -2635,10 +2447,7 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
                 ContentType::TEXT_PLAIN,
                 None,
             )),
-            Some(SettlementToken::new(
-                subscription.id(),
-                "encoded-subscription-token",
-            )),
+            Some(SettlementToken::new(subscription.id(), "encoded-subscription-token")),
             Default::default(),
         ));
         let received_by_handler = received.clone();
@@ -2654,10 +2463,7 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(
-            *received.lock().unwrap(),
-            Some("decoded from transport".to_owned())
-        );
+        assert_eq!(*received.lock().unwrap(), Some("decoded from transport".to_owned()));
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
     });
@@ -2700,12 +2506,10 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     }
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
-    let topic = Topic::new("async.panic-codec")
-        .unwrap()
-        .with_codec(PanicOnceCodec {
-            content_type: ContentType::TEXT_PLAIN,
-            panicked: Arc::new(AtomicBool::new(false)),
-        });
+    let topic = Topic::new("async.panic-codec").unwrap().with_codec(PanicOnceCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        panicked: Arc::new(AtomicBool::new(false)),
+    });
     let handled = Arc::new(AtomicUsize::new(0));
     let diagnostic_seen = Arc::new(AtomicBool::new(false));
     let observed = diagnostic_seen.clone();
@@ -2714,9 +2518,7 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
             observed.store(true, Ordering::Release);
         }
     });
-    let subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("panic-codec", topic.clone()).unwrap()))
-            .unwrap();
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("panic-codec", topic.clone()).unwrap())).unwrap();
     let subscription_id = subscription.id();
     let enqueue = |id: &'static str, token: &'static str| {
         InboundMessage::new(
@@ -2773,11 +2575,9 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     // Recovery uses a new subscription after the codec is repaired. This probe
     // panics only once, so its shared topic codec now successfully decodes.
     let recovered_spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let recovered_bus =
-        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), recovered_spi.clone()).unwrap();
+    let recovered_bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), recovered_spi.clone()).unwrap();
     let recovered =
-        block_on(recovered_bus.subscribe(SubscribeRequest::new("recovered-codec", topic).unwrap()))
-            .unwrap();
+        block_on(recovered_bus.subscribe(SubscribeRequest::new("recovered-codec", topic).unwrap())).unwrap();
     for (id, bytes) in [
         ("recovered-event", b"ok".as_slice()),
         ("invalid-codec-event", &[0xff_u8][..]),
@@ -2788,11 +2588,7 @@ fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
-            TransportPayload::Encoded(EncodedPayload::new(
-                Arc::from(bytes),
-                ContentType::TEXT_PLAIN,
-                None,
-            )),
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from(bytes), ContentType::TEXT_PLAIN, None)),
             Some(SettlementToken::new(recovered.id(), id)),
             Default::default(),
         ));
@@ -2888,10 +2684,7 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
                 ContentType::TEXT_PLAIN,
                 None,
             )),
-            Some(SettlementToken::new(
-                subscription.id(),
-                "registry-codec-token",
-            )),
+            Some(SettlementToken::new(subscription.id(), "registry-codec-token")),
             Default::default(),
         ));
         let received_by_handler = received.clone();
@@ -2907,10 +2700,7 @@ fn test_async_subscription_resolves_encoded_payload_codec_from_facade_registry()
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(
-            *received.lock().unwrap(),
-            Some("decoded through registry".to_owned())
-        );
+        assert_eq!(*received.lock().unwrap(), Some("decoded through registry".to_owned()));
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
     });
@@ -2935,8 +2725,8 @@ fn test_async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
         capabilities,
         subscribe_calls: AtomicUsize::new(0),
     });
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new(
         "missing-async-codec",
         Topic::<String>::new("async.missing-codec").unwrap(),
@@ -2959,22 +2749,21 @@ fn test_async_encoded_subscription_without_codec_fails_before_spi_subscribe() {
 #[test]
 fn test_shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let started = Arc::new(AtomicBool::new(false));
     let finish = Arc::new(AtomicBool::new(false));
     let handler_calls = Arc::new(AtomicUsize::new(0));
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("paused-shutdown", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("paused-shutdown", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "paused-shutdown-token"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "paused-shutdown-token",
+        ))));
         let started_by_handler = started.clone();
         let finish_by_handler = finish.clone();
         let calls_by_handler = handler_calls.clone();
@@ -3021,15 +2810,16 @@ fn test_shutdown_takes_over_a_paused_async_session_and_finishes_its_owned_task()
 #[test]
 fn test_async_success_settles_the_provider_token_after_handler_completion() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new("async-settle", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let subscription = bus.subscribe(request).await.unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "settlement-1"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "settlement-1",
+        ))));
         let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
         for _ in 0..100 {
             if spi.settlement_count() == 1 {
@@ -3046,19 +2836,18 @@ fn test_async_success_settles_the_provider_token_after_handler_completion() {
 #[test]
 fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let handler_calls = Arc::new(AtomicUsize::new(0));
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("settle-cancel", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("settle-cancel", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "cancelled-settle"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "cancelled-settle",
+        ))));
         spi.pause_next_settle();
         {
             let first_calls = handler_calls.clone();
@@ -3068,13 +2857,7 @@ fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
             }));
             std::future::poll_fn(|cx| {
                 let _ = first_run.as_mut().poll(cx);
-                if spi
-                    .operation_log()
-                    .iter()
-                    .filter(|op| **op == "settle")
-                    .count()
-                    > 0
-                {
+                if spi.operation_log().iter().filter(|op| **op == "settle").count() > 0 {
                     Poll::Ready(())
                 } else {
                     cx.waker().wake_by_ref();
@@ -3091,24 +2874,12 @@ fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
             }))
         });
         for _ in 0..100 {
-            if spi
-                .operation_log()
-                .iter()
-                .filter(|op| **op == "settle")
-                .count()
-                >= 2
-            {
+            if spi.operation_log().iter().filter(|op| **op == "settle").count() >= 2 {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        assert_eq!(
-            spi.operation_log()
-                .iter()
-                .filter(|op| **op == "settle")
-                .count(),
-            2
-        );
+        assert_eq!(spi.operation_log().iter().filter(|op| **op == "settle").count(), 2);
         assert_eq!(spi.settlement_count(), 1);
         assert_eq!(
             handler_calls.load(Ordering::SeqCst),
@@ -3123,8 +2894,8 @@ fn test_cancelling_run_during_settle_keeps_token_for_idempotent_retry() {
 #[test]
 fn test_dropping_idle_wait_unregisters_signal_waker() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let started = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let handler_waker = Arc::new(std::sync::Mutex::new(None::<Waker>));
@@ -3137,14 +2908,13 @@ fn test_dropping_idle_wait_unregisters_signal_waker() {
         std::thread::spawn(move || {
             block_on(async move {
                 let subscription = bus
-                    .subscribe(
-                        SubscribeRequest::new("stale-waker", topic()).expect("valid subscriber ID"),
-                    )
+                    .subscribe(SubscribeRequest::new("stale-waker", topic()).expect("valid subscriber ID"))
                     .await
                     .unwrap();
-                spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-                    SettlementToken::new(subscription.id(), "stale-waker-token"),
-                )));
+                spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+                    subscription.id(),
+                    "stale-waker-token",
+                ))));
                 subscription
                     .run(move |_| {
                         let started = started.clone();
@@ -3198,8 +2968,8 @@ fn test_dropping_idle_wait_unregisters_signal_waker() {
 #[test]
 fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let settlement_failed = Arc::new(AtomicBool::new(false));
     let observed = settlement_failed.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
@@ -3208,15 +2978,15 @@ fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handle
         }
     });
     let handler_calls = Arc::new(AtomicUsize::new(0));
-    let request =
-        SubscribeRequest::new("async-settle-failure", topic()).expect("valid subscriber ID");
+    let request = SubscribeRequest::new("async-settle-failure", topic()).expect("valid subscriber ID");
 
     block_on(async {
         let subscription = bus.subscribe(request).await.unwrap();
         spi.fail_next_settle();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "settlement-fail"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "settlement-fail",
+        ))));
         let calls = handler_calls.clone();
         let runner = std::thread::spawn(move || {
             block_on(subscription.run(move |_| {
@@ -3250,13 +3020,7 @@ fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handle
             1,
             "settlement retry does not rerun the handler"
         );
-        assert_eq!(
-            spi.operation_log()
-                .iter()
-                .filter(|op| **op == "settle")
-                .count(),
-            2
-        );
+        assert_eq!(spi.operation_log().iter().filter(|op| **op == "settle").count(), 2);
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
         assert_eq!(
@@ -3272,8 +3036,8 @@ fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handle
 #[test]
 fn test_cancelling_pending_provider_shutdown_can_be_retried_after_partial_progress() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     spi.pause_shutdown();
     let mut first_shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
 
@@ -3287,9 +3051,7 @@ fn test_cancelling_pending_provider_shutdown_can_be_retried_after_partial_progre
     spi.release_shutdown();
     assert_eq!(
         ShutdownOutcome::Complete,
-        block_on(bus.shutdown(ShutdownMode::Immediate))
-            .unwrap()
-            .outcome
+        block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap().outcome
     );
     assert_eq!(
         1,
@@ -3308,20 +3070,18 @@ fn test_cancelling_pending_provider_shutdown_can_be_retried_after_partial_progre
 #[test]
 fn test_async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("permanent-settlement-failure", topic())
-                    .expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("permanent-settlement-failure", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.fail_all_settles();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "permanent-failure-token"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "permanent-failure-token",
+        ))));
         let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
         for _ in 0..100 {
             if spi.operation_log().contains(&"settle") {
@@ -3342,11 +3102,7 @@ fn test_async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
                     }
                 )
         ));
-        assert_eq!(
-            spi.settlement_count(),
-            0,
-            "provider never accepted this token"
-        );
+        assert_eq!(spi.settlement_count(), 0, "provider never accepted this token");
         assert!(
             spi.operation_log().contains(&"close"),
             "receiver close owns final cleanup"
@@ -3357,19 +3113,18 @@ fn test_async_shutdown_stops_permanent_settlement_retry_after_receiver_close() {
 #[test]
 fn test_async_settlement_call_panic_is_reported_once_and_does_not_retry() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("async-settle-panic", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("async-settle-panic", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.panic_on_settle_call();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "settle-panic-token"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "settle-panic-token",
+        ))));
         let runner = std::thread::spawn(move || block_on(subscription.run(|_| async { Ok(()) })));
         for _ in 0..100 {
             if spi.operation_log().contains(&"settle") {
@@ -3404,15 +3159,14 @@ fn test_async_settlement_call_panic_is_reported_once_and_does_not_retry() {
 #[test]
 fn test_permanent_settlement_failure_yields_to_same_executor_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("provider"), spi.clone())
-        .expect("bus");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("provider"), spi.clone()).expect("bus");
     let subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("same-executor", topic()).expect("request")))
-            .expect("subscribe");
+        block_on(bus.subscribe(SubscribeRequest::new("same-executor", topic()).expect("request"))).expect("subscribe");
     spi.fail_all_settles();
-    spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-        SettlementToken::new(subscription.id(), "token"),
-    )));
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "token",
+    ))));
     let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
     let mut result = Poll::Pending;
     for _ in 0..16 {
@@ -3436,17 +3190,13 @@ fn test_permanent_settlement_failure_yields_to_same_executor_shutdown() {
 #[test]
 fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_without_event() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let observed = Arc::new(std::sync::Mutex::new(None));
     let observed_by_callback = observed.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if let Diagnostic::SettlementFailed {
-            event_id, topic, ..
-        } = diagnostic
-        {
-            *observed_by_callback.lock().unwrap() =
-                Some((event_id.as_str().to_owned(), topic.to_string()));
+        if let Diagnostic::SettlementFailed { event_id, topic, .. } = diagnostic {
+            *observed_by_callback.lock().unwrap() = Some((event_id.as_str().to_owned(), topic.to_string()));
         }
     });
     struct InvalidUtf8Codec(ContentType);
@@ -3469,8 +3219,7 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
     let string_topic = Topic::<String>::new("test.topic")
         .unwrap()
         .with_codec(InvalidUtf8Codec(ContentType::TEXT_PLAIN));
-    let request =
-        SubscribeRequest::new("decode-settle-failure", string_topic).expect("valid subscriber ID");
+    let request = SubscribeRequest::new("decode-settle-failure", string_topic).expect("valid subscriber ID");
 
     block_on(async {
         let subscription = bus.subscribe(request).await.unwrap();
@@ -3481,11 +3230,7 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
-            TransportPayload::Encoded(EncodedPayload::new(
-                Arc::from([0xff_u8]),
-                ContentType::TEXT_PLAIN,
-                None,
-            )),
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from([0xff_u8]), ContentType::TEXT_PLAIN, None)),
             Some(SettlementToken::new(subscription.id(), "decode-fail")),
             Default::default(),
         ));
@@ -3508,8 +3253,8 @@ fn test_async_decode_settlement_failure_diagnostic_keeps_inbound_identity_withou
 #[test]
 fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_closed() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let request = SubscribeRequest::new("async-spi-panic", topic()).expect("valid subscriber ID");
 
     block_on(async {
@@ -3530,9 +3275,7 @@ fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_clos
         );
         assert!(Arc::ptr_eq(
             &reason,
-            &subscription
-                .terminal_failure()
-                .expect("cached provider failure")
+            &subscription.terminal_failure().expect("cached provider failure")
         ));
         let ReceiveError::Stopped(repeated) = subscription
             .run(|_| async { Ok(()) })
@@ -3558,37 +3301,31 @@ fn test_async_spi_receive_poll_panic_is_converted_to_a_structured_error_and_clos
 #[test]
 fn test_async_spi_operation_call_panics_are_returned_as_structured_errors() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     spi.panic_on_subscribe_call();
-    let subscribe_error = match block_on(bus.subscribe(
-        SubscribeRequest::new("async-subscribe-panic", topic()).expect("valid subscriber ID"),
-    )) {
+    let subscribe_error = match block_on(
+        bus.subscribe(SubscribeRequest::new("async-subscribe-panic", topic()).expect("valid subscriber ID")),
+    ) {
         Ok(_) => panic!("subscribe panic must be returned as an error"),
         Err(error) => error,
     };
-    assert!(
-        matches!(subscribe_error, SubscribeError::Spi(error) if error.kind() == "provider_panicked")
-    );
+    assert!(matches!(subscribe_error, SubscribeError::Spi(error) if error.kind() == "provider_panicked"));
 
     spi.panic_on_shutdown_call();
     let shutdown_error = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap_err();
-    assert!(
-        matches!(shutdown_error, ShutdownError::Spi(error) if error.kind() == "provider_panicked")
-    );
+    assert!(matches!(shutdown_error, ShutdownError::Spi(error) if error.kind() == "provider_panicked"));
 }
 
 #[test]
 fn test_async_receiver_close_call_panic_is_reported_during_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
 
     block_on(async {
         let _subscription = bus
-            .subscribe(
-                SubscribeRequest::new("async-close-panic", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("async-close-panic", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
         spi.panic_on_close_call();
@@ -3600,22 +3337,16 @@ fn test_async_receiver_close_call_panic_is_reported_during_shutdown() {
 #[test]
 fn test_concurrent_async_shutdown_calls_close_the_provider_once() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let first = bus.clone();
     let second = bus.clone();
 
     let first = std::thread::spawn(move || block_on(first.shutdown(ShutdownMode::Immediate)));
     let second = std::thread::spawn(move || block_on(second.shutdown(ShutdownMode::Immediate)));
 
-    assert_eq!(
-        first.join().unwrap().unwrap().outcome,
-        ShutdownOutcome::Complete
-    );
-    assert_eq!(
-        second.join().unwrap().unwrap().outcome,
-        ShutdownOutcome::Complete
-    );
+    assert_eq!(first.join().unwrap().unwrap().outcome, ShutdownOutcome::Complete);
+    assert_eq!(second.join().unwrap().unwrap().outcome, ShutdownOutcome::Complete);
     assert_eq!(
         spi.operation_log()
             .iter()
@@ -3628,25 +3359,25 @@ fn test_concurrent_async_shutdown_calls_close_the_provider_once() {
 #[test]
 fn test_immediate_shutdown_waits_for_runner_settlement_and_close_before_provider_shutdown() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
-        .expect("valid provider capabilities");
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let started = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let handlers = Arc::new(AtomicUsize::new(0));
 
     block_on(async {
         let subscription = bus
-            .subscribe(
-                SubscribeRequest::new("shutdown-order", topic()).expect("valid subscriber ID"),
-            )
+            .subscribe(SubscribeRequest::new("shutdown-order", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "shutdown-order"),
-        )));
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(
-            SettlementToken::new(subscription.id(), "shutdown-queued"),
-        )));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "shutdown-order",
+        ))));
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "shutdown-queued",
+        ))));
         let handler_started = started.clone();
         let handler_release = release.clone();
         let handler_count = handlers.clone();
@@ -3677,13 +3408,11 @@ fn test_immediate_shutdown_waits_for_runner_settlement_and_close_before_provider
         let shutdown_polled_by_thread = shutdown_polled.clone();
         let shutdown = std::thread::spawn(move || {
             let mut shutdown = Box::pin(shutdown_bus.shutdown(ShutdownMode::Immediate));
-            block_on(std::future::poll_fn(|context| {
-                match shutdown.as_mut().poll(context) {
-                    Poll::Ready(result) => Poll::Ready(result),
-                    Poll::Pending => {
-                        shutdown_polled_by_thread.store(true, Ordering::Release);
-                        Poll::Pending
-                    }
+            block_on(std::future::poll_fn(|context| match shutdown.as_mut().poll(context) {
+                Poll::Ready(result) => Poll::Ready(result),
+                Poll::Pending => {
+                    shutdown_polled_by_thread.store(true, Ordering::Release);
+                    Poll::Pending
                 }
             }))
         });
@@ -3703,14 +3432,8 @@ fn test_immediate_shutdown_waits_for_runner_settlement_and_close_before_provider
             "provider shutdown must wait for the active handler"
         );
         let operations = spi.operation_log();
-        let settle = operations
-            .iter()
-            .position(|operation| *operation == "settle")
-            .unwrap();
-        let close = operations
-            .iter()
-            .position(|operation| *operation == "close")
-            .unwrap();
+        let settle = operations.iter().position(|operation| *operation == "settle").unwrap();
+        let close = operations.iter().position(|operation| *operation == "close").unwrap();
         let shutdown = operations
             .iter()
             .position(|operation| *operation == "shutdown")

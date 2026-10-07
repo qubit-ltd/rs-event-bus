@@ -187,7 +187,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 | `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`DeliverySchedulingConfig`、`SettlementRetryConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
 | `local` | 内置进程内 provider | `LocalEventBusConfig`、`LocalEventBusProvider`、`AsyncLocalEventBusProvider`、`LocalEventBusSpi`、`AsyncLocalEventBusSpi`、`LocalQueue`、`OutstandingBudget` |
 | `notification` | 在 `EventBus` 前面加一层永不阻塞的有界发布队列 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
-| `error` | 分层错误类型 | `EventBusError`、`PublishError`、`SubscribeError`、`DeliveryError`、`LifecycleError`、`ShutdownError`、`ProviderError`、`SpiError`、`CapabilityError`、`CodecError`、`ConfigurationError` |
+| `error` | 分层错误类型 | `EventBusError`、`PublishError`、`SubscribeError`、`DeliveryError`、`LifecycleError`、`ShutdownError`、`ProviderError`、`FacadeBuildError`、`SpiError`、`CapabilityError`、`CodecError`、`ConfigurationError` |
 
 依赖方向严格为 `facade → pipeline → {model, codec, spi, error}`、
 `registry → spi`、`local → spi`。`pipeline` 与 `spi` 不知道 facade 的存在，
@@ -661,9 +661,11 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `settlement_retry` | `SettlementRetryConfig`：5 次、5 秒、10 ms 初始退避、1 秒上限 | 只重试明确可重试的结算错误 |
 | `payload_limits` | `PayloadLimits` | 编码发布和接收的独立正数上限，默认各 1,048,576 字节 |
 
-facade 创建时只读取一次 provider capabilities，并在后续校验中使用不可变快照。
-直接构造时若 `capabilities()` panic，构造函数返回 `SpiError`，分类为终态
-`provider_panicked`。
+facade 先校验配置中的全部订阅中间件，再查询 provider capabilities。同步 facade
+拒绝任何异步订阅中间件，异步 facade 对同步订阅中间件对称处理；直接构造时返回
+`FacadeBuildError::Configuration`。请求级中间件仍在订阅时校验。随后只读取一次
+capabilities，并在后续校验中使用不可变快照。查询失败或 panic 返回
+`FacadeBuildError::Spi`；panic 分类为终态 `provider_panicked`。
 
 全局拦截器/中间件与请求级拦截器/中间件**叠加**而非替代：发布侧先跑请求级
 （typed），后跑全局（metadata）；消费侧全局中间件包在请求级中间件**外层**
@@ -1229,6 +1231,7 @@ completion guard 在处理循环及用户资源清理完成后，发布唯一的
 | `LifecycleError` | `wait_for_*`、`cancel`、停机内部 | `Timer(TimeError)`、`WouldDeadlock { operation }`、`Closed`、`IdleWaitUnsupported`、`Spi`、`SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
 | `ShutdownError` | `request_shutdown`、ticket wait、`shutdown` | `TimedOut { .. }`、`CoordinatorStart(io::Error)`、`Lifecycle(LifecycleError)`（含 `WouldDeadlock`）、`Spi`、`SubscriptionClose` |
 | `ProviderError` | registry | `Resolution`（找不到 provider / 选择非法）、`Creation`（provider 构造失败或 `RequiredCapabilities` 缺失） |
+| `FacadeBuildError` | facade 直接构造函数 | `Configuration(ConfigurationError)` 表示中间件执行模型不符，`Spi(SpiError)` 表示能力查询失败；registry 的 `Creation` 在 source 中保留此错误 |
 | `EventBusProviderError` | provider 作者 | provider `create` 返回的错误包装，供 `qubit-spi` 聚合 |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`、`Operation { provider_id, operation, resource, kind, retryable, source }`、`InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | 构造期或校验 | 见各自定义 |

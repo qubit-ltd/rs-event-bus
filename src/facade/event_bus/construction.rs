@@ -21,7 +21,7 @@ use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
 use crate::EventBusRegistry;
 use crate::ProviderError;
-use crate::error::SpiError;
+use crate::error::FacadeBuildError;
 use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
 use crate::facade::event_bus::internal::EventBusInner;
@@ -73,10 +73,9 @@ impl EventBus {
     /// Returns an error if the local provider cannot be registered or created,
     /// or if the supplied local configuration is invalid.
     pub fn local(config: LocalEventBusConfig) -> Result<Self, ProviderError> {
-        let registry =
-            EventBusRegistry::with_local().map_err(|source| ProviderError::Resolution {
-                source: Box::new(source),
-            })?;
+        let registry = EventBusRegistry::with_local().map_err(|source| ProviderError::Resolution {
+            source: Box::new(source),
+        })?;
         let config = EventBusConfig::default().with_provider_options(config.provider_options());
         registry.create(&config)
     }
@@ -97,9 +96,9 @@ impl EventBus {
     /// A running facade with default facade configuration.
     ///
     /// # Errors
-    /// Returns the provider's capability call failure. A Rust panic from that
-    /// call is reported as a terminal `provider_panicked` SPI error.
-    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Result<Self, SpiError> {
+    /// Returns [`FacadeBuildError::Spi`] if querying provider capabilities
+    /// fails or panics.
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Result<Self, FacadeBuildError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
@@ -117,13 +116,14 @@ impl EventBus {
     /// A running facade using the supplied configuration.
     ///
     /// # Errors
-    /// Returns the provider's capability call failure, including a terminal
-    /// `provider_panicked` error when the SPI unwinds.
+    /// Returns [`FacadeBuildError::Configuration`] for asynchronous subscriber
+    /// middleware, or [`FacadeBuildError::Spi`] if the provider capability call
+    /// fails or panics.
     pub fn with_config(
         provider_id: ProviderId,
         spi: Arc<dyn EventBusSpi>,
         config: EventBusFacadeConfig,
-    ) -> Result<Self, SpiError> {
+    ) -> Result<Self, FacadeBuildError> {
         Self::with_config_and_clock(provider_id, spi, config, Arc::new(StdMonotonicClock::new()))
     }
 
@@ -143,19 +143,20 @@ impl EventBus {
     /// A facade whose receiver owners share the injected clock.
     ///
     /// # Errors
-    /// Returns a structured SPI error if querying provider capabilities panics.
+    /// Returns [`FacadeBuildError::Configuration`] for asynchronous subscriber
+    /// middleware, or [`FacadeBuildError::Spi`] if querying provider
+    /// capabilities fails or panics.
     pub fn with_config_and_clock(
         provider_id: ProviderId,
         spi: Arc<dyn EventBusSpi>,
         config: EventBusFacadeConfig,
         clock: Arc<dyn MonotonicClock>,
-    ) -> Result<Self, SpiError> {
-        let capabilities = crate::spi::panic_boundary::catch_spi_call(
-            provider_id.as_str(),
-            "capabilities",
-            None,
-            || spi.capabilities(),
-        )?;
+    ) -> Result<Self, FacadeBuildError> {
+        config.validate_for_sync()?;
+        let capabilities =
+            crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
+                spi.capabilities()
+            })?;
         let scheduler = SyncDeliveryScheduler::new(config.delivery_scheduling());
         let subscription_worker_budget = Arc::new(SubscriptionWorkerBudget {
             active: AtomicUsize::new(0),
@@ -204,8 +205,6 @@ impl EventBus {
     #[must_use = "delivery metrics are the current bus diagnostics"]
     #[inline]
     pub fn delivery_metrics(&self) -> crate::facade::DeliveryMetricsSnapshot {
-        self.inner
-            .delivery_metrics
-            .snapshot(self.inner.delivery_gauges(None))
+        self.inner.delivery_metrics.snapshot(self.inner.delivery_gauges(None))
     }
 }
