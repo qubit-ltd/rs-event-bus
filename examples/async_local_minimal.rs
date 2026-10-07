@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (sender, receiver) = mpsc::channel();
     let subscription = block_on(bus.subscribe(SubscribeRequest::new("audit", topic.clone())?))?;
     let runner = thread::spawn(move || {
-        let mut subscription = subscription;
+        let subscription = subscription;
         block_on(subscription.run(move |delivery| {
             let _ = sender.send(delivery.payload().clone());
             async { Ok::<(), DeliveryError>(()) }

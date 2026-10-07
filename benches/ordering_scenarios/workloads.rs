@@ -112,7 +112,10 @@ impl AsyncEventBusSpi for RetrySpi {
 
     /// Strips the fixture key before local publication. The prepared key table
     /// restores it on receipt; publication is outside the measured interval.
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         let unkeyed = OutboundMessage::new(
             message.topic().clone(),
             message.id().clone(),
@@ -144,7 +147,10 @@ impl AsyncEventBusSpi for RetrySpi {
     }
 
     /// Delegates shutdown and preserves its outcome and error semantics.
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }
 }
@@ -152,7 +158,10 @@ impl AsyncEventBusSpi for RetrySpi {
 impl AsyncEventSubscriptionSpi for RetryReceiver {
     /// Restores a prepared key and wraps the local token; other outcomes pass
     /// through. Unexpected fixture payloads return a permanent SPI error.
-    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         Box::pin(async move {
             let outcome = self.inner.receive(timeout).await?;
             let ReceiveOutcome::Message(message) = outcome else {
@@ -160,9 +169,9 @@ impl AsyncEventSubscriptionSpi for RetryReceiver {
             };
             let (topic, id, timestamp, headers, _, payload, token, metadata) = message.into_parts();
             let key = match &payload {
-                TransportPayload::Native(value) => {
-                    value.downcast_ref::<usize>().and_then(|index| self.keys.get(*index))
-                }
+                TransportPayload::Native(value) => value
+                    .downcast_ref::<usize>()
+                    .and_then(|index| self.keys.get(*index)),
                 _ => None,
             }
             .cloned()
@@ -198,14 +207,18 @@ impl AsyncEventSubscriptionSpi for RetryReceiver {
     ) -> SpiFuture<'a, Result<(), SpiError>> {
         self.counts.attempts.fetch_add(1, Ordering::Relaxed);
         if disposition != DeliveryDisposition::Accept {
-            self.counts.wrong_dispositions.fetch_add(1, Ordering::Relaxed);
+            self.counts
+                .wrong_dispositions
+                .fetch_add(1, Ordering::Relaxed);
         }
         let Some(token) = token.downcast_ref::<RetryToken>() else {
             return Box::pin(async { Err(injected_error(false)) });
         };
         if token
             .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                left.checked_sub(1)
+            })
             .is_ok()
         {
             return Box::pin(async { Err(injected_error(true)) });
@@ -282,14 +295,26 @@ struct Sample {
 fn sample(workload: &str, operations: usize) -> Sample {
     let cross_subscription = workload == "cross-subscription";
     let gated = matches!(workload, "hot-a0-gate" | "cross-subscription");
-    let failures = if workload == "settlement-retry" { FAILURES } else { 0 };
+    let failures = if workload == "settlement-retry" {
+        FAILURES
+    } else {
+        0
+    };
     let subscriptions = if cross_subscription { 2 } else { 1 };
-    let healthy = Arc::new((0..operations).map(|index| gated && index % 4 == 3).collect::<Vec<_>>());
+    let healthy = Arc::new(
+        (0..operations)
+            .map(|index| gated && index % 4 == 3)
+            .collect::<Vec<_>>(),
+    );
     let keys = Arc::new(
         (0..operations)
             .map(|index| {
                 let key = if gated {
-                    if healthy[index] { "B".to_owned() } else { "A".to_owned() }
+                    if healthy[index] {
+                        "B".to_owned()
+                    } else {
+                        "A".to_owned()
+                    }
                 } else {
                     format!("key-{}", index % 16)
                 };
@@ -299,7 +324,8 @@ fn sample(workload: &str, operations: usize) -> Sample {
     );
     let counts = Arc::new(SettlementCounts::default());
     let provider = Arc::new(RetrySpi {
-        inner: AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(operations)).unwrap(),
+        inner: AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(operations))
+            .unwrap(),
         keys: keys.clone(),
         failures,
         counts: counts.clone(),
@@ -321,7 +347,12 @@ fn sample(workload: &str, operations: usize) -> Sample {
     let config = EventBusFacadeConfig::new()
         .with_delivery_scheduling(scheduling)
         .with_settlement_retry(retry);
-    let bus = AsyncEventBus::with_config(ProviderId::new("ordering-scenarios").unwrap(), provider, config).unwrap();
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("ordering-scenarios").unwrap(),
+        provider,
+        config,
+    )
+    .unwrap();
     let mut handles = Vec::with_capacity(subscriptions);
     let topics = (0..subscriptions)
         .map(|index| Topic::<usize>::new(&format!("bench.scenario.{index}")).unwrap())
@@ -360,7 +391,11 @@ fn sample(workload: &str, operations: usize) -> Sample {
     let healthy_completed = Arc::new(AtomicUsize::new(0));
     let early_hot = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(OnceLock::<Instant>::new());
-    let latencies = Arc::new((0..operations).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
+    let latencies = Arc::new(
+        (0..operations)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
     let mut runners: Vec<Runner<'_>> = handles
         .iter_mut()
         .map(|handle| {
@@ -387,7 +422,8 @@ fn sample(workload: &str, operations: usize) -> Sample {
                         return Poll::Pending;
                     }
                     if let Some(start) = started.get() {
-                        latencies[index].store(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                        latencies[index]
+                            .store(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     }
                     completed.fetch_add(1, Ordering::Relaxed);
                     if healthy[index] {
@@ -410,7 +446,10 @@ fn sample(workload: &str, operations: usize) -> Sample {
                 break;
             }
         }
-        if gated && !released.load(Ordering::Relaxed) && healthy_completed.load(Ordering::Relaxed) >= healthy_target {
+        if gated
+            && !released.load(Ordering::Relaxed)
+            && healthy_completed.load(Ordering::Relaxed) >= healthy_target
+        {
             healthy_before_release = healthy_completed.load(Ordering::Relaxed);
             released.store(true, Ordering::Relaxed);
         }
@@ -422,7 +461,10 @@ fn sample(workload: &str, operations: usize) -> Sample {
     drop(gate_release);
     drop(runners);
     let _shutdown_report = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
-    assert!(!runner_stopped, "runner terminated before the sample completed");
+    assert!(
+        !runner_stopped,
+        "runner terminated before the sample completed"
+    );
     assert_eq!(
         completed.load(Ordering::Relaxed),
         operations,
@@ -433,7 +475,10 @@ fn sample(workload: &str, operations: usize) -> Sample {
         operations,
         "incomplete settlement sample"
     );
-    assert_eq!(counts.attempts.load(Ordering::Relaxed), operations * (failures + 1));
+    assert_eq!(
+        counts.attempts.load(Ordering::Relaxed),
+        operations * (failures + 1)
+    );
     assert_eq!(counts.wrong_dispositions.load(Ordering::Relaxed), 0);
     assert_eq!(
         early_hot.load(Ordering::Relaxed),
@@ -443,7 +488,10 @@ fn sample(workload: &str, operations: usize) -> Sample {
     assert!(healthy_before_release >= healthy_target);
     Sample {
         wall_ns,
-        handler_backlog_latency_ns: latencies.iter().map(|value| value.load(Ordering::Relaxed)).collect(),
+        handler_backlog_latency_ns: latencies
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .collect(),
         healthy_before_release,
         settlement_attempts: counts.attempts.load(Ordering::Relaxed),
     }
@@ -453,7 +501,12 @@ fn sample(workload: &str, operations: usize) -> Sample {
 /// Smoke timings are discarded. Full mode emits every raw latency and a real
 /// per-delivery backlog p95; this is not handler execution duration or SPI p95.
 pub(crate) fn run(smoke: bool) {
-    for workload in ["uniform", "hot-a0-gate", "cross-subscription", "settlement-retry"] {
+    for workload in [
+        "uniform",
+        "hot-a0-gate",
+        "cross-subscription",
+        "settlement-retry",
+    ] {
         if smoke {
             black_box(sample(workload, 64));
             println!("scenario={workload} invariants=passed smoke_timings=discarded");
@@ -468,13 +521,27 @@ pub(crate) fn run(smoke: bool) {
             sorted.sort_unstable();
             let p95 = sorted[(sorted.len() * 95).div_ceil(100) - 1];
             println!(
-                "scheduling provider=key-restoring-local-fixture scenario={workload} iteration={iteration} operations={OPERATIONS} running_limit=2 owned_limit=64 per_subscription_limit=32 subscriptions={} wall_ns={} ns_per_settled_delivery={} handler_backlog_p95_ns={p95} healthy_before_release={} settlement_attempts={} handler_backlog_latency_ns={:?}",
-                if workload == "cross-subscription" { 2 } else { 1 },
+                concat!(
+                    "scheduling provider=key-restoring-local-fixture scenario={workload} ",
+                    "iteration={iteration} operations={OPERATIONS} running_limit=2 owned_limit=64 ",
+                    "per_subscription_limit=32 subscriptions={} wall_ns={} ",
+                    "ns_per_settled_delivery={} handler_backlog_p95_ns={p95} ",
+                    "healthy_before_release={} settlement_attempts={} handler_backlog_latency_ns={:?}",
+                ),
+                if workload == "cross-subscription" {
+                    2
+                } else {
+                    1
+                },
                 result.wall_ns,
                 result.wall_ns / OPERATIONS as u128,
                 result.healthy_before_release,
                 result.settlement_attempts,
                 result.handler_backlog_latency_ns,
+                workload = workload,
+                iteration = iteration,
+                OPERATIONS = OPERATIONS,
+                p95 = p95,
             );
         }
     }

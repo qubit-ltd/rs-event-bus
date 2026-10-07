@@ -24,6 +24,7 @@ use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -56,7 +57,9 @@ fn sample() -> io::Result<Duration> {
         .with_facade_config(facade);
     let bus = registry.create(&config).map_err(io::Error::other)?;
     let result = run_sample(&bus);
-    let shutdown_result = bus.shutdown(ShutdownMode::Immediate).map_err(io::Error::other);
+    let shutdown_result = bus
+        .shutdown(ShutdownMode::Immediate)
+        .map_err(io::Error::other);
     match (result, shutdown_result) {
         (Ok(wait), Ok(_)) => Ok(wait),
         (Err(error), _) => Err(error),
@@ -78,10 +81,12 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
         .build();
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
-        let request = SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
-            .map_err(io::Error::other)?
-            .with_options(retry_options.clone());
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}"))
+            .map_err(io::Error::other)?;
+        let request =
+            SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
+                .map_err(io::Error::other)?
+                .with_options(retry_options.clone());
         let barrier = barrier.clone();
         let first_attempt = Arc::new(AtomicBool::new(true));
         let _ = bus
@@ -99,21 +104,26 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     }
 
     let (started_tx, started_rx) = mpsc::channel();
-    let independent_topic = Topic::<u8>::new("retry-saturation.independent").map_err(io::Error::other)?;
+    let independent_topic =
+        Topic::<u8>::new("retry-saturation.independent").map_err(io::Error::other)?;
     let independent_request =
-        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone()).map_err(io::Error::other)?;
+        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone())
+            .map_err(io::Error::other)?;
     let _ = bus
         .subscribe(independent_request, move |_| {
-            started_tx.send(Instant::now()).map_err(|error| DeliveryError::Handler {
-                source: Box::new(io::Error::other(error.to_string())),
-            })
+            started_tx
+                .send(Instant::now())
+                .map_err(|error| DeliveryError::Handler {
+                    source: Box::new(io::Error::other(error.to_string())),
+                })
         })
         .map_err(io::Error::other)?;
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}"))
+            .map_err(io::Error::other)?;
         let _ = bus
-            .publish(qubit_event_bus::model::PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
+            .publish(PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
     }
 
@@ -121,9 +131,11 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     thread::sleep(PUBLISH_OFFSET);
     let publish_started = Instant::now();
     let _ = bus
-        .publish(qubit_event_bus::model::PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
+        .publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
-    let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(io::Error::other)?;
+    let handler_started = started_rx
+        .recv_timeout(SAMPLE_TIMEOUT)
+        .map_err(io::Error::other)?;
     Ok(handler_started.duration_since(publish_started))
 }
 
@@ -142,6 +154,9 @@ fn main() -> io::Result<()> {
     }
 
     waits.sort_unstable();
-    println!("median_ms,{}", waits[waits.len() / 2].as_secs_f64() * 1_000.0);
+    println!(
+        "median_ms,{}",
+        waits[waits.len() / 2].as_secs_f64() * 1_000.0
+    );
     Ok(())
 }

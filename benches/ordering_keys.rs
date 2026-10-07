@@ -203,7 +203,9 @@ fn timed_drain<F: Future>(
 /// default admission can keep all these lanes simultaneously active. Same-key
 /// input has one distinct key; churn has one distinct key per operation.
 fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: usize) -> Sample {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(operations)).unwrap());
+    let spi = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(operations)).unwrap(),
+    );
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
             NonZeroUsize::new(limit).unwrap(),
@@ -213,12 +215,13 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
         )
         .unwrap(),
     );
-    let bus = AsyncEventBus::with_config(ProviderId::new("ordering-bench").unwrap(), spi, config).unwrap();
+    let bus = AsyncEventBus::with_config(ProviderId::new("ordering-bench").unwrap(), spi, config)
+        .unwrap();
     let topic = Topic::<usize>::new("bench.ordering.facade").unwrap();
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .build();
-    let mut subscription = block_on(
+    let subscription = block_on(
         bus.subscribe(
             SubscribeRequest::new("ordering-bench", topic.clone())
                 .unwrap()
@@ -267,7 +270,13 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
         "churn" => limit.min(operations),
         _ => limit.min(active_keys).min(operations),
     };
-    let first_wave = observe_first_wave(&mut runner, &mut context, &peak, expected_first_wave, operations);
+    let first_wave = observe_first_wave(
+        &mut runner,
+        &mut context,
+        &peak,
+        expected_first_wave,
+        operations,
+    );
     // Complete publication outside timing without polling the gated runner.
     // The fixed same-key setup backlog matches the previous facade workload.
     for request in requests {
@@ -280,7 +289,10 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
     assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
     assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
     assert!(shutdown_report.provider_may_have_abandoned_deliveries);
-    assert!(!runner_stopped, "runner stopped before completing the sample");
+    assert!(
+        !runner_stopped,
+        "runner stopped before completing the sample"
+    );
     assert_eq!(
         black_box(completed.load(Ordering::Relaxed)),
         operations,
@@ -326,18 +338,40 @@ fn measure(label: &str, mut run: impl FnMut() -> Sample) {
         SAMPLES,
         "background scheduling prevented seven valid samples for {label}"
     );
-    let observations = samples.iter().map(|sample| sample.observed).collect::<Vec<_>>();
-    let thread_cpu = samples.iter().map(|sample| sample.cpu_ns).collect::<Vec<_>>();
-    let mut times = samples.iter().map(|sample| sample.ns_per_operation).collect::<Vec<_>>();
+    let observations = samples
+        .iter()
+        .map(|sample| sample.observed)
+        .collect::<Vec<_>>();
+    let thread_cpu = samples
+        .iter()
+        .map(|sample| sample.cpu_ns)
+        .collect::<Vec<_>>();
+    let mut times = samples
+        .iter()
+        .map(|sample| sample.ns_per_operation)
+        .collect::<Vec<_>>();
     times.sort_unstable();
     let median = times[SAMPLES / 2];
-    let mut deviations = times.iter().map(|time| time.abs_diff(median)).collect::<Vec<_>>();
+    let mut deviations = times
+        .iter()
+        .map(|time| time.abs_diff(median))
+        .collect::<Vec<_>>();
     deviations.sort_unstable();
     println!(
-        "{label} samples={samples:?} observed={observations:?} thread_cpu_ns={thread_cpu:?} discarded={discarded} median_ns={median} min_ns={} max_ns={} mad_ns={}",
+        concat!(
+            "{label} samples={samples:?} observed={observations:?} ",
+            "thread_cpu_ns={thread_cpu:?} discarded={discarded} median_ns={median} ",
+            "min_ns={} max_ns={} mad_ns={}"
+        ),
         times[0],
         times[SAMPLES - 1],
-        deviations[SAMPLES / 2]
+        deviations[SAMPLES / 2],
+        label = label,
+        samples = samples,
+        observations = observations,
+        thread_cpu = thread_cpu,
+        discarded = discarded,
+        median = median,
     );
 }
 
@@ -359,13 +393,22 @@ fn main() {
     }
     if env::var_os("ORDERING_PROFILE").is_some() {
         let operations = env::var("ORDERING_PROFILE_OPERATIONS")
-            .map(|value| value.parse().expect("profile operations must be an integer"))
+            .map(|value| {
+                value
+                    .parse()
+                    .expect("profile operations must be an integer")
+            })
             .unwrap_or(65_536);
         let _ = black_box(facade_sample(4096, 64, "balanced", operations));
         return;
     }
     println!(
-        "ordering_keys warmups={WARMUPS} samples={SAMPLES} boundary=public_facade unit=ns_per_handled_delivery registry_workload=retired"
+        concat!(
+            "ordering_keys warmups={WARMUPS} samples={SAMPLES} boundary=public_facade ",
+            "unit=ns_per_handled_delivery registry_workload=retired"
+        ),
+        WARMUPS = WARMUPS,
+        SAMPLES = SAMPLES
     );
     for active_keys in KEYS {
         for limit in [4, active_keys.max(64)] {
@@ -377,7 +420,14 @@ fn main() {
                 };
                 measure(
                     &format!(
-                        "facade case_keys={active_keys} distinct_input_keys={distinct_keys} running_limit={limit} owned_limit={limit} workload={workload}"
+                        concat!(
+                            "facade case_keys={active_keys} distinct_input_keys={distinct_keys} ",
+                            "running_limit={limit} owned_limit={limit} workload={workload}"
+                        ),
+                        active_keys = active_keys,
+                        distinct_keys = distinct_keys,
+                        limit = limit,
+                        workload = workload
                     ),
                     || facade_sample(active_keys, limit, workload, active_keys.max(1024) * 2),
                 );

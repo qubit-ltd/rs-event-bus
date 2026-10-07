@@ -9,11 +9,12 @@ SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
 CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
+CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }
