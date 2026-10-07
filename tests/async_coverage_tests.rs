@@ -36,6 +36,7 @@ use qubit_clock::TimeError;
 use qubit_clock::Timer;
 use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBusFacadeConfig;
@@ -50,6 +51,7 @@ use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::facade::PublishMetricsSnapshot;
 use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DEAD_LETTER_HEADER;
 use qubit_event_bus::model::DEAD_LETTER_HEADER_VALUE;
@@ -313,6 +315,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert!(batch.items().iter().all(Result::is_ok));
     assert_eq!(bus.publish_metrics().attempts, 2);
     assert_eq!(bus.publish_metrics().opaque_accepted, 2);
+    assert_eq!(bus.publish_metrics().cancelled, 0);
 
     let _ =
         block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
@@ -328,6 +331,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     assert!(matches!(closed, Err(failure) if matches!(failure.cause(), PublishError::Closed)));
     assert_eq!(clone.publish_metrics().attempts, 3);
     assert_eq!(clone.publish_metrics().errors, 1);
+    assert_eq!(clone.publish_metrics().cancelled, 0);
 
     let dropped_bus = AsyncEventBus::with_config(
         ProviderId::new("async-publisher-metrics-dropped")
@@ -415,6 +419,20 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     )
     .expect("empty destination acknowledgement must be returned");
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
+    let rejected = block_on(empty_bus.publish_checked(
+        PublishRequest::builder()
+            .topic(topic())
+            .payload(60_u32)
+            .build()
+            .expect("test publish request must be valid"),
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    ));
+    assert!(matches!(rejected, Err(CheckedPublishError::Admission { .. })));
+    let checked_metrics = empty_bus.publish_metrics();
+    assert_eq!(checked_metrics.attempts, 2);
+    assert_eq!(checked_metrics.zero_destinations, 2);
+    assert_eq!(checked_metrics.errors, 0);
+    assert_eq!(checked_metrics.cancelled, 0);
 
     let failing_bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-metrics-error")
@@ -437,6 +455,7 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     let failure_metrics = failing_bus.publish_metrics();
     assert_eq!(failure_metrics.attempts, 1);
     assert_eq!(failure_metrics.errors, 1);
+    assert_eq!(failure_metrics.cancelled, 0);
 
     let concurrent_bus = AsyncEventBus::from_spi(
         ProviderId::new("async-publisher-metrics-concurrent")
@@ -491,11 +510,40 @@ fn test_async_publisher_metrics_count_polled_attempt_even_if_future_is_cancelled
     assert!(matches!(publish.as_mut().poll(&mut context), Poll::Pending));
     let pending_metrics = bus.publish_metrics();
     assert_eq!(pending_metrics.attempts, 1);
+    assert_eq!(pending_metrics.cancelled, 0);
     assert_eq!(pending_metrics.errors, 0);
     assert_eq!(pending_metrics.opaque_accepted, 0);
 
     drop(publish);
-    assert_eq!(bus.publish_metrics().attempts, 1);
+    let after_drop = bus.publish_metrics();
+    assert_eq!(after_drop.attempts, 1);
+    assert_eq!(after_drop.cancelled, 1);
+    assert_eq!(after_drop.errors, 0);
+    assert_eq!(after_drop.opaque_accepted, 0);
+}
+
+#[test]
+fn test_async_publisher_metrics_ignore_unpolled_future() {
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("async-publisher-metrics-unpolled")
+            .expect("static test provider ID must be valid"),
+        Arc::new(PublisherCoverageSpi::new(PayloadModes::Native, 0, false)),
+    )
+    .expect("valid provider capabilities");
+    let publish = bus.publish(
+        PublishRequest::builder()
+            .topic(topic())
+            .payload(9_u32)
+            .build()
+            .expect("test publish request must be valid"),
+    );
+
+    drop(publish);
+    let metrics = bus.publish_metrics();
+    assert_eq!(metrics.attempts, 0);
+    assert_eq!(metrics.cancelled, 0);
+    assert_eq!(metrics.errors, 0);
+    assert_eq!(metrics.opaque_accepted, 0);
 }
 
 #[test]

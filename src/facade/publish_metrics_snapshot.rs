@@ -32,6 +32,9 @@ pub struct PublishMetricsSnapshot {
     pub attempts: u64,
     /// Number of calls that returned a publication error.
     pub errors: u64,
+    /// Number of asynchronous publishes dropped after their first poll and
+    /// before returning a result. This does not imply provider rejection.
+    pub cancelled: u64,
     /// Number of calls intentionally dropped by a publisher interceptor.
     pub dropped: u64,
     /// Number of calls accepted by a provider that does not expose

@@ -21,6 +21,8 @@ pub(crate) struct PublishMetrics {
     attempts: AtomicU64,
     /// Public publish calls that returned errors.
     errors: AtomicU64,
+    /// Asynchronous publish futures dropped after polling but before returning.
+    cancelled: AtomicU64,
     /// Receipts where an interceptor stopped dispatch.
     dropped: AtomicU64,
     /// Provider accepts without destination detail.
@@ -46,6 +48,12 @@ impl PublishMetrics {
     /// Increments the error counter with saturating arithmetic.
     pub(crate) fn record_error(&self) {
         Self::increment(&self.errors, 1);
+    }
+
+    /// Records one polled asynchronous publish that ended before returning.
+    /// Increments the cancellation counter with saturating arithmetic.
+    pub(crate) fn record_cancelled(&self) {
+        Self::increment(&self.cancelled, 1);
     }
 
     /// Records one successful public call and its provider-reported outcome.
@@ -80,6 +88,7 @@ impl PublishMetrics {
         PublishMetricsSnapshot {
             attempts: self.attempts.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
+            cancelled: self.cancelled.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
             opaque_accepted: self.opaque_accepted.load(Ordering::Relaxed),
             zero_destinations: self.zero_destinations.load(Ordering::Relaxed),

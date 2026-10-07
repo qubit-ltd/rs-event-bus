@@ -12,6 +12,7 @@ use crate::CapabilityError;
 use crate::PublishError;
 use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
+use crate::facade::PublishMetrics;
 use crate::error::CheckedPublishError;
 use crate::error::ConfigurationError;
 use crate::error::EventBusError;
@@ -24,6 +25,35 @@ use crate::model::PublishRequest;
 use crate::model::Topic;
 use crate::pipeline::PipelineFailure;
 use crate::spi::PublishVisibility;
+
+/// Counts a polled publish as cancelled if it is dropped before returning.
+struct PublishCompletionGuard<'a> {
+    metrics: &'a PublishMetrics,
+    completed: bool,
+}
+
+impl<'a> PublishCompletionGuard<'a> {
+    /// Starts tracking an in-flight asynchronous publish.
+    fn new(metrics: &'a PublishMetrics) -> Self {
+        Self {
+            metrics,
+            completed: false,
+        }
+    }
+
+    /// Marks the publish as returned so dropping the guard does not count it.
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for PublishCompletionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics.record_cancelled();
+        }
+    }
+}
 
 impl AsyncEventBus {
     /// Checks that the configured provider can publish this topic's payload.
@@ -122,12 +152,14 @@ impl AsyncEventBus {
         &self,
         request: PublishRequest<T>,
     ) -> Result<PublishReceipt, PublishFailure> {
-        // This body begins on the first poll, so a cancelled in-flight future
-        // still contributes an attempt without recording a fabricated outcome.
+        // This body begins on the first poll, so an unpolled future has no
+        // effect on the counters.
         let event_id = request.envelope().id().clone();
         self.inner.publish_metrics.record_attempt();
+        let mut completion = PublishCompletionGuard::new(&self.inner.publish_metrics);
         let Some(_publish) = self.inner.begin_publish() else {
             self.inner.publish_metrics.record_error();
+            completion.complete();
             return Err(PublishFailure::new(
                 event_id,
                 PublishEffect::NotAccepted,
@@ -135,7 +167,7 @@ impl AsyncEventBus {
             ));
         };
         let observers = self.observer_snapshot();
-        self.inner
+        let result = self.inner
             .publisher
             .publish_async(
                 self.inner.spi.as_ref(),
@@ -151,7 +183,9 @@ impl AsyncEventBus {
             })
             .inspect(|receipt| {
                 self.inner.publish_metrics.record_receipt(receipt);
-            })
+            });
+        completion.complete();
+        result
     }
 
     /// Publishes each request in order and retains each independent result.
