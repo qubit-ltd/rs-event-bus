@@ -21,6 +21,7 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
@@ -86,12 +87,15 @@ fn test_permanent_settlement_stops_after_one_attempt() {
     )
     .expect("test provider capabilities must be valid");
     let topic = Topic::<u32>::new("orders.created").expect("static test topic must be valid");
-    let mut sub = block_on(
-        bus.subscribe(SubscribeRequest::new("permanent", topic).expect("test subscription request must be valid")),
-    )
+    let sub = block_on(bus.subscribe(
+        SubscribeRequest::new("permanent", topic).expect("test subscription request must be valid"),
+    ))
     .expect("test subscription must be accepted");
     spi.fail_all_settles();
-    spi.enqueue(inbound_message(Some(SettlementToken::new(sub.id(), "token"))));
+    spi.enqueue(inbound_message(Some(SettlementToken::new(
+        sub.id(),
+        "token",
+    ))));
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     let mut result = Poll::Pending;
     for _ in 0..16 {
@@ -101,10 +105,27 @@ fn test_permanent_settlement_stops_after_one_attempt() {
         }
     }
     assert!(
-        matches!(result, Poll::Ready(Err(ReceiveError::Stopped(ref reason))) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 1, termination: SettlementTermination::PermanentError, .. })),
+        matches!(
+            result,
+            Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
+                if matches!(
+                    reason.as_ref(),
+                    SubscriptionStopReason::Settlement {
+                        attempts: 1,
+                        termination: SettlementTermination::PermanentError,
+                        ..
+                    }
+                )
+        ),
         "permanent settlement must converge in one poll: {result:?}"
     );
-    assert_eq!(spi.operation_log().iter().filter(|op| **op == "settle").count(), 1);
+    assert_eq!(
+        spi.operation_log()
+            .iter()
+            .filter(|op| **op == "settle")
+            .count(),
+        1
+    );
 }
 
 /// Shared observations and controls for scripted settlement/concurrency tests.
@@ -127,7 +148,10 @@ impl AsyncEventBusSpi for ProbeBus {
     fn capabilities(&self) -> EventBusCapabilities {
         self.fake.capabilities()
     }
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.fake.publish(message)
     }
     fn subscribe<'a>(
@@ -142,7 +166,10 @@ impl AsyncEventBusSpi for ProbeBus {
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.fake.shutdown(mode)
     }
 }
@@ -171,7 +198,10 @@ struct ProbeReceiver {
     active: Arc<AtomicBool>,
 }
 impl AsyncEventSubscriptionSpi for ProbeReceiver {
-    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         Box::pin(async move {
             let _operation = OperationGuard::new(self.active.clone());
             let outcome = self.receiver.receive(timeout).await?;
@@ -212,7 +242,9 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
                 && self
                     .probe
                     .reject_failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| remaining.checked_sub(1))
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
                     .is_ok();
             let failure = if reject_failure {
                 Some(Some(true))
@@ -246,7 +278,13 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
 }
 
 /// Builds explicit independent capacity and finite retry limits.
-fn config(running: usize, owned: usize, per_sub: usize, subscriptions: usize, attempts: u32) -> EventBusFacadeConfig {
+fn config(
+    running: usize,
+    owned: usize,
+    per_sub: usize,
+    subscriptions: usize,
+    attempts: u32,
+) -> EventBusFacadeConfig {
     EventBusFacadeConfig::new()
         .with_delivery_scheduling(
             DeliverySchedulingConfig::new(
@@ -259,7 +297,8 @@ fn config(running: usize, owned: usize, per_sub: usize, subscriptions: usize, at
         )
         .with_settlement_retry(
             SettlementRetryConfig::new(
-                NonZeroU32::new(attempts).expect("settlement attempt log mutex must not be poisoned"),
+                NonZeroU32::new(attempts)
+                    .expect("settlement attempt log mutex must not be poisoned"),
                 Duration::from_secs(1),
                 Duration::from_millis(10),
                 Duration::from_millis(100),
@@ -311,7 +350,7 @@ fn enqueue(fake: &FakeAsyncEventBusSpi, id: Id, value: u32, key: &str) {
     fake.enqueue(InboundMessage::new(
         TopicAddress::new("test.topic").expect("static SPI topic address must be valid"),
         EventId::new(format!("event-{value}")).expect("generated test event ID must be valid"),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         Some(OrderingKey::new(key).expect("static ordering key must be valid")),
         TransportPayload::Native(Arc::new(value)),
@@ -337,7 +376,7 @@ fn test_unknown_retryability_stops() {
         .lock()
         .expect("injected failure queue mutex must not be poisoned")
         .push_back(None);
-    let mut sub = subscribe(&bus, "unknown");
+    let sub = subscribe(&bus, "unknown");
     enqueue(&fake, sub.id(), 1, "A");
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     let mut result = Poll::Pending;
@@ -348,7 +387,18 @@ fn test_unknown_retryability_stops() {
         }
     }
     assert!(
-        matches!(result, Poll::Ready(Err(ReceiveError::Stopped(ref reason))) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 1, termination: SettlementTermination::RetryabilityUnknown, .. })),
+        matches!(
+            result,
+            Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
+                if matches!(
+                    reason.as_ref(),
+                    SubscriptionStopReason::Settlement {
+                        attempts: 1,
+                        termination: SettlementTermination::RetryabilityUnknown,
+                        ..
+                    }
+                )
+        ),
         "{result:?}"
     );
     assert_eq!(
@@ -401,7 +451,11 @@ fn test_drop_run_during_settlement_backoff_resumes_same_token() {
         (0, 0, 0, 1)
     );
     assert_eq!(
-        (paused.settlement_attempts, paused.settlement_retries, paused.completed),
+        (
+            paused.settlement_attempts,
+            paused.settlement_retries,
+            paused.completed
+        ),
         (1, 0, 0)
     );
     clock
@@ -428,7 +482,10 @@ fn test_drop_run_during_settlement_backoff_resumes_same_token() {
         (2, 1, 1)
     );
     assert_eq!(
-        (completed.handler_duration_count, completed.settlement_duration_count),
+        (
+            completed.handler_duration_count,
+            completed.settlement_duration_count
+        ),
         (1, 1)
     );
     assert_eq!(completed.settlement_duration_total_nanos, 10_000_000);
@@ -442,7 +499,7 @@ fn test_drop_run_during_settlement_backoff_resumes_same_token() {
 fn test_drop_inflight_attempt_counts_budget_and_backoff_without_stopping_on_pause() {
     let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 2));
     probe.pause.store(true, Ordering::SeqCst);
-    let mut sub = subscribe(&bus, "resume-attempt");
+    let sub = subscribe(&bus, "resume-attempt");
     enqueue(&fake, sub.id(), 1, "A");
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     poll_pending(run.as_mut());
@@ -477,16 +534,26 @@ fn test_drop_inflight_attempt_counts_budget_and_backoff_without_stopping_on_paus
 fn test_cancelled_last_attempt_only_stops_on_resume() {
     let (bus, fake, probe, _) = setup(config(1, 4, 4, 2, 1));
     probe.pause.store(true, Ordering::SeqCst);
-    let mut sub = subscribe(&bus, "last-attempt");
+    let sub = subscribe(&bus, "last-attempt");
     enqueue(&fake, sub.id(), 1, "A");
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     poll_pending(run.as_mut());
     drop(run);
     assert!(sub.terminal_failure().is_none());
     let result = block_on(sub.run(|_| async { panic!("handler cannot rerun") }));
-    assert!(
-        matches!(result, Err(ReceiveError::Stopped(ref reason)) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 1, termination: SettlementTermination::AttemptsExhausted, error, .. } if error.kind() == "settlement_attempt_cancelled"))
-    );
+    assert!(matches!(
+        result,
+        Err(ReceiveError::Stopped(ref reason))
+            if matches!(
+                reason.as_ref(),
+                SubscriptionStopReason::Settlement {
+                    attempts: 1,
+                    termination: SettlementTermination::AttemptsExhausted,
+                    error,
+                    ..
+                } if error.kind() == "settlement_attempt_cancelled"
+            )
+    ));
     assert_eq!(
         probe
             .attempts
@@ -502,7 +569,7 @@ fn test_cancelled_last_attempt_only_stops_on_resume() {
 #[test]
 fn test_unpolled_run_has_no_handler_or_settlement_side_effects() {
     let (bus, fake, probe, _) = setup(config(1, 4, 4, 2, 1));
-    let mut sub = subscribe(&bus, "unpolled");
+    let sub = subscribe(&bus, "unpolled");
     enqueue(&fake, sub.id(), 1, "A");
     drop(sub.run(|_| async { panic!("unpolled handler") }));
     assert_eq!(probe.receives.load(Ordering::SeqCst), 0);
@@ -520,7 +587,7 @@ fn test_unpolled_run_has_no_handler_or_settlement_side_effects() {
 #[test]
 fn test_hot_backlog_does_not_take_handler_slots_and_owned_is_bounded() {
     let (bus, fake, probe, _) = setup(config(2, 4, 4, 2, 3));
-    let mut sub = subscribe(&bus, "hot");
+    let sub = subscribe(&bus, "hot");
     for (value, key) in [(1, "A"), (2, "A"), (3, "B"), (4, "A"), (5, "C")] {
         enqueue(&fake, sub.id(), value, key);
     }
@@ -538,7 +605,9 @@ fn test_hot_backlog_does_not_take_handler_slots_and_owned_is_bounded() {
     }));
     poll_pending(run.as_mut());
     assert_eq!(
-        *seen.lock().expect("observed delivery log mutex must not be poisoned"),
+        *seen
+            .lock()
+            .expect("observed delivery log mutex must not be poisoned"),
         [1, 3]
     );
     assert_eq!(probe.receives.load(Ordering::SeqCst), 4);
@@ -548,7 +617,7 @@ fn test_hot_backlog_does_not_take_handler_slots_and_owned_is_bounded() {
 #[test]
 fn test_backoff_keeps_polling_another_started_handler() {
     let (bus, fake, probe, _) = setup(config(2, 4, 4, 2, 3));
-    let mut sub = subscribe(&bus, "backoff-progress");
+    let sub = subscribe(&bus, "backoff-progress");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "B");
     let gate = Arc::new(AtomicBool::new(false));
@@ -592,7 +661,7 @@ fn test_backoff_keeps_polling_another_started_handler() {
 #[test]
 fn test_inflight_settlement_keeps_polling_other_started_handler() {
     let (bus, fake, probe, _) = setup(config(2, 4, 4, 2, 3));
-    let mut sub = subscribe(&bus, "inflight-progress");
+    let sub = subscribe(&bus, "inflight-progress");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "B");
     let gate = Arc::new(AtomicBool::new(false));
@@ -662,8 +731,8 @@ fn test_ready_subscriptions_rotate_and_scheduler_notifies_other_session() {
         }
     }
     let (bus, _, _, _) = setup(config(1, 8, 4, 2, 3));
-    let mut first = subscribe(&bus, "first");
-    let mut second = subscribe(&bus, "second");
+    let first = subscribe(&bus, "first");
+    let second = subscribe(&bus, "second");
     for value in [1u32, 2] {
         let _ = block_on(
             bus.publish(
@@ -725,7 +794,9 @@ fn test_ready_subscriptions_rotate_and_scheduler_notifies_other_session() {
     );
     poll_pending(second_run.as_mut());
     assert_eq!(
-        *seen.lock().expect("observed delivery log mutex must not be poisoned"),
+        *seen
+            .lock()
+            .expect("observed delivery log mutex must not be poisoned"),
         [("first", 1), ("second", 1)],
         "second subscription receives next H grant before first's queued successor"
     );
@@ -740,7 +811,7 @@ fn test_backoff_deadline_stops_without_extra_attempt() {
         .lock()
         .expect("injected failure queue mutex must not be poisoned")
         .push_back(Some(true));
-    let mut sub = subscribe(&bus, "deadline");
+    let sub = subscribe(&bus, "deadline");
     enqueue(&fake, sub.id(), 1, "A");
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     poll_pending(run.as_mut());
@@ -749,7 +820,18 @@ fn test_backoff_deadline_stops_without_extra_attempt() {
         .expect("manual clock must advance to the settlement deadline");
     let result = poll_once(run.as_mut());
     assert!(
-        matches!(result, Poll::Ready(Err(ReceiveError::Stopped(ref reason))) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 1, termination: SettlementTermination::DeadlineExceeded, .. })),
+        matches!(
+            result,
+            Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
+                if matches!(
+                    reason.as_ref(),
+                    SubscriptionStopReason::Settlement {
+                        attempts: 1,
+                        termination: SettlementTermination::DeadlineExceeded,
+                        ..
+                    }
+                )
+        ),
         "{result:?}"
     );
     assert_eq!(
@@ -766,12 +848,15 @@ fn test_backoff_deadline_stops_without_extra_attempt() {
 #[test]
 fn test_terminal_subscription_does_not_stop_other_session() {
     let (bus, _, probe, _) = setup(config(1, 4, 2, 2, 3));
-    let mut first = subscribe(&bus, "terminal");
-    let mut second = subscribe(&bus, "healthy");
+    let first = subscribe(&bus, "terminal");
+    let second = subscribe(&bus, "healthy");
     let _ = block_on(
         bus.publish(
-            PublishRequest::new(Topic::new("test.topic").expect("static test topic must be valid"), 1u32)
-                .expect("test publish request must be valid"),
+            PublishRequest::new(
+                Topic::new("test.topic").expect("static test topic must be valid"),
+                1u32,
+            )
+            .expect("test publish request must be valid"),
         ),
     )
     .expect("test publish must be accepted");
@@ -822,12 +907,15 @@ fn test_decode_rejection_runs_while_handler_capacity_is_full() {
         .with_codec(Utf8Codec(
             ContentType::new("text/plain").expect("static codec content type must be valid"),
         ));
-    let mut sub = block_on(
-        bus.subscribe(SubscribeRequest::new("decode", topic).expect("test subscription request must be valid")),
-    )
+    let sub = block_on(bus.subscribe(
+        SubscribeRequest::new("decode", topic).expect("test subscription request must be valid"),
+    ))
     .expect("test subscription must be accepted");
     for (id, payload) in [
-        ("valid", TransportPayload::Native(Arc::new("valid".to_owned()))),
+        (
+            "valid",
+            TransportPayload::Native(Arc::new("valid".to_owned())),
+        ),
         (
             "invalid",
             TransportPayload::Encoded(EncodedPayload::new(
@@ -840,7 +928,7 @@ fn test_decode_rejection_runs_while_handler_capacity_is_full() {
         fake.enqueue(InboundMessage::new(
             TopicAddress::new("test.topic").expect("static SPI topic address must be valid"),
             EventId::new(id).expect("generated test event ID must be valid"),
-            std::time::SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
             payload,
@@ -873,7 +961,7 @@ fn test_decode_rejection_runs_while_handler_capacity_is_full() {
 #[test]
 fn test_resume_after_terminal_failure_finishes_owned_handlers_and_closes() {
     let (bus, fake, probe, _) = setup(config(2, 4, 4, 2, 3));
-    let mut sub = subscribe(&bus, "terminal-resume");
+    let sub = subscribe(&bus, "terminal-resume");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "B");
     let gate = Arc::new(AtomicBool::new(false));
@@ -962,12 +1050,23 @@ fn test_settlement_timer_registration_and_poll_failures_stop_without_extra_attem
             timer,
         )
         .expect("test provider capabilities must be valid");
-        let mut sub = subscribe(&bus, "clock-error");
+        let sub = subscribe(&bus, "clock-error");
         enqueue(&fake, sub.id(), 1, "A");
         let result = block_on(sub.run(|_| async { Ok(()) }));
-        assert!(
-            matches!(result, Err(ReceiveError::Stopped(ref reason)) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 1, termination: SettlementTermination::InfrastructureFailure, error, .. } if std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>())))
-        );
+        assert!(matches!(
+            result,
+            Err(ReceiveError::Stopped(ref reason))
+                if matches!(
+                    reason.as_ref(),
+                    SubscriptionStopReason::Settlement {
+                        attempts: 1,
+                        termination: SettlementTermination::InfrastructureFailure,
+                        error,
+                        ..
+                    } if std::error::Error::source(error.as_ref())
+                        .is_some_and(|source| source.is::<TimeError>())
+                )
+        ));
         assert_eq!(
             probe
                 .attempts
@@ -976,7 +1075,10 @@ fn test_settlement_timer_registration_and_poll_failures_stop_without_extra_attem
                 .len(),
             1
         );
-        assert_eq!(sub.delivery_metrics().metrics.settlement_terminal_failures, 1);
+        assert_eq!(
+            sub.delivery_metrics().metrics.settlement_terminal_failures,
+            1
+        );
     }
 }
 
@@ -990,7 +1092,7 @@ fn test_close_failure_does_not_overwrite_first_settlement_cause() {
         fake.clone(),
     )
     .expect("test provider capabilities must be valid");
-    let mut sub = subscribe(&bus, "first-cause");
+    let sub = subscribe(&bus, "first-cause");
     enqueue(&fake, sub.id(), 1, "A");
     fake.fail_all_settles();
     fake.panic_on_close_call();
@@ -1053,7 +1155,7 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
             timer.clone(),
         )
         .expect("test provider capabilities must be valid");
-        let mut sub = subscribe(&bus, "clock-reentry");
+        let sub = subscribe(&bus, "clock-reentry");
         enqueue(&fake, sub.id(), 1, "A");
         let mut run = Box::pin(sub.run(|_| async {
             std::future::pending::<()>().await;
@@ -1069,12 +1171,28 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
         let nested_snapshots = Arc::new(Mutex::new(Vec::new()));
         let captured_snapshots = nested_snapshots.clone();
         let _observer = bus.observe_diagnostics(move |diagnostic| {
-            if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "delivery_metrics_clock") {
+            if matches!(
+                diagnostic,
+                Diagnostic::InternalFailure { origin, .. }
+                    if origin.as_ref() == "delivery_metrics_clock"
+            ) {
                 let count = observed.fetch_add(1, Ordering::SeqCst);
-                // Bound recursion deliberately: failure is an assertion, never a stack overflow.
+                // Bound recursion deliberately: failure is an assertion, never a stack
+                // overflow.
                 if count < 3 {
-                    let nested = if through_handle { weak_sub.upgrade().expect("subscription handle must remain alive during callback").delivery_metrics().metrics } else { callback_bus.delivery_metrics() };
-                    captured_snapshots.lock().expect("reentrant snapshot log mutex must not be poisoned").push(nested);
+                    let nested = if through_handle {
+                        weak_sub
+                            .upgrade()
+                            .expect("subscription handle must remain alive during callback")
+                            .delivery_metrics()
+                            .metrics
+                    } else {
+                        callback_bus.delivery_metrics()
+                    };
+                    captured_snapshots
+                        .lock()
+                        .expect("reentrant snapshot log mutex must not be poisoned")
+                        .push(nested);
                 }
             }
         });
@@ -1092,7 +1210,11 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
         let nested = nested_snapshots
             .lock()
             .expect("reentrant snapshot log mutex must not be poisoned");
-        assert_eq!(nested.len(), 1, "observer completed its reentrant snapshot call");
+        assert_eq!(
+            nested.len(),
+            1,
+            "observer completed its reentrant snapshot call"
+        );
         assert_eq!(nested[0].running_handlers, 1);
         assert_eq!(nested[0].oldest_owned_age, None);
         assert_eq!(snapshot.running_handlers, 1);
@@ -1134,14 +1256,15 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
                 .ordering_policy(OrderingPolicy::PerKey)
                 .build(),
         );
-    let mut sub = block_on(bus.subscribe(request)).expect("test subscription must be accepted");
+    let sub = block_on(bus.subscribe(request)).expect("test subscription must be accepted");
     for (id, payload) in [
         ("first", TransportPayload::Native(Arc::new(1u32))),
         (
             "malformed",
             TransportPayload::Encoded(EncodedPayload::new(
                 Arc::from([0xffu8]),
-                ContentType::new("application/test").expect("static codec content type must be valid"),
+                ContentType::new("application/test")
+                    .expect("static codec content type must be valid"),
                 None,
             )),
         ),
@@ -1150,7 +1273,7 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
         fake.enqueue(InboundMessage::new(
             TopicAddress::new("test.topic").expect("static SPI topic address must be valid"),
             EventId::new(id).expect("static test event ID must be valid"),
-            std::time::SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
             payload,
@@ -1183,7 +1306,12 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
         }
     }));
     poll_pending(run.as_mut());
-    assert_eq!(*calls.lock().expect("handler call log mutex must not be poisoned"), [1]);
+    assert_eq!(
+        *calls
+            .lock()
+            .expect("handler call log mutex must not be poisoned"),
+        [1]
+    );
     assert!(
         probe
             .attempts
@@ -1193,17 +1321,26 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
         "malformed same-key message cannot settle ahead of its running predecessor"
     );
     let pending = bus.delivery_metrics();
-    assert_eq!((pending.running_handlers, pending.queued, pending.settling), (1, 3, 0));
+    assert_eq!(
+        (pending.running_handlers, pending.queued, pending.settling),
+        (1, 3, 0)
+    );
     gate.store(true, Ordering::SeqCst);
     poll_pending(run.as_mut());
     assert_eq!(
-        *calls.lock().expect("handler call log mutex must not be poisoned"),
+        *calls
+            .lock()
+            .expect("handler call log mutex must not be poisoned"),
         [1, 4],
         "another key runs while Reject retains its lane during backoff"
     );
     let backing_off = bus.delivery_metrics();
     assert_eq!(
-        (backing_off.running_handlers, backing_off.queued, backing_off.settling),
+        (
+            backing_off.running_handlers,
+            backing_off.queued,
+            backing_off.settling
+        ),
         (0, 1, 1)
     );
     drop(run);
@@ -1223,7 +1360,9 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
     }));
     poll_pending(resumed.as_mut());
     assert_eq!(
-        *calls.lock().expect("handler call log mutex must not be poisoned"),
+        *calls
+            .lock()
+            .expect("handler call log mutex must not be poisoned"),
         [1, 4, 3],
         "resume neither reconstructs the first handler nor invokes a malformed handler"
     );
@@ -1232,7 +1371,10 @@ fn test_decode_rejection_waits_for_same_key_predecessor_and_blocks_successor() {
         .lock()
         .expect("settlement attempt log mutex must not be poisoned");
     assert_eq!(
-        attempts.iter().map(|(_, disposition)| *disposition).collect::<Vec<_>>(),
+        attempts
+            .iter()
+            .map(|(_, disposition)| *disposition)
+            .collect::<Vec<_>>(),
         [
             DeliveryDisposition::Accept,
             DeliveryDisposition::Reject,
@@ -1290,15 +1432,19 @@ fn test_tokenless_metrics_distinguish_success_from_unresolved_rejection() {
             .expect("diagnostic log mutex must not be poisoned")
             .push(diagnostic.clone())
     });
-    let successful_topic = Topic::<u32>::new("successful").expect("static test topic must be valid");
-    let mut successful = block_on(bus.subscribe(
-        SubscribeRequest::new("successful", successful_topic).expect("test subscription request must be valid"),
-    ))
+    let successful_topic =
+        Topic::<u32>::new("successful").expect("static test topic must be valid");
+    let successful = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("successful", successful_topic)
+                .expect("test subscription request must be valid"),
+        ),
+    )
     .expect("test subscription must be accepted");
     spi.enqueue(InboundMessage::new(
         TopicAddress::new("successful").expect("static SPI topic address must be valid"),
         EventId::new("success").expect("static test event ID must be valid"),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Native(Arc::new(1_u32)),
@@ -1309,7 +1455,13 @@ fn test_tokenless_metrics_distinguish_success_from_unresolved_rejection() {
     poll_pending(success_run.as_mut());
     drop(success_run);
     let success_metrics = successful.delivery_metrics().metrics;
-    assert_eq!((success_metrics.completed, success_metrics.abandoned_ephemeral), (1, 0));
+    assert_eq!(
+        (
+            success_metrics.completed,
+            success_metrics.abandoned_ephemeral
+        ),
+        (1, 0)
+    );
 
     let reject_spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         native_no_settlement_capabilities(),
@@ -1331,14 +1483,17 @@ fn test_tokenless_metrics_distinguish_success_from_unresolved_rejection() {
         .with_codec(RejectCodec(
             ContentType::new("application/test").expect("static codec content type must be valid"),
         ));
-    let mut rejected = block_on(reject_bus.subscribe(
-        SubscribeRequest::new("rejected", rejected_topic).expect("test subscription request must be valid"),
-    ))
+    let rejected = block_on(
+        reject_bus.subscribe(
+            SubscribeRequest::new("rejected", rejected_topic)
+                .expect("test subscription request must be valid"),
+        ),
+    )
     .expect("test subscription must be accepted");
     reject_spi.enqueue(InboundMessage::new(
         TopicAddress::new("rejected").expect("static SPI topic address must be valid"),
         EventId::new("malformed").expect("static test event ID must be valid"),
-        std::time::SystemTime::UNIX_EPOCH,
+        SystemTime::UNIX_EPOCH,
         Headers::new(),
         None,
         TransportPayload::Encoded(EncodedPayload::new(
@@ -1349,8 +1504,9 @@ fn test_tokenless_metrics_distinguish_success_from_unresolved_rejection() {
         None,
         Default::default(),
     ));
-    let mut reject_run =
-        Box::pin(rejected.run(|_| async { panic!("decode-rejected message cannot reach the handler") }));
+    let mut reject_run = Box::pin(
+        rejected.run(|_| async { panic!("decode-rejected message cannot reach the handler") }),
+    );
     poll_pending(reject_run.as_mut());
     drop(reject_run);
     let reject_metrics = rejected.delivery_metrics().metrics;
@@ -1372,7 +1528,19 @@ fn test_tokenless_metrics_distinguish_success_from_unresolved_rejection() {
         0,
         "tokenless messages never call SPI settlement"
     );
-    assert!(diagnostics.lock().expect("diagnostic log mutex must not be poisoned").iter().any(|diagnostic| matches!(diagnostic,
-        Diagnostic::SettlementUnavailable { event_id, requested: DeliveryDisposition::Reject, .. } if event_id.as_str() == "malformed"
-    )), "unavailable tokenless Reject must be observable");
+    assert!(
+        diagnostics
+            .lock()
+            .expect("diagnostic log mutex must not be poisoned")
+            .iter()
+            .any(|diagnostic| matches!(
+                diagnostic,
+                Diagnostic::SettlementUnavailable {
+                    event_id,
+                    requested: DeliveryDisposition::Reject,
+                    ..
+                } if event_id.as_str() == "malformed"
+            )),
+        "unavailable tokenless Reject must be observable"
+    );
 }

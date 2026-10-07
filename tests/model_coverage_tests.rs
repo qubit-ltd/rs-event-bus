@@ -72,7 +72,8 @@ use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
 
 #[test]
-fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks() -> Result<(), Box<dyn Error>> {
+fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks()
+-> Result<(), Box<dyn Error>> {
     let defaults = SubscribeOptions::<u32>::new();
     let from_new = SubscribeOptionsBuilder::<u32>::new().build();
     let from_default = SubscribeOptionsBuilder::<u32>::default().build();
@@ -97,7 +98,9 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
         .ack_mode(AckMode::Manual)
         .filter(|event| *event.payload() > 10)
         .retry_policy(RetryPolicy::builder().max_attempts(2).build()?)
-        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
+        .retry_rule(
+            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
+        )
         .retry_cancellation_token(RetryCancellationToken::new())
         .error_handler(|_, _| FailureDirective::Discard)
         .interceptor(|delivery, next| next(delivery))
@@ -128,11 +131,20 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
     assert_eq!(options.async_interceptors().len(), 1);
     assert!(matches!(options.dead_letter(), Some(policy) if policy.topic_name() == "dead.events"));
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
-    assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
-    assert_eq!(options.durability(), SubscriptionDurability::Durable);
-    assert_eq!(options.start_position(), &StartPosition::At("cursor-7".into()));
     assert_eq!(
-        options.provider_options().get("local.prefetch").map(String::as_str),
+        options.consumer_group().expect("configured group").as_str(),
+        "workers"
+    );
+    assert_eq!(options.durability(), SubscriptionDurability::Durable);
+    assert_eq!(
+        options.start_position(),
+        &StartPosition::At("cursor-7".into())
+    );
+    assert_eq!(
+        options
+            .provider_options()
+            .get("local.prefetch")
+            .map(String::as_str),
         Some("4")
     );
 
@@ -147,8 +159,14 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
     ));
     assert!(cloned.retry_cancellation_token().is_some());
     assert_eq!(cloned.provider_options(), options.provider_options());
-    assert!(Arc::ptr_eq(&options.error_handlers()[0], &cloned.error_handlers()[0]));
-    assert!(Arc::ptr_eq(&options.interceptors()[0], &cloned.interceptors()[0]));
+    assert!(Arc::ptr_eq(
+        &options.error_handlers()[0],
+        &cloned.error_handlers()[0]
+    ));
+    assert!(Arc::ptr_eq(
+        &options.interceptors()[0],
+        &cloned.interceptors()[0]
+    ));
     assert!(Arc::ptr_eq(
         &options.async_interceptors()[0],
         &cloned.async_interceptors()[0]
@@ -157,7 +175,8 @@ fn test_subscribe_options_builder_exposes_configured_policy_and_clones_callbacks
 }
 
 #[test]
-fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> Result<(), Box<dyn Error>> {
+fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation()
+-> Result<(), Box<dyn Error>> {
     let defaults = SubscribeOptions::<String>::new();
     assert!(defaults.retry_rule().is_none());
     assert!(defaults.retry_cancellation_token().is_none());
@@ -165,10 +184,13 @@ fn test_string_subscribe_options_expose_retry_rule_and_shared_cancellation() -> 
     let cancellation = RetryCancellationToken::new();
     let options = SubscribeOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build()?)
-        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Abort)
+        .retry_rule(
+            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Abort,
+        )
         .retry_cancellation_token(cancellation.clone())
         .build();
-    let request = SubscribeRequest::new("string-worker", Topic::<String>::new("orders.text")?)?.with_options(options);
+    let request = SubscribeRequest::new("string-worker", Topic::<String>::new("orders.text")?)?
+        .with_options(options);
     let configured = request.options();
     assert!(configured.retry_rule().is_some());
     let configured_token = configured
@@ -190,7 +212,9 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
         .ack_mode(AckMode::Manual)
         .filter(|event| *event.payload() == 42)
         .retry_policy(RetryPolicy::builder().max_attempts(3).build()?)
-        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
+        .retry_rule(
+            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
+        )
         .retry_cancellation_token(RetryCancellationToken::new())
         .error_handler(|_, _| FailureDirective::Requeue)
         .interceptor(|delivery, next| next(delivery))
@@ -223,16 +247,25 @@ fn test_subscribe_request_builder_exposes_every_policy_field() -> Result<(), Box
     let error = DeliveryError::Handler {
         source: Box::new(IoError::other("test failure")),
     };
-    assert_eq!(options.error_handlers()[0](&event, &error), FailureDirective::Requeue);
+    assert_eq!(
+        options.error_handlers()[0](&event, &error),
+        FailureDirective::Requeue
+    );
     assert_eq!(options.interceptors().len(), 1);
     assert_eq!(options.async_interceptors().len(), 1);
     assert!(matches!(options.dead_letter(), Some(policy) if policy.topic_name() == "dead.events"));
     assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
-    assert_eq!(options.consumer_group().expect("configured group").as_str(), "workers");
+    assert_eq!(
+        options.consumer_group().expect("configured group").as_str(),
+        "workers"
+    );
     assert_eq!(options.durability(), SubscriptionDurability::Durable);
     assert_eq!(options.start_position(), &StartPosition::Earliest);
     assert_eq!(
-        options.provider_options().get("local.prefetch").map(String::as_str),
+        options
+            .provider_options()
+            .get("local.prefetch")
+            .map(String::as_str),
         Some("12")
     );
     Ok(())
@@ -247,7 +280,8 @@ fn test_subscribe_request_builder_default_reports_missing_identity() {
 }
 
 #[test]
-fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() -> Result<(), Box<dyn Error>> {
+fn test_subscribe_request_builder_replaces_policy_then_appends_later_values()
+-> Result<(), Box<dyn Error>> {
     let topic = Topic::<u32>::new("orders.created")?;
     let reusable = SubscribeOptions::<u32>::builder()
         .ack_mode(AckMode::Manual)
@@ -314,7 +348,8 @@ fn test_subscribe_request_builder_replaces_policy_then_appends_later_values() ->
 }
 
 #[test]
-fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> Result<(), Box<dyn Error>> {
+fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields()
+-> Result<(), Box<dyn Error>> {
     let subscriber_id = SubscriberId::new("audit")?;
     let topic = Topic::<u32>::new("orders.created")?;
     let options = SubscribeOptions::<u32>::builder()
@@ -333,7 +368,10 @@ fn test_subscribe_request_with_options_and_into_parts_preserve_all_fields() -> R
     assert_eq!(actual_id, subscriber_id);
     assert_eq!(actual_topic, topic);
     assert_eq!(
-        actual_options.consumer_group().expect("configured group").as_str(),
+        actual_options
+            .consumer_group()
+            .expect("configured group")
+            .as_str(),
         "auditors"
     );
     assert_eq!(actual_options.ack_mode(), AckMode::Manual);
@@ -357,7 +395,11 @@ fn test_subscribe_request_builder_rejects_retry_without_policy_and_invalid_provi
     ));
     assert!(matches!(
         make_builder()
-            .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| { RetryDecision::UseDefault })
+            .retry_rule(
+                |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| {
+                    RetryDecision::UseDefault
+                }
+            )
             .build(),
         Err(SubscribeRequestBuildError::InvalidRetryConfiguration)
     ));
@@ -376,7 +418,8 @@ fn test_subscribe_request_builder_rejects_retry_without_policy_and_invalid_provi
 }
 
 #[test]
-fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<(), Box<dyn Error>> {
+fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<(), Box<dyn Error>>
+{
     assert_eq!(ConsumerGroup::new("workers")?.as_str(), "workers");
     for invalid in ["", " workers", "workers ", "work\ners"] {
         assert!(matches!(
@@ -392,7 +435,10 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
         "dead.events"
     );
     let topic = Topic::<String>::new("dead.events")?;
-    assert_eq!(DeadLetterPolicy::with_topic(&topic).topic_name(), "dead.events");
+    assert_eq!(
+        DeadLetterPolicy::with_topic(&topic).topic_name(),
+        "dead.events"
+    );
     assert_eq!(
         DeadLetterPolicy::with_topic(&topic).admission_policy(),
         DeadLetterAdmissionPolicy::TransportAccepted
@@ -410,7 +456,8 @@ fn test_consumer_group_and_dead_letter_policy_validate_public_input() -> Result<
 }
 
 #[test]
-fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Result<(), Box<dyn Error>> {
+fn test_dead_letter_event_public_accessors_preserve_non_clone_original()
+-> Result<(), Box<dyn Error>> {
     struct NonClonePayload(u32);
 
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(8))?;
@@ -453,7 +500,8 @@ fn test_dead_letter_event_public_accessors_preserve_non_clone_original() -> Resu
         .build()?;
     let _ = bus.publish(publish)?;
 
-    let (event_id, same_original, payload, subscriber_id, reason) = receiver.recv_timeout(Duration::from_secs(2))?;
+    let (event_id, same_original, payload, subscriber_id, reason) =
+        receiver.recv_timeout(Duration::from_secs(2))?;
     assert_eq!(event_id, "original-event-42");
     assert!(same_original);
     assert_eq!(payload, 42);
@@ -482,9 +530,15 @@ fn test_spi_subscription_request_exposes_all_transport_fields() -> Result<(), Bo
     assert_eq!(request.subscription_id(), Id::new(7));
     assert_eq!(request.topic().as_str(), "orders.created");
     assert_eq!(request.subscriber_id().as_str(), "worker");
-    assert_eq!(request.group().expect("configured group").as_str(), "workers");
+    assert_eq!(
+        request.group().expect("configured group").as_str(),
+        "workers"
+    );
     assert_eq!(request.durability(), SubscriptionDurability::Durable);
-    assert_eq!(request.start_position(), &StartPosition::At("cursor-7".into()));
+    assert_eq!(
+        request.start_position(),
+        &StartPosition::At("cursor-7".into())
+    );
     assert_eq!(request.provider_options(), &provider_options);
 
     let standalone = SpiSubscriptionRequest::new(
@@ -547,24 +601,43 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
     assert_eq!(native, shared);
     assert_eq!(shared, owned);
     assert!(owned.codec().is_some());
-    assert_eq!(owned.schema_id().expect("owned codec schema").as_str(), "order-v1");
-    assert!(Arc::ptr_eq(shared.codec().expect("configured codec"), &shared_codec));
-    assert_eq!(shared.schema_id().expect("configured schema").as_str(), "order-v1");
     assert_eq!(
-        shared.codec().expect("configured codec").content_type().as_str(),
+        owned.schema_id().expect("owned codec schema").as_str(),
+        "order-v1"
+    );
+    assert!(Arc::ptr_eq(
+        shared.codec().expect("configured codec"),
+        &shared_codec
+    ));
+    assert_eq!(
+        shared.schema_id().expect("configured schema").as_str(),
+        "order-v1"
+    );
+    assert_eq!(
+        shared
+            .codec()
+            .expect("configured codec")
+            .content_type()
+            .as_str(),
         "text/plain"
     );
     assert_eq!(
-        shared.codec().expect("configured codec").decode(&EncodedPayload::new(
-            Arc::from(b"example".as_slice()),
-            ContentType::TEXT_PLAIN,
-            Some(SchemaId::new("order-v1")?)
-        ))?,
+        shared
+            .codec()
+            .expect("configured codec")
+            .decode(&EncodedPayload::new(
+                Arc::from(b"example".as_slice()),
+                ContentType::TEXT_PLAIN,
+                Some(SchemaId::new("order-v1")?)
+            ))?,
         "example"
     );
 
     let cloned = shared.clone();
-    assert!(Arc::ptr_eq(cloned.codec().expect("cloned codec"), &shared_codec));
+    assert!(Arc::ptr_eq(
+        cloned.codec().expect("cloned codec"),
+        &shared_codec
+    ));
     let mut native_hash = DefaultHasher::new();
     let mut encoded_hash = DefaultHasher::new();
     native.hash(&mut native_hash);
@@ -582,7 +655,8 @@ fn test_topic_identity_codec_metadata_and_clone_are_type_safe() -> Result<(), Bo
 }
 
 #[test]
-fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy() -> Result<(), Box<dyn Error>> {
+fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy()
+-> Result<(), Box<dyn Error>> {
     let defaults = PublishOptions::<String>::new();
     assert!(defaults.retry_policy().is_none());
     assert!(defaults.retry_rule().is_none());
@@ -590,7 +664,12 @@ fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy(
     assert!(defaults.error_handlers().is_empty());
     assert_eq!(defaults.error_handler_count(), 0);
     assert!(defaults.interceptors().is_empty());
-    assert!(PublishOptionsBuilder::<String>::new().build().interceptors().is_empty());
+    assert!(
+        PublishOptionsBuilder::<String>::new()
+            .build()
+            .interceptors()
+            .is_empty()
+    );
     assert!(
         PublishOptionsBuilder::<String>::default()
             .build()
@@ -603,7 +682,9 @@ fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy(
     let second = seen.clone();
     let options = PublishOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(4).build()?)
-        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault)
+        .retry_rule(
+            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::UseDefault,
+        )
         .retry_cancellation_token(RetryCancellationToken::new())
         .error_handler(|_, _| {})
         .error_handler(|_, _| {})
@@ -636,9 +717,16 @@ fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy(
         options.retry_rule().expect("configured retry rule"),
         cloned.retry_rule().expect("cloned retry rule")
     ));
-    assert!(Arc::ptr_eq(&options.error_handlers()[0], &cloned.error_handlers()[0]));
-    assert!(Arc::ptr_eq(&options.interceptors()[1], &cloned.interceptors()[1]));
-    let request = PublishRequest::new(Topic::<String>::new("orders.created")?, "value".into())?.with_options(cloned);
+    assert!(Arc::ptr_eq(
+        &options.error_handlers()[0],
+        &cloned.error_handlers()[0]
+    ));
+    assert!(Arc::ptr_eq(
+        &options.interceptors()[1],
+        &cloned.interceptors()[1]
+    ));
+    let request = PublishRequest::new(Topic::<String>::new("orders.created")?, "value".into())?
+        .with_options(cloned);
     let (mut event, request_options) = request.into_parts();
     for interceptor in request_options.interceptors() {
         event = interceptor(event)?.expect("interceptor keeps event");
@@ -649,7 +737,8 @@ fn test_publish_options_builder_and_clone_preserve_retry_and_interceptor_policy(
 }
 
 #[test]
-fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity() -> Result<(), Box<dyn Error>> {
+fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
+-> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.created")?;
     let plain = EventEnvelope::new(topic.clone(), "plain".to_owned())?;
     assert!(plain.headers().is_empty());
@@ -670,17 +759,26 @@ fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
     assert_eq!(event.header("trace-id"), Some("first"));
     assert_eq!(event.header("missing"), None);
     assert_eq!(event.headers().len(), 1);
-    assert_eq!(event.headers().get("trace-id").map(String::as_str), Some("first"));
+    assert_eq!(
+        event.headers().get("trace-id").map(String::as_str),
+        Some("first")
+    );
     assert_eq!(event.ordering_key(), Some("customer-7"));
     assert_eq!(event.delay(), Some(Duration::from_millis(25)));
     assert_eq!(event.timestamp(), event.clone().timestamp());
 
-    assert_eq!(event.set_header("trace-id", "second")?, Some("first".into()));
+    assert_eq!(
+        event.set_header("trace-id", "second")?,
+        Some("first".into())
+    );
     assert_eq!(event.set_header("tenant_id", "acme")?, None);
     assert_eq!(event.header("trace-id"), Some("second"));
     assert_eq!(event.remove_header("trace-id")?, Some("second".into()));
     assert_eq!(event.remove_header("trace-id")?, None);
-    assert_eq!(event.headers().get("tenant_id").map(String::as_str), Some("acme"));
+    assert_eq!(
+        event.headers().get("tenant_id").map(String::as_str),
+        Some("acme")
+    );
     for (key, value) in [("", "ok"), ("bad key", "ok"), ("trace-id", "bad\nvalue")] {
         assert!(matches!(
             event.set_header(key, value),
@@ -690,7 +788,11 @@ fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
             })
         ));
     }
-    assert!(event.set_header(DEAD_LETTER_HEADER.to_uppercase(), "v1").is_err());
+    assert!(
+        event
+            .set_header(DEAD_LETTER_HEADER.to_uppercase(), "v1")
+            .is_err()
+    );
     assert!(event.remove_header(DEAD_LETTER_HEADER).is_err());
     let shared = event.clone().into_payload();
     assert!(Arc::ptr_eq(&shared, &event.into_payload()));
@@ -698,7 +800,8 @@ fn test_event_envelope_metadata_getters_and_header_mutations_preserve_identity()
 }
 
 #[test]
-fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy() -> Result<(), Box<dyn Error>> {
+fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy()
+-> Result<(), Box<dyn Error>> {
     let topic = Topic::<String>::new("orders.text")?;
     let options = PublishOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build()?)
@@ -714,7 +817,10 @@ fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy(
     assert_eq!(event.topic(), &topic);
     assert_eq!(event.id().as_str(), "text-event-1");
     assert_eq!(event.payload(), "text payload");
-    assert_eq!(event.headers().get("trace-id").map(String::as_str), Some("trace-7"));
+    assert_eq!(
+        event.headers().get("trace-id").map(String::as_str),
+        Some("trace-7")
+    );
     assert_eq!(event.header("trace-id"), Some("trace-7"));
     assert_eq!(event.header("absent"), None);
     assert_eq!(event.ordering_key(), None);
@@ -731,7 +837,8 @@ fn test_string_publish_request_into_parts_preserves_specific_payload_and_policy(
 }
 
 #[test]
-fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> Result<(), Box<dyn Error>> {
+fn test_delivery_context_and_delivery_getters_preserve_transport_metadata()
+-> Result<(), Box<dyn Error>> {
     let provider = ProviderId::new("local")?;
     let subscriber = SubscriberId::new("audit")?;
     let default_context = DeliveryContext::new(provider.clone(), Id::new(9), subscriber.clone());
@@ -749,7 +856,10 @@ fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> R
         .with_provider_metadata(metadata.clone())
         .with_settlement(true)
         .as_dead_letter();
-    let event = Arc::new(EventEnvelope::new(Topic::<u32>::new("orders.created")?, 42)?);
+    let event = Arc::new(EventEnvelope::new(
+        Topic::<u32>::new("orders.created")?,
+        42,
+    )?);
     let delivery = Delivery::new(event.clone(), context);
     assert_eq!(delivery.payload(), &42);
     assert!(eq(delivery.event(), event.as_ref()));
@@ -768,7 +878,8 @@ fn test_delivery_context_and_delivery_getters_preserve_transport_metadata() -> R
 }
 
 #[test]
-fn test_publish_receipt_and_batch_into_items_preserve_order_and_admission() -> Result<(), Box<dyn Error>> {
+fn test_publish_receipt_and_batch_into_items_preserve_order_and_admission()
+-> Result<(), Box<dyn Error>> {
     let provider = ProviderId::new("local")?;
     let input = EventId::new("original")?;
     let dispatched = EventId::new("transformed")?;
@@ -799,7 +910,10 @@ fn test_publish_receipt_and_batch_into_items_preserve_order_and_admission() -> R
     assert_eq!(batch.accepted_count(), 1);
     assert_eq!(batch.dropped_count(), 1);
     assert_eq!(batch.failure_count(), 0);
-    assert_eq!(batch.items()[0].as_ref().expect("accepted receipt"), &accepted);
+    assert_eq!(
+        batch.items()[0].as_ref().expect("accepted receipt"),
+        &accepted
+    );
     let results = batch.into_items();
     assert_eq!(results[0].as_ref().expect("first receipt"), &accepted);
     assert_eq!(results[1].as_ref().expect("second receipt"), &dropped);

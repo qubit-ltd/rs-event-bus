@@ -29,5 +29,8 @@ fn test_event_bus_clones_share_shutdown_state() {
     )
     .expect("publish request is valid");
     let failure = bus.publish(request).expect_err("shutdown clone closes bus");
-    assert!(matches!(failure.cause(), PublishError::Closed));
+    assert!(
+        matches!(failure.cause(), PublishError::Closed),
+        "publishing after shutdown should report a closed event bus"
+    );
 }

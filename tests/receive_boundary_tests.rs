@@ -247,7 +247,12 @@ impl Receiver {
         };
         ReceiveOutcome::Message(InboundMessage::new(
             TopicAddress::new("boundary").expect("topic"),
-            EventId::new(if good { "healthy-record" } else { "source-record" }).expect("id"),
+            EventId::new(if good {
+                "healthy-record"
+            } else {
+                "source-record"
+            })
+            .expect("id"),
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
@@ -264,7 +269,10 @@ impl EventBusSpi for Source {
     fn publish(&self, _: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         panic!("unused publishing")
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(self.receiver(request)))
     }
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -276,13 +284,20 @@ impl EventSubscriptionSpi for Receiver {
         if self.delivered == 1 && self.source.first_good {
             let deadline = Instant::now() + Duration::from_secs(5);
             while self.source.wait_second.load(Ordering::SeqCst) {
-                assert!(Instant::now() < deadline, "first handler starts before second receive");
+                assert!(
+                    Instant::now() < deadline,
+                    "first handler starts before second receive"
+                );
                 thread::yield_now();
             }
         }
         Ok(self.next())
     }
-    fn settle(&mut self, _: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        _: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         self.source
             .dispositions
             .lock()
@@ -299,14 +314,19 @@ impl AsyncEventBusSpi for Source {
     fn capabilities(&self) -> EventBusCapabilities {
         self.capabilities_value()
     }
-    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async { panic!("unused publishing") })
     }
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
-        Box::pin(async move { Ok(Box::new(self.receiver(request)) as Box<dyn AsyncEventSubscriptionSpi>) })
+        Box::pin(async move {
+            Ok(Box::new(self.receiver(request)) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
     }
     fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
@@ -358,22 +378,32 @@ fn verify_boundary(
 ) {
     let probe = Probe::new();
     let source = Arc::new(Source::new(size, schema));
-    let topic = Topic::new("boundary").expect("topic").with_shared_codec(probe.clone());
+    let topic = Topic::new("boundary")
+        .expect("topic")
+        .with_shared_codec(probe.clone());
     if asynchronous {
-        let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-            .expect("bus");
-        let mut subscription =
-            manual_async::block_on(bus.subscribe(SubscribeRequest::new("probe", topic).expect("request")))
-                .expect("subscription");
+        let bus = AsyncEventBus::with_config(
+            ProviderId::new("probe").expect("provider"),
+            source.clone(),
+            config(),
+        )
+        .expect("bus");
+        let subscription = manual_async::block_on(
+            bus.subscribe(SubscribeRequest::new("probe", topic).expect("request")),
+        )
+        .expect("subscription");
         let result = manual_async::block_on(subscription.run(|_| async { Ok(()) }));
         if expected_decode == 0 {
-            let reason = subscription.terminal_failure().expect("cached receive cause");
+            let reason = subscription
+                .terminal_failure()
+                .expect("cached receive cause");
             let ReceiveError::Stopped(returned) = result.expect_err("boundary stops") else {
                 panic!("structured stop")
             };
             assert!(Arc::ptr_eq(&reason, &returned));
-            let ReceiveError::Stopped(repeated) = manual_async::block_on(subscription.run(|_| async { Ok(()) }))
-                .expect_err("same handle remains stopped")
+            let ReceiveError::Stopped(repeated) =
+                manual_async::block_on(subscription.run(|_| async { Ok(()) }))
+                    .expect_err("same handle remains stopped")
             else {
                 panic!("structured stop")
             };
@@ -383,10 +413,17 @@ fn verify_boundary(
         }
         let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     } else {
-        let bus =
-            EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+        let bus = EventBus::with_config(
+            ProviderId::new("probe").expect("provider"),
+            source.clone(),
+            config(),
+        )
+        .expect("bus");
         let subscription = bus
-            .subscribe(SubscribeRequest::new("probe", topic).expect("request"), |_| {})
+            .subscribe(
+                SubscribeRequest::new("probe", topic).expect("request"),
+                |_| {},
+            )
             .expect("subscription");
         let deadline = Instant::now() + Duration::from_secs(5);
         while source.closed.load(Ordering::SeqCst) == 0 {
@@ -416,7 +453,11 @@ fn verify_boundary(
             "durable source remains unsettled"
         );
         assert!(
-            source.dispositions.lock().expect("settlement log").is_empty(),
+            source
+                .dispositions
+                .lock()
+                .expect("settlement log")
+                .is_empty(),
             "fail-stop submits no Accept, Retry or Reject"
         );
     }
@@ -424,7 +465,13 @@ fn verify_boundary(
 #[test]
 fn test_receive_limit_precedes_callbacks() {
     for asynchronous in [false, true] {
-        verify_boundary(5, Some(SchemaId::new("v1").expect("schema")), 0, 0, asynchronous);
+        verify_boundary(
+            5,
+            Some(SchemaId::new("v1").expect("schema")),
+            0,
+            0,
+            asynchronous,
+        );
     }
 }
 #[test]
@@ -438,7 +485,13 @@ fn test_receive_metadata_precedes_decode() {
 #[test]
 fn test_receive_exact_limit_allows_decode() {
     for asynchronous in [false, true] {
-        verify_boundary(4, Some(SchemaId::new("v1").expect("schema")), 1, 1, asynchronous);
+        verify_boundary(
+            4,
+            Some(SchemaId::new("v1").expect("schema")),
+            1,
+            1,
+            asynchronous,
+        );
     }
 }
 
@@ -456,14 +509,20 @@ fn panic_probe(mode: usize) -> Arc<Probe> {
 fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
     for mode in [1, 2] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));
-        let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-            .expect("bus");
+        let bus = AsyncEventBus::with_config(
+            ProviderId::new("probe").expect("provider"),
+            source.clone(),
+            config(),
+        )
+        .expect("bus");
         let probe = panic_probe(mode);
-        let mut stopped = manual_async::block_on(
+        let stopped = manual_async::block_on(
             bus.subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
+                    Topic::new("boundary")
+                        .expect("topic")
+                        .with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
             ),
@@ -477,14 +536,20 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
         assert_eq!(probe.decode.load(Ordering::SeqCst), usize::from(mode == 2));
         assert_eq!(source.settled.load(Ordering::SeqCst), 0);
         assert!(
-            source.dispositions.lock().expect("settlement log").is_empty(),
+            source
+                .dispositions
+                .lock()
+                .expect("settlement log")
+                .is_empty(),
             "fail-stop must never settle with any disposition"
         );
-        let mut healthy = manual_async::block_on(
+        let healthy = manual_async::block_on(
             bus.subscribe(
                 SubscribeRequest::new(
                     "healthy",
-                    Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
+                    Topic::new("boundary")
+                        .expect("topic")
+                        .with_shared_codec(Probe::new()),
                 )
                 .expect("request"),
             ),
@@ -506,13 +571,19 @@ fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
 fn test_cancelled_close_retains_driver_and_same_cause() {
     let source = Arc::new(Source::new(5, Some(SchemaId::new("v1").expect("schema"))));
     source.close_paused.store(true, Ordering::SeqCst);
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("probe").expect("provider"),
+        source.clone(),
+        config(),
+    )
+    .expect("bus");
     let mut subscription = manual_async::block_on(
         bus.subscribe(
             SubscribeRequest::new(
                 "paused-close",
-                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -528,11 +599,16 @@ fn test_cancelled_close_retains_driver_and_same_cause() {
     assert!(manual_async::poll_once(close.as_mut()).is_pending());
     drop(close);
     source.close_paused.store(false, Ordering::SeqCst);
-    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus driver resumes provider close");
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate))
+        .expect("bus driver resumes provider close");
     assert_eq!(source.closed.load(Ordering::SeqCst), 1);
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
-        source.dispositions.lock().expect("settlement log").is_empty(),
+        source
+            .dispositions
+            .lock()
+            .expect("settlement log")
+            .is_empty(),
         "fail-stop must never settle with any disposition"
     );
     assert!(Arc::ptr_eq(
@@ -545,13 +621,19 @@ fn test_receive_stop_finishes_already_started_handler() {
     let mut source = Source::new(5, Some(SchemaId::new("v1").expect("schema")));
     source.first_good = true;
     let source = Arc::new(source);
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
-    let mut subscription = manual_async::block_on(
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("probe").expect("provider"),
+        source.clone(),
+        config(),
+    )
+    .expect("bus");
+    let subscription = manual_async::block_on(
         bus.subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -579,8 +661,15 @@ fn test_receive_stop_finishes_already_started_handler() {
     assert!(manual_async::poll_once(run.as_mut()).is_pending());
     assert_eq!(started.load(Ordering::SeqCst), 1);
     release.store(true, Ordering::SeqCst);
-    assert!(matches!(manual_async::block_on(run), Err(ReceiveError::Stopped(_))));
-    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
+    assert!(matches!(
+        manual_async::block_on(run),
+        Err(ReceiveError::Stopped(_))
+    ));
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "started handler completes"
+    );
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
         0,
@@ -597,24 +686,37 @@ fn test_receive_stop_finishes_already_started_handler() {
 fn test_regular_decode_failure_rejects_without_terminal_stop() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));
-        let topic = Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(3));
+        let topic = Topic::new("boundary")
+            .expect("topic")
+            .with_shared_codec(panic_probe(3));
         if asynchronous {
-            let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
-            let mut subscription =
-                manual_async::block_on(bus.subscribe(SubscribeRequest::new("malformed", topic).expect("request")))
-                    .expect("subscription");
+            let bus = AsyncEventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
+            let subscription = manual_async::block_on(
+                bus.subscribe(SubscribeRequest::new("malformed", topic).expect("request")),
+            )
+            .expect("subscription");
             manual_async::block_on(subscription.run(|_| async { panic!("no decoded delivery") }))
                 .expect("ordinary bad message rejected");
             assert!(subscription.terminal_failure().is_none());
-            let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            let _ =
+                manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         } else {
-            let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
+            let bus = EventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
             let subscription = bus
-                .subscribe(SubscribeRequest::new("malformed", topic).expect("request"), |_| -> () {
-                    panic!("no decoded delivery")
-                })
+                .subscribe(
+                    SubscribeRequest::new("malformed", topic).expect("request"),
+                    |_| -> () { panic!("no decoded delivery") },
+                )
                 .expect("subscription");
             let deadline = Instant::now() + Duration::from_secs(5);
             while source.closed.load(Ordering::SeqCst) == 0 {
@@ -643,21 +745,29 @@ fn test_content_native_and_ephemeral_stop_contracts() {
             source.ephemeral = ephemeral;
             source.content = ContentType::new("application/incompatible").expect("content");
             let source = Arc::new(source);
-            let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
+            let bus = AsyncEventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
             let probe = Probe::new();
             let mut subscription = manual_async::block_on(
                 bus.subscribe(
                     SubscribeRequest::new(
                         "contract",
-                        Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
+                        Topic::new("boundary")
+                            .expect("topic")
+                            .with_shared_codec(probe.clone()),
                     )
                     .expect("request"),
                 ),
             )
             .expect("subscription");
             assert!(matches!(
-                manual_async::block_on(subscription.run(|_| async { panic!("no handler on mismatch") })),
+                manual_async::block_on(
+                    subscription.run(|_| async { panic!("no handler on mismatch") })
+                ),
                 Err(ReceiveError::Stopped(_))
             ));
             let reason = subscription.terminal_failure().expect("canonical failure");
@@ -667,16 +777,24 @@ fn test_content_native_and_ephemeral_stop_contracts() {
             if native {
                 assert!(matches!(error.as_ref(), CodecError::NativeTypeMismatch));
             } else {
-                assert!(matches!(error.as_ref(), CodecError::MetadataMismatch { .. }));
+                assert!(matches!(
+                    error.as_ref(),
+                    CodecError::MetadataMismatch { .. }
+                ));
             }
             assert_eq!(probe.validate.load(Ordering::SeqCst), usize::from(!native));
             assert_eq!(probe.decode.load(Ordering::SeqCst), 0);
             manual_async::block_on(subscription.close()).expect("close");
-            let report = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            let report =
+                manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
             assert_eq!(report.known_abandoned_deliveries, u64::from(ephemeral));
             assert_eq!(source.settled.load(Ordering::SeqCst), 0);
             assert!(
-                source.dispositions.lock().expect("settlement log").is_empty(),
+                source
+                    .dispositions
+                    .lock()
+                    .expect("settlement log")
+                    .is_empty(),
                 "fail-stop must never settle with any disposition"
             );
         }
@@ -686,14 +804,20 @@ fn test_content_native_and_ephemeral_stop_contracts() {
 fn test_sync_permanent_panic_is_once_and_cached() {
     for mode in [1, 2] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));
-        let bus =
-            EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+        let bus = EventBus::with_config(
+            ProviderId::new("probe").expect("provider"),
+            source.clone(),
+            config(),
+        )
+        .expect("bus");
         let probe = panic_probe(mode);
         let subscription = bus
             .subscribe(
                 SubscribeRequest::new(
                     "panic",
-                    Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
+                    Topic::new("boundary")
+                        .expect("topic")
+                        .with_shared_codec(probe.clone()),
                 )
                 .expect("request"),
                 |_| -> () { panic!("no handler after codec panic") },
@@ -714,7 +838,11 @@ fn test_sync_permanent_panic_is_once_and_cached() {
         assert_eq!(probe.decode.load(Ordering::SeqCst), usize::from(mode == 2));
         assert_eq!(source.settled.load(Ordering::SeqCst), 0);
         assert!(
-            source.dispositions.lock().expect("settlement log").is_empty(),
+            source
+                .dispositions
+                .lock()
+                .expect("settlement log")
+                .is_empty(),
             "fail-stop must never settle with any disposition"
         );
         let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
@@ -724,20 +852,27 @@ fn test_sync_permanent_panic_is_once_and_cached() {
 #[test]
 fn test_explicit_legacy_schema_override_can_decode() {
     let source = Arc::new(Source::new(4, None));
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("probe").expect("provider"),
+        source.clone(),
+        config(),
+    )
+    .expect("bus");
     let probe = panic_probe(4);
-    let mut subscription = manual_async::block_on(
+    let subscription = manual_async::block_on(
         bus.subscribe(
             SubscribeRequest::new(
                 "legacy",
-                Topic::new("boundary").expect("topic").with_shared_codec(probe.clone()),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(probe.clone()),
             )
             .expect("request"),
         ),
     )
     .expect("subscription");
-    manual_async::block_on(subscription.run(|_| async { Ok(()) })).expect("explicit metadata compatibility");
+    manual_async::block_on(subscription.run(|_| async { Ok(()) }))
+        .expect("explicit metadata compatibility");
     assert_eq!(probe.validate.load(Ordering::SeqCst), 1);
     assert_eq!(probe.decode.load(Ordering::SeqCst), 1);
     assert!(subscription.terminal_failure().is_none());
@@ -750,8 +885,12 @@ fn test_sync_receive_stop_drains_started_handler() {
     source.first_good = true;
     source.wait_second.store(true, Ordering::SeqCst);
     let source = Arc::new(source);
-    let bus =
-        EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let bus = EventBus::with_config(
+        ProviderId::new("probe").expect("provider"),
+        source.clone(),
+        config(),
+    )
+    .expect("bus");
     let (release, wait) = mpsc::channel();
     let wait = Arc::new(Mutex::new(wait));
     let handler_source = source.clone();
@@ -761,7 +900,9 @@ fn test_sync_receive_stop_drains_started_handler() {
         .subscribe(
             SubscribeRequest::new(
                 "inflight",
-                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(Probe::new()),
             )
             .expect("request"),
             move |_| {
@@ -786,7 +927,11 @@ fn test_sync_receive_stop_drains_started_handler() {
     );
     release.send(()).expect("release handler");
     subscription.cancel().expect("cancel drains handler");
-    assert_eq!(finished.load(Ordering::SeqCst), 1, "started handler completes");
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "started handler completes"
+    );
     assert_eq!(
         source.settled.load(Ordering::SeqCst),
         0,
@@ -798,13 +943,19 @@ fn test_sync_receive_stop_drains_started_handler() {
 #[test]
 fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     let source = Arc::new(Source::new(4, None));
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
-    let mut stopped = manual_async::block_on(
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("probe").expect("provider"),
+        source.clone(),
+        config(),
+    )
+    .expect("bus");
+    let stopped = manual_async::block_on(
         bus.subscribe(
             SubscribeRequest::new(
                 "strict",
-                Topic::new("boundary").expect("topic").with_shared_codec(Probe::new()),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(Probe::new()),
             )
             .expect("request"),
         ),
@@ -816,20 +967,27 @@ fn test_schema_stop_recovers_after_explicit_compatibility_change() {
     ));
     assert_eq!(source.settled.load(Ordering::SeqCst), 0);
     assert!(
-        source.dispositions.lock().expect("settlement log").is_empty(),
+        source
+            .dispositions
+            .lock()
+            .expect("settlement log")
+            .is_empty(),
         "fail-stop must never settle with any disposition"
     );
-    let mut restored = manual_async::block_on(
+    let restored = manual_async::block_on(
         bus.subscribe(
             SubscribeRequest::new(
                 "compatible",
-                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(4)),
+                Topic::new("boundary")
+                    .expect("topic")
+                    .with_shared_codec(panic_probe(4)),
             )
             .expect("request"),
         ),
     )
     .expect("subscription");
-    manual_async::block_on(restored.run(|_| async { Ok(()) })).expect("same durable record recovers");
+    manual_async::block_on(restored.run(|_| async { Ok(()) }))
+        .expect("same durable record recovers");
     assert_eq!(source.settled.load(Ordering::SeqCst), 1);
     assert_eq!(source.closed.load(Ordering::SeqCst), 2);
     let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
@@ -845,21 +1003,31 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
         let observed = notifications.clone();
         let diagnostic_origins = Arc::new(Mutex::new(Vec::new()));
         let recorded_origins = diagnostic_origins.clone();
-        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
+        let topic = Topic::new("boundary")
+            .expect("topic")
+            .with_shared_codec(Probe::new());
         if asynchronous {
-            let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
+            let bus = AsyncEventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
-                recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
-                    _ => "other_diagnostic".to_owned(),
-                });
+                recorded_origins
+                    .lock()
+                    .expect("diagnostic log")
+                    .push(match diagnostic {
+                        Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                        _ => "other_diagnostic".to_owned(),
+                    });
                 panic!("observer fails while reporting the terminal boundary");
             });
-            let mut subscription =
-                manual_async::block_on(bus.subscribe(SubscribeRequest::new("observer", topic).expect("request")))
-                    .expect("subscription");
+            let mut subscription = manual_async::block_on(
+                bus.subscribe(SubscribeRequest::new("observer", topic).expect("request")),
+            )
+            .expect("subscription");
             let ReceiveError::Stopped(returned) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("boundary stops despite observer panic")
@@ -880,7 +1048,8 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
                 assert!(Arc::ptr_eq(&cause, &repeated));
                 manual_async::block_on(subscription.close()).expect("repeated close");
             }
-            let report = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            let report =
+                manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
             assert_eq!(
                 report.known_abandoned_deliveries, 1,
                 "observer panic cannot prevent loss accounting"
@@ -890,24 +1059,35 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
                 &subscription.terminal_failure().expect("retained cause")
             ));
         } else {
-            let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
+            let bus = EventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
             let _observer = bus.observe_diagnostics(move |diagnostic| {
                 observed.fetch_add(1, Ordering::SeqCst);
-                recorded_origins.lock().expect("diagnostic log").push(match diagnostic {
-                    Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
-                    _ => "other_diagnostic".to_owned(),
-                });
+                recorded_origins
+                    .lock()
+                    .expect("diagnostic log")
+                    .push(match diagnostic {
+                        Diagnostic::InternalFailure { origin, .. } => origin.to_string(),
+                        _ => "other_diagnostic".to_owned(),
+                    });
                 panic!("observer fails while reporting the terminal boundary");
             });
             let subscription = bus
-                .subscribe(SubscribeRequest::new("observer", topic).expect("request"), |_| -> () {
-                    panic!("no handler")
-                })
+                .subscribe(
+                    SubscribeRequest::new("observer", topic).expect("request"),
+                    |_| -> () { panic!("no handler") },
+                )
                 .expect("subscription");
             let deadline = Instant::now() + Duration::from_secs(5);
             while source.closed.load(Ordering::SeqCst) == 0 {
-                assert!(Instant::now() < deadline, "receiver closes despite observer panic");
+                assert!(
+                    Instant::now() < deadline,
+                    "receiver closes despite observer panic"
+                );
                 thread::yield_now();
             }
             let cause = subscription.terminal_failure().expect("cached cause");
@@ -930,7 +1110,13 @@ fn test_panicking_diagnostic_observer_preserves_cause_and_reports_stop_once() {
             ["receive_boundary"],
             "caught observer panic cannot swallow the assertion about diagnostic identity"
         );
-        assert!(source.dispositions.lock().expect("settlement log").is_empty());
+        assert!(
+            source
+                .dispositions
+                .lock()
+                .expect("settlement log")
+                .is_empty()
+        );
     }
 }
 
@@ -950,21 +1136,30 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
     for asynchronous in [false, true] {
         let source = Arc::new(Source::new(5, Some(SchemaId::new("v1").expect("schema"))));
         source.close_failed.store(true, Ordering::SeqCst);
-        let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
+        let topic = Topic::new("boundary")
+            .expect("topic")
+            .with_shared_codec(Probe::new());
         let cause;
         if asynchronous {
-            let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
-            let mut subscription =
-                manual_async::block_on(bus.subscribe(SubscribeRequest::new("close-error", topic).expect("request")))
-                    .expect("subscription");
+            let bus = AsyncEventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
+            let mut subscription = manual_async::block_on(
+                bus.subscribe(SubscribeRequest::new("close-error", topic).expect("request")),
+            )
+            .expect("subscription");
             let ReceiveError::Stopped(run_cause) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
                     .expect_err("run returns the first codec stop cause")
             else {
                 panic!("codec stop cause")
             };
-            cause = subscription.terminal_failure().expect("codec cause still available");
+            cause = subscription
+                .terminal_failure()
+                .expect("codec cause still available");
             assert!(Arc::ptr_eq(&cause, &run_cause));
             let ReceiveError::Stopped(repeated) =
                 manual_async::block_on(subscription.run(|_| async { panic!("no handler") }))
@@ -974,7 +1169,8 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             };
             assert!(Arc::ptr_eq(&cause, &repeated));
             let LifecycleError::SubscriptionClose(close_errors) =
-                manual_async::block_on(subscription.close()).expect_err("provider close remains independently failed")
+                manual_async::block_on(subscription.close())
+                    .expect_err("provider close remains independently failed")
             else {
                 panic!("close failure snapshot")
             };
@@ -989,11 +1185,17 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             assert_independent_close_errors(&shutdown_errors);
             assert!(Arc::ptr_eq(
                 &cause,
-                &subscription.terminal_failure().expect("codec cause remains")
+                &subscription
+                    .terminal_failure()
+                    .expect("codec cause remains")
             ));
         } else {
-            let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
-                .expect("bus");
+            let bus = EventBus::with_config(
+                ProviderId::new("probe").expect("provider"),
+                source.clone(),
+                config(),
+            )
+            .expect("bus");
             let subscription = bus
                 .subscribe(
                     SubscribeRequest::new("close-error", topic).expect("request"),
@@ -1024,7 +1226,9 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             assert_independent_close_errors(&shutdown_errors);
             assert!(Arc::ptr_eq(
                 &cause,
-                &subscription.terminal_failure().expect("codec cause remains")
+                &subscription
+                    .terminal_failure()
+                    .expect("codec cause remains")
             ));
         }
         let SubscriptionStopReason::Codec { event_id, error } = cause.as_ref() else {
@@ -1040,7 +1244,11 @@ fn test_codec_stop_and_provider_close_failure_remain_separately_observable() {
             }
         ));
         assert!(
-            source.dispositions.lock().expect("settlement log").is_empty(),
+            source
+                .dispositions
+                .lock()
+                .expect("settlement log")
+                .is_empty(),
             "neither stop nor failed close settles the durable record"
         );
     }

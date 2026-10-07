@@ -13,8 +13,10 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
 #[test]
-fn option_replacement_is_visible_and_survives_consumption() {
-    let options = SubscribeOptions::<String>::builder().ack_mode(AckMode::Manual).build();
+fn test_option_replacement_is_visible_and_survives_consumption() {
+    let options = SubscribeOptions::<String>::builder()
+        .ack_mode(AckMode::Manual)
+        .build();
     let request = SubscribeRequest::new(
         "model-subscriber",
         Topic::<String>::new("model.subscribe").expect("valid topic"),

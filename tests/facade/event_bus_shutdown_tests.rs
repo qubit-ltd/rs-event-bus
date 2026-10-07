@@ -49,6 +49,7 @@ impl Drop for Gate {
         self.release();
     }
 }
+
 /// Creates a real local handler blocked until the returned gate is released.
 fn blocked_bus() -> (EventBus, Gate, Subscription) {
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
@@ -119,7 +120,9 @@ fn test_pending_observers_cancel_independently_and_timeout_preserves_ticket() {
     let ticket = bus
         .request_shutdown(ShutdownMode::Graceful { timeout: LIMIT })
         .expect("ticket");
-    let strengthened = bus.request_shutdown(ShutdownMode::Immediate).expect("joined ticket");
+    let strengthened = bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .expect("joined ticket");
     drop(strengthened);
     assert!(matches!(
         ticket.wait(Some(Duration::ZERO)),
@@ -134,7 +137,10 @@ fn test_pending_observers_cancel_independently_and_timeout_preserves_ticket() {
     drop(cancelled);
     gate.release();
     rx.recv_timeout(LIMIT).expect("remaining observer wakes");
-    assert!(matches!(poll(observer.as_mut(), &waker), Poll::Ready(Ok(_))));
+    assert!(matches!(
+        poll(observer.as_mut(), &waker),
+        Poll::Ready(Ok(_))
+    ));
     drop(observer);
     let report = ticket.wait(Some(LIMIT)).expect("repeated sync wait");
     let mut again = Box::pin(ticket.wait_async());
@@ -144,14 +150,22 @@ fn test_pending_observers_cancel_independently_and_timeout_preserves_ticket() {
 #[test]
 fn test_finish_before_first_poll_and_closed_ready_ticket() {
     let bus = EventBus::local(LocalEventBusConfig::default()).expect("local bus");
-    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("ticket");
+    let ticket = bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .expect("ticket");
     let report = ticket.wait(Some(LIMIT)).expect("completed");
     let mut future = Box::pin(ticket.wait_async());
-    assert!(matches!(poll(future.as_mut(), Waker::noop()), Poll::Ready(Ok(value)) if value == report));
-    let ready = bus.request_shutdown(ShutdownMode::Immediate).expect("ready ticket");
+    assert!(
+        matches!(poll(future.as_mut(), Waker::noop()), Poll::Ready(Ok(value)) if value == report)
+    );
+    let ready = bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .expect("ready ticket");
     assert_eq!(ready.wait(Some(Duration::ZERO)).expect("cached"), report);
     let mut future = Box::pin(ready.wait_async());
-    assert!(matches!(poll(future.as_mut(), Waker::noop()), Poll::Ready(Ok(value)) if value == report));
+    assert!(
+        matches!(poll(future.as_mut(), Waker::noop()), Poll::Ready(Ok(value)) if value == report)
+    );
 }
 
 #[test]
@@ -167,7 +181,10 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
                 let ticket = callback_bus
                     .request_shutdown(ShutdownMode::Immediate)
                     .expect("nonblocking request");
-                let rejected = matches!(ticket.wait(Some(Duration::ZERO)), Err(ShutdownError::Lifecycle(_)));
+                let rejected = matches!(
+                    ticket.wait(Some(Duration::ZERO)),
+                    Err(ShutdownError::Lifecycle(_))
+                );
                 tx.send((ticket, rejected)).expect("send ticket");
             },
         )
@@ -186,10 +203,14 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
 #[test]
 fn test_dropping_observer_does_not_stop_its_shutdown_generation() {
     let (bus, gate, _subscription) = blocked_bus();
-    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("ticket");
+    let ticket = bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .expect("ticket");
     drop(ticket);
     gate.release();
-    let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown continues");
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("shutdown continues");
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
     assert_eq!(report.known_abandoned_deliveries, 0);
     assert!(report.provider_may_have_abandoned_deliveries);

@@ -46,7 +46,8 @@ impl AsyncServiceProvider<EventBusSpec> for DiscoveredAsyncProvider {
     fn create_configured<'a>(
         &'a self,
         _: &'a EventBusConfig,
-    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
+    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>>
+    {
         Box::pin(async { Ok(Arc::new(FakeAsyncEventBusSpi::new()) as Arc<dyn AsyncEventBusSpi>) })
     }
 }
@@ -66,7 +67,8 @@ fn test_discovered_async_provider_is_creatable() {
             .iter()
             .any(|id| id.as_str() == "test-async-discovered")
     );
-    let config = EventBusConfig::default().with_selection(ProviderSelection::named("test-async-discovered").unwrap());
+    let config = EventBusConfig::default()
+        .with_selection(ProviderSelection::named("test-async-discovered").unwrap());
     let _bus = block_on(registry.create(&config)).unwrap();
 }
 

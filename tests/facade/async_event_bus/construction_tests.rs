@@ -26,7 +26,8 @@ use crate::support::manual_async::block_on;
 fn test_async_facade_capability_panic_is_a_terminal_spi_error() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.panic_on_capabilities();
-    let result = AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
+    let result =
+        AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
     match result {
         Err(SpiError::Operation {
             operation: "capabilities",
@@ -54,8 +55,12 @@ fn test_async_facade_constructors_initialize_provider_capabilities_once() {
             EventBusFacadeConfig::default(),
         )
         .expect("with_config constructs the facade"),
-        AsyncEventBus::with_timer(ProviderId::new("with-timer").unwrap(), spi.clone(), timer.clone())
-            .expect("with_timer constructs the facade"),
+        AsyncEventBus::with_timer(
+            ProviderId::new("with-timer").unwrap(),
+            spi.clone(),
+            timer.clone(),
+        )
+        .expect("with_timer constructs the facade"),
         AsyncEventBus::with_config_and_timer(
             ProviderId::new("with-config-and-timer").unwrap(),
             spi.clone(),
@@ -94,7 +99,8 @@ fn test_async_facade_exposes_cached_provider_capabilities() {
 
 #[test]
 fn test_async_local_constructor_returns_a_shutdown_capable_facade() {
-    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("local facade constructs");
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default()))
+        .expect("local facade constructs");
     let outcome = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local facade shuts down");
 
     assert_eq!(outcome.outcome, ShutdownOutcome::Complete);

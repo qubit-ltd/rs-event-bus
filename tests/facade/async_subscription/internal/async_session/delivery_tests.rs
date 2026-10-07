@@ -27,12 +27,15 @@ use crate::support::manual_async::block_on;
 
 #[test]
 fn test_delivery_preserves_decoded_payload_and_transport_headers() {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).expect("local SPI"));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("provider ID"), spi).expect("event bus");
+    let spi =
+        Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).expect("local SPI"));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("local").expect("provider ID"), spi)
+        .expect("event bus");
     let topic = Topic::<String>::new("delivery.mirror").expect("topic");
-    let mut subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("delivery-mirror", topic.clone()).expect("request")))
-            .expect("subscription");
+    let subscription = block_on(
+        bus.subscribe(SubscribeRequest::new("delivery-mirror", topic.clone()).expect("request")),
+    )
+    .expect("subscription");
     let (delivered_tx, delivered_rx) = mpsc::channel();
     let mut runner = Box::pin(subscription.run(move |delivery| {
         let delivered_tx = delivered_tx.clone();
@@ -63,7 +66,9 @@ fn test_delivery_preserves_decoded_payload_and_transport_headers() {
 
     let mut delivered = None;
     for _ in 0..8 {
-        let _ = runner.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        let _ = runner
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
         if let Ok(value) = delivered_rx.try_recv() {
             delivered = Some(value);
             break;

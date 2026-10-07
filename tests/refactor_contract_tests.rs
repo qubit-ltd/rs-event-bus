@@ -58,7 +58,8 @@ fn test_invalid_delivery_limits_report_exact_fields() {
 #[test]
 fn test_facade_config_preserves_new_policies() {
     let n = |value| NonZeroUsize::new(value).expect("positive test value");
-    let scheduling = DeliverySchedulingConfig::new(n(2), n(8), n(3), n(7)).expect("valid independent limits");
+    let scheduling =
+        DeliverySchedulingConfig::new(n(2), n(8), n(3), n(7)).expect("valid independent limits");
     let retry = SettlementRetryConfig::new(
         NonZeroU32::new(1).expect("positive attempt limit"),
         Duration::from_secs(2),
@@ -101,7 +102,9 @@ fn test_settlement_stop_preserves_provider_source_chain() {
         source.source().expect("original cause").to_string(),
         "original provider cause"
     );
-    assert!(matches!(reason, SubscriptionStopReason::Settlement {error: actual, ..} if Arc::ptr_eq(&actual, &error)));
+    assert!(
+        matches!(reason, SubscriptionStopReason::Settlement { error: actual, .. } if Arc::ptr_eq(&actual, &error))
+    );
 }
 
 #[test]

@@ -94,11 +94,17 @@ impl AsyncServiceProvider<EventBusSpec> for TestProvider {
     fn create_configured<'a>(
         &'a self,
         _: &'a EventBusConfig,
-    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
+    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>>
+    {
         self.calls.creates.fetch_add(1, Ordering::SeqCst);
         let calls = self.calls.clone();
         let capabilities = self.capabilities;
-        Box::pin(async move { Ok(Arc::new(TestSpi { calls, capabilities }) as Arc<dyn AsyncEventBusSpi>) })
+        Box::pin(async move {
+            Ok(Arc::new(TestSpi {
+                calls,
+                capabilities,
+            }) as Arc<dyn AsyncEventBusSpi>)
+        })
     }
 }
 
@@ -117,7 +123,10 @@ impl AsyncEventBusSpi for TestSpi {
         self.capabilities
     }
 
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.publish.fetch_add(1, Ordering::SeqCst);
         assert!(matches!(message.payload(), TransportPayload::Native(_)));
         Box::pin(async move {
@@ -134,7 +143,9 @@ impl AsyncEventBusSpi for TestSpi {
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         self.calls.subscribe.fetch_add(1, Ordering::SeqCst);
         let calls = self.calls.clone();
-        Box::pin(async move { Ok(Box::new(TestSubscription { calls }) as Box<dyn AsyncEventSubscriptionSpi>) })
+        Box::pin(async move {
+            Ok(Box::new(TestSubscription { calls }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
     }
 
     fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
@@ -152,7 +163,11 @@ impl AsyncEventSubscriptionSpi for TestSubscription {
         Box::pin(async { Ok(ReceiveOutcome::TimedOut) })
     }
 
-    fn settle<'a>(&'a mut self, _: &SettlementToken, _: DeliveryDisposition) -> SpiFuture<'a, Result<(), SpiError>> {
+    fn settle<'a>(
+        &'a mut self,
+        _: &SettlementToken,
+        _: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -191,7 +206,10 @@ fn create_error(required: RequiredCapabilities) -> ProviderError {
         &ProviderSelection::named("coverage-async").expect("selection is valid"),
         &EventBusConfig::default().with_required_capabilities(required),
     ))
-    .map_or_else(|error| error, |_| panic!("incompatible provider must be rejected"))
+    .map_or_else(
+        |error| error,
+        |_| panic!("incompatible provider must be rejected"),
+    )
 }
 
 #[test]
@@ -224,7 +242,10 @@ fn test_async_registry_reports_each_unsatisfied_capability_through_creation_erro
         "publish_guarantee",
         "publish_visibility",
     ] {
-        assert!(display.contains(capability), "missing {capability:?} in {display}");
+        assert!(
+            display.contains(capability),
+            "missing {capability:?} in {display}"
+        );
     }
 }
 
@@ -234,7 +255,10 @@ fn test_async_registry_resolution_failure_is_distinct_from_creation_failure() {
         &ProviderSelection::named("missing").expect("selection is valid"),
         &EventBusConfig::default(),
     ))
-    .map_or_else(|error| error, |_| panic!("unknown provider cannot be resolved"));
+    .map_or_else(
+        |error| error,
+        |_| panic!("unknown provider cannot be resolved"),
+    );
     assert!(matches!(error, ProviderError::Resolution { .. }));
 }
 
@@ -242,13 +266,17 @@ fn test_async_registry_resolution_failure_is_distinct_from_creation_failure() {
 fn test_empty_registries_resolve_their_default_selection_during_create() {
     let sync_error = EventBusRegistry::new()
         .create(&EventBusConfig::default())
-        .map_or_else(|error| error, |_| panic!("empty sync registry has no default provider"));
+        .map_or_else(
+            |error| error,
+            |_| panic!("empty sync registry has no default provider"),
+        );
     assert!(matches!(sync_error, ProviderError::Resolution { .. }));
 
-    let async_error = block_on(AsyncEventBusRegistry::new().create(&EventBusConfig::default())).map_or_else(
-        |error| error,
-        |_| panic!("empty async registry has no default provider"),
-    );
+    let async_error = block_on(AsyncEventBusRegistry::new().create(&EventBusConfig::default()))
+        .map_or_else(
+            |error| error,
+            |_| panic!("empty async registry has no default provider"),
+        );
     assert!(matches!(async_error, ProviderError::Resolution { .. }));
 }
 
@@ -264,15 +292,19 @@ fn test_async_identified_spi_delegates_facade_operations_and_keeps_provider_iden
             capabilities: capabilities(),
         })
         .expect("provider registration succeeds");
-    let bus = block_on(registry.create(&EventBusConfig::default())).expect("provider creates facade");
+    let bus =
+        block_on(registry.create(&EventBusConfig::default())).expect("provider creates facade");
 
     let request = PublishRequest::new(Topic::<u32>::new("coverage.topic").unwrap(), 7).unwrap();
     let receipt = block_on(bus.publish(request)).expect("SPI accepts publication");
     assert_eq!("coverage-async", receipt.provider_id().as_str());
     assert_eq!(1, calls.publish.load(Ordering::SeqCst));
 
-    let request = SubscribeRequest::new("coverage-subscriber", Topic::<u32>::new("coverage.topic").unwrap())
-        .expect("valid subscriber ID");
+    let request = SubscribeRequest::new(
+        "coverage-subscriber",
+        Topic::<u32>::new("coverage.topic").unwrap(),
+    )
+    .expect("valid subscriber ID");
     let mut subscription = block_on(bus.subscribe(request)).expect("SPI creates receiver");
     assert_eq!(1, calls.subscribe.load(Ordering::SeqCst));
     block_on(subscription.close()).expect("receiver closes");
@@ -330,22 +362,35 @@ fn test_async_registry_uses_default_and_configured_selections_and_resolves_alias
         .set_default_selection(alias.clone())
         .expect("default selection can be replaced before sealing");
     assert_eq!(alias, registry.default_selection());
-    let default_bus =
-        block_on(registry.create(&EventBusConfig::default())).expect("create uses the configured default selection");
+    let default_bus = block_on(registry.create(&EventBusConfig::default()))
+        .expect("create uses the configured default selection");
     let request = PublishRequest::new(Topic::<u32>::new("coverage.default").unwrap(), 1).unwrap();
-    let receipt = block_on(default_bus.publish(request)).expect("default-selected provider publishes");
-    assert_eq!("coverage-async-alias-target", receipt.provider_id().as_str());
+    let receipt =
+        block_on(default_bus.publish(request)).expect("default-selected provider publishes");
+    assert_eq!(
+        "coverage-async-alias-target",
+        receipt.provider_id().as_str()
+    );
 
     let config = EventBusConfig::default().with_selection(alias);
-    let configured_bus = block_on(registry.create(&config)).expect("create honors config selection");
+    let configured_bus =
+        block_on(registry.create(&config)).expect("create honors config selection");
     let request = PublishRequest::new(Topic::<u32>::new("coverage.config").unwrap(), 2).unwrap();
-    let receipt = block_on(configured_bus.publish(request)).expect("config-selected provider publishes");
-    assert_eq!("coverage-async-alias-target", receipt.provider_id().as_str());
+    let receipt =
+        block_on(configured_bus.publish(request)).expect("config-selected provider publishes");
+    assert_eq!(
+        "coverage-async-alias-target",
+        receipt.provider_id().as_str()
+    );
     assert_eq!(2, calls.creates.load(Ordering::SeqCst));
 
     registry.seal();
     assert!(registry.is_sealed());
-    assert!(registry.set_default_selection(ProviderSelection::auto()).is_err());
+    assert!(
+        registry
+            .set_default_selection(ProviderSelection::auto())
+            .is_err()
+    );
 }
 
 #[test]
@@ -384,7 +429,8 @@ fn test_async_registry_falls_back_for_unsupported_candidates_and_reports_exhaust
     let selection = ProviderSelection::chain(["coverage-ephemeral", "coverage-durable"])
         .expect("candidate selection is valid")
         .with_fallback_policy(FallbackPolicy::OnAbsence);
-    let required = EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
+    let required =
+        EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable());
     let bus = block_on(registry.create_selected(&selection, &required))
         .expect("unsupported first provider falls back to the capable provider");
     let request = PublishRequest::new(Topic::<u32>::new("coverage.fallback").unwrap(), 3).unwrap();
@@ -412,11 +458,14 @@ fn test_async_registry_falls_back_for_unsupported_candidates_and_reports_exhaust
             capabilities: capabilities(),
         })
         .expect("second provider registers");
-    let exhausted = ProviderSelection::chain(["coverage-first-ephemeral", "coverage-second-ephemeral"])
-        .expect("candidate selection is valid")
-        .with_fallback_policy(FallbackPolicy::OnAbsence);
-    let error = block_on(exhausted_registry.create_selected(&exhausted, &required))
-        .map_or_else(|error| error, |_| panic!("all unsupported candidates must fail"));
+    let exhausted =
+        ProviderSelection::chain(["coverage-first-ephemeral", "coverage-second-ephemeral"])
+            .expect("candidate selection is valid")
+            .with_fallback_policy(FallbackPolicy::OnAbsence);
+    let error = block_on(exhausted_registry.create_selected(&exhausted, &required)).map_or_else(
+        |error| error,
+        |_| panic!("all unsupported candidates must fail"),
+    );
     assert!(matches!(error, ProviderError::Creation { .. }));
     assert_eq!(1, first.creates.load(Ordering::SeqCst));
     assert_eq!(1, second.creates.load(Ordering::SeqCst));
@@ -435,14 +484,20 @@ fn test_sync_local_registry_supports_default_and_configured_selection() {
     let default_bus = registry
         .create(&EventBusConfig::default())
         .expect("registry create uses its default selection");
-    let request = PublishRequest::new(Topic::<u32>::new("coverage.sync-default").unwrap(), 10).unwrap();
-    let receipt = default_bus.publish(request).expect("local default provider publishes");
+    let request =
+        PublishRequest::new(Topic::<u32>::new("coverage.sync-default").unwrap(), 10).unwrap();
+    let receipt = default_bus
+        .publish(request)
+        .expect("local default provider publishes");
     assert_eq!("local", receipt.provider_id().as_str());
 
-    let config =
-        EventBusConfig::default().with_selection(ProviderSelection::named("in-process").expect("alias is valid"));
-    let configured_bus = registry.create(&config).expect("config selection is honored");
-    let request = PublishRequest::new(Topic::<u32>::new("coverage.sync-config").unwrap(), 11).unwrap();
+    let config = EventBusConfig::default()
+        .with_selection(ProviderSelection::named("in-process").expect("alias is valid"));
+    let configured_bus = registry
+        .create(&config)
+        .expect("config selection is honored");
+    let request =
+        PublishRequest::new(Topic::<u32>::new("coverage.sync-config").unwrap(), 11).unwrap();
     let receipt = configured_bus
         .publish(request)
         .expect("selected local provider publishes");
@@ -455,7 +510,10 @@ fn test_provider_error_preserves_and_displays_its_cause() {
     assert!(error.to_string().contains("backend init failed"));
     assert_eq!(
         "backend init failed",
-        error.source().expect("provider cause is retained").to_string()
+        error
+            .source()
+            .expect("provider cause is retained")
+            .to_string()
     );
 }
 

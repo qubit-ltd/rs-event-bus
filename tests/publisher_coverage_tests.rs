@@ -11,11 +11,16 @@
 mod support;
 
 use std::any::TypeId;
+use std::error::Error;
+use std::io::Error as IoError;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
@@ -27,6 +32,7 @@ use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::EventBus;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::facade::PayloadLimits;
+use qubit_event_bus::facade::PublishMetricsSnapshot;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DestinationAdmission;
@@ -113,7 +119,7 @@ impl EventCodec<String> for FailingStringCodec {
 
     fn encode(&self, _value: &String) -> Result<Arc<[u8]>, CodecError> {
         Err(CodecError::Encode {
-            source: Box::new(std::io::Error::other("injected codec failure")),
+            source: Box::new(IoError::other("injected codec failure")),
         })
     }
 
@@ -155,7 +161,10 @@ impl EventBusSpi for PanickingSyncPublishSpi {
         panic!("scripted sync publish panic")
     }
 
-    fn subscribe(&self, _request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        _request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         unreachable!("publisher coverage SPI is not used for subscriptions")
     }
 
@@ -224,14 +233,17 @@ impl EventBusSpi for CoverageSpi {
         }
     }
 
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Err(SpiError::Operation {
             provider_id: "coverage".into(),
             operation: "subscribe",
             resource: Some(request.topic().as_str().into()),
             kind: "unused_test_operation",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other("subscription is not used by this test SPI")),
+            source: Box::new(IoError::other("subscription is not used by this test SPI")),
         })
     }
 
@@ -241,16 +253,18 @@ impl EventBusSpi for CoverageSpi {
 }
 
 fn bus(spi: Arc<dyn EventBusSpi>) -> EventBus {
-    EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi).expect("valid provider capabilities")
+    EventBus::from_spi(ProviderId::new("publisher-coverage").unwrap(), spi)
+        .expect("valid provider capabilities")
 }
 
 #[test]
 fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
-    use qubit_event_bus::facade::PublishMetricsSnapshot;
-
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Native, false));
     let sync_bus = bus(spi);
-    assert_eq!(sync_bus.publish_metrics(), PublishMetricsSnapshot::default());
+    assert_eq!(
+        sync_bus.publish_metrics(),
+        PublishMetricsSnapshot::default()
+    );
     let clone = sync_bus.clone();
     let batch = clone.publish_all([
         PublishRequest::new(Topic::new("metrics.sync").unwrap(), 1_u32).unwrap(),
@@ -334,9 +348,11 @@ fn test_publisher_metrics_track_shared_attempts_and_batch_items() {
     let workers = (0..8)
         .map(|index| {
             let worker_bus = concurrent_bus.clone();
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 let _ = worker_bus
-                    .publish(PublishRequest::new(Topic::new("metrics.sync").unwrap(), index).unwrap())
+                    .publish(
+                        PublishRequest::new(Topic::new("metrics.sync").unwrap(), index).unwrap(),
+                    )
                     .expect("concurrent publish should be accepted");
             })
         })
@@ -389,7 +405,7 @@ impl EventBusSpi for ScriptedFailureSpi {
                 kind: "scripted_failure",
                 retryable: self.retryable,
                 effect: PublishEffect::NotAccepted,
-                source: Box::new(std::io::Error::other("scripted provider failure")),
+                source: Box::new(IoError::other("scripted provider failure")),
             });
         }
         Ok(PublishAcknowledgement::Accepted {
@@ -398,7 +414,10 @@ impl EventBusSpi for ScriptedFailureSpi {
         })
     }
 
-    fn subscribe(&self, _request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        _request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         unreachable!("publisher coverage SPI is not used for subscriptions")
     }
 
@@ -429,7 +448,10 @@ impl AsyncEventBusSpi for EncodedAsyncPublishSpi {
         )
     }
 
-    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.0.fetch_add(1, Ordering::AcqRel);
         Box::pin(async {
             Ok(PublishAcknowledgement::Accepted {
@@ -446,7 +468,10 @@ impl AsyncEventBusSpi for EncodedAsyncPublishSpi {
         Box::pin(async { unreachable!("publisher test SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        _mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -467,7 +492,10 @@ impl AsyncEventBusSpi for AcceptingAsyncPublishSpi {
         )
     }
 
-    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async {
             Ok(PublishAcknowledgement::Accepted {
                 provider_message_id: None,
@@ -483,7 +511,10 @@ impl AsyncEventBusSpi for AcceptingAsyncPublishSpi {
         Box::pin(async { unreachable!("publisher coverage SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        _mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -504,7 +535,10 @@ impl AsyncEventBusSpi for PanickingAsyncPublishSpi {
         )
     }
 
-    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async { panic!("scripted async publish panic") })
     }
 
@@ -515,7 +549,10 @@ impl AsyncEventBusSpi for PanickingAsyncPublishSpi {
         Box::pin(async { unreachable!("publisher coverage SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        _mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -536,7 +573,10 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
         )
     }
 
-    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         panic!("scripted async publish construction panic")
     }
 
@@ -547,7 +587,10 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
         Box::pin(async { unreachable!("publisher coverage SPI is not used for subscriptions") })
     }
 
-    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        _mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -556,14 +599,19 @@ impl AsyncEventBusSpi for PanickingAsyncPublishConstructionSpi {
 fn test_encoded_publish_retains_codec_failure_and_skips_provider_call() {
     let spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let bus = bus(spi.clone());
-    let topic = Topic::new("codec.failure").unwrap().with_codec(FailingStringCodec {
-        content_type: ContentType::TEXT_PLAIN,
-    });
+    let topic = Topic::new("codec.failure")
+        .unwrap()
+        .with_codec(FailingStringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let request = PublishRequest::new(topic, "payload".to_owned()).unwrap();
 
     let error = bus.publish(request).unwrap_err();
-    assert!(matches!(error.cause(), PublishError::Codec(CodecError::Encode { .. })));
-    assert!(std::error::Error::source(&error).is_some());
+    assert!(matches!(
+        error.cause(),
+        PublishError::Codec(CodecError::Encode { .. })
+    ));
+    assert!(Error::source(&error).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 0);
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
@@ -575,9 +623,11 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         NonZeroUsize::new(4).expect("positive receive limit"),
     ));
     let topic = || {
-        Topic::new("codec.limit").unwrap().with_codec(SuccessfulStringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        })
+        Topic::new("codec.limit")
+            .unwrap()
+            .with_codec(SuccessfulStringCodec {
+                content_type: ContentType::TEXT_PLAIN,
+            })
     };
     let sync_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let sync_bus = EventBus::with_config(
@@ -610,7 +660,9 @@ fn test_encoded_publish_respects_configured_byte_limit_in_sync_and_async_facades
         config,
     )
     .unwrap();
-    let error = block_on(async_bus.publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap())).unwrap_err();
+    let error =
+        block_on(async_bus.publish(PublishRequest::new(topic(), "oversized".to_owned()).unwrap()))
+            .unwrap_err();
     assert!(matches!(
         error.cause(),
         PublishError::Codec(CodecError::PayloadTooLarge {
@@ -642,7 +694,7 @@ fn test_sync_spi_publish_panic_becomes_source_preserving_publish_error() {
             ..
         } if provider_id.as_ref() == "publisher-coverage" && resource.as_ref() == "sync.panic"
     ));
-    assert!(std::error::Error::source(&source).is_some());
+    assert!(Error::source(&source).is_some());
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
 
@@ -670,7 +722,9 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
         .publish(PublishRequest::new(Topic::new("generic.u128").unwrap(), 42_u128).unwrap())
         .unwrap();
     let _ = bus
-        .publish(PublishRequest::new(Topic::new("generic.bytes").unwrap(), vec![1_u8, 2, 3]).unwrap())
+        .publish(
+            PublishRequest::new(Topic::new("generic.bytes").unwrap(), vec![1_u8, 2, 3]).unwrap(),
+        )
         .unwrap();
     let _ = bus
         .publish(PublishRequest::new(Topic::new("generic.array").unwrap(), [4_u8, 5, 6]).unwrap())
@@ -679,7 +733,13 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
         .publish(PublishRequest::new(Topic::new("generic.option").unwrap(), Some(7_u16)).unwrap())
         .unwrap();
     let _ = bus
-        .publish(PublishRequest::new(Topic::new("generic.result").unwrap(), Ok::<i32, &'static str>(8)).unwrap())
+        .publish(
+            PublishRequest::new(
+                Topic::new("generic.result").unwrap(),
+                Ok::<i32, &'static str>(8),
+            )
+            .unwrap(),
+        )
         .unwrap();
     let _ = bus
         .publish(
@@ -718,11 +778,12 @@ fn test_native_publisher_supports_many_domain_payload_types_without_clone_bounds
 fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
     let encoded_spi = Arc::new(CoverageSpi::new(PayloadModes::Encoded, false));
     let encoded_bus = bus(encoded_spi.clone());
-    let encoded_topic = Topic::new("representation.encoded")
-        .unwrap()
-        .with_codec(SuccessfulStringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        });
+    let encoded_topic =
+        Topic::new("representation.encoded")
+            .unwrap()
+            .with_codec(SuccessfulStringCodec {
+                content_type: ContentType::TEXT_PLAIN,
+            });
     let _ = encoded_bus
         .publish(PublishRequest::new(encoded_topic, "encoded body".to_owned()).unwrap())
         .unwrap();
@@ -732,11 +793,12 @@ fn test_encoded_and_hybrid_capabilities_choose_the_supported_representation() {
 
     let hybrid_spi = Arc::new(CoverageSpi::new(PayloadModes::NativeAndEncoded, false));
     let hybrid_bus = bus(hybrid_spi.clone());
-    let hybrid_topic = Topic::new("representation.hybrid")
-        .unwrap()
-        .with_codec(SuccessfulStringCodec {
-            content_type: ContentType::TEXT_PLAIN,
-        });
+    let hybrid_topic =
+        Topic::new("representation.hybrid")
+            .unwrap()
+            .with_codec(SuccessfulStringCodec {
+                content_type: ContentType::TEXT_PLAIN,
+            });
     let _ = hybrid_bus
         .publish(PublishRequest::new(hybrid_topic, "native preferred".to_owned()).unwrap())
         .unwrap();
@@ -757,9 +819,12 @@ fn test_typed_metadata_mutation_error_is_returned_before_provider_publish() {
             Ok(Some(envelope))
         })
         .build();
-    let request = PublishRequest::new(Topic::new("metadata.failure").unwrap(), "payload".to_owned())
-        .unwrap()
-        .with_options(options);
+    let request = PublishRequest::new(
+        Topic::new("metadata.failure").unwrap(),
+        "payload".to_owned(),
+    )
+    .unwrap()
+    .with_options(options);
 
     let error = bus.publish(request).unwrap_err();
     assert!(matches!(error.cause(), PublishError::Configuration(_)));
@@ -813,7 +878,7 @@ fn test_direct_spi_error_is_not_wrapped_in_retry_when_no_policy_is_configured() 
             ..
         }
     ));
-    assert!(std::error::Error::source(&source).is_some());
+    assert!(Error::source(&source).is_some());
     assert_eq!(spi.publish_calls.load(Ordering::Acquire), 1);
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
@@ -824,7 +889,9 @@ fn test_custom_retry_rule_can_override_explicit_non_retryable_spi_classification
     let bus = bus(spi.clone());
     let options = PublishOptions::<u32>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
+        .retry_rule(
+            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
+        )
         .build();
     let request = PublishRequest::new(Topic::new("retry.override").unwrap(), 5_u32)
         .unwrap()
@@ -845,7 +912,7 @@ fn test_terminal_publish_error_handler_can_inspect_shared_non_clone_event_contex
     let bus = bus(spi.clone());
     let observed = Arc::new(Mutex::new(None));
     let observed_by_handler = observed.clone();
-    let created_at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
+    let created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(123);
     let options = PublishOptions::<NonClonePayload>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
         .error_handler(move |context, _| {
@@ -936,7 +1003,7 @@ fn test_async_spi_future_panic_becomes_source_preserving_publish_error() {
             ..
         }
     ));
-    assert!(std::error::Error::source(&source).is_some());
+    assert!(Error::source(&source).is_some());
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
@@ -947,11 +1014,14 @@ fn test_async_spi_future_construction_panic_becomes_source_preserving_publish_er
         Arc::new(PanickingAsyncPublishConstructionSpi),
     )
     .expect("valid provider capabilities");
-    let request = PublishRequest::new(Topic::new("async.construction.panic").unwrap(), 11_u32).unwrap();
+    let request =
+        PublishRequest::new(Topic::new("async.construction.panic").unwrap(), 11_u32).unwrap();
 
     let error = block_on(bus.publish(request)).unwrap_err();
     let PublishError::Spi(source) = error.cause() else {
-        panic!("async SPI construction panic should be converted to a provider error, got {error:?}");
+        panic!(
+            "async SPI construction panic should be converted to a provider error, got {error:?}"
+        );
     };
     assert!(matches!(
         &source,
@@ -964,7 +1034,7 @@ fn test_async_spi_future_construction_panic_becomes_source_preserving_publish_er
         } if provider_id.as_ref() == "async-publisher-construction-panic"
             && resource.as_ref() == "async.construction.panic"
     ));
-    assert!(std::error::Error::source(&source).is_some());
+    assert!(Error::source(&source).is_some());
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
@@ -978,8 +1048,9 @@ fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_boun
 
     macro_rules! publish {
         ($name:literal, $request:expr) => {
-            block_on(bus.publish($request))
-                .unwrap_or_else(|error| panic!("async publish for {} payload failed: {error}", $name))
+            block_on(bus.publish($request)).unwrap_or_else(|error| {
+                panic!("async publish for {} payload failed: {error}", $name)
+            })
         };
     }
     let _ = publish!(
@@ -1016,13 +1087,17 @@ fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_boun
     );
     let _ = publish!(
         "result",
-        PublishRequest::new(Topic::new("async.result").unwrap(), Ok::<i32, &'static str>(6)).unwrap()
+        PublishRequest::new(
+            Topic::new("async.result").unwrap(),
+            Ok::<i32, &'static str>(6)
+        )
+        .unwrap()
     );
     let _ = publish!(
         "non-clone domain",
         PublishRequest::new(
             Topic::new("async.domain").unwrap(),
-            std::sync::Mutex::new(String::from("non-clone payload")),
+            Mutex::new(String::from("non-clone payload")),
         )
         .unwrap()
     );
@@ -1047,7 +1122,7 @@ fn test_diagnostics_skip_preflight_failures_isolate_panics_and_stop_after_observ
             PublishRequest::builder()
                 .topic(Topic::<u32>::new("diagnostics.preflight").unwrap())
                 .payload(1)
-                .delay(std::time::Duration::from_secs(1))
+                .delay(Duration::from_secs(1))
                 .build()
                 .unwrap(),
         )

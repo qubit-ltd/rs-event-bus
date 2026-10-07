@@ -98,7 +98,10 @@ fn test_metadata_validation_is_exact() {
         ContentType::new("Text/plain").expect("valid MIME"),
         Some(SchemaId::new("v1").expect("valid schema")),
     );
-    match codec.validate_metadata(&mismatched).expect_err("different metadata") {
+    match codec
+        .validate_metadata(&mismatched)
+        .expect_err("different metadata")
+    {
         CodecError::MetadataMismatch {
             expected_content_type,
             actual_content_type,
@@ -118,7 +121,11 @@ fn test_metadata_validation_is_exact() {
 #[test]
 fn test_publish_failure_preserves_cause_and_identity() {
     let event_id = EventId::new("failed-event").expect("valid event ID");
-    let failure = PublishFailure::new(event_id.clone(), PublishEffect::NotAccepted, PublishError::Closed);
+    let failure = PublishFailure::new(
+        event_id.clone(),
+        PublishEffect::NotAccepted,
+        PublishError::Closed,
+    );
     assert_eq!(failure.event_id(), &event_id);
     assert_eq!(failure.effect(), PublishEffect::NotAccepted);
     assert!(matches!(failure.cause(), PublishError::Closed));
@@ -184,7 +191,12 @@ fn test_spi_publish_error_getters_and_attempt_effect() {
     assert_eq!(error.kind(), "unavailable");
     assert_eq!(error.retryable(), Some(true));
     assert_eq!(error.publish_effect(), PublishEffect::NotAccepted);
-    let attempt = PublishAttemptError::new(error.kind(), error.retryable(), error.publish_effect(), error);
+    let attempt = PublishAttemptError::new(
+        error.kind(),
+        error.retryable(),
+        error.publish_effect(),
+        error,
+    );
     assert_eq!(attempt.effect(), PublishEffect::NotAccepted);
     assert!(attempt.source().expect("SPI cause").is::<SpiError>());
     let generic = SpiError::Operation {

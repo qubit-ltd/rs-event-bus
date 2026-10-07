@@ -55,12 +55,21 @@ fn test_discovered_sync_provider_is_creatable() {
     let registry = EventBusRegistry::discover().expect("discover linked providers");
     let provider_ids = registry.provider_ids();
     assert!(provider_ids.iter().any(|id| id.as_str() == "local"));
-    assert!(provider_ids.iter().any(|id| id.as_str() == "test-sync-discovered"));
-    let selection = ProviderSelection::named("test-sync-discovered").expect("valid provider selection");
+    assert!(
+        provider_ids
+            .iter()
+            .any(|id| id.as_str() == "test-sync-discovered")
+    );
+    let selection =
+        ProviderSelection::named("test-sync-discovered").expect("valid provider selection");
     let config = EventBusConfig::default().with_selection(selection);
-    let bus = registry.create(&config).expect("create bus from discovered provider");
+    let bus = registry
+        .create(&config)
+        .expect("create bus from discovered provider");
     let topic = Topic::<String>::new("discovery.test").expect("valid topic");
     let request = PublishRequest::new(topic, "hello".to_owned()).expect("valid publish request");
-    let receipt = bus.publish(request).expect("publish through discovered provider");
+    let receipt = bus
+        .publish(request)
+        .expect("publish through discovered provider");
     assert_eq!(receipt.provider_id().as_str(), "test-sync-discovered");
 }

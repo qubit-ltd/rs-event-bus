@@ -40,6 +40,7 @@ pub(crate) struct Signal {
 impl Signal {
     /// Returns the exact number of observed entries.
     #[must_use]
+    #[inline]
     pub(crate) fn count(&self) -> usize {
         *self.count.lock().expect("signal lock")
     }
@@ -68,6 +69,7 @@ pub(crate) struct Gate {
 impl Gate {
     /// Installs an unwind guard that releases this gate before bus teardown.
     #[must_use]
+    #[inline]
     pub(crate) fn release_on_drop(self: &Arc<Self>) -> ReleaseGate {
         ReleaseGate(self.clone())
     }
@@ -138,13 +140,17 @@ impl ProbeBus {
     }
 }
 impl EventBusSpi for ProbeBus {
+    #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
         self.fake.capabilities()
     }
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.fake.publish(message)
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         let probe = self
             .probes
             .lock()
@@ -177,14 +183,23 @@ impl EventSubscriptionSpi for ProbeSubscription {
         }
         Ok(outcome)
     }
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
-        assert!(token.belongs_to(self.owner), "settlement remains on its issuing owner");
-        let identity = token.downcast_ref::<String>().expect("fake issues String token") as *const String as usize;
-        self.probe
-            .attempts
-            .lock()
-            .expect("attempts lock")
-            .push((self.owner, identity, disposition));
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
+        assert!(
+            token.belongs_to(self.owner),
+            "settlement remains on its issuing owner"
+        );
+        let identity = token
+            .downcast_ref::<String>()
+            .expect("fake issues String token") as *const String as usize;
+        self.probe.attempts.lock().expect("attempts lock").push((
+            self.owner,
+            identity,
+            disposition,
+        ));
         self.probe.entered.enter();
         self.probe.settle_gate.wait();
         let mut policy = self.probe.failures.lock().expect("failure policy lock");

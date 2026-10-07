@@ -8,6 +8,7 @@
 //! Public display and source contracts for codec failures.
 
 use std::error::Error;
+use std::io::Error as IoError;
 
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::model::ContentType;
@@ -47,13 +48,16 @@ fn test_codec_error_metadata_mismatch_display_reports_expected_and_received_valu
 fn test_codec_error_native_type_mismatch_display_explains_contract_failure() {
     let error = CodecError::NativeTypeMismatch;
 
-    assert_eq!(error.to_string(), "native payload type does not match subscribed topic");
+    assert_eq!(
+        error.to_string(),
+        "native payload type does not match subscribed topic"
+    );
 }
 
 #[test]
 fn test_codec_error_encode_preserves_original_error_source() {
     let error = CodecError::Encode {
-        source: Box::new(std::io::Error::other("encoder rejected value")),
+        source: Box::new(IoError::other("encoder rejected value")),
     };
 
     assert_eq!(
@@ -69,7 +73,7 @@ fn test_codec_error_encode_preserves_original_error_source() {
 #[test]
 fn test_codec_error_decode_preserves_original_error_source() {
     let error = CodecError::Decode {
-        source: Box::new(std::io::Error::other("decoder rejected bytes")),
+        source: Box::new(IoError::other("decoder rejected bytes")),
     };
 
     assert_eq!(

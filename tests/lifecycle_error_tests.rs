@@ -45,14 +45,22 @@ use qubit_event_bus::spi::SubscriptionModes;
 fn test_lifecycle_error_timer_conversion_retains_time_error() {
     let error = LifecycleError::from(TimeError::InstantOverflow);
 
-    assert_eq!(error.to_string(), "event bus timer failed: monotonic instant overflow");
-    assert!(matches!(&error, LifecycleError::Timer(TimeError::InstantOverflow)));
+    assert_eq!(
+        error.to_string(),
+        "event bus timer failed: monotonic instant overflow"
+    );
+    assert!(matches!(
+        &error,
+        LifecycleError::Timer(TimeError::InstantOverflow)
+    ));
     assert!(Error::source(&error).is_some_and(|source| source.is::<TimeError>()));
 }
 
 #[test]
 fn test_lifecycle_error_would_deadlock_retains_operation() {
-    let error = LifecycleError::WouldDeadlock { operation: "shutdown" };
+    let error = LifecycleError::WouldDeadlock {
+        operation: "shutdown",
+    };
 
     assert_eq!(
         error.to_string(),
@@ -60,7 +68,9 @@ fn test_lifecycle_error_would_deadlock_retains_operation() {
     );
     assert!(matches!(
         &error,
-        LifecycleError::WouldDeadlock { operation: "shutdown" }
+        LifecycleError::WouldDeadlock {
+            operation: "shutdown"
+        }
     ));
     assert!(Error::source(&error).is_none());
 }
@@ -145,7 +155,11 @@ fn test_lifecycle_error_subscription_close_preserves_public_failure_chain() {
             .as_str(),
         "worker"
     );
-    assert!(errors.to_string().contains("1 subscription close failure(s)"));
+    assert!(
+        errors
+            .to_string()
+            .contains("1 subscription close failure(s)")
+    );
     let close_failure = Error::source(&error).expect("lifecycle error should expose close failure");
     assert_eq!(
         close_failure.to_string(),
@@ -184,7 +198,10 @@ impl EventBusSpi for CloseFailureProvider {
         })
     }
 
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(CloseFailureSubscription {
             subscriber_id: request.subscriber_id().as_str().to_owned(),
         }))

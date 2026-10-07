@@ -29,16 +29,18 @@ use qubit_id::Id;
 
 #[test]
 fn test_async_spi_provider_id_defaults_to_unassigned() {
-    let spi: Arc<dyn AsyncEventBusSpi> =
-        Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let spi: Arc<dyn AsyncEventBusSpi> = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"),
+    );
 
     assert_eq!(None, spi.provider_id());
 }
 
 #[test]
 fn test_async_spi_capabilities_remain_stable_for_instance_lifetime() {
-    let spi: Arc<dyn AsyncEventBusSpi> =
-        Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let spi: Arc<dyn AsyncEventBusSpi> = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"),
+    );
 
     let initial = spi.capabilities();
     let later = spi.capabilities();
@@ -50,8 +52,9 @@ fn test_async_spi_capabilities_remain_stable_for_instance_lifetime() {
 fn test_async_spi_object_safe_operations_return_send_futures() {
     fn assert_send<T: Send>(_: &T) {}
 
-    let spi: Arc<dyn AsyncEventBusSpi> =
-        Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"));
+    let spi: Arc<dyn AsyncEventBusSpi> = Arc::new(
+        AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid local configuration"),
+    );
     let message = OutboundMessage::new(
         TopicAddress::new("spi.contract").expect("valid topic address"),
         EventId::new("event-contract").expect("valid event ID"),

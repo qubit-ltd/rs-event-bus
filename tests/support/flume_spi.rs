@@ -110,7 +110,11 @@ impl EventBusSpi for FlumeSpi {
             return Err(operation_error("publish", "topic_type_conflict"));
         }
         let mut admissions = Vec::new();
-        for (id, route) in state.routes.iter().filter(|(_, route)| route.topic == *message.topic()) {
+        for (id, route) in state
+            .routes
+            .iter()
+            .filter(|(_, route)| route.topic == *message.topic())
+        {
             let inbound = InboundMessage::new(
                 message.topic().clone(),
                 message.id().clone(),
@@ -123,15 +127,26 @@ impl EventBusSpi for FlumeSpi {
             );
             let status = match route.sender.try_send(inbound) {
                 Ok(()) => AdmissionStatus::Accepted,
-                Err(TrySendError::Full(_)) => AdmissionStatus::Rejected("subscription queue is full".into()),
-                Err(TrySendError::Disconnected(_)) => AdmissionStatus::Rejected("subscription is closed".into()),
+                Err(TrySendError::Full(_)) => {
+                    AdmissionStatus::Rejected("subscription queue is full".into())
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    AdmissionStatus::Rejected("subscription is closed".into())
+                }
             };
-            admissions.push(DestinationAdmission::new(*id, route.subscriber.clone(), status));
+            admissions.push(DestinationAdmission::new(
+                *id,
+                route.subscriber.clone(),
+                status,
+            ));
         }
         Ok(PublishAcknowledgement::DestinationAdmissions(admissions))
     }
 
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         let (sender, receiver) = sync_channel(QUEUE_CAPACITY);
         let id = request.subscription_id();
         let mut state = self.state.lock().unwrap();
@@ -193,7 +208,11 @@ impl EventSubscriptionSpi for FlumeSubscription {
         }
     }
 
-    fn settle(&mut self, _token: &SettlementToken, _disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        _token: &SettlementToken,
+        _disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         Err(operation_error("settle", "settlement_unsupported"))
     }
 
@@ -203,7 +222,10 @@ impl EventSubscriptionSpi for FlumeSubscription {
         }
         let mut state = self.state.lock().unwrap();
         if let Some(route) = state.routes.remove(&self.id)
-            && !state.routes.values().any(|candidate| candidate.topic == route.topic)
+            && !state
+                .routes
+                .values()
+                .any(|candidate| candidate.topic == route.topic)
         {
             state.payload_types.remove(&route.topic);
         }

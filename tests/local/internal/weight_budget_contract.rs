@@ -26,6 +26,7 @@ use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
@@ -72,16 +73,22 @@ impl Bus {
     /// Creates the selected local SPI with a ten-slot count capacity and
     /// optional weight budget.
     fn new(asynchronous: bool, weight: Option<usize>) -> Self {
-        let mut config = LocalEventBusConfig::new().queue_capacity(10).max_total_outstanding(10);
+        let mut config = LocalEventBusConfig::new()
+            .queue_capacity(10)
+            .max_total_outstanding(10);
         if let Some(weight) = weight {
-            config = config.max_total_outstanding_weight_bytes(NonZeroUsize::new(weight).expect("positive budget"));
+            config = config.max_total_outstanding_weight_bytes(
+                NonZeroUsize::new(weight).expect("positive budget"),
+            );
         }
         if asynchronous {
             Self::Async(AsyncLocalEventBusSpi::new(&config).expect("valid async config"))
         } else {
             Self::Sync(
                 LocalEventBusProvider
-                    .create_configured(&EventBusConfig::default().with_provider_options(config.provider_options()))
+                    .create_configured(
+                        &EventBusConfig::default().with_provider_options(config.provider_options()),
+                    )
                     .expect("valid sync config"),
             )
         }
@@ -101,7 +108,9 @@ impl Bus {
         );
         match self {
             Self::Sync(bus) => Receiver::Sync(bus.subscribe(request).expect("sync subscription")),
-            Self::Async(bus) => Receiver::Async(ready(bus.subscribe(request)).expect("async subscription")),
+            Self::Async(bus) => {
+                Receiver::Async(ready(bus.subscribe(request)).expect("async subscription"))
+            }
         }
     }
 
@@ -127,15 +136,21 @@ impl Receiver {
     fn receive(&mut self) -> ReceiveOutcome {
         match self {
             Self::Sync(receiver) => receiver.receive(Duration::ZERO).expect("sync receive"),
-            Self::Async(receiver) => ready(receiver.receive(Duration::ZERO)).expect("async receive"),
+            Self::Async(receiver) => {
+                ready(receiver.receive(Duration::ZERO)).expect("async receive")
+            }
         }
     }
 
     /// Applies one provider settlement and checks that it succeeds.
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) {
         match self {
-            Self::Sync(receiver) => receiver.settle(token, disposition).expect("sync settlement"),
-            Self::Async(receiver) => ready(receiver.settle(token, disposition)).expect("async settlement"),
+            Self::Sync(receiver) => receiver
+                .settle(token, disposition)
+                .expect("sync settlement"),
+            Self::Async(receiver) => {
+                ready(receiver.settle(token, disposition)).expect("async settlement")
+            }
         }
     }
 
@@ -165,7 +180,8 @@ fn message(id: &str, weight: Option<usize>, delay: Option<Duration>) -> Outbound
         TransportPayload::Native(Arc::new(7_u32)),
     );
     match weight {
-        Some(weight) => message.with_native_payload_weight_bytes(NonZeroUsize::new(weight).expect("positive weight")),
+        Some(weight) => message
+            .with_native_payload_weight_bytes(NonZeroUsize::new(weight).expect("positive weight")),
         None => message,
     }
 }
@@ -208,10 +224,10 @@ pub(crate) fn missing_weight(asynchronous: bool) {
             .expect_err("missing declaration fails");
         assert!(matches!(
             error,
-            SpiError::Operation {
-                operation: "publish",
+            SpiError::Publish {
                 kind: "missing_native_payload_weight",
                 retryable: Some(false),
+                effect: PublishEffect::NotAccepted,
                 ..
             }
         ));
@@ -262,7 +278,8 @@ pub(crate) fn settlement(asynchronous: bool) {
         let bus = Bus::new(asynchronous, Some(5));
         let mut receiver = bus.subscribe(1);
         admissions(
-            bus.publish(message("first", Some(5), None)).expect("first admission"),
+            bus.publish(message("first", Some(5), None))
+                .expect("first admission"),
             1,
             0,
         );
@@ -285,7 +302,8 @@ pub(crate) fn settlement(asynchronous: bool) {
         receiver.settle(&token, disposition);
         receiver.settle(&token, disposition);
         admissions(
-            bus.publish(message("reused", Some(5), None)).expect("terminal release"),
+            bus.publish(message("reused", Some(5), None))
+                .expect("terminal release"),
             1,
             0,
         );
@@ -311,7 +329,8 @@ pub(crate) fn cleanup(asynchronous: bool) {
         };
         drop(inbound);
         admissions(
-            bus.publish(message("ready", Some(3), None)).expect("ready admission"),
+            bus.publish(message("ready", Some(3), None))
+                .expect("ready admission"),
             1,
             0,
         );
@@ -322,7 +341,8 @@ pub(crate) fn cleanup(asynchronous: bool) {
             0,
         );
         admissions(
-            bus.publish(message("blocked", Some(1), None)).expect("budget full"),
+            bus.publish(message("blocked", Some(1), None))
+                .expect("budget full"),
             0,
             1,
         );
@@ -375,7 +395,8 @@ pub(crate) fn disabled(asynchronous: bool) {
         ("large-two", Some(usize::MAX)),
     ] {
         admissions(
-            bus.publish(message(id, weight, None)).expect("count-only admission"),
+            bus.publish(message(id, weight, None))
+                .expect("count-only admission"),
             1,
             0,
         );

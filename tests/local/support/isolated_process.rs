@@ -18,6 +18,10 @@ use std::time::Instant;
 /// # Parameters
 /// - `test_name`: exact test name selected in the child process.
 /// - `case`: value passed through `QUBIT_EVENT_BUS_ISOLATED_CASE`.
+///
+/// # Panics
+/// Panics if the child process cannot be started, exits unsuccessfully, or
+/// exceeds the default ten-second watchdog timeout.
 pub(crate) fn run_case(test_name: &str, case: &str) {
     run_case_with_timeout(test_name, case, Duration::from_secs(10));
 }
@@ -28,6 +32,10 @@ pub(crate) fn run_case(test_name: &str, case: &str) {
 /// - `test_name`: exact test name selected in the child process.
 /// - `case`: value passed through `QUBIT_EVENT_BUS_ISOLATED_CASE`.
 /// - `timeout`: maximum child lifetime before it is killed and reaped.
+///
+/// # Panics
+/// Panics if the child process cannot be started or polled, exits
+/// unsuccessfully, or exceeds `timeout` and cannot be killed and reaped.
 pub(crate) fn run_case_with_timeout(test_name: &str, case: &str, timeout: Duration) {
     let mut child = Command::new(current_exe().unwrap())
         .args(["--exact", test_name, "--nocapture", "--test-threads=1"])

@@ -88,7 +88,10 @@ impl EventBusSpi for AdmissionProvider {
             .expect("test acknowledgement was configured"))
     }
 
-    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        _: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Err(provider_error("subscribe"))
     }
 
@@ -116,8 +119,11 @@ fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
     });
-    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider)
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(
+        ProviderId::new("admission-test").expect("valid provider ID"),
+        provider,
+    )
+    .expect("valid provider capabilities");
     let topic = Topic::<String>::new("orders.created").expect("valid topic");
     let request = PublishRequest::new(topic, "order-1".to_owned()).expect("request builds");
     let receipt = bus
@@ -177,7 +183,10 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
         ),
         (
             "filtered only",
-            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Filtered)]),
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(
+                1,
+                AdmissionStatus::Filtered,
+            )]),
             Some(AdmissionSummary {
                 accepted: 0,
                 filtered: 1,
@@ -204,7 +213,10 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
         ),
         (
             "accepted only",
-            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Accepted)]),
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(
+                1,
+                AdmissionStatus::Accepted,
+            )]),
             Some(AdmissionSummary {
                 accepted: 1,
                 filtered: 0,
@@ -231,7 +243,9 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
         ),
     ];
 
-    for (name, acknowledgement, summary, at_least_one, no_rejected, provider_or_destination) in cases {
+    for (name, acknowledgement, summary, at_least_one, no_rejected, provider_or_destination) in
+        cases
+    {
         let receipt = receipt(acknowledgement.clone());
         assert_eq!(summary, receipt.admission_summary(), "{name}");
         assert_eq!(
@@ -260,19 +274,28 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
 #[test]
 fn test_checked_publish_returns_the_receipt_when_admission_fails() {
     let provider = Arc::new(AdmissionProvider {
-        acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
+        acknowledgements: Mutex::new(VecDeque::from([
+            PublishAcknowledgement::DestinationAdmissions(vec![]),
+        ])),
         visibility: PublishVisibility::DestinationAdmissions,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
     });
     let bus = EventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider).unwrap();
-    let request = PublishRequest::new(Topic::<String>::new("orders.created").unwrap(), "order-2".to_owned()).unwrap();
+    let request = PublishRequest::new(
+        Topic::<String>::new("orders.created").unwrap(),
+        "order-2".to_owned(),
+    )
+    .unwrap();
     let error = bus
         .publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)
         .expect_err("no destination was admitted");
     match error {
         qubit_event_bus::CheckedPublishError::Admission { receipt, reason } => {
-            assert_eq!(receipt.admission_outcome(), AdmissionOutcome::NoDestinations);
+            assert_eq!(
+                receipt.admission_outcome(),
+                AdmissionOutcome::NoDestinations
+            );
             assert_eq!(reason, AdmissionCheckError::NoAcceptedDestination);
         }
         other => panic!("expected admission error with receipt, got {other:?}"),
@@ -352,10 +375,13 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
         let error = bus
             .publish_checked(request, requirement)
             .expect_err("opaque provider cannot report destinations");
-        assert!(
-            matches!(error, CheckedPublishError::UnsupportedVisibility { event_id: actual_event_id, provider_id: actual_provider_id }
-            if actual_event_id == event_id && actual_provider_id == provider_id)
-        );
+        assert!(matches!(
+            error,
+            CheckedPublishError::UnsupportedVisibility {
+                event_id: actual_event_id,
+                provider_id: actual_provider_id
+            } if actual_event_id == event_id && actual_provider_id == provider_id
+        ));
         assert_eq!(interceptor_calls.load(Ordering::Acquire), 0);
         assert_eq!(codec_calls.load(Ordering::Acquire), 0);
         assert_eq!(provider.publish_calls.load(Ordering::Acquire), 0);
@@ -368,19 +394,29 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
             AdmissionRequirement::ProviderOrDestinationAccepted,
         )
         .expect("provider acceptance satisfies the new condition");
-    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::OpaqueAccepted);
+    assert_eq!(
+        receipt.admission_outcome(),
+        AdmissionOutcome::OpaqueAccepted
+    );
     assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
 
     let visible_provider = Arc::new(AdmissionProvider {
-        acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
+        acknowledgements: Mutex::new(VecDeque::from([
+            PublishAcknowledgement::DestinationAdmissions(vec![]),
+        ])),
         visibility: PublishVisibility::DestinationAdmissions,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
     });
-    let visible_bus = EventBus::from_spi(provider_id, visible_provider.clone()).expect("valid visible provider");
+    let visible_bus =
+        EventBus::from_spi(provider_id, visible_provider.clone()).expect("valid visible provider");
     let error = visible_bus
         .publish_checked(
-            PublishRequest::new(Topic::<String>::new("orders.visible").unwrap(), "order".to_owned()).unwrap(),
+            PublishRequest::new(
+                Topic::<String>::new("orders.visible").unwrap(),
+                "order".to_owned(),
+            )
+            .unwrap(),
             AdmissionRequirement::ProviderOrDestinationAccepted,
         )
         .expect_err("no destinations accepted");
@@ -406,7 +442,10 @@ fn test_admission_outcome_classifies_every_provider_result() {
             AdmissionOutcome::NoDestinations,
         ),
         (
-            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Filtered)]),
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(
+                1,
+                AdmissionStatus::Filtered,
+            )]),
             AdmissionOutcome::NoneAccepted(AdmissionSummary {
                 accepted: 0,
                 filtered: 1,
@@ -425,7 +464,10 @@ fn test_admission_outcome_classifies_every_provider_result() {
             }),
         ),
         (
-            PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Accepted)]),
+            PublishAcknowledgement::DestinationAdmissions(vec![destination(
+                1,
+                AdmissionStatus::Accepted,
+            )]),
             AdmissionOutcome::Accepted(AdmissionSummary {
                 accepted: 1,
                 filtered: 0,
@@ -454,7 +496,10 @@ fn test_admission_outcome_classifies_every_provider_result() {
                 rejected: 1,
             }),
         ),
-        (PublishAcknowledgement::DroppedByInterceptor, AdmissionOutcome::Dropped),
+        (
+            PublishAcknowledgement::DroppedByInterceptor,
+            AdmissionOutcome::Dropped,
+        ),
     ];
 
     for (acknowledgement, expected) in cases {
@@ -526,7 +571,10 @@ fn test_publish_receipt_preserves_partial_destination_admission() {
         panic!("provider destination admissions must be preserved");
     };
     assert_eq!(2, destinations.len());
-    assert_eq!("accepted-subscriber", destinations[0].subscriber_id().as_str());
+    assert_eq!(
+        "accepted-subscriber",
+        destinations[0].subscriber_id().as_str()
+    );
     assert_eq!(&AdmissionStatus::Accepted, destinations[0].status());
     assert_eq!("full-subscriber", destinations[1].subscriber_id().as_str());
     assert_eq!(
@@ -548,5 +596,8 @@ fn test_publish_receipt_is_successful_when_every_destination_rejects_admission()
         panic!("provider destination admissions must be preserved");
     };
     assert_eq!(1, destinations.len());
-    assert!(matches!(destinations[0].status(), AdmissionStatus::Rejected(_)));
+    assert!(matches!(
+        destinations[0].status(),
+        AdmissionStatus::Rejected(_)
+    ));
 }

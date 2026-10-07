@@ -22,11 +22,16 @@ use qubit_event_bus::spi::ShutdownMode;
 fn test_interceptor_panic_retains_public_failure_identity_and_origin_scope() {
     let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus starts");
     let options = PublishOptions::<String>::builder()
-        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> { panic!("interceptor failed") })
+        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> {
+            panic!("interceptor failed")
+        })
         .build();
-    let request = PublishRequest::new(Topic::new("pipeline.failure").unwrap(), "payload".to_owned())
-        .unwrap()
-        .with_options(options);
+    let request = PublishRequest::new(
+        Topic::new("pipeline.failure").unwrap(),
+        "payload".to_owned(),
+    )
+    .unwrap()
+    .with_options(options);
     let event_id = request.envelope().id().clone();
 
     let failure = bus.publish(request).unwrap_err();

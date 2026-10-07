@@ -65,11 +65,13 @@ impl Wake for WakeCounter {
 fn test_close_drains_all_started_handlers() {
     let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
     let topic = Topic::<usize>::new("regression.close-drain").expect("topic");
-    let mut subscription = ready(bus.subscribe(SubscribeRequest::new("close-drain", topic.clone()).expect("request")))
-        .expect("subscription");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("close-drain", topic.clone()).expect("request")))
+            .expect("subscription");
     for value in 0..2 {
         let _ =
-            ready(bus.publish(PublishRequest::new(topic.clone(), value).expect("publish request"))).expect("publish");
+            ready(bus.publish(PublishRequest::new(topic.clone(), value).expect("publish request")))
+                .expect("publish");
     }
 
     let gates = Arc::new([AtomicBool::new(false), AtomicBool::new(false)]);
@@ -120,9 +122,11 @@ fn test_close_drains_all_started_handlers() {
 fn test_wait_inside_own_handler_returns_would_deadlock() {
     let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
     let topic = Topic::<usize>::new("regression.self-wait").expect("topic");
-    let mut subscription = ready(bus.subscribe(SubscribeRequest::new("self-wait", topic.clone()).expect("request")))
-        .expect("subscription");
-    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("self-wait", topic.clone()).expect("request")))
+            .expect("subscription");
+    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request")))
+        .expect("publish");
 
     let observed = Arc::new(Mutex::new(None));
     let mut run = {
@@ -134,7 +138,8 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
             let topic = topic.clone();
             let observed = observed.clone();
             async move {
-                *observed.lock().expect("result lock") = Some(bus.wait_for_received_deliveries(&topic, None).await);
+                *observed.lock().expect("result lock") =
+                    Some(bus.wait_for_received_deliveries(&topic, None).await);
                 Ok::<(), DeliveryError>(())
             }
         }))
@@ -156,7 +161,8 @@ fn test_wait_inside_own_handler_returns_would_deadlock() {
 
 #[test]
 fn test_admission_wakes_successor_after_coalesced_permit_releases() {
-    let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
+    let provider =
+        Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
             NonZeroUsize::new(2).expect("limit"),
@@ -166,19 +172,35 @@ fn test_admission_wakes_successor_after_coalesced_permit_releases() {
         )
         .expect("scheduling"),
     );
-    let bus =
-        AsyncEventBus::with_config(ProviderId::new("local").expect("provider ID"), provider, config).expect("facade");
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("local").expect("provider ID"),
+        provider,
+        config,
+    )
+    .expect("facade");
     let topic_a = Topic::<usize>::new("regression.admission.a").expect("topic A");
     let topic_b = Topic::<usize>::new("regression.admission.b").expect("topic B");
     let topic_c = Topic::<usize>::new("regression.admission.c").expect("topic C");
-    let mut sub_a = ready(bus.subscribe(SubscribeRequest::new("admission-a", topic_a.clone()).expect("request A")))
-        .expect("subscription A");
-    let mut sub_b = ready(bus.subscribe(SubscribeRequest::new("admission-b", topic_b.clone()).expect("request B")))
-        .expect("subscription B");
-    let mut sub_c = ready(bus.subscribe(SubscribeRequest::new("admission-c", topic_c.clone()).expect("request C")))
-        .expect("subscription C");
-    for (topic, value) in [(topic_a.clone(), 0), (topic_a, 1), (topic_b, 0), (topic_c, 0)] {
-        let _ = ready(bus.publish(PublishRequest::new(topic, value).expect("publish request"))).expect("publish");
+    let sub_a = ready(
+        bus.subscribe(SubscribeRequest::new("admission-a", topic_a.clone()).expect("request A")),
+    )
+    .expect("subscription A");
+    let sub_b = ready(
+        bus.subscribe(SubscribeRequest::new("admission-b", topic_b.clone()).expect("request B")),
+    )
+    .expect("subscription B");
+    let sub_c = ready(
+        bus.subscribe(SubscribeRequest::new("admission-c", topic_c.clone()).expect("request C")),
+    )
+    .expect("subscription C");
+    for (topic, value) in [
+        (topic_a.clone(), 0),
+        (topic_a, 1),
+        (topic_b, 0),
+        (topic_c, 0),
+    ] {
+        let _ = ready(bus.publish(PublishRequest::new(topic, value).expect("publish request")))
+            .expect("publish");
     }
 
     let gate_a = Arc::new(AtomicBool::new(false));

@@ -9,6 +9,7 @@
 //! budget.
 
 mod support;
+
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -51,7 +52,8 @@ fn assert_hot_lane_does_not_block_independent_handler(two_subscriptions: bool) {
     if two_subscriptions {
         spi.register("independent", independent);
     }
-    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi).expect("valid capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi)
+        .expect("valid capabilities");
     let blocked = Arc::new(Gate::default());
     let barrier = Arc::new(Signal::default());
     let callback_gate = blocked.clone();
@@ -79,9 +81,12 @@ fn assert_hot_lane_does_not_block_independent_handler(two_subscriptions: bool) {
     let independent_subscription = if two_subscriptions {
         Some(
             bus.subscribe(
-                SubscribeRequest::new("independent", Topic::<String>::new("independent").expect("valid topic"))
-                    .expect("valid subscriber")
-                    .with_options(options),
+                SubscribeRequest::new(
+                    "independent",
+                    Topic::<String>::new("independent").expect("valid topic"),
+                )
+                .expect("valid subscriber")
+                .with_options(options),
                 move |_: Delivery<String>| {
                     let _ = entered_tx.send(());
                 },
@@ -99,15 +104,28 @@ fn assert_hot_lane_does_not_block_independent_handler(two_subscriptions: bool) {
     // Declared after the bus, this guard releases A0 even if an assertion unwinds.
     let _release_on_unwind = blocked.release_on_drop();
     publish(&bus, "hot", "A0", "A");
-    assert!(barrier.wait(1), "A0 enters handler at explicit startup barrier");
+    assert!(
+        barrier.wait(1),
+        "A0 enters handler at explicit startup barrier"
+    );
     for payload in ["A1", "A2", "A3", "A4"] {
         publish(&bus, "hot", payload, "A");
     }
     let received_hot = hot.received.wait(5);
     if received_hot {
-        publish(&bus, if two_subscriptions { "independent" } else { "hot" }, "B0", "B");
+        publish(
+            &bus,
+            if two_subscriptions {
+                "independent"
+            } else {
+                "hot"
+            },
+            "B0",
+            "B",
+        );
     }
-    let independent_entered = received_hot && entered_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+    let independent_entered =
+        received_hot && entered_rx.recv_timeout(Duration::from_secs(2)).is_ok();
     // Release before joining: failure cannot deadlock on the still-running handler.
     blocked.release();
     hot_subscription.cancel().expect("hot cleanup");

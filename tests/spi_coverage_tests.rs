@@ -64,10 +64,19 @@ fn test_inbound_message_exposes_encoded_payload_and_all_transport_metadata() {
     assert_eq!(message.topic().as_str(), "orders.created");
     assert_eq!(message.id().as_str(), "event-inbound-1");
     assert_eq!(message.timestamp(), timestamp);
-    assert_eq!(message.headers().get("trace-id").map(String::as_str), Some("trace-7"));
-    assert_eq!(message.ordering_key().map(OrderingKey::as_str), Some("customer-42"));
     assert_eq!(
-        message.provider_metadata().get("partition").map(String::as_str),
+        message.headers().get("trace-id").map(String::as_str),
+        Some("trace-7")
+    );
+    assert_eq!(
+        message.ordering_key().map(OrderingKey::as_str),
+        Some("customer-42")
+    );
+    assert_eq!(
+        message
+            .provider_metadata()
+            .get("partition")
+            .map(String::as_str),
         Some("3")
     );
     let TransportPayload::Encoded(payload) = message.payload() else {
@@ -77,7 +86,9 @@ fn test_inbound_message_exposes_encoded_payload_and_all_transport_metadata() {
     assert_eq!(payload.content_type().as_str(), "application/octet-stream");
     assert_eq!(payload.schema_id().map(SchemaId::as_str), Some("schema-v2"));
 
-    let token = message.take_settlement().expect("message carries settlement token");
+    let token = message
+        .take_settlement()
+        .expect("message carries settlement token");
     assert!(token.belongs_to(subscription_id));
     assert_eq!(token.downcast_ref::<u64>(), Some(&7));
     assert!(message.take_settlement().is_none());
@@ -108,7 +119,8 @@ fn test_inbound_message_into_parts_transfers_encoded_payload_and_metadata() {
         metadata,
     );
 
-    let (topic, id, received_at, headers, ordering_key, payload, settlement, metadata) = message.into_parts();
+    let (topic, id, received_at, headers, ordering_key, payload, settlement, metadata) =
+        message.into_parts();
     assert_eq!(topic.as_str(), "events.archived");
     assert_eq!(id.as_str(), "event-archived");
     assert_eq!(received_at, timestamp);
@@ -148,17 +160,26 @@ fn test_outbound_message_exposes_transport_fields_and_consumes_payload() {
     assert_eq!(message.id().as_str(), "event-outbound-1");
     assert_eq!(message.timestamp(), timestamp);
     assert_eq!(
-        message.headers().get("content-language").map(String::as_str),
+        message
+            .headers()
+            .get("content-language")
+            .map(String::as_str),
         Some("en")
     );
-    assert_eq!(message.ordering_key().map(OrderingKey::as_str), Some("account-5"));
+    assert_eq!(
+        message.ordering_key().map(OrderingKey::as_str),
+        Some("account-5")
+    );
     assert_eq!(message.delay(), Some(delay));
     let TransportPayload::Encoded(payload) = message.into_payload() else {
         panic!("outbound payload should be returned by into_payload");
     };
     assert_eq!(payload.bytes(), &[42]);
     assert_eq!(payload.content_type().as_str(), "application/cbor");
-    assert_eq!(payload.schema_id().map(SchemaId::as_str), Some("notification-v1"));
+    assert_eq!(
+        payload.schema_id().map(SchemaId::as_str),
+        Some("notification-v1")
+    );
 }
 
 #[test]
@@ -206,7 +227,10 @@ fn test_settlement_token_binds_identity_and_allows_typed_mutation() {
 
     assert!(token.belongs_to(issuing_subscription));
     assert!(!token.belongs_to(other_subscription));
-    assert_eq!(token.downcast_ref::<String>().map(String::as_str), Some("offset-4"));
+    assert_eq!(
+        token.downcast_ref::<String>().map(String::as_str),
+        Some("offset-4")
+    );
     assert!(token.downcast_ref::<u64>().is_none());
     token
         .downcast_mut::<String>()
@@ -267,7 +291,10 @@ impl AsyncEventBusSpi for MinimalAsyncProvider {
         unreachable!("the default provider identity does not require capabilities")
     }
 
-    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        _: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         unreachable!("the default provider identity does not publish")
     }
 

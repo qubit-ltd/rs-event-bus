@@ -7,7 +7,9 @@
 // =============================================================================
 //! Public asynchronous event-bus publishing contracts.
 
+use std::error::Error;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::PublishError;
@@ -37,8 +39,8 @@ fn topic() -> Topic<u32> {
 #[test]
 fn test_async_facade_publishes_single_and_ordered_batch_without_runtime_dependency() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
 
     let unpolled = bus.publish(PublishRequest::new(topic(), 99).unwrap());
     assert_eq!(bus.publish_metrics().attempts, 0);
@@ -97,34 +99,47 @@ fn test_async_facade_publishes_single_and_ordered_batch_without_runtime_dependen
     assert_eq!(metrics.opaque_accepted, 6);
     assert_eq!(metrics.dropped, 0);
     assert_eq!(spi.shutdown_transition_count(), 1);
-    assert_eq!(spi.operation_log().iter().filter(|op| **op == "publish").count(), 7);
+    assert_eq!(
+        spi.operation_log()
+            .iter()
+            .filter(|op| **op == "publish")
+            .count(),
+        7
+    );
 }
 
 #[test]
 fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
-    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let order = Arc::new(Mutex::new(Vec::new()));
     let typed_order = order.clone();
     let global_order = order.clone();
-    let config = EventBusFacadeConfig::new().publisher_interceptor(move |metadata: &mut PublishMetadata| {
-        global_order.lock().unwrap().push("global");
-        assert_eq!(metadata.header("origin"), Some("typed"));
-        metadata.set_header("trace", "global")?;
-        Ok(false)
-    });
+    let config =
+        EventBusFacadeConfig::new().publisher_interceptor(move |metadata: &mut PublishMetadata| {
+            global_order.lock().unwrap().push("global");
+            assert_eq!(metadata.header("origin"), Some("typed"));
+            metadata.set_header("trace", "global")?;
+            Ok(false)
+        });
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
         .expect("valid provider capabilities");
     let options = PublishOptions::<u32>::builder()
         .interceptor(move |mut envelope| {
             typed_order.lock().unwrap().push("typed");
-            envelope.set_header("origin", "typed").expect("valid header");
+            envelope
+                .set_header("origin", "typed")
+                .expect("valid header");
             Ok(Some(envelope))
         })
         .build();
 
     block_on(async {
         let receipt = bus
-            .publish(PublishRequest::new(topic(), 17).unwrap().with_options(options))
+            .publish(
+                PublishRequest::new(topic(), 17)
+                    .unwrap()
+                    .with_options(options),
+            )
             .await
             .unwrap();
         assert!(receipt.acknowledgement().is_dropped());
@@ -141,16 +156,22 @@ fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
 fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.fail_next_publish();
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
     let options = PublishOptions::<u32>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
-        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
+        .retry_rule(
+            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
+        )
         .build();
 
     block_on(async {
         let error = bus
-            .publish(PublishRequest::new(topic(), 91).unwrap().with_options(options))
+            .publish(
+                PublishRequest::new(topic(), 91)
+                    .unwrap()
+                    .with_options(options),
+            )
             .await
             .unwrap_err();
         let PublishError::Retry(retry) = error.into_cause() else {
@@ -160,7 +181,7 @@ fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source
         assert_eq!(retry.context().attempts(), 1);
         let attempt_error = retry.last_error().expect("attempt error retained");
         assert_eq!(attempt_error.kind(), "fake_failure");
-        let mut source = std::error::Error::source(attempt_error);
+        let mut source = Error::source(attempt_error);
         let mut found = false;
         while let Some(error) = source {
             if error.to_string().contains("fake") {
@@ -169,7 +190,10 @@ fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source
             }
             source = error.source();
         }
-        assert!(found, "provider source chain must survive terminal retry mapping");
+        assert!(
+            found,
+            "provider source chain must survive terminal retry mapping"
+        );
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 }

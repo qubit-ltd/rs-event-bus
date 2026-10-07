@@ -89,7 +89,10 @@ fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {
     let outcomes = outcome_receiver.try_iter().collect::<Vec<_>>();
     assert!(matches!(
         outcomes.as_slice(),
-        [NotificationOutcome::Published(_), NotificationOutcome::Published(_)]
+        [
+            NotificationOutcome::Published(_),
+            NotificationOutcome::Published(_)
+        ]
     ));
     assert_eq!(vec!["first", "second"], *spi.published.lock().unwrap());
     assert_eq!(1, publisher.stats().queue_full());
@@ -110,7 +113,9 @@ fn test_notification_publisher_close_is_idempotent_and_does_not_close_bus() {
 
     publisher.close().unwrap();
     publisher.close().unwrap();
-    assert!(matches!(publisher.try_publish("late".into()), Err(TryPublishError::Closed(value)) if value == "late"));
+    assert!(
+        matches!(publisher.try_publish("late".into()), Err(TryPublishError::Closed(value)) if value == "late")
+    );
     assert_eq!(0, spi.shutdown_calls.load(Ordering::Acquire));
     let error = publisher.try_publish("again".into()).unwrap_err();
     assert_eq!("notification publisher is closed", error.to_string());
@@ -184,7 +189,9 @@ fn test_notification_publisher_zero_timeout_is_nonblocking_and_finished_close_su
         .expect_err("zero timeout must not wait for a blocked provider");
     assert_eq!(ErrorKind::TimedOut, error.kind());
     spi.release();
-    publisher.close().expect("unbounded close drains the accepted item");
+    publisher
+        .close()
+        .expect("unbounded close drains the accepted item");
     publisher
         .close_with_timeout(Duration::ZERO)
         .expect("an already finished worker closes immediately");
@@ -226,19 +233,32 @@ fn test_notification_publisher_concurrent_timed_close_callers_can_timeout_and_re
         second_started_sender.send(()).unwrap();
         second_publisher.close_with_timeout(Duration::from_secs(2))
     });
-    first_started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-    second_started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    first_started_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    second_started_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
 
-    let error = first.join().unwrap().expect_err("short close caller times out");
+    let error = first
+        .join()
+        .unwrap()
+        .expect_err("short close caller times out");
     assert_eq!(ErrorKind::TimedOut, error.kind());
     spi.release();
-    second.join().unwrap().expect("long close caller observes completion");
+    second
+        .join()
+        .unwrap()
+        .expect("long close caller observes completion");
     assert_eq!(vec!["blocked"], *spi.published.lock().unwrap());
 }
 
 #[test]
 fn test_notification_stats_snapshot_exposes_all_counters() {
-    assert_eq!(256, NotificationPublisher::<String>::default_capacity().get());
+    assert_eq!(
+        256,
+        NotificationPublisher::<String>::default_capacity().get()
+    );
     let spi = Arc::new(GatedSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -265,8 +285,8 @@ fn test_notification_stats_snapshot_exposes_all_counters() {
 #[test]
 fn test_notification_publisher_concurrent_close_callers_share_worker_completion() {
     let spi = Arc::new(GatedSpi::new());
-    let bus =
-        EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi).expect("valid provider capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi)
+        .expect("valid provider capabilities");
     let publisher = Arc::new(
         NotificationPublisher::new(
             bus,
@@ -329,12 +349,16 @@ fn test_notification_observer_cannot_close_its_own_worker() {
                     .and_then(Weak::upgrade)
                     .expect("publisher remains alive during its observer");
                 let results = [
-                    publisher.close().map_err(|error| (error.kind(), error.to_string())),
+                    publisher
+                        .close()
+                        .map_err(|error| (error.kind(), error.to_string())),
                     publisher
                         .close_with_timeout(Duration::from_secs(1))
                         .map_err(|error| (error.kind(), error.to_string())),
                 ];
-                close_sender.send(results).expect("test receives close results");
+                close_sender
+                    .send(results)
+                    .expect("test receives close results");
             },
         )
         .unwrap(),
@@ -360,15 +384,23 @@ fn test_notification_observer_cannot_close_its_own_worker() {
         for result in results {
             let (kind, message) = result.expect_err("worker-thread close must be rejected");
             assert_eq!(ErrorKind::Other, kind);
-            assert_eq!("notification publisher cannot close from its worker thread", message);
+            assert_eq!(
+                "notification publisher cannot close from its worker thread",
+                message
+            );
         }
     }
 
     publisher
         .try_publish("third".into())
         .expect("worker-thread close attempts must leave admission open");
-    publisher.close().expect("external close drains queued notifications");
-    assert_eq!(vec!["first", "second", "third"], *spi.published.lock().unwrap());
+    publisher
+        .close()
+        .expect("external close drains queued notifications");
+    assert_eq!(
+        vec!["first", "second", "third"],
+        *spi.published.lock().unwrap()
+    );
 }
 
 /// Regression for a destructor panic after an idle worker drains its queue.
@@ -408,7 +440,10 @@ fn test_notification_observer_drop_panic_releases_all_close_callers() {
     barrier.wait();
     for closer in closers {
         assert_eq!(
-            Err((ErrorKind::Other, "notification publisher worker panicked".into())),
+            Err((
+                ErrorKind::Other,
+                "notification publisher worker panicked".into()
+            )),
             closer.join().expect("close caller returns"),
         );
     }
@@ -478,7 +513,9 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
             .expect_err("blocked destructor keeps completion pending")
             .kind()
     );
-    release_sender.send(()).expect("release observer destructor");
+    release_sender
+        .send(())
+        .expect("release observer destructor");
     assert_eq!(
         ErrorKind::Other,
         publisher
@@ -489,7 +526,10 @@ fn test_notification_cleanup_timeout_can_retry_and_preserves_worker_identity() {
     assert_eq!(1, publisher.stats().worker_panicked());
     assert_eq!(
         ErrorKind::Other,
-        publisher.close().expect_err("all retries retain panic outcome").kind()
+        publisher
+            .close()
+            .expect_err("all retries retain panic outcome")
+            .kind()
     );
 }
 
@@ -510,7 +550,9 @@ impl Drop for GatedPanicOnDrop {
         let error = publisher
             .close_with_timeout(Duration::ZERO)
             .expect_err("cleanup cannot close its own worker");
-        self.entered.send(error.kind()).expect("test observes cleanup");
+        self.entered
+            .send(error.kind())
+            .expect("test observes cleanup");
         self.release
             .lock()
             .expect("cleanup release mutex")
@@ -600,7 +642,10 @@ impl EventBusSpi for GatedSpi {
         })
     }
 
-    fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        _: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Err(SpiError::Operation {
             provider_id: "notification-test".into(),
             operation: "subscribe",

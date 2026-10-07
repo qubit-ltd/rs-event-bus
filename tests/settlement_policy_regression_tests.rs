@@ -7,6 +7,7 @@
 // =============================================================================
 //! Sync settlement retryability and opaque-token ownership regressions.
 mod support;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -16,6 +17,8 @@ use std::time::Instant;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::Subscription;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
+use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishRequest;
@@ -29,7 +32,8 @@ use support::settlement_probe::SettlementProbe;
 /// Starts a test subscription with a handler invocation counter.
 fn subscribe(bus: &EventBus, name: &str, calls: Arc<AtomicUsize>) -> Subscription {
     bus.subscribe(
-        SubscribeRequest::new(name, Topic::<u32>::new(name).expect("valid topic")).expect("valid subscriber"),
+        SubscribeRequest::new(name, Topic::<u32>::new(name).expect("valid topic"))
+            .expect("valid subscriber"),
         move |_: Delivery<u32>| {
             calls.fetch_add(1, Ordering::SeqCst);
         },
@@ -39,7 +43,10 @@ fn subscribe(bus: &EventBus, name: &str, calls: Arc<AtomicUsize>) -> Subscriptio
 /// Publishes a scalar through the real facade.
 fn publish(bus: &EventBus, topic: &str) {
     let _ = bus
-        .publish(PublishRequest::new(Topic::new(topic).expect("valid topic"), 42_u32).expect("valid request"))
+        .publish(
+            PublishRequest::new(Topic::new(topic).expect("valid topic"), 42_u32)
+                .expect("valid request"),
+        )
         .expect("publish succeeds");
 }
 
@@ -50,7 +57,8 @@ fn test_sync_permanent_settlement_stops_subscription_without_cancel() {
     let healthy = SettlementProbe::new(true, 0);
     spi.register("bad", bad.clone());
     spi.register("healthy", healthy.clone());
-    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi).expect("valid capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi)
+        .expect("valid capabilities");
     let calls = Arc::new(AtomicUsize::new(0));
     let subscription = Arc::new(subscribe(&bus, "bad", calls.clone()));
     let healthy_calls = Arc::new(AtomicUsize::new(0));
@@ -80,7 +88,10 @@ fn test_sync_permanent_settlement_stops_subscription_without_cancel() {
     let attempts = bad.entered.count();
     let closed = bad.closed.count();
     publish(&bus, "healthy");
-    assert!(healthy.entered.wait(1), "healthy subscription settles independently");
+    assert!(
+        healthy.entered.wait(1),
+        "healthy subscription settles independently"
+    );
     subscription.cancel().expect("failure-safe cleanup");
     healthy_subscription.cancel().expect("healthy cleanup");
     assert!(
@@ -98,7 +109,8 @@ fn test_sync_settlement_retry_preserves_token_and_disposition() {
     let spi = ProbeBus::new();
     let probe = SettlementProbe::new(true, 1);
     spi.register("retry", probe.clone());
-    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi).expect("valid capabilities");
+    let bus = EventBus::from_spi(ProviderId::new("probe").expect("valid provider"), spi)
+        .expect("valid capabilities");
     let calls = Arc::new(AtomicUsize::new(0));
     let subscription = subscribe(&bus, "retry", calls.clone());
     let _cancel_on_unwind = CancelOnDrop(vec![&subscription]);
@@ -120,10 +132,6 @@ fn test_sync_settlement_retry_preserves_token_and_disposition() {
 /// A non-returning owner SPI must not retain the only real handler thread.
 #[test]
 fn test_sync_blocked_settlement_releases_real_handler_thread_and_serializes_receiver() {
-    use std::num::NonZeroUsize;
-
-    use qubit_event_bus::facade::DeliverySchedulingConfig;
-    use qubit_event_bus::facade::EventBusFacadeConfig;
     let spi = ProbeBus::new();
     let blocked = Arc::new(SettlementProbe::default());
     blocked.close_gate.release();
@@ -132,17 +140,23 @@ fn test_sync_blocked_settlement_releases_real_handler_thread_and_serializes_rece
     spi.register("healthy", healthy.clone());
     let positive = |n| NonZeroUsize::new(n).expect("positive limit");
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
-        DeliverySchedulingConfig::new(positive(1), positive(6), positive(3), positive(2)).expect("valid config"),
+        DeliverySchedulingConfig::new(positive(1), positive(6), positive(3), positive(2))
+            .expect("valid config"),
     );
-    let bus =
-        EventBus::with_config(ProviderId::new("probe").expect("valid provider"), spi, config).expect("bus starts");
+    let bus = EventBus::with_config(
+        ProviderId::new("probe").expect("valid provider"),
+        spi,
+        config,
+    )
+    .expect("bus starts");
     let first_handler = Arc::new(support::settlement_probe::Gate::default());
     let first_entered = Arc::new(support::settlement_probe::Signal::default());
     let handler_gate = first_handler.clone();
     let handler_entered = first_entered.clone();
     let blocked_subscription = bus
         .subscribe(
-            SubscribeRequest::new("blocked", Topic::<u32>::new("blocked").expect("topic")).expect("request"),
+            SubscribeRequest::new("blocked", Topic::<u32>::new("blocked").expect("topic"))
+                .expect("request"),
             move |_| {
                 handler_entered.enter();
                 handler_gate.wait();
@@ -162,7 +176,10 @@ fn test_sync_blocked_settlement_releases_real_handler_thread_and_serializes_rece
         "another runnable delivery is queued before settlement"
     );
     first_handler.release();
-    assert!(blocked.entered.wait(1), "blocked owner is inside settlement");
+    assert!(
+        blocked.entered.wait(1),
+        "blocked owner is inside settlement"
+    );
     publish(&bus, "blocked");
     publish(&bus, "healthy");
     assert!(

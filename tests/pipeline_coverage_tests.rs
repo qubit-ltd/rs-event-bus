@@ -65,7 +65,9 @@ fn test_retry_runs_interceptor_and_handler_again() {
     let options = SubscribeOptions::<u32>::builder()
         .ordering_policy(OrderingPolicy::PerKey)
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
+        .retry_rule(
+            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry,
+        )
         .error_handler(|_, _| FailureDirective::Retry)
         .interceptor(move |delivery, next| {
             interceptor_attempts.fetch_add(1, Ordering::AcqRel);
@@ -108,7 +110,8 @@ fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagn
     let (dead_letter_tx, dead_letter_rx) = mpsc::channel();
     let dead_letter_subscription = bus
         .subscribe(
-            SubscribeRequest::new("dead-letter-reader", dead_letter_topic).expect("valid subscriber ID"),
+            SubscribeRequest::new("dead-letter-reader", dead_letter_topic)
+                .expect("valid subscriber ID"),
             move |delivery: Delivery<DeadLetterEvent<String>>| {
                 dead_letter_tx
                     .send((
@@ -147,7 +150,8 @@ fn test_exhausted_retry_publishes_typed_dead_letter_and_emits_one_terminal_diagn
         .publish(PublishRequest::new(source_topic.clone(), "original".to_owned()).unwrap())
         .unwrap();
 
-    let (original_payload, subscriber_id, reason) = dead_letter_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (original_payload, subscriber_id, reason) =
+        dead_letter_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let attempts = diagnostic_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(original_payload, "original");
     assert_eq!(subscriber_id, "dead-letter-source");
@@ -174,15 +178,21 @@ fn test_interceptor_error_retries_and_scheduler_backpressure_preserves_pending_d
         .unwrap(),
     );
     let backend = Arc::new(support::fake_spi::FakeEventBusSpi::new());
-    let bus = EventBus::with_config(ProviderId::new("pipeline-admission").unwrap(), backend, facade_config)
-        .expect("valid provider capabilities");
+    let bus = EventBus::with_config(
+        ProviderId::new("pipeline-admission").unwrap(),
+        backend,
+        facade_config,
+    )
+    .expect("valid provider capabilities");
     let interceptor_calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = Arc::new(AtomicUsize::new(0));
 
     let interceptor_count = interceptor_calls.clone();
     let options = SubscribeOptions::<u32>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
-        .retry_rule(|_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry)
+        .retry_rule(
+            |_: &AttemptFailure<DeliveryAttemptError>, _: &RetryContext| RetryDecision::Retry,
+        )
         .error_handler(|_, _| FailureDirective::Retry)
         .interceptor(move |delivery, next| {
             if interceptor_count.fetch_add(1, Ordering::AcqRel) == 0 {

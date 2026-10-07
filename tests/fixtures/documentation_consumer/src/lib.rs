@@ -8,6 +8,7 @@
 //! Compiled examples from the bilingual user guides.
 
 pub mod bounded_shutdown;
+pub mod local_capacity;
 pub mod order_created_codec;
 #[path = "orders/mod.rs"]
 pub mod orders;

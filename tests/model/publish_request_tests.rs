@@ -12,7 +12,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::Topic;
 
 #[test]
-fn header_lookup_and_into_parts_preserve_request_data() {
+fn test_header_lookup_and_into_parts_preserve_request_data() {
     let options = PublishOptions::<String>::builder().build();
     let request = PublishRequest::builder()
         .topic(Topic::<String>::new("model.request").expect("valid topic"))

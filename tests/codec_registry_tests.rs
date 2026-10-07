@@ -66,7 +66,9 @@ fn test_codec_registry_returns_shared_codec_by_payload_type() {
     let codec = string_codec("text/plain");
     registry.register(codec.clone()).expect("unique codec type");
 
-    let retrieved = registry.get::<String>().expect("string codec is registered");
+    let retrieved = registry
+        .get::<String>()
+        .expect("string codec is registered");
     assert!(Arc::ptr_eq(&codec, &retrieved));
     assert_eq!(retrieved.content_type().as_str(), "text/plain");
     assert!(registry.get::<u32>().is_none());
@@ -87,7 +89,9 @@ fn test_codec_registry_rejects_duplicate_and_explicitly_replaces_codec() {
     assert!(
         matches!(error, CodecRegistrationError::DuplicatePayloadType { type_name } if type_name == "alloc::string::String")
     );
-    let registered = registry.get::<String>().expect("original codec remains registered");
+    let registered = registry
+        .get::<String>()
+        .expect("original codec remains registered");
     assert!(Arc::ptr_eq(&registered, &original));
 
     let previous = registry
@@ -95,7 +99,9 @@ fn test_codec_registry_rejects_duplicate_and_explicitly_replaces_codec() {
         .expect("replacement returns previous codec");
     assert!(Arc::ptr_eq(&previous, &original));
 
-    let retrieved = registry.get::<String>().expect("replacement codec is registered");
+    let retrieved = registry
+        .get::<String>()
+        .expect("replacement codec is registered");
     assert!(Arc::ptr_eq(&retrieved, &replacement));
     assert_eq!(retrieved.content_type().as_str(), "text/csv");
 }

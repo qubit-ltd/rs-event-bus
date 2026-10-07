@@ -18,6 +18,9 @@ fn test_facade_config_clone_shares_the_configured_codec_registry() {
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::clone(&codecs));
     let cloned = config.clone();
 
-    assert!(Arc::ptr_eq(config.codec_registry(), cloned.codec_registry()));
+    assert!(Arc::ptr_eq(
+        config.codec_registry(),
+        cloned.codec_registry()
+    ));
     assert!(Arc::ptr_eq(config.codec_registry(), &codecs));
 }

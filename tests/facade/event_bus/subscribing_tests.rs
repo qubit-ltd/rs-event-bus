@@ -51,5 +51,7 @@ fn test_subscribe_starts_worker_and_delivers_provider_message() {
         42
     );
     subscription.cancel().expect("subscription cancels");
-    let _ = bus.shutdown(ShutdownMode::Immediate).expect("event bus shuts down");
+    let _ = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("event bus shuts down");
 }

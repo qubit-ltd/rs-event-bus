@@ -74,7 +74,11 @@ impl Timer for SwitchingTimer {
 
 /// Creates an isolated facade and controllable clocks, with no background
 /// runtime.
-fn setup() -> (AsyncEventBus, Arc<FakeAsyncEventBusSpi>, Arc<SwitchingTimer>) {
+fn setup() -> (
+    AsyncEventBus,
+    Arc<FakeAsyncEventBusSpi>,
+    Arc<SwitchingTimer>,
+) {
     let fake = Arc::new(FakeAsyncEventBusSpi::new());
     let timer = Arc::new(SwitchingTimer {
         normal: ManualMonotonicClock::new(),
@@ -94,13 +98,15 @@ fn setup() -> (AsyncEventBus, Arc<FakeAsyncEventBusSpi>, Arc<SwitchingTimer>) {
 /// Registers one u32 subscription and supplies a single valid token-owned
 /// message.
 fn subscribe(bus: &AsyncEventBus, fake: &FakeAsyncEventBusSpi) -> AsyncSubscription<u32> {
-    let request =
-        SubscribeRequest::new("first-cause", Topic::<u32>::new("test.topic").expect("topic")).expect("request");
+    let request = SubscribeRequest::new(
+        "first-cause",
+        Topic::<u32>::new("test.topic").expect("topic"),
+    )
+    .expect("request");
     let sub = block_on(bus.subscribe(request)).expect("subscription");
-    fake.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
-        sub.id(),
-        "token",
-    ))));
+    fake.enqueue(support::fake_spi::inbound_message(Some(
+        SettlementToken::new(sub.id(), "token"),
+    )));
     sub
 }
 
@@ -109,7 +115,7 @@ fn subscribe(bus: &AsyncEventBus, fake: &FakeAsyncEventBusSpi) -> AsyncSubscript
 #[test]
 fn test_handler_clock_error_is_first_cause_before_observer_snapshot() {
     let (bus, fake, timer) = setup();
-    let mut sub = subscribe(&bus, &fake);
+    let sub = subscribe(&bus, &fake);
     let callback_bus = bus.clone();
     let callbacks = Arc::new(AtomicUsize::new(0));
     let observed = callbacks.clone();
@@ -134,7 +140,9 @@ fn test_handler_clock_error_is_first_cause_before_observer_snapshot() {
     };
     assert_eq!(error.kind(), "handler_clock_failure");
     assert_eq!(error.operation(), "handler");
-    assert!(std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
+    assert!(
+        std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>())
+    );
     assert_eq!(callbacks.load(Ordering::SeqCst), 1);
     assert_eq!(fake.settlement_count(), 0);
 }
@@ -144,7 +152,7 @@ fn test_handler_clock_error_is_first_cause_before_observer_snapshot() {
 #[test]
 fn test_settlement_clock_error_is_first_cause_before_observer_snapshot() {
     let (bus, fake, timer) = setup();
-    let mut sub = subscribe(&bus, &fake);
+    let sub = subscribe(&bus, &fake);
     fake.pause_next_settle();
     let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
     for _ in 0..16 {
@@ -184,7 +192,9 @@ fn test_settlement_clock_error_is_first_cause_before_observer_snapshot() {
     assert_eq!(*termination, SettlementTermination::InfrastructureFailure);
     assert_eq!(error.kind(), "settlement_clock_failure");
     assert_eq!(error.operation(), "settle");
-    assert!(std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
+    assert!(
+        std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>())
+    );
     assert_eq!(clock_callbacks.load(Ordering::SeqCst), 1);
     let stopped = stopped.lock().expect("stopped diagnostics");
     assert_eq!(stopped.len(), 1);
@@ -196,35 +206,51 @@ fn test_settlement_clock_error_is_first_cause_before_observer_snapshot() {
 #[test]
 fn test_permanent_settlement_is_first_cause_before_failed_observer_snapshot() {
     let (bus, fake, timer) = setup();
-    let mut sub = subscribe(&bus, &fake);
+    let sub = subscribe(&bus, &fake);
     fake.fail_all_settles();
     let callback_bus = bus.clone();
     let diagnostics = Arc::new(Mutex::new(Vec::new()));
     let observed = diagnostics.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementFailed { error, .. } = diagnostic {
-            observed.lock().expect("diagnostics").push(("failed", error.clone()));
+            observed
+                .lock()
+                .expect("diagnostics")
+                .push(("failed", error.clone()));
             timer.switched.store(true, Ordering::SeqCst);
             let _ = callback_bus.delivery_metrics();
         }
         if let Diagnostic::SettlementStopped { error, .. } = diagnostic {
-            observed.lock().expect("diagnostics").push(("stopped", error.clone()));
+            observed
+                .lock()
+                .expect("diagnostics")
+                .push(("stopped", error.clone()));
         }
     });
     let result = block_on(sub.run(|_| async { Ok(()) }));
     let Err(ReceiveError::Stopped(reason)) = result else {
         panic!("permanent provider error must stop");
     };
-    let SubscriptionStopReason::Settlement { error, termination, .. } = reason.as_ref() else {
+    let SubscriptionStopReason::Settlement {
+        error, termination, ..
+    } = reason.as_ref()
+    else {
         panic!("original permanent cause must remain: {reason:?}");
     };
     assert_eq!(*termination, SettlementTermination::PermanentError);
     let diagnostics = diagnostics.lock().expect("diagnostics");
     assert_eq!(
-        diagnostics.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+        diagnostics
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<Vec<_>>(),
         ["failed", "stopped"]
     );
-    assert!(diagnostics.iter().all(|(_, source)| Arc::ptr_eq(error, source)));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(_, source)| Arc::ptr_eq(error, source))
+    );
 }
 
 /// Switches clock domains only after a real successful provider settlement
@@ -238,7 +264,10 @@ impl AsyncEventBusSpi for SuccessClockBus {
     fn capabilities(&self) -> EventBusCapabilities {
         self.fake.capabilities()
     }
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.fake.publish(message)
     }
     fn subscribe<'a>(
@@ -253,7 +282,10 @@ impl AsyncEventBusSpi for SuccessClockBus {
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.fake.shutdown(mode)
     }
 }
@@ -266,7 +298,10 @@ struct SuccessClockReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for SuccessClockReceiver {
-    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.receiver.receive(timeout)
     }
     fn settle<'a>(
@@ -308,11 +343,19 @@ fn test_successful_spi_then_clock_failure_is_not_abandoned_or_retried() {
         timer,
     )
     .expect("bus");
-    let mut sub = subscribe(&bus, &fake);
+    let sub = subscribe(&bus, &fake);
     let result = block_on(sub.run(|_| async { Ok(()) }));
-    assert!(
-        matches!(result, Err(ReceiveError::Stopped(ref reason)) if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { termination: SettlementTermination::InfrastructureFailure, .. }))
-    );
+    assert!(matches!(
+        result,
+        Err(ReceiveError::Stopped(ref reason))
+            if matches!(
+                reason.as_ref(),
+                SubscriptionStopReason::Settlement {
+                    termination: SettlementTermination::InfrastructureFailure,
+                    ..
+                }
+            )
+    ));
     let metrics = sub.delivery_metrics().metrics;
     assert_eq!(
         (

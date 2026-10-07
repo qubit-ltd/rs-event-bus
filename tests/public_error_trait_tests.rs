@@ -53,6 +53,9 @@ fn test_retry_error_converts_to_publish_error_without_losing_terminal_reason() {
     let PublishError::Retry(retry_error) = publish_error else {
         panic!("retry outcome should remain a retry publish error");
     };
-    assert!(matches!(retry_error.reason(), RetryErrorReason::Exhausted { .. }));
+    assert!(matches!(
+        retry_error.reason(),
+        RetryErrorReason::Exhausted { .. }
+    ));
     assert_eq!(retry_error.last_error().unwrap().kind(), "injected");
 }

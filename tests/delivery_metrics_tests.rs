@@ -79,7 +79,11 @@ fn test_sync_delivery_metrics_empty_and_closed_handle() {
     assert_eq!(snapshot.subscriber_id, *subscription.subscriber_id());
     assert_eq!(snapshot.metrics, DeliveryMetricsSnapshot::default());
     assert_eq!(bus.delivery_metrics(), DeliveryMetricsSnapshot::default());
-    assert_eq!(calls, spi.operation_log(), "snapshots never call the provider");
+    assert_eq!(
+        calls,
+        spi.operation_log(),
+        "snapshots never call the provider"
+    );
 }
 
 #[test]
@@ -87,9 +91,10 @@ fn test_async_delivery_metrics_empty_and_closed_handle() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("metrics").unwrap(), spi.clone()).unwrap();
     assert_eq!(bus.delivery_metrics(), DeliveryMetricsSnapshot::default());
-    let mut subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap()))
-            .unwrap();
+    let mut subscription = block_on(bus.subscribe(
+        SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap(),
+    ))
+    .unwrap();
     block_on(subscription.close()).unwrap();
     let calls = spi.operation_log();
     let snapshot = subscription.delivery_metrics();
@@ -97,7 +102,11 @@ fn test_async_delivery_metrics_empty_and_closed_handle() {
     assert_eq!(snapshot.subscriber_id, *subscription.subscriber_id());
     assert_eq!(snapshot.metrics, DeliveryMetricsSnapshot::default());
     assert_eq!(bus.delivery_metrics(), DeliveryMetricsSnapshot::default());
-    assert_eq!(calls, spi.operation_log(), "snapshots never call the provider");
+    assert_eq!(
+        calls,
+        spi.operation_log(),
+        "snapshots never call the provider"
+    );
 }
 
 /// A provider gate makes a settlement call observable before its result is
@@ -111,7 +120,10 @@ impl AsyncEventBusSpi for GatedAsyncProvider {
     fn capabilities(&self) -> EventBusCapabilities {
         self.fake.capabilities()
     }
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.fake.publish(message)
     }
     fn subscribe<'a>(
@@ -126,7 +138,10 @@ impl AsyncEventBusSpi for GatedAsyncProvider {
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.fake.shutdown(mode)
     }
 }
@@ -138,7 +153,10 @@ struct GatedAsyncReceiver {
 }
 
 impl AsyncEventSubscriptionSpi for GatedAsyncReceiver {
-    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.receiver.receive(timeout)
     }
     fn settle<'a>(
@@ -167,7 +185,13 @@ impl AsyncEventSubscriptionSpi for GatedAsyncReceiver {
 
 /// Asserts the exact scheduler phase decomposition on a manually polled
 /// executor.
-fn assert_phases(snapshot: DeliveryMetricsSnapshot, reserved: u64, queued: u64, running: u64, settling: u64) {
+fn assert_phases(
+    snapshot: DeliveryMetricsSnapshot,
+    reserved: u64,
+    queued: u64,
+    running: u64,
+    settling: u64,
+) {
     assert_eq!(
         (
             snapshot.reserved_receives,
@@ -199,9 +223,10 @@ fn test_async_delivery_metrics_gated_phases_and_final_counters() {
         clock.new_timer(),
     )
     .unwrap();
-    let mut subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap()))
-            .unwrap();
+    let mut subscription = block_on(bus.subscribe(
+        SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap(),
+    ))
+    .unwrap();
     let id = subscription.id();
     let gate = handler.clone();
     let mut run = Box::pin(subscription.run(move |_| {
@@ -216,14 +241,19 @@ fn test_async_delivery_metrics_gated_phases_and_final_counters() {
     }));
     assert!(poll_once(run.as_mut()).is_pending());
     assert_phases(bus.delivery_metrics(), 1, 0, 0, 0);
-    spi.fake.enqueue(inbound_message(Some(SettlementToken::new(id, "one"))));
-    spi.fake.enqueue(inbound_message(Some(SettlementToken::new(id, "two"))));
+    spi.fake
+        .enqueue(inbound_message(Some(SettlementToken::new(id, "one"))));
+    spi.fake
+        .enqueue(inbound_message(Some(SettlementToken::new(id, "two"))));
     for _ in 0..8 {
         assert!(poll_once(run.as_mut()).is_pending());
     }
     assert_phases(bus.delivery_metrics(), 0, 1, 1, 0);
     clock.advance(Duration::from_nanos(7)).unwrap();
-    assert_eq!(bus.delivery_metrics().oldest_owned_age, Some(Duration::from_nanos(7)));
+    assert_eq!(
+        bus.delivery_metrics().oldest_owned_age,
+        Some(Duration::from_nanos(7))
+    );
     handler.store(true, Ordering::Release);
     assert!(poll_once(run.as_mut()).is_pending());
     let snapshot = bus.delivery_metrics();
@@ -273,19 +303,24 @@ fn test_async_delivery_metrics_retry_attempts_and_deadline_admission() {
             clock.new_timer(),
         )
         .unwrap();
-        let mut subscription = block_on(
-            bus.subscribe(SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap()),
-        )
+        let mut subscription = block_on(bus.subscribe(
+            SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap(),
+        ))
         .unwrap();
         spi.fail_next_settle();
-        spi.enqueue(inbound_message(Some(SettlementToken::new(subscription.id(), "retry"))));
+        spi.enqueue(inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "retry",
+        ))));
         let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
         for _ in 0..4 {
             assert!(poll_once(run.as_mut()).is_pending());
         }
         assert_eq!(bus.delivery_metrics().settlement_attempts, 1);
         assert_eq!(bus.delivery_metrics().settlement_retries, 0);
-        clock.advance(Duration::from_secs(if expire { 2 } else { 1 })).unwrap();
+        clock
+            .advance(Duration::from_secs(if expire { 2 } else { 1 }))
+            .unwrap();
         let result = poll_once(run.as_mut());
         if expire {
             assert!(result.is_ready());
@@ -318,13 +353,16 @@ fn test_async_delivery_metrics_permanent_error_keeps_shared_source() {
                 assert_eq!(*attempt, 1);
                 observed.lock().unwrap().push(error.clone());
             }
-            Diagnostic::SettlementStopped { error, .. } => observed.lock().unwrap().push(error.clone()),
+            Diagnostic::SettlementStopped { error, .. } => {
+                observed.lock().unwrap().push(error.clone())
+            }
             _ => {}
         }
     });
-    let mut subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap()))
-            .unwrap();
+    let mut subscription = block_on(bus.subscribe(
+        SubscribeRequest::new("metrics", Topic::<u32>::new("test.topic").unwrap()).unwrap(),
+    ))
+    .unwrap();
     spi.fail_all_settles();
     spi.enqueue(inbound_message(Some(SettlementToken::new(
         subscription.id(),
@@ -353,11 +391,16 @@ fn test_async_delivery_metrics_decode_failure_does_not_sample_handler() {
         released: settled.clone(),
     });
     let bus = AsyncEventBus::from_spi(ProviderId::new("metrics").unwrap(), spi.clone()).unwrap();
-    let mut subscription =
-        block_on(bus.subscribe(SubscribeRequest::new("metrics", Topic::<String>::new("test.topic").unwrap()).unwrap()))
-            .unwrap();
+    let mut subscription = block_on(bus.subscribe(
+        SubscribeRequest::new("metrics", Topic::<String>::new("test.topic").unwrap()).unwrap(),
+    ))
+    .unwrap();
     let (address, event_id, timestamp, headers, ordering_key, _, token, metadata) =
-        inbound_message(Some(SettlementToken::new(subscription.id(), "missing-codec"))).into_parts();
+        inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "missing-codec",
+        )))
+        .into_parts();
     spi.fake.enqueue(InboundMessage::new(
         address,
         event_id,
@@ -410,7 +453,9 @@ fn test_sync_delivery_metrics_retry_and_permanent_final_counters() {
                 |_: Delivery<u32>| Ok::<(), DeliveryError>(()),
             )
             .unwrap();
-        let _ = bus.publish(PublishRequest::new(topic.clone(), 42).unwrap()).unwrap();
+        let _ = bus
+            .publish(PublishRequest::new(topic.clone(), 42).unwrap())
+            .unwrap();
         if permanent {
             assert!(probe.closed.wait(1), "permanent failure closes the owner");
         } else {
