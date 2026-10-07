@@ -59,6 +59,10 @@ pub struct SpiSubscriptionRequestBuilder {
 
 impl SpiSubscriptionRequestBuilder {
     /// Sets the bus-local receiver identity used for settlement tokens.
+    ///
+    /// # Parameters
+    /// `subscription_id` is the identity assigned by the event bus to this
+    /// receiver.
     #[inline]
     pub fn subscription_id(mut self, subscription_id: Id) -> Self {
         self.subscription_id = Some(subscription_id);
@@ -66,6 +70,9 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the validated provider destination for the subscription.
+    ///
+    /// # Parameters
+    /// `topic` is the destination previously validated for the provider.
     #[inline]
     pub fn topic(mut self, topic: TopicAddress) -> Self {
         self.topic = Some(topic);
@@ -73,6 +80,10 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the validated logical subscriber identity.
+    ///
+    /// # Parameters
+    /// `subscriber_id` identifies the logical subscriber independently of
+    /// this bus-local receiver.
     #[inline]
     pub fn subscriber_id(mut self, subscriber_id: SubscriberId) -> Self {
         self.subscriber_id = Some(subscriber_id);
@@ -80,6 +91,9 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the shared consumer group, or explicitly sets `None` for no group.
+    ///
+    /// # Parameters
+    /// `group` is `Some` for shared consumption or `None` for independent use.
     #[inline]
     pub fn group(mut self, group: Option<ConsumerGroup>) -> Self {
         self.group = Some(group);
@@ -87,6 +101,10 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the requested subscription persistence mode.
+    ///
+    /// # Parameters
+    /// `durability` selects the persistence behavior requested from the
+    /// provider.
     #[inline]
     pub fn durability(mut self, durability: SubscriptionDurability) -> Self {
         self.durability = Some(durability);
@@ -94,6 +112,10 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the provider position from which the subscription should begin.
+    ///
+    /// # Parameters
+    /// `start_position` specifies the initial position requested from the
+    /// provider.
     #[inline]
     pub fn start_position(mut self, start_position: StartPosition) -> Self {
         self.start_position = Some(start_position);
@@ -101,6 +123,9 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the namespaced options passed through to the provider.
+    ///
+    /// # Parameters
+    /// `provider_options` contains backend-specific options for the provider.
     #[inline]
     pub fn provider_options(mut self, provider_options: ProviderOptions) -> Self {
         self.provider_options = Some(provider_options);
@@ -108,6 +133,10 @@ impl SpiSubscriptionRequestBuilder {
     }
 
     /// Sets the Rust payload type used by native routing providers.
+    ///
+    /// # Parameters
+    /// `payload_type_id` identifies the native payload type expected by the
+    /// provider.
     #[inline]
     pub fn payload_type_id(mut self, payload_type_id: TypeId) -> Self {
         self.payload_type_id = Some(payload_type_id);

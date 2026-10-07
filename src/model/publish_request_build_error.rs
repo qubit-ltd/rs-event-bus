@@ -36,10 +36,12 @@ pub enum PublishRequestBuildError {
         /// Name of the omitted request field.
         &'static str,
     ),
-    /// A header key or value is invalid.
+    /// A header key is reserved or malformed, or its value contains control
+    /// characters.
     #[error("invalid publish header {0:?}")]
     InvalidHeader(
-        /// Invalid header key.
+        /// Key of the header entry rejected because its key or value is
+        /// invalid.
         String,
     ),
     /// The ordering key is empty or contains controls.

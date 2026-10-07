@@ -91,8 +91,16 @@ fn dead_letter_id(event_id: &EventId, subscriber_id: &SubscriberId) -> EventId {
         }
         value
     }
-    let first = hash(0xcbf2_9ce4_8422_2325, event_id.as_str(), subscriber_id.as_str());
-    let second = hash(0x8422_2325_cbf2_9ce4, subscriber_id.as_str(), event_id.as_str());
+    let first = hash(
+        0xcbf2_9ce4_8422_2325,
+        event_id.as_str(),
+        subscriber_id.as_str(),
+    );
+    let second = hash(
+        0x8422_2325_cbf2_9ce4,
+        subscriber_id.as_str(),
+        event_id.as_str(),
+    );
     EventId::new(format!("dlq-{first:016x}{second:016x}")).expect("derived ID is portable")
 }
 

@@ -39,7 +39,11 @@ impl AsyncDeliveryGuard {
 impl Drop for AsyncDeliveryGuard {
     /// Decrements the topic count and wakes lifecycle waiters.
     fn drop(&mut self) {
-        let mut state = self.tracker.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self
+            .tracker
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(count) = state.in_flight.get_mut(self.topic.as_ref()) {
             *count = count.saturating_sub(1);
             if *count == 0 {

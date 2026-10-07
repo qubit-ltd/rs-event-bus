@@ -29,6 +29,7 @@ impl ReceiveLeaseGuard {
     /// # Returns
     /// A guard transferable into the received delivery's lifetime.
     #[must_use = "the guard must own the claimed lease until delivery ownership ends"]
+    #[inline]
     pub(in crate::facade) fn new(scheduler: Arc<SyncDeliveryScheduler>, lease: u64) -> Self {
         Self { scheduler, lease }
     }

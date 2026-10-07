@@ -56,7 +56,11 @@ impl<T: 'static> DeadLetterEvent<T> {
     /// # Returns
     /// A dead-letter payload sharing the original event allocation.
     #[must_use]
-    pub(crate) fn new(original_event: Arc<EventEnvelope<T>>, subscriber_id: SubscriberId, reason: Box<str>) -> Self {
+    pub(crate) fn new(
+        original_event: Arc<EventEnvelope<T>>,
+        subscriber_id: SubscriberId,
+        reason: Box<str>,
+    ) -> Self {
         Self {
             original_event,
             subscriber_id,

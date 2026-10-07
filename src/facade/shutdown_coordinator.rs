@@ -94,7 +94,10 @@ impl ShutdownCoordinator {
     /// - `generation`: attempt whose waiters should observe this result.
     /// - `result`: provider outcome or failure to retain for that generation.
     pub(crate) fn finish(&self, generation: u64, result: Result<ShutdownOutcome, SpiError>) {
-        self.complete(generation, ShutdownResult::Provider(result.map_err(Arc::new)));
+        self.complete(
+            generation,
+            ShutdownResult::Provider(result.map_err(Arc::new)),
+        );
     }
 
     /// Records a thread start error for this generation and allows retry.
@@ -119,7 +122,12 @@ impl ShutdownCoordinator {
     /// Whether the deadline elapsed and, after completion, the retained result
     /// for this generation. A timeout returns `None` without releasing the
     /// caller's ticket.
-    pub(crate) fn wait(&self, generation: u64, deadline: Option<Instant>) -> (bool, Option<ShutdownResult>) {
+    #[must_use]
+    pub(crate) fn wait(
+        &self,
+        generation: u64,
+        deadline: Option<Instant>,
+    ) -> (bool, Option<ShutdownResult>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         while state.active && state.generation == generation {
             if let Some(deadline) = deadline {
@@ -136,7 +144,10 @@ impl ShutdownCoordinator {
                     return (true, None);
                 }
             } else {
-                state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
         }
         (false, state.results.get(&generation).cloned())
@@ -219,7 +230,10 @@ impl ShutdownCoordinator {
                 *waiters = waiters.saturating_sub(1);
                 if *waiters == 0 {
                     state.waiters.remove(&generation);
-                    Some((state.results.remove(&generation), state.wakers.remove(&generation)))
+                    Some((
+                        state.results.remove(&generation),
+                        state.wakers.remove(&generation),
+                    ))
                 } else {
                     None
                 }
@@ -288,7 +302,10 @@ mod tests {
         };
         let (leader, generation) = coordinator.begin(graceful);
         assert!(leader);
-        assert_eq!(coordinator.begin(ShutdownMode::Immediate), (false, generation));
+        assert_eq!(
+            coordinator.begin(ShutdownMode::Immediate),
+            (false, generation)
+        );
         assert_eq!(coordinator.mode(generation), ShutdownMode::Immediate);
     }
 
@@ -329,7 +346,8 @@ mod tests {
         let (_, generation) = coordinator.begin(ShutdownMode::Graceful {
             timeout: Duration::from_secs(1),
         });
-        let (timed_out, result) = coordinator.wait(generation, Some(Instant::now() - Duration::from_millis(1)));
+        let (timed_out, result) =
+            coordinator.wait(generation, Some(Instant::now() - Duration::from_millis(1)));
         assert!(timed_out);
         assert!(result.is_none());
         coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
@@ -341,11 +359,25 @@ mod tests {
         let mut first = None;
         let mut second = None;
         let cx = Context::from_waker(Waker::noop());
-        assert!(coordinator.poll_result(generation, &mut first, &cx).is_pending());
-        assert!(coordinator.poll_result(generation, &mut second, &cx).is_pending());
-        assert_eq!(coordinator.state.lock().expect("state").wakers[&generation].len(), 2);
+        assert!(
+            coordinator
+                .poll_result(generation, &mut first, &cx)
+                .is_pending()
+        );
+        assert!(
+            coordinator
+                .poll_result(generation, &mut second, &cx)
+                .is_pending()
+        );
+        assert_eq!(
+            coordinator.state.lock().expect("state").wakers[&generation].len(),
+            2
+        );
         coordinator.unregister(generation, first.take().expect("first registration"));
-        assert_eq!(coordinator.state.lock().expect("state").wakers[&generation].len(), 1);
+        assert_eq!(
+            coordinator.state.lock().expect("state").wakers[&generation].len(),
+            1
+        );
         coordinator.abort_start(generation, Error::other("spawn failed"));
         let (leader, retry) = coordinator.begin(ShutdownMode::Immediate);
         assert!(leader);
@@ -368,7 +400,11 @@ mod tests {
         struct Reentrant(Arc<ShutdownCoordinator>, u64);
         impl Wake for Reentrant {
             fn wake(self: Arc<Self>) {
-                let state = self.0.state.try_lock().expect("wake runs outside state lock");
+                let state = self
+                    .0
+                    .state
+                    .try_lock()
+                    .expect("wake runs outside state lock");
                 assert!(!state.active);
                 assert_eq!(state.generation, self.1);
             }
@@ -395,7 +431,10 @@ mod tests {
         impl Wake for ConditionalWake {
             fn wake(self: Arc<Self>) {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                assert!(!self.panic_on_wake.load(Ordering::SeqCst), "broken observer waker");
+                assert!(
+                    !self.panic_on_wake.load(Ordering::SeqCst),
+                    "broken observer waker"
+                );
             }
         }
         let coordinator = ShutdownCoordinator::new();
@@ -414,12 +453,20 @@ mod tests {
         let second_waker = Waker::from(second.clone());
         assert!(
             coordinator
-                .poll_result(generation, &mut panic_token, &Context::from_waker(&first_waker))
+                .poll_result(
+                    generation,
+                    &mut panic_token,
+                    &Context::from_waker(&first_waker)
+                )
                 .is_pending()
         );
         assert!(
             coordinator
-                .poll_result(generation, &mut count_token, &Context::from_waker(&second_waker))
+                .poll_result(
+                    generation,
+                    &mut count_token,
+                    &Context::from_waker(&second_waker)
+                )
                 .is_pending()
         );
         first.panic_on_wake.store(true, Ordering::SeqCst);
@@ -428,7 +475,10 @@ mod tests {
         let completion = catch_unwind(AssertUnwindSafe(|| {
             coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
         }));
-        assert!(completion.is_ok(), "observer waker panic must not escape completion");
+        assert!(
+            completion.is_ok(),
+            "observer waker panic must not escape completion"
+        );
         assert_eq!(first.calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.calls.load(Ordering::SeqCst), 1);
         coordinator.release(generation);
@@ -549,7 +599,8 @@ mod tests {
             "only completion should wake a pending observer",
         );
         assert!(
-            rx.recv_timeout(Duration::from_secs(5)).expect("waker destructor runs"),
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("waker destructor runs"),
             "{operation} must drop the waker outside coordinator state"
         );
         coordinator.release(generation);

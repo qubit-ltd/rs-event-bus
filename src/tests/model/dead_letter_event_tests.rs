@@ -18,7 +18,7 @@ use crate::model::Topic;
 struct NonClonePayload;
 
 #[test]
-fn constructor_retains_the_exact_non_clone_event_allocation() {
+fn test_constructor_retains_the_exact_non_clone_event_allocation() {
     let envelope = Arc::new(EventEnvelope::with_id(
         Topic::<NonClonePayload>::new("dead.internal").expect("valid topic"),
         NonClonePayload,

@@ -90,9 +90,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
-        sender.send(delivery.payload().clone()).unwrap();
-    })?;
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).unwrap();
+        },
+    )?;
     let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
@@ -788,24 +791,71 @@ let bus = EventBus::local(local)?;
 
 如果还需要限制应用声明的原生载荷权重，可设置 `max_total_outstanding_weight_bytes`，并为每种具体载荷类型提供 `native_payload_weight` 回调。例如，发布 `String` 时可按 UTF-8 字节长度声明权重，空字符串至少按一个字节计算：
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Compiled local-provider capacity example used by both user guides.
+
 use std::num::NonZeroUsize;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
+use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
-let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
-let bus = EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(budget))?;
-let topic = Topic::<String>::new("orders.created")?;
-let options = PublishOptions::<String>::builder()
-    .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive weight"))
-    .build();
-let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-let receipt = bus.publish(request)?;
+/// Publishes one weighed `String`, waits for its handler, and closes the bus.
+///
+/// # Errors
+/// Returns an error if bus construction, subscription, admission, delivery wait,
+/// or graceful shutdown fails.
+pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
+    let local = LocalEventBusConfig::new()
+        .queue_capacity(2_048)
+        .max_total_outstanding(20_000)
+        .max_total_outstanding_weight_bytes(budget);
+    let bus = EventBus::local(local)?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).expect("receiver remains open");
+        },
+    )?;
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(|payload| {
+            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
+        })
+        .build();
+    let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
+    let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(3))?,
+        "order-42"
+    );
+    let shutdown = bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
+    Ok(())
+}
 ```
 
-权重预算默认关闭。回调接收发布拦截器处理后的载荷，在 provider 首次尝试前执行一次，重试复用该值。启用后，原生载荷未声明权重时，provider 会在任何目标入队前返回不可重试错误。扇出投递按每个已接纳目标分别计费；拒绝的目标不占权重额度。重试期间保留额度，到终态结算或清理时释放。这只是应用声明的记账上限，**不是进程真实内存上限**：共享分配、队列、处理函数和传输层仍会占用内存。编码传输另受编码载荷字节限制。
+权重预算默认关闭。回调接收发布拦截器处理后的载荷，在 provider 首次尝试前执行一次，重试复用该值。启用后，原生载荷未声明权重时，provider 会在任何目标入队前返回不可重试错误。扇出投递按每个已接纳目标分别计费；拒绝的目标不占权重额度。重试期间保留额度，到终态结算或清理时释放。权重是应用估算值，**不是实际测量值，也不是 RSS/进程内存硬上限**：共享分配、队列、处理函数和传输层仍会占用内存。应同时监控载荷权重分布、队列接纳拒绝和 handler 延迟，再依据实际负载调整估算与限额。编码传输另受编码载荷字节限制。
 
 同步和异步 facade 共用 `DeliverySchedulingConfig`：默认最多运行 4 个 handler、持有 256 条投递、每订阅持有 32 条投递、注册 256 个订阅。owned 包括 receive 前的预留、排队、执行中和结算中；接收前预留，绝不额外取一条越过额度。同键排队和结算退避不占 handler 执行额度，同键通道要到结算成功或订阅终止才释放。四个参数均为 `NonZeroUsize`，running 和 per-subscription 不得大于 owned。
 
@@ -1186,6 +1236,22 @@ subscription.run(move |delivery| {
 ```
 
 应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
+
+监控任务运行时应保留可访问的订阅句柄，供 runner 借用。启动宽限期由应用按启动流程设定；宽限期内允许 `Unstarted`，超时后告警；非预期的 `Paused` 或 `Stopped` 也应告警：
+
+```rust
+use qubit_event_bus::AsyncSubscriptionRunState;
+
+match subscription.run_state() {
+    AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
+    AsyncSubscriptionRunState::Unstarted => alert("订阅 runner 未启动"),
+    AsyncSubscriptionRunState::Running => {}
+    AsyncSubscriptionRunState::Paused => alert("订阅 runner 已暂停"),
+    AsyncSubscriptionRunState::Stopped => alert("订阅 runner 已停止"),
+}
+```
+
+`Running` 不代表业务处理成功，`Stopped` 也不代表 provider 队列已清空。状态只是瞬时快照，应与订阅诊断和投递指标结合判断。
 
 ### 恢复因编码边界失败而停止的订阅
 

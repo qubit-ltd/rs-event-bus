@@ -37,8 +37,14 @@ impl DeliverySnapshotInput {
     /// Immutable bounded input ready for a later external clock sample.
     #[must_use]
     #[inline]
-    pub(super) fn new(gauges: DeliveryMetricsSnapshot, owned_starts: Vec<MonotonicInstant>) -> Self {
-        Self { gauges, owned_starts }
+    pub(super) fn new(
+        gauges: DeliveryMetricsSnapshot,
+        owned_starts: Vec<MonotonicInstant>,
+    ) -> Self {
+        Self {
+            gauges,
+            owned_starts,
+        }
     }
 
     /// Computes the oldest age from this capture after the caller samples its
@@ -58,11 +64,18 @@ impl DeliverySnapshotInput {
     /// clock domain, or `TimeError::InvalidInstantOrder` when `now`
     /// precedes a captured start.
     #[must_use = "delivery snapshots should be observed"]
-    pub(in crate::facade) fn at(self, now: MonotonicInstant) -> Result<DeliveryMetricsSnapshot, TimeError> {
+    pub(in crate::facade) fn at(
+        self,
+        now: MonotonicInstant,
+    ) -> Result<DeliveryMetricsSnapshot, TimeError> {
         let mut snapshot = self.gauges;
         for started in self.owned_starts {
             let age = now.duration_since(started)?;
-            snapshot.oldest_owned_age = Some(snapshot.oldest_owned_age.map_or(age, |oldest| oldest.max(age)));
+            snapshot.oldest_owned_age = Some(
+                snapshot
+                    .oldest_owned_age
+                    .map_or(age, |oldest| oldest.max(age)),
+            );
         }
         Ok(snapshot)
     }

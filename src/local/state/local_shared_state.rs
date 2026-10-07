@@ -33,7 +33,8 @@ pub(in crate::local) struct LocalSharedState {
 }
 
 impl LocalSharedState {
-    /// Creates an empty provider state with a validated positive queue bound.
+    /// Creates an empty provider state with the configured queue and
+    /// outstanding bounds.
     ///
     /// # Parameters
     /// - `capacity`: maximum queued and unsettled items for each subscription.

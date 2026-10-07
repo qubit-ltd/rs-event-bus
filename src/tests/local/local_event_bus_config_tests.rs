@@ -25,8 +25,13 @@ fn test_native_payload_weight_budget_round_trip_and_zero_field() {
         LocalEventBusConfig::from_provider_options(&registry).expect("options parse"),
         config
     );
-    let invalid = EventBusConfig::default()
-        .with_provider_options([("local.max_total_outstanding_weight_bytes".to_owned(), "0".to_owned())].into());
+    let invalid = EventBusConfig::default().with_provider_options(
+        [(
+            "local.max_total_outstanding_weight_bytes".to_owned(),
+            "0".to_owned(),
+        )]
+        .into(),
+    );
     assert!(matches!(
         LocalEventBusConfig::from_provider_options(&invalid),
         Err(ConfigurationError::InvalidField {

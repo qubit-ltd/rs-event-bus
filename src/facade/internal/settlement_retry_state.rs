@@ -33,7 +33,10 @@ impl SettlementRetryState {
     #[must_use]
     #[inline]
     pub(in crate::facade) fn new(config: SettlementRetryConfig) -> Self {
-        Self { config, attempts: 0 }
+        Self {
+            config,
+            attempts: 0,
+        }
     }
 
     /// Returns the total number of admitted provider settlement attempts.
@@ -68,7 +71,10 @@ impl SettlementRetryState {
     /// Returns `DeadlineExceeded` when `elapsed` reaches or exceeds
     /// `max_elapsed`. Otherwise returns `AttemptsExhausted` when the total
     /// attempt limit is reached.
-    pub(in crate::facade) fn admit_attempt(&mut self, elapsed: Duration) -> Result<u32, SettlementTermination> {
+    pub(in crate::facade) fn admit_attempt(
+        &mut self,
+        elapsed: Duration,
+    ) -> Result<u32, SettlementTermination> {
         if elapsed >= self.config.max_elapsed() {
             return Err(SettlementTermination::DeadlineExceeded);
         }
@@ -102,7 +108,11 @@ impl SettlementRetryState {
     /// exponential backoff capped by `max_backoff` and the remaining total
     /// elapsed budget. The owner must admit another attempt after waiting;
     /// reaching the deadline never permits another provider invocation.
-    pub(in crate::facade) fn after_error(&self, error: &SpiError, elapsed: Duration) -> SettlementRetryDecision {
+    pub(in crate::facade) fn after_error(
+        &self,
+        error: &SpiError,
+        elapsed: Duration,
+    ) -> SettlementRetryDecision {
         if matches!(error, SpiError::InvalidSettlementToken { .. }) {
             return SettlementRetryDecision::Stop(SettlementTermination::InvalidToken);
         }
@@ -255,7 +265,10 @@ mod tests {
         let mut state = SettlementRetryState::new(config);
         assert_eq!(state.admit_attempt(Duration::ZERO), Ok(1));
         assert_eq!(
-            state.after_error(&create_test_error("transient", Some(true)), Duration::from_millis(950)),
+            state.after_error(
+                &create_test_error("transient", Some(true)),
+                Duration::from_millis(950)
+            ),
             SettlementRetryDecision::RetryAfter(Duration::from_millis(50))
         );
         assert_eq!(
@@ -268,7 +281,10 @@ mod tests {
         );
         assert_eq!(state.attempts(), 1);
         assert_eq!(
-            state.after_error(&create_test_error("transient", Some(true)), Duration::from_secs(1)),
+            state.after_error(
+                &create_test_error("transient", Some(true)),
+                Duration::from_secs(1)
+            ),
             SettlementRetryDecision::Stop(SettlementTermination::DeadlineExceeded)
         );
     }
@@ -325,7 +341,12 @@ mod tests {
     /// durations.
     #[test]
     fn test_backoff_is_saturating() {
-        let config = create_test_config(u32::MAX, Duration::MAX, Duration::from_nanos(1), Duration::MAX);
+        let config = create_test_config(
+            u32::MAX,
+            Duration::MAX,
+            Duration::from_nanos(1),
+            Duration::MAX,
+        );
         let mut state = SettlementRetryState::new(config);
         for attempts in [32, 33, u32::MAX - 1] {
             state.attempts = attempts;
@@ -347,7 +368,12 @@ mod tests {
     /// add.
     #[test]
     fn test_attempt_counter_does_not_overflow() {
-        let config = create_test_config(u32::MAX, Duration::MAX, Duration::from_nanos(1), Duration::MAX);
+        let config = create_test_config(
+            u32::MAX,
+            Duration::MAX,
+            Duration::from_nanos(1),
+            Duration::MAX,
+        );
         let mut state = SettlementRetryState::new(config);
         state.attempts = u32::MAX - 1;
         assert_eq!(state.admit_attempt(Duration::ZERO), Ok(u32::MAX));
@@ -366,7 +392,10 @@ mod tests {
         state.attempts = state.config.max_attempts().get();
         for retryable in [Some(true), Some(false), None] {
             assert_eq!(
-                state.after_error(&create_test_error("provider_panicked", retryable), Duration::MAX),
+                state.after_error(
+                    &create_test_error("provider_panicked", retryable),
+                    Duration::MAX
+                ),
                 SettlementRetryDecision::Stop(SettlementTermination::ProviderPanicked)
             );
             let error = SpiError::InvalidSettlementToken {

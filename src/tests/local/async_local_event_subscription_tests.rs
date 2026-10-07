@@ -28,7 +28,10 @@ use crate::spi::TopicAddress;
 
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
-    match future.as_mut().poll(&mut Context::from_waker(std::task::Waker::noop())) {
+    match future
+        .as_mut()
+        .poll(&mut Context::from_waker(std::task::Waker::noop()))
+    {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("operation unexpectedly pending"),
     }
@@ -50,7 +53,8 @@ fn subscription_request(id: u64) -> SpiSubscriptionRequest {
 #[test]
 fn test_close_is_idempotent_and_receive_reports_closed() {
     let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid config");
-    let mut receiver = ready(spi.subscribe(subscription_request(9001))).expect("subscription is accepted");
+    let mut receiver =
+        ready(spi.subscribe(subscription_request(9001))).expect("subscription is accepted");
 
     ready(receiver.close()).expect("first close succeeds");
     ready(receiver.close()).expect("repeated close succeeds");

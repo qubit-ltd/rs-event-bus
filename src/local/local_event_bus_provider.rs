@@ -73,10 +73,12 @@ impl ServiceProvider<EventBusSpec> for LocalEventBusProvider {
         &self,
         config: &EventBusConfig,
     ) -> Result<Arc<dyn EventBusSpi>, ProviderFailure<EventBusProviderError>> {
-        let local = LocalEventBusConfig::from_provider_options(config)
-            .map_err(|error| ProviderFailure::invalid_configuration(EventBusProviderError::provider(error)))?;
-        let spi = LocalEventBusSpi::new(&local)
-            .map_err(|error| ProviderFailure::invalid_configuration(EventBusProviderError::provider(error)))?;
+        let local = LocalEventBusConfig::from_provider_options(config).map_err(|error| {
+            ProviderFailure::invalid_configuration(EventBusProviderError::provider(error))
+        })?;
+        let spi = LocalEventBusSpi::new(&local).map_err(|error| {
+            ProviderFailure::invalid_configuration(EventBusProviderError::provider(error))
+        })?;
         Ok(Arc::new(spi))
     }
 }

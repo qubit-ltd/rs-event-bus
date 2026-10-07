@@ -57,7 +57,8 @@ pub(crate) fn decode_payload<T: Send + Sync + 'static>(
                     limit,
                 });
             }
-            let codec = codec.ok_or_else(|| decode_error("encoded payload has no resolved codec"))?;
+            let codec =
+                codec.ok_or_else(|| decode_error("encoded payload has no resolved codec"))?;
             call_codec("validate_metadata", || codec.validate_metadata(encoded))?;
             call_codec("decode", || codec.decode(encoded)).map(Arc::new)
         }

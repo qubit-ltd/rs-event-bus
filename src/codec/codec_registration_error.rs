@@ -8,6 +8,7 @@
 //! Errors returned while registering payload codecs.
 
 /// Describes a codec registration that conflicts with an existing entry.
+#[must_use]
 #[derive(Debug, thiserror::Error)]
 pub enum CodecRegistrationError {
     /// A codec has already been registered for the payload type.

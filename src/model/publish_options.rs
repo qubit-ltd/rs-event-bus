@@ -26,13 +26,16 @@ use crate::model::DuplicateRiskPolicy;
 ///
 /// # Type Parameters
 /// - `T`: payload type attached to the failed event.
-pub type PublishErrorHandler<T> = dyn Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static;
+pub type PublishErrorHandler<T> =
+    dyn Fn(&PublishFailureContext<T>, &PublishFailure) + Send + Sync + 'static;
 /// A typed publisher interceptor that may transform or drop an envelope.
 ///
 /// # Type Parameters
 /// - `T`: payload type processed by the interceptor.
-pub type PublisherInterceptor<T> =
-    dyn Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static;
+pub type PublisherInterceptor<T> = dyn Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>
+    + Send
+    + Sync
+    + 'static;
 
 /// Typed declaration callback retained by publication options.
 ///

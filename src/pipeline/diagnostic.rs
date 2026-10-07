@@ -140,11 +140,16 @@ pub enum Diagnostic {
     },
 }
 
-/// Callback used by a facade to deliver runtime diagnostics.
+/// Thread-safe callback invoked by a facade for each runtime diagnostic.
+///
+/// The callback receives a temporary shared borrow, so it must copy any data
+/// that needs to outlive the invocation. Observer panics are contained by the
+/// facade and do not escape the notification path.
 pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 
-/// Calls each active observer in registration order, containing observer
-/// panics.
+/// Calls active observers in registration order, containing panics per
+/// observer so one faulty callback does not prevent later observers from
+/// receiving the diagnostic.
 ///
 /// # Parameters
 /// - `observers`: observers to invoke in their registration order.

@@ -63,7 +63,11 @@ impl LifecycleTracker {
     /// A must-use guard that decrements this topic's counter on drop.
     #[must_use = "the guard must remain alive while the delivery is in flight"]
     pub(crate) fn track_delivery(&self, topic: &str) -> DeliveryTrackerGuard<'_> {
-        *self.lock_state().in_flight_by_topic.entry(topic.into()).or_default() += 1;
+        *self
+            .lock_state()
+            .in_flight_by_topic
+            .entry(topic.into())
+            .or_default() += 1;
         DeliveryTrackerGuard::new(self, topic.into())
     }
 
@@ -81,7 +85,13 @@ impl LifecycleTracker {
         let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
         let mut state = self.lock_state();
         loop {
-            if state.in_flight_by_topic.get(topic).copied().unwrap_or_default() == 0 {
+            if state
+                .in_flight_by_topic
+                .get(topic)
+                .copied()
+                .unwrap_or_default()
+                == 0
+            {
                 return WaitOutcome::Idle;
             }
             let Some(deadline) = deadline else {
@@ -97,7 +107,14 @@ impl LifecycleTracker {
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(PoisonError::into_inner);
             state = next_state;
-            if result.timed_out() && state.in_flight_by_topic.get(topic).copied().unwrap_or_default() != 0 {
+            if result.timed_out()
+                && state
+                    .in_flight_by_topic
+                    .get(topic)
+                    .copied()
+                    .unwrap_or_default()
+                    != 0
+            {
                 return WaitOutcome::TimedOut;
             }
         }
@@ -175,6 +192,8 @@ impl LifecycleTracker {
     /// # Returns
     /// Tracker state reacquired after a notification or poison recovery.
     fn wait<'a>(&self, state: MutexGuard<'a, TrackerState>) -> MutexGuard<'a, TrackerState> {
-        self.changed.wait(state).unwrap_or_else(PoisonError::into_inner)
+        self.changed
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }

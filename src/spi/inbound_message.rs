@@ -182,6 +182,7 @@ impl InboundMessage {
     /// `Some` with a positive attempt number when supplied by the provider,
     /// otherwise `None`. Local handler retries do not change this value.
     #[must_use]
+    #[inline]
     pub fn provider_attempt(&self) -> Option<NonZeroU32> {
         self.provider_attempt
     }

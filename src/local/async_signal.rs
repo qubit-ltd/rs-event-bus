@@ -67,7 +67,10 @@ impl AsyncSignal {
     #[must_use]
     #[cfg(test)]
     fn waiter_count(&self) -> usize {
-        self.waiters.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 }
 
@@ -126,7 +129,8 @@ mod tests {
         assert_registry_unlocked(probe);
     }
 
-    static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
+    static PROBE_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[derive(Default)]
     struct CountWake(AtomicUsize);

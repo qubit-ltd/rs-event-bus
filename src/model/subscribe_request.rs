@@ -120,6 +120,7 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// The handler, retry, and provider policy for the registration.
+    #[must_use = "Use the returned options."]
     #[inline]
     pub fn options(&self) -> &SubscribeOptions<T> {
         &self.options

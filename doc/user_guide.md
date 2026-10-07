@@ -90,9 +90,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(LocalEventBusConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
-        sender.send(delivery.payload().clone()).unwrap();
-    })?;
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).unwrap();
+        },
+    )?;
     let _ = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)?;
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
@@ -788,24 +791,71 @@ let bus = EventBus::local(local)?;
 
 To bound application-declared native payload weight as well as delivery count, opt in to `max_total_outstanding_weight_bytes` and supply a `native_payload_weight` callback for each concrete payload type you publish. For example, a `String` publisher can declare its UTF-8 length (at least one byte for an empty string):
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Compiled local-provider capacity example used by both user guides.
+
 use std::num::NonZeroUsize;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::{PublishOptions, PublishRequest, Topic};
+use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 
-let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
-let bus = EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(budget))?;
-let topic = Topic::<String>::new("orders.created")?;
-let options = PublishOptions::<String>::builder()
-    .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive weight"))
-    .build();
-let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-let receipt = bus.publish(request)?;
+/// Publishes one weighed `String`, waits for its handler, and closes the bus.
+///
+/// # Errors
+/// Returns an error if bus construction, subscription, admission, delivery wait,
+/// or graceful shutdown fails.
+pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
+    let local = LocalEventBusConfig::new()
+        .queue_capacity(2_048)
+        .max_total_outstanding(20_000)
+        .max_total_outstanding_weight_bytes(budget);
+    let bus = EventBus::local(local)?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).expect("receiver remains open");
+        },
+    )?;
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(|payload| {
+            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
+        })
+        .build();
+    let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
+    let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(3))?,
+        "order-42"
+    );
+    let shutdown = bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
+    Ok(())
+}
 ```
 
-The budget is disabled by default. The callback sees the payload after publisher interceptors and runs once before provider retries. When enabled, a native publish without a declared weight fails with a non-retryable provider error before any destination is enqueued. Each accepted fanout delivery consumes one copy of the declared weight; rejected destinations do not. A retry keeps its reservation until terminal settlement or cleanup. This is a declared accounting limit, not a measurement or upper bound of process memory: shared allocations, queues, handlers, and transport overhead still consume memory. Encoded providers use the separate encoded-payload byte limits.
+The budget is disabled by default. The callback sees the payload after publisher interceptors and runs once before provider retries. When enabled, a native publish without a declared weight fails with a non-retryable provider error before any destination is enqueued. Each accepted fanout delivery consumes one copy of the declared weight; rejected destinations do not. A retry keeps its reservation until terminal settlement or cleanup. Treat the weight as an application estimate, not a measurement or hard RSS/process-memory cap: shared allocations, queues, handlers, and transport overhead still consume memory. Monitor the payload-weight distribution, queue admission rejections, and handler latency together, then tune the estimate and limits from observed load. Encoded providers use the separate encoded-payload byte limits.
 
 Both facades use `DeliverySchedulingConfig`: defaults are 4 running handlers, 256 owned deliveries globally, 32 owned deliveries per subscription, and 256 registered subscriptions. Owned includes a pre-receive reservation, queued, running, and settling work. Reservation happens before receive, with no extra pending message outside the limit. Same-key queues and settlement backoff do not consume handler slots; a lane stays owned until settlement succeeds or the subscription terminates. All four parameters are `NonZeroUsize`; running and per-subscription limits must not exceed the global owned limit.
 
@@ -1186,6 +1236,22 @@ subscription.run(move |delivery| {
 ```
 
 At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await` ends the subscription and reports provider close errors. Dropping the handle requests disposal but cannot await provider close or report its errors; explicitly await `close()` when those errors matter. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
+
+Keep the handle available to the application monitor while the runner borrows it. Allow an application-defined startup grace period before alerting on `Unstarted`; alert on an unexpected `Paused` or `Stopped` state:
+
+```rust
+use qubit_event_bus::AsyncSubscriptionRunState;
+
+match subscription.run_state() {
+    AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
+    AsyncSubscriptionRunState::Unstarted => alert("subscription runner did not start"),
+    AsyncSubscriptionRunState::Running => {}
+    AsyncSubscriptionRunState::Paused => alert("subscription runner is paused"),
+    AsyncSubscriptionRunState::Stopped => alert("subscription runner stopped"),
+}
+```
+
+`Running` does not mean business processing succeeded, and `Stopped` does not mean the provider queue is empty. The state is a momentary snapshot; correlate it with subscription diagnostics and delivery metrics.
 
 ### Recover a stopped encoded subscription
 

@@ -87,7 +87,10 @@ impl SyncDeliveryScheduler {
     /// # Side Effects
     /// Starts H threads and retains their join handles until shutdown.
     pub(super) fn start(self: &Arc<Self>) -> io::Result<()> {
-        let mut handles = self.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut handles = self
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !handles.is_empty() {
             return Ok(());
         }
@@ -192,7 +195,10 @@ impl SyncDeliveryScheduler {
     /// released.
     pub(super) fn route_notifications(&self) {
         let notifications = self.core.take_notifications();
-        let owners = self.owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for id in notifications {
             if let Some(owner) = owners.get(&id) {
                 owner.unpark();
@@ -399,7 +405,10 @@ impl SyncDeliveryScheduler {
     /// Publishes shutdown policy before waking affected receiver owners.
     pub(super) fn stop_admission(&self, immediate: bool) {
         {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.draining = true;
             state.immediate |= immediate;
         }
@@ -475,7 +484,10 @@ impl SyncDeliveryScheduler {
     /// drain.
     #[must_use]
     pub(super) fn handler_may_start(&self, id: Id, cancelled: bool) -> bool {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         !state.immediate && !state.cancelled.contains(&id) && (!cancelled || state.draining)
     }
 
@@ -490,7 +502,10 @@ impl SyncDeliveryScheduler {
     /// cancellation.
     #[must_use]
     pub(super) fn should_drain(&self, id: Id) -> bool {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.draining && !state.immediate && !state.cancelled.contains(&id)
     }
 
@@ -554,7 +569,10 @@ impl SyncDeliveryScheduler {
     fn worker_loop(&self) {
         loop {
             let job = {
-                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 loop {
                     if let Some(job) = state.jobs.pop_front() {
                         break Some(job);
@@ -590,14 +608,17 @@ mod scheduler_race_tests {
     #[test]
     fn test_reservation_cancel_race_does_not_run_owner_settlement_inline() {
         let one = NonZeroUsize::new(1).expect("positive limit");
-        let scheduler =
-            SyncDeliveryScheduler::new(DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"));
+        let scheduler = SyncDeliveryScheduler::new(
+            DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"),
+        );
         scheduler.start().expect("workers start");
         let id = Id::new(44);
         assert!(scheduler.register(id));
         scheduler.attach_owner(id);
         scheduler.request_receive(id);
-        let lease = scheduler.take_receive_reservation(id).expect("receive credit");
+        let lease = scheduler
+            .take_receive_reservation(id)
+            .expect("receive credit");
         scheduler.enqueue(lease, None);
         assert_eq!(scheduler.take_ready(id), Some(lease));
         scheduler.cancel_subscription(id);
@@ -618,7 +639,10 @@ mod scheduler_race_tests {
         let returned = returned_rx.recv_timeout(Duration::from_millis(100)).is_ok();
         release_tx.send(()).expect("callback alive");
         submitter.join().expect("submitter exits");
-        assert!(returned, "submission must leave the owner available for settlement");
+        assert!(
+            returned,
+            "submission must leave the owner available for settlement"
+        );
         scheduler.handler_finished(lease);
         assert!(
             !scheduler.core.unregister(id),
@@ -633,17 +657,26 @@ mod scheduler_race_tests {
     #[test]
     fn test_closed_subscription_recancellation_cannot_recreate_tombstones() {
         let one = NonZeroUsize::new(1).expect("positive limit");
-        let scheduler =
-            SyncDeliveryScheduler::new(DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"));
+        let scheduler = SyncDeliveryScheduler::new(
+            DeliverySchedulingConfig::new(one, one, one, one).expect("valid config"),
+        );
         for index in 1..=1000 {
             let id = Id::new(index);
             assert!(scheduler.register(id));
             scheduler.cancel_subscription(id);
-            assert_eq!(scheduler.state.lock().expect("pool state").cancelled.len(), 1);
+            assert_eq!(
+                scheduler.state.lock().expect("pool state").cancelled.len(),
+                1
+            );
             scheduler.finish_subscription(id);
             scheduler.cancel_subscription(id);
             assert!(
-                scheduler.state.lock().expect("pool state").cancelled.is_empty(),
+                scheduler
+                    .state
+                    .lock()
+                    .expect("pool state")
+                    .cancelled
+                    .is_empty(),
                 "closed IDs cannot reenter cancellation metadata"
             );
         }
@@ -660,7 +693,12 @@ mod scheduler_race_tests {
                 scheduler.finish_subscription(id);
             });
             assert!(
-                scheduler.state.lock().expect("pool state").cancelled.is_empty(),
+                scheduler
+                    .state
+                    .lock()
+                    .expect("pool state")
+                    .cancelled
+                    .is_empty(),
                 "finish and cancellation share one lifecycle fence"
             );
         }

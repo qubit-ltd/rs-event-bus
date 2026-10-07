@@ -64,7 +64,10 @@ fn subscription_request() -> SpiSubscriptionRequest {
 
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
-    match future.as_mut().poll(&mut Context::from_waker(std::task::Waker::noop())) {
+    match future
+        .as_mut()
+        .poll(&mut Context::from_waker(std::task::Waker::noop()))
+    {
         Poll::Ready(result) => result,
         Poll::Pending => panic!("operation unexpectedly pending"),
     }
@@ -73,12 +76,15 @@ fn ready<F: Future>(future: F) -> F::Output {
 #[test]
 fn test_pending_receive_is_woken_by_publish_and_keeps_message_available() {
     let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("valid config");
-    let mut receiver = ready(spi.subscribe(subscription_request())).expect("subscription is accepted");
+    let mut receiver =
+        ready(spi.subscribe(subscription_request())).expect("subscription is accepted");
     let counter = Arc::new(CountWake::default());
     let waker = Waker::from(counter.clone());
     let mut pending_receive = receiver.receive(Duration::MAX);
     assert!(matches!(
-        pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
+        pending_receive
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker)),
         Poll::Pending
     ));
 
@@ -94,7 +100,9 @@ fn test_pending_receive_is_woken_by_publish_and_keeps_message_available() {
     let _ = ready(spi.publish(message)).expect("publish succeeds");
     assert!(counter.0.load(Ordering::Relaxed) > 0);
     assert!(matches!(
-        pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
+        pending_receive
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker)),
         Poll::Ready(Ok(ReceiveOutcome::Message(_)))
     ));
 }

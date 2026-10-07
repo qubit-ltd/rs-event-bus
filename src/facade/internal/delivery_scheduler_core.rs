@@ -70,7 +70,10 @@ impl DeliverySchedulerCore {
     /// should the owner sample its clock and call
     /// `DeliverySnapshotInput::at` with that instant.
     #[must_use]
-    pub(in crate::facade) fn snapshot_input(&self, subscription_id: Option<Id>) -> DeliverySnapshotInput {
+    pub(in crate::facade) fn snapshot_input(
+        &self,
+        subscription_id: Option<Id>,
+    ) -> DeliverySnapshotInput {
         self.lock().snapshot_input(subscription_id)
     }
 
@@ -86,7 +89,10 @@ impl DeliverySchedulerCore {
     /// an age.
     #[must_use = "scheduler gauges are the current delivery snapshot"]
     #[inline]
-    pub(in crate::facade) fn snapshot_gauges(&self, subscription_id: Option<Id>) -> DeliveryMetricsSnapshot {
+    pub(in crate::facade) fn snapshot_gauges(
+        &self,
+        subscription_id: Option<Id>,
+    ) -> DeliveryMetricsSnapshot {
         self.lock().snapshot_gauges(subscription_id)
     }
 
@@ -218,7 +224,11 @@ impl DeliverySchedulerCore {
     ///   adapter.
     /// - `lane`: shared ordering identity, or `None` for an independent
     ///   delivery lane.
-    pub(in crate::facade) fn enqueue_settlement(&self, lease_id: u64, lane: Option<OrderingLaneKey>) {
+    pub(in crate::facade) fn enqueue_settlement(
+        &self,
+        lease_id: u64,
+        lane: Option<OrderingLaneKey>,
+    ) {
         self.enqueue_phase(lease_id, lane, OwnedDeliveryPhase::QueuedSettlement);
     }
 
@@ -415,7 +425,11 @@ impl DeliverySchedulerCore {
     ///   enqueue.
     /// - `created_at`: monotonic instant sampled by the owner outside the core
     ///   mutex.
-    pub(in crate::facade) fn record_owned_start(&self, lease_id: u64, created_at: MonotonicInstant) {
+    pub(in crate::facade) fn record_owned_start(
+        &self,
+        lease_id: u64,
+        created_at: MonotonicInstant,
+    ) {
         let mut state = self.lock();
         let Some(record) = state.owned.get(&lease_id) else {
             return;
@@ -443,7 +457,12 @@ impl DeliverySchedulerCore {
     /// - `lane`: ordering identity, or `None` for an independent lane.
     /// - `phase`: handler-queued or settlement-queued state chosen by the
     ///   public-in-facade wrapper.
-    fn enqueue_phase(&self, lease_id: u64, lane: Option<OrderingLaneKey>, phase: OwnedDeliveryPhase) {
+    fn enqueue_phase(
+        &self,
+        lease_id: u64,
+        lane: Option<OrderingLaneKey>,
+        phase: OwnedDeliveryPhase,
+    ) {
         let mut state = self.lock();
         let Some(record) = state.owned.get(&lease_id) else {
             return;
@@ -539,7 +558,12 @@ mod tests {
     use crate::pipeline::OrderingLaneKey;
 
     /// Creates a scheduler with explicit small limits for state transitions.
-    fn scheduler(running: usize, owned: usize, per_sub: usize, subscriptions: usize) -> DeliverySchedulerCore {
+    fn scheduler(
+        running: usize,
+        owned: usize,
+        per_sub: usize,
+        subscriptions: usize,
+    ) -> DeliverySchedulerCore {
         let positive = |value| NonZeroUsize::new(value).expect("positive test limit");
         DeliverySchedulerCore::new(
             DeliverySchedulingConfig::new(
@@ -555,8 +579,13 @@ mod tests {
     /// Receives one lease and associates its optional ordering lane.
     fn queue(core: &DeliverySchedulerCore, sub: Id, key: Option<&str>) -> u64 {
         core.request_receive(sub);
-        let lease = core.take_receive_reservation(sub).expect("receive credit available");
-        core.enqueue(lease, key.map(|key| OrderingLaneKey::new("topic", Some(key), sub)));
+        let lease = core
+            .take_receive_reservation(sub)
+            .expect("receive credit available");
+        core.enqueue(
+            lease,
+            key.map(|key| OrderingLaneKey::new("topic", Some(key), sub)),
+        );
         lease
     }
 
@@ -597,7 +626,9 @@ mod tests {
         assert!(core.register(first));
         assert!(core.register(second));
         core.request_receive(first);
-        let lease = core.take_receive_reservation(first).expect("first receive granted");
+        let lease = core
+            .take_receive_reservation(first)
+            .expect("first receive granted");
         core.request_receive(first);
         core.request_receive(second);
         assert_eq!(core.take_receive_reservation(first), None);
@@ -804,7 +835,9 @@ mod tests {
             assert!(core.register(id));
         }
         core.request_receive(first);
-        let initial = core.take_receive_reservation(first).expect("initial credit");
+        let initial = core
+            .take_receive_reservation(first)
+            .expect("initial credit");
         for _ in 0..100 {
             core.request_receive(second);
             core.request_receive(third);
@@ -874,7 +907,11 @@ mod tests {
                 scope.spawn(|| {
                     barrier.wait();
                     core.stop_subscription(sub);
-                    assert_eq!(core.take_ready(sub), None, "no grant may cross the stop fence");
+                    assert_eq!(
+                        core.take_ready(sub),
+                        None,
+                        "no grant may cross the stop fence"
+                    );
                     assert_eq!(
                         core.take_settlement_ready(sub),
                         None,
@@ -1004,7 +1041,11 @@ mod tests {
         core.request_receive(first);
         core.cancel_receive(first);
         core.cancel_receive(second);
-        assert_eq!(core.lock().owned.len(), 1, "claimed reservation is still owned");
+        assert_eq!(
+            core.lock().owned.len(),
+            1,
+            "claimed reservation is still owned"
+        );
         core.complete(second_lease);
         assert_eq!(
             core.take_receive_reservation(first),
@@ -1033,13 +1074,18 @@ mod tests {
         let mut leases = Vec::new();
         for key in ["a", "a", "b", "b"] {
             core.request_receive(first);
-            let lease = core.take_receive_reservation(first).expect("receive reservation");
+            let lease = core
+                .take_receive_reservation(first)
+                .expect("receive reservation");
             core.record_owned_start(lease, started);
             core.enqueue(lease, Some(OrderingLaneKey::new("topic", Some(key), first)));
             leases.push(lease);
         }
         core.request_receive(second);
-        let before = core.snapshot_input(Some(first)).at(now).expect("same-domain snapshot");
+        let before = core
+            .snapshot_input(Some(first))
+            .at(now)
+            .expect("same-domain snapshot");
         assert_eq!(
             (before.queued, before.lane_waiting),
             (4, 2),
@@ -1066,9 +1112,16 @@ mod tests {
         assert_eq!(local.queued, 0);
         assert_eq!(local.oldest_owned_age, None);
         core.handler_finished(leases[0]);
-        let settling = core.snapshot_input(Some(first)).at(now).expect("settling snapshot");
+        let settling = core
+            .snapshot_input(Some(first))
+            .at(now)
+            .expect("settling snapshot");
         assert_eq!(
-            (settling.running_handlers, settling.settling, settling.lane_waiting),
+            (
+                settling.running_handlers,
+                settling.settling,
+                settling.lane_waiting
+            ),
             (0, 1, 2)
         );
         core.complete(leases[0]);
@@ -1109,17 +1162,25 @@ mod tests {
                 .oldest_owned_age,
             None
         );
-        let lease = core.take_receive_reservation(sub).expect("claim reservation");
+        let lease = core
+            .take_receive_reservation(sub)
+            .expect("claim reservation");
         core.record_owned_start(lease, zero);
         core.record_owned_start(lease, now);
         assert_eq!(
-            core.snapshot_input(None).at(now).expect("claimed age").oldest_owned_age,
+            core.snapshot_input(None)
+                .at(now)
+                .expect("claimed age")
+                .oldest_owned_age,
             Some(Duration::from_secs(9))
         );
         core.enqueue(lease, None);
         core.record_owned_start(lease, now);
         assert_eq!(
-            core.snapshot_input(None).at(now).expect("queue age").oldest_owned_age,
+            core.snapshot_input(None)
+                .at(now)
+                .expect("queue age")
+                .oldest_owned_age,
             Some(Duration::from_secs(9))
         );
         core.complete(lease);
@@ -1140,7 +1201,9 @@ mod tests {
         let start = MonotonicInstant::new(domain, Duration::from_secs(5));
         assert!(core.register(sub));
         core.request_receive(sub);
-        let lease = core.take_receive_reservation(sub).expect("claim reservation");
+        let lease = core
+            .take_receive_reservation(sub)
+            .expect("claim reservation");
         core.record_owned_start(lease, start);
         let foreign = MonotonicInstant::new(ClockDomain::new(), Duration::from_secs(7));
         assert!(matches!(
@@ -1169,7 +1232,9 @@ mod tests {
             assert!(core.register(sub));
             core.set_dispatch_active(sub, true);
             core.request_receive(sub);
-            let lease = core.take_receive_reservation(sub).expect("receive reservation");
+            let lease = core
+                .take_receive_reservation(sub)
+                .expect("receive reservation");
             core.record_owned_start(lease, now);
             let lane = Some(OrderingLaneKey::new("topic", Some("key"), sub));
             if value % 2 == 0 {
@@ -1192,7 +1257,9 @@ mod tests {
             assert_eq!(state.running, 0);
         }
         assert_eq!(
-            core.snapshot_input(None).at(now).expect("empty final snapshot"),
+            core.snapshot_input(None)
+                .at(now)
+                .expect("empty final snapshot"),
             DeliveryMetricsSnapshot::default()
         );
     }
@@ -1206,14 +1273,19 @@ mod tests {
         let running = queue(&core, sub, Some("key"));
         assert_eq!(core.take_ready(sub), Some(running));
         core.request_receive(sub);
-        let failed = core.take_receive_reservation(sub).expect("decode-failed receive lease");
+        let failed = core
+            .take_receive_reservation(sub)
+            .expect("decode-failed receive lease");
         core.enqueue_settlement(failed, None);
         assert_eq!(core.take_settlement_ready(sub), Some(failed));
         assert_eq!(core.take_settlement_ready(sub), None);
         let state = core.lock();
         assert_eq!(state.owned[&failed].phase, OwnedDeliveryPhase::Settling);
         assert!(state.owned[&failed].lane.is_none());
-        assert_eq!(state.running, 1, "decode failure never consumes handler capacity");
+        assert_eq!(
+            state.running, 1,
+            "decode failure never consumes handler capacity"
+        );
         assert_eq!(state.owned.len(), 2);
         assert_eq!(state.subscriptions[&sub].receive_reservation, None);
         drop(state);
@@ -1229,8 +1301,13 @@ mod tests {
         let sub = Id::new(1);
         assert!(core.register(sub));
         core.request_receive(sub);
-        let lease = core.take_receive_reservation(sub).expect("receive reservation");
-        core.record_owned_start(lease, MonotonicInstant::new(ClockDomain::new(), Duration::ZERO));
+        let lease = core
+            .take_receive_reservation(sub)
+            .expect("receive reservation");
+        core.record_owned_start(
+            lease,
+            MonotonicInstant::new(ClockDomain::new(), Duration::ZERO),
+        );
         assert!(
             core.snapshot_input(None)
                 .at(MonotonicInstant::new(ClockDomain::new(), Duration::ZERO))
@@ -1252,12 +1329,16 @@ mod tests {
         let later_start = MonotonicInstant::new(domain, Duration::from_secs(10));
         assert!(core.register(sub));
         core.request_receive(sub);
-        let first = core.take_receive_reservation(sub).expect("first reservation");
+        let first = core
+            .take_receive_reservation(sub)
+            .expect("first reservation");
         core.record_owned_start(first, initial);
         core.enqueue(first, None);
         let captured = core.snapshot_input(Some(sub));
         core.request_receive(sub);
-        let later = core.take_receive_reservation(sub).expect("later reservation");
+        let later = core
+            .take_receive_reservation(sub)
+            .expect("later reservation");
         core.record_owned_start(later, later_start);
         let snapshot = captured
             .at(sampled_after_capture)
@@ -1278,8 +1359,13 @@ mod tests {
     /// grant.
     fn queue_settlement(core: &DeliverySchedulerCore, sub: Id, key: Option<&str>) -> u64 {
         core.request_receive(sub);
-        let lease = core.take_receive_reservation(sub).expect("settlement receive credit");
-        core.enqueue_settlement(lease, key.map(|key| OrderingLaneKey::new("topic", Some(key), sub)));
+        let lease = core
+            .take_receive_reservation(sub)
+            .expect("settlement receive credit");
+        core.enqueue_settlement(
+            lease,
+            key.map(|key| OrderingLaneKey::new("topic", Some(key), sub)),
+        );
         lease
     }
 
@@ -1386,7 +1472,11 @@ mod tests {
             None,
             "wrong kind must leave second's turn intact"
         );
-        assert_eq!(core.take_settlement_ready(first), None, "first cannot overtake second");
+        assert_eq!(
+            core.take_settlement_ready(first),
+            None,
+            "first cannot overtake second"
+        );
         assert_eq!(core.take_settlement_ready(second), Some(second_settlement));
         assert_eq!(
             core.take_ready(first),
@@ -1406,7 +1496,11 @@ mod tests {
         let sub = Id::new(1);
         assert!(core.register(sub));
         let first = queue_settlement(&core, sub, Some("a"));
-        assert_eq!(core.take_settlement_ready(sub), None, "registration begins inactive");
+        assert_eq!(
+            core.take_settlement_ready(sub),
+            None,
+            "registration begins inactive"
+        );
         core.set_dispatch_active(sub, true);
         assert_eq!(core.take_settlement_ready(sub), Some(first));
         let queued = queue_settlement(&core, sub, Some("b"));

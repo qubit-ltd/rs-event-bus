@@ -26,6 +26,7 @@ pub use error::SpiError;
 pub use error::SubscribeError;
 pub use facade::AsyncEventBus;
 pub use facade::AsyncSubscription;
+pub use facade::AsyncSubscriptionRunState;
 pub use facade::DiagnosticObserverHandle;
 pub use facade::EventBus;
 pub use facade::EventBusFacadeConfig;

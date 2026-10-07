@@ -24,7 +24,8 @@ use crate::pipeline::dead_letter_retry_config;
 
 #[test]
 fn test_unknown_dead_letter_publish_is_not_retried() {
-    let config = dead_letter_retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
+    let config =
+        dead_letter_retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
     let calls = Cell::new(0);
     let result: Result<_, _> = Retry::new(&config).run(|| {
         calls.set(calls.get() + 1);
@@ -47,7 +48,8 @@ fn test_unknown_dead_letter_publish_is_not_retried() {
 
 #[test]
 fn test_partially_admitted_dead_letter_is_not_retried() {
-    let config = dead_letter_retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
+    let config =
+        dead_letter_retry_config(&RetryPolicy::builder().max_attempts(3).build().unwrap()).unwrap();
     let calls = Cell::new(0);
     let result: Result<_, _> = Retry::new(&config).run(|| {
         calls.set(calls.get() + 1);

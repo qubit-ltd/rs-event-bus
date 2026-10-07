@@ -15,6 +15,7 @@ use qubit_id::Id;
 
 use self::internal::AsyncSession;
 pub(in crate::facade) use self::internal::AsyncSubscriptionControl;
+use self::internal::RunStateGuard;
 use self::internal::SessionSignals;
 use super::async_event_bus::AsyncEventBusInner;
 use super::async_event_bus::AsyncRunnerGuard;
@@ -50,7 +51,8 @@ pub(super) use internal::is_current_bus_poll;
 ///
 /// # Type Parameters
 /// - `T`: payload type accepted by the handler.
-type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
+type AsyncHandler<T> =
+    dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
 /// Shared owner of a subscriber handler callback.
 ///
 /// # Type Parameters
@@ -194,6 +196,17 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         self.control.signals.terminal_failure()
     }
 
+    /// Returns a snapshot of this subscription runner's lifecycle state.
+    ///
+    /// The state is instantaneous and can change immediately after it is read.
+    /// It describes whether the caller-driven runner is active; it does not
+    /// report whether the provider queue is empty.
+    #[must_use]
+    #[inline]
+    pub fn run_state(&self) -> crate::facade::AsyncSubscriptionRunState {
+        self.control.run_state()
+    }
+
     /// Runs this subscription until its receiver closes or shutdown stops it.
     ///
     /// The bus-wide delivery scheduling configuration independently bounds
@@ -219,18 +232,28 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
-    pub async fn run<H, F>(&mut self, handler: H) -> Result<(), ReceiveError>
+    pub async fn run<H, F>(&self, handler: H) -> Result<(), ReceiveError>
     where
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
         F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
     {
         let mut lease = self.control.lease().await.ok_or(ReceiveError::Closed)?;
-        lease
+        if !self.control.enter_run() {
+            return Err(self
+                .control
+                .signals
+                .terminal_failure()
+                .map_or(ReceiveError::Closed, ReceiveError::Stopped));
+        }
+        let _run_state_guard = RunStateGuard::new(&self.control);
+        let result = lease
             .session
             .as_mut()
             .expect("session lease owns its session")
             .run(handler, &self.control)
-            .await
+            .await;
+        self.control.mark_stopped();
+        result
     }
 
     /// Stops this session and closes its provider receiver.
@@ -244,12 +267,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
     pub async fn close(&mut self) -> Result<(), LifecycleError> {
-        if self
-            .control
-            .bus
-            .upgrade()
-            .is_none_or(|inner| *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running)
-        {
+        self.control.mark_stopped();
+        if self.control.bus.upgrade().is_none_or(|inner| {
+            *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running
+        }) {
             return Ok(());
         }
         self.control.signals.stop(ShutdownMode::Immediate);

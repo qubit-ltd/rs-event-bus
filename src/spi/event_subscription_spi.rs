@@ -56,7 +56,11 @@ pub trait EventSubscriptionSpi: Send + 'static {
     ///
     /// # Errors
     /// Returns a structured provider settlement failure.
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError>;
 
     /// Closes this receiver and releases its resources.
     ///

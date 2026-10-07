@@ -16,7 +16,12 @@ use crate::spi::panic_boundary::provider_panic;
 #[test]
 fn test_provider_panic_error_has_stable_operation_context() {
     let provider_id = ProviderId::new("panic-test").expect("valid provider ID");
-    let error = provider_panic(provider_id.as_str(), "publish", None, Box::new("provider SPI panicked"));
+    let error = provider_panic(
+        provider_id.as_str(),
+        "publish",
+        None,
+        Box::new("provider SPI panicked"),
+    );
     assert!(matches!(
         &error,
         SpiError::Operation {

@@ -99,7 +99,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     T: Send + Sync + 'static,
 {
     let _worker_context = BusContextGuard::enter(bus_identity);
-    let _lifecycle = crate::facade::event_bus::internal::OwnerLifecycleGuard::new(inner.clone(), control.clone());
+    let _lifecycle = crate::facade::event_bus::internal::OwnerLifecycleGuard::new(
+        inner.clone(),
+        control.clone(),
+    );
     let mut owned: HashMap<u64, OwnedSyncDelivery<'_, T>> = HashMap::new();
     let (sender, receiver) = mpsc::channel();
     let worker_result = catch_unwind(AssertUnwindSafe(|| {
@@ -132,8 +135,14 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     message @ CoordinatorMessage::Settlement { lease_id, .. } => {
                         if let Some(delivery) = owned.get_mut(&lease_id) {
                             if let Some(previous) = delivery.settlement.as_ref() {
-                                if settlement_disposition(previous) != settlement_disposition(&message) {
-                                    fail_internal(&inner, &control, "conflicting_settlement_intent");
+                                if settlement_disposition(previous)
+                                    != settlement_disposition(&message)
+                                {
+                                    fail_internal(
+                                        &inner,
+                                        &control,
+                                        "conflicting_settlement_intent",
+                                    );
                                 }
                             } else {
                                 delivery.settlement = Some(message);
@@ -160,7 +169,8 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     if let Some((message, _)) = delivery.inbound.take() {
                         delivery.handler_finished = true;
                         if control.terminal_failure().is_none() {
-                            delivery.settlement = canceled_intent(&inner, lease, control.id, &subscriber_id, message);
+                            delivery.settlement =
+                                canceled_intent(&inner, lease, control.id, &subscriber_id, message);
                             delivery.abandoned = delivery.settlement.is_none();
                         } else {
                             count_abandoned(&inner, control.id);
@@ -175,7 +185,8 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         delivery.handler_finished = true;
                         let event = prepared.event_arc();
                         delivery.settlement = if delivery.token.is_some()
-                            && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+                            && inner.capabilities.settlement()
+                                == crate::spi::SettlementCapabilities::AcceptRetryReject
                         {
                             Some(CoordinatorMessage::Settlement {
                                 lease_id: lease,
@@ -209,7 +220,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     if delivery.handler_finished
                         && let Some((outcome, directive)) = delivery.result.take()
                     {
-                        *delivery.directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(directive);
+                        *delivery
+                            .directive
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) = Some(directive);
                         let terminal_result = if stopping {
                             Some(match outcome {
                                 DeliveryOutcome::Success => Ok(()),
@@ -256,7 +270,15 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             })
                         };
                         if let Some(result) = terminal_result {
-                            finish_attempt(&inner, &router, &control, &subscriber_id, &options, delivery, result);
+                            finish_attempt(
+                                &inner,
+                                &router,
+                                &control,
+                                &subscriber_id,
+                                &options,
+                                delivery,
+                                result,
+                            );
                         }
                     }
                     if let Some(due) = delivery.due
@@ -299,7 +321,13 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     if stopping && delivery.retry.attempts() > 0 {
                         continue;
                     }
-                    match attempt_settlement(&inner, &control, &mut *spi_subscription, delivery, stopping) {
+                    match attempt_settlement(
+                        &inner,
+                        &control,
+                        &mut *spi_subscription,
+                        delivery,
+                        stopping,
+                    ) {
                         Some(delay) => wait = wait.min(delay),
                         None => {
                             if delivery.settlement.is_none() {
@@ -340,8 +368,16 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     };
                     if let Some((message, decoded)) = delivery.inbound.take() {
                         let provider_attempt = message.provider_attempt();
-                        let (address, event_id, timestamp, headers, ordering_key, _, token, metadata) =
-                            message.into_parts();
+                        let (
+                            address,
+                            event_id,
+                            timestamp,
+                            headers,
+                            ordering_key,
+                            _,
+                            token,
+                            metadata,
+                        ) = message.into_parts();
                         delivery.token = token;
                         delivery.delivery = prepare_delivery(
                             &inner,
@@ -422,22 +458,27 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     let task_handler = handler.clone();
                     let task_sender = sender.clone();
                     inner.scheduler.submit(move || {
-                        let _completion = crate::facade::event_bus::internal::HandlerCompletionGuard::new(
-                            task_inner.scheduler.clone(),
-                            task_control.id,
-                            lease,
-                            task_sender.clone(),
-                        );
+                        let _completion =
+                            crate::facade::event_bus::internal::HandlerCompletionGuard::new(
+                                task_inner.scheduler.clone(),
+                                task_control.id,
+                                lease,
+                                task_sender.clone(),
+                            );
                         let _context = BusContextGuard::enter(bus_identity);
                         let event = task_delivery.event_arc();
                         let outcome = if !task_control.try_start()
-                            || (task_control.is_cancelled() && !task_inner.scheduler.should_drain(task_control.id))
+                            || (task_control.is_cancelled()
+                                && !task_inner.scheduler.should_drain(task_control.id))
                         {
                             DeliveryOutcome::Failure(DeliveryError::Handler {
-                                source: Box::new(crate::facade::event_bus::internal::HandlerStartRejected),
+                                source: Box::new(
+                                    crate::facade::event_bus::internal::HandlerStartRejected,
+                                ),
                             })
                         } else {
-                            let interceptors = task_inner.facade_config.subscriber_interceptors::<T>();
+                            let interceptors =
+                                task_inner.facade_config.subscriber_interceptors::<T>();
                             match catch_unwind(AssertUnwindSafe(|| {
                                 run_delivery_attempt(
                                     &task_options,
@@ -480,8 +521,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             if !receive_closed && !control.is_cancelled() {
                 inner.scheduler.request_receive(control.id);
                 if let Some(lease) = inner.scheduler.take_receive_reservation(control.id) {
-                    let lease_guard =
-                        crate::facade::event_bus::internal::ReceiveLeaseGuard::new(inner.scheduler.clone(), lease);
+                    let lease_guard = crate::facade::event_bus::internal::ReceiveLeaseGuard::new(
+                        inner.scheduler.clone(),
+                        lease,
+                    );
                     inner.scheduler.record_owned_start(lease, inner.clock.now());
                     inner.scheduler.set_dispatch_active(control.id, false);
                     let result = crate::spi::panic_boundary::catch_spi_call(
@@ -495,8 +538,16 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     match result {
                         Ok(ReceiveOutcome::Message(message)) => {
                             let provider_attempt = message.provider_attempt();
-                            let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
-                                message.into_parts();
+                            let (
+                                address,
+                                event_id,
+                                timestamp,
+                                headers,
+                                ordering_key,
+                                payload,
+                                token,
+                                metadata,
+                            ) = message.into_parts();
                             let decoded = decode_payload(
                                 codec.as_ref(),
                                 &payload,
@@ -521,7 +572,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 }
                                 continue;
                             }
-                            let lane = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
+                            let lane = if options.ordering_policy()
+                                == crate::model::OrderingPolicy::PerKey
+                            {
                                 Some(OrderingLaneKey::new(
                                     topic.name(),
                                     ordering_key.as_ref().map(crate::spi::OrderingKey::as_str),
@@ -550,7 +603,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                         settlement_granted: false,
                                         abandoned: false,
                                         lifecycle_failed: false,
-                                        retry: SettlementRetryState::new(inner.facade_config.settlement_retry()),
+                                        retry: SettlementRetryState::new(
+                                            inner.facade_config.settlement_retry(),
+                                        ),
                                         first_attempt: None,
                                         next_attempt: Duration::ZERO,
                                         last_error: None,
@@ -608,7 +663,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                     settlement_granted: true,
                                     abandoned: false,
                                     lifecycle_failed: false,
-                                    retry: SettlementRetryState::new(inner.facade_config.settlement_retry()),
+                                    retry: SettlementRetryState::new(
+                                        inner.facade_config.settlement_retry(),
+                                    ),
                                     first_attempt: None,
                                     next_attempt: Duration::ZERO,
                                     last_error: None,
@@ -623,8 +680,8 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         }
                         Ok(ReceiveOutcome::Gap(gap)) => {
                             drop(lease_guard);
-                            let stop_gap =
-                                (options.gap_policy() == crate::model::GapPolicy::Stop).then(|| Arc::new(gap.clone()));
+                            let stop_gap = (options.gap_policy() == crate::model::GapPolicy::Stop)
+                                .then(|| Arc::new(gap.clone()));
                             inner.emit(Diagnostic::ReceiveGap {
                                 subscription_id: control.id,
                                 subscriber_id: subscriber_id.clone(),
@@ -639,8 +696,9 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         Err(error) => {
                             drop(lease_guard);
                             let text = error.to_string();
-                            let first =
-                                control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) });
+                            let first = control.fail_receive(SubscriptionStopReason::Provider {
+                                error: Arc::new(error),
+                            });
                             inner.scheduler.cancel_subscription(control.id);
                             if first {
                                 inner.emit_internal("receive", text);
@@ -659,7 +717,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     }));
     if let Err(payload) = worker_result {
         fail_internal(&inner, &control, "owner_panicked");
-        inner.emit_internal("subscription_worker", panic_message(payload.as_ref()).into());
+        inner.emit_internal(
+            "subscription_worker",
+            panic_message(payload.as_ref()).into(),
+        );
         // Preserve payload/tracker lifetime even when an injected clock or an
         // internal operation unwinds while pool callbacks are still running.
         while owned.values().any(|delivery| delivery.running) {
@@ -752,7 +813,9 @@ fn finish_attempt<T: Send + Sync + 'static>(
         ),
     }
     delivery.handler_finished = false;
-    let _ = router.sender.send(CoordinatorMessage::HandlerFinished(router.lease_id));
+    let _ = router
+        .sender
+        .send(CoordinatorMessage::HandlerFinished(router.lease_id));
 }
 
 /// Extracts the immutable disposition for duplicate-intent invariant checks.
@@ -786,7 +849,9 @@ fn fail_internal(inner: &EventBusInner, control: &SubscriptionControl, kind: &'s
         retryable: Some(false),
         source: Box::new(std::io::Error::other(kind)),
     };
-    let first = control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) });
+    let first = control.fail_receive(SubscriptionStopReason::Provider {
+        error: Arc::new(error),
+    });
     inner.scheduler.cancel_subscription(control.id);
     if first {
         inner.emit_internal("delivery_owner", kind.into());
@@ -845,7 +910,9 @@ fn attempt_settlement<T>(
             resource: Some(subscriber_id.as_str().into()),
             reason: "foreign_owner",
             retryable: Some(false),
-            source: Box::new(std::io::Error::other("provider token belongs to another subscription")),
+            source: Box::new(std::io::Error::other(
+                "provider token belongs to another subscription",
+            )),
         });
         stop_settlement(
             inner,
@@ -1143,7 +1210,9 @@ fn canceled_intent(
     message: InboundMessage,
 ) -> Option<CoordinatorMessage> {
     let (address, event_id, _, _, _, _, token, _) = message.into_parts();
-    if token.is_some() && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject {
+    if token.is_some()
+        && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
+    {
         return Some(CoordinatorMessage::Settlement {
             lease_id,
             token,

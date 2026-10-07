@@ -66,7 +66,10 @@ impl AsyncTracker {
     /// A guard that decrements the active-close count when dropped.
     #[must_use = "Keep the guard alive while the close operation is active."]
     pub(in crate::facade) fn close_started(self: &Arc<Self>) -> AsyncCloseGuard {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).active_closes += 1;
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .active_closes += 1;
         AsyncCloseGuard::new(self.clone())
     }
 
@@ -75,7 +78,10 @@ impl AsyncTracker {
     /// # Side Effects
     /// Increments the active-runner count under the tracker lock.
     pub(in crate::facade) fn runner_started(&self) {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).active_runners += 1;
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .active_runners += 1;
     }
 
     /// Decrements the runner count and wakes quiescence waiters.

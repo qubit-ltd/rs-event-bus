@@ -109,7 +109,9 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 return Ok(ReceiveOutcome::TimedOut);
             }
             let delay = state.next_ready_delay(now);
-            let wait_for = delay.filter(|delay| *delay < remaining).unwrap_or(remaining);
+            let wait_for = delay
+                .filter(|delay| *delay < remaining)
+                .unwrap_or(remaining);
             let (next, result) = self
                 .queue
                 .ready
@@ -141,7 +143,11 @@ impl EventSubscriptionSpi for LocalEventSubscription {
     /// # Errors
     /// Returns an invalid-token error for a foreign, unknown, forged, or
     /// already settled token with a conflicting disposition.
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         if !token.belongs_to(self.queue.id) {
             return Err(invalid_token_error(
                 Some(self.queue.topic.as_str()),
@@ -169,7 +175,10 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             .get(token_state.token_id.as_ref())
             .ok_or_else(|| invalid_token_error(Some(self.queue.topic.as_str()), "unknown_token"))?;
         if !Arc::ptr_eq(&delivery.settlement, &settlement) {
-            return Err(invalid_token_error(Some(self.queue.topic.as_str()), "unknown_token"));
+            return Err(invalid_token_error(
+                Some(self.queue.topic.as_str()),
+                "unknown_token",
+            ));
         }
         let event = state
             .in_flight
@@ -212,7 +221,11 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             }
         }
         self.queue.async_ready.notify_all();
-        let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let topic = self.queue.topic.clone();
         let removed = state
             .topics
@@ -221,7 +234,11 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         if removed {
             state.subscription_ids.remove(&self.queue.id);
         }
-        if state.topics.get(&topic).is_some_and(|bucket| bucket.queues.is_empty()) {
+        if state
+            .topics
+            .get(&topic)
+            .is_some_and(|bucket| bucket.queues.is_empty())
+        {
             state.topics.remove(&topic);
         }
         drop(state);
@@ -267,8 +284,10 @@ mod tests {
     #[test]
     fn test_token_exhaustion_preserves_pending_weight_until_close() {
         let weight = NonZeroUsize::new(5).expect("positive weight");
-        let spi = LocalEventBusSpi::new(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
-            .expect("valid config");
+        let spi = LocalEventBusSpi::new(
+            &LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight),
+        )
+        .expect("valid config");
         let topic = TopicAddress::new("local.token.exhaustion").expect("valid topic");
         let request = SpiSubscriptionRequest::new(
             Id::new(1),
@@ -292,12 +311,22 @@ mod tests {
         )
         .with_native_payload_weight_bytes(weight);
         let _ = spi.publish(message).expect("admitted event");
-        let queue = spi.shared.state.lock().expect("bus lock").live_queues_for_topic(&topic)[0].clone();
+        let queue = spi
+            .shared
+            .state
+            .lock()
+            .expect("bus lock")
+            .live_queues_for_topic(&topic)[0]
+            .clone();
         queue.lock().next_delivery_token = u64::MAX;
         for timeout in [Duration::ZERO, Duration::MAX] {
             let result = receiver.receive(timeout);
             let state = queue.lock();
-            assert_eq!(state.pending_count(), 1, "failed receive must retain the event");
+            assert_eq!(
+                state.pending_count(),
+                1,
+                "failed receive must retain the event"
+            );
             assert!(state.in_flight.is_empty());
             assert_eq!(state.next_delivery_token, u64::MAX);
             drop(state);
@@ -311,7 +340,10 @@ mod tests {
                 })
             ));
         }
-        assert!(!spi.shared.outstanding.try_acquire(1), "pending event keeps its weight");
+        assert!(
+            !spi.shared.outstanding.try_acquire(1),
+            "pending event keeps its weight"
+        );
         receiver.close().expect("close removes retained event");
         assert!(
             spi.shared.outstanding.try_acquire(weight.get()),

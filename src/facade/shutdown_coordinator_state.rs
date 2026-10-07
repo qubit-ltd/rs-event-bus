@@ -13,7 +13,8 @@ use std::task::Waker;
 use super::shutdown_result::ShutdownResult;
 use crate::spi::ShutdownMode;
 
-/// One shutdown attempt and its result shared by concurrent callers.
+/// Tracks shutdown attempts, observers, and retained results for concurrent
+/// callers.
 pub(super) struct ShutdownCoordinatorState {
     /// Whether a shutdown worker currently owns an attempt.
     pub(super) active: bool,

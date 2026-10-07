@@ -146,7 +146,10 @@ impl<T: 'static> PublishOptionsBuilder<T> {
     /// The updated builder.
     pub fn interceptor<F>(mut self, value: F) -> Self
     where
-        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError> + Send + Sync + 'static,
+        F: Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>
+            + Send
+            + Sync
+            + 'static,
     {
         self.options.interceptors.push(Arc::new(value));
         self
@@ -189,10 +192,10 @@ impl<T: 'static> PublishOptionsBuilder<T> {
 
 impl<T: 'static> Default for PublishOptionsBuilder<T> {
     /// Creates a builder with default retry and callback settings.
-    #[inline]
     ///
     /// # Returns
     /// A builder with no retry policy or callbacks configured.
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

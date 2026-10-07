@@ -48,7 +48,11 @@ impl DeliveryAttemptError {
     /// # Returns
     /// A classified attempt error that exposes `source` through its error
     /// chain.
-    pub fn new(kind: &'static str, retryable: Option<bool>, source: impl Error + Send + Sync + 'static) -> Self {
+    pub fn new(
+        kind: &'static str,
+        retryable: Option<bool>,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
         Self::Failure {
             kind,
             retryable,

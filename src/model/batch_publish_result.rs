@@ -73,9 +73,11 @@ impl BatchPublishResult {
             .filter(|item| match item {
                 Ok(receipt) => match receipt.acknowledgement() {
                     PublishAcknowledgement::Accepted { .. } => true,
-                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
-                        .iter()
-                        .any(|destination| matches!(destination.status(), AdmissionStatus::Accepted)),
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => {
+                        destinations.iter().any(|destination| {
+                            matches!(destination.status(), AdmissionStatus::Accepted)
+                        })
+                    }
                     PublishAcknowledgement::DroppedByInterceptor => false,
                 },
                 Err(_) => false,
@@ -89,7 +91,15 @@ impl BatchPublishResult {
     #[must_use]
     #[inline]
     pub fn dropped_count(&self) -> usize {
-        self.items.iter().filter(|item| matches!(item, Ok(receipt) if matches!(receipt.acknowledgement(), PublishAcknowledgement::DroppedByInterceptor))).count()
+        self.items
+            .iter()
+            .filter(|item| {
+                matches!(item, Ok(receipt) if matches!(
+                    receipt.acknowledgement(),
+                    PublishAcknowledgement::DroppedByInterceptor
+                ))
+            })
+            .count()
     }
     /// Counts failed publications and local receipts with at least one rejected
     /// destination. A mixed local receipt contributes to both accepted and
@@ -104,9 +114,11 @@ impl BatchPublishResult {
             .filter(|item| match item {
                 Err(_) => true,
                 Ok(receipt) => match receipt.acknowledgement() {
-                    PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
-                        .iter()
-                        .any(|destination| matches!(destination.status(), AdmissionStatus::Rejected(_))),
+                    PublishAcknowledgement::DestinationAdmissions(destinations) => {
+                        destinations.iter().any(|destination| {
+                            matches!(destination.status(), AdmissionStatus::Rejected(_))
+                        })
+                    }
                     _ => false,
                 },
             })

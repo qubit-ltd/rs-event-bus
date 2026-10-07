@@ -69,7 +69,11 @@ impl LocalQueueState {
     /// - `event`: event restored ahead of its same-key successors.
     pub(in crate::local) fn enqueue_front(&mut self, event: LocalEvent) {
         let key = event.ordering_key.clone();
-        self.lanes.entry(key.clone()).or_default().events.push_front(event);
+        self.lanes
+            .entry(key.clone())
+            .or_default()
+            .events
+            .push_front(event);
         self.pending_count += 1;
         self.schedule_lane_head(key);
     }
@@ -100,7 +104,11 @@ impl LocalQueueState {
     /// Events whose payload references must be released outside the queue lock.
     #[must_use = "Drop discarded event payloads after releasing the queue lock."]
     pub(in crate::local) fn clear_pending(&mut self) -> Vec<LocalEvent> {
-        let mut discarded = self.lanes.drain().flat_map(|(_, lane)| lane.events).collect::<Vec<_>>();
+        let mut discarded = self
+            .lanes
+            .drain()
+            .flat_map(|(_, lane)| lane.events)
+            .collect::<Vec<_>>();
         discarded.extend(self.in_flight.drain().map(|(_, flight)| flight.event));
         self.ready_lanes.clear();
         self.delayed_lanes.clear();
@@ -227,7 +235,10 @@ impl LocalQueueState {
             .peek()
             .is_some_and(|Reverse(head)| head.deadline <= now)
         {
-            let Reverse(head) = self.delayed_lanes.pop().expect("peeked delayed head exists");
+            let Reverse(head) = self
+                .delayed_lanes
+                .pop()
+                .expect("peeked delayed head exists");
             let is_live = self.lanes.get_mut(&head.key).is_some_and(|lane| {
                 if lane.version == head.version && lane.delayed_version == Some(head.version) {
                     lane.delayed_version = None;
@@ -250,9 +261,9 @@ impl LocalQueueState {
     /// generation.
     pub(in crate::local) fn discard_stale_delayed_heads(&mut self) {
         while self.delayed_lanes.peek().is_some_and(|Reverse(head)| {
-            self.lanes
-                .get(&head.key)
-                .is_none_or(|lane| lane.version != head.version || lane.delayed_version != Some(head.version))
+            self.lanes.get(&head.key).is_none_or(|lane| {
+                lane.version != head.version || lane.delayed_version != Some(head.version)
+            })
         }) {
             self.delayed_lanes.pop();
             self.delayed_stale_count -= 1;

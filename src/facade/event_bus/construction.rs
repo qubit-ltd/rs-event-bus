@@ -21,6 +21,7 @@ use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
 use crate::EventBusRegistry;
 use crate::ProviderError;
+use crate::error::SpiError;
 use crate::facade::LifecycleTracker;
 use crate::facade::PublishMetrics;
 use crate::facade::event_bus::internal::EventBusInner;
@@ -72,9 +73,10 @@ impl EventBus {
     /// Returns an error if the local provider cannot be registered or created,
     /// or if the supplied local configuration is invalid.
     pub fn local(config: LocalEventBusConfig) -> Result<Self, ProviderError> {
-        let registry = EventBusRegistry::with_local().map_err(|source| ProviderError::Resolution {
-            source: Box::new(source),
-        })?;
+        let registry =
+            EventBusRegistry::with_local().map_err(|source| ProviderError::Resolution {
+                source: Box::new(source),
+            })?;
         let config = EventBusConfig::default().with_provider_options(config.provider_options());
         registry.create(&config)
     }
@@ -97,7 +99,7 @@ impl EventBus {
     /// # Errors
     /// Returns the provider's capability call failure. A Rust panic from that
     /// call is reported as a terminal `provider_panicked` SPI error.
-    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Result<Self, crate::error::SpiError> {
+    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn EventBusSpi>) -> Result<Self, SpiError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
@@ -121,7 +123,7 @@ impl EventBus {
         provider_id: ProviderId,
         spi: Arc<dyn EventBusSpi>,
         config: EventBusFacadeConfig,
-    ) -> Result<Self, crate::error::SpiError> {
+    ) -> Result<Self, SpiError> {
         Self::with_config_and_clock(provider_id, spi, config, Arc::new(StdMonotonicClock::new()))
     }
 
@@ -147,11 +149,13 @@ impl EventBus {
         spi: Arc<dyn EventBusSpi>,
         config: EventBusFacadeConfig,
         clock: Arc<dyn MonotonicClock>,
-    ) -> Result<Self, crate::error::SpiError> {
-        let capabilities =
-            crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
-                spi.capabilities()
-            })?;
+    ) -> Result<Self, SpiError> {
+        let capabilities = crate::spi::panic_boundary::catch_spi_call(
+            provider_id.as_str(),
+            "capabilities",
+            None,
+            || spi.capabilities(),
+        )?;
         let scheduler = SyncDeliveryScheduler::new(config.delivery_scheduling());
         let subscription_worker_budget = Arc::new(SubscriptionWorkerBudget {
             active: AtomicUsize::new(0),
@@ -200,6 +204,8 @@ impl EventBus {
     #[must_use = "delivery metrics are the current bus diagnostics"]
     #[inline]
     pub fn delivery_metrics(&self) -> crate::facade::DeliveryMetricsSnapshot {
-        self.inner.delivery_metrics.snapshot(self.inner.delivery_gauges(None))
+        self.inner
+            .delivery_metrics
+            .snapshot(self.inner.delivery_gauges(None))
     }
 }

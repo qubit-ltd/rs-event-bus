@@ -91,7 +91,10 @@ where
                 seen_admission.set(seen_admission.get() || acknowledges_admission(acknowledgement));
             })
             .map_err(|error| {
-                seen_unknown.set(seen_unknown.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted);
+                seen_unknown.set(
+                    seen_unknown.get()
+                        || error.publish_effect() == PublishEffect::MayHaveBeenAccepted,
+                );
                 PublishError::from(error)
             });
     };
@@ -104,12 +107,20 @@ where
         .run(|| {
             spi_publish_sync(spi, provider_id, make_message())
                 .inspect(|acknowledgement| {
-                    seen_admission.set(seen_admission.get() || acknowledges_admission(acknowledgement));
+                    seen_admission
+                        .set(seen_admission.get() || acknowledges_admission(acknowledgement));
                 })
                 .map_err(|error| {
-                    seen_unknown
-                        .set(seen_unknown.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted);
-                    PublishAttemptError::new(error.kind(), error.retryable(), error.publish_effect(), error)
+                    seen_unknown.set(
+                        seen_unknown.get()
+                            || error.publish_effect() == PublishEffect::MayHaveBeenAccepted,
+                    );
+                    PublishAttemptError::new(
+                        error.kind(),
+                        error.retryable(),
+                        error.publish_effect(),
+                        error,
+                    )
                 })
         })
         .map(|success| success.value().clone())
@@ -182,7 +193,11 @@ where
         let message = make_message();
         let attempt = spi_publish(spi, provider_id, message);
         let seen_unknown = seen_unknown.clone();
-        Box::pin(publish_attempt(attempt, seen_unknown, seen_admission.clone()))
+        Box::pin(publish_attempt(
+            attempt,
+            seen_unknown,
+            seen_admission.clone(),
+        ))
     };
     retry
         .run(operation)
@@ -209,10 +224,17 @@ async fn spi_publish(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    let future = catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message))?;
+    let future = catch_spi_call(provider_id, "publish", Some(&resource), || {
+        spi.publish(message)
+    })?;
     match CatchUnwindFuture::new(future).await {
         Ok(result) => result,
-        Err(payload) => Err(provider_panic(provider_id, "publish", Some(&resource), payload)),
+        Err(payload) => Err(provider_panic(
+            provider_id,
+            "publish",
+            Some(&resource),
+            payload,
+        )),
     }
 }
 
@@ -234,7 +256,10 @@ fn spi_publish_sync(
     message: OutboundMessage,
 ) -> Result<PublishAcknowledgement, SpiError> {
     let resource = message.topic().as_str().to_owned();
-    catch_spi_call(provider_id, "publish", Some(&resource), || spi.publish(message)).and_then(identity)
+    catch_spi_call(provider_id, "publish", Some(&resource), || {
+        spi.publish(message)
+    })
+    .and_then(identity)
 }
 
 /// Builds an abort-on-exhaustion retry configuration for publication attempts.
@@ -257,16 +282,19 @@ fn retry_config(
     let mut builder = RetryConfig::<PublishAttemptError>::builder()
         .policy(policy.clone())
         .fallback(RetryFallback::Abort)
-        .rule(move |failure: &AttemptFailure<PublishAttemptError>, _: &RetryContext| {
-            let effect = failure
-                .as_error()
-                .map_or(PublishEffect::MayHaveBeenAccepted, PublishAttemptError::effect);
-            if !uncertainty_allows_retry(effect, duplicate_policy) {
-                RetryDecision::Abort
-            } else {
-                RetryDecision::UseDefault
-            }
-        });
+        .rule(
+            move |failure: &AttemptFailure<PublishAttemptError>, _: &RetryContext| {
+                let effect = failure.as_error().map_or(
+                    PublishEffect::MayHaveBeenAccepted,
+                    PublishAttemptError::effect,
+                );
+                if !uncertainty_allows_retry(effect, duplicate_policy) {
+                    RetryDecision::Abort
+                } else {
+                    RetryDecision::UseDefault
+                }
+            },
+        );
     if let Some(rule) = rule {
         builder = builder.shared_rule(rule.clone());
     }
@@ -296,11 +324,16 @@ fn retry_config(
 ///
 /// # Returns
 /// Whether the attempt may proceed to ordinary retry decisions.
+#[must_use]
 #[inline]
 pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateRiskPolicy) -> bool {
     matches!(
         (effect, policy),
-        (PublishEffect::NotAccepted, _) | (PublishEffect::MayHaveBeenAccepted, DuplicateRiskPolicy::AllowDuplicates)
+        (PublishEffect::NotAccepted, _)
+            | (
+                PublishEffect::MayHaveBeenAccepted,
+                DuplicateRiskPolicy::AllowDuplicates
+            )
     )
 }
 
@@ -344,7 +377,12 @@ where
         if error.publish_effect() == PublishEffect::MayHaveBeenAccepted {
             seen_unknown.store(true, Ordering::Release);
         }
-        PublishAttemptError::new(error.kind(), error.retryable(), error.publish_effect(), error)
+        PublishAttemptError::new(
+            error.kind(),
+            error.retryable(),
+            error.publish_effect(),
+            error,
+        )
     })
 }
 
@@ -355,11 +393,14 @@ where
 ///
 /// # Returns
 /// Whether a later infrastructure failure must retain admission evidence.
+#[must_use]
 #[inline]
 fn acknowledges_admission(acknowledgement: &PublishAcknowledgement) -> bool {
     matches!(
         acknowledgement.admission_outcome(),
-        AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Accepted(_) | AdmissionOutcome::PartiallyAccepted(_)
+        AdmissionOutcome::OpaqueAccepted
+            | AdmissionOutcome::Accepted(_)
+            | AdmissionOutcome::PartiallyAccepted(_)
     )
 }
 
@@ -394,8 +435,9 @@ mod tests {
     /// timeout.
     fn assert_hard_timeout_preserves_uncertainty(flow_timeout: bool) {
         let clock = ManualMonotonicClock::new_shared();
-        let rule: Arc<dyn RetryRule<PublishAttemptError>> =
-            Arc::new(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry);
+        let rule: Arc<dyn RetryRule<PublishAttemptError>> = Arc::new(
+            |_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry,
+        );
         let policy = RetryPolicy::builder().max_attempts(2).build().unwrap();
         let config = retry_config(&policy, Some(&rule), DuplicateRiskPolicy::Forbid).unwrap();
         let retry = AsyncRetry::new(&config).timer(clock.new_timer());

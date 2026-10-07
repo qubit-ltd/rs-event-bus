@@ -228,6 +228,7 @@ impl RequiredCapabilities {
     ///
     /// # Returns
     /// Stable labels for requirements the provider does not satisfy.
+    #[must_use]
     pub(crate) fn missing_from(self, capabilities: EventBusCapabilities) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if let Some(required) = self.payload
@@ -296,8 +297,14 @@ impl RequiredCapabilities {
 /// `true` when `actual` includes every behavior required by `required`.
 fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
     match required {
-        PayloadModes::Native => matches!(actual, PayloadModes::Native | PayloadModes::NativeAndEncoded),
-        PayloadModes::Encoded => matches!(actual, PayloadModes::Encoded | PayloadModes::NativeAndEncoded),
+        PayloadModes::Native => matches!(
+            actual,
+            PayloadModes::Native | PayloadModes::NativeAndEncoded
+        ),
+        PayloadModes::Encoded => matches!(
+            actual,
+            PayloadModes::Encoded | PayloadModes::NativeAndEncoded
+        ),
         PayloadModes::NativeAndEncoded => actual == PayloadModes::NativeAndEncoded,
     }
 }
@@ -317,7 +324,9 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
             actual,
             SettlementCapabilities::AcceptOnly | SettlementCapabilities::AcceptRetryReject
         ),
-        SettlementCapabilities::AcceptRetryReject => actual == SettlementCapabilities::AcceptRetryReject,
+        SettlementCapabilities::AcceptRetryReject => {
+            actual == SettlementCapabilities::AcceptRetryReject
+        }
     }
 }
 
@@ -332,7 +341,10 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
 fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> bool {
     match required {
         ReplayCapability::None => true,
-        ReplayCapability::Position => matches!(actual, ReplayCapability::Position | ReplayCapability::Timestamp),
+        ReplayCapability::Position => matches!(
+            actual,
+            ReplayCapability::Position | ReplayCapability::Timestamp
+        ),
         ReplayCapability::Timestamp => actual == ReplayCapability::Timestamp,
     }
 }

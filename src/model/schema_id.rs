@@ -14,6 +14,9 @@ use crate::util::validated_text::is_nonblank_without_controls;
 
 /// A validated schema identifier supplied by an application codec.
 ///
+/// An identifier must be nonblank, have no surrounding Unicode whitespace,
+/// and contain no control characters.
+///
 /// # Examples
 ///
 /// ```
@@ -40,6 +43,8 @@ impl SchemaId {
     /// # Panics
     /// Panics during constant evaluation, or at runtime, if the value is empty,
     /// has surrounding Unicode whitespace, or contains a control character.
+    ///
+    /// # Examples
     ///
     /// ```compile_fail
     /// use qubit_event_bus::model::SchemaId;

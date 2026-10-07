@@ -53,10 +53,11 @@ impl TopicAddress {
         Ok(Self(value.into()))
     }
 
-    /// Returns the topic name.
+    /// Borrows the validated topic name without allocating or copying it.
     ///
     /// # Returns
-    /// The validated topic name.
+    /// The validated topic name, which remains available for the lifetime of
+    /// the borrow.
     #[must_use]
     #[inline]
     pub fn as_str(&self) -> &str {

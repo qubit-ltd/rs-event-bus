@@ -9,6 +9,7 @@
 
 mod async_event_bus;
 mod async_subscription;
+mod async_subscription_run_state;
 mod diagnostic_observer_handle;
 mod event_bus;
 mod event_bus_facade_config;
@@ -31,6 +32,7 @@ mod wait_outcome;
 
 pub use async_event_bus::AsyncEventBus;
 pub use async_subscription::AsyncSubscription;
+pub use async_subscription_run_state::AsyncSubscriptionRunState;
 pub use diagnostic_observer_handle::DiagnosticObserverHandle;
 pub use event_bus::EventBus;
 pub use event_bus_facade_config::EventBusFacadeConfig;

@@ -20,7 +20,11 @@ use crate::model::SchemaId;
 /// ```
 /// use qubit_event_bus::error::CodecError;
 ///
-/// let error = CodecError::PayloadTooLarge { direction: qubit_event_bus::model::PayloadDirection::Publish, actual: 128, limit: 64 };
+/// let error = CodecError::PayloadTooLarge {
+///     direction: qubit_event_bus::model::PayloadDirection::Publish,
+///     actual: 128,
+///     limit: 64,
+/// };
 /// assert!(matches!(error, CodecError::PayloadTooLarge { actual: 128, limit: 64, .. }));
 /// ```
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +32,9 @@ use crate::model::SchemaId;
 #[must_use]
 pub enum CodecError {
     /// Encoded payload exceeds the facade's configured byte limit.
-    #[error("{direction:?} encoded event payload is {actual} bytes, exceeding the {limit}-byte limit")]
+    #[error(
+        "{direction:?} encoded event payload is {actual} bytes, exceeding the {limit}-byte limit"
+    )]
     PayloadTooLarge {
         /// Boundary whose positive byte limit was exceeded.
         direction: PayloadDirection,

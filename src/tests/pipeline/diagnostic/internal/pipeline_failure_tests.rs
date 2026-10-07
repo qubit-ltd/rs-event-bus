@@ -20,9 +20,21 @@ fn test_failure_preserves_origin_cause_and_admission_evidence() {
 
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
     assert_eq!(failure.publish_effect(), PublishEffect::MayHaveBeenAccepted);
-    assert!(matches!(failure.error(), EventBusError::Publish(PublishError::Closed)));
-    assert!(std::error::Error::source(&failure).is_some());
+    assert!(
+        matches!(
+            failure.error(),
+            EventBusError::Publish(PublishError::Closed)
+        ),
+        "the failure should retain the original publish error"
+    );
+    assert!(
+        std::error::Error::source(&failure).is_some(),
+        "the failure should expose its cause"
+    );
 
     let error = failure.into_error();
-    assert!(matches!(error, EventBusError::Publish(PublishError::Closed)));
+    assert!(
+        matches!(error, EventBusError::Publish(PublishError::Closed)),
+        "converting the failure should preserve the publish error"
+    );
 }

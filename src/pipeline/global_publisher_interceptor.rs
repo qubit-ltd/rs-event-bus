@@ -94,9 +94,11 @@ mod tests {
 
     #[test]
     fn test_interceptor_converts_string_panic_to_structured_error() {
-        let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
-            panic!("publisher middleware failed")
-        });
+        let interceptor = GlobalPublisherInterceptor::new(
+            |_: &mut PublishMetadata| -> Result<bool, PublishError> {
+                panic!("publisher middleware failed")
+            },
+        );
         let error = interceptor
             .apply(&mut PublishMetadata::default())
             .expect_err("panic should become a structured error");
@@ -111,9 +113,9 @@ mod tests {
 
     #[test]
     fn test_interceptor_handles_non_string_panic_payload() {
-        let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
-            panic_any(17_u8)
-        });
+        let interceptor = GlobalPublisherInterceptor::new(
+            |_: &mut PublishMetadata| -> Result<bool, PublishError> { panic_any(17_u8) },
+        );
         let error = interceptor
             .apply(&mut PublishMetadata::default())
             .expect_err("panic should become a structured error");

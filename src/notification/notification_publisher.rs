@@ -98,7 +98,12 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     ///
     /// # Errors
     /// Returns an I/O error if the worker thread cannot be started.
-    pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize, observer: F) -> io::Result<Self>
+    pub fn new<F>(
+        bus: EventBus,
+        topic: Topic<T>,
+        capacity: NonZeroUsize,
+        observer: F,
+    ) -> io::Result<Self>
     where
         F: Fn(NotificationOutcome) + Send + Sync + 'static,
     {
@@ -270,7 +275,11 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.reject_worker_thread()?;
         let started = Instant::now();
-        let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         drop(sender);
         let (lock, changed) = &*self.state;
         let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -291,7 +300,9 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         self.finish_join(timeout, started)?;
         match exit {
             Some(WorkerExit::Drained) => Ok(()),
-            Some(WorkerExit::Panicked) | None => Err(io::Error::other("notification publisher worker panicked")),
+            Some(WorkerExit::Panicked) | None => {
+                Err(io::Error::other("notification publisher worker panicked"))
+            }
         }
     }
 
@@ -336,10 +347,17 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             }
             match timeout {
                 None => thread::sleep(Duration::from_millis(1)),
-                Some(limit) => thread::sleep(remaining_timeout(limit, started)?.min(Duration::from_millis(1))),
+                Some(limit) => {
+                    thread::sleep(remaining_timeout(limit, started)?.min(Duration::from_millis(1)))
+                }
             }
         }
-        if let Some(worker) = self.worker.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             worker
                 .join()
                 .map_err(|_| io::Error::other("notification publisher worker panicked"))?;
@@ -360,14 +378,20 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 /// # Errors
 /// Returns `TimedOut` when the deadline has elapsed.
 fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> {
-    limit
-        .checked_sub(started.elapsed())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "notification publisher close timed out"))
+    limit.checked_sub(started.elapsed()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "notification publisher close timed out",
+        )
+    })
 }
 
 impl<T: Send + Sync + 'static> Drop for NotificationPublisher<T> {
     /// Closes queue admission without waiting for worker completion.
     fn drop(&mut self) {
-        self.sender.get_mut().unwrap_or_else(PoisonError::into_inner).take();
+        self.sender
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 }

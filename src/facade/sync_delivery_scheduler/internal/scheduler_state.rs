@@ -16,7 +16,8 @@ use qubit_id::Id;
 #[derive(Default)]
 pub(in crate::facade::sync_delivery_scheduler) struct SchedulerState {
     /// Jobs already holding a core execution grant; bounded by H.
-    pub(in crate::facade::sync_delivery_scheduler) jobs: VecDeque<Box<dyn FnOnce() + Send + 'static>>,
+    pub(in crate::facade::sync_delivery_scheduler) jobs:
+        VecDeque<Box<dyn FnOnce() + Send + 'static>>,
     /// Graceful shutdown keeps dispatching already owned deliveries.
     pub(in crate::facade::sync_delivery_scheduler) draining: bool,
     /// Immediate shutdown permanently strengthens a graceful request.

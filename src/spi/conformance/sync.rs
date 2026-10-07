@@ -73,7 +73,11 @@ where
 /// # Panics
 /// Panics if the provider factory or an SPI method unwinds.
 #[must_use = "Inspect the conformance results."]
-pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: ConformanceProfile) -> ConformanceReport
+pub fn run_sync_with_profile<F>(
+    factory: F,
+    hooks: &ConformanceHooks,
+    profile: ConformanceProfile,
+) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
@@ -84,7 +88,11 @@ where
         case_id: "capability-payload-mode".into(),
     });
     for (index, (case_id, payload)) in payloads.into_iter().enumerate() {
-        let spi = if index == 0 { capability_spi.clone() } else { factory() };
+        let spi = if index == 0 {
+            capability_spi.clone()
+        } else {
+            factory()
+        };
         let capabilities = spi.capabilities();
         let mut subscription = match spi.subscribe(probe_request(1, capabilities.durability())) {
             Ok(subscription) => {
@@ -134,27 +142,39 @@ where
                     } else {
                         ConformanceCase::Failed {
                             case_id: "receive-payload".into(),
-                            detail: "received payload mode or type does not match the declaration".into(),
+                            detail: "received payload mode or type does not match the declaration"
+                                .into(),
                         }
                     });
                     let token = message.take_settlement();
-                    report.push(settlement_case(capabilities.settlement(), token.as_ref(), |token| {
-                        subscription.settle(token, DeliveryDisposition::Accept)?;
-                        subscription.settle(token, DeliveryDisposition::Accept)
-                    }));
+                    report.push(settlement_case(
+                        capabilities.settlement(),
+                        token.as_ref(),
+                        |token| {
+                            subscription.settle(token, DeliveryDisposition::Accept)?;
+                            subscription.settle(token, DeliveryDisposition::Accept)
+                        },
+                    ));
                     report.push(match token.as_ref() {
-                        Some(token) if capabilities.settlement() != SettlementCapabilities::None => {
+                        Some(token)
+                            if capabilities.settlement() != SettlementCapabilities::None =>
+                        {
                             match subscription.settle(token, DeliveryDisposition::Reject) {
-                                Err(error) if error.kind() == "invalid_settlement_token" => ConformanceCase::Passed {
-                                    case_id: "settlement-conflicting-disposition".into(),
-                                },
+                                Err(error) if error.kind() == "invalid_settlement_token" => {
+                                    ConformanceCase::Passed {
+                                        case_id: "settlement-conflicting-disposition".into(),
+                                    }
+                                }
                                 Err(error) => ConformanceCase::Failed {
                                     case_id: "settlement-conflicting-disposition".into(),
-                                    detail: format!("conflicting settlement returned the wrong error: {error}"),
+                                    detail: format!(
+                                        "conflicting settlement returned the wrong error: {error}"
+                                    ),
                                 },
                                 Ok(()) => ConformanceCase::Failed {
                                     case_id: "settlement-conflicting-disposition".into(),
-                                    detail: "provider accepted a conflicting terminal disposition".into(),
+                                    detail: "provider accepted a conflicting terminal disposition"
+                                        .into(),
                                 },
                             }
                         }
@@ -243,12 +263,18 @@ where
             hooks.settlement.as_ref(),
         );
     }
-    report.not_applicable("receive-cancellation", "synchronous receive has no cancellable future");
+    report.not_applicable(
+        "receive-cancellation",
+        "synchronous receive has no cancellable future",
+    );
     report.not_applicable(
         "settlement-cancellation",
         "synchronous settlement has no cancellable future",
     );
-    report.not_applicable("close-cancellation", "synchronous close has no cancellable future");
+    report.not_applicable(
+        "close-cancellation",
+        "synchronous close has no cancellable future",
+    );
     report.not_applicable(
         "shutdown-cancellation",
         "synchronous shutdown has no cancellable future",
@@ -257,7 +283,11 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Ephemeral)
     {
-        push_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref());
+        push_hook(
+            &mut report,
+            "ephemeral-cleanup",
+            hooks.ephemeral_cleanup.as_ref(),
+        );
     } else {
         report.push(ConformanceCase::Skipped {
             case_id: "ephemeral-cleanup".into(),

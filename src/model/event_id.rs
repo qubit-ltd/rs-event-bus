@@ -66,7 +66,11 @@ impl EventId {
     /// Returns [`EventIdGenerationError`] if the operating-system random source
     /// cannot provide the bytes needed by the UUID generator.
     pub fn generate() -> Result<Self, EventIdGenerationError> {
-        Self::generate_with(|| UuidV4Generator::new().generate().map(|uuid| uuid.to_string()))
+        Self::generate_with(|| {
+            UuidV4Generator::new()
+                .generate()
+                .map(|uuid| uuid.to_string())
+        })
     }
 
     /// Returns the original event identifier.
@@ -112,7 +116,8 @@ mod tests {
     /// Confirms generator failures stay recoverable and preserve their source.
     #[test]
     fn test_generate_with_preserves_generator_failure_source() {
-        let result = EventId::generate_with(|| Err(IdGenerationError::HostOutOfRange { host: 1, max: 0 }));
+        let result =
+            EventId::generate_with(|| Err(IdGenerationError::HostOutOfRange { host: 1, max: 0 }));
         let error = result.expect_err("the injected generator should fail");
         let source = Error::source(&error).expect("wrapper should expose generator error");
         assert!(source.to_string().contains("host id 1 is out of range"));

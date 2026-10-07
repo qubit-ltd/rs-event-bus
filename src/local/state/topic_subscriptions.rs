@@ -32,7 +32,11 @@ impl TopicSubscriptions {
     /// Strong owners of live queues ordered by subscription ID.
     pub(in crate::local) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
         self.queues.retain(|_, queue| queue.strong_count() > 0);
-        let queues = self.queues.values().filter_map(Weak::upgrade).collect::<Vec<_>>();
+        let queues = self
+            .queues
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
         if queues.is_empty() {
             self.payload_type_id = None;
         }

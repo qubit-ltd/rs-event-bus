@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use qubit_id::Id;
 
@@ -16,11 +17,14 @@ use super::super::super::async_event_bus::AsyncEventBusInner;
 use super::OwnedDeliveryTask;
 use super::PendingDelivery;
 use super::SessionSignals;
+use crate::codec::EventCodec;
 use crate::facade::async_subscription::SharedAsyncHandler;
+use crate::facade::internal::DeliveryMetrics;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
 use crate::model::Topic;
 use crate::spi::AsyncEventSubscriptionSpi;
+use crate::spi::DurabilityCapability;
 
 /// Runtime state for one typed subscription, including the receiver and all
 /// delivery futures that have been accepted by the facade.
@@ -31,7 +35,7 @@ pub(in crate::facade) struct AsyncSession<T: 'static> {
     /// Shared bus lifecycle, tracker, provider, and pipelines.
     pub(in crate::facade) inner: Arc<AsyncEventBusInner>,
     /// Subscription counters retained independently by the public handle.
-    pub(in crate::facade) metrics: Arc<crate::facade::internal::DeliveryMetrics>,
+    pub(in crate::facade) metrics: Arc<DeliveryMetrics>,
     /// Bus-local subscription identity.
     pub(in crate::facade) id: Id,
     /// Logical subscriber identity used in SPI diagnostics.
@@ -39,7 +43,7 @@ pub(in crate::facade) struct AsyncSession<T: 'static> {
     /// Typed topic receiving provider messages.
     pub(in crate::facade) topic: Topic<T>,
     /// Codec retained for the subscription lifetime, when configured.
-    pub(in crate::facade) codec: Option<Arc<dyn crate::codec::EventCodec<T>>>,
+    pub(in crate::facade) codec: Option<Arc<dyn EventCodec<T>>>,
     /// Handler, retry, settlement, and provider policies.
     pub(in crate::facade) options: SubscribeOptions<T>,
     /// Single-owner receiver, retained until successful close.
@@ -78,12 +82,14 @@ impl<T: 'static> Drop for AsyncSession<T> {
     /// dropped.
     fn drop(&mut self) {
         self.inner.scheduler.stop_subscription(self.id);
-        let abandoned =
-            self.buffered.len() + self.tasks.len() + self.completed.len() + self.completed_during_settlement.len();
-        if self.inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
+        let abandoned = self.buffered.len()
+            + self.tasks.len()
+            + self.completed.len()
+            + self.completed_during_settlement.len();
+        if self.inner.capabilities.durability() == DurabilityCapability::Ephemeral {
             self.inner
                 .abandoned_deliveries
-                .fetch_add(abandoned as u64, std::sync::atomic::Ordering::AcqRel);
+                .fetch_add(abandoned as u64, Ordering::AcqRel);
             for _ in 0..abandoned {
                 self.metrics.record_abandoned_ephemeral();
             }

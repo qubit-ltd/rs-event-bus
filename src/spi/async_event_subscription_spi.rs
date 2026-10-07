@@ -62,7 +62,10 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     ///
     /// # Errors
     /// The future resolves with a structured provider receive failure.
-    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>>;
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>>;
 
     /// Applies a terminal disposition to a provider-issued token.
     ///

@@ -211,7 +211,10 @@ impl PublishReceipt {
     /// [`AdmissionCheckError::NoAcceptedDestination`] if none accepted, or
     /// [`AdmissionCheckError::RejectedDestinations`] when the strict
     /// requirement observes any rejection.
-    pub fn check_admission(&self, requirement: AdmissionRequirement) -> Result<(), AdmissionCheckError> {
+    pub fn check_admission(
+        &self,
+        requirement: AdmissionRequirement,
+    ) -> Result<(), AdmissionCheckError> {
         match self.admission_outcome() {
             AdmissionOutcome::OpaqueAccepted => {
                 if requirement == AdmissionRequirement::ProviderOrDestinationAccepted {

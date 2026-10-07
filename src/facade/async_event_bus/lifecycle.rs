@@ -63,9 +63,12 @@ impl AsyncEventBus {
                 operation: "wait_for_received_deliveries",
             });
         }
-        wait_until(&self.inner.tracker.signal, self.inner.timer.as_ref(), timeout, || {
-            self.inner.tracker.is_idle(topic.name())
-        })
+        wait_until(
+            &self.inner.tracker.signal,
+            self.inner.timer.as_ref(),
+            timeout,
+            || self.inner.tracker.is_idle(topic.name()),
+        )
         .await
     }
 
@@ -104,7 +107,10 @@ impl AsyncEventBus {
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {
-            return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
+            return Err(LifecycleError::WouldDeadlock {
+                operation: "shutdown",
+            }
+            .into());
         }
         if mode == ShutdownMode::Immediate {
             self.inner.shutdown_immediate.store(true, Ordering::Release);
@@ -127,7 +133,14 @@ impl AsyncEventBus {
         };
         let mut deadline = None;
         loop {
-            let is_closed = { *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed };
+            let is_closed = {
+                *self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    == BusState::Closed
+            };
             if is_closed {
                 if let Some(errors) = self.inner.close_errors_snapshot() {
                     return Err(ShutdownError::SubscriptionClose(errors));
@@ -141,7 +154,12 @@ impl AsyncEventBus {
             }
             if deadline.is_none() {
                 deadline = timeout
-                    .map(|timeout| self.inner.timer.after(timeout).map_err(LifecycleError::from))
+                    .map(|timeout| {
+                        self.inner
+                            .timer
+                            .after(timeout)
+                            .map_err(LifecycleError::from)
+                    })
                     .transpose()?;
             }
             if self
@@ -151,7 +169,11 @@ impl AsyncEventBus {
                 .is_ok()
             {
                 let _leader = ShutdownLeaderGuard::new(self.inner.clone());
-                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closing;
+                *self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = BusState::Closing;
                 let requested_mode = self.requested_shutdown_mode(mode);
                 let controls: Vec<_> = self
                     .inner
@@ -165,15 +187,19 @@ impl AsyncEventBus {
                     control.stop(requested_mode);
                 }
                 let close = self.close_unstarted_subscriptions(requested_mode);
-                if await_until_deadline(close, deadline.as_mut()).await?.is_none() {
+                if await_until_deadline(close, deadline.as_mut())
+                    .await?
+                    .is_none()
+                {
                     return Err(ShutdownError::TimedOut {
                         timeout: timeout.expect("a deadline exists for graceful shutdown"),
                     });
                 }
-                let stopped = wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), || {
-                    self.inner.tracker.runners_stopped()
-                })
-                .await?;
+                let stopped =
+                    wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), || {
+                        self.inner.tracker.runners_stopped()
+                    })
+                    .await?;
                 if stopped == WaitOutcome::TimedOut {
                     return Err(ShutdownError::TimedOut {
                         timeout: timeout.expect("a deadline exists for graceful shutdown"),
@@ -181,12 +207,16 @@ impl AsyncEventBus {
                 }
                 let outcome = loop {
                     let requested_mode = self.requested_shutdown_mode(mode);
-                    let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
-                        self.inner.spi.shutdown(requested_mode)
-                    })?;
-                    let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
+                    let shutdown =
+                        catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
+                            self.inner.spi.shutdown(requested_mode)
+                        })?;
+                    let shutdown =
+                        catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
                     if requested_mode == ShutdownMode::Immediate {
-                        let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
+                        let Some(outcome) =
+                            await_until_deadline(shutdown, deadline.as_mut()).await?
+                        else {
                             return Err(ShutdownError::TimedOut {
                                 timeout: timeout.expect("a deadline exists for graceful shutdown"),
                             });
@@ -221,16 +251,21 @@ impl AsyncEventBus {
                     .shutdown_report
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = Some(report);
-                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
+                *self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
                 if let Some(errors) = self.inner.close_errors_snapshot() {
                     return Err(ShutdownError::SubscriptionClose(errors));
                 }
                 return Ok(report);
             }
-            let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
-                !self.inner.shutdown_active.load(Ordering::Acquire)
-            })
-            .await?;
+            let stopped =
+                wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
+                    !self.inner.shutdown_active.load(Ordering::Acquire)
+                })
+                .await?;
             if stopped == WaitOutcome::TimedOut {
                 return Err(ShutdownError::TimedOut {
                     timeout: timeout.expect("a deadline exists for graceful shutdown"),
@@ -248,7 +283,9 @@ impl AsyncEventBus {
     /// Immediate mode if any caller requested it, otherwise `requested`.
     #[inline]
     fn requested_shutdown_mode(&self, requested: ShutdownMode) -> ShutdownMode {
-        if requested == ShutdownMode::Immediate || self.inner.shutdown_immediate.load(Ordering::Acquire) {
+        if requested == ShutdownMode::Immediate
+            || self.inner.shutdown_immediate.load(Ordering::Acquire)
+        {
             ShutdownMode::Immediate
         } else {
             requested

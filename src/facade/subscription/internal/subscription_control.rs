@@ -95,6 +95,7 @@ impl SubscriptionControl {
     /// # Returns
     /// Some canonical first cause after failure, or None while no terminal
     /// cause exists.
+    #[must_use = "observe the retained terminal receive cause"]
     pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.terminal_failure
             .lock()
@@ -120,7 +121,10 @@ impl SubscriptionControl {
     /// `true` when the subscription has no terminal failure; `false` otherwise.
     #[must_use = "observe whether delivery work was admitted"]
     pub(in crate::facade) fn try_start(&self) -> bool {
-        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.terminal_failure().is_none()
     }
 
@@ -135,8 +139,14 @@ impl SubscriptionControl {
     /// True only for the first cause; callers must fence scheduling before
     /// diagnostics.
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
-        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut stored = self
+            .terminal_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let first = stored.is_none();
         if first {
             *stored = Some(Arc::new(reason));
@@ -155,7 +165,10 @@ impl SubscriptionControl {
     /// True when this invocation is admitted; the lock is released before user
     /// code.
     pub(in crate::facade) fn try_start_handler(&self, allowed: impl FnOnce(bool) -> bool) -> bool {
-        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.terminal_failure().is_none() && allowed(self.is_cancelled())
     }
 
@@ -173,7 +186,10 @@ impl SubscriptionControl {
     /// Publishes cancellation under the same short gate as actual handler
     /// admission. The gate is never held across user callbacks.
     pub(in crate::facade) fn request_cancel(&self) {
-        let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let _start = self
+            .start_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.cancelled.store(true, Ordering::Release);
     }
 
@@ -182,7 +198,10 @@ impl SubscriptionControl {
     /// # Parameters
     /// - `error`: canonical provider close failure to retain.
     pub(in crate::facade) fn record_close_error(&self, error: Arc<SubscriptionCloseFailure>) {
-        let mut slot = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = self
+            .close_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if slot.is_none() {
             *slot = Some(error);
         }

@@ -21,10 +21,11 @@ use super::SubscriberId;
 /// use qubit_event_bus::model::DeliveryContext;
 /// use qubit_event_bus::model::ProviderId;
 /// use qubit_event_bus::model::SubscriberId;
+/// use qubit_id::Id;
 ///
 /// let context = DeliveryContext::new(
 ///     ProviderId::new("local").unwrap(),
-///     qubit_id::Id::new(1),
+///     Id::new(1),
 ///     SubscriberId::new("audit").unwrap(),
 /// );
 /// assert_eq!(context.provider_id().as_str(), "local");

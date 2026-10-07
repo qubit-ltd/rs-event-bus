@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::any::TypeId;
+use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -67,6 +68,9 @@ impl CodecRegistry {
     ///
     /// The codec is shared with future lookups through [`Self::get`].
     ///
+    /// # Returns
+    /// Returns `Ok(())` after registration succeeds.
+    ///
     /// # Errors
     /// Returns [`CodecRegistrationError::DuplicatePayloadType`] when a codec
     /// for `T` is already registered; the existing codec remains unchanged.
@@ -77,7 +81,7 @@ impl CodecRegistry {
         let type_id = TypeId::of::<T>();
         if self.codecs.contains_key(&type_id) {
             return Err(CodecRegistrationError::DuplicatePayloadType {
-                type_name: std::any::type_name::<T>(),
+                type_name: type_name::<T>(),
             });
         }
         self.codecs.insert(type_id, Box::new(codec));
@@ -86,19 +90,25 @@ impl CodecRegistry {
 
     /// Replaces the codec registered for `T`.
     ///
+    /// # Type Parameters
+    /// * `T` — payload type whose registered codec is replaced.
+    ///
     /// # Parameters
     /// * `codec` — shared codec implementation to retain for `T`.
     ///
     /// # Returns
-    /// The previous codec, or `None` when `T` was not previously registered.
+    /// The previous codec when `T` was registered, or `None` when this call
+    /// adds the first codec for `T`.
     pub fn replace<T: Send + Sync + 'static>(
         &mut self,
         codec: Arc<dyn EventCodec<T>>,
     ) -> Option<Arc<dyn EventCodec<T>>> {
-        self.codecs.insert(TypeId::of::<T>(), Box::new(codec)).map(|previous| {
-            *previous
-                .downcast::<Arc<dyn EventCodec<T>>>()
-                .expect("codec registry TypeId matches stored codec type")
-        })
+        self.codecs
+            .insert(TypeId::of::<T>(), Box::new(codec))
+            .map(|previous| {
+                *previous
+                    .downcast::<Arc<dyn EventCodec<T>>>()
+                    .expect("codec registry TypeId matches stored codec type")
+            })
     }
 }

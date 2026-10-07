@@ -96,8 +96,15 @@ impl<T: 'static> EventEnvelope<T> {
     ///
     /// # Errors
     /// Returns [`EventIdGenerationError`] if UUID generation fails.
-    pub fn from_shared_payload(topic: Topic<T>, payload: Arc<T>) -> Result<Self, EventIdGenerationError> {
-        Ok(Self::with_id_and_shared_payload(topic, payload, EventId::generate()?))
+    pub fn from_shared_payload(
+        topic: Topic<T>,
+        payload: Arc<T>,
+    ) -> Result<Self, EventIdGenerationError> {
+        Ok(Self::with_id_and_shared_payload(
+            topic,
+            payload,
+            EventId::generate()?,
+        ))
     }
 
     /// Creates an event around an existing shared payload and validated ID.

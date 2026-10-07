@@ -67,6 +67,62 @@ impl LocalEventBusConfig {
         }
     }
 
+    /// Parses and validates local settings from a registry configuration.
+    ///
+    /// # Parameters
+    /// - `config`: registry configuration containing namespaced provider
+    ///   options.
+    ///
+    /// # Returns
+    /// Validated local transport settings, using defaults for omitted options.
+    ///
+    /// # Errors
+    /// Returns [`ConfigurationError::InvalidField`] for unknown keys,
+    /// malformed values, or zero limits.
+    pub(crate) fn from_provider_options(
+        config: &EventBusConfig,
+    ) -> Result<Self, ConfigurationError> {
+        let mut local = Self::default();
+        for (key, value) in config.provider_options() {
+            match key.as_str() {
+                QUEUE_CAPACITY_OPTION => {
+                    local.queue_capacity =
+                        value
+                            .parse()
+                            .map_err(|_| ConfigurationError::InvalidField {
+                                field: QUEUE_CAPACITY_OPTION,
+                                message: "must be a positive integer".into(),
+                            })?;
+                }
+                MAX_TOTAL_OUTSTANDING_OPTION => {
+                    local.max_total_outstanding =
+                        value
+                            .parse()
+                            .map_err(|_| ConfigurationError::InvalidField {
+                                field: MAX_TOTAL_OUTSTANDING_OPTION,
+                                message: "must be a positive integer".into(),
+                            })?;
+                }
+                MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION => {
+                    local.max_total_outstanding_weight_bytes = Some(value.parse().map_err(
+                        |_| ConfigurationError::InvalidField {
+                            field: MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION,
+                            message: "must be a positive integer".into(),
+                        },
+                    )?);
+                }
+                _ => {
+                    return Err(ConfigurationError::InvalidField {
+                        field: "provider_options",
+                        message: format!("unknown local provider option `{key}`").into(),
+                    });
+                }
+            }
+        }
+        local.validate()?;
+        Ok(local)
+    }
+
     /// Returns the per-subscription pending queue limit.
     ///
     /// # Returns
@@ -119,7 +175,10 @@ impl LocalEventBusConfig {
     #[must_use]
     pub fn provider_options(&self) -> ProviderOptions {
         let mut options: ProviderOptions = [
-            (QUEUE_CAPACITY_OPTION.to_owned(), self.queue_capacity.to_string()),
+            (
+                QUEUE_CAPACITY_OPTION.to_owned(),
+                self.queue_capacity.to_string(),
+            ),
             (
                 MAX_TOTAL_OUTSTANDING_OPTION.to_owned(),
                 self.max_total_outstanding.to_string(),
@@ -127,7 +186,10 @@ impl LocalEventBusConfig {
         ]
         .into();
         if let Some(weight) = self.max_total_outstanding_weight_bytes {
-            options.insert(MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION.to_owned(), weight.to_string());
+            options.insert(
+                MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION.to_owned(),
+                weight.to_string(),
+            );
         }
         options
     }
@@ -183,53 +245,6 @@ impl LocalEventBusConfig {
             });
         }
         Ok(())
-    }
-
-    /// Parses and validates local settings from a registry configuration.
-    ///
-    /// # Parameters
-    /// - `config`: registry configuration containing namespaced provider
-    ///   options.
-    ///
-    /// # Returns
-    /// Validated local transport settings, using defaults for omitted options.
-    ///
-    /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] for unknown keys,
-    /// malformed values, or zero limits.
-    pub(crate) fn from_provider_options(config: &EventBusConfig) -> Result<Self, ConfigurationError> {
-        let mut local = Self::default();
-        for (key, value) in config.provider_options() {
-            match key.as_str() {
-                QUEUE_CAPACITY_OPTION => {
-                    local.queue_capacity = value.parse().map_err(|_| ConfigurationError::InvalidField {
-                        field: QUEUE_CAPACITY_OPTION,
-                        message: "must be a positive integer".into(),
-                    })?;
-                }
-                MAX_TOTAL_OUTSTANDING_OPTION => {
-                    local.max_total_outstanding = value.parse().map_err(|_| ConfigurationError::InvalidField {
-                        field: MAX_TOTAL_OUTSTANDING_OPTION,
-                        message: "must be a positive integer".into(),
-                    })?;
-                }
-                MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION => {
-                    local.max_total_outstanding_weight_bytes =
-                        Some(value.parse().map_err(|_| ConfigurationError::InvalidField {
-                            field: MAX_TOTAL_OUTSTANDING_WEIGHT_BYTES_OPTION,
-                            message: "must be a positive integer".into(),
-                        })?);
-                }
-                _ => {
-                    return Err(ConfigurationError::InvalidField {
-                        field: "provider_options",
-                        message: format!("unknown local provider option `{key}`").into(),
-                    });
-                }
-            }
-        }
-        local.validate()?;
-        Ok(local)
     }
 }
 

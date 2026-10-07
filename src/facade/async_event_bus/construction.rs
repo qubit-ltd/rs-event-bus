@@ -21,6 +21,8 @@ use crate::AsyncEventBus;
 use crate::AsyncEventBusRegistry;
 use crate::EventBusConfig;
 use crate::EventBusFacadeConfig;
+use crate::error::ProviderError;
+use crate::error::SpiError;
 use crate::facade::PublishMetrics;
 use crate::facade::async_event_bus::AsyncEventBusInner;
 use crate::facade::async_event_bus::AsyncSignal;
@@ -32,6 +34,7 @@ use crate::model::ProviderId;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::EventBusCapabilities;
+use crate::spi::panic_boundary::catch_spi_call;
 
 impl AsyncEventBus {
     /// Returns the provider capability snapshot captured during construction.
@@ -63,9 +66,9 @@ impl AsyncEventBus {
     ///
     /// # Errors
     /// Returns an error when local provider resolution or construction fails.
-    pub async fn local(config: LocalEventBusConfig) -> Result<Self, crate::error::ProviderError> {
+    pub async fn local(config: LocalEventBusConfig) -> Result<Self, ProviderError> {
         let registry =
-            AsyncEventBusRegistry::with_local().map_err(|source| crate::error::ProviderError::Resolution {
+            AsyncEventBusRegistry::with_local().map_err(|source| ProviderError::Resolution {
                 source: Box::new(source),
             })?;
         registry
@@ -86,7 +89,10 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns the provider's capability call failure. A Rust panic from that
     /// call is reported as a terminal `provider_panicked` SPI error.
-    pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Result<Self, crate::error::SpiError> {
+    pub fn from_spi(
+        provider_id: ProviderId,
+        spi: Arc<dyn AsyncEventBusSpi>,
+    ) -> Result<Self, SpiError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
 
@@ -110,8 +116,13 @@ impl AsyncEventBus {
         provider_id: ProviderId,
         spi: Arc<dyn AsyncEventBusSpi>,
         config: EventBusFacadeConfig,
-    ) -> Result<Self, crate::error::SpiError> {
-        Self::with_config_and_timer(provider_id, spi, config, StdMonotonicClock::new().new_timer())
+    ) -> Result<Self, SpiError> {
+        Self::with_config_and_timer(
+            provider_id,
+            spi,
+            config,
+            StdMonotonicClock::new().new_timer(),
+        )
     }
 
     /// Creates a facade using the supplied runtime-neutral timer for deadlines
@@ -132,7 +143,7 @@ impl AsyncEventBus {
         provider_id: ProviderId,
         spi: Arc<dyn AsyncEventBusSpi>,
         timer: Arc<dyn Timer>,
-    ) -> Result<Self, crate::error::SpiError> {
+    ) -> Result<Self, SpiError> {
         Self::with_config_and_timer(provider_id, spi, EventBusFacadeConfig::default(), timer)
     }
 
@@ -155,11 +166,10 @@ impl AsyncEventBus {
         spi: Arc<dyn AsyncEventBusSpi>,
         config: EventBusFacadeConfig,
         timer: Arc<dyn Timer>,
-    ) -> Result<Self, crate::error::SpiError> {
-        let capabilities =
-            crate::spi::panic_boundary::catch_spi_call(provider_id.as_str(), "capabilities", None, || {
-                spi.capabilities()
-            })?;
+    ) -> Result<Self, SpiError> {
+        let capabilities = catch_spi_call(provider_id.as_str(), "capabilities", None, || {
+            spi.capabilities()
+        })?;
         let scheduler = Arc::new(DeliverySchedulerCore::new(config.delivery_scheduling()));
         Ok(Self {
             inner: Arc::new(AsyncEventBusInner {

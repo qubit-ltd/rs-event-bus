@@ -107,7 +107,9 @@ impl EventBusSpi for FakeBus {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let mut state = self.state.lock().expect("test state poisoned");
         state.calls += 1;
-        state.published_headers.push(message.headers().get("typed").cloned());
+        state
+            .published_headers
+            .push(message.headers().get("typed").cloned());
         state.payload_was_encoded = Some(matches!(message.payload(), TransportPayload::Encoded(_)));
         if state.calls <= state.fail_count {
             return Err(SpiError::Publish {
@@ -135,7 +137,10 @@ impl EventBusSpi for FakeBus {
         }
     }
 
-    fn subscribe(&self, _request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        _request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         unreachable!("publisher tests do not subscribe")
     }
 
@@ -149,7 +154,10 @@ impl AsyncEventBusSpi for FakeBus {
         EventBusSpi::capabilities(self)
     }
 
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move { EventBusSpi::publish(self, message) })
     }
 
@@ -160,7 +168,10 @@ impl AsyncEventBusSpi for FakeBus {
         Box::pin(async { unreachable!("publisher tests do not subscribe") })
     }
 
-    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        _mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
@@ -280,7 +291,9 @@ fn test_retry_exhaustion_preserves_retry_source_and_failure_origin() {
     let options = PublishOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
-    let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
+    let failure = pipeline
+        .publish(spi.as_ref(), request(options), &[], &[])
+        .unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
     assert!(matches!(
         failure.error(),
@@ -296,7 +309,9 @@ fn test_retry_replays_the_same_prepared_message_until_provider_accepts() {
     let options = PublishOptions::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
         .build();
-    let _ = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap();
+    let _ = pipeline
+        .publish(spi.as_ref(), request(options), &[], &[])
+        .unwrap();
     assert_eq!(state.lock().unwrap().calls, 2);
 }
 
@@ -305,9 +320,13 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
     let (spi, _) = bus(PayloadModes::Native, 0);
     let pipeline = make_pipeline(&spi);
     let options = PublishOptions::builder()
-        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> { panic!("typed interceptor failed") })
+        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> {
+            panic!("typed interceptor failed")
+        })
         .build();
-    let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
+    let failure = pipeline
+        .publish(spi.as_ref(), request(options), &[], &[])
+        .unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Interceptor);
     assert!(matches!(
         failure.error(),
@@ -319,20 +338,26 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
 fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new("orders.encoded").unwrap().with_codec(StringCodec {
-        content_type: ContentType::TEXT_PLAIN,
-    });
+    let topic = Topic::new("orders.encoded")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let encoded_request = PublishRequest::builder()
         .topic(topic)
         .payload("serialized".to_owned())
         .event_id(EventId::new("encoded-event").unwrap())
         .build()
         .unwrap();
-    let _ = pipeline.publish(spi.as_ref(), encoded_request, &[], &[]).unwrap();
+    let _ = pipeline
+        .publish(spi.as_ref(), encoded_request, &[], &[])
+        .unwrap();
     assert_eq!(state.lock().unwrap().payload_was_encoded, Some(true));
 
     let request = request(PublishOptions::new());
-    let failure = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap_err();
+    let failure = pipeline
+        .publish(spi.as_ref(), request, &[], &[])
+        .unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Capability);
 }
 
@@ -356,9 +381,11 @@ fn test_native_payload_does_not_require_clone() {
 fn test_native_and_encoded_provider_prefers_native_payload() {
     let (spi, state) = bus(PayloadModes::NativeAndEncoded, 0);
     let pipeline = make_pipeline(&spi);
-    let topic = Topic::new("orders.hybrid").unwrap().with_codec(StringCodec {
-        content_type: ContentType::TEXT_PLAIN,
-    });
+    let topic = Topic::new("orders.hybrid")
+        .unwrap()
+        .with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+        });
     let request = PublishRequest::builder()
         .topic(topic)
         .payload("hybrid".to_owned())
@@ -379,7 +406,12 @@ fn test_destination_rejection_emits_one_diagnostic_and_observer_panic_is_isolate
     let observer: Arc<dyn Fn(&Diagnostic) + Send + Sync> =
         Arc::new(move |diagnostic: &Diagnostic| sink.lock().unwrap().push(diagnostic.clone()));
     let receipt = pipeline
-        .publish(spi.as_ref(), request(PublishOptions::new()), &[], &[observer])
+        .publish(
+            spi.as_ref(),
+            request(PublishOptions::new()),
+            &[],
+            &[observer],
+        )
         .unwrap();
     assert!(!receipt.acknowledgement().is_dropped());
     assert_eq!(diagnostics.lock().unwrap().len(), 1);
@@ -390,7 +422,12 @@ fn test_destination_rejection_emits_one_diagnostic_and_observer_panic_is_isolate
     let observer: Arc<dyn Fn(&Diagnostic) + Send + Sync> = Arc::new(|_| panic!("observer failure"));
     assert!(
         pipeline
-            .publish(spi.as_ref(), request(PublishOptions::new()), &[], &[observer])
+            .publish(
+                spi.as_ref(),
+                request(PublishOptions::new()),
+                &[],
+                &[observer]
+            )
             .is_ok()
     );
 }
@@ -408,7 +445,10 @@ fn test_async_publish_is_runtime_neutral() {
     );
     let mut future = pin!(future);
     let mut context = Context::from_waker(Waker::noop());
-    assert!(matches!(future.as_mut().poll(&mut context), Poll::Ready(Ok(_))));
+    assert!(matches!(
+        future.as_mut().poll(&mut context),
+        Poll::Ready(Ok(_))
+    ));
     assert_eq!(state.lock().unwrap().calls, 1);
 }
 
@@ -468,7 +508,9 @@ fn test_publish_error_observers_receive_shared_non_clone_payload_and_metadata() 
         .build()
         .unwrap();
 
-    let failure = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap_err();
+    let failure = pipeline
+        .publish(spi.as_ref(), request, &[], &[])
+        .unwrap_err();
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
     let observed = seen.lock().unwrap().take().expect("handler should run");
     assert_eq!(observed.0, "payload");
@@ -498,14 +540,22 @@ fn test_publish_error_handler_panics_are_isolated_and_keep_terminal_source() {
         })
         .build();
 
-    let failure = pipeline.publish(spi.as_ref(), request(options), &[], &[]).unwrap_err();
+    let failure = pipeline
+        .publish(spi.as_ref(), request(options), &[], &[])
+        .unwrap_err();
     assert_eq!(*calls.lock().unwrap(), ["panicking", "later"]);
     assert_eq!(failure.origin(), PipelineFailureOrigin::Retry);
-    let EventBusError::Publish(PublishError::ErrorHandlerPanicked { source, .. }) = failure.error() else {
-        panic!("expected structured publish observer panic, got {:?}", failure.error());
+    let EventBusError::Publish(PublishError::ErrorHandlerPanicked { source, .. }) = failure.error()
+    else {
+        panic!(
+            "expected structured publish observer panic, got {:?}",
+            failure.error()
+        );
     };
     assert!(matches!(
-        source.downcast_ref::<PublishFailure>().map(PublishFailure::cause),
+        source
+            .downcast_ref::<PublishFailure>()
+            .map(PublishFailure::cause),
         Some(PublishError::Retry(_))
     ));
     assert!(Error::source(source.as_ref()).is_some());

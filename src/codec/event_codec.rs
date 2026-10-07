@@ -119,7 +119,8 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     /// documented [`CodecError`] for incompatible metadata. The payload bytes
     /// are not inspected.
     fn validate_metadata(&self, payload: &EncodedPayload) -> Result<(), CodecError> {
-        if self.content_type() == payload.content_type() && self.schema_id() == payload.schema_id() {
+        if self.content_type() == payload.content_type() && self.schema_id() == payload.schema_id()
+        {
             Ok(())
         } else {
             Err(CodecError::MetadataMismatch {

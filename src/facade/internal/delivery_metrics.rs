@@ -55,7 +55,10 @@ impl DeliveryMetrics {
     ///
     /// # Returns
     /// A fixed-size value that retains no delivery or subscription state.
-    pub(in crate::facade) fn snapshot(&self, gauges: DeliveryMetricsSnapshot) -> DeliveryMetricsSnapshot {
+    pub(in crate::facade) fn snapshot(
+        &self,
+        gauges: DeliveryMetricsSnapshot,
+    ) -> DeliveryMetricsSnapshot {
         let mut counters = *self.counters.lock().unwrap_or_else(PoisonError::into_inner);
         counters.reserved_receives = gauges.reserved_receives;
         counters.queued = gauges.queued;
@@ -84,7 +87,8 @@ impl DeliveryMetrics {
     /// Records one permanently stopped settlement cycle.
     pub(in crate::facade) fn record_terminal_failure(&self) {
         self.update(|counters| {
-            counters.settlement_terminal_failures = counters.settlement_terminal_failures.saturating_add(1)
+            counters.settlement_terminal_failures =
+                counters.settlement_terminal_failures.saturating_add(1)
         });
     }
 
@@ -97,7 +101,9 @@ impl DeliveryMetrics {
     /// Records one unresolved known ephemeral delivery abandoned during
     /// cleanup.
     pub(in crate::facade) fn record_abandoned_ephemeral(&self) {
-        self.update(|counters| counters.abandoned_ephemeral = counters.abandoned_ephemeral.saturating_add(1));
+        self.update(|counters| {
+            counters.abandoned_ephemeral = counters.abandoned_ephemeral.saturating_add(1)
+        });
     }
 
     /// Checks a handler interval before recording a sample in both
@@ -157,7 +163,8 @@ impl DeliveryMetrics {
         let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
         self.update(|counters| {
             counters.handler_duration_count = counters.handler_duration_count.saturating_add(1);
-            counters.handler_duration_total_nanos = counters.handler_duration_total_nanos.saturating_add(nanos);
+            counters.handler_duration_total_nanos =
+                counters.handler_duration_total_nanos.saturating_add(nanos);
             counters.handler_duration_max_nanos = counters.handler_duration_max_nanos.max(nanos);
         });
     }
@@ -171,9 +178,13 @@ impl DeliveryMetrics {
     pub(in crate::facade) fn record_settlement_elapsed(&self, elapsed: Duration) {
         let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
         self.update(|counters| {
-            counters.settlement_duration_count = counters.settlement_duration_count.saturating_add(1);
-            counters.settlement_duration_total_nanos = counters.settlement_duration_total_nanos.saturating_add(nanos);
-            counters.settlement_duration_max_nanos = counters.settlement_duration_max_nanos.max(nanos);
+            counters.settlement_duration_count =
+                counters.settlement_duration_count.saturating_add(1);
+            counters.settlement_duration_total_nanos = counters
+                .settlement_duration_total_nanos
+                .saturating_add(nanos);
+            counters.settlement_duration_max_nanos =
+                counters.settlement_duration_max_nanos.max(nanos);
         });
     }
 
@@ -193,7 +204,10 @@ impl DeliveryMetrics {
             record(&mut counters);
         }
         if let Some(parent) = &self.parent {
-            let mut counters = parent.counters.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut counters = parent
+                .counters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record(&mut counters);
         }
     }
@@ -220,13 +234,33 @@ mod tests {
         clock.advance(Duration::from_nanos(5)).unwrap();
         let later = clock.now();
         assert!(local.record_handler_duration(later, first).is_err());
-        assert!(local.record_settlement_duration(first, foreign.now()).is_err());
-        assert_eq!(*local.counters.lock().unwrap(), DeliveryMetricsSnapshot::default());
-        assert_eq!(*global.counters.lock().unwrap(), DeliveryMetricsSnapshot::default());
+        assert!(
+            local
+                .record_settlement_duration(first, foreign.now())
+                .is_err()
+        );
+        assert_eq!(
+            *local.counters.lock().unwrap(),
+            DeliveryMetricsSnapshot::default()
+        );
+        assert_eq!(
+            *global.counters.lock().unwrap(),
+            DeliveryMetricsSnapshot::default()
+        );
         local.record_handler_duration(first, later).unwrap();
         local.record_settlement_duration(first, later).unwrap();
-        assert_eq!(local.counters.lock().unwrap().handler_duration_total_nanos, 5);
-        assert_eq!(global.counters.lock().unwrap().settlement_duration_total_nanos, 5);
+        assert_eq!(
+            local.counters.lock().unwrap().handler_duration_total_nanos,
+            5
+        );
+        assert_eq!(
+            global
+                .counters
+                .lock()
+                .unwrap()
+                .settlement_duration_total_nanos,
+            5
+        );
     }
 
     #[test]

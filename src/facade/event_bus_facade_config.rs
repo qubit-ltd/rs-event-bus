@@ -318,7 +318,9 @@ impl EventBusFacadeConfig {
     /// # Returns
     /// The registered callbacks in append order, or an empty vector.
     #[must_use = "Use the returned asynchronous middleware chain."]
-    pub(crate) fn async_subscriber_interceptors<T: 'static>(&self) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
+    pub(crate) fn async_subscriber_interceptors<T: 'static>(
+        &self,
+    ) -> Vec<Arc<AsyncSubscriberInterceptor<T>>> {
         self.async_subscriber_interceptors
             .get(&TypeId::of::<T>())
             .and_then(|list| list.downcast_ref::<Vec<Arc<AsyncSubscriberInterceptor<T>>>>())
@@ -336,7 +338,8 @@ impl EventBusFacadeConfig {
     #[must_use]
     #[inline]
     pub(crate) fn has_sync_subscriber_interceptors<T: 'static>(&self) -> bool {
-        self.sync_subscriber_interceptors.contains_key(&TypeId::of::<T>())
+        self.sync_subscriber_interceptors
+            .contains_key(&TypeId::of::<T>())
     }
 
     /// Checks whether any asynchronous middleware was registered for `T`.
@@ -350,6 +353,7 @@ impl EventBusFacadeConfig {
     #[must_use]
     #[inline]
     pub(crate) fn has_async_subscriber_interceptors<T: 'static>(&self) -> bool {
-        self.async_subscriber_interceptors.contains_key(&TypeId::of::<T>())
+        self.async_subscriber_interceptors
+            .contains_key(&TypeId::of::<T>())
     }
 }

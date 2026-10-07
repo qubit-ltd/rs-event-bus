@@ -19,7 +19,7 @@ use std::task::Waker;
 #[derive(Default)]
 pub(in crate::facade) struct AsyncSignal {
     /// Current waker for each registered waiter ID.
-    wakers: Mutex<HashMap<u64, std::task::Waker>>,
+    wakers: Mutex<HashMap<u64, Waker>>,
     /// Generates waiter IDs from a wrapping `u64` sequence.
     next_waiter: AtomicU64,
 }
@@ -127,7 +127,8 @@ mod tests {
         assert_registry_unlocked(probe);
     }
 
-    static PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
+    static PROBE_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_probe, wake_probe, wake_probe_by_ref, drop_probe);
 
     #[test]
     fn test_waker_callbacks_are_outside_the_registry_lock() {

@@ -96,7 +96,10 @@ impl AsyncEventBusInner {
     pub(in crate::facade) fn notify_scheduler(&self) {
         let ids = self.scheduler.take_notifications();
         let controls = self.controls.lock().unwrap_or_else(PoisonError::into_inner);
-        let targets: Vec<_> = ids.iter().filter_map(|id| controls.get(id).cloned()).collect();
+        let targets: Vec<_> = ids
+            .iter()
+            .filter_map(|id| controls.get(id).cloned())
+            .collect();
         drop(controls);
         for control in targets {
             control.notify();
@@ -125,7 +128,9 @@ impl AsyncEventBusInner {
     /// A guard that releases the subscribe counter, or None after shutdown
     /// starts.
     #[must_use]
-    pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<super::AsyncSubscribeGuard> {
+    pub(in crate::facade) fn begin_subscribe(
+        self: &Arc<Self>,
+    ) -> Option<super::AsyncSubscribeGuard> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
             return None;
@@ -141,7 +146,10 @@ impl AsyncEventBusInner {
     /// Strong references to active callbacks for one emission pass.
     #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut observers = self
+            .observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         observers.retain(|entry| entry.strong_count() > 0);
         observers
             .iter()
@@ -183,7 +191,10 @@ impl AsyncEventBusInner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(failure.clone());
-        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self
+            .close_error_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         failure
     }
 
@@ -196,7 +207,10 @@ impl AsyncEventBusInner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(failure);
-        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self
+            .close_error_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Returns a cached aggregate of recorded close failures, if any exist.
@@ -206,8 +220,14 @@ impl AsyncEventBusInner {
     /// none.
     #[must_use]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        let failures = self
+            .close_errors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self
+            .close_error_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {
             return Some(errors.clone());
         }
@@ -255,7 +275,10 @@ mod tests {
     fn ready<F: Future>(future: F) -> F::Output {
         let mut future = pin!(future);
         for _ in 0..64 {
-            if let Poll::Ready(result) = future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            if let Poll::Ready(result) = future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
                 return result;
             }
         }
@@ -267,19 +290,31 @@ mod tests {
     #[test]
     fn test_async_registry_returns_to_baseline_across_1000_sessions() {
         let limit = NonZeroUsize::new(1).expect("one live session");
-        let config = EventBusFacadeConfig::new()
-            .with_delivery_scheduling(DeliverySchedulingConfig::new(limit, limit, limit, limit).expect("limits"));
-        let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
-        let bus =
-            AsyncEventBus::with_config(ProviderId::new("local").expect("provider"), provider, config).expect("bus");
+        let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+            DeliverySchedulingConfig::new(limit, limit, limit, limit).expect("limits"),
+        );
+        let provider =
+            Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
+        let bus = AsyncEventBus::with_config(
+            ProviderId::new("local").expect("provider"),
+            provider,
+            config,
+        )
+        .expect("bus");
         let topic = Topic::<u32>::new("session-registry").expect("topic");
         let mut closed_handles = Vec::new();
         for index in 0..1000 {
-            let request = SubscribeRequest::new(&format!("session-{index}"), topic.clone()).expect("request");
-            let mut subscription = ready(bus.subscribe(request)).expect("slot was released by prior close");
+            let request =
+                SubscribeRequest::new(&format!("session-{index}"), topic.clone()).expect("request");
+            let mut subscription =
+                ready(bus.subscribe(request)).expect("slot was released by prior close");
             assert_eq!(bus.inner.controls.lock().expect("controls").len(), 1);
             let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
-            assert!(run.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+            assert!(
+                run.as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
             drop(run);
             ready(subscription.close()).expect("close");
             assert!(bus.inner.controls.lock().expect("controls").is_empty());

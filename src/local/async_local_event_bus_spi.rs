@@ -25,6 +25,7 @@ use super::async_local_event_subscription::AsyncLocalEventSubscription;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
 use super::internal::MailboxKey;
+use super::local_event_bus_spi::missing_native_payload_weight_error;
 use super::local_event_bus_spi::operation_error;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
@@ -106,7 +107,10 @@ impl AsyncLocalEventBusSpi {
     /// # Errors
     /// Returns `ConfigurationError::InvalidField` when either configured
     /// capacity is zero.
-    pub fn with_timer(config: &LocalEventBusConfig, timer: Arc<dyn Timer>) -> Result<Self, ConfigurationError> {
+    pub fn with_timer(
+        config: &LocalEventBusConfig,
+        timer: Arc<dyn Timer>,
+    ) -> Result<Self, ConfigurationError> {
         config.validate()?;
         Ok(Self {
             shared: Arc::new(AsyncLocalShared::new(
@@ -153,7 +157,10 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     /// Returns an SPI error for encoded payloads, closed state, type conflicts,
     /// an unrepresentable delay deadline, or a missing native weight
     /// declaration when weight budgeting is enabled.
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+    fn publish<'a>(
+        &'a self,
+        message: OutboundMessage,
+    ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let topic = message.topic().clone();
             if !matches!(message.payload(), TransportPayload::Native(_)) {
@@ -163,33 +170,42 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "unsupported_payload_mode",
                 ));
             }
-            let mut event = LocalEvent::transport(topic.clone(), &message)
-                .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
+            let mut event = LocalEvent::transport(topic.clone(), &message).ok_or_else(|| {
+                operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow")
+            })?;
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),
             };
             let mailboxes = {
-                let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let bus = self
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if bus.closed {
-                    return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
+                    return Err(operation_error(
+                        "publish",
+                        Some(topic.as_str()),
+                        "provider_closed",
+                    ));
                 }
                 if bus
                     .payload_types
                     .get(&topic)
                     .is_some_and(|previous| *previous != payload_type)
                 {
-                    return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
+                    return Err(operation_error(
+                        "publish",
+                        Some(topic.as_str()),
+                        "topic_type_conflict",
+                    ));
                 }
                 bus.mailboxes_for_topic(&topic)
             };
             if self.shared.outstanding.requires_weight() {
                 if message.native_payload_weight_bytes().is_none() {
-                    return Err(operation_error(
-                        "publish",
-                        Some(topic.as_str()),
-                        "missing_native_payload_weight",
-                    ));
+                    return Err(missing_native_payload_weight_error(topic.as_str()));
                 }
             } else {
                 event.weight_bytes = 0;
@@ -254,9 +270,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             let key = MailboxKey {
                 subscription_id: request.subscription_id(),
             };
-            let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut bus = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if bus.closed {
-                return Err(operation_error("subscribe", Some(topic.as_str()), "provider_closed"));
+                return Err(operation_error(
+                    "subscribe",
+                    Some(topic.as_str()),
+                    "provider_closed",
+                ));
             }
             if bus
                 .payload_types
@@ -308,10 +332,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     ///
     /// # Errors
     /// Returns an SPI error if the injected timer fails during graceful wait.
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+    fn shutdown<'a>(
+        &'a self,
+        mode: ShutdownMode,
+    ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async move {
             {
-                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut bus = self
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 bus.closed = true;
             }
             let result = match mode {
@@ -321,7 +352,11 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     let mut wait_registration = None;
                     let mut timer_future = None;
                     poll_fn(|cx| {
-                        let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                        let bus = self
+                            .shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         let busy = bus.mailboxes.values().any(|mailbox| {
                             let queue = mailbox.queue.lock();
                             !queue.is_pending_empty() || !queue.in_flight.is_empty()
@@ -343,13 +378,15 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                         if let (None, Some(remaining)) = (timer_future.as_ref(), remaining) {
                             let timer = Arc::clone(&self.shared.timer);
                             timer_future = Some(Box::pin(async move {
-                                let timer = timer.after(remaining).map_err(|error| SpiError::Operation {
-                                    provider_id: "local".into(),
-                                    operation: "shutdown",
-                                    resource: None,
-                                    kind: "timer_error",
-                                    retryable: Some(false),
-                                    source: Box::new(error),
+                                let timer = timer.after(remaining).map_err(|error| {
+                                    SpiError::Operation {
+                                        provider_id: "local".into(),
+                                        operation: "shutdown",
+                                        resource: None,
+                                        kind: "timer_error",
+                                        retryable: Some(false),
+                                        source: Box::new(error),
+                                    }
                                 })?;
                                 timer.await.map_err(|error| SpiError::Operation {
                                     provider_id: "local".into(),
@@ -375,7 +412,11 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 }
             };
             let (mailboxes, discarded) = {
-                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut bus = self
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if let Some(previous) = bus.outcome {
                     return Ok(previous);
                 }

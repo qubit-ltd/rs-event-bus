@@ -209,7 +209,7 @@ impl EventBusCapabilities {
     ///
     /// # Returns
     /// The provider's historical replay capability.
-    #[must_use]
+    #[must_use = "inspect the returned replay capability"]
     #[inline]
     pub const fn replay(self) -> ReplayCapability {
         self.replay

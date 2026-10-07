@@ -17,6 +17,7 @@
 /// let replay = ReplayCapability::Position;
 /// assert_eq!(replay, ReplayCapability::Position);
 /// ```
+#[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ReplayCapability {

@@ -72,9 +72,10 @@ impl MonotonicClock for SamplingClock {
     }
     fn now(&self) -> MonotonicInstant {
         let now = self.manual.now();
-        let _ = self
-            .sampled
-            .send((self.attempts.load(Ordering::SeqCst), now.elapsed_since_origin()));
+        let _ = self.sampled.send((
+            self.attempts.load(Ordering::SeqCst),
+            now.elapsed_since_origin(),
+        ));
         now
     }
     fn new_timer(&self) -> Arc<dyn Timer> {
@@ -98,7 +99,10 @@ impl EventBusSpi for FailingSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(FailingReceiver {
             inner: self.inner.subscribe(request)?,
             attempts: self.attempts.clone(),
@@ -129,7 +133,11 @@ impl EventSubscriptionSpi for FailingReceiver {
 }
 /// Waits until the owner samples the requested logical instant after an
 /// explicit wake.
-fn sampled_at(receiver: &mpsc::Receiver<(usize, Duration)>, expected_attempts: usize, expected: Duration) {
+fn sampled_at(
+    receiver: &mpsc::Receiver<(usize, Duration)>,
+    expected_attempts: usize,
+    expected: Duration,
+) {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut last = None;
     loop {
@@ -171,8 +179,13 @@ fn test_sync_settlement_clock_wake_respects_backoff_and_total_deadline() {
         )
         .expect("valid budget"),
     );
-    let bus = EventBus::with_config_and_clock(ProviderId::new("clock-test").expect("provider"), spi, config, clock)
-        .expect("bus");
+    let bus = EventBus::with_config_and_clock(
+        ProviderId::new("clock-test").expect("provider"),
+        spi,
+        config,
+        clock,
+    )
+    .expect("bus");
     let (failed_tx, failed_rx) = mpsc::channel();
     let (stopped_tx, stopped_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| match diagnostic {
@@ -186,29 +199,44 @@ fn test_sync_settlement_clock_wake_respects_backoff_and_total_deadline() {
     });
     let topic = Topic::<u32>::new("clock.retry").expect("topic");
     let subscription = bus
-        .subscribe(SubscribeRequest::new("clock", topic.clone()).expect("request"), |_| {})
+        .subscribe(
+            SubscribeRequest::new("clock", topic.clone()).expect("request"),
+            |_| {},
+        )
         .expect("subscribe");
     let _ = bus
         .publish(PublishRequest::new(topic, 7).expect("publication"))
         .expect("publish");
     assert_eq!(
-        failed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"),
+        failed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first attempt"),
         1
     );
     sampled_at(&sampled_rx, 1, Duration::ZERO);
     manual.advance(Duration::from_millis(9)).expect("advance");
     bus.inner.scheduler.notify(subscription.id());
     sampled_at(&sampled_rx, 1, Duration::from_millis(9));
-    assert_eq!(attempts.load(Ordering::SeqCst), 1, "wake before due time cannot retry");
-    manual.advance(Duration::from_millis(1)).expect("advance to retry");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "wake before due time cannot retry"
+    );
+    manual
+        .advance(Duration::from_millis(1))
+        .expect("advance to retry");
     bus.inner.scheduler.notify(subscription.id());
     assert_eq!(
-        failed_rx.recv_timeout(Duration::from_secs(2)).expect("second attempt"),
+        failed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second attempt"),
         2
     );
     // Observe the post-error sample before advancing the deadline.
     sampled_at(&sampled_rx, 2, Duration::from_millis(10));
-    manual.advance(Duration::from_millis(10)).expect("advance to deadline");
+    manual
+        .advance(Duration::from_millis(10))
+        .expect("advance to deadline");
     bus.inner.scheduler.notify(subscription.id());
     assert_eq!(
         stopped_rx
@@ -282,7 +310,10 @@ fn test_sync_settlement_clock_domain_failure_keeps_structured_source_and_attempt
     });
     let topic = Topic::<u32>::new("clock.domain").expect("topic");
     let subscription = bus
-        .subscribe(SubscribeRequest::new("clock", topic.clone()).expect("request"), |_| {})
+        .subscribe(
+            SubscribeRequest::new("clock", topic.clone()).expect("request"),
+            |_| {},
+        )
         .expect("subscribe");
     let _ = bus
         .publish(PublishRequest::new(topic, 7).expect("publication"))
@@ -321,8 +352,9 @@ fn test_sync_settlement_clock_domain_failure_keeps_structured_source_and_attempt
 fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
     let local = EventBus::local(Default::default()).expect("local provider");
     let one = NonZeroUsize::new(1).expect("positive limit");
-    let config = EventBusFacadeConfig::new()
-        .with_delivery_scheduling(DeliverySchedulingConfig::new(one, one, one, one).expect("one live subscription"));
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(one, one, one, one).expect("one live subscription"),
+    );
     let bus = EventBus::with_config(
         ProviderId::new("registry-test").expect("provider"),
         local.inner.spi.clone(),
@@ -333,7 +365,10 @@ fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
     let mut closed = Vec::with_capacity(1000);
     for index in 0..1000 {
         let subscription = bus
-            .subscribe(SubscribeRequest::new("churn", topic.clone()).expect("request"), |_| {})
+            .subscribe(
+                SubscribeRequest::new("churn", topic.clone()).expect("request"),
+                |_| {},
+            )
             .expect("one slot is reusable");
         if index == 999 {
             let _ = bus
@@ -341,13 +376,21 @@ fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
                 .expect("publish");
             // Wait for received processing before closing this final handle.
             let deadline = Instant::now() + Duration::from_secs(2);
-            while subscription.delivery_metrics().metrics.completed == 0 && Instant::now() < deadline {
+            while subscription.delivery_metrics().metrics.completed == 0
+                && Instant::now() < deadline
+            {
                 thread::yield_now();
             }
             assert_eq!(subscription.delivery_metrics().metrics.completed, 1);
         }
         subscription.cancel().expect("close and join");
-        assert!(bus.inner.subscriptions.lock().expect("registry lock").is_empty());
+        assert!(
+            bus.inner
+                .subscriptions
+                .lock()
+                .expect("registry lock")
+                .is_empty()
+        );
         let gauges = bus.inner.scheduler.snapshot_gauges(None);
         assert_eq!(
             gauges.reserved_receives + gauges.queued + gauges.running_handlers + gauges.settling,
@@ -416,8 +459,9 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
         switched: AtomicBool::new(false),
     });
     let one = NonZeroUsize::new(1).expect("positive limit");
-    let config = EventBusFacadeConfig::new()
-        .with_delivery_scheduling(DeliverySchedulingConfig::new(one, one, one, one).expect("one owned lease"));
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(one, one, one, one).expect("one owned lease"),
+    );
     let bus = EventBus::with_config_and_clock(
         ProviderId::new("snapshot-test").expect("provider"),
         local.inner.spi.clone(),
@@ -499,7 +543,9 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
     subscription.cancel().expect("cleanup");
     assert!(Arc::ptr_eq(
         &reason,
-        &subscription.terminal_failure().expect("first cause retained")
+        &subscription
+            .terminal_failure()
+            .expect("first cause retained")
     ));
 }
 
@@ -522,7 +568,10 @@ impl EventBusSpi for SuccessfulSettlementSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(SuccessfulSettlementReceiver {
             inner: self.inner.subscribe(request)?,
             successes: self.successes.clone(),
@@ -537,7 +586,11 @@ impl EventSubscriptionSpi for SuccessfulSettlementReceiver {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
         self.inner.receive(timeout)
     }
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         self.inner.settle(token, disposition)?;
         self.successes.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -576,12 +629,17 @@ fn test_sync_successful_settlement_clock_failure_is_terminal_without_completed_o
     });
     let topic = Topic::<u32>::new("clock.success").expect("topic");
     let subscription = bus
-        .subscribe(SubscribeRequest::new("clock", topic.clone()).expect("request"), |_| {})
+        .subscribe(
+            SubscribeRequest::new("clock", topic.clone()).expect("request"),
+            |_| {},
+        )
         .expect("subscribe");
     let _ = bus
         .publish(PublishRequest::new(topic, 7).expect("request"))
         .expect("publish");
-    let stopped_error = stopped_rx.recv_timeout(Duration::from_secs(2)).expect("clock stop");
+    let stopped_error = stopped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("clock stop");
     subscription.cancel().expect("close and join");
     assert_eq!(
         successes.load(Ordering::SeqCst),
@@ -695,7 +753,10 @@ impl EventBusSpi for TokenlessAfterReceiveSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         Ok(Box::new(TokenlessAfterReceiveSubscription {
             inner: self.inner.subscribe(request)?,
             armed: self.armed.clone(),
@@ -721,7 +782,8 @@ impl EventSubscriptionSpi for TokenlessAfterReceiveSubscription {
         }
         match self.inner.receive(timeout)? {
             ReceiveOutcome::Message(message) => {
-                let (address, event_id, timestamp, headers, ordering_key, payload, _, metadata) = message.into_parts();
+                let (address, event_id, timestamp, headers, ordering_key, payload, _, metadata) =
+                    message.into_parts();
                 self.armed.store(true, Ordering::SeqCst);
                 self.message_seen.store(true, Ordering::SeqCst);
                 Ok(ReceiveOutcome::Message(InboundMessage::new(
@@ -738,7 +800,11 @@ impl EventSubscriptionSpi for TokenlessAfterReceiveSubscription {
             outcome => Ok(outcome),
         }
     }
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         self.settles.fetch_add(1, Ordering::SeqCst);
         self.inner.settle(token, disposition)
     }
@@ -861,7 +927,9 @@ fn test_sync_tokenless_handler_start_clock_panic_counts_abandoned_not_completed(
     let bus_metrics = bus.delivery_metrics();
     assert_eq!(bus_metrics.completed, 0);
     assert_eq!(bus_metrics.abandoned_ephemeral, 1);
-    subscription.cancel().expect("owner lease and receiver cleanup");
+    subscription
+        .cancel()
+        .expect("owner lease and receiver cleanup");
     let final_metrics = subscription.delivery_metrics().metrics;
     assert_eq!(
         final_metrics.reserved_receives
@@ -913,7 +981,10 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
         .expect("bus");
         let topic = Topic::<u32>::new("clock.panic").expect("topic");
         let subscription = bus
-            .subscribe(SubscribeRequest::new("panic", topic.clone()).expect("request"), |_| {})
+            .subscribe(
+                SubscribeRequest::new("panic", topic.clone()).expect("request"),
+                |_| {},
+            )
             .expect("subscribe");
         // Wait for the failure before cancellation, ensuring the claimed lease path
         // ran.
@@ -934,7 +1005,10 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
         assert!(bus.inner.tracker.workers_are_idle());
         let metrics = bus.delivery_metrics();
         assert_eq!(
-            metrics.reserved_receives + metrics.queued + metrics.running_handlers + metrics.settling,
+            metrics.reserved_receives
+                + metrics.queued
+                + metrics.running_handlers
+                + metrics.settling,
             0
         );
         let (called_tx, called_rx) = mpsc::channel();
@@ -1001,7 +1075,12 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
                 });
             }
             if stage == "retry" {
-                builder = builder.retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("policy"));
+                builder = builder.retry_policy(
+                    RetryPolicy::builder()
+                        .max_attempts(2)
+                        .build()
+                        .expect("policy"),
+                );
             }
             let calls = Arc::new(AtomicUsize::new(0));
             let callback_calls = calls.clone();
@@ -1090,9 +1169,16 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
                 .expect("stop completes after gate release");
             subscription.cancel().expect("join subscription");
             let expected = usize::from(stage == "retry") + usize::from(mode == "graceful");
-            assert_eq!(calls.load(Ordering::SeqCst), expected, "mode={mode}, stage={stage}");
             assert_eq!(
-                subscription.delivery_metrics().metrics.handler_duration_count,
+                calls.load(Ordering::SeqCst),
+                expected,
+                "mode={mode}, stage={stage}"
+            );
+            assert_eq!(
+                subscription
+                    .delivery_metrics()
+                    .metrics
+                    .handler_duration_count,
                 expected as u64
             );
         }
@@ -1142,7 +1228,10 @@ impl EventBusSpi for ReceiveFailureSpi {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.inner.publish(message)
     }
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         let fail_after_message = request.subscriber_id().as_str() == "receive-failure";
         Ok(Box::new(ReceiveFailureReceiver {
             inner: self.inner.subscribe(request)?,
@@ -1170,7 +1259,11 @@ impl EventSubscriptionSpi for ReceiveFailureReceiver {
         self.received |= matches!(result, ReceiveOutcome::Message(_));
         Ok(result)
     }
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+    fn settle(
+        &mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> Result<(), SpiError> {
         self.inner.settle(token, disposition)
     }
     fn close(&mut self) -> Result<(), SpiError> {
@@ -1227,7 +1320,9 @@ fn test_sync_receive_stop_fences_scheduler_before_observer_callback() {
     let _ = bus
         .publish(PublishRequest::new(blocker_topic, 1).expect("request"))
         .expect("publish");
-    blocked_rx.recv_timeout(Duration::from_secs(2)).expect("H occupied");
+    blocked_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("H occupied");
     let bad = bus
         .subscribe(
             SubscribeRequest::new("receive-failure", bad_topic.clone()).expect("request"),
@@ -1304,7 +1399,10 @@ fn test_sync_terminal_settlement_failed_observer_sees_published_stop() {
     let weak = Arc::downgrade(&bus.inner);
     let (observed_tx, observed_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if let Diagnostic::SettlementFailed { subscription_id, .. } = diagnostic {
+        if let Diagnostic::SettlementFailed {
+            subscription_id, ..
+        } = diagnostic
+        {
             let inner = weak.upgrade().expect("bus live");
             let control = inner
                 .subscriptions
@@ -1313,7 +1411,8 @@ fn test_sync_terminal_settlement_failed_observer_sees_published_stop() {
                 .get(subscription_id)
                 .expect("control")
                 .clone();
-            let _ = observed_tx.send(control.is_cancelled() && control.terminal_failure().is_some());
+            let _ =
+                observed_tx.send(control.is_cancelled() && control.terminal_failure().is_some());
         }
     });
     let topic = Topic::<u32>::new("terminal.observer").expect("topic");

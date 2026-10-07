@@ -67,7 +67,10 @@ impl EventBusShutdown {
     /// subscription-close failure.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<ShutdownReport, ShutdownError> {
         if is_current_bus_context(Arc::as_ptr(&self.inner) as usize) {
-            return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());
+            return Err(LifecycleError::WouldDeadlock {
+                operation: "shutdown",
+            }
+            .into());
         }
         let Some(generation) = self.generation else {
             return self.report();
@@ -97,7 +100,8 @@ impl EventBusShutdown {
         let Some(generation) = self.generation else {
             return self.report();
         };
-        let mut registration = ShutdownRegistration::new(&self.inner.shutdown_coordinator, generation);
+        let mut registration =
+            ShutdownRegistration::new(&self.inner.shutdown_coordinator, generation);
         let result = poll_fn(|cx| registration.poll(cx)).await;
         self.resolve(result)
     }
@@ -117,9 +121,10 @@ impl EventBusShutdown {
                 self.report()
             }
             Some(ShutdownResult::StartFailed(error)) => Err(ShutdownError::CoordinatorStart(
-                error
-                    .raw_os_error()
-                    .map_or_else(|| Error::new(error.kind(), error.to_string()), Error::from_raw_os_error),
+                error.raw_os_error().map_or_else(
+                    || Error::new(error.kind(), error.to_string()),
+                    Error::from_raw_os_error,
+                ),
             )),
             None => Err(ShutdownError::CoordinatorStart(Error::other(
                 "shutdown generation ended without a result",

@@ -76,7 +76,9 @@ fn test_manual_ack_matrix_and_handler_error_precedence_are_enforced() {
             source: Box::new(IoError::other("handler failed")),
         }),
     );
-    assert!(matches!(outcome, DeliveryOutcome::Failure(error) if error.to_string().contains("handler failed")));
+    assert!(
+        matches!(outcome, DeliveryOutcome::Failure(error) if error.to_string().contains("handler failed"))
+    );
 
     let auto = delivery();
     assert!(matches!(
@@ -101,17 +103,33 @@ fn test_manual_ack_matrix_and_handler_error_precedence_are_enforced() {
     ));
     assert!(nacked.acknowledgement().nack().is_ok());
     assert!(nacked.acknowledgement().ack().is_err());
-    assert!(SubscriberPipeline::validate_ack_capability(AckMode::Manual, SettlementCapabilities::None).is_err());
-    assert!(SubscriberPipeline::validate_ack_capability(AckMode::Manual, SettlementCapabilities::AcceptOnly).is_err());
     assert!(
-        SubscriberPipeline::validate_ack_capability(AckMode::Manual, SettlementCapabilities::AcceptRetryReject).is_ok()
+        SubscriberPipeline::validate_ack_capability(AckMode::Manual, SettlementCapabilities::None)
+            .is_err()
+    );
+    assert!(
+        SubscriberPipeline::validate_ack_capability(
+            AckMode::Manual,
+            SettlementCapabilities::AcceptOnly
+        )
+        .is_err()
+    );
+    assert!(
+        SubscriberPipeline::validate_ack_capability(
+            AckMode::Manual,
+            SettlementCapabilities::AcceptRetryReject
+        )
+        .is_ok()
     );
 
     let retry_delivery = delivery();
     retry_delivery.acknowledgement().ack().unwrap();
     let next_attempt = retry_delivery.next_attempt(2);
     assert_eq!(next_attempt.context().retry_attempt(), 2);
-    assert_eq!(next_attempt.acknowledgement().state(), AcknowledgementState::Pending);
+    assert_eq!(
+        next_attempt.acknowledgement().state(),
+        AcknowledgementState::Pending
+    );
     assert_eq!(next_attempt.event().id(), retry_delivery.event().id());
 }
 
@@ -133,14 +151,21 @@ fn test_subscriber_middleware_unwinds_in_reverse_registration_layers() {
         typed_order.lock().unwrap().push("inner-after");
         result
     })];
-    let outcome = SubscriberPipeline::attempt_sync(AckMode::Auto, delivery(), &global, &typed, move |_| {
-        handler_order.lock().unwrap().push("handler");
-        Ok(())
-    });
+    let outcome =
+        SubscriberPipeline::attempt_sync(AckMode::Auto, delivery(), &global, &typed, move |_| {
+            handler_order.lock().unwrap().push("handler");
+            Ok(())
+        });
     assert!(matches!(outcome, DeliveryOutcome::Success));
     assert_eq!(
         *order.lock().unwrap(),
-        ["outer-before", "inner-before", "handler", "inner-after", "outer-after"]
+        [
+            "outer-before",
+            "inner-before",
+            "handler",
+            "inner-after",
+            "outer-after"
+        ]
     );
 }
 
@@ -150,24 +175,26 @@ fn test_async_subscriber_middleware_uses_runtime_neutral_continuations() {
     let global_order = order.clone();
     let typed_order = order.clone();
     let handler_order = order.clone();
-    let global: Vec<Arc<AsyncSubscriberInterceptor<String>>> = vec![Arc::new(move |delivery, next| {
-        global_order.lock().unwrap().push("outer-before");
-        let order = global_order.clone();
-        Box::pin(async move {
-            let result = next(delivery).await;
-            order.lock().unwrap().push("outer-after");
-            result
-        }) as SpiFuture<'static, Result<(), DeliveryError>>
-    })];
-    let typed: Vec<Arc<AsyncSubscriberInterceptor<String>>> = vec![Arc::new(move |delivery, next| {
-        typed_order.lock().unwrap().push("inner-before");
-        let order = typed_order.clone();
-        Box::pin(async move {
-            let result = next(delivery).await;
-            order.lock().unwrap().push("inner-after");
-            result
-        }) as SpiFuture<'static, Result<(), DeliveryError>>
-    })];
+    let global: Vec<Arc<AsyncSubscriberInterceptor<String>>> =
+        vec![Arc::new(move |delivery, next| {
+            global_order.lock().unwrap().push("outer-before");
+            let order = global_order.clone();
+            Box::pin(async move {
+                let result = next(delivery).await;
+                order.lock().unwrap().push("outer-after");
+                result
+            }) as SpiFuture<'static, Result<(), DeliveryError>>
+        })];
+    let typed: Vec<Arc<AsyncSubscriberInterceptor<String>>> =
+        vec![Arc::new(move |delivery, next| {
+            typed_order.lock().unwrap().push("inner-before");
+            let order = typed_order.clone();
+            Box::pin(async move {
+                let result = next(delivery).await;
+                order.lock().unwrap().push("inner-after");
+                result
+            }) as SpiFuture<'static, Result<(), DeliveryError>>
+        })];
     let outcome = block_on(SubscriberPipeline::attempt_async(
         AckMode::Auto,
         delivery(),
@@ -181,7 +208,13 @@ fn test_async_subscriber_middleware_uses_runtime_neutral_continuations() {
     assert!(matches!(outcome, DeliveryOutcome::Success));
     assert_eq!(
         *order.lock().unwrap(),
-        ["outer-before", "inner-before", "handler", "inner-after", "outer-after"]
+        [
+            "outer-before",
+            "inner-before",
+            "handler",
+            "inner-after",
+            "outer-after"
+        ]
     );
 }
 
@@ -218,14 +251,18 @@ fn test_failure_directive_maps_to_terminal_spi_disposition() {
         None
     );
     assert_eq!(
-        SubscriberPipeline::failure_disposition(DeliveryFailureAction::Discard, SettlementCapabilities::None),
+        SubscriberPipeline::failure_disposition(
+            DeliveryFailureAction::Discard,
+            SettlementCapabilities::None
+        ),
         None
     );
 }
 
 #[test]
 fn test_subscriber_middleware_panic_is_contained_as_delivery_failure() {
-    let panic_layer: Arc<SubscriberInterceptor<String>> = Arc::new(|_, _| panic!("middleware panic"));
+    let panic_layer: Arc<SubscriberInterceptor<String>> =
+        Arc::new(|_, _| panic!("middleware panic"));
     let called = Arc::new(Mutex::new(false));
     let called_handler = called.clone();
     let result = SubscriberPipeline::run_sync(delivery(), &[panic_layer], &[], move |_| {
@@ -243,7 +280,12 @@ fn test_delivery_attempt_error_preserves_delivery_error_as_source() {
     };
     let attempt = DeliveryAttemptError::new("delivery", None, original);
     assert_eq!(attempt.kind(), "delivery");
-    assert!(Error::source(&attempt).unwrap().to_string().contains("original"));
+    assert!(
+        Error::source(&attempt)
+            .unwrap()
+            .to_string()
+            .contains("original")
+    );
 }
 
 #[test]
@@ -264,7 +306,10 @@ fn test_dead_letter_record_preserves_original_and_prevents_recursive_dead_letter
         .unwrap()
         .unwrap();
     assert_eq!(dead_letter.topic().name(), "test.dead-letter");
-    assert_eq!(dead_letter.header("x-qubit-event-bus-dead-letter"), Some("v1"));
+    assert_eq!(
+        dead_letter.header("x-qubit-event-bus-dead-letter"),
+        Some("v1")
+    );
     let record = dead_letter.payload();
     assert!(Arc::ptr_eq(&record.original_event_arc(), &envelope));
     assert_eq!(record.subscriber_id().as_str(), "test.subscriber");

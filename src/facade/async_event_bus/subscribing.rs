@@ -59,16 +59,25 @@ impl AsyncEventBus {
     ) -> Result<AsyncSubscription<T>, SubscribeError> {
         let _subscribe = self.inner.begin_subscribe().ok_or(SubscribeError::Closed)?;
         let (subscriber_id, topic, options) = request.into_parts();
-        if !options.interceptors().is_empty() || self.inner.facade_config.has_sync_subscriber_interceptors::<T>() {
-            return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
-                field: "sync_subscriber_interceptor",
-                message: "AsyncEventBus requires async subscriber middleware".into(),
-            }));
+        if !options.interceptors().is_empty()
+            || self
+                .inner
+                .facade_config
+                .has_sync_subscriber_interceptors::<T>()
+        {
+            return Err(SubscribeError::Configuration(
+                ConfigurationError::InvalidField {
+                    field: "sync_subscriber_interceptor",
+                    message: "AsyncEventBus requires async subscriber middleware".into(),
+                },
+            ));
         }
         let capabilities = self.inner.capabilities;
         let codec = resolve_codec(&topic, self.inner.facade_config.codec_registry());
         SubscriberPipeline::validate_ack_capability(options.ack_mode(), capabilities.settlement())?;
-        if options.ordering_policy() == OrderingPolicy::PerKey && !capabilities.ordering().supports_per_key() {
+        if options.ordering_policy() == OrderingPolicy::PerKey
+            && !capabilities.ordering().supports_per_key()
+        {
             return Err(SubscribeError::Capability(CapabilityError::Unsupported {
                 capability: "ordering.per_key",
             }));
@@ -88,7 +97,9 @@ impl AsyncEventBus {
         let id = self
             .inner
             .next_subscription_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
             .map(Id::new)
             .map_err(|_| {
                 SubscribeError::Configuration(ConfigurationError::InvalidField {
@@ -99,7 +110,12 @@ impl AsyncEventBus {
         if !self.inner.scheduler.register(id) {
             return Err(SubscribeError::ResourceLimit {
                 resource: "subscriptions",
-                limit: self.inner.facade_config.delivery_scheduling().max_subscriptions().get(),
+                limit: self
+                    .inner
+                    .facade_config
+                    .delivery_scheduling()
+                    .max_subscriptions()
+                    .get(),
             });
         }
         let mut registration = super::internal::scheduler_registration::SchedulerRegistration {
@@ -140,7 +156,11 @@ impl AsyncEventBus {
             receiver,
         );
         let admitted = {
-            let state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if *state != BusState::Running {
                 false
             } else {
@@ -222,7 +242,10 @@ mod tests {
             )
         }
 
-        fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        fn publish<'a>(
+            &'a self,
+            _: OutboundMessage,
+        ) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
             Box::pin(async { unreachable!("subscribe test does not publish") })
         }
 
@@ -243,7 +266,10 @@ mod tests {
             })
         }
 
-        fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        fn shutdown<'a>(
+            &'a self,
+            _: ShutdownMode,
+        ) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
             Box::pin(async { Ok(ShutdownOutcome::Complete) })
         }
     }
@@ -263,14 +289,22 @@ mod tests {
         let spi = Arc::new(SubscribeProbe {
             calls: AtomicUsize::new(0),
         });
-        let bus = AsyncEventBus::from_spi(ProviderId::new("overflow-probe").expect("valid provider"), spi.clone())
-            .expect("valid provider capabilities");
-        bus.inner.next_subscription_id.store(u64::MAX, Ordering::Release);
+        let bus = AsyncEventBus::from_spi(
+            ProviderId::new("overflow-probe").expect("valid provider"),
+            spi.clone(),
+        )
+        .expect("valid provider capabilities");
+        bus.inner
+            .next_subscription_id
+            .store(u64::MAX, Ordering::Release);
 
         let result = drive_ready(
             bus.subscribe(
-                SubscribeRequest::new("overflow-subscriber", Topic::<u32>::new("overflow.topic").unwrap())
-                    .expect("valid request"),
+                SubscribeRequest::new(
+                    "overflow-subscriber",
+                    Topic::<u32>::new("overflow.topic").unwrap(),
+                )
+                .expect("valid request"),
             ),
         );
         assert!(
@@ -278,7 +312,11 @@ mod tests {
             field: "subscription_id", message
         })) if message.as_ref() == "bus-local subscription ID space is exhausted")
         );
-        assert_eq!(spi.calls.load(Ordering::Acquire), 0, "provider SPI must not be called");
+        assert_eq!(
+            spi.calls.load(Ordering::Acquire),
+            0,
+            "provider SPI must not be called"
+        );
         let exhausted_id = Id::new(u64::MAX);
         assert!(
             bus.inner.scheduler.register(exhausted_id),

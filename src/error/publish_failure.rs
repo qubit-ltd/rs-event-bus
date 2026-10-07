@@ -37,6 +37,7 @@ use crate::model::PublishEffect;
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[error("publication {event_id:?} failed ({effect:?}): {cause}")]
+#[must_use = "publication failures must be handled or inspected"]
 pub struct PublishFailure {
     /// Original caller-provided identity of the failed publication.
     event_id: EventId,
@@ -57,7 +58,6 @@ impl PublishFailure {
     ///
     /// # Returns
     /// A failure exposing stable identity, effect and the original cause.
-    #[must_use]
     pub fn new(event_id: EventId, effect: PublishEffect, cause: PublishError) -> Self {
         Self {
             event_id,

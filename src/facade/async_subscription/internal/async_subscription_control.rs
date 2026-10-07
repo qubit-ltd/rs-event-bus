@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use qubit_id::Id;
@@ -28,6 +30,7 @@ use super::SessionSlot;
 use crate::error::ReceiveError;
 use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
+use crate::facade::AsyncSubscriptionRunState;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::async_event_bus::AsyncSignal;
 use crate::facade::internal::DeliveryMetrics;
@@ -47,13 +50,16 @@ pub(in crate::facade) struct AsyncSubscriptionControl<T: 'static> {
     /// Wakes callers waiting for the session lease.
     pub(in crate::facade::async_subscription) available: AsyncSignal,
     /// Canonical provider receiver close failure.
-    pub(in crate::facade::async_subscription) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
+    pub(in crate::facade::async_subscription) close_error:
+        Mutex<Option<Arc<SubscriptionCloseFailure>>>,
     /// Weak owner used to unregister this control from the bus.
     pub(in crate::facade::async_subscription) bus: Weak<AsyncEventBusInner>,
     /// Final cumulative counters retained after receiver cleanup.
     pub(in crate::facade) metrics: Arc<DeliveryMetrics>,
     /// Bus-local subscription identity.
     pub(in crate::facade::async_subscription) id: Id,
+    /// Atomic snapshot of the caller-driven run lifecycle.
+    pub(in crate::facade::async_subscription) run_state: AtomicU8,
 }
 
 impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
@@ -85,6 +91,7 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
             close_error: Mutex::new(None),
             bus,
             id,
+            run_state: AtomicU8::new(AsyncSubscriptionRunState::Unstarted as u8),
         })
     }
 
@@ -118,6 +125,45 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
 }
 
 impl<T: 'static> AsyncSubscriptionControl<T> {
+    /// Returns the current caller-driven lifecycle snapshot.
+    #[inline]
+    pub(in crate::facade::async_subscription) fn run_state(&self) -> AsyncSubscriptionRunState {
+        AsyncSubscriptionRunState::from_atomic(self.run_state.load(Ordering::Acquire))
+    }
+
+    /// Transitions a live subscription into the public runner state.
+    ///
+    /// # Returns
+    /// True if this call changed `Unstarted` or `Paused` to `Running`.
+    pub(in crate::facade::async_subscription) fn enter_run(&self) -> bool {
+        let mut current = self.run_state.load(Ordering::Acquire);
+        loop {
+            match AsyncSubscriptionRunState::from_atomic(current) {
+                AsyncSubscriptionRunState::Unstarted | AsyncSubscriptionRunState::Paused => {
+                    match self.run_state.compare_exchange_weak(
+                        current,
+                        AsyncSubscriptionRunState::Running as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return true,
+                        Err(actual) => current = actual,
+                    }
+                }
+                AsyncSubscriptionRunState::Running | AsyncSubscriptionRunState::Stopped => {
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Marks this subscription terminal. A running guard cannot undo it.
+    #[inline]
+    pub(in crate::facade::async_subscription) fn mark_stopped(&self) {
+        self.run_state
+            .store(AsyncSubscriptionRunState::Stopped as u8, Ordering::Release);
+    }
+
     /// Merges live scheduler gauges with retained final counters after close.
     ///
     /// # Returns
@@ -126,7 +172,9 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// without age.
     #[must_use = "delivery metrics are the current subscription diagnostics"]
     #[inline]
-    pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
+    pub(in crate::facade::async_subscription) fn delivery_metrics(
+        &self,
+    ) -> DeliveryMetricsSnapshot {
         let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
             let input = bus.scheduler.snapshot_input(Some(self.id));
             let now = bus.timer.clock().now();
@@ -142,7 +190,11 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
                         retryable: Some(false),
                         source: Box::new(error),
                     });
-                    if self.signals.fail_receive(SubscriptionStopReason::Provider { error }) {
+                    if self
+                        .signals
+                        .fail_receive(SubscriptionStopReason::Provider { error })
+                    {
+                        self.mark_stopped();
                         bus.emit(&Diagnostic::InternalFailure {
                             origin: "delivery_metrics_clock".into(),
                             message: message.into(),
@@ -162,10 +214,15 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// asynchronous cleanup.
     pub(in crate::facade::async_subscription) fn dispose(&self) {
         self.signals.stop(ShutdownMode::Immediate);
+        self.mark_stopped();
         let session = {
             let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
             slot.disposed = true;
-            if slot.active { None } else { slot.session.take() }
+            if slot.active {
+                None
+            } else {
+                slot.session.take()
+            }
         };
         if let Some(bus) = self.bus.upgrade() {
             bus.controls
@@ -191,8 +248,13 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// True only when this call publishes the first terminal cause.
+    #[inline]
     fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
-        self.signals.fail_receive(SubscriptionStopReason::Provider { error })
+        let published = self
+            .signals
+            .fail_receive(SubscriptionStopReason::Provider { error });
+        self.mark_stopped();
+        published
     }
     /// Stops the active or future runner.
     ///
@@ -201,6 +263,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     #[inline]
     fn stop(&self, mode: ShutdownMode) {
         self.signals.stop(mode);
+        self.mark_stopped();
     }
 
     /// Returns the canonical receiver close failure, when one exists.
@@ -209,7 +272,10 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// The stored close failure, or `None` before a close failure occurs.
     #[inline]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>> {
-        self.close_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.close_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Stores the first close failure for later shutdown callers.
@@ -219,8 +285,14 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The first stored failure.
-    fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure> {
-        let mut stored = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
+    fn store_close_error(
+        &self,
+        failure: Arc<SubscriptionCloseFailure>,
+    ) -> Arc<SubscriptionCloseFailure> {
+        let mut stored = self
+            .close_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         stored.get_or_insert(failure).clone()
     }
 
@@ -241,6 +313,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>> {
         Box::pin(async move {
             self.signals.stop(mode);
+            self.mark_stopped();
             let Some(mut lease) = self.lease().await else {
                 return Ok(());
             };

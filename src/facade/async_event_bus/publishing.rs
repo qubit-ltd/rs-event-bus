@@ -8,6 +8,7 @@
 //! Asynchronous event bus publishing operations.
 
 use crate::AsyncEventBus;
+use crate::CapabilityError;
 use crate::PublishError;
 use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
@@ -20,10 +21,34 @@ use crate::model::EventId;
 use crate::model::PublishEffect;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
+use crate::model::Topic;
 use crate::pipeline::PipelineFailure;
 use crate::spi::PublishVisibility;
 
 impl AsyncEventBus {
+    /// Checks that the configured provider can publish this topic's payload.
+    ///
+    /// This synchronous configuration query checks codec availability only,
+    /// using capabilities cached when the facade was created. It does not
+    /// encode a value, call the provider, or change publish metrics.
+    /// It does not verify that encoding, payload limits, transport
+    /// availability, or message persistence will succeed.
+    ///
+    /// # Errors
+    /// Returns [`CapabilityError::CodecRequired`] when the provider accepts
+    /// only encoded payloads and neither the topic nor facade registry has
+    /// a codec.
+    pub fn check_publish_codec<T: Send + Sync + 'static>(
+        &self,
+        topic: &Topic<T>,
+    ) -> Result<(), CapabilityError> {
+        crate::codec::check_publish_codec(
+            self.inner.capabilities.payload_modes(),
+            topic,
+            self.inner.facade_config.codec_registry(),
+        )
+    }
+
     /// Publishes once and requires the resulting receipt to satisfy
     /// `requirement`. Per-destination conditions fail without publishing when
     /// the provider hides destination admissions. Other admission failures
@@ -43,18 +68,23 @@ impl AsyncEventBus {
         request: PublishRequest<T>,
         requirement: AdmissionRequirement,
     ) -> Result<PublishReceipt, CheckedPublishError> {
-        if matches!(self.inner.capabilities.publish_visibility(), PublishVisibility::Opaque)
-            && matches!(
-                requirement,
-                AdmissionRequirement::AtLeastOneAccepted | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected
-            )
-        {
+        if matches!(
+            self.inner.capabilities.publish_visibility(),
+            PublishVisibility::Opaque
+        ) && matches!(
+            requirement,
+            AdmissionRequirement::AtLeastOneAccepted
+                | AdmissionRequirement::AtLeastOneAcceptedAndNoRejected
+        ) {
             return Err(CheckedPublishError::UnsupportedVisibility {
                 event_id: request.envelope().id().clone(),
                 provider_id: self.inner.provider_id.clone(),
             });
         }
-        let receipt = self.publish(request).await.map_err(CheckedPublishError::Publish)?;
+        let receipt = self
+            .publish(request)
+            .await
+            .map_err(CheckedPublishError::Publish)?;
         match receipt.check_admission(requirement) {
             Ok(()) => Ok(receipt),
             Err(reason) => Err(CheckedPublishError::Admission {
@@ -63,10 +93,12 @@ impl AsyncEventBus {
             }),
         }
     }
+
     /// Returns the shared publication counters for this facade and its clones.
     ///
     /// # Returns
     /// A point-in-time snapshot of publication counters.
+    #[inline]
     pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
         self.inner.publish_metrics.snapshot()
     }
@@ -155,7 +187,10 @@ impl AsyncEventBus {
 ///
 /// # Returns
 /// The corresponding public publish error.
-pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
+pub(in crate::facade) fn publish_pipeline_error(
+    event_id: EventId,
+    failure: PipelineFailure,
+) -> PublishFailure {
     let effect = failure.publish_effect();
     let cause = match failure.into_error() {
         EventBusError::Configuration(error) => PublishError::Configuration(error),

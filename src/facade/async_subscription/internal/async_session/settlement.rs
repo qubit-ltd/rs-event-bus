@@ -144,14 +144,20 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .as_ref()
                 .expect("cancelled attempts preserve context")
                 .clone();
-            if let SettlementRetryDecision::Stop(termination) = pending.settlement.retry.after_error(&error, elapsed) {
+            if let SettlementRetryDecision::Stop(termination) =
+                pending.settlement.retry.after_error(&error, elapsed)
+            {
                 self.stop_settlement(index, error, termination, None);
                 return true;
             }
         }
         if elapsed < pending.settlement.due {
             if pending.settlement.timer.is_none() {
-                match self.inner.timer.after(pending.settlement.due.saturating_sub(elapsed)) {
+                match self
+                    .inner
+                    .timer
+                    .after(pending.settlement.due.saturating_sub(elapsed))
+                {
                     Ok(timer) => pending.settlement.timer = Some(timer),
                     Err(error) => self.stop_infrastructure(index, error, None),
                 }
@@ -175,7 +181,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 return true;
             }
         };
-        let result = self.perform_settlement_attempt(index, disposition, attempt).await;
+        let result = self
+            .perform_settlement_attempt(index, disposition, attempt)
+            .await;
         self.handle_settlement_result(index, disposition, attempt, result);
         true
     }
@@ -205,7 +213,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let pending = &mut self.completed[index];
         let token = pending.token.as_ref().expect("validated settlement token");
         let result = {
-            let receiver = self.receiver.as_mut().expect("settlement owner retains receiver");
+            let receiver = self
+                .receiver
+                .as_mut()
+                .expect("settlement owner retains receiver");
             let mut guard = SettlementAttemptGuard {
                 progress: &mut pending.settlement,
                 timer: self.inner.timer.clone(),
@@ -232,7 +243,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     poll_fn(|cx| {
                         let mut cursor = 0;
                         while cursor < self.tasks.len() {
-                            if let Poll::Ready(delivery) = self.tasks[cursor].future.as_mut().poll(cx) {
+                            if let Poll::Ready(delivery) =
+                                self.tasks[cursor].future.as_mut().poll(cx)
+                            {
                                 self.inner.scheduler.handler_finished(delivery.lease.id);
                                 drop(self.tasks.remove(cursor));
                                 self.completed_during_settlement.push_back(delivery);
@@ -342,15 +355,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         preceding: Option<Diagnostic>,
     ) {
         let pending = &self.completed[index];
-        let disposition = pending.settlement_intent.expect("settlement intent is immutable");
+        let disposition = pending
+            .settlement_intent
+            .expect("settlement intent is immutable");
         let attempts = pending.settlement.retry.attempts();
-        let first = self.signals.fail_receive(SubscriptionStopReason::Settlement {
-            event_id: pending.event_id.clone(),
-            disposition,
-            attempts,
-            termination,
-            error: error.clone(),
-        });
+        let first = self
+            .signals
+            .fail_receive(SubscriptionStopReason::Settlement {
+                event_id: pending.event_id.clone(),
+                disposition,
+                attempts,
+                termination,
+                error: error.clone(),
+            });
         self.inner.scheduler.stop_subscription(self.id);
         self.metrics.record_terminal_failure();
         if let Some(diagnostic) = preceding {
@@ -392,7 +409,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// The resulting SpiError retains `source`; callbacks run after
     /// publication.
-    fn stop_infrastructure(&mut self, index: usize, source: TimeError, preceding: Option<Diagnostic>) {
+    fn stop_infrastructure(
+        &mut self,
+        index: usize,
+        source: TimeError,
+        preceding: Option<Diagnostic>,
+    ) {
         let error = Arc::new(SpiError::Operation {
             provider_id: self.inner.provider_id.as_str().into(),
             operation: "settle",
@@ -401,7 +423,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             retryable: Some(false),
             source: Box::new(source),
         });
-        self.stop_settlement(index, error, SettlementTermination::InfrastructureFailure, preceding);
+        self.stop_settlement(
+            index,
+            error,
+            SettlementTermination::InfrastructureFailure,
+            preceding,
+        );
     }
 
     /// Releases successful settlement ownership and deferred handler
@@ -414,7 +441,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// SPI response or counting that message as an unresolved abandonment.
     fn finish_completed(&mut self, index: usize) {
         if self.completed[index].settlement.started_at.is_some() {
-            match self.completed[index].settlement.elapsed(self.inner.timer.as_ref()) {
+            match self.completed[index]
+                .settlement
+                .elapsed(self.inner.timer.as_ref())
+            {
                 Ok(elapsed) => self.metrics.record_settlement_elapsed(elapsed),
                 Err(error) => {
                     self.stop_infrastructure(index, error, None);
@@ -423,7 +453,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             }
         }
         self.metrics.record_completed();
-        let pending = self.completed.remove(index).expect("selected owned delivery");
+        let pending = self
+            .completed
+            .remove(index)
+            .expect("selected owned delivery");
         self.emit_failure_diagnostic(
             pending.failure_diagnostic.clone(),
             pending.event_id.clone(),

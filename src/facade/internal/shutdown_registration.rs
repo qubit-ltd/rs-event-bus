@@ -33,7 +33,10 @@ impl<'ticket> ShutdownRegistration<'ticket> {
     ///
     /// # Returns
     /// An unregistered guard that can install a waker when polled.
-    pub(in crate::facade) fn new(coordinator: &'ticket ShutdownCoordinator, generation: u64) -> Self {
+    pub(in crate::facade) fn new(
+        coordinator: &'ticket ShutdownCoordinator,
+        generation: u64,
+    ) -> Self {
         Self {
             coordinator,
             generation,
@@ -51,7 +54,8 @@ impl<'ticket> ShutdownRegistration<'ticket> {
     /// when this generation has a shutdown result, or `Poll::Ready(None)`
     /// when the coordinator reports no result for this generation.
     pub(in crate::facade) fn poll(&mut self, cx: &Context<'_>) -> Poll<Option<ShutdownResult>> {
-        self.coordinator.poll_result(self.generation, &mut self.token, cx)
+        self.coordinator
+            .poll_result(self.generation, &mut self.token, cx)
     }
 }
 impl Drop for ShutdownRegistration<'_> {

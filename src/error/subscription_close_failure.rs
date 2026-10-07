@@ -47,7 +47,10 @@ impl SubscriptionCloseFailure {
     /// # Returns
     /// A failure record that retains both values for later shutdown reporting.
     pub(crate) fn new(subscriber_id: SubscriberId, error: SpiError) -> Self {
-        Self { subscriber_id, error }
+        Self {
+            subscriber_id,
+            error,
+        }
     }
 
     /// Returns the logical subscriber whose provider subscription failed to

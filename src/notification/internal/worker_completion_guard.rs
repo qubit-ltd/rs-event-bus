@@ -62,7 +62,11 @@ impl WorkerCompletionGuard {
 impl Drop for WorkerCompletionGuard {
     /// Publishes one immutable result and wakes all closers without user code.
     fn drop(&mut self) {
-        let exit = if panicking() { WorkerExit::Panicked } else { self.exit };
+        let exit = if panicking() {
+            WorkerExit::Panicked
+        } else {
+            self.exit
+        };
         let (lock, changed) = &*self.state;
         let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
         if state.exit.is_none() {

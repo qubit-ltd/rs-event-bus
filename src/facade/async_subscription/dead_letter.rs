@@ -64,7 +64,7 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
     ///
     /// # Errors
     /// Returns the pipeline or not-admitted failure.
-    pub(in crate::facade) async fn attempt<T: Send + Sync + 'static>(
+    async fn attempt<T: Send + Sync + 'static>(
         inner: &Arc<AsyncEventBusInner>,
         envelope: EventEnvelope<DeadLetterEvent<T>>,
         admission_policy: DeadLetterAdmissionPolicy,
@@ -80,11 +80,15 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
                 inner.timer.clone(),
             )
             .await
-            .map_err(|failure| DeadLetterForwardError::Publish(publish_pipeline_error(event_id, failure)))?;
+            .map_err(|failure| {
+                DeadLetterForwardError::Publish(publish_pipeline_error(event_id, failure))
+            })?;
         if dead_letter_was_accepted(&receipt, inner.capabilities, admission_policy) {
             Ok(receipt)
         } else {
-            Err(DeadLetterForwardError::NotAdmitted(receipt.admission_outcome()))
+            Err(DeadLetterForwardError::NotAdmitted(
+                receipt.admission_outcome(),
+            ))
         }
     }
 

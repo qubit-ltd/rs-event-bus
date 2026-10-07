@@ -55,7 +55,8 @@ pub type SubscribeErrorHandler<T> =
 ///
 /// # Type Parameters
 /// - `T`: event payload type passed to the next middleware stage.
-pub type SubscriberNext<T> = Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
+pub type SubscriberNext<T> =
+    Box<dyn FnOnce(Delivery<T>) -> Result<(), DeliveryError> + Send + 'static>;
 
 /// Synchronous typed subscriber middleware; invoke `next` to continue.
 ///
@@ -179,11 +180,6 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
 }
 
 impl<T: 'static> SubscribeOptions<T> {
-    /// Returns the behavior used after a delivery gap.
-    #[inline]
-    pub fn gap_policy(&self) -> GapPolicy {
-        self.gap_policy
-    }
     /// Returns default options: automatic ACK, ephemeral, and new messages.
     ///
     /// # Returns
@@ -200,6 +196,13 @@ impl<T: 'static> SubscribeOptions<T> {
     #[inline]
     pub fn builder() -> super::SubscribeOptionsBuilder<T> {
         super::SubscribeOptionsBuilder::new()
+    }
+
+    /// Returns the behavior used after a delivery gap.
+    #[must_use = "Use the returned gap policy."]
+    #[inline]
+    pub fn gap_policy(&self) -> GapPolicy {
+        self.gap_policy
     }
 
     /// Returns the acknowledgement mode.

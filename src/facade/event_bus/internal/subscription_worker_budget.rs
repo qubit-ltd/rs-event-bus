@@ -33,10 +33,12 @@ impl SubscriptionWorkerBudget {
             if active >= self.limit {
                 return None;
             }
-            match self
-                .active
-                .compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
-            {
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => return Some(SubscriptionWorkerPermit(self.clone())),
                 Err(observed) => active = observed,
             }

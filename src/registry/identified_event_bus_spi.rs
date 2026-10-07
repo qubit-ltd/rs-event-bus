@@ -102,7 +102,10 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
     #[inline]
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+    fn subscribe(
+        &self,
+        request: SpiSubscriptionRequest,
+    ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
         self.inner.subscribe(request)
     }
 
@@ -118,7 +121,11 @@ impl EventBusSpi for IdentifiedEventBusSpi {
     /// # Errors
     /// Returns the SPI failure produced by the wrapped provider.
     #[inline]
-    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
+    fn wait_for_topic_idle(
+        &self,
+        topic: &TopicAddress,
+        timeout: Option<Duration>,
+    ) -> Result<Option<bool>, SpiError> {
         self.inner.wait_for_topic_idle(topic, timeout)
     }
 

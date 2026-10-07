@@ -67,7 +67,9 @@ pub enum SpiError {
         source: Box<dyn Error + Send + Sync>,
     },
     /// A settlement token was rejected by its owning provider.
-    #[error("provider {provider_id} failed {operation} (invalid_settlement_token/{reason}): {source}")]
+    #[error(
+        "provider {provider_id} failed {operation} (invalid_settlement_token/{reason}): {source}"
+    )]
     InvalidSettlementToken {
         /// Provider that produced the token.
         provider_id: Box<str>,
@@ -128,7 +130,9 @@ impl SpiError {
     pub fn operation(&self) -> &'static str {
         match self {
             Self::Publish { .. } => "publish",
-            Self::Operation { operation, .. } | Self::InvalidSettlementToken { operation, .. } => operation,
+            Self::Operation { operation, .. } | Self::InvalidSettlementToken { operation, .. } => {
+                operation
+            }
         }
     }
 

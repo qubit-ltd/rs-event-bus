@@ -49,8 +49,8 @@ impl EventBusProviderAdapter {
     #[must_use]
     pub(crate) fn new(provider: Arc<EventBusProvider>) -> Self {
         let descriptor = provider.descriptor();
-        let provider_id =
-            ProviderId::new(descriptor.id().as_str()).expect("qubit-spi provider IDs satisfy the facade ID invariants");
+        let provider_id = ProviderId::new(descriptor.id().as_str())
+            .expect("qubit-spi provider IDs satisfy the facade ID invariants");
         Self {
             provider,
             descriptor,
@@ -90,16 +90,23 @@ impl ServiceProvider<EventBusSpec> for EventBusProviderAdapter {
         config: &EventBusConfig,
     ) -> Result<Arc<dyn EventBusSpi>, ProviderFailure<EventBusProviderError>> {
         let spi = self.provider.create_configured(config)?;
-        let capabilities = catch_spi_call(self.provider_id.as_str(), "capabilities", None, || spi.capabilities())
-            .map_err(|error| ProviderFailure::initialization_failed(EventBusProviderError::provider(error)))?;
+        let capabilities = catch_spi_call(self.provider_id.as_str(), "capabilities", None, || {
+            spi.capabilities()
+        })
+        .map_err(|error| {
+            ProviderFailure::initialization_failed(EventBusProviderError::provider(error))
+        })?;
         let missing = config.required_capabilities().missing_from(capabilities);
         if !missing.is_empty() {
             return Err(ProviderFailure::unsupported(
                 EventBusProviderError::UnsupportedCapabilities { missing },
             ));
         }
-        let identified: Arc<dyn EventBusSpi> =
-            Arc::new(IdentifiedEventBusSpi::new(self.provider_id.clone(), spi, capabilities));
+        let identified: Arc<dyn EventBusSpi> = Arc::new(IdentifiedEventBusSpi::new(
+            self.provider_id.clone(),
+            spi,
+            capabilities,
+        ));
         Ok(identified)
     }
 }

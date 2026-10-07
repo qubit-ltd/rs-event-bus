@@ -12,6 +12,6 @@
 pub(super) struct OperationGateState {
     /// Whether new facade operations are rejected.
     pub(super) closing: bool,
-    /// Number of publish and subscribe calls admitted so far.
+    /// Number of publish and subscribe calls currently in progress.
     pub(super) active: usize,
 }
