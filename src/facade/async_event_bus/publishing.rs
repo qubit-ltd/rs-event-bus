@@ -12,10 +12,10 @@ use crate::CapabilityError;
 use crate::PublishError;
 use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
-use crate::facade::PublishMetrics;
 use crate::error::CheckedPublishError;
 use crate::error::ConfigurationError;
 use crate::error::EventBusError;
+use crate::facade::PublishMetrics;
 use crate::model::AdmissionRequirement;
 use crate::model::BatchPublishResult;
 use crate::model::EventId;
@@ -167,7 +167,8 @@ impl AsyncEventBus {
             ));
         };
         let observers = self.observer_snapshot();
-        let result = self.inner
+        let result = self
+            .inner
             .publisher
             .publish_async(
                 self.inner.spi.as_ref(),

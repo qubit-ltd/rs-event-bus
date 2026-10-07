@@ -50,8 +50,8 @@ use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::facade::PublishMetricsSnapshot;
-use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DEAD_LETTER_HEADER;
 use qubit_event_bus::model::DEAD_LETTER_HEADER_VALUE;
@@ -419,15 +419,20 @@ fn test_async_publisher_metrics_track_shared_attempts_and_batch_items() {
     )
     .expect("empty destination acknowledgement must be returned");
     assert_eq!(empty_bus.publish_metrics().zero_destinations, 1);
-    let rejected = block_on(empty_bus.publish_checked(
-        PublishRequest::builder()
-            .topic(topic())
-            .payload(60_u32)
-            .build()
-            .expect("test publish request must be valid"),
-        AdmissionRequirement::ProviderOrDestinationAccepted,
+    let rejected = block_on(
+        empty_bus.publish_checked(
+            PublishRequest::builder()
+                .topic(topic())
+                .payload(60_u32)
+                .build()
+                .expect("test publish request must be valid"),
+            AdmissionRequirement::ProviderOrDestinationAccepted,
+        ),
+    );
+    assert!(matches!(
+        rejected,
+        Err(CheckedPublishError::Admission { .. })
     ));
-    assert!(matches!(rejected, Err(CheckedPublishError::Admission { .. })));
     let checked_metrics = empty_bus.publish_metrics();
     assert_eq!(checked_metrics.attempts, 2);
     assert_eq!(checked_metrics.zero_destinations, 2);
