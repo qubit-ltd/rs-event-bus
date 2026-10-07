@@ -55,6 +55,27 @@ impl EventBus {
     /// the provider hides destination admissions. Other admission failures
     /// retain the receipt; retrying may duplicate accepted deliveries.
     ///
+    /// # Type Parameters
+    /// - `T`: payload type carried by the request.
+    ///
+    /// # Parameters
+    /// - `request`: validated request to publish.
+    /// - `requirement`: admission condition that the resulting receipt must
+    ///   satisfy.
+    ///
+    /// # Returns
+    /// The provider receipt when publication succeeds and the requirement is
+    /// met.
+    ///
+    /// # Errors
+    /// Returns [`CheckedPublishError::UnsupportedVisibility`] before
+    /// publication when the selected requirement needs destination
+    /// admissions hidden by the provider.
+    /// Returns [`CheckedPublishError::Publish`] if the publish operation fails.
+    /// Returns [`CheckedPublishError::Admission`] with the complete receipt
+    /// when the provider published but the requirement was not met; some
+    /// destinations may already have accepted the event.
+    ///
     /// ```
     /// # use qubit_event_bus::EventBus;
     /// # use qubit_event_bus::CheckedPublishError;
