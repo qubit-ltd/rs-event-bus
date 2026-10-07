@@ -795,7 +795,7 @@ let local = LocalEventBusConfig::new()
 let bus = EventBus::local(local)?;
 ```
 
-`queue_capacity` limits how many messages **one subscriber** may have outstanding. The default is 1,024. `max_total_outstanding` limits outstanding deliveries **across every subscriber of this local instance**. The default is 65,536. A message that has been taken but not finished counts, and a retry keeps its slot. Both values must be greater than zero. The unit is a delivery, not a byte. When a queue is full, that subscriber may reject the message while others still accept it. Terminal settlement or provider cleanup releases the outstanding slot; handler completion alone does not. Size these from measured handling speed and memory. A message count is not a memory budget.
+`queue_capacity` limits how many messages **one subscriber** may have outstanding. The default is 1,024. `max_total_outstanding` limits outstanding deliveries **across every subscriber of this local instance**. The default is 65,536. A message that has been taken but not finished counts, and a retry keeps its slot. Both values must be greater than zero. The unit is a delivery, not a byte. When a queue is full, that subscriber may reject the message while others still accept it. Terminal settlement or provider cleanup releases the outstanding slot; handler completion alone does not. Size these from the expected subscriber count, measured peak payload sizes, handler throughput, and the process memory budget. For example, two subscribers can create two outstanding deliveries for one publication. The values below (2,048 per subscription, 20,000 per instance, and 8 MiB of declared weight) are illustrative, not general capacity thresholds.
 
 To bound application-declared native payload weight as well as delivery count, opt in to `max_total_outstanding_weight_bytes` and supply a `native_payload_weight` callback for each concrete payload type you publish. For example, a `String` publisher can declare its UTF-8 length (at least one byte for an empty string):
 
@@ -814,6 +814,7 @@ use std::num::NonZeroUsize;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
@@ -850,7 +851,24 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build();
     let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    let published = bus.publish_checked(
+        request,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    );
+    let metrics = bus.publish_metrics();
+    eprintln!(
+        "local admission totals: rejected={}, zero_destinations={}",
+        metrics.rejected_destinations, metrics.zero_destinations
+    );
+    let receipt = match published {
+        Ok(receipt) => receipt,
+        Err(CheckedPublishError::Admission { receipt, reason }) => {
+            eprintln!("local admission: {:?}", receipt.admission_outcome());
+            return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    eprintln!("local admission: {:?}", receipt.admission_outcome());
     assert_eq!(
         receiver.recv_timeout(Duration::from_secs(3))?,
         "order-42"
@@ -863,7 +881,9 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The budget is disabled by default. The callback sees the payload after publisher interceptors and runs once before provider retries. When enabled, a native publish without a declared weight fails with a non-retryable provider error before any destination is enqueued. Each accepted fanout delivery consumes one copy of the declared weight; rejected destinations do not. A retry keeps its reservation until terminal settlement or cleanup. Treat the weight as an application estimate, not a measurement or hard RSS/process-memory cap: shared allocations, queues, handlers, and transport overhead still consume memory. Monitor the payload-weight distribution, queue admission rejections, and handler latency together, then tune the estimate and limits from observed load. Encoded providers use the separate encoded-payload byte limits.
+The budget is disabled by default. The callback sees the payload after publisher interceptors and runs once before provider retries. When enabled, a native publish without a declared weight fails with a non-retryable provider error before any destination is enqueued. Each accepted fanout delivery consumes one copy of the declared weight; rejected destinations do not. For example, a 1 KiB declaration accepted by two subscribers consumes 2 KiB of the 8 MiB budget. A retry keeps its reservation until terminal settlement or cleanup. The example's `String::len()` counts its UTF-8 bytes; adapt the estimator to cover the payload holding cost your application intends to account for. Shared buffers, unused allocation capacity, handler allocations, queues, and transport overhead need separate assessment. Declared weight is not a measured or hard RSS/process-memory cap. Monitor process RSS independently and tune the estimate and limits from observed payload sizes, handler latency, and load. Encoded providers use the separate encoded-payload byte limits.
+
+The example requires every reported destination to accept the publication. `publish_checked` returns an admission error with the complete receipt if any destination rejects, even if another destination already accepted. The example logs that receipt's `admission_outcome()` and the bus's `publish_metrics()` counters, then returns the error with its receipt intact. In a long-running service, record each receipt and watch `rejected_destinations` and `zero_destinations` over time; the counters aggregate all publications on this facade and do not identify why a destination rejected. Inspect the individual destination status and rejection reason on the receipt to diagnose capacity or other causes. A partial acceptance must be reconciled per destination or by an application idempotency policy; blindly republishing the whole event may duplicate work for destinations that accepted it. Admission still does not prove handler completion.
 
 Both facades use `DeliverySchedulingConfig`: defaults are 4 running handlers, 256 owned deliveries globally, 32 owned deliveries per subscription, and 256 registered subscriptions. Owned includes a pre-receive reservation, queued, running, and settling work. Reservation happens before receive, with no extra pending message outside the limit. Same-key queues and settlement backoff do not consume handler slots; a lane stays owned until settlement succeeds or the subscription terminates. All four parameters are `NonZeroUsize`; running and per-subscription limits must not exceed the global owned limit.
 

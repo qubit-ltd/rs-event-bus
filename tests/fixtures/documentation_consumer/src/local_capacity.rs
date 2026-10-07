@@ -11,6 +11,7 @@ use std::num::NonZeroUsize;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
@@ -47,7 +48,24 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build();
     let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    let published = bus.publish_checked(
+        request,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    );
+    let metrics = bus.publish_metrics();
+    eprintln!(
+        "local admission totals: rejected={}, zero_destinations={}",
+        metrics.rejected_destinations, metrics.zero_destinations
+    );
+    let receipt = match published {
+        Ok(receipt) => receipt,
+        Err(CheckedPublishError::Admission { receipt, reason }) => {
+            eprintln!("local admission: {:?}", receipt.admission_outcome());
+            return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    eprintln!("local admission: {:?}", receipt.admission_outcome());
     assert_eq!(
         receiver.recv_timeout(Duration::from_secs(3))?,
         "order-42"

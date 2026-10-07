@@ -795,7 +795,7 @@ let local = LocalEventBusConfig::new()
 let bus = EventBus::local(local)?;
 ```
 
-`queue_capacity` 限制**每个订阅者**最多积压多少条消息，默认 1,024；`max_total_outstanding` 限制**这个 local 实例的所有订阅者合计**最多积压多少次投递，默认 65,536。已经取走但还没处理完的消息也算在内，重试期间仍占名额。两个值都要大于零。计数单位是消息投递次数，不是字节；队列满时，某个订阅者可能拒绝，其他订阅者仍可接收。终态结算或 provider 清理后释放名额，handler 返回本身不等于结算完成。请结合处理速度和内存实测调整，不能只看条数推断内存占用。
+`queue_capacity` 限制**每个订阅者**最多积压多少条消息，默认 1,024；`max_total_outstanding` 限制**这个 local 实例的所有订阅者合计**最多积压多少次投递，默认 65,536。已经取走但还没处理完的消息也算在内，重试期间仍占名额。两个值都要大于零。计数单位是消息投递次数，不是字节；队列满时，某个订阅者可能拒绝，其他订阅者仍可接收。终态结算或 provider 清理后释放名额，handler 返回本身不等于结算完成。配置时结合目标订阅数、实测峰值载荷、处理速度及进程内存预算；例如两个订阅者接收同一次发布，会形成两次待处理投递。下例的每订阅 2,048 条、实例总计 20,000 条和 8 MiB 声明权重都只是示例值，并非通用阈值。
 
 如果还需要限制应用声明的原生载荷权重，可设置 `max_total_outstanding_weight_bytes`，并为每种具体载荷类型提供 `native_payload_weight` 回调。例如，发布 `String` 时可按 UTF-8 字节长度声明权重，空字符串至少按一个字节计算：
 
@@ -814,6 +814,7 @@ use std::num::NonZeroUsize;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
@@ -850,7 +851,24 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build();
     let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let _receipt = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)?;
+    let published = bus.publish_checked(
+        request,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    );
+    let metrics = bus.publish_metrics();
+    eprintln!(
+        "local admission totals: rejected={}, zero_destinations={}",
+        metrics.rejected_destinations, metrics.zero_destinations
+    );
+    let receipt = match published {
+        Ok(receipt) => receipt,
+        Err(CheckedPublishError::Admission { receipt, reason }) => {
+            eprintln!("local admission: {:?}", receipt.admission_outcome());
+            return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    eprintln!("local admission: {:?}", receipt.admission_outcome());
     assert_eq!(
         receiver.recv_timeout(Duration::from_secs(3))?,
         "order-42"
@@ -863,7 +881,9 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-权重预算默认关闭。回调接收发布拦截器处理后的载荷，在 provider 首次尝试前执行一次，重试复用该值。启用后，原生载荷未声明权重时，provider 会在任何目标入队前返回不可重试错误。扇出投递按每个已接纳目标分别计费；拒绝的目标不占权重额度。重试期间保留额度，到终态结算或清理时释放。权重是应用估算值，**不是实际测量值，也不是 RSS/进程内存硬上限**：共享分配、队列、处理函数和传输层仍会占用内存。应同时监控载荷权重分布、队列接纳拒绝和 handler 延迟，再依据实际负载调整估算与限额。编码传输另受编码载荷字节限制。
+权重预算默认关闭。回调接收发布拦截器处理后的载荷，在 provider 首次尝试前执行一次，重试复用该值。启用后，原生载荷未声明权重时，provider 会在任何目标入队前返回不可重试错误。扇出投递按每个已接纳目标分别计费；例如声明 1 KiB 的消息被两个订阅者接纳，就占用 8 MiB 预算中的 2 KiB；拒绝的目标不占额度。重试期间保留额度，到终态结算或清理时释放。示例用 `String::len()` 计入 UTF-8 内容字节；实际应用应按希望核算的载荷持有成本调整估算。共享缓冲区、预留但未使用的容量、处理函数额外分配、队列和传输层开销都要另行评估。声明权重**不是实际测量值，也不是 RSS/进程内存硬上限**。请独立监控进程 RSS，再结合载荷大小、handler 延迟和负载实测调整估算及限额。编码传输另受编码载荷字节限制。
+
+示例要求每个已报告的目标都接纳消息。若某个目标拒绝，即使其他目标已接纳，`publish_checked` 也会返回带完整回执的接纳错误。示例记录该回执的 `admission_outcome()` 以及 `publish_metrics()` 计数，并把含回执的错误完整返回。长期运行时，应记录每次回执，并持续观察 `rejected_destinations` 和 `zero_destinations`；这些计数汇总了该 facade 的多次发布，无法区分容量不足或其他拒绝原因。诊断时查看具体回执中各目标的状态和拒绝原因。部分接纳后应按目标补偿，或依靠应用的幂等策略对账；直接重发整条消息会让已接纳的目标重复处理。接纳成功仍不代表 handler 已完成。
 
 同步和异步 facade 共用 `DeliverySchedulingConfig`：默认最多运行 4 个 handler、持有 256 条投递、每订阅持有 32 条投递、注册 256 个订阅。owned 包括 receive 前的预留、排队、执行中和结算中；接收前预留，绝不额外取一条越过额度。同键排队和结算退避不占 handler 执行额度，同键通道要到结算成功或订阅终止才释放。四个参数均为 `NonZeroUsize`，running 和 per-subscription 不得大于 owned。
 
