@@ -54,6 +54,9 @@ pub(in crate::facade) struct OwnedSyncDelivery<'tracking, T: 'static> {
     pub(in crate::facade) settlement: Option<CoordinatorMessage>,
     /// True only after the job returned or unstarted work was canceled.
     pub(in crate::facade) handler_finished: bool,
+    /// A retry remains owned while its deadline is pending or its grant is
+    /// requeued; cleared only when admission becomes terminal or succeeds.
+    pub(in crate::facade) retry_pending: bool,
     /// Whether the delivery has acquired its lane for settlement.
     pub(in crate::facade) settlement_granted: bool,
     /// Whether cancellation already abandoned this payload without settlement.

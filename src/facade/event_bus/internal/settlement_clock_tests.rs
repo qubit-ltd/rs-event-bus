@@ -200,6 +200,9 @@ fn test_sync_settlement_clock_wake_respects_backoff_and_total_deadline() {
     bus.inner.scheduler.notify(subscription.id());
     sampled_at(&sampled_rx, 1, Duration::from_millis(9));
     assert_eq!(attempts.load(Ordering::SeqCst), 1, "wake before due time cannot retry");
+    bus.inner.scheduler.notify(subscription.id());
+    sampled_at(&sampled_rx, 1, Duration::from_millis(9));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1, "repeated early wake cannot retry");
     manual.advance(Duration::from_millis(1)).expect("advance to retry");
     bus.inner.scheduler.notify(subscription.id());
     assert_eq!(
@@ -1028,7 +1031,7 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
                 .expect("publish");
             entered_rx
                 .recv_timeout(Duration::from_secs(2))
-                .expect("pipeline gate reached before actual handler admission");
+                .unwrap_or_else(|error| panic!("pipeline gate reached before actual handler admission; mode={mode}, stage={stage}, callback_calls={}: {error}", calls.load(Ordering::SeqCst)));
             let control = bus
                 .inner
                 .subscriptions

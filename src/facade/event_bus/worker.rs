@@ -20,6 +20,7 @@ use std::thread::park_timeout;
 use std::time::Duration;
 
 use qubit_id::Id;
+use qubit_retry::RetrySessionAdmission;
 use qubit_retry::RetrySessionStep;
 
 use crate::DeliveryError;
@@ -173,6 +174,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     {
                         delivery.due = None;
                         delivery.handler_finished = true;
+                        delivery.retry_pending = false;
                         let event = prepared.event_arc();
                         delivery.settlement = if delivery.token.is_some()
                             && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
@@ -232,11 +234,16 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                 )),
                             };
                             match session.record_result(result) {
-                                RetrySessionStep::Complete(_) => Some(Ok(())),
+                                RetrySessionStep::Complete(_) => {
+                                    delivery.retry_pending = false;
+                                    Some(Ok(()))
+                                }
                                 RetrySessionStep::Failed(error) => {
+                                    delivery.retry_pending = false;
                                     Some(Err(terminal_retry_error(&inner, error, directive)))
                                 }
                                 RetrySessionStep::RetryAt(due) => {
+                                    delivery.retry_pending = true;
                                     delivery.due = Some(due);
                                     inner.scheduler.finish_attempt_waiting(lease);
                                     None
@@ -256,6 +263,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             })
                         };
                         if let Some(result) = terminal_result {
+                            delivery.retry_pending = false;
                             finish_attempt(&inner, &router, &control, &subscriber_id, &options, delivery, result);
                         }
                     }
@@ -269,7 +277,6 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         let remaining = due.duration_since(now).unwrap_or(Duration::ZERO);
                         if cancelled || remaining.is_zero() {
                             delivery.due = None;
-                            delivery.handler_finished = false;
                             inner.scheduler.wake_retry(lease);
                         } else {
                             wait = wait.min(remaining);
@@ -285,6 +292,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                 }
                 for (&lease, delivery) in &mut owned {
                     if !delivery.handler_finished
+                        || delivery.retry_pending
                         || delivery.due.is_some()
                         || (!delivery.settlement_granted && !stopping)
                     {
@@ -384,8 +392,21 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                     }
                     let attempt = if let Some(session) = &mut delivery.session {
                         match session.begin_attempt() {
-                            Ok(attempt) => attempt.get(),
+                            Ok(RetrySessionAdmission::Admitted(attempt)) => {
+                                delivery.retry_pending = false;
+                                delivery.handler_finished = false;
+                                attempt.get()
+                            }
+                            Ok(RetrySessionAdmission::Waiting(due)) => {
+                                delivery.retry_pending = true;
+                                delivery.due = Some(due);
+                                inner.scheduler.defer_unstarted_retry(lease);
+                                let remaining = due.duration_since(inner.clock.now()).unwrap_or(Duration::ZERO);
+                                wait = wait.min(remaining);
+                                continue;
+                            }
                             Err(error) => {
+                                delivery.retry_pending = false;
                                 let directive = delivery
                                     .directive
                                     .lock()
@@ -406,10 +427,10 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             }
                         }
                     } else {
+                        delivery.handler_finished = false;
                         1
                     };
                     delivery.attempts = attempt;
-                    delivery.handler_finished = false;
                     delivery.running = true;
                     let task_delivery = delivery
                         .delivery
@@ -547,6 +568,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                         running: false,
                                         settlement: None,
                                         handler_finished: true,
+                                        retry_pending: false,
                                         settlement_granted: false,
                                         abandoned: false,
                                         lifecycle_failed: false,
@@ -605,6 +627,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                                     running: false,
                                     settlement: None,
                                     handler_finished: false,
+                                    retry_pending: false,
                                     settlement_granted: true,
                                     abandoned: false,
                                     lifecycle_failed: false,

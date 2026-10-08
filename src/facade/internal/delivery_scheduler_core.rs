@@ -273,6 +273,24 @@ impl DeliverySchedulerCore {
         state.notify_ready();
     }
 
+    /// Returns a grant that has not started to retry backoff, releasing its
+    /// handler slot while retaining owned credit and the ordering lane.
+    ///
+    /// Only a `Running` lease is changed. Repeated calls and other phases are
+    /// unchanged, so handler capacity is released at most once.
+    pub(in crate::facade) fn defer_unstarted_retry(&self, lease_id: u64) {
+        let mut state = self.lock();
+        let Some(record) = state.owned.get_mut(&lease_id) else {
+            return;
+        };
+        if record.phase != OwnedDeliveryPhase::Running {
+            return;
+        }
+        record.phase = OwnedDeliveryPhase::WaitingRetry;
+        state.running -= 1;
+        state.notify_ready();
+    }
+
     /// Marks `lease_id` as waiting after actual job exit released H. Duplicate
     /// notifications are ignored; ownership and the ordering lane stay held.
     pub(in crate::facade) fn finish_attempt_waiting(&self, lease_id: u64) {
@@ -583,6 +601,43 @@ mod tests {
         assert_eq!(core.take_ready(sub), Some(first));
         core.handler_finished(first);
         assert_eq!(core.take_ready(sub), None);
+        core.complete(first);
+        assert_eq!(core.take_ready(sub), Some(successor));
+        core.complete(successor);
+        assert_invariants(&core);
+    }
+
+    #[test]
+    fn test_defer_unstarted_retry_releases_handler_and_preserves_lane() {
+        let core = scheduler(1, 3, 3, 1);
+        let sub = Id::new(1);
+        assert!(core.register(sub));
+        core.set_dispatch_active(sub, true);
+        let first = queue(&core, sub, Some("a"));
+        let successor = queue(&core, sub, Some("a"));
+        let other_lane = queue(&core, sub, Some("b"));
+
+        assert_eq!(core.take_ready(sub), Some(first));
+        assert_eq!(core.snapshot_gauges(None).running_handlers, 1);
+        core.defer_unstarted_retry(first);
+        assert_eq!(core.snapshot_gauges(None).running_handlers, 0);
+        assert_eq!(core.lock().owned.len(), 3, "defer retains owned credits");
+
+        // A different lane can consume the freed handler slot, while the
+        // original lane remains locked and its FIFO successor cannot pass.
+        assert_eq!(core.take_ready(sub), Some(other_lane));
+        assert_eq!(core.take_ready(sub), None);
+        core.handler_finished(other_lane);
+        core.complete(other_lane);
+        assert_eq!(core.take_ready(sub), None, "same-lane successor remains blocked");
+
+        // A duplicate defer is phase-checked and cannot decrement capacity a
+        // second time. Waking restores the original lane head.
+        core.defer_unstarted_retry(first);
+        assert_eq!(core.snapshot_gauges(None).running_handlers, 0);
+        core.wake_retry(first);
+        assert_eq!(core.take_ready(sub), Some(first));
+        core.handler_finished(first);
         core.complete(first);
         assert_eq!(core.take_ready(sub), Some(successor));
         core.complete(successor);
