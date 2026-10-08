@@ -1,4 +1,0 @@
-# relative git root<TAB>repository URL<TAB>default branch
-../rs-retry	https://github.com/qubit-ltd/rs-retry	main
-../rs-state-machine	https://github.com/qubit-ltd/rs-state-machine	main
-../rs-thread-pool	https://github.com/qubit-ltd/rs-thread-pool	main
