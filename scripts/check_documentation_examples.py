@@ -10,11 +10,12 @@ CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
 CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
+REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }

@@ -13,11 +13,12 @@ CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
 CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
+REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }
@@ -30,7 +31,7 @@ def run_case(mutator):
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY):
+        for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"fn example() {{ /* {source} */ }}\n", encoding="utf-8")
@@ -110,7 +111,7 @@ def symlink_escape(root):
     add_source(root, "examples/escape.rs")
 
 
-for source in (RECEIPT, SHUTDOWN):
+for source in (RECEIPT, SHUTDOWN, REPUBLISH):
     for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md"):
         expect_failure(lambda root: remove_safety_marker(root, source, document),
                        f"missing checked example {source}")
@@ -126,4 +127,4 @@ expect_failure(drift, f"example drift from {LOCAL}")
 expect_failure(traversal, "invalid source path ../../outside.rs")
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print("documentation example checker: 13 cases passed (both guides, safety drift, nested paths, traversal and symlink escape)")
+print("documentation example checker: 16 cases passed (both guides, safety drift, nested paths, traversal and symlink escape)")
