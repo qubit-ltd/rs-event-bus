@@ -35,16 +35,12 @@ conformance = []
 loom = ["dep:loom"]
 
 [dependencies]
-qubit-argument = { version = "0.4" }
-qubit-clock = "0.13"
-qubit-collections = { version = "0.2" }
-qubit-executor = { version = "0.9" }
-qubit-id = { version = "0.7", features = ["uuid"] }
-qubit-metadata = { version = "0.6", default-features = false }
-qubit-retry = { version = "0.26", features = ["worker", "async"] }
-qubit-spi = "0.13"
 thiserror = "^2.0"
 loom = { version = "^0.7", optional = true }
+qubit-clock = "0.13"
+qubit-id = { version = "0.7", features = ["uuid"] }
+qubit-retry = { version = "0.26", features = ["worker", "async"] }
+qubit-spi = "0.13"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
