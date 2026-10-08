@@ -27,6 +27,7 @@ use std::task::Waker;
 use std::thread::sleep;
 use std::thread::spawn;
 use std::time::Duration;
+use std::time::Instant;
 
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
@@ -1703,12 +1704,17 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
                     async { Ok(()) }
                 }))
             });
-            for _ in 0..100 {
-                if spi.settlement_count() > 0 {
-                    break;
-                }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (spi.settlement_count() == 0 || (panic_filter && !delivery_failed.load(Ordering::Acquire)))
+                && Instant::now() < deadline
+            {
                 sleep(Duration::from_millis(2));
             }
+            assert!(spi.settlement_count() > 0, "delivery must be settled");
+            assert!(
+                !panic_filter || delivery_failed.load(Ordering::Acquire),
+                "filter panic must be diagnosed"
+            );
             let dispositions = spi.settlement_dispositions();
             let _ = bus
                 .shutdown(ShutdownMode::Immediate)
@@ -1775,12 +1781,15 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
             })
         }))
     });
-    for _ in 0..100 {
-        if spi.settlement_count() > 0 && internal_failure.load(Ordering::Acquire) {
-            break;
-        }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while (spi.settlement_count() == 0 || !internal_failure.load(Ordering::Acquire)) && Instant::now() < deadline {
         sleep(Duration::from_millis(2));
     }
+    assert!(spi.settlement_count() > 0, "delivery must be settled");
+    assert!(
+        internal_failure.load(Ordering::Acquire),
+        "error handler panic must be diagnosed"
+    );
     assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     assert!(internal_failure.load(Ordering::Acquire));
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("event bus shutdown must complete");
