@@ -20,6 +20,15 @@ use qubit_event_bus::spi::ShutdownOutcome;
 /// Returns `false` after both waits expire or the provider reports incomplete
 /// shutdown. The application should record metrics and hand control to its
 /// external supervisor. Errors other than a caller deadline are propagated.
+///
+/// # Returns
+///
+/// `true` if either graceful wait completes shutdown; otherwise `false` when
+/// both waits expire or shutdown remains incomplete.
+///
+/// # Errors
+///
+/// Returns any shutdown error other than a timeout.
 pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
     match bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(2),
@@ -41,6 +50,15 @@ pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
 ///
 /// Returns `false` if cleanup remains incomplete; other shutdown errors propagate.
 /// Cancelling this future leaves shutdown state for the coordinator to resume.
+///
+/// # Returns
+///
+/// `true` if either graceful wait completes shutdown; otherwise `false` when
+/// both waits expire or shutdown remains incomplete.
+///
+/// # Errors
+///
+/// Returns any shutdown error other than a timeout.
 pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownError> {
     match bus
         .shutdown(ShutdownMode::Graceful {

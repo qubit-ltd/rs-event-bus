@@ -42,16 +42,17 @@ impl PipelineFailure {
         }
     }
 
+    /// Returns admission evidence carried from the terminal attempt boundary.
+    #[inline]
+    pub(crate) fn publish_effect(&self) -> PublishEffect {
+        self.effect
+    }
+
     /// Attaches admission evidence without inspecting or replacing the source.
     #[inline]
     pub(crate) fn with_publish_effect(mut self, effect: PublishEffect) -> Self {
         self.effect = effect;
         self
-    }
-    /// Returns admission evidence carried from the terminal attempt boundary.
-    #[inline]
-    pub(crate) fn publish_effect(&self) -> PublishEffect {
-        self.effect
     }
 
     /// Returns the publisher pipeline failure stage.

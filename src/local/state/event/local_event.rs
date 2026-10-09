@@ -46,32 +46,6 @@ pub(in crate::local) struct LocalEvent {
 }
 
 impl LocalEvent {
-    /// Converts queued data into one delivery and binds a fresh settlement
-    /// handle.
-    ///
-    /// # Parameters
-    /// - `subscription_id`: queue identity bound to the settlement token.
-    /// - `settlement`: shared state retained by the token and queue entry.
-    ///
-    /// # Returns
-    /// The provider message containing this event and its settlement token.
-    pub(in crate::local) fn into_inbound(
-        self,
-        subscription_id: Id,
-        settlement: LocalSettlementHandle,
-    ) -> InboundMessage {
-        InboundMessage::new(
-            self.topic,
-            self.id.clone(),
-            self.timestamp,
-            self.headers,
-            self.ordering_key,
-            self.payload.to_transport(),
-            Some(SettlementToken::new(subscription_id, settlement)),
-            ProviderMessageMetadata::default(),
-        )
-    }
-
     /// Copies outbound metadata and shares its native payload into queue form.
     ///
     /// # Parameters
@@ -98,6 +72,32 @@ impl LocalEvent {
                 .map_or(0, std::num::NonZeroUsize::get),
             not_before,
         })
+    }
+
+    /// Converts queued data into one delivery and binds a fresh settlement
+    /// handle.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: queue identity bound to the settlement token.
+    /// - `settlement`: shared state retained by the token and queue entry.
+    ///
+    /// # Returns
+    /// The provider message containing this event and its settlement token.
+    pub(in crate::local) fn into_inbound(
+        self,
+        subscription_id: Id,
+        settlement: LocalSettlementHandle,
+    ) -> InboundMessage {
+        InboundMessage::new(
+            self.topic,
+            self.id.clone(),
+            self.timestamp,
+            self.headers,
+            self.ordering_key,
+            self.payload.to_transport(),
+            Some(SettlementToken::new(subscription_id, settlement)),
+            ProviderMessageMetadata::default(),
+        )
     }
 
     /// Returns the event identity used to construct a per-delivery token key.

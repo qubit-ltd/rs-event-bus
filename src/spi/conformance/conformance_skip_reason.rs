@@ -7,6 +7,10 @@
 // =============================================================================
 //! Typed explanations for checks that could not run.
 
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::Result;
+
 /// Typed explanation for a conformance check the runner could not execute.
 ///
 /// # Examples
@@ -40,7 +44,7 @@ pub enum ConformanceSkipReason {
     },
 }
 
-impl std::fmt::Display for ConformanceSkipReason {
+impl Display for ConformanceSkipReason {
     /// Formats this reason as a concise explanation.
     ///
     /// # Parameters
@@ -51,7 +55,7 @@ impl std::fmt::Display for ConformanceSkipReason {
     ///
     /// # Errors
     /// Returns a formatting error when the destination rejects the text.
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
         match self {
             Self::UnsupportedCapability { capability } => {
                 write!(formatter, "unsupported capability: {capability}")

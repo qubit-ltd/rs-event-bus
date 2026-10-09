@@ -11,6 +11,8 @@ use std::io::Error as IoError;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -33,7 +35,7 @@ pub(crate) struct ShutdownCoordinator {
     changed: Condvar,
     /// Synchronizes tests with a waiter immediately before its condvar wait.
     #[cfg(test)]
-    wait_timeout_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
+    wait_timeout_barrier: Mutex<Option<Arc<Barrier>>>,
 }
 
 impl ShutdownCoordinator {
@@ -54,7 +56,7 @@ impl ShutdownCoordinator {
 
     /// Installs a one-shot test synchronization point before a timed wait.
     #[cfg(test)]
-    fn set_wait_timeout_barrier(&self, barrier: Arc<std::sync::Barrier>) {
+    fn set_wait_timeout_barrier(&self, barrier: Arc<Barrier>) {
         *self.wait_timeout_barrier.lock().unwrap_or_else(PoisonError::into_inner) = Some(barrier);
     }
 

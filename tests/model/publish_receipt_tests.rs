@@ -14,7 +14,7 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishReceipt;
 
 #[test]
-fn retry_evidence_is_preserved_without_changing_provider_acknowledgement() {
+fn test_retry_evidence_is_preserved_without_changing_provider_acknowledgement() {
     let acknowledgement = PublishAcknowledgement::Accepted {
         provider_message_id: Some("broker-17".into()),
         metadata: Default::default(),

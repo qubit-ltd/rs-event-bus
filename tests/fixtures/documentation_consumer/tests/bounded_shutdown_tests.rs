@@ -117,7 +117,8 @@ async fn test_async_uncooperative_handler_returns_control_before_gate_release() 
         .expect("admission");
     timeout(Duration::from_secs(30), entered_receiver.recv())
         .await
-        .expect("handler entered");
+        .expect("handler entry timed out")
+        .expect("handler exited before entry");
     let result = timeout(Duration::from_secs(30), try_shutdown_async(&bus)).await;
     gate.notify_one();
     assert!(

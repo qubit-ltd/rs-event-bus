@@ -28,6 +28,7 @@ use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
 use qubit_event_bus::error::PublishAttemptError;
@@ -35,6 +36,7 @@ use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::PublishFailure;
 use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
@@ -1034,31 +1036,28 @@ fn test_no_destination_ack_then_clock_failure_retains_known_non_admission() {
 
 /// Counts real codec encoding calls across the complete publication.
 struct CountingTextCodec {
-    content_type: qubit_event_bus::model::ContentType,
+    content_type: ContentType,
     encodes: Arc<std::sync::atomic::AtomicUsize>,
 }
-impl qubit_event_bus::codec::EventCodec<String> for CountingTextCodec {
-    fn content_type(&self) -> &qubit_event_bus::model::ContentType {
+impl EventCodec<String> for CountingTextCodec {
+    fn content_type(&self) -> &ContentType {
         &self.content_type
     }
-    fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+    fn schema_id(&self) -> Option<&SchemaId> {
         None
     }
-    fn encode(&self, value: &String) -> Result<Arc<[u8]>, qubit_event_bus::error::CodecError> {
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         self.encodes.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::from(value.as_bytes()))
     }
-    fn decode(
-        &self,
-        payload: &qubit_event_bus::spi::EncodedPayload,
-    ) -> Result<String, qubit_event_bus::error::CodecError> {
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
         Ok(String::from_utf8_lossy(payload.bytes()).into_owned())
     }
 }
 
 /// Publishes through either facade after an unknown attempt and verifies that
 /// terminal admission details cannot erase earlier uncertainty.
-fn assert_unknown_then_admissions(asynchronous: bool, statuses: Vec<qubit_event_bus::model::AdmissionStatus>) {
+fn assert_unknown_then_admissions(asynchronous: bool, statuses: Vec<AdmissionStatus>) {
     let acknowledgement = PublishAcknowledgement::DestinationAdmissions(
         statuses
             .into_iter()
@@ -1083,14 +1082,14 @@ fn assert_unknown_then_admissions(asynchronous: bool, statuses: Vec<qubit_event_
     let typed = typed_calls.clone();
     let global = global_calls.clone();
     let error_count = errors.clone();
-    let config = qubit_event_bus::EventBusFacadeConfig::new().publisher_interceptor(move |_| {
+    let config = EventBusFacadeConfig::new().publisher_interceptor(move |_| {
         global.fetch_add(1, Ordering::SeqCst);
         Ok(true)
     });
     let topic = Topic::new("unknown.admissions")
         .expect("encoded topic")
         .with_codec(CountingTextCodec {
-            content_type: qubit_event_bus::model::ContentType::new("text/plain").expect("content type"),
+            content_type: ContentType::new("text/plain").expect("content type"),
             encodes: encodes.clone(),
         });
     let request = PublishRequest::builder()
@@ -1132,10 +1131,10 @@ fn assert_unknown_then_admissions(asynchronous: bool, statuses: Vec<qubit_event_
     assert_eq!(calls[1].id(), &id);
     assert_eq!(calls[0].timestamp(), calls[1].timestamp());
     assert_eq!(calls[0].headers(), calls[1].headers());
-    let qubit_event_bus::spi::TransportPayload::Encoded(first) = calls[0].payload() else {
+    let TransportPayload::Encoded(first) = calls[0].payload() else {
         panic!("encoded first attempt")
     };
-    let qubit_event_bus::spi::TransportPayload::Encoded(second) = calls[1].payload() else {
+    let TransportPayload::Encoded(second) = calls[1].payload() else {
         panic!("encoded second attempt")
     };
     assert_eq!(first.bytes(), second.bytes());
@@ -1151,36 +1150,24 @@ fn test_async_unknown_then_no_destinations_keeps_duplicates() {
 }
 #[test]
 fn test_sync_unknown_then_all_rejected_keeps_duplicates() {
-    assert_unknown_then_admissions(
-        false,
-        vec![qubit_event_bus::model::AdmissionStatus::Rejected("full".into())],
-    );
+    assert_unknown_then_admissions(false, vec![AdmissionStatus::Rejected("full".into())]);
 }
 #[test]
 fn test_async_unknown_then_all_rejected_keeps_duplicates() {
-    assert_unknown_then_admissions(
-        true,
-        vec![qubit_event_bus::model::AdmissionStatus::Rejected("full".into())],
-    );
+    assert_unknown_then_admissions(true, vec![AdmissionStatus::Rejected("full".into())]);
 }
 #[test]
 fn test_sync_unknown_then_partial_keeps_duplicates() {
     assert_unknown_then_admissions(
         false,
-        vec![
-            qubit_event_bus::model::AdmissionStatus::Accepted,
-            qubit_event_bus::model::AdmissionStatus::Rejected("full".into()),
-        ],
+        vec![AdmissionStatus::Accepted, AdmissionStatus::Rejected("full".into())],
     );
 }
 #[test]
 fn test_async_unknown_then_partial_keeps_duplicates() {
     assert_unknown_then_admissions(
         true,
-        vec![
-            qubit_event_bus::model::AdmissionStatus::Accepted,
-            qubit_event_bus::model::AdmissionStatus::Rejected("full".into()),
-        ],
+        vec![AdmissionStatus::Accepted, AdmissionStatus::Rejected("full".into())],
     );
 }
 
@@ -1200,10 +1187,7 @@ fn assert_terminal_source_chain(asynchronous: bool) {
     };
     assert_eq!(failure.event_id(), &id);
     assert_eq!(failure.effect(), PublishEffect::MayHaveBeenAccepted);
-    assert!(matches!(
-        failure.cause(),
-        qubit_event_bus::error::PublishError::Retry(_)
-    ));
+    assert!(matches!(failure.cause(), PublishError::Retry(_)));
     let mut source: &(dyn Error + 'static) = &failure;
     let mut original = None;
     while let Some(next) = source.source() {
@@ -1238,7 +1222,7 @@ fn test_unpolled_async_publish_defers_interceptors_and_codec() {
     let bus = AsyncEventBus::with_config(
         ProviderId::new("scripted").expect("provider"),
         spi.clone(),
-        qubit_event_bus::EventBusFacadeConfig::new().publisher_interceptor(move |_| {
+        EventBusFacadeConfig::new().publisher_interceptor(move |_| {
             global.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         }),
@@ -1247,7 +1231,7 @@ fn test_unpolled_async_publish_defers_interceptors_and_codec() {
     let topic = Topic::new("lazy.prepare")
         .expect("encoded topic")
         .with_codec(CountingTextCodec {
-            content_type: qubit_event_bus::model::ContentType::new("text/plain").expect("content type"),
+            content_type: ContentType::new("text/plain").expect("content type"),
             encodes: encodes.clone(),
         });
     let request = PublishRequest::builder()

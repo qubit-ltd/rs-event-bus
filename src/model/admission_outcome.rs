@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Classifies the provider's report after one publication attempt.
+//! Classifies admission after one publication attempt.
 
 use super::AdmissionSummary;
 

@@ -72,7 +72,7 @@ fn capabilities(modes: PayloadModes) -> EventBusCapabilities {
 }
 
 #[test]
-fn sync_check_codec_is_a_pure_lookup_for_all_payload_modes() {
+fn test_sync_check_codec_is_a_pure_lookup_for_all_payload_modes() {
     for (index, modes) in [
         PayloadModes::Native,
         PayloadModes::Encoded,
@@ -115,7 +115,7 @@ fn sync_check_codec_is_a_pure_lookup_for_all_payload_modes() {
 }
 
 #[test]
-fn async_check_codec_is_a_pure_lookup_for_all_payload_modes() {
+fn test_async_check_codec_is_a_pure_lookup_for_all_payload_modes() {
     for (index, modes) in [
         PayloadModes::Native,
         PayloadModes::Encoded,

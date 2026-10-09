@@ -170,7 +170,6 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// Clock errors publish the first stop cause and return accurate gauges
     /// without age.
     #[must_use = "delivery metrics are the current subscription diagnostics"]
-    #[inline]
     pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
         let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
             let input = bus.scheduler.snapshot_input(Some(self.id));
@@ -258,7 +257,6 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The stored close failure, or `None` before a close failure occurs.
-    #[inline]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>> {
         self.close_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }

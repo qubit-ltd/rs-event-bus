@@ -144,8 +144,12 @@ impl Subscription {
         self.control.is_cancelled()
     }
 
-    /// Returns the canonical receive failure, or None before a terminal stop.
-    /// The same Arc remains available after cancellation and provider close.
+    /// Returns the canonical receive failure, or `None` before a terminal stop.
+    /// The same `Arc` remains available after cancellation and provider close.
+    ///
+    /// # Returns
+    /// The canonical failure after a terminal receive failure, or `None` while
+    /// no terminal receive failure has been recorded.
     #[must_use]
     #[inline]
     pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {

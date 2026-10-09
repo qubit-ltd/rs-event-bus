@@ -264,6 +264,7 @@ fn forward_dead_letter<T: Send + Sync + 'static>(
 /// # Side Effects
 /// Dispatches settlement through the owning receiver and emits diagnostics
 /// for invalid or unavailable tokens.
+#[inline]
 pub(in crate::facade) fn settle_token<T>(
     _inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -433,6 +434,7 @@ pub(in crate::facade) fn stop_after_dead_letter_failure(inner: &EventBusInner, s
 /// # Returns
 /// A stable message that reveals whether the panic payload was string-like.
 #[must_use]
+#[inline]
 pub(in crate::facade) fn panic_message(payload: &(dyn Any + Send)) -> &'static str {
     if payload.is::<&'static str>() || payload.is::<String>() {
         "user or provider callback panicked"

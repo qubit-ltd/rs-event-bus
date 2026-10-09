@@ -122,7 +122,6 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// The attached provider identity, or `None` when no registry identity is
     /// attached.
     #[doc(hidden)]
-    #[must_use = "Use the returned query result."]
     #[inline]
     fn provider_id(&self) -> Option<ProviderId> {
         None

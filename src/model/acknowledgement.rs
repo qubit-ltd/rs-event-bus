@@ -48,7 +48,7 @@ impl Acknowledgement {
     /// Returns the current state from the atomic handle.
     ///
     /// # Returns
-    /// The latest observed terminal state, using acquire ordering.
+    /// The latest observed state, using acquire ordering.
     #[must_use = "Use the returned state."]
     #[inline]
     pub fn state(&self) -> AcknowledgementState {

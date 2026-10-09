@@ -219,7 +219,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The filter callback when one is configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned filter."]
     pub fn filter(&self) -> Option<&Arc<EventFilter<T>>> {
         self.filter.as_ref()
     }
@@ -229,7 +228,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The retry schedule when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned retry policy."]
     pub fn retry_policy(&self) -> Option<&RetryPolicy> {
         self.retry_policy.as_ref()
     }
@@ -239,7 +237,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The custom retry rule when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned retry rule."]
     pub fn retry_rule(&self) -> Option<&Arc<dyn RetryRule<DeliveryAttemptError>>> {
         self.retry_rule.as_ref()
     }
@@ -249,7 +246,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The shared cancellation token when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned retry cancellation token."]
     pub fn retry_cancellation_token(&self) -> Option<&RetryCancellationToken> {
         self.retry_cancellation_token.as_ref()
     }
@@ -289,7 +285,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The terminal failure policy when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned dead letter."]
     pub fn dead_letter(&self) -> Option<&DeadLetterPolicy> {
         self.dead_letter.as_ref()
     }
@@ -309,7 +304,6 @@ impl<T: 'static> SubscribeOptions<T> {
     /// # Returns
     /// The shared consumer group when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned consumer group."]
     pub fn consumer_group(&self) -> Option<&ConsumerGroup> {
         self.consumer_group.as_ref()
     }

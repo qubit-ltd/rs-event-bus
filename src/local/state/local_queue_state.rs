@@ -121,7 +121,6 @@ impl LocalQueueState {
     ///
     /// # Panics
     /// Panics if a ready-lane or heap entry violates its queue-state invariant.
-    #[must_use]
     pub(in crate::local) fn pop_ready(&mut self, now: Instant) -> Option<LocalEvent> {
         self.promote_due_heads(now);
         while let Some((key, version)) = self.ready_lanes.pop_front() {
@@ -158,7 +157,6 @@ impl LocalQueueState {
     /// # Returns
     /// `Some` with the time until the next delayed event, or `None` when no
     /// delayed head exists.
-    #[must_use]
     pub(in crate::local) fn next_ready_delay(&mut self, now: Instant) -> Option<Duration> {
         self.discard_stale_delayed_heads();
         self.delayed_lanes

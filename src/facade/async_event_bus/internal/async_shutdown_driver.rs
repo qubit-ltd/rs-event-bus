@@ -38,7 +38,6 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     ///
     /// # Returns
     /// Some with the retained failure, or None before a failure is recorded.
-    #[must_use = "Use the returned query result."]
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>>;
 
     /// Stores and returns the canonical receiver close failure.

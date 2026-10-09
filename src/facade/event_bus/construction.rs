@@ -52,6 +52,7 @@ impl EventBus {
     ///
     /// # Returns
     /// The provider identity supplied to the facade constructor.
+    #[must_use]
     #[inline]
     pub fn provider_id(&self) -> &ProviderId {
         &self.inner.provider_id

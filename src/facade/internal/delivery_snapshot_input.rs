@@ -57,7 +57,6 @@ impl DeliverySnapshotInput {
     /// Returns `TimeError::ClockDomainMismatch` for a start from a foreign
     /// clock domain, or `TimeError::InvalidInstantOrder` when `now`
     /// precedes a captured start.
-    #[must_use = "delivery snapshots should be observed"]
     pub(in crate::facade) fn at(self, now: MonotonicInstant) -> Result<DeliveryMetricsSnapshot, TimeError> {
         let mut snapshot = self.gauges;
         for started in self.owned_starts {

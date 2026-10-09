@@ -16,6 +16,7 @@ use crate::model::PublishReceipt;
 
 /// A publication failure, unsupported admission visibility, or a receipt that
 /// did not satisfy the requested admission condition.
+#[must_use]
 #[derive(Debug, thiserror::Error)]
 pub enum CheckedPublishError {
     /// Per-destination admission was requested from a provider that cannot

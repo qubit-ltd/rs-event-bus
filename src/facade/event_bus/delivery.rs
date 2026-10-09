@@ -83,10 +83,13 @@ use crate::spi::TopicAddress;
 /// - `provider_attempt`: positive attempt number reported by the provider, if
 ///   known.
 ///
+/// # Returns
+/// The delivery when decoding succeeds and the subscription filter accepts the
+/// event; otherwise `None` after rejection, filter exclusion, or filter panic.
+///
 /// # Side Effects
 /// Runs the filter, emits diagnostics, and routes terminal settlement.
-/// Returns a delivery for accepted payloads, or `None` after rejection, filter
-/// exclusion, or filter panic. The provider token stays in the owner.
+/// The provider token stays in the owner.
 pub(in crate::facade) fn prepare_delivery<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
@@ -187,6 +190,18 @@ where
 /// directive with its rule. Returns no session when retry is disabled, or a
 /// terminal delivery error if configuration is invalid. The session samples
 /// the bus clock but never registers a timer or sleeps.
+///
+/// # Parameters
+/// - `inner`: bus state supplying the clock used to create the retry timer.
+/// - `options`: subscription policy and optional cancellation token.
+/// - `terminal_directive`: shared slot containing the selected failure
+///   directive.
+///
+/// # Returns
+/// `Some(session)` when retry is enabled, or `None` when it is disabled.
+///
+/// # Errors
+/// Returns a `DeliveryError` when the retry configuration is invalid.
 pub(in crate::facade) fn new_retry_session<T>(
     inner: &EventBusInner,
     options: &SubscribeOptions<T>,
@@ -231,6 +246,14 @@ pub(in crate::facade) fn new_retry_session<T>(
 
 /// Maps a terminal retry error while preserving its diagnostics and directive.
 /// Emits rule failures once; the returned error retains the retry context.
+///
+/// # Parameters
+/// - `inner`: bus state used to emit retry-rule diagnostics.
+/// - `error`: terminal retry error whose context is preserved.
+/// - `directive`: previously selected failure directive.
+///
+/// # Returns
+/// The mapped delivery error and the final failure directive.
 pub(in crate::facade) fn terminal_retry_error(
     inner: &EventBusInner,
     error: qubit_retry::RetryError<DeliveryAttemptError>,
@@ -296,6 +319,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
 /// # Parameters
 /// - `options`: subscriber acknowledgement and middleware settings.
 /// - `delivery`: delivery supplied to the middleware chain.
+/// - `handler`: typed subscriber callback invoked with the delivery.
 /// - `_attempt`: one-based attempt number retained for the shared call shape.
 /// - `global_interceptors`: bus-wide middleware callbacks.
 ///

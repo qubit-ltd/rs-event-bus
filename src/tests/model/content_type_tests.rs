@@ -10,7 +10,7 @@
 use crate::model::ContentType;
 
 #[test]
-fn static_and_runtime_constructors_preserve_their_storage_modes() {
+fn test_static_and_runtime_constructors_preserve_their_storage_modes() {
     let static_value = ContentType::new_static("application/x-test");
     let runtime_value = ContentType::new("application/x-test").expect("valid MIME token");
 

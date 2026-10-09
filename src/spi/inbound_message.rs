@@ -217,6 +217,7 @@ impl InboundMessage {
     /// # Returns
     /// Topic, ID, timestamp, headers, ordering key, payload, optional
     /// settlement token, and provider metadata in that order.
+    #[must_use = "Use the returned transport fields."]
     pub fn into_parts(
         self,
     ) -> (

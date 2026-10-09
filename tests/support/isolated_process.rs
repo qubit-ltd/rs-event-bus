@@ -18,6 +18,7 @@ use std::time::Instant;
 /// # Parameters
 /// - `test_name`: exact test name selected in the child process.
 /// - `case`: value passed through `QUBIT_EVENT_BUS_ISOLATED_CASE`.
+#[inline]
 pub(crate) fn run_case(test_name: &str, case: &str) {
     run_case_with_timeout(test_name, case, Duration::from_secs(10));
 }

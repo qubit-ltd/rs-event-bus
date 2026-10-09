@@ -227,9 +227,11 @@ fn test_native_payload_weight_panic_is_preflight_failure() {
                 .with_options(options),
         )
         .expect_err("weight panic fails preflight");
-    assert!(
-        matches!(failure.cause(), PublishError::InterceptorPanicked { scope: "payload_weight", message } if message.as_ref() == "weight panic")
-    );
+    assert!(matches!(
+        failure.cause(),
+        PublishError::InterceptorPanicked { scope: "payload_weight", message }
+            if message.as_ref() == "weight panic"
+    ));
     assert_eq!(failure.effect(), PublishEffect::NotAccepted);
     assert!(probe.messages.lock().expect("probe lock").is_empty());
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");

@@ -77,6 +77,7 @@ fn blocked_bus() -> (EventBus, Gate, Subscription) {
     (bus, gate, subscription)
 }
 
+/// Sends a notification whenever the test executor is woken.
 struct Signal(mpsc::Sender<()>);
 
 impl Wake for Signal {

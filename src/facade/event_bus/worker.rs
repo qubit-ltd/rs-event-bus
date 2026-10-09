@@ -20,6 +20,7 @@ use std::thread::park_timeout;
 use std::time::Duration;
 
 use qubit_id::Id;
+use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetrySessionAdmission;
 use qubit_retry::RetrySessionStep;
 
@@ -273,7 +274,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                         let now = inner.clock.now();
                         let cancelled = options
                             .retry_cancellation_token()
-                            .is_some_and(qubit_retry::RetryCancellationToken::is_cancelled);
+                            .is_some_and(RetryCancellationToken::is_cancelled);
                         let remaining = due.duration_since(now).unwrap_or(Duration::ZERO);
                         if cancelled || remaining.is_zero() {
                             delivery.due = None;

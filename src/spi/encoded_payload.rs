@@ -70,6 +70,7 @@ impl EncodedPayload {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
     /// Returns the media type.
     ///
     /// # Returns
@@ -79,6 +80,7 @@ impl EncodedPayload {
     pub fn content_type(&self) -> &ContentType {
         &self.content_type
     }
+
     /// Returns the optional schema identifier, or `None` when absent.
     ///
     /// # Returns

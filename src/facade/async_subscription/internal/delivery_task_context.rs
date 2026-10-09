@@ -89,7 +89,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         };
         if let Some(disposition) = pending.settlement_intent {
             let event = pending.event.clone();
-            self.settle_pending(disposition, event.as_deref()).await;
+            self.settle_pending(disposition, event.as_deref());
             return;
         }
         let Some(event) = pending.event.as_ref().cloned() else {
@@ -112,7 +112,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             }
             match filtered {
                 Ok(false) => {
-                    self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await;
+                    self.settle_pending(DeliveryDisposition::Accept, Some(&event));
                     return;
                 }
                 Ok(true) => {}
@@ -175,7 +175,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             return;
         };
         match outcome {
-            Ok(_) => self.settle_pending(DeliveryDisposition::Accept, Some(&event)).await,
+            Ok(_) => self.settle_pending(DeliveryDisposition::Accept, Some(&event)),
             Err((error, attempts, directive)) => self.finish_failure(delivery, *error, attempts, directive).await,
         }
     }
@@ -294,7 +294,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
             }
         };
         if let Some(disposition) = disposition {
-            self.settle_pending(disposition, Some(delivery.event())).await;
+            self.settle_pending(disposition, Some(delivery.event()));
         }
     }
 
@@ -311,7 +311,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// Updates the pending delivery's settlement intent when a delivery is
     /// pending.
     #[inline]
-    async fn settle_pending(&mut self, disposition: DeliveryDisposition, _event: Option<&EventEnvelope<T>>) {
+    fn settle_pending(&mut self, disposition: DeliveryDisposition, _event: Option<&EventEnvelope<T>>) {
         if let Some(pending) = self.pending.as_mut() {
             pending.settlement_intent = Some(disposition);
         }

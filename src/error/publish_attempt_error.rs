@@ -18,7 +18,12 @@ use crate::model::PublishEffect;
 /// ```
 /// use qubit_event_bus::error::PublishAttemptError;
 ///
-/// let failure = PublishAttemptError::new("unavailable", Some(true), qubit_event_bus::model::PublishEffect::NotAccepted, std::io::Error::other("offline"));
+/// let failure = PublishAttemptError::new(
+///     "unavailable",
+///     Some(true),
+///     qubit_event_bus::model::PublishEffect::NotAccepted,
+///     std::io::Error::other("offline"),
+/// );
 /// assert_eq!(failure.kind(), "unavailable");
 /// assert_eq!(failure.retryable(), Some(true));
 /// assert_eq!(failure.effect(), qubit_event_bus::model::PublishEffect::NotAccepted);
@@ -97,7 +102,6 @@ impl PublishAttemptError {
     /// # Returns
     /// The configured override, or `None` to use the default classification.
     #[inline]
-    #[must_use = "Use the returned query result."]
     pub fn retryable(&self) -> Option<bool> {
         match self {
             Self::Failure { retryable, .. } => *retryable,

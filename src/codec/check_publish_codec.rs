@@ -13,7 +13,26 @@ use crate::error::CapabilityError;
 use crate::model::Topic;
 use crate::spi::PayloadModes;
 
-/// Checks codec availability without invoking codec or provider operations.
+/// Checks that encoded publication has a codec registered for the topic.
+///
+/// This capability check only resolves codec configuration; it does not invoke
+/// the codec or contact the provider. Raw publication does not require a codec.
+///
+/// # Parameters
+///
+/// * `modes` - Payload representations supported by the provider.
+/// * `topic` - Topic whose configured codec is checked for encoded publication.
+/// * `registry` - Codec registry used to resolve the topic's codec.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when raw publication is supported or an encoded codec is
+/// available for the topic.
+///
+/// # Errors
+///
+/// Returns [`CapabilityError::CodecRequired`] when encoded publication is
+/// supported but no codec is registered for the topic.
 pub(crate) fn check_publish_codec<T: Send + Sync + 'static>(
     modes: PayloadModes,
     topic: &Topic<T>,

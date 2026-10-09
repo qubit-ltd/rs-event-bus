@@ -104,6 +104,7 @@ impl<T: 'static> Delivery<T> {
     pub fn payload(&self) -> &T {
         self.event.payload()
     }
+
     /// Returns the received envelope.
     ///
     /// # Returns
@@ -113,6 +114,7 @@ impl<T: 'static> Delivery<T> {
     pub fn event(&self) -> &EventEnvelope<T> {
         &self.event
     }
+
     /// Returns provider and subscriber context.
     ///
     /// # Returns
@@ -122,6 +124,7 @@ impl<T: 'static> Delivery<T> {
     pub fn context(&self) -> &DeliveryContext {
         &self.context
     }
+
     /// Returns the shared ACK/NACK handle.
     ///
     /// # Returns

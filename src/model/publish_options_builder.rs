@@ -54,6 +54,7 @@ impl<T: 'static> PublishOptionsBuilder<T> {
             options: PublishOptions::default(),
         }
     }
+
     /// Sets whether configured retries may duplicate uncertain admission.
     ///
     /// # Parameters

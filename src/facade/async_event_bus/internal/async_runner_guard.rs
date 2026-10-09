@@ -26,7 +26,6 @@ impl AsyncRunnerGuard {
     ///
     /// # Returns
     /// A guard that releases the runner count when dropped.
-    #[must_use = "the guard must remain alive while the runner is active"]
     pub(in crate::facade) fn enter(tracker: Arc<AsyncTracker>) -> Self {
         tracker.runner_started();
         Self(tracker)

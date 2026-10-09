@@ -726,7 +726,9 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
             .expect("typed delivery must reach the observer")
     );
     subscription.cancel().expect("typed facade subscription must cancel");
-    let report = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .expect("bounded-channel facade must shut down successfully");
     assert_eq!(ShutdownOutcome::Complete, report.outcome);
     assert_eq!(0, report.known_abandoned_deliveries);
     assert!(report.provider_may_have_abandoned_deliveries);

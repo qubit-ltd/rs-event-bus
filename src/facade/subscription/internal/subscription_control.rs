@@ -95,7 +95,6 @@ impl SubscriptionControl {
     /// # Returns
     /// Some canonical first cause after failure, or None while no terminal
     /// cause exists.
-    #[must_use = "observe the retained terminal receive cause"]
     pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.terminal_failure
             .lock()

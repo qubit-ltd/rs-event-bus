@@ -17,7 +17,7 @@ impl Drop for BusPollScope {
     /// Removes the current poll's facade identity from the thread-local stack.
     fn drop(&mut self) {
         ACTIVE_BUS_POLLS.with(|active| {
-            active.borrow_mut().pop();
+            let _ = active.borrow_mut().pop();
         });
     }
 }

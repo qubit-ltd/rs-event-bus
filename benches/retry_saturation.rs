@@ -7,6 +7,7 @@
 // =============================================================================
 //! Measures synchronous handler-pool saturation while four handlers back off.
 
+use std::hint::black_box;
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -131,13 +132,13 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
 /// Runs warmups and prints seven independent-message wait measurements.
 fn main() -> io::Result<()> {
     for _ in 0..WARMUPS {
-        sample()?;
+        black_box(sample()?);
     }
 
     let mut waits = Vec::with_capacity(SAMPLES);
     println!("iteration,independent_handler_wait_ms");
     for iteration in 1..=SAMPLES {
-        let wait = sample()?;
+        let wait = black_box(sample()?);
         println!("{iteration},{}", wait.as_secs_f64() * 1_000.0);
         waits.push(wait);
     }

@@ -5,9 +5,10 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Terminal state of a delivery acknowledgement handle.
+//! Current acknowledgement state of a delivery handle.
 
-/// The terminal ACK/NACK decision for one delivery.
+/// The acknowledgement status of one delivery, including while its handler is
+/// still running.
 ///
 /// # Examples
 ///

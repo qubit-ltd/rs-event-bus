@@ -1029,9 +1029,18 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
             let _ = bus
                 .publish(PublishRequest::new(topic, 1).expect("request"))
                 .expect("publish");
-            entered_rx
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap_or_else(|error| panic!("pipeline gate reached before actual handler admission; mode={mode}, stage={stage}, callback_calls={}: {error}", calls.load(Ordering::SeqCst)));
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|error| {
+                panic!(
+                    concat!(
+                        "pipeline gate reached before actual handler admission; ",
+                        "mode={}, stage={}, callback_calls={}: {}"
+                    ),
+                    mode,
+                    stage,
+                    calls.load(Ordering::SeqCst),
+                    error
+                )
+            });
             let control = bus
                 .inner
                 .subscriptions

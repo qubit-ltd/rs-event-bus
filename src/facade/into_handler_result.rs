@@ -52,7 +52,6 @@ impl IntoHandlerResult for () {
     ///
     /// # Errors
     /// This implementation never returns an error.
-    #[inline]
     fn into_handler_result(self) -> Result<(), DeliveryError> {
         Ok(())
     }

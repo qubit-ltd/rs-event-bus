@@ -8,6 +8,7 @@
 //! Synchronous subscription capacity contract tests.
 
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusFacadeConfig;
@@ -82,7 +83,7 @@ fn test_subscription_capacity_rejects_at_limit_and_reuses_cancelled_slot() {
     }
     let report = bus
         .shutdown(ShutdownMode::Graceful {
-            timeout: std::time::Duration::from_secs(2),
+            timeout: Duration::from_secs(2),
         })
         .expect("shutdown succeeds");
     assert_eq!(report.outcome, ShutdownOutcome::Complete);

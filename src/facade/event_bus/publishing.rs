@@ -42,6 +42,9 @@ impl EventBus {
     /// Returns [`CapabilityError::CodecRequired`] when the provider accepts
     /// only encoded payloads and neither the topic nor facade registry has
     /// a codec.
+    ///
+    /// # Returns
+    /// `Ok(())` when the provider can accept the topic's payload mode.
     pub fn check_publish_codec<T: Send + Sync + 'static>(&self, topic: &Topic<T>) -> Result<(), CapabilityError> {
         crate::codec::check_publish_codec(
             self.inner.capabilities.payload_modes(),

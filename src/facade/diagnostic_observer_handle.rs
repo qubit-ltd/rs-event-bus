@@ -48,6 +48,7 @@ impl DiagnosticObserverHandle {
     ///
     /// # Returns
     /// A handle that keeps the registration active while it is alive.
+    #[inline]
     pub(super) fn new(entry: Arc<ObserverEntry>) -> Self {
         Self { entry }
     }

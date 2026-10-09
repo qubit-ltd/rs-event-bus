@@ -99,6 +99,10 @@ impl CodecRegistry {
     /// # Returns
     /// The previous codec when `T` was registered, or `None` when this call
     /// adds the first codec for `T`.
+    ///
+    /// # Panics
+    /// Panics if the registry's internal type index does not match the stored
+    /// codec type, which indicates a violated registry invariant.
     pub fn replace<T: Send + Sync + 'static>(
         &mut self,
         codec: Arc<dyn EventCodec<T>>,

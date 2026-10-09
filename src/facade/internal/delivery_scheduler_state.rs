@@ -95,7 +95,6 @@ impl DeliverySchedulerState {
     /// # Returns
     /// Accurate live gauges with zero cumulative counters and no owned age.
     #[must_use = "scheduler gauges are the current delivery snapshot"]
-    #[inline]
     pub(super) fn snapshot_gauges(&self, subscription_id: Option<Id>) -> DeliveryMetricsSnapshot {
         let mut snapshot = DeliveryMetricsSnapshot::default();
         for record in self.owned.values() {
@@ -157,7 +156,6 @@ impl DeliverySchedulerState {
     ///
     /// # Parameters
     /// - `id`: registration whose eligibility may have changed.
-    #[inline]
     pub(super) fn refresh_ready(&mut self, id: Id) {
         let eligible = self
             .subscriptions
@@ -174,7 +172,6 @@ impl DeliverySchedulerState {
 
     /// Coalesces a notification for the currently selected runner without
     /// reserving capacity.
-    #[inline]
     pub(super) fn notify_ready(&mut self) {
         if let Some((id, _)) = self.selected_ready() {
             self.notifications.insert(id);

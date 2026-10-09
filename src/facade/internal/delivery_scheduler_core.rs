@@ -7,6 +7,7 @@
 // =============================================================================
 //! Bounded metadata-only delivery admission and dispatch.
 
+use std::collections::VecDeque;
 use std::sync::PoisonError;
 
 use qubit_clock::MonotonicInstant;
@@ -329,8 +330,7 @@ impl DeliverySchedulerCore {
         {
             queue.push_front(lease_id);
         } else {
-            sub.lanes
-                .push_back((lane, std::collections::VecDeque::from([lease_id])));
+            sub.lanes.push_back((lane, VecDeque::from([lease_id])));
         }
         state
             .owned

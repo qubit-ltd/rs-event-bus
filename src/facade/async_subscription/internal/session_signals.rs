@@ -54,7 +54,6 @@ impl SessionSignals {
     }
 
     /// Returns the first receive cause, or None while receiving is healthy.
-    #[must_use]
     pub(in crate::facade) fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.terminal_failure
             .lock()
@@ -103,7 +102,6 @@ impl SessionSignals {
     ///
     /// Receive stops return the same Arc on every call. Other terminal errors
     /// are taken once; None means no cause remains to report.
-    #[must_use]
     pub(in crate::facade) fn take_terminal_error(&self) -> Option<ReceiveError> {
         if let Some(reason) = self.terminal_failure() {
             return Some(ReceiveError::Stopped(reason));

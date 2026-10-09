@@ -17,7 +17,13 @@ use super::worker_exit::WorkerExit;
 use super::worker_state::WorkerState;
 use crate::notification::notification_stats::NotificationStats;
 
-/// Sole publisher of the worker's terminal state; owns no user resources.
+/// Publishes the worker's terminal state when its processing scope ends.
+///
+/// The guard owns shared references to the completion state and statistics, but
+/// no worker resources. It defaults to `Panicked`; callers mark it drained only
+/// after processing and cleanup succeed. On drop, an active unwind takes
+/// precedence over that mark. The guard records the outcome once, recovers a
+/// poisoned state lock, and wakes all waiting closers.
 #[must_use = "retain the guard until worker processing and cleanup have completed"]
 pub(in crate::notification) struct WorkerCompletionGuard {
     /// State and wakeup shared with every closer.
@@ -40,6 +46,9 @@ impl WorkerCompletionGuard {
     ///
     /// # Returns
     /// A guard that publishes `Panicked` unless processing and cleanup drain.
+    ///
+    /// The supplied `Arc`s are retained until the guard is dropped; no user
+    /// callback is invoked while publishing completion.
     #[inline]
     pub(in crate::notification) fn new(
         state: Arc<(Mutex<WorkerState>, Condvar)>,
@@ -53,6 +62,10 @@ impl WorkerCompletionGuard {
     }
 
     /// Records successful processing and cleanup before publishing completion.
+    ///
+    /// The mark is used when the guard is later dropped outside an unwind. If
+    /// the thread is unwinding at drop time, the published outcome remains
+    /// `Panicked`.
     #[inline]
     pub(in crate::notification) fn mark_drained(&mut self) {
         self.exit = WorkerExit::Drained;

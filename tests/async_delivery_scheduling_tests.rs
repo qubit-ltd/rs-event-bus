@@ -271,7 +271,7 @@ fn config(running: usize, owned: usize, per_sub: usize, subscriptions: usize, at
         )
         .with_settlement_retry(
             SettlementRetryConfig::new(
-                NonZeroU32::new(attempts).expect("settlement attempt log mutex must not be poisoned"),
+                NonZeroU32::new(attempts).expect("settlement attempt limit must be nonzero"),
                 Duration::from_secs(1),
                 Duration::from_millis(10),
                 Duration::from_millis(100),

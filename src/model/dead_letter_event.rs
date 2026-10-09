@@ -79,7 +79,6 @@ impl<T: 'static> DeadLetterEvent<T> {
     ///
     /// # Returns
     /// A cloned shared owner of the original event.
-    #[must_use]
     #[inline]
     pub fn original_event_arc(&self) -> Arc<EventEnvelope<T>> {
         Arc::clone(&self.original_event)

@@ -45,7 +45,6 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// The attached provider identity, or `None` when no registry identity is
     /// attached.
     #[doc(hidden)]
-    #[must_use = "Use the returned query result."]
     #[inline]
     fn provider_id(&self) -> Option<ProviderId> {
         None
@@ -58,7 +57,6 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     ///
     /// # Returns
     /// The immutable capabilities supported by this provider instance.
-    #[must_use = "Use the returned query result."]
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one transport message.

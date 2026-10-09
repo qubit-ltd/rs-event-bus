@@ -40,7 +40,10 @@ fn test_codec_error_metadata_mismatch_display_reports_expected_and_received_valu
 
     assert_eq!(
         error.to_string(),
-        "encoded metadata mismatch: expected ContentType(\"text/plain\")/Some(SchemaId(\"order-v1\")), received ContentType(\"application/json\")/None"
+        concat!(
+            "encoded metadata mismatch: expected ContentType(\"text/plain\")/Some(SchemaId(\"order-v1\")), ",
+            "received ContentType(\"application/json\")/None",
+        )
     );
 }
 

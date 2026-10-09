@@ -25,7 +25,9 @@ impl SubscriptionWorkerBudget {
     /// Reserves one worker slot when the configured limit allows it.
     ///
     /// # Returns
-    /// A permit when capacity exists, otherwise None.
+    /// `Some` containing a permit when the active count is below the limit;
+    /// otherwise `None`. The reservation is atomic, so concurrent callers
+    /// cannot reserve more slots than the limit.
     #[must_use]
     pub(in crate::facade) fn try_reserve(self: &Arc<Self>) -> Option<SubscriptionWorkerPermit> {
         let mut active = self.active.load(Ordering::Acquire);

@@ -46,7 +46,6 @@ pub(in crate::facade::async_event_bus) struct CatchSpiFuture<F: Future> {
 /// # Errors
 /// Preserves a provider's returned [`SpiError`] and converts a polling unwind
 /// into a non-retryable `provider_panicked` operation error.
-#[must_use = "the provider operation future must be awaited"]
 pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, SpiError>>>(
     future: F,
     provider_id: &ProviderId,

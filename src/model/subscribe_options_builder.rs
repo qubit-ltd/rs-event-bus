@@ -65,8 +65,16 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
         }
     }
 
-    /// Sets whether receiving stops after a delivery gap.
+    /// Sets how the subscriber handles a gap in the delivered event sequence.
+    ///
+    /// # Parameters
+    /// - `value`: policy that determines whether delivery continues after a
+    ///   gap.
+    ///
+    /// # Returns
+    /// The updated builder.
     #[must_use = "Use the returned builder."]
+    #[inline]
     pub fn gap_policy(mut self, value: GapPolicy) -> Self {
         self.options.gap_policy = value;
         self

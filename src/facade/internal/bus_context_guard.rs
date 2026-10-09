@@ -30,7 +30,6 @@ impl BusContextGuard {
     ///
     /// # Returns
     /// A guard that removes the identity when this execution scope ends.
-    #[inline]
     pub(in crate::facade) fn enter(bus_identity: usize) -> Self {
         CURRENT_BUS_CONTEXTS.with(|contexts| contexts.borrow_mut().push(bus_identity));
         Self { bus_identity }

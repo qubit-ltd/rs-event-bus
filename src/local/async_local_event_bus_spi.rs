@@ -125,7 +125,6 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     ///
     /// # Returns
     /// An immutable capability set matching the in-process mailbox behavior.
-    #[inline]
     fn capabilities(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Native,

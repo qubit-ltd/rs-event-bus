@@ -27,6 +27,13 @@ pub enum AsyncSubscriptionRunState {
 
 impl AsyncSubscriptionRunState {
     /// Decodes the stable atomic representation used by the control object.
+    ///
+    /// Values outside the `0..=3` representation are invalid and indicate a
+    /// broken internal invariant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` does not encode one of the four lifecycle states.
     pub(super) fn from_atomic(value: u8) -> Self {
         match value {
             0 => Self::Unstarted,

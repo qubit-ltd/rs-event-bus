@@ -141,6 +141,7 @@ impl<T: Send + Sync + 'static> SubscribeRequest<T> {
     ///
     /// # Returns
     /// The validated identity, typed topic, and options as owned values.
+    #[must_use = "the subscription parts are needed to use the request configuration"]
     #[inline]
     pub fn into_parts(self) -> (SubscriberId, Topic<T>, SubscribeOptions<T>) {
         (self.subscriber_id, self.topic, self.options)

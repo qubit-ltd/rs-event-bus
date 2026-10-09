@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+
 use std::sync::Arc;
 
 use qubit_event_bus::EventBusFacadeConfig;
@@ -16,6 +17,12 @@ fn test_clone_shares_the_configured_codec_registry() {
     let config = EventBusFacadeConfig::new().with_codec_registry(Arc::clone(&codecs));
     let cloned = config.clone();
 
-    assert!(Arc::ptr_eq(config.codec_registry(), cloned.codec_registry()));
-    assert!(Arc::ptr_eq(config.codec_registry(), &codecs));
+    assert!(
+        Arc::ptr_eq(config.codec_registry(), cloned.codec_registry()),
+        "cloning the facade config should share its codec registry",
+    );
+    assert!(
+        Arc::ptr_eq(config.codec_registry(), &codecs),
+        "the config should retain the provided codec registry",
+    );
 }

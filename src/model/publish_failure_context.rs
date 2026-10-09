@@ -146,7 +146,6 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The matching header value, or `None` when absent.
-    #[must_use = "Use the returned header value."]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
@@ -156,7 +155,6 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The ordering key borrowed from the event, or `None` when absent.
-    #[must_use = "Use the returned ordering key."]
     #[inline]
     pub fn ordering_key(&self) -> Option<&str> {
         self.ordering_key.as_deref()
@@ -176,7 +174,6 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The requested delay, or `None` when the event has no delay.
-    #[must_use = "Use the returned delay."]
     #[inline]
     pub fn delay(&self) -> Option<Duration> {
         self.delay

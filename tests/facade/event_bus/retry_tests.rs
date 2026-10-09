@@ -11,7 +11,9 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
@@ -19,18 +21,42 @@ use std::time::Duration;
 use std::time::Instant;
 
 use qubit_event_bus::DeliveryError;
+use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::EventBusRegistry;
+use qubit_event_bus::error::DeliveryAttemptError;
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::Delivery;
+use qubit_event_bus::model::FailureDirective;
+use qubit_event_bus::model::OrderingPolicy;
+use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::registry::EventBusConfig;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventBusCapabilities;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_retry::AttemptFailure;
 use qubit_retry::BackoffPolicy;
+use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
 use qubit_retry::RetryPolicy;
+
+use crate::support::fake_spi::FakeEventBusSpi;
 
 const HANDLER_SLOTS: usize = 4;
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -111,7 +137,7 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     for index in 0..HANDLER_SLOTS {
         let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
         let _ = bus
-            .publish(qubit_event_bus::model::PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
+            .publish(PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
     }
 
@@ -119,7 +145,7 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
     thread::sleep(PUBLISH_OFFSET);
     let publish_started = Instant::now();
     let _ = bus
-        .publish(qubit_event_bus::model::PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
+        .publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
     let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(io::Error::other)?;
     Ok(handler_started.duration_since(publish_started))
@@ -130,34 +156,6 @@ fn test_retry_backoff_releases_four_handler_slots() {
     let wait = sample().expect("saturation sample completes");
     assert!(wait < Duration::from_millis(200), "independent handler waited {wait:?}");
 }
-
-use std::sync::Mutex;
-use std::sync::atomic::AtomicUsize;
-
-use qubit_event_bus::Diagnostic;
-use qubit_event_bus::error::DeliveryAttemptError;
-use qubit_event_bus::error::SpiError;
-use qubit_event_bus::model::Delivery;
-use qubit_event_bus::model::FailureDirective;
-use qubit_event_bus::model::OrderingPolicy;
-use qubit_event_bus::model::ProviderId;
-use qubit_event_bus::model::PublishAcknowledgement;
-use qubit_event_bus::model::PublishRequest;
-use qubit_event_bus::spi::DeliveryDisposition;
-use qubit_event_bus::spi::EventBusCapabilities;
-use qubit_event_bus::spi::EventBusSpi;
-use qubit_event_bus::spi::EventSubscriptionSpi;
-use qubit_event_bus::spi::OutboundMessage;
-use qubit_event_bus::spi::ReceiveOutcome;
-use qubit_event_bus::spi::SettlementToken;
-use qubit_event_bus::spi::ShutdownOutcome;
-use qubit_event_bus::spi::SpiSubscriptionRequest;
-use qubit_retry::AttemptFailure;
-use qubit_retry::RetryCancellationToken;
-use qubit_retry::RetryContext;
-use qubit_retry::RetryDecision;
-
-use crate::support::fake_spi::FakeEventBusSpi;
 
 #[derive(Default)]
 struct TokenLog {

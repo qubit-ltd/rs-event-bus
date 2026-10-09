@@ -27,7 +27,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use crate::support::fake_spi::FakeEventBusSpi;
 
 #[test]
-fn default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
+fn test_default_gap_policy_stops_sync_subscription_with_the_gap_reason() {
     let spi = Arc::new(FakeEventBusSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("gap-test").unwrap(), spi.clone()).unwrap();
     let topic = Topic::<u32>::new("gap.events").unwrap();

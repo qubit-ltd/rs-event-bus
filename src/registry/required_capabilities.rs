@@ -295,6 +295,8 @@ impl RequiredCapabilities {
 ///
 /// # Returns
 /// `true` when `actual` includes every behavior required by `required`.
+#[must_use]
+#[inline]
 fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
     match required {
         PayloadModes::Native => matches!(actual, PayloadModes::Native | PayloadModes::NativeAndEncoded),
@@ -311,6 +313,8 @@ fn payload_satisfies(actual: PayloadModes, required: PayloadModes) -> bool {
 ///
 /// # Returns
 /// `true` when `actual` supports the requested settlement operations.
+#[must_use]
+#[inline]
 fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapabilities) -> bool {
     match required {
         SettlementCapabilities::None => true,
@@ -330,6 +334,8 @@ fn settlement_satisfies(actual: SettlementCapabilities, required: SettlementCapa
 ///
 /// # Returns
 /// `true` when `actual` supports the requested replay behavior.
+#[must_use]
+#[inline]
 fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> bool {
     match required {
         ReplayCapability::None => true,
@@ -346,6 +352,8 @@ fn replay_satisfies(actual: ReplayCapability, required: ReplayCapability) -> boo
 ///
 /// # Returns
 /// `true` when the actual guarantee is at least as strong as required.
+#[must_use]
+#[inline]
 fn publish_guarantee_satisfies(actual: PublishGuarantee, required: PublishGuarantee) -> bool {
     let rank = |value| match value {
         PublishGuarantee::FireAndForget => 0,

@@ -116,6 +116,7 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::Barrier;
+    use std::thread;
 
     use super::OutstandingBudget;
 
@@ -194,7 +195,7 @@ mod tests {
             for _ in 0..2 {
                 let budget = Arc::clone(&budget);
                 let barrier = Arc::clone(&barrier);
-                threads.push(std::thread::spawn(move || {
+                threads.push(thread::spawn(move || {
                     barrier.wait();
                     budget.try_acquire(2)
                 }));

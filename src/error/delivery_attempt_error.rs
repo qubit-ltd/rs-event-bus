@@ -73,7 +73,6 @@ impl DeliveryAttemptError {
     ///
     /// # Returns
     /// The optional application retry override attached to this failure.
-    #[must_use]
     #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {

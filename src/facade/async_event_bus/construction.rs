@@ -37,25 +37,6 @@ use crate::spi::EventBusCapabilities;
 use crate::spi::panic_boundary::catch_spi_call;
 
 impl AsyncEventBus {
-    /// Returns the provider capability snapshot captured during construction.
-    ///
-    /// # Returns
-    /// The immutable capabilities reported by the provider when this facade
-    /// was created.
-    #[inline]
-    pub fn capabilities(&self) -> EventBusCapabilities {
-        self.inner.capabilities
-    }
-
-    /// Returns the stable identity assigned to this provider facade.
-    ///
-    /// # Returns
-    /// The provider identity supplied to the facade constructor.
-    #[inline]
-    pub fn provider_id(&self) -> &ProviderId {
-        &self.inner.provider_id
-    }
-
     /// Asynchronously creates a facade using the built-in local provider.
     ///
     /// # Parameters
@@ -194,5 +175,25 @@ impl AsyncEventBus {
                 delivery_metrics: Arc::default(),
             }),
         })
+    }
+
+    /// Returns the provider capability snapshot captured during construction.
+    ///
+    /// # Returns
+    /// The immutable capabilities reported by the provider when this facade
+    /// was created.
+    #[inline]
+    pub fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities
+    }
+
+    /// Returns the stable identity assigned to this provider facade.
+    ///
+    /// # Returns
+    /// The provider identity supplied to the facade constructor.
+    #[must_use]
+    #[inline]
+    pub fn provider_id(&self) -> &ProviderId {
+        &self.inner.provider_id
     }
 }

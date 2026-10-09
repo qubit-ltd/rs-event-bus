@@ -39,6 +39,7 @@ impl<F: Future> BusContextFuture<F> {
     /// # Returns
     ///
     /// A future wrapper that scopes the identity to each poll.
+    #[must_use = "futures do nothing unless they are polled"]
     pub(in crate::facade) fn new(bus_key: usize, future: F) -> Self {
         Self {
             bus_key,

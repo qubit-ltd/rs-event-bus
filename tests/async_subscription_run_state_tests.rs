@@ -17,6 +17,7 @@ use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncSubscription;
 use qubit_event_bus::AsyncSubscriptionRunState;
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::ReceiveError;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
@@ -43,14 +44,12 @@ fn subscribe(bus: &AsyncEventBus) -> AsyncSubscription<u32> {
     .expect("subscription")
 }
 
-fn pending_run<'a>(
-    subscription: &'a AsyncSubscription<u32>,
-) -> impl Future<Output = Result<(), qubit_event_bus::ReceiveError>> + 'a {
+fn pending_run<'a>(subscription: &'a AsyncSubscription<u32>) -> impl Future<Output = Result<(), ReceiveError>> + 'a {
     subscription.run(|_| async { Ok(()) })
 }
 
 #[test]
-fn unpolled_run_does_not_change_state_and_first_poll_marks_running() {
+fn test_unpolled_run_does_not_change_state_and_first_poll_marks_running() {
     let (bus, _fake) = setup();
     let subscription = subscribe(&bus);
     let run = pending_run(&subscription);
@@ -65,7 +64,7 @@ fn unpolled_run_does_not_change_state_and_first_poll_marks_running() {
 }
 
 #[test]
-fn paused_run_can_resume_and_shutdown_stops_it() {
+fn test_paused_run_can_resume_and_shutdown_stops_it() {
     let (bus, _fake) = setup();
     let subscription = subscribe(&bus);
     {
@@ -85,7 +84,7 @@ fn paused_run_can_resume_and_shutdown_stops_it() {
 }
 
 #[test]
-fn shutdown_stops_a_running_subscription_before_its_guard_drops() {
+fn test_shutdown_stops_a_running_subscription_before_its_guard_drops() {
     let (bus, _fake) = setup();
     let subscription = subscribe(&bus);
     let mut run = Box::pin(pending_run(&subscription));
@@ -103,7 +102,7 @@ fn shutdown_stops_a_running_subscription_before_its_guard_drops() {
 }
 
 #[test]
-fn explicit_close_stops_unstarted_subscription() {
+fn test_explicit_close_stops_unstarted_subscription() {
     let (bus, _fake) = setup();
     let mut subscription = subscribe(&bus);
     block_on(subscription.close()).expect("close");
@@ -115,7 +114,7 @@ fn explicit_close_stops_unstarted_subscription() {
 }
 
 #[test]
-fn shutdown_stops_unstarted_subscription() {
+fn test_shutdown_stops_unstarted_subscription() {
     let (bus, _fake) = setup();
     let subscription = subscribe(&bus);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
@@ -124,7 +123,7 @@ fn shutdown_stops_unstarted_subscription() {
 }
 
 #[test]
-fn receive_error_stops_subscription() {
+fn test_receive_error_stops_subscription() {
     let (bus, fake) = setup();
     let subscription = subscribe(&bus);
     fake.fail_next_receive();

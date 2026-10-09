@@ -142,7 +142,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ) {
         let tracking = self.inner.tracker.track(self.topic.name());
         let provider_attempt = message.provider_attempt();
-        let (address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
+        let (_address, event_id, timestamp, headers, ordering_key, transport_payload, token, provider_metadata) =
             message.into_parts();
         let lane = (self.options.ordering_policy() == crate::model::OrderingPolicy::PerKey).then(|| {
             crate::pipeline::OrderingLaneKey::new(
@@ -190,7 +190,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     failure_diagnostic: Some((0, error.to_string().into())),
                     lease,
                 });
-                let _ = address;
                 return;
             }
         };

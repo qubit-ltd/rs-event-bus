@@ -470,7 +470,7 @@ fn test_admission_outcome_classifies_every_provider_result() {
             | AdmissionOutcome::NoneAccepted(summary) => Some(summary),
             AdmissionOutcome::NoDestinations => Some(AdmissionSummary::default()),
             AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
-            _ => None,
+            _ => panic!("unexpected admission outcome in test case"),
         };
         assert_eq!(expected_summary, receipt.admission_summary());
     }

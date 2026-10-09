@@ -30,7 +30,6 @@ use crate::model::Topic;
 /// # Returns
 /// A shared codec handle from the topic or registry, or `None` if neither has
 /// a codec for `T`.
-#[must_use]
 #[inline]
 pub(crate) fn resolve_codec<T: Send + Sync + 'static>(
     topic: &Topic<T>,

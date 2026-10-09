@@ -8,6 +8,20 @@
 //! Errors returned while registering payload codecs.
 
 /// Describes a codec registration that conflicts with an existing entry.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::codec::CodecRegistrationError;
+///
+/// let error = CodecRegistrationError::DuplicatePayloadType {
+///     type_name: "ExamplePayload",
+/// };
+/// assert_eq!(
+///     error.to_string(),
+///     "a codec is already registered for payload type `ExamplePayload`"
+/// );
+/// ```
 #[must_use]
 #[derive(Debug, thiserror::Error)]
 pub enum CodecRegistrationError {

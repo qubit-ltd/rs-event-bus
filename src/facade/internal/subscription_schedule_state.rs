@@ -15,7 +15,11 @@ use super::owned_delivery_phase::OwnedDeliveryPhase;
 use super::owned_delivery_record::OwnedDeliveryRecord;
 use crate::pipeline::OrderingLaneKey;
 
-/// Per-subscription scheduling metadata bounded by its owned limit.
+/// Tracks one subscription's receive demand and delivery scheduling state.
+///
+/// The scheduler uses `owned` to enforce the subscription's configured limit,
+/// while the lane queues and lock set preserve FIFO ordering and prevent
+/// concurrent dispatch within an ordered lane.
 #[derive(Default)]
 pub(super) struct SubscriptionScheduleState {
     /// Credits reserved, queued, running, or settling for this subscription.
@@ -48,8 +52,9 @@ impl SubscriptionScheduleState {
     ///
     /// # Returns
     /// `Some(index)` identifies the first unlocked lane whose head can consume
-    /// a grant. `None` means stopped, inactive, empty, locked, or only
-    /// handler heads without capacity.
+    /// a grant. `None` means stopped or inactive, or that no lane has an
+    /// eligible head because it is empty, locked, missing lease metadata, or
+    /// a handler head without available capacity.
     #[must_use]
     pub(super) fn eligible_lane(
         &self,

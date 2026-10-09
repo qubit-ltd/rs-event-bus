@@ -252,7 +252,6 @@ impl SubscriberPipeline {
     /// # Returns
     /// The provider disposition required by the action, or `None` when no
     /// settlement applies.
-    #[must_use]
     #[inline]
     pub(crate) fn failure_disposition(
         action: DeliveryFailureAction,

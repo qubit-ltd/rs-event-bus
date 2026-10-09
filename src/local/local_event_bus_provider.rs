@@ -50,6 +50,10 @@ impl ProviderMetadata for LocalEventBusProvider {
     ///
     /// # Returns
     /// A descriptor selected as `local`, `memory`, or `in-process`.
+    ///
+    /// # Panics
+    /// Panics only if the built-in provider ID or aliases violate the SPI's
+    /// validation rules.
     fn descriptor(&self) -> ProviderDescriptor {
         ProviderDescriptor::new(SpiProviderId::new("local").expect("static provider ID is valid"))
             .with_aliases(["memory", "in-process"])
