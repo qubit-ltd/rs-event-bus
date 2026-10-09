@@ -14,11 +14,12 @@ RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
 CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
 REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
+RETRY = "tests/fixtures/documentation_consumer/src/retry_policy.rs"
 REQUIRED = {
     "README.md": {LOCAL},
     "README.zh_CN.md": {LOCAL},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }
@@ -31,7 +32,7 @@ def run_case(mutator):
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH):
+        for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"fn example() {{ /* {source} */ }}\n", encoding="utf-8")

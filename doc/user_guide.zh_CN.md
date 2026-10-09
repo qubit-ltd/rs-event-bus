@@ -552,7 +552,7 @@ let subscription = bus.subscribe(request, handler)?;
 | --- | --- | --- |
 | 过滤事件 | `filter` | 总线取到消息后、处理函数运行前，查看事件内容并决定是否跳过。在 local 上，被跳过的消息在发布回执里仍是 `Accepted`；跳过不等于拒绝。示例见[需要拦截或过滤消息时](#需要拦截或过滤消息时)。 |
 | 由处理函数决定何时确认 | `ack_mode(AckMode::Manual)` | 写入业务数据后调用 `delivery.acknowledgement().ack()`；处理失败可调用 `nack()`。未作决定就返回会被视为失败。示例见[由处理函数决定何时确认](#由处理函数决定何时确认)。 |
-| 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.25"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
+| 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.26"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
 | 失败后选择动作 | `error_handler` | 可要求重试、重新放回队列、转入失败消息主题或放弃；重新入队需要所用实现支持。 |
 | 保存最终处理失败的事件 | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | 把失败消息转发到另一个主题（死信主题），还需有人订阅并处理它。示例见[保存最终处理失败的事件](#保存最终处理失败的事件)。 |
 | 同一客户的消息按顺序处理 | `ordering_policy(OrderingPolicy::PerKey)` | 发布方须为事件设置顺序键，所用实现还须支持此能力；见[保证同一对象的处理顺序](#保证同一对象的处理顺序)。 |
@@ -563,29 +563,51 @@ let subscription = bus.subscribe(request, handler)?;
 
 ### 数据库写入失败后自动重试
 
-客户视图写入偶发超时时，让库自动重试。重试策略类型来自 `qubit-retry`，需要在应用中直接依赖 `qubit-retry = "0.25"`：
+客户视图写入偶发超时时，让库自动重试。重试策略类型来自 `qubit-retry`，需要在应用中直接依赖 `qubit-retry = "0.26"`。下面的示例由编译 fixture 校验，确保所用类型与当前 crate 兼容：
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/retry_policy.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Compiled retry-policy example used by both user guides.
+
 use std::time::Duration;
 
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 use qubit_retry::BackoffPolicy;
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryPolicyError;
 
-let options = SubscribeOptions::<OrderCreated>::builder()
-    .retry_policy(
-        RetryPolicy::builder()
-            .max_attempts(3)
-            .backoff(BackoffPolicy::fixed(Duration::from_millis(200)))
-            .build()?,
+use crate::orders::events::OrderCreated;
+
+/// Builds the customer-view request with three total attempts and a fixed delay.
+pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, RetryPolicyError> {
+    let options = SubscribeOptions::<OrderCreated>::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(3)
+                .backoff(BackoffPolicy::fixed(Duration::from_millis(200)))
+                .build()?,
+        )
+        .build();
+    let request = SubscribeRequest::new(
+        "customer-view",
+        Topic::<OrderCreated>::new_static("orders.created"),
     )
-    .build();
-let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
-let subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
+    .expect("static topic and subscriber ID are valid")
+    .with_options(options);
+    Ok(request)
+}
 ```
 
-处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题，只向 `observe_diagnostics` 登记的回调发出一条 `Diagnostic::DeliveryFailed`，其中带有尝试次数和最终错误。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型决定哪些失败值得重试，单独设置它不会启动重试。重试期间这条消息一直占用 local 的积压名额。
+将返回的请求传给 `bus.subscribe`，并提供客户视图处理函数。处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题；`observe_diagnostics` 登记的回调会收到一条 `Diagnostic::DeliveryFailed`，其中包含尝试次数和最终错误。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型判断哪些失败值得重试，单独设置它不会启动重试。重试期间这条消息一直占用 local 的积压名额。
 
 ### 由处理函数决定何时确认
 

@@ -8,5 +8,6 @@ publish = false
 
 [dependencies]
 qubit-event-bus = { version = "0.20.0", path = "../../.." }
+qubit-retry = "0.26"
 qubit-spi = "0.13"
 tokio = { version = "1.53", features = ["rt", "macros", "sync", "time"] }

@@ -552,7 +552,7 @@ Also keep these limits in mind:
 | --- | --- | --- |
 | Filter events | `filter` | After the bus has taken the message and before the handler runs, inspect the event and decide whether to skip it. On local, a skipped message is still `Accepted` on the publish receipt. A skip is not a rejection. See [Filter or intercept a message](#filter-or-intercept-a-message). |
 | Let the handler decide when to acknowledge | `ack_mode(AckMode::Manual)` | After the business write, call `delivery.acknowledgement().ack()`. On failure, call `nack()`. Returning without a decision counts as failure. See [Let the handler decide when to acknowledge](#let-the-handler-decide-when-to-acknowledge). |
-| Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and the delay. A classification rule alone does not enable retries. These types require a direct `qubit-retry = "0.25"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
+| Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and the delay. A classification rule alone does not enable retries. These types require a direct `qubit-retry = "0.26"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
 | Choose an action after failure | `error_handler` | The handler can ask for a retry, a requeue, a move to a failure topic, or a discard. Requeue requires support from the transport. |
 | Keep an event that fails for good | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | Forward the failed message to another topic (the dead-letter topic). Someone still has to subscribe and handle it. See [Keep an event that fails for good](#keep-an-event-that-fails-for-good). |
 | Handle one customer's messages in order | `ordering_policy(OrderingPolicy::PerKey)` | The publisher must set an ordering key, and the transport must support the capability. See [Keep events for one object in order](#keep-events-for-one-object-in-order). |
@@ -563,29 +563,51 @@ A handler may return `()` or `Result<(), DeliveryError>`. Return an error when a
 
 ### Retry after a database write fails
 
-When the customer-view write occasionally times out, let the crate retry. Retry policy types come from `qubit-retry`, so the application depends on `qubit-retry = "0.25"` directly:
+When the customer-view write occasionally times out, let the crate retry. Retry policy types come from `qubit-retry`, so the application depends on `qubit-retry = "0.26"` directly. The compiled fixture keeps this example checked against the version accepted by this crate:
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/retry_policy.rs -->
 ```rust
+// =============================================================================
+//    Copyright (c) 2025 - 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Compiled retry-policy example used by both user guides.
+
 use std::time::Duration;
 
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 use qubit_retry::BackoffPolicy;
 use qubit_retry::RetryPolicy;
+use qubit_retry::RetryPolicyError;
 
-let options = SubscribeOptions::<OrderCreated>::builder()
-    .retry_policy(
-        RetryPolicy::builder()
-            .max_attempts(3)
-            .backoff(BackoffPolicy::fixed(Duration::from_millis(200)))
-            .build()?,
+use crate::orders::events::OrderCreated;
+
+/// Builds the customer-view request with three total attempts and a fixed delay.
+pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, RetryPolicyError> {
+    let options = SubscribeOptions::<OrderCreated>::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(3)
+                .backoff(BackoffPolicy::fixed(Duration::from_millis(200)))
+                .build()?,
+        )
+        .build();
+    let request = SubscribeRequest::new(
+        "customer-view",
+        Topic::<OrderCreated>::new_static("orders.created"),
     )
-    .build();
-let request = SubscribeRequest::new("customer-view", OrderCreated::TOPIC)?.with_options(options);
-let subscription = bus.subscribe(request, move |delivery| store.upsert_order(delivery.payload()))?;
+    .expect("static topic and subscriber ID are valid")
+    .with_options(options);
+    Ok(request)
+}
 ```
 
-When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry, and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; setting only the rule does not start retries. The message keeps its local outstanding slot for the whole retry.
+Pass the returned request to `bus.subscribe` with the customer-view handler. When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; setting only the rule does not start retries. The message keeps its local outstanding slot for the whole retry.
 
 ### Let the handler decide when to acknowledge
 

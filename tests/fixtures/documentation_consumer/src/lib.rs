@@ -15,3 +15,4 @@ pub mod orders;
 pub mod provider_spec;
 pub mod receipt_safety;
 pub mod republish_action;
+pub mod retry_policy;

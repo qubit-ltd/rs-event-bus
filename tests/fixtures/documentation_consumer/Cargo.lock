@@ -25,6 +25,7 @@ name = "event-bus-documentation-consumer"
 version = "0.0.0"
 dependencies = [
  "qubit-event-bus",
+ "qubit-retry",
  "qubit-spi",
  "tokio",
 ]
