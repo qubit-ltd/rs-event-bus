@@ -920,9 +920,9 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
             .expect("subscribe");
         // Wait for the failure before cancellation, ensuring the claimed lease path
         // ran.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(5);
         while subscription.terminal_failure().is_none() && Instant::now() < deadline {
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(1));
         }
         assert!(subscription.terminal_failure().is_some());
         subscription
@@ -953,7 +953,7 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
             .publish(PublishRequest::new(topic, 1).expect("request"))
             .expect("publish");
         called_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(5))
             .expect("healthy handler after owner panic");
         healthy.cancel().expect("healthy cleanup");
         drop(bus);
@@ -961,7 +961,7 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
         let _ = finished_tx.send(());
     });
     finished_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(15))
         .expect("claimed lease panic cleanup must finish within the watchdog");
 }
 

@@ -18,6 +18,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use qubit_clock::ManualMonotonicClock;
@@ -39,6 +40,7 @@ use qubit_event_bus::error::CapabilityError;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::AsyncEventBus;
+use qubit_event_bus::facade::AsyncSubscriptionRunState;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::AckMode;
@@ -706,6 +708,21 @@ fn test_idle_async_subscription_does_not_consume_handler_capacity() {
         let _ = bus.publish(PublishRequest::new(topic(), 7).unwrap()).await.unwrap();
         (active, idle)
     });
+    let idle = Arc::new(idle);
+    let idle_from_runner = idle.clone();
+    let idle_runner =
+        std::thread::spawn(move || block_on(idle_from_runner.run(|_| async { Ok::<(), DeliveryError>(()) })));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while idle.run_state() != AsyncSubscriptionRunState::Running && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let idle_running = idle.run_state() == AsyncSubscriptionRunState::Running;
+    if !idle_running {
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate));
+        let _ = idle_runner.join();
+        panic!("idle runner must start before shutdown");
+    }
+
     let active_started = Arc::new(AtomicBool::new(false));
     let active_started_from_runner = active_started.clone();
     let active_runner = std::thread::spawn(move || {
@@ -714,13 +731,9 @@ fn test_idle_async_subscription_does_not_consume_handler_capacity() {
             async { Ok::<(), DeliveryError>(()) }
         }))
     });
-    let idle_runner = std::thread::spawn(move || block_on(idle.run(|_| async { Ok::<(), DeliveryError>(()) })));
-
-    for _ in 0..100 {
-        if active_started.load(Ordering::Acquire) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !active_started.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
     }
     let was_dispatched = active_started.load(Ordering::Acquire);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();

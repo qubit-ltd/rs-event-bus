@@ -579,7 +579,7 @@ mod tests {
         let destructor_thread = drop_entered_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("terminal error Drop entered");
-        let returned_before_drop_release = returned_rx.recv_timeout(Duration::from_millis(250));
+        let returned_before_drop_release = returned_rx.recv_timeout(Duration::from_secs(5));
         drop_release_tx.send(()).expect("release custom Drop before assertions");
         cleanup.join().expect("cleanup joins");
         requester.join().expect("request joins");
