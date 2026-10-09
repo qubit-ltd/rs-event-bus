@@ -1326,7 +1326,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 | `tests/support/flume_spi.rs` | 基于标准库有界通道的第二个真实传输实现，验证 SPI 不为 local 定制 |
 | `tests/support/manual_async.rs` | 手动 executor / 手动 timer，让异步测试确定性推进 |
 | `tests/support/provider_shapes.rs` | 各能力组合的 provider 形态 |
-| `tests/support/{scheduler_race,spawn_failure,panic_hook}.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
+| `src/facade/sync_delivery_scheduler.rs`（inline `scheduler_race_tests`）、`src/facade/event_bus.rs`（inline `spawn_failure_tests`）、`tests/support/panic_hook.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
 | `tests/discovery_{sync,async,conflict}_tests.rs` + `tests/fixtures/discovery_{provider,consumer}` | `discovery` feature 跨 crate 链接与冲突检测 |
 | `tests/spi_conformance_tests.rs` | 用 `conformance` 模块跑 local 与 flume |
 | `tests/concurrency_contract_tests.rs` | `loom` 模型检查：admission permit 精确释放一次、lane 取消后唤醒下一位、cancel 与 receive 竞争、graceful shutdown 与 publish 的单一准入线性化点 |
@@ -1480,4 +1480,4 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.18；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.20；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

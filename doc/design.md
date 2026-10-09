@@ -1414,7 +1414,7 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 | `tests/support/flume_spi.rs` | A second bounded channel transport implemented with the standard library, so the SPI is not tailored to `local` |
 | `tests/support/manual_async.rs` | A manual executor and manual timer so async tests advance deterministically |
 | `tests/support/provider_shapes.rs` | Provider shapes for combinations of capabilities |
-| `tests/support/{scheduler_race,spawn_failure,panic_hook}.rs` | Scheduler races, thread-spawn failure, panic-hook isolation |
+| `src/facade/sync_delivery_scheduler.rs` (inline `scheduler_race_tests`), `src/facade/event_bus.rs` (inline `spawn_failure_tests`), `tests/support/panic_hook.rs` | Scheduler races, thread-spawn failure, panic-hook isolation |
 | `tests/discovery_{sync,async,conflict}_tests.rs` plus `tests/fixtures/discovery_{provider,consumer}` | Cross-crate linking and conflict detection for the `discovery` feature |
 | `tests/spi_conformance_tests.rs` | Runs the `conformance` module against `local` and flume |
 | `tests/concurrency_contract_tests.rs` | `loom` models: an admission permit is released exactly once, cancelling a lane wakes the next waiter, cancel races receive, graceful shutdown and publish share one admission linearization point |
@@ -1576,6 +1576,6 @@ For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.18. Missing
+metadata, and rejects a graph mixing old event-bus minors with 0.20. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
 does not prove delivery behavior by itself.
