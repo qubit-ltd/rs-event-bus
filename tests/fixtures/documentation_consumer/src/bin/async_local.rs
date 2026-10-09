@@ -16,6 +16,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use tokio::main;
 use tokio::spawn;
 use tokio::sync::mpsc::unbounded_channel;
@@ -25,7 +26,7 @@ use tokio::time::timeout;
 async fn main() -> Result<(), Box<dyn Error>> {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
     let topic = Topic::<String>::new("orders.created")?;
-    let mut subscription = bus
+    let subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
     let (sender, mut receiver) = unbounded_channel();
@@ -40,14 +41,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })
             .await
     });
-    bus.publish(PublishRequest::new(topic, "order-42".to_owned())?)
+    let _receipt = bus
+        .publish(PublishRequest::new(topic, "order-42".to_owned())?)
         .await?;
     let delivered = timeout(Duration::from_secs(3), receiver.recv()).await?;
     assert_eq!(delivered.as_deref(), Some("order-42"));
-    bus.shutdown(ShutdownMode::Graceful {
+    let report = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })
     .await?;
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
     runner.await??;
     Ok(())
 }

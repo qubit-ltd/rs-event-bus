@@ -47,7 +47,8 @@ fn test_sync_uncooperative_handler_returns_control_before_gate_release() {
             },
         )
         .expect("subscription");
-    bus.publish(PublishRequest::new(topic, String::new()).expect("publication"))
+    let _receipt = bus
+        .publish(PublishRequest::new(topic, String::new()).expect("publication"))
         .expect("admission");
     entered_receiver
         .recv_timeout(Duration::from_secs(30))
@@ -92,7 +93,7 @@ async fn test_async_uncooperative_handler_returns_control_before_gate_release() 
         .await
         .expect("local bus");
     let topic = Topic::<String>::new("shutdown.gate").expect("topic");
-    let mut subscription = bus
+    let subscription = bus
         .subscribe(SubscribeRequest::new("gate", topic.clone()).expect("request"))
         .await
         .expect("subscription");
@@ -112,7 +113,8 @@ async fn test_async_uncooperative_handler_returns_control_before_gate_release() 
             })
             .await
     });
-    bus.publish(PublishRequest::new(topic, String::new()).expect("publication"))
+    let _receipt = bus
+        .publish(PublishRequest::new(topic, String::new()).expect("publication"))
         .await
         .expect("admission");
     timeout(Duration::from_secs(30), entered_receiver.recv())
