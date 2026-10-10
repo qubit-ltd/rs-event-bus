@@ -20,7 +20,7 @@ else
 fi
 cache_root="$cache_home/rs-infra"
 mkdir -p "$cache_root/sources" "$cache_root/tools" "$cache_root/locks" "$cache_root/build/manager"
-manager_repo=git@github.com:qubit-ltd/rs-infra-tools.git
+manager_repo=https://github.com/qubit-ltd/rs-infra-tools.git
 
 if [[ -n "${RS_INFRA_SHARED_ROOT:-}" && -x "${RS_INFRA_TOOLS_BIN:-}" ]]; then
     shared_root=$RS_INFRA_SHARED_ROOT
