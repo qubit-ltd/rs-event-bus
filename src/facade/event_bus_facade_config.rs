@@ -149,7 +149,6 @@ impl EventBusFacadeConfig {
     ///
     /// # Returns
     /// The configured encoded publish and receive byte limits.
-    #[must_use]
     #[inline]
     pub const fn payload_limits(&self) -> PayloadLimits {
         self.payload_limits

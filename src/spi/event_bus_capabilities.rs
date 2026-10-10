@@ -148,7 +148,6 @@ impl EventBusCapabilities {
     ///
     /// # Returns
     /// Supported native and encoded payload modes.
-    #[must_use]
     #[inline]
     pub const fn payload_modes(self) -> PayloadModes {
         self.payload_modes
@@ -193,7 +192,6 @@ impl EventBusCapabilities {
     ///
     /// # Returns
     /// The set of accepted subscription modes.
-    #[must_use]
     #[inline]
     pub const fn subscription_modes(self) -> SubscriptionModes {
         self.subscription_modes
