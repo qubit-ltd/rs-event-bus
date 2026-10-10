@@ -52,6 +52,7 @@ impl IntoHandlerResult for () {
     ///
     /// # Errors
     /// This implementation never returns an error.
+    #[inline]
     fn into_handler_result(self) -> Result<(), DeliveryError> {
         Ok(())
     }
@@ -68,7 +69,6 @@ impl IntoHandlerResult for Result<(), DeliveryError> {
     ///
     /// # Errors
     /// Returns a handler error retaining the original `DeliveryError`.
-    #[inline]
     fn into_handler_result(self) -> Result<(), DeliveryError> {
         self.map_err(|source| DeliveryError::Handler {
             source: Box::new(source),

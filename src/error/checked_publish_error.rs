@@ -16,6 +16,20 @@ use crate::model::PublishReceipt;
 
 /// A publication failure, unsupported admission visibility, or a receipt that
 /// did not satisfy the requested admission condition.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::CheckedPublishError;
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::ProviderId;
+///
+/// let error = CheckedPublishError::UnsupportedVisibility {
+///     event_id: EventId::new("order-42").unwrap(),
+///     provider_id: ProviderId::new("local").unwrap(),
+/// };
+/// assert!(matches!(error, CheckedPublishError::UnsupportedVisibility { .. }));
+/// ```
 #[must_use]
 #[derive(Debug, thiserror::Error)]
 pub enum CheckedPublishError {

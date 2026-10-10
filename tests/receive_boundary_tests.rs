@@ -567,10 +567,10 @@ fn test_receive_stop_finishes_already_started_handler() {
         handler_started.fetch_add(1, Ordering::SeqCst);
         let release = handler_release.clone();
         let handler_finished = handler_finished.clone();
-        std::future::poll_fn(move |_| {
+        poll_fn(move |_| {
             if release.load(Ordering::SeqCst) {
                 handler_finished.fetch_add(1, Ordering::SeqCst);
-                std::task::Poll::Ready(Ok(()))
+                Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
             }

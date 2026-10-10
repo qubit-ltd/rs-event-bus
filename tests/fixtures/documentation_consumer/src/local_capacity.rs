@@ -66,10 +66,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(Box::new(error)),
     };
     eprintln!("local admission: {:?}", receipt.admission_outcome());
-    assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(3))?,
-        "order-42"
-    );
+    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
     })?;

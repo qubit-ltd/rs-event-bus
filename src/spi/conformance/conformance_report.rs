@@ -170,6 +170,9 @@ pub(super) fn encoded_probe() -> TransportPayload {
 ///
 /// # Returns
 /// A message addressed to the conformance probe topic.
+///
+/// # Panics
+/// Panics only if the fixed probe topic or event ID is rejected as invalid.
 pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
     OutboundMessage::new(
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
@@ -190,6 +193,10 @@ pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
 ///
 /// # Returns
 /// A request subscribed to the conformance probe topic.
+///
+/// # Panics
+/// Panics if the generated subscriber ID or the fully configured request is
+/// rejected by its constructor or builder.
 pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapability) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::builder()
         .subscription_id(Id::new(subscription_id))

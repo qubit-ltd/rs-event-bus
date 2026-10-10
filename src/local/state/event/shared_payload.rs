@@ -39,7 +39,6 @@ impl SharedPayload {
     /// # Panics
     /// Panics if `payload` is encoded, violating the local SPI's native-payload
     /// contract.
-    #[must_use = "use the shared payload in local queue state"]
     #[inline]
     pub(in crate::local) fn from_transport(payload: &TransportPayload) -> Self {
         match payload {
@@ -54,7 +53,6 @@ impl SharedPayload {
     ///
     /// # Returns
     /// A native SPI payload sharing the original allocation.
-    #[must_use = "use the reconstructed SPI payload"]
     #[inline]
     pub(in crate::local) fn to_transport(&self) -> TransportPayload {
         match self {

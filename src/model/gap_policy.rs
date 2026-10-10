@@ -8,6 +8,16 @@
 
 /// Controls whether a subscription continues after the provider reports a
 /// delivery gap.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::GapPolicy;
+///
+/// let stop = GapPolicy::Stop;
+/// let continue_receiving = GapPolicy::Continue;
+/// assert_ne!(stop, continue_receiving);
+/// ```
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GapPolicy {
     /// Stop receiving so the caller can recover or replace the subscription.

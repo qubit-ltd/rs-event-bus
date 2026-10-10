@@ -61,6 +61,7 @@ impl EventBusRegistry {
     /// # Returns
     /// An empty mutable registry.
     #[must_use]
+    #[inline]
     pub fn new() -> Self {
         Self {
             providers: ProviderRegistry::default(),

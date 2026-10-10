@@ -58,6 +58,7 @@ impl PublishFailure {
     ///
     /// # Returns
     /// A failure exposing stable identity, effect and the original cause.
+    #[inline]
     pub fn new(event_id: EventId, effect: PublishEffect, cause: PublishError) -> Self {
         Self {
             event_id,

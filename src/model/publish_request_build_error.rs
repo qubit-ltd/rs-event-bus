@@ -16,11 +16,8 @@ use crate::error::EventIdGenerationError;
 /// ```
 /// use qubit_event_bus::model::PublishRequestBuildError;
 ///
-/// fn is_missing_field(error: &PublishRequestBuildError) -> bool {
-///     matches!(error, PublishRequestBuildError::MissingField(_))
-/// }
-///
-/// let _ = is_missing_field as fn(&PublishRequestBuildError) -> bool;
+/// let error = PublishRequestBuildError::MissingField("event_id");
+/// assert!(matches!(error, PublishRequestBuildError::MissingField("event_id")));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

@@ -61,6 +61,7 @@ impl DeliveryContext {
     /// # Returns
     /// A context with the initial retry attempt and no provider metadata.
     #[must_use]
+    #[inline]
     pub fn new(provider_id: ProviderId, subscription_id: Id, subscriber_id: SubscriberId) -> Self {
         Self {
             provider_id,

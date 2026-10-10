@@ -130,10 +130,10 @@ where
 /// - `policy`: Optional retry budget and backoff policy.
 /// - `rule`: Optional user retry decision rule.
 /// - `cancellation`: Optional signal that cancels retry delays.
+/// - `timer`: Clock used for retry delays.
 /// - `duplicate_policy`: Admission uncertainty safety policy.
 /// - `seen_unknown`: Monotonic evidence across completed provider attempts.
 /// - `seen_admission`: Confirmed admission retained for post-ACK retry failure.
-/// - `timer`: Clock used for retry delays.
 ///
 /// # Returns
 /// The provider acknowledgement after success.

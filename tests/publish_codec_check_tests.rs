@@ -32,6 +32,7 @@ use qubit_event_bus::spi::PublishVisibility;
 use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SubscriptionModes;
+
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::fake_spi::FakeEventBusSpi;
 

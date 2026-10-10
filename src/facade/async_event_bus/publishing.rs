@@ -64,6 +64,15 @@ impl AsyncEventBus {
     /// It does not verify that encoding, payload limits, transport
     /// availability, or message persistence will succeed.
     ///
+    /// # Type Parameters
+    /// - `T`: payload type accepted by the topic.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose configured codec availability is checked.
+    ///
+    /// # Returns
+    /// `Ok(())` when the provider can accept the topic's payload mode.
+    ///
     /// # Errors
     /// Returns [`CapabilityError::CodecRequired`] when the provider accepts
     /// only encoded payloads and neither the topic nor facade registry has

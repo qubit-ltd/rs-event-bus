@@ -672,7 +672,7 @@ fn test_failed_timer_registration_surfaces_after_a_failed_settlement() {
 
 #[test]
 fn test_graceful_shutdown_timer_registration_failure_leaves_bus_available_for_immediate_shutdown() {
-    let spi = Arc::new(crate::support::fake_spi::FakeAsyncEventBusSpi::new());
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let timer = Arc::new(FailingTimer {
         clock: StdMonotonicClock::new(),
     });

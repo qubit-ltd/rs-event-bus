@@ -99,7 +99,14 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
         }
     }
     /// Sets whether receiving stops after a delivery gap.
+    ///
+    /// # Parameters
+    /// - `value`: policy for handling gaps in the delivery sequence.
+    ///
+    /// # Returns
+    /// The updated builder.
     #[must_use = "Use the returned builder."]
+    #[inline]
     pub fn gap_policy(mut self, value: GapPolicy) -> Self {
         self.options.gap_policy = value;
         self

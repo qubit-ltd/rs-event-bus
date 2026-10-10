@@ -63,6 +63,9 @@ impl SpiSubscriptionRequestBuilder {
     /// # Parameters
     /// `subscription_id` is the identity assigned by the event bus to this
     /// receiver.
+    ///
+    /// # Returns
+    /// The builder with the receiver identity configured.
     #[inline]
     pub fn subscription_id(mut self, subscription_id: Id) -> Self {
         self.subscription_id = Some(subscription_id);
@@ -73,6 +76,9 @@ impl SpiSubscriptionRequestBuilder {
     ///
     /// # Parameters
     /// `topic` is the destination previously validated for the provider.
+    ///
+    /// # Returns
+    /// The builder with the provider destination configured.
     #[inline]
     pub fn topic(mut self, topic: TopicAddress) -> Self {
         self.topic = Some(topic);
@@ -84,6 +90,9 @@ impl SpiSubscriptionRequestBuilder {
     /// # Parameters
     /// `subscriber_id` identifies the logical subscriber independently of
     /// this bus-local receiver.
+    ///
+    /// # Returns
+    /// The builder with the logical subscriber identity configured.
     #[inline]
     pub fn subscriber_id(mut self, subscriber_id: SubscriberId) -> Self {
         self.subscriber_id = Some(subscriber_id);
@@ -94,6 +103,9 @@ impl SpiSubscriptionRequestBuilder {
     ///
     /// # Parameters
     /// `group` is `Some` for shared consumption or `None` for independent use.
+    ///
+    /// # Returns
+    /// The builder with the shared group setting configured.
     #[inline]
     pub fn group(mut self, group: Option<ConsumerGroup>) -> Self {
         self.group = Some(group);
@@ -105,6 +117,9 @@ impl SpiSubscriptionRequestBuilder {
     /// # Parameters
     /// `durability` selects the persistence behavior requested from the
     /// provider.
+    ///
+    /// # Returns
+    /// The builder with the persistence mode configured.
     #[inline]
     pub fn durability(mut self, durability: SubscriptionDurability) -> Self {
         self.durability = Some(durability);
@@ -116,6 +131,9 @@ impl SpiSubscriptionRequestBuilder {
     /// # Parameters
     /// `start_position` specifies the initial position requested from the
     /// provider.
+    ///
+    /// # Returns
+    /// The builder with the initial provider position configured.
     #[inline]
     pub fn start_position(mut self, start_position: StartPosition) -> Self {
         self.start_position = Some(start_position);
@@ -126,6 +144,9 @@ impl SpiSubscriptionRequestBuilder {
     ///
     /// # Parameters
     /// `provider_options` contains backend-specific options for the provider.
+    ///
+    /// # Returns
+    /// The builder with the provider options configured.
     #[inline]
     pub fn provider_options(mut self, provider_options: ProviderOptions) -> Self {
         self.provider_options = Some(provider_options);
@@ -137,6 +158,9 @@ impl SpiSubscriptionRequestBuilder {
     /// # Parameters
     /// `payload_type_id` identifies the native payload type expected by the
     /// provider.
+    ///
+    /// # Returns
+    /// The builder with the native payload type configured.
     #[inline]
     pub fn payload_type_id(mut self, payload_type_id: TypeId) -> Self {
         self.payload_type_id = Some(payload_type_id);

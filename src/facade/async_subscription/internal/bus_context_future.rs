@@ -80,6 +80,7 @@ impl<F: Future> Future for BusContextFuture<F> {
 ///
 /// `true` if that identity is present; otherwise, `false`.
 #[must_use = "Use the returned query result."]
+#[inline]
 pub(in crate::facade) fn is_current_bus_poll(bus_key: usize) -> bool {
     ACTIVE_BUS_POLLS.with(|active| active.borrow().contains(&bus_key))
 }

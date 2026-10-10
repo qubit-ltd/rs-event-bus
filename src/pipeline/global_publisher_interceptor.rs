@@ -76,6 +76,7 @@ impl GlobalPublisherInterceptor {
 ///
 /// # Returns
 /// A string payload when available, or a fixed fallback message.
+#[must_use]
 pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&'static str>()

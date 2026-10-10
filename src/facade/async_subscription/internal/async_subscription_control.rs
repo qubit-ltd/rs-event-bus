@@ -125,6 +125,7 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
 
 impl<T: 'static> AsyncSubscriptionControl<T> {
     /// Returns the current caller-driven lifecycle snapshot.
+    #[must_use = "the subscription lifecycle state should be observed"]
     #[inline]
     pub(in crate::facade::async_subscription) fn run_state(&self) -> AsyncSubscriptionRunState {
         AsyncSubscriptionRunState::from_atomic(self.run_state.load(Ordering::Acquire))
@@ -134,6 +135,7 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// True if this call changed `Unstarted` or `Paused` to `Running`.
+    #[must_use = "the caller must know whether it acquired the run state"]
     pub(in crate::facade::async_subscription) fn enter_run(&self) -> bool {
         let mut current = self.run_state.load(Ordering::Acquire);
         loop {
@@ -238,6 +240,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// # Returns
     /// True only when this call publishes the first terminal cause.
     #[inline]
+    #[must_use = "the caller must know whether this call published the failure"]
     fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
         let published = self.signals.fail_receive(SubscriptionStopReason::Provider { error });
         self.mark_stopped();

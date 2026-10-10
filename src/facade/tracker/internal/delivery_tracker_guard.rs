@@ -27,6 +27,7 @@ impl<'a> DeliveryTrackerGuard<'a> {
     ///
     /// # Returns
     /// A guard that decrements the topic count on drop.
+    #[inline]
     pub(in crate::facade) fn new(tracker: &'a LifecycleTracker, topic: Box<str>) -> Self {
         Self { tracker, topic }
     }

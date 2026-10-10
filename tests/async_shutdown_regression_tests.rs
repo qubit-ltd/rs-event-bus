@@ -124,12 +124,16 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(30),
     }));
-    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert!(
+        graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending(),
+        "graceful provider shutdown should remain pending",
+    );
     assert_eq!(
         vec![ShutdownMode::Graceful {
             timeout: Duration::from_secs(30)
         }],
-        *provider.calls.lock().expect("calls lock")
+        *provider.calls.lock().expect("calls lock"),
+        "the provider should receive the initial graceful shutdown request",
     );
 
     let mut immediate = Box::pin(bus.shutdown(ShutdownMode::Immediate));
@@ -137,10 +141,17 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
         immediate
             .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
-            .is_pending()
+            .is_pending(),
+        "immediate shutdown should wait while escalating the active provider call",
     );
-    assert!(counter.0.load(Ordering::SeqCst) > 0);
-    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_ready());
+    assert!(
+        counter.0.load(Ordering::SeqCst) > 0,
+        "escalating shutdown should wake the graceful shutdown task",
+    );
+    assert!(
+        graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_ready(),
+        "the graceful shutdown task should complete after escalation",
+    );
     assert_eq!(
         vec![
             ShutdownMode::Graceful {
@@ -149,11 +160,13 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
             ShutdownMode::Immediate,
         ],
         *provider.calls.lock().expect("calls lock"),
+        "the provider should receive graceful and immediate shutdown requests in order",
     );
     assert!(
         immediate
             .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
-            .is_ready()
+            .is_ready(),
+        "the immediate shutdown task should complete after escalation",
     );
 }

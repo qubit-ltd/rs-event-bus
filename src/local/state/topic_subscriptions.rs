@@ -30,6 +30,7 @@ impl TopicSubscriptions {
     ///
     /// # Returns
     /// Strong owners of live queues ordered by subscription ID.
+    #[must_use]
     pub(in crate::local) fn live_queues(&mut self) -> Vec<Arc<LocalQueue>> {
         self.queues.retain(|_, queue| queue.strong_count() > 0);
         let queues = self.queues.values().filter_map(Weak::upgrade).collect::<Vec<_>>();
@@ -47,6 +48,7 @@ impl TopicSubscriptions {
     ///
     /// # Returns
     /// `true` when the stored entry matched and was removed.
+    #[must_use]
     pub(in crate::local) fn remove(&mut self, id: Id, queue: &Arc<LocalQueue>) -> bool {
         let matches = self
             .queues

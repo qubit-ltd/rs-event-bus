@@ -247,7 +247,7 @@ fn forward_dead_letter<T: Send + Sync + 'static>(
     )
 }
 
-/// Settles one provider-issued token and emits a structured failure on error.
+/// Routes settlement of one provider-issued token through its owning receiver.
 ///
 /// # Type Parameters
 /// - `T`: event payload type associated with the settlement.
@@ -262,8 +262,8 @@ fn forward_dead_letter<T: Send + Sync + 'static>(
 /// - `subscriber_id`: logical subscriber identity.
 ///
 /// # Side Effects
-/// Dispatches settlement through the owning receiver and emits diagnostics
-/// for invalid or unavailable tokens.
+/// Dispatches settlement through the owning receiver. If no token is available,
+/// this function returns without contacting the provider.
 #[inline]
 pub(in crate::facade) fn settle_token<T>(
     _inner: &Arc<EventBusInner>,

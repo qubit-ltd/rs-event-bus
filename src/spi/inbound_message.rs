@@ -144,7 +144,6 @@ impl InboundMessage {
     /// # Returns
     /// `Some` with the key when configured, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&OrderingKey> {
         self.ordering_key.as_ref()
     }
@@ -162,7 +161,6 @@ impl InboundMessage {
     /// # Returns
     /// `Some` when a provider settlement token is available, otherwise `None`.
     #[inline]
-    #[must_use = "Use the returned settlement."]
     pub fn settlement(&self) -> Option<&SettlementToken> {
         self.settlement.as_ref()
     }
@@ -181,7 +179,6 @@ impl InboundMessage {
     /// # Returns
     /// `Some` with a positive attempt number when supplied by the provider,
     /// otherwise `None`. Local handler retries do not change this value.
-    #[must_use]
     #[inline]
     pub fn provider_attempt(&self) -> Option<NonZeroU32> {
         self.provider_attempt

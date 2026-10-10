@@ -7,7 +7,10 @@
 // =============================================================================
 //! Provider ordering capabilities.
 
-/// Strongest message ordering scope guaranteed by a provider.
+/// Message ordering scope guaranteed by a provider.
+///
+/// Each variant describes the boundary within which message order is preserved;
+/// messages outside that boundary have no ordering guarantee from this capability.
 ///
 /// # Examples
 ///
@@ -20,13 +23,13 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OrderingCapability {
-    /// No ordering guarantee.
+    /// The provider does not guarantee message ordering.
     None,
-    /// Ordering is maintained per subscription.
+    /// Message order is preserved within each subscription, but not across subscriptions.
     PerSubscription,
-    /// Ordering is maintained for each key.
+    /// Message order is preserved among messages with the same key.
     PerKey,
-    /// Ordering is maintained within each partition.
+    /// Message order is preserved among messages in the same partition.
     PerPartition,
 }
 

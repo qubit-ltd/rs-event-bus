@@ -116,6 +116,7 @@ impl SpiSubscriptionRequest {
             payload_type_id,
         }
     }
+
     /// Returns the bus-local subscription ID.
     ///
     /// # Returns
@@ -125,6 +126,7 @@ impl SpiSubscriptionRequest {
     pub fn subscription_id(&self) -> Id {
         self.subscription_id
     }
+
     /// Returns the topic address.
     ///
     /// # Returns
@@ -134,6 +136,7 @@ impl SpiSubscriptionRequest {
     pub fn topic(&self) -> &TopicAddress {
         &self.topic
     }
+
     /// Returns the logical subscriber ID.
     ///
     /// # Returns
@@ -143,15 +146,17 @@ impl SpiSubscriptionRequest {
     pub fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
+
     /// Returns the optional consumer group.
     ///
     /// # Returns
     /// `Some` with the shared group when set, otherwise `None`.
-    #[inline]
     #[must_use = "Use the returned group."]
+    #[inline]
     pub fn group(&self) -> Option<&ConsumerGroup> {
         self.group.as_ref()
     }
+
     /// Returns the requested durability.
     ///
     /// # Returns
@@ -161,6 +166,7 @@ impl SpiSubscriptionRequest {
     pub fn durability(&self) -> SubscriptionDurability {
         self.durability
     }
+
     /// Returns the requested starting position.
     ///
     /// # Returns
@@ -170,6 +176,7 @@ impl SpiSubscriptionRequest {
     pub fn start_position(&self) -> &StartPosition {
         &self.start_position
     }
+
     /// Returns provider-specific options.
     ///
     /// # Returns

@@ -486,7 +486,7 @@ fn test_strict_local_ephemeral_cleanup_discards_unsettled_delivery() {
         }
         receiver.close().map_err(|error| error.to_string())?;
         let mut replacement = spi
-            .subscribe(crate::support::fake_spi::subscription_request())
+            .subscribe(subscription_request())
             .map_err(|error| error.to_string())?;
         if !matches!(replacement.receive(Duration::ZERO), Ok(ReceiveOutcome::TimedOut)) {
             return Err("closed ephemeral delivery was restored to a new receiver".into());

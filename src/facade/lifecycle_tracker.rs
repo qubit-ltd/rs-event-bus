@@ -203,6 +203,7 @@ impl LifecycleTracker {
 mod tests {
     use std::sync::Arc;
     use std::sync::Barrier;
+    use std::sync::PoisonError;
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -240,10 +241,7 @@ mod tests {
         let tracker = Arc::new(LifecycleTracker::new());
         let delivery = tracker.track_delivery("orders");
         let barrier = Arc::new(Barrier::new(2));
-        *tracker
-            .test_wait_barrier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        *tracker.test_wait_barrier.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&barrier));
         let (result_tx, result_rx) = mpsc::channel();
         let waiter_tracker = Arc::clone(&tracker);
         let waiter = thread::spawn(move || {
@@ -270,10 +268,7 @@ mod tests {
         let tracker = Arc::new(LifecycleTracker::new());
         tracker.worker_started();
         let barrier = Arc::new(Barrier::new(2));
-        *tracker
-            .test_wait_barrier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        *tracker.test_wait_barrier.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&barrier));
         let (result_tx, result_rx) = mpsc::channel();
         let waiter_tracker = Arc::clone(&tracker);
         let waiter = thread::spawn(move || {

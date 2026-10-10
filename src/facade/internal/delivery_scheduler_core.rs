@@ -86,7 +86,6 @@ impl DeliverySchedulerCore {
     /// counters. This remains usable when a clock error prevents computing
     /// an age.
     #[must_use = "scheduler gauges are the current delivery snapshot"]
-    #[inline]
     pub(in crate::facade) fn snapshot_gauges(&self, subscription_id: Option<Id>) -> DeliveryMetricsSnapshot {
         self.lock().snapshot_gauges(subscription_id)
     }

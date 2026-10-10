@@ -25,6 +25,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
+use crate::support::fake_spi::full_capabilities;
 use crate::support::manual_async::block_on;
 
 #[test]
@@ -101,7 +102,7 @@ fn test_async_facade_constructors_initialize_provider_capabilities_once() {
 #[test]
 fn test_async_facade_exposes_cached_provider_capabilities() {
     let provider_id = ProviderId::new("cached-async").expect("valid provider ID");
-    let capabilities = crate::support::fake_spi::full_capabilities();
+    let capabilities = full_capabilities();
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
     let bus = AsyncEventBus::from_spi(provider_id.clone(), spi.clone()).expect("facade constructs");
     let clone = bus.clone();

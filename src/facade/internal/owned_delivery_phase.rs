@@ -19,7 +19,8 @@ pub(super) enum OwnedDeliveryPhase {
     QueuedSettlement,
     /// Handler execution holding one running slot.
     Running,
-    /// Retry backoff retains the owned credit and ordering lane without H.
+    /// Retry backoff retains the owned credit and ordering lane without
+    /// holding a handler slot.
     WaitingRetry,
     /// Provider settlement owns the credit and any lane retained from handler
     /// execution.

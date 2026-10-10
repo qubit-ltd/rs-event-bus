@@ -66,13 +66,19 @@ fn test_published_event_keeps_identity_and_native_payload() {
     else {
         panic!("local provider reports destination admissions");
     };
-    assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
+    assert!(
+        matches!(admissions[0].status(), AdmissionStatus::Accepted),
+        "published event should be accepted by its destination"
+    );
     let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).expect("receive succeeds") else {
         panic!("published event is available immediately");
     };
     assert_eq!(event_id.as_str(), message.id().as_str());
-    assert!(matches!(
-        message.payload(),
-        TransportPayload::Native(payload) if payload.downcast_ref::<u32>() == Some(&31)
-    ));
+    assert!(
+        matches!(
+            message.payload(),
+            TransportPayload::Native(payload) if payload.downcast_ref::<u32>() == Some(&31)
+        ),
+        "published native payload should retain its u32 value"
+    );
 }

@@ -20,6 +20,9 @@ fn test_clones_observe_one_terminal_decision_and_reject_conflicts() {
     original.ack().expect("repeating the same decision should succeed");
 
     assert_eq!(original.state(), AcknowledgementState::Acknowledged);
-    assert!(clone.is_completed());
-    assert!(matches!(clone.nack(), Err(AcknowledgementError::AlreadyCompleted)));
+    assert!(clone.is_completed(), "clone should observe the shared terminal state");
+    assert!(
+        matches!(clone.nack(), Err(AcknowledgementError::AlreadyCompleted)),
+        "conflicting decision should be rejected after completion"
+    );
 }

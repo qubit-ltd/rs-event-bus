@@ -28,6 +28,7 @@ pub(crate) enum ReceiveFailureAction {
 /// # Returns
 /// `Reject` for deterministic decode failures; `StopUnsettled` for every other
 /// codec failure.
+#[inline]
 pub(crate) fn receive_failure_action(error: &CodecError) -> ReceiveFailureAction {
     match error {
         CodecError::Decode { .. } => ReceiveFailureAction::Reject,

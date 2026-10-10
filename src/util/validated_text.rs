@@ -7,7 +7,7 @@
 // =============================================================================
 //! Const-compatible validation helpers for portable text values.
 
-/// Checks for nonempty text without surrounding Unicode whitespace or controls.
+/// Checks for nonempty text with no control characters or boundary Unicode whitespace.
 ///
 /// Control characters are rejected anywhere; whitespace is permitted only
 /// between the first and last code points.

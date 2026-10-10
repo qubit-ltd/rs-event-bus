@@ -22,9 +22,25 @@ fn test_option_replacement_is_visible_and_survives_consumption() {
     .expect("valid request")
     .with_options(options);
 
-    assert_eq!(request.options().ack_mode(), AckMode::Manual);
+    assert_eq!(
+        request.options().ack_mode(),
+        AckMode::Manual,
+        "replacement options should be visible through the request"
+    );
     let (subscriber, topic, options) = request.into_parts();
-    assert_eq!(subscriber.as_str(), "model-subscriber");
-    assert_eq!(topic.name(), "model.subscribe");
-    assert_eq!(options.ack_mode(), AckMode::Manual);
+    assert_eq!(
+        subscriber.as_str(),
+        "model-subscriber",
+        "consuming the request should preserve its subscriber"
+    );
+    assert_eq!(
+        topic.name(),
+        "model.subscribe",
+        "consuming the request should preserve its topic"
+    );
+    assert_eq!(
+        options.ack_mode(),
+        AckMode::Manual,
+        "consuming the request should preserve the replacement options"
+    );
 }

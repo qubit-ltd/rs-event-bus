@@ -30,6 +30,15 @@ use crate::pipeline::PipelineFailure;
 use crate::spi::PublishVisibility;
 
 impl EventBus {
+    /// Returns the shared publication counters for this facade and its clones.
+    ///
+    /// # Returns
+    /// A point-in-time snapshot of publication counters.
+    #[inline]
+    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
+        self.inner.publish_metrics.snapshot()
+    }
+
     /// Checks that the configured provider can publish this topic's payload.
     ///
     /// This synchronous configuration query checks codec availability only,
@@ -113,15 +122,6 @@ impl EventBus {
             }),
         }
     }
-    /// Returns the shared publication counters for this facade and its clones.
-    ///
-    /// # Returns
-    /// A point-in-time snapshot of publication counters.
-    #[inline]
-    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
-        self.inner.publish_metrics.snapshot()
-    }
-
     /// Publishes one typed request through publisher interceptors, retry, and
     /// SPI.
     ///

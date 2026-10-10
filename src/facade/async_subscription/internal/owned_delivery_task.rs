@@ -49,11 +49,14 @@ pub(in crate::facade) fn discard_unstarted_tasks<T: 'static>(
     abandoned: &AtomicU64,
     ephemeral: bool,
 ) {
-    let unstarted = tasks
-        .iter()
-        .filter(|task| !task.started.load(Ordering::Acquire))
-        .count() as u64;
-    tasks.retain(|task| task.started.load(Ordering::Acquire));
+    let mut unstarted = 0_u64;
+    tasks.retain(|task| {
+        let started = task.started.load(Ordering::Acquire);
+        if !started {
+            unstarted += 1;
+        }
+        started
+    });
     if ephemeral && unstarted > 0 {
         abandoned.fetch_add(unstarted, Ordering::AcqRel);
     }

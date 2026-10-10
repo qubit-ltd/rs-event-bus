@@ -62,8 +62,8 @@ fn close_bus(bus: &EventBus) {
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }
 
-#[test]
 /// Rejects an application-declared payload weight above the provider budget.
+#[test]
 fn test_declared_weight_over_budget_is_not_admitted() {
     let bus = configured_bus(4);
     let topic = Topic::<String>::new("capacity.over-budget").expect("topic");
@@ -86,8 +86,8 @@ fn test_declared_weight_over_budget_is_not_admitted() {
     close_bus(&bus);
 }
 
-#[test]
 /// Shows that one event's fanout consumes weight separately per destination.
+#[test]
 fn test_fanout_charges_declared_weight_for_each_accepted_target() {
     let bus = configured_bus(5);
     let topic = Topic::<String>::new("capacity.fanout").expect("topic");
@@ -133,8 +133,8 @@ fn test_fanout_charges_declared_weight_for_each_accepted_target() {
     drop(subscriptions);
 }
 
-#[test]
 /// Rejects a native publication when weighted admission has no weight callback.
+#[test]
 fn test_weight_budget_rejects_native_publish_without_declaration() {
     let bus = configured_bus(8);
     let topic = Topic::<String>::new("capacity.missing-weight").expect("topic");

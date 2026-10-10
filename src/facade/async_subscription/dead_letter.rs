@@ -32,8 +32,10 @@ use crate::pipeline::dead_letter_was_accepted;
 /// # Parameters
 /// - `inner`: bus state and provider pipeline.
 /// - `envelope`: typed dead-letter event to publish.
-/// - `retry_policy`: optional retry policy for dead-letter forwarding.
-/// - `cancellation`: optional cancellation signal for retry waits.
+/// - `retry_policy`: retry policy for dead-letter forwarding. `None` makes one
+///   publishing attempt; `Some` applies the configured retry policy.
+/// - `cancellation`: signal that can cancel retry waits. `None` leaves those
+///   waits uncancelled; `Some` uses the supplied token.
 /// - `admission_policy`: condition required for a forwarded event to count as
 ///   accepted.
 ///

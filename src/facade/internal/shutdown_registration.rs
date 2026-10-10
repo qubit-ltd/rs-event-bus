@@ -33,6 +33,7 @@ impl<'ticket> ShutdownRegistration<'ticket> {
     ///
     /// # Returns
     /// An unregistered guard that can install a waker when polled.
+    #[inline]
     pub(in crate::facade) fn new(coordinator: &'ticket ShutdownCoordinator, generation: u64) -> Self {
         Self {
             coordinator,

@@ -54,7 +54,6 @@ impl LocalEvent {
     ///
     /// # Returns
     /// `Some` with a queued event, or `None` if a delay deadline overflows.
-    #[must_use]
     pub(in crate::local) fn transport(topic: TopicAddress, message: &OutboundMessage) -> Option<Self> {
         let not_before = match message.delay() {
             Some(delay) => Some(Instant::now().checked_add(delay)?),

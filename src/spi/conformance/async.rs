@@ -176,10 +176,10 @@ where
 /// payload.
 ///
 /// # Parameters
-/// - spi: fresh provider instance used only for this payload case.
-/// - case_id: identifier of the payload probe being exercised.
-/// - payload: transport representation sent through the provider.
-/// - report: report receiving the ordered case results.
+/// - `spi`: fresh provider instance used only for this payload case.
+/// - `case_id`: identifier of the payload probe being exercised.
+/// - `payload`: transport representation sent through the provider.
+/// - `report`: report receiving the ordered case results.
 async fn run_payload_case(
     spi: Arc<dyn AsyncEventBusSpi>,
     case_id: &'static str,
@@ -384,11 +384,11 @@ async fn async_conflicting_settlement_case(
 /// Records a shutdown result, preserving the case-specific error wording.
 ///
 /// # Parameters
-/// - report: report receiving the shutdown result.
-/// - spi: provider instance to shut down.
-/// - case_id: stable result identifier.
-/// - outcome_prefix: wording for a non-complete outcome.
-/// - error_prefix: wording for an SPI error.
+/// - `report`: report receiving the shutdown result.
+/// - `spi`: provider instance to shut down.
+/// - `case_id`: stable result identifier.
+/// - `outcome_prefix`: wording for a non-complete outcome.
+/// - `error_prefix`: wording for an SPI error.
 async fn record_async_shutdown(
     report: &mut ConformanceReport,
     spi: &dyn AsyncEventBusSpi,
@@ -407,10 +407,10 @@ async fn record_async_shutdown(
 /// Records a receiver close result with its case-specific error wording.
 ///
 /// # Parameters
-/// - report: report receiving the close result.
-/// - subscription: receiver to close.
-/// - case_id: stable result identifier.
-/// - error_prefix: wording for an SPI error.
+/// - `report`: report receiving the close result.
+/// - `subscription`: receiver to close.
+/// - `case_id`: stable result identifier.
+/// - `error_prefix`: wording for an SPI error.
 async fn record_async_subscription_close(
     report: &mut ConformanceReport,
     subscription: &mut dyn AsyncEventSubscriptionSpi,
@@ -427,9 +427,9 @@ async fn record_async_subscription_close(
 /// Pushes a pass or failure result into the conformance report.
 ///
 /// # Parameters
-/// - report: report receiving the result.
-/// - case_id: stable result identifier.
-/// - result: successful completion or its failure detail.
+/// - `report`: report receiving the result.
+/// - `case_id`: stable result identifier.
+/// - `result`: successful completion or its failure detail.
 fn push_async_result(report: &mut ConformanceReport, case_id: &str, result: Result<(), String>) {
     report.push(match result {
         Ok(()) => ConformanceCase::Passed {

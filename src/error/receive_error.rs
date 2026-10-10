@@ -16,7 +16,8 @@ use crate::error::SpiError;
 use crate::model::EventId;
 use crate::model::SubscriptionStopReason;
 
-/// A subscription could not receive or decode its next delivery.
+/// A subscription could not receive its next delivery or complete a related
+/// operation, such as decoding, settlement retry, or dead-letter forwarding.
 ///
 /// # Examples
 ///

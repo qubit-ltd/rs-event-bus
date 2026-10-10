@@ -31,10 +31,11 @@ use crate::model::SubscriberId;
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubscriptionDeliveryMetricsSnapshot {
-    /// Bus-local subscription identity.
+    /// Identifies the subscription within the event bus that created it.
     pub subscription_id: Id,
-    /// Logical subscriber identity.
+    /// Identifies the logical subscriber associated with this subscription.
     pub subscriber_id: SubscriberId,
-    /// Delivery gauges and cumulative counters for this subscription.
+    /// Captures this subscription's delivery gauges and cumulative counters
+    /// at the time the snapshot was taken.
     pub metrics: DeliveryMetricsSnapshot,
 }

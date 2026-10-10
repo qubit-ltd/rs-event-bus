@@ -27,11 +27,19 @@ fn test_retry_evidence_is_preserved_without_changing_provider_acknowledgement() 
     )
     .with_duplicate_possible(true);
 
-    assert!(receipt.duplicate_possible());
-    assert_eq!(receipt.acknowledgement(), &acknowledgement);
+    assert!(
+        receipt.duplicate_possible(),
+        "retry evidence should mark the receipt as possibly duplicated"
+    );
+    assert_eq!(
+        receipt.acknowledgement(),
+        &acknowledgement,
+        "retry evidence should preserve the provider acknowledgement"
+    );
     assert!(
         receipt
             .check_admission(AdmissionRequirement::AtLeastOneAccepted)
-            .is_err()
+            .is_err(),
+        "possibly duplicated delivery must not satisfy the admission requirement"
     );
 }

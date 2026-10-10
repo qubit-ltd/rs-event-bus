@@ -265,13 +265,18 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
     });
-    let bus = EventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider).unwrap();
-    let request = PublishRequest::new(Topic::<String>::new("orders.created").unwrap(), "order-2".to_owned()).unwrap();
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider)
+        .expect("valid provider capabilities");
+    let request = PublishRequest::new(
+        Topic::<String>::new("orders.created").expect("valid topic"),
+        "order-2".to_owned(),
+    )
+    .expect("request builds");
     let error = bus
         .publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)
         .expect_err("no destination was admitted");
     match error {
-        qubit_event_bus::CheckedPublishError::Admission { receipt, reason } => {
+        CheckedPublishError::Admission { receipt, reason } => {
             assert_eq!(receipt.admission_outcome(), AdmissionOutcome::NoDestinations);
             assert_eq!(reason, AdmissionCheckError::NoAcceptedDestination);
         }
@@ -383,7 +388,11 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
     let visible_bus = EventBus::from_spi(provider_id, visible_provider.clone()).expect("valid visible provider");
     let error = visible_bus
         .publish_checked(
-            PublishRequest::new(Topic::<String>::new("orders.visible").unwrap(), "order".to_owned()).unwrap(),
+            PublishRequest::new(
+                Topic::<String>::new("orders.visible").expect("valid topic"),
+                "order".to_owned(),
+            )
+            .expect("valid request"),
             AdmissionRequirement::ProviderOrDestinationAccepted,
         )
         .expect_err("no destinations accepted");

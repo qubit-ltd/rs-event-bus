@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-/// Counts active workers and received deliveries by topic.
+/// Stores active worker counts and per-topic in-flight delivery counts.
 #[derive(Default)]
 pub(in crate::facade) struct TrackerState {
     /// Number of subscription workers that have not completed cleanup.

@@ -1130,8 +1130,8 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
                     if origin.as_ref() == "delivery_metrics_clock"
             ) {
                 let count = observed.fetch_add(1, Ordering::SeqCst);
-                // Bound recursion deliberately: failure is an assertion, never a stack
-                // overflow.
+                // Bound recursion deliberately: failure is an assertion,
+                // never a stack overflow.
                 if count < 3 {
                     let nested = if through_handle {
                         weak_sub

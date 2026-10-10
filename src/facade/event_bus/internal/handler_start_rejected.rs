@@ -24,6 +24,7 @@ impl HandlerStartRejected {
     /// # Returns
     /// True only for the internal stopped-handler signal.
     #[must_use]
+    #[inline]
     pub(in crate::facade) fn is_rejection(error: &DeliveryError) -> bool {
         matches!(error, DeliveryError::Handler { source } if source.is::<Self>())
     }

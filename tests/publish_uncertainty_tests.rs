@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
 use std::time::Duration;
 
 use qubit_clock::ClockDomain;
@@ -579,7 +580,7 @@ fn dead_letter_options() -> SubscribeOptions<u32> {
 fn test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry() {
     let spi = Arc::new(DeadLetterSpi::new());
     let bus = EventBus::from_spi(ProviderId::new("dead-letter").expect("test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry: test provider identity must be valid"), spi.clone()).expect("test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry: facade must accept the scripted provider capabilities");
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::DeliveryFailed { .. }) {
             tx.send(()).expect("test_sync_uncertain_dlq_stops_without_settling_source_or_blind_retry: test synchronization receiver must remain connected");
@@ -1037,7 +1038,7 @@ fn test_no_destination_ack_then_clock_failure_retains_known_non_admission() {
 /// Counts real codec encoding calls across the complete publication.
 struct CountingTextCodec {
     content_type: ContentType,
-    encodes: Arc<std::sync::atomic::AtomicUsize>,
+    encodes: Arc<AtomicUsize>,
 }
 impl EventCodec<String> for CountingTextCodec {
     fn content_type(&self) -> &ContentType {
@@ -1191,7 +1192,7 @@ fn assert_terminal_source_chain(asynchronous: bool) {
     let mut source: &(dyn Error + 'static) = &failure;
     let mut original = None;
     while let Some(next) = source.source() {
-        if let Some(provider_source) = next.downcast_ref::<std::io::Error>() {
+        if let Some(provider_source) = next.downcast_ref::<IoError>() {
             original = Some(provider_source.to_string());
         }
         source = next;

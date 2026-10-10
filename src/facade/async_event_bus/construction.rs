@@ -182,6 +182,7 @@ impl AsyncEventBus {
     /// # Returns
     /// The immutable capabilities reported by the provider when this facade
     /// was created.
+    #[must_use]
     #[inline]
     pub fn capabilities(&self) -> EventBusCapabilities {
         self.inner.capabilities

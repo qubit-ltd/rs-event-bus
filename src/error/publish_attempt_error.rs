@@ -71,6 +71,7 @@ impl PublishAttemptError {
             source: Box::new(source),
         }
     }
+
     /// Returns the external admission evidence recorded for this failed
     /// attempt.
     ///

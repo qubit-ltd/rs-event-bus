@@ -51,14 +51,17 @@ impl EventCodec<String> for TextCodec {
     fn content_type(&self) -> &ContentType {
         &self.content_type
     }
+
     /// Returns the optional schema expected by this codec.
     fn schema_id(&self) -> Option<&SchemaId> {
         self.schema_id.as_ref()
     }
+
     /// Encodes text into immutable UTF-8 bytes.
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
         Ok(Arc::from(value.as_bytes()))
     }
+
     /// Decodes the supplied bytes while retaining access to metadata.
     fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
         Ok(format!(

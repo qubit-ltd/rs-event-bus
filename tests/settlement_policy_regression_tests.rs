@@ -26,6 +26,7 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DeliveryDisposition;
+
 use support::settlement_probe::CancelOnDrop;
 use support::settlement_probe::ProbeBus;
 use support::settlement_probe::SettlementProbe;
@@ -40,6 +41,7 @@ fn subscribe(bus: &EventBus, name: &str, calls: Arc<AtomicUsize>) -> Subscriptio
     )
     .expect("subscription starts")
 }
+
 /// Publishes a scalar through the real facade.
 fn publish(bus: &EventBus, topic: &str) {
     let _ = bus

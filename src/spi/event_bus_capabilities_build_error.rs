@@ -39,6 +39,10 @@ impl EventBusCapabilitiesBuildError {
     }
 
     /// Returns the name of the first required field absent from the builder.
+    ///
+    /// # Returns
+    ///
+    /// The static field name that the builder did not provide.
     #[must_use]
     #[inline]
     pub const fn missing_field(self) -> &'static str {

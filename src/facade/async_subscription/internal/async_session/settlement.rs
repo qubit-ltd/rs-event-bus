@@ -36,6 +36,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// first terminal cause before callbacks. Dropping the future retains
     /// interrupted accounting. The single receiver remains borrowed
     /// exclusively while started tasks are polled.
+    ///
+    /// # Panics
+    /// Panics if retry state marks an attempt cancelled or exhausted without
+    /// retaining the preceding error required to classify that attempt.
     #[must_use]
     pub(super) async fn settle_ready(&mut self) -> bool {
         let mut selected = None;
@@ -196,6 +200,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// # Errors
     /// Returns the source-preserving SPI error from invocation or polling.
+    ///
+    /// # Panics
+    /// Panics if the selected delivery no longer has its validated provider
+    /// token or the session no longer owns its receiver.
     async fn perform_settlement_attempt(
         &mut self,
         index: usize,
@@ -334,6 +342,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// This stops dispatch before observers run, records terminal metrics,
     /// emits at most one SettlementStopped, and releases the actual
     /// delivery owner.
+    ///
+    /// # Panics
+    /// Panics if the selected delivery has no immutable settlement intent.
     fn stop_settlement(
         &mut self,
         index: usize,
@@ -412,6 +423,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// A duration error stops lifecycle accounting without undoing a confirmed
     /// SPI response or counting that message as an unresolved abandonment.
+    ///
+    /// # Panics
+    /// Panics if the selected delivery is absent from the completed queue.
     fn finish_completed(&mut self, index: usize) {
         if self.completed[index].settlement.started_at.is_some() {
             match self.completed[index].settlement.elapsed(self.inner.timer.as_ref()) {

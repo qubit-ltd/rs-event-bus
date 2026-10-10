@@ -46,7 +46,6 @@ impl LocalSharedState {
     ///
     /// # Panics
     /// Panics if `max_total_outstanding` is zero.
-    #[must_use = "retain the shared state in provider handles"]
     pub(in crate::local) fn new(
         capacity: usize,
         max_total_outstanding: usize,

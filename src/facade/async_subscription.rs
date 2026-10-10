@@ -48,11 +48,14 @@ mod delivery_task;
 pub(super) use internal::is_current_bus_poll;
 
 /// Boxed subscriber handler that returns a runtime-neutral future.
+/// The callback can be shared by delivery tasks without tying the session to
+/// a specific executor's future type.
 ///
 /// # Type Parameters
 /// - `T`: payload type accepted by the handler.
 type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
 /// Shared owner of a subscriber handler callback.
+/// Clones retain the same callback for concurrent delivery tasks.
 ///
 /// # Type Parameters
 /// - `T`: payload type accepted by the handler.
@@ -216,7 +219,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// handler futures before using its handler for new messages.
     ///
     /// # Type Parameters
-    /// - `H`: handler factory callable type.
+    /// - `H`: callback type invoked for each newly received delivery.
     /// - `F`: future returned by the handler.
     ///
     /// # Parameters
@@ -226,8 +229,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// `Ok(())` when the provider closes or shutdown stops the runner.
     ///
     /// # Errors
-    /// Returns the retained first terminal cause as `ReceiveError::Stopped`,
-    /// or a receiver close failure when no earlier cause exists.
+    /// Returns `ReceiveError::Closed` when the session is already closed,
+    /// the retained first terminal cause as `ReceiveError::Stopped`, or a
+    /// receiver close failure when no earlier cause exists.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
@@ -261,7 +265,8 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// `Ok(())` after receiver cleanup completes.
     ///
     /// # Errors
-    /// Returns a lifecycle error when provider receiver close fails.
+    /// Returns `LifecycleError::Closed` when the session is already closed,
+    /// or a lifecycle error when provider receiver close fails.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.

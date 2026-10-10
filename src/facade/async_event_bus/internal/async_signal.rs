@@ -65,6 +65,7 @@ impl AsyncSignal {
     /// The next ID in the `u64` sequence; IDs repeat only after the sequence
     /// wraps.
     #[must_use = "waiter IDs must be retained for registration"]
+    #[inline]
     pub(in crate::facade) fn next_waiter_id(&self) -> u64 {
         self.next_waiter.fetch_add(1, Ordering::Relaxed)
     }

@@ -32,7 +32,7 @@ pub(in crate::local) struct AsyncLocalShared {
 }
 
 impl AsyncLocalShared {
-    /// Creates shared provider state with validated positive capacity limits.
+    /// Creates shared provider state with the supplied capacity limits.
     ///
     /// # Parameters
     /// - `capacity`: per-subscription queued and unsettled-message bound.

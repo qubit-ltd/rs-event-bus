@@ -130,7 +130,6 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// A shared codec reference when one was configured, otherwise `None`.
-    #[must_use]
     #[inline]
     pub fn codec(&self) -> Option<&Arc<dyn EventCodec<T>>> {
         self.codec.as_ref()
@@ -140,7 +139,6 @@ impl<T: 'static> Topic<T> {
     ///
     /// # Returns
     /// The schema identifier borrowed from the configured codec, or `None`.
-    #[must_use]
     #[inline]
     pub fn schema_id(&self) -> Option<&SchemaId> {
         self.codec.as_ref().and_then(|codec| codec.schema_id())

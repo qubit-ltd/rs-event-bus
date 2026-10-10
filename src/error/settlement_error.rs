@@ -16,7 +16,7 @@ use crate::error::SpiError;
 /// ```
 /// use qubit_event_bus::error::SettlementError;
 ///
-/// assert!(matches!(SettlementError::AlreadySettled, SettlementError::AlreadySettled));
+/// assert_eq!(SettlementError::AlreadySettled.to_string(), "delivery has already been settled");
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

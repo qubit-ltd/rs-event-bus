@@ -86,7 +86,6 @@ pub trait EventCodec<T>: Send + Sync + 'static {
     /// # Returns
     /// `Some` when the codec uses a schema, or `None` when its format is
     /// self-describing or has no schema identifier.
-    #[must_use]
     fn schema_id(&self) -> Option<&SchemaId>;
     /// Encodes one application value into shared immutable bytes.
     ///

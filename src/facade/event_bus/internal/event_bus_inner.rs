@@ -113,7 +113,6 @@ impl EventBusInner {
     /// A checked clock failure stops affected owners before invoking
     /// diagnostics.
     #[must_use = "delivery gauges are the current bus snapshot"]
-    #[inline]
     pub(in crate::facade) fn delivery_gauges(&self, scope: Option<Id>) -> crate::facade::DeliveryMetricsSnapshot {
         match self.scheduler.snapshot(scope, self.clock.as_ref()) {
             Ok(snapshot) => snapshot,
@@ -248,7 +247,6 @@ impl EventBusInner {
     ///
     /// # Returns
     /// Some with all failures, or None if no close failure was recorded.
-    #[must_use = "Inspect the recorded subscription close failures."]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
         let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(errors) = snapshot.as_ref() {

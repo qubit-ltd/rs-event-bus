@@ -392,6 +392,7 @@ mod tests {
         waiter.join().expect("waiter joins");
         finisher.join().expect("finisher joins");
     }
+
     #[test]
     fn test_async_registration_cancel_and_failed_generation_survives_retry() {
         let coordinator = ShutdownCoordinator::new();

@@ -234,6 +234,8 @@ impl FakeEventBusSpi {
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
     }
+    #[must_use]
+    #[inline]
     pub(crate) fn capabilities_calls(&self) -> usize {
         self.capabilities_calls.load(Ordering::Acquire)
     }

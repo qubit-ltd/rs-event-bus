@@ -11,6 +11,16 @@
 ///
 /// The value is an instantaneous snapshot and can change immediately after it
 /// is read. It describes the caller-driven runner, not provider queue depth.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::AsyncSubscriptionRunState;
+///
+/// let state = AsyncSubscriptionRunState::Unstarted;
+/// assert_eq!(state, AsyncSubscriptionRunState::Unstarted);
+/// assert_ne!(state, AsyncSubscriptionRunState::Running);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 #[repr(u8)]
@@ -34,6 +44,8 @@ impl AsyncSubscriptionRunState {
     /// # Panics
     ///
     /// Panics if `value` does not encode one of the four lifecycle states.
+    #[must_use]
+    #[inline]
     pub(super) fn from_atomic(value: u8) -> Self {
         match value {
             0 => Self::Unstarted,
