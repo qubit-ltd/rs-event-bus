@@ -26,7 +26,6 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DeliveryDisposition;
-
 use support::settlement_probe::CancelOnDrop;
 use support::settlement_probe::ProbeBus;
 use support::settlement_probe::SettlementProbe;

@@ -240,7 +240,6 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// # Returns
     /// True only when this call publishes the first terminal cause.
     #[inline]
-    #[must_use = "the caller must know whether this call published the failure"]
     fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
         let published = self.signals.fail_receive(SubscriptionStopReason::Provider { error });
         self.mark_stopped();

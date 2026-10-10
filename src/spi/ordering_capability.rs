@@ -10,7 +10,8 @@
 /// Message ordering scope guaranteed by a provider.
 ///
 /// Each variant describes the boundary within which message order is preserved;
-/// messages outside that boundary have no ordering guarantee from this capability.
+/// messages outside that boundary have no ordering guarantee from this
+/// capability.
 ///
 /// # Examples
 ///
@@ -25,7 +26,8 @@
 pub enum OrderingCapability {
     /// The provider does not guarantee message ordering.
     None,
-    /// Message order is preserved within each subscription, but not across subscriptions.
+    /// Message order is preserved within each subscription, but not across
+    /// subscriptions.
     PerSubscription,
     /// Message order is preserved among messages with the same key.
     PerKey,

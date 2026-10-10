@@ -13,12 +13,12 @@ use std::time::Duration;
 ///
 /// For the synchronous [`crate::EventBus`] facade, `Graceful` bounds how long
 /// the caller waits for the complete shutdown sequence. If that deadline
-/// expires, the caller receives [`crate::ShutdownError::TimedOut`] while a background
-/// coordinator continues cleanup and the bus rejects new operations. A later
-/// shutdown call can wait again, or `Immediate` can strengthen the active
-/// attempt. Rust cannot forcibly stop a blocked synchronous provider call or
-/// handler. Async facade shutdown is driven by its returned future and may be
-/// cancelled by dropping that future.
+/// expires, the caller receives [`crate::ShutdownError::TimedOut`] while a
+/// background coordinator continues cleanup and the bus rejects new operations.
+/// A later shutdown call can wait again, or `Immediate` can strengthen the
+/// active attempt. Rust cannot forcibly stop a blocked synchronous provider
+/// call or handler. Async facade shutdown is driven by its returned future and
+/// may be cancelled by dropping that future.
 ///
 /// # Examples
 ///

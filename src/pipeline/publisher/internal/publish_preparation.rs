@@ -13,8 +13,8 @@ use crate::model::PublishReceipt;
 /// A completed interceptor drop or a publication ready for the provider.
 ///
 /// # Type Parameters
-/// - `T`: the payload type held by the prepared publication.
-///   The `'static` bound excludes payloads that borrow non-static data.
+/// - `T`: the payload type held by the prepared publication. The `'static`
+///   bound excludes payloads that borrow non-static data.
 #[must_use]
 pub(in crate::pipeline::publisher) enum PublishPreparation<T: 'static> {
     /// An interceptor completed the publication without entering SPI.

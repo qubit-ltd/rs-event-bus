@@ -22,7 +22,6 @@ use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
-
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::manual_async::block_on;
 use support::manual_async::poll_once;
