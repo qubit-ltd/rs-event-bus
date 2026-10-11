@@ -204,8 +204,8 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 - 运行期真正使用的 qubit 依赖：`qubit-spi`（目录/发现）、`qubit-retry`
   （`worker` + `async` feature）、`qubit-clock`（`Timer`/`TimeError`）、
   `qubit-id`（`Uuid` 生成 `EventId`）。错误类型依赖 `thiserror`。
-- dev 依赖 `loom`（并发模型）；有界通道传输使用标准库实现
-  与 `loom`（并发模型检查）。
+- dev 依赖 `loom` 用于 crate 内的并发模型检查，运行命令为
+  `RUSTFLAGS="--cfg loom" cargo test --lib loom`；普通构建使用标准库同步原语。
 
 ---
 
@@ -1306,7 +1306,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
     异步投递任务上，不持有订阅目录、ordering lane 或 tracker 的锁。这样用户回调
     再进入 bus API 时不会在同一把锁上自死锁，配合 §8.6 / §9.8 的 `WouldDeadlock` 检测。
 
-`tests/concurrency_contract_tests.rs` 在 `loom` 下对第 4、5、7、10 条相关的原语建模检查。
+crate 内的 `loom` 测试对预算准入、操作许可和调度器容量进行模型检查。
 
 ---
 
@@ -1329,7 +1329,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 | `src/facade/sync_delivery_scheduler.rs`（inline `scheduler_race_tests`）、`src/facade/event_bus.rs`（inline `spawn_failure_tests`）、`tests/support/panic_hook.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
 | `tests/discovery_{sync,async,conflict}_tests.rs` + `tests/fixtures/discovery_{provider,consumer}` | `discovery` feature 跨 crate 链接与冲突检测 |
 | `tests/spi_conformance_tests.rs` | 用 `conformance` 模块跑 local 与 flume |
-| `tests/concurrency_contract_tests.rs` | `loom` 模型检查：admission permit 精确释放一次、lane 取消后唤醒下一位、cancel 与 receive 竞争、graceful shutdown 与 publish 的单一准入线性化点 |
+| `src/local/outstanding_budget.rs`、`src/facade/event_bus/internal/operation_gate.rs`、`src/facade/internal/delivery_scheduler_core_loom_tests.rs` | `loom` 模型检查：预算准入、操作许可和调度器容量 |
 | `fuzz/fuzz_targets/{provider_options,transport_envelope}.rs` | 解析/构造边界 fuzz |
 | `benches/` | 见 §10.6 |
 

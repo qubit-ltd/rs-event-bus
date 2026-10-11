@@ -221,8 +221,8 @@ facade. `local` does not know about any layer above the registry.
 - Qubit crates actually used at runtime: `qubit-spi` (catalog and discovery),
   `qubit-retry` (`worker` and `async` features), `qubit-clock` (`Timer` / `TimeError`),
   and `qubit-id` (UUID `EventId`s). Error types use `thiserror`.
-- Dev-dependencies: `loom` (concurrency models); the bounded channel transport uses the standard library
-  and `loom` (concurrency model checking).
+- Dev-dependency: `loom` runs the in-crate concurrency models with
+  `RUSTFLAGS="--cfg loom" cargo test --lib loom`; normal builds use standard-library synchronization.
 
 ---
 
@@ -1394,7 +1394,7 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
     A callback that re-enters the bus API therefore cannot deadlock on the same lock.
     This pairs with the `WouldDeadlock` checks in §8.6 and §9.8.
 
-`tests/concurrency_contract_tests.rs` model-checks primitives related to items 4, 5, 7, and 10 under `loom`.
+The in-crate `loom` tests model-check budget admission, operation permits, and scheduler capacity.
 
 ---
 
@@ -1417,7 +1417,7 @@ Diagnostics are a **push** model, not a log. This crate does not depend on `log`
 | `src/facade/sync_delivery_scheduler.rs` (inline `scheduler_race_tests`), `src/facade/event_bus.rs` (inline `spawn_failure_tests`), `tests/support/panic_hook.rs` | Scheduler races, thread-spawn failure, panic-hook isolation |
 | `tests/discovery_{sync,async,conflict}_tests.rs` plus `tests/fixtures/discovery_{provider,consumer}` | Cross-crate linking and conflict detection for the `discovery` feature |
 | `tests/spi_conformance_tests.rs` | Runs the `conformance` module against `local` and flume |
-| `tests/concurrency_contract_tests.rs` | `loom` models: an admission permit is released exactly once, cancelling a lane wakes the next waiter, cancel races receive, graceful shutdown and publish share one admission linearization point |
+| `src/local/outstanding_budget.rs`, `src/facade/event_bus/internal/operation_gate.rs`, `src/facade/internal/delivery_scheduler_core_loom_tests.rs` | `loom` models for budget admission, operation permits, and scheduler capacity |
 | `fuzz/fuzz_targets/{provider_options,transport_envelope}.rs` | Fuzz of parse and construction edges |
 | `benches/` | See §10.6 |
 
