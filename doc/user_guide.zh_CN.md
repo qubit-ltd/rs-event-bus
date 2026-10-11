@@ -65,13 +65,6 @@
 
 <!-- event-bus-source: examples/local_delivery.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Minimal local-provider example showing subscription, publication, and
 //! graceful shutdown.
 
@@ -371,13 +364,6 @@ fn publish_to_redis<T: Send + Sync + 'static>(
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/republish_action.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Application decisions after examining publication evidence.
 
 /// A decision for the application; this enum performs no publication itself.
@@ -397,13 +383,6 @@ pub enum RepublishAction {
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/receipt_safety.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Check retained history before the final attempt's admission summary.
 
 use qubit_event_bus::model::AdmissionOutcome;
@@ -567,13 +546,6 @@ let subscription = bus.subscribe(request, handler)?;
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/retry_policy.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Compiled retry-policy example used by both user guides.
 
 use std::time::Duration;
@@ -820,13 +792,6 @@ let bus = EventBus::local(local)?;
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Compiled local-provider capacity example used by both user guides.
 
 use std::num::NonZeroUsize;
@@ -1089,13 +1054,6 @@ Codec 回调受 panic 边界保护。`encode` 返回错误或编码/元数据回
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/order_created_codec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Order-event codec compiled from the bilingual user guides.
 
 use std::io::Error;
@@ -1204,13 +1162,6 @@ let config = EventBusConfig::default().with_facade_config(bus_settings);
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Asynchronous local delivery example compiled by the user-guide checks.
 
 use std::error::Error;
@@ -1441,13 +1392,6 @@ shutdown_result?;
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Two bounded waits hand unresolved cleanup back to the application supervisor.
 
 use std::time::Duration;

@@ -65,13 +65,6 @@ Third-party implementations, codecs, and extension interfaces come after the bas
 
 <!-- event-bus-source: examples/local_delivery.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Minimal local-provider example showing subscription, publication, and
 //! graceful shutdown.
 
@@ -371,13 +364,6 @@ Check history for the whole logical publication before interpreting the final ad
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/republish_action.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Application decisions after examining publication evidence.
 
 /// A decision for the application; this enum performs no publication itself.
@@ -397,13 +383,6 @@ pub enum RepublishAction {
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/receipt_safety.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Check retained history before the final attempt's admission summary.
 
 use qubit_event_bus::model::AdmissionOutcome;
@@ -567,13 +546,6 @@ When the customer-view write occasionally times out, let the crate retry. Retry 
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/retry_policy.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Compiled retry-policy example used by both user guides.
 
 use std::time::Duration;
@@ -820,13 +792,6 @@ To bound application-declared native payload weight as well as delivery count, o
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Compiled local-provider capacity example used by both user guides.
 
 use std::num::NonZeroUsize;
@@ -1089,13 +1054,6 @@ This application module imports `OrderCreated` from the `orders::events` module 
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/order_created_codec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Order-event codec compiled from the bilingual user guides.
 
 use std::io::Error;
@@ -1204,13 +1162,6 @@ Pass `config` to the registry `create` for the encoded provider, the same way th
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bin/async_local.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Asynchronous local delivery example compiled by the user-guide checks.
 
 use std::error::Error;
@@ -1443,13 +1394,6 @@ Stop business ingress first, then drain notification sources with a deadline. Av
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Two bounded waits hand unresolved cleanup back to the application supervisor.
 
 use std::time::Duration;

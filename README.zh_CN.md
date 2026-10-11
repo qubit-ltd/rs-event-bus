@@ -24,13 +24,6 @@ qubit-event-bus = "0.20"
 
 <!-- event-bus-source: examples/local_delivery.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Minimal local-provider example showing subscription, publication, and
 //! graceful shutdown.
 

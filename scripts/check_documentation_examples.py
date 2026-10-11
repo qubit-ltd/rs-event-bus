@@ -25,6 +25,16 @@ PATTERN = re.compile(
     r"(?P<fence>[\x60~]{3})rust\s*\n(?P<code>.*?)\n(?P=fence)",
     re.DOTALL,
 )
+FILE_HEADER = re.compile(
+    r"\A// =+\n"
+    r"//    Copyright \(c\) [^\n]+\n"
+    r"//\n"
+    r"//    SPDX-License-Identifier: Apache-2\.0\n"
+    r"//\n"
+    r"//    Licensed under the Apache License, Version 2\.0\.\n"
+    r"// =+\n"
+)
+EXAMPLE_DOCUMENTS = {"README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md"}
 errors = []
 for document, required in REQUIRED.items():
     text = (ROOT / document).read_text(encoding="utf-8")
@@ -36,7 +46,10 @@ for document, required in REQUIRED.items():
             errors.append(f"{document}: invalid source path {name}")
             continue
         found.add(name)
-        if match.group("code").strip() != source.read_text(encoding="utf-8").strip():
+        source_code = source.read_text(encoding="utf-8")
+        if document in EXAMPLE_DOCUMENTS:
+            source_code = FILE_HEADER.sub("", source_code)
+        if match.group("code").strip() != source_code.strip():
             errors.append(f"{document}: example drift from {name}")
     for missing in sorted(required - found):
         errors.append(f"{document}: missing checked example {missing}")

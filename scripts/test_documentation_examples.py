@@ -23,6 +23,15 @@ REQUIRED = {
     "doc/design.md": {SPEC},
     "doc/design.zh_CN.md": {SPEC},
 }
+FILE_HEADER = (
+    "// =============================================================================\n"
+    "//    Copyright (c) 2026 Haixing Hu.\n"
+    "//\n"
+    "//    SPDX-License-Identifier: Apache-2.0\n"
+    "//\n"
+    "//    Licensed under the Apache License, Version 2.0.\n"
+    "// =============================================================================\n"
+)
 
 
 def run_case(mutator):
@@ -35,13 +44,14 @@ def run_case(mutator):
         for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"fn example() {{ /* {source} */ }}\n", encoding="utf-8")
+            header = FILE_HEADER if source == LOCAL else ""
+            path.write_text(f"{header}fn example() {{ /* {source} */ }}\n", encoding="utf-8")
         for document, required in REQUIRED.items():
             path = root / document
             path.parent.mkdir(parents=True, exist_ok=True)
             blocks = []
             for source in sorted(required):
-                code = (root / source).read_text(encoding="utf-8").strip()
+                code = (root / source).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
                 blocks.append(f"<!-- event-bus-source: {source} -->\n```rust\n{code}\n```")
             path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
         mutator(root)
@@ -67,6 +77,11 @@ def missing_marker(root):
 def drift(root):
     path = root / "README.md"
     path.write_text(path.read_text(encoding="utf-8").replace("/* examples", "/* changed"), encoding="utf-8")
+
+
+def add_file_header(root):
+    path = root / "README.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("```rust\n", "```rust\n" + FILE_HEADER), encoding="utf-8")
 
 
 def traversal(root):
@@ -125,7 +140,8 @@ assert result.returncode == 0, result.stdout + result.stderr
 
 expect_failure(missing_marker, f"missing checked example {LOCAL}")
 expect_failure(drift, f"example drift from {LOCAL}")
+expect_failure(add_file_header, f"example drift from {LOCAL}")
 expect_failure(traversal, "invalid source path ../../outside.rs")
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print("documentation example checker: 16 cases passed (both guides, safety drift, nested paths, traversal and symlink escape)")
+print("documentation example checker: 17 cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")
