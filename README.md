@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
 
-`qubit-event-bus` solves a common problem inside an order service: once an order is accepted, the order code must trigger several independent tasks, such as writing an audit trail and refreshing a customer-facing view. Directly calling both tasks couples order creation to their implementations and failure paths. This crate lets the order code publish one typed event while each task subscribes independently. Its built-in local provider handles work inside one process, where events may be lost and the application must arrange any needed recovery; a provider SPI lets applications integrate a different transport without changing the event-facing API. The crate does not make the handoff from the order transaction to publication reliable.
+`qubit-event-bus` provides a typed event bus for Rust applications. When several independent parts of an application need to react to the same event, the publisher can publish it once and each part can subscribe independently, without coupling the publisher to their implementations and failure paths. Its built-in local provider handles work inside one process, where events may be lost and the application must arrange any needed recovery; a provider SPI lets applications integrate a different transport without changing the event-facing API. The crate does not make the handoff from a business transaction to event publication reliable.
 
 ## An order service example
 
