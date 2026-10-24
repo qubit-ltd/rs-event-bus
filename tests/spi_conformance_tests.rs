@@ -99,6 +99,8 @@ use crate::support::manual_async::poll_once;
 use crate::support::provider_shapes::ChannelShapedEventBusSpi;
 use crate::support::provider_shapes::encoded_settlement_capabilities;
 
+/// Accepts an overall publication acceptance or one matching accepted
+/// admission.
 fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id: Id) -> Result<(), String> {
     match acknowledgement {
         PublishAcknowledgement::Accepted { .. } => Ok(()),

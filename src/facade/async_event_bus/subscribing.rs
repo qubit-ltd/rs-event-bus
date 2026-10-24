@@ -50,9 +50,10 @@ impl AsyncEventBus {
     /// until its runner takes control.
     ///
     /// # Errors
-    /// Returns an error when shutdown has started, options require unsupported
-    /// provider capabilities, the bus-local subscription ID space is exhausted,
-    /// or provider subscription fails.
+    /// Returns an error when shutdown has started, async subscriber middleware
+    /// is misconfigured, options require unsupported provider capabilities, the
+    /// bus-local subscription ID space is exhausted, the configured
+    /// subscription limit has been reached, or provider subscription fails.
     pub async fn subscribe<T: Send + Sync + 'static>(
         &self,
         request: SubscribeRequest<T>,

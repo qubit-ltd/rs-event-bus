@@ -86,8 +86,14 @@ fn test_async_facade_publishes_single_and_ordered_batch_without_runtime_dependen
         assert_eq!(mixed_batch.total_count(), 2);
         assert_eq!(mixed_batch.accepted_count(), 1);
         assert_eq!(mixed_batch.failure_count(), 1);
-        assert!(mixed_batch.items()[0].is_err());
-        assert!(mixed_batch.items()[1].is_ok());
+        assert!(
+            mixed_batch.items()[0].is_err(),
+            "the first item should retain its injected publish failure"
+        );
+        assert!(
+            mixed_batch.items()[1].is_ok(),
+            "the second item should be accepted after the first item fails"
+        );
 
         let outcome = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         assert_eq!(outcome.outcome, ShutdownOutcome::Complete);
@@ -129,14 +135,20 @@ fn test_async_facade_publisher_interceptor_can_drop_without_spi_publish() {
             .publish(PublishRequest::new(topic(), 17).unwrap().with_options(options))
             .await
             .unwrap();
-        assert!(receipt.acknowledgement().is_dropped());
+        assert!(
+            receipt.acknowledgement().is_dropped(),
+            "the global interceptor should drop the publish"
+        );
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 
     assert_eq!(*order.lock().unwrap(), ["typed", "global"]);
     assert_eq!(bus.publish_metrics().attempts, 1);
     assert_eq!(bus.publish_metrics().dropped, 1);
-    assert!(!spi.operation_log().contains(&"publish"));
+    assert!(
+        !spi.operation_log().contains(&"publish"),
+        "a dropped publish must not reach the SPI"
+    );
 }
 
 #[test]
@@ -158,7 +170,10 @@ fn test_async_terminal_publish_retry_error_retains_reason_attempt_and_spi_source
         let PublishError::Retry(retry) = error.into_cause() else {
             panic!("typed RetryError must reach async facade caller");
         };
-        assert!(matches!(retry.reason(), RetryErrorReason::Exhausted { .. }));
+        assert!(
+            matches!(retry.reason(), RetryErrorReason::Exhausted { .. }),
+            "a single failed attempt should exhaust the retry policy"
+        );
         assert_eq!(retry.context().attempts(), 1);
         let attempt_error = retry.last_error().expect("attempt error retained");
         assert_eq!(attempt_error.kind(), "fake_failure");

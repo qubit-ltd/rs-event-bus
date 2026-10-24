@@ -18,6 +18,10 @@ use crate::spi::PayloadModes;
 /// This capability check only resolves codec configuration; it does not invoke
 /// the codec or contact the provider. Raw publication does not require a codec.
 ///
+/// # Type Parameters
+///
+/// * `T` - Payload type carried by the topic whose codec is checked.
+///
 /// # Parameters
 ///
 /// * `modes` - Payload representations supported by the provider.

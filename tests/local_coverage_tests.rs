@@ -180,7 +180,10 @@ fn test_capacity_is_per_subscription_and_includes_in_flight_messages() {
     );
     assert_eq!(2, second_admissions.len());
     assert!(second_admissions.iter().all(|admission| {
-        matches!(admission.status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
+        matches!(
+            admission.status(),
+            AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full"
+        )
     }));
 
     let token = in_flight
@@ -312,7 +315,10 @@ fn test_delayed_pending_event_consumes_subscription_capacity() {
         .expect("full bounded queue reports a destination rejection");
     assert!(matches!(
         destination_admissions(rejected).as_slice(),
-        [admission] if matches!(admission.status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full")
+        [admission] if matches!(
+            admission.status(),
+            AdmissionStatus::Rejected(reason) if reason.as_ref() == "subscription queue is full"
+        )
     ));
     assert!(matches!(
         subscription

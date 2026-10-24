@@ -47,6 +47,10 @@ impl ProviderMetadata for AsyncLocalEventBusProvider {
     ///
     /// # Returns
     /// A descriptor for the built-in in-process provider.
+    ///
+    /// # Panics
+    /// Panics only if the built-in provider ID or aliases violate the SPI's
+    /// validation rules.
     fn descriptor(&self) -> ProviderDescriptor {
         ProviderDescriptor::new(ProviderId::new("local").expect("static provider ID is valid"))
             .with_aliases(["memory", "in-process"])

@@ -1,5 +1,5 @@
 // =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
+//    Copyright (c) 2025 - 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
 //
@@ -101,7 +101,11 @@ fn test_settlement_stop_preserves_provider_source_chain() {
         source.source().expect("original cause").to_string(),
         "original provider cause"
     );
-    assert!(matches!(reason, SubscriptionStopReason::Settlement { error: actual, .. } if Arc::ptr_eq(&actual, &error)));
+    assert!(matches!(
+        reason,
+        SubscriptionStopReason::Settlement { error: actual, .. }
+            if Arc::ptr_eq(&actual, &error)
+    ));
 }
 
 #[test]

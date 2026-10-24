@@ -5,32 +5,31 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Crate-internal event-preservation contract through the local SPI boundary.
+//! Public SPI contract for preserving native event identity and payload.
 
 use std::any::TypeId;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::local::LocalEventBusProvider;
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::StartPosition;
+use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::registry::EventBusConfig;
+use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TopicAddress;
+use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
 use qubit_spi::ServiceProvider;
-
-use crate::local::LocalEventBusConfig;
-use crate::local::LocalEventBusProvider;
-use crate::model::AdmissionStatus;
-use crate::model::EventId;
-use crate::model::Headers;
-use crate::model::ProviderOptions;
-use crate::model::PublishAcknowledgement;
-use crate::model::StartPosition;
-use crate::model::SubscriberId;
-use crate::model::SubscriptionDurability;
-use crate::registry::EventBusConfig;
-use crate::spi::OutboundMessage;
-use crate::spi::ReceiveOutcome;
-use crate::spi::SpiSubscriptionRequest;
-use crate::spi::TopicAddress;
-use crate::spi::TransportPayload;
 
 #[test]
 fn test_published_event_keeps_identity_and_native_payload() {

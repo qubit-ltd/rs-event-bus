@@ -93,7 +93,6 @@ impl SpiError {
     /// # Returns
     /// Provider evidence for admission, or conservative uncertainty when no
     /// publish-specific evidence was retained.
-    #[must_use = "inspect the admission evidence before retrying publication"]
     #[inline]
     pub fn publish_effect(&self) -> PublishEffect {
         match self {
@@ -139,7 +138,6 @@ impl SpiError {
     ///
     /// # Returns
     /// The associated resource name, if the operation had one.
-    #[must_use]
     #[inline]
     pub fn resource(&self) -> Option<&str> {
         match self {
@@ -167,7 +165,6 @@ impl SpiError {
     ///
     /// # Returns
     /// The provider's retry classification when available.
-    #[must_use]
     #[inline]
     pub fn retryable(&self) -> Option<bool> {
         match self {

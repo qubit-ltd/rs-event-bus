@@ -10,6 +10,16 @@
 use qubit_event_bus::model::ContentType;
 
 #[test]
+fn test_static_and_runtime_constructors_preserve_their_storage_modes() {
+    let static_value = ContentType::new_static("application/x-test");
+    let runtime_value = ContentType::new("application/x-test").expect("valid MIME token");
+
+    assert_eq!(static_value.as_str(), "application/x-test");
+    assert_eq!(runtime_value.as_str(), "application/x-test");
+    assert_eq!(static_value, runtime_value);
+}
+
+#[test]
 fn test_runtime_content_types_accept_tokens_and_reject_parameters_or_extra_slashes() {
     let custom = ContentType::new("application/vnd.example+json").expect("valid MIME token");
     assert_eq!(

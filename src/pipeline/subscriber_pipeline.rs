@@ -361,7 +361,6 @@ impl SubscriberPipeline {
 ///
 /// # Returns
 /// A callback representing the remaining middleware and handler chain.
-#[must_use]
 fn sync_next<T: 'static>(
     index: usize,
     chain: Vec<Arc<SubscriberInterceptor<T>>>,
@@ -392,7 +391,6 @@ fn sync_next<T: 'static>(
 ///
 /// # Returns
 /// A callback representing the remaining middleware and handler chain.
-#[must_use]
 fn async_next<T: 'static>(
     index: usize,
     chain: Vec<Arc<AsyncSubscriberInterceptor<T>>>,

@@ -121,6 +121,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Returns
     /// The public subscription handle and its shared shutdown control.
+    #[must_use = "the subscription handle and shutdown control must be retained"]
     pub(super) fn new(
         inner: Arc<AsyncEventBusInner>,
         id: Id,

@@ -56,7 +56,7 @@ impl Drop for BusContextGuard {
 /// # Returns
 /// `true` when that bus currently owns a synchronous execution scope on this
 /// thread.
-#[must_use = "Use the returned query result."]
+#[must_use = "Check whether this thread is executing work for the bus."]
 pub(in crate::facade) fn is_current_bus_context(bus_identity: usize) -> bool {
     CURRENT_BUS_CONTEXTS.with(|contexts| contexts.borrow().contains(&bus_identity))
 }

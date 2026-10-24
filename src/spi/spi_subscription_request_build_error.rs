@@ -48,6 +48,7 @@ impl SpiSubscriptionRequestBuildError {
 }
 
 impl Display for SpiSubscriptionRequestBuildError {
+    /// Formats the missing subscription request field for diagnostics.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
         write!(formatter, "missing subscription request field `{}`", self.missing_field)
     }

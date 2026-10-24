@@ -7,6 +7,7 @@
 // =============================================================================
 //! Asynchronous event bus publishing operations.
 
+use super::PublishCompletionGuard;
 use crate::AsyncEventBus;
 use crate::CapabilityError;
 use crate::PublishError;
@@ -15,7 +16,6 @@ use crate::PublishMetricsSnapshot;
 use crate::error::CheckedPublishError;
 use crate::error::ConfigurationError;
 use crate::error::EventBusError;
-use crate::facade::PublishMetrics;
 use crate::model::AdmissionRequirement;
 use crate::model::BatchPublishResult;
 use crate::model::EventId;
@@ -26,36 +26,16 @@ use crate::model::Topic;
 use crate::pipeline::PipelineFailure;
 use crate::spi::PublishVisibility;
 
-/// Counts a polled publish as cancelled if it is dropped before returning.
-struct PublishCompletionGuard<'a> {
-    metrics: &'a PublishMetrics,
-    completed: bool,
-}
-
-impl<'a> PublishCompletionGuard<'a> {
-    /// Starts tracking an in-flight asynchronous publish.
-    fn new(metrics: &'a PublishMetrics) -> Self {
-        Self {
-            metrics,
-            completed: false,
-        }
-    }
-
-    /// Marks the publish as returned so dropping the guard does not count it.
-    fn complete(&mut self) {
-        self.completed = true;
-    }
-}
-
-impl Drop for PublishCompletionGuard<'_> {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.metrics.record_cancelled();
-        }
-    }
-}
-
 impl AsyncEventBus {
+    /// Returns the shared publication counters for this facade and its clones.
+    ///
+    /// # Returns
+    /// A point-in-time snapshot of publication counters.
+    #[inline]
+    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
+        self.inner.publish_metrics.snapshot()
+    }
+
     /// Checks that the configured provider can publish this topic's payload.
     ///
     /// This synchronous configuration query checks codec availability only,
@@ -144,15 +124,6 @@ impl AsyncEventBus {
                 reason,
             }),
         }
-    }
-
-    /// Returns the shared publication counters for this facade and its clones.
-    ///
-    /// # Returns
-    /// A point-in-time snapshot of publication counters.
-    #[inline]
-    pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
-        self.inner.publish_metrics.snapshot()
     }
 
     /// Publishes one typed request through interceptors, retry, and provider

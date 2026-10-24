@@ -108,7 +108,6 @@ impl AsyncEventBusInner {
     /// # Returns
     /// A guard that releases the publish counter, or None after shutdown
     /// starts.
-    #[must_use]
     pub(in crate::facade) fn begin_publish(self: &Arc<Self>) -> Option<super::AsyncPublishGuard> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
@@ -124,7 +123,6 @@ impl AsyncEventBusInner {
     /// # Returns
     /// A guard that releases the subscribe counter, or None after shutdown
     /// starts.
-    #[must_use]
     pub(in crate::facade) fn begin_subscribe(self: &Arc<Self>) -> Option<super::AsyncSubscribeGuard> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if *state != BusState::Running {
@@ -204,7 +202,6 @@ impl AsyncEventBusInner {
     /// # Returns
     /// Some with all close failures recorded so far, or None when there are
     /// none.
-    #[must_use]
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
         let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
         let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);

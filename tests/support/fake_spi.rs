@@ -215,10 +215,12 @@ pub(crate) struct FakeEventBusSpi {
 }
 
 impl FakeEventBusSpi {
+    #[must_use]
     pub(crate) fn new() -> Self {
         Self::with_capabilities(full_capabilities())
     }
 
+    #[must_use]
     pub(crate) fn with_capabilities(capabilities: EventBusCapabilities) -> Self {
         Self {
             capabilities,
@@ -239,7 +241,6 @@ impl FakeEventBusSpi {
     pub(crate) fn capabilities_calls(&self) -> usize {
         self.capabilities_calls.load(Ordering::Acquire)
     }
-    #[must_use]
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
     }
@@ -494,10 +495,12 @@ pub(crate) struct FakeAsyncEventBusSpi {
 }
 
 impl FakeAsyncEventBusSpi {
+    #[must_use]
     pub(crate) fn new() -> Self {
         Self::with_capabilities(full_capabilities())
     }
 
+    #[must_use]
     pub(crate) fn with_capabilities(capabilities: EventBusCapabilities) -> Self {
         Self {
             capabilities,
@@ -530,7 +533,6 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
     }
-    #[must_use]
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
     }
@@ -548,7 +550,6 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn receiver_drop_recoveries(&self) -> usize {
         self.receiver_drop_recoveries.load(Ordering::Acquire)
     }
-    #[must_use]
     pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
         self.queues
             .lock()

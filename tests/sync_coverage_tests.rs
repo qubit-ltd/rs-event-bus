@@ -501,9 +501,10 @@ fn test_shutdown_provider_error_is_retryable_and_closes_public_admission() {
             .outcome
     );
     assert_eq!(2, spi.shutdown_calls());
-    assert!(
-        matches!(bus.publish(request("after-close")), Err(failure) if matches!(failure.cause(), PublishError::Closed))
-    );
+    assert!(matches!(
+        bus.publish(request("after-close")),
+        Err(failure) if matches!(failure.cause(), PublishError::Closed)
+    ));
     assert!(matches!(
         bus.subscribe(
             SubscribeRequest::new("after-close", topic()).expect("valid subscriber ID"),

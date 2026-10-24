@@ -141,6 +141,10 @@ impl EventSubscriptionSpi for LocalEventSubscription {
     /// # Errors
     /// Returns an invalid-token error for a foreign, unknown, forged, or
     /// already settled token with a conflicting disposition.
+    ///
+    /// # Panics
+    /// Panics if the validated in-flight delivery disappears while its queue
+    /// remains locked, which would violate the queue state invariant.
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         if !token.belongs_to(self.queue.id) {
             return Err(invalid_token_error(
@@ -239,7 +243,6 @@ impl Drop for LocalEventSubscription {
 
 #[cfg(all(test, not(loom)))]
 mod tests {
-
     use std::any::TypeId;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
@@ -267,8 +270,8 @@ mod tests {
     #[test]
     fn test_token_exhaustion_preserves_pending_weight_until_close() {
         let weight = NonZeroUsize::new(5).expect("positive weight");
-        let spi = LocalEventBusSpi::new(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
-            .expect("valid config");
+        let config = LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight);
+        let spi = LocalEventBusSpi::new(&config).expect("valid config");
         let topic = TopicAddress::new("local.token.exhaustion").expect("valid topic");
         let request = SpiSubscriptionRequest::new(
             Id::new(1),

@@ -29,6 +29,18 @@ pub type SyncOutput = <EventBusSpec as SyncServiceSpec>::Output;
 pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
 
 /// Performs one nonblocking receive attempt on a synchronous subscription.
+///
+/// # Parameters
+///
+/// - `receiver`: The subscription to poll once.
+///
+/// # Returns
+///
+/// The outcome of the receive attempt, including whether a message is available.
+///
+/// # Errors
+///
+/// Returns the subscription's SPI error if the receive attempt fails.
 pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOutcome, SpiError> {
     receiver.receive(Duration::ZERO)
 }
@@ -37,6 +49,19 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
 ///
 /// The future borrows the receiver for `'a`; the caller may release the token
 /// borrow independently after this method returns.
+///
+/// # Parameters
+///
+/// - `receiver`: The asynchronous subscription that performs settlement.
+/// - `token`: The delivery token to accept.
+///
+/// # Returns
+///
+/// A future borrowing the receiver for `'a` and resolving when settlement completes.
+///
+/// # Errors
+///
+/// The future resolves to an SPI error if the subscription cannot accept the token.
 pub fn settle_without_borrowing_token<'a>(
     receiver: &'a mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,

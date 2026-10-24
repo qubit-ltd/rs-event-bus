@@ -30,6 +30,7 @@ use crate::spi::PublishGuarantee;
 ///
 /// `true` when the configured policy considers the dead-letter event forwarded.
 #[must_use]
+#[inline]
 pub(crate) fn was_accepted(
     receipt: &PublishReceipt,
     capabilities: EventBusCapabilities,

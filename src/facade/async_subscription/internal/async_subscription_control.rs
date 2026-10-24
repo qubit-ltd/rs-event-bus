@@ -70,7 +70,6 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// Shared control registered with the originating bus.
-    #[must_use = "the subscription control must be retained"]
     pub(in crate::facade::async_subscription) fn new(
         session: AsyncSession<T>,
         signals: Arc<SessionSignals>,
@@ -98,7 +97,6 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// `Some` with a lease while the control is live, or `None` after disposal.
-    #[must_use = "the session lease result must be handled"]
     pub(in crate::facade::async_subscription) async fn lease(&self) -> Option<SessionLease<'_, T>> {
         let registration = SignalRegistration::new(&self.available);
         let session = poll_fn(|cx| {
@@ -125,6 +123,9 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
 
 impl<T: 'static> AsyncSubscriptionControl<T> {
     /// Returns the current caller-driven lifecycle snapshot.
+    ///
+    /// # Returns
+    /// The current lifecycle state observed from the atomic snapshot.
     #[must_use = "the subscription lifecycle state should be observed"]
     #[inline]
     pub(in crate::facade::async_subscription) fn run_state(&self) -> AsyncSubscriptionRunState {
@@ -171,7 +172,6 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// Subscription counters with active gauges, or zero gauges after disposal.
     /// Clock errors publish the first stop cause and return accurate gauges
     /// without age.
-    #[must_use = "delivery metrics are the current subscription diagnostics"]
     pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
         let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
             let input = bus.scheduler.snapshot_input(Some(self.id));

@@ -42,7 +42,7 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const PUBLISH_OFFSET: Duration = Duration::from_millis(10);
 
 /// Runs one fresh local bus sample and returns independent-message queue wait.
-fn sample() -> io::Result<Duration> {
+fn retry_saturation_sample() -> io::Result<Duration> {
     let registry = EventBusRegistry::with_local().map_err(io::Error::other)?;
     let positive = |value| NonZeroUsize::new(value).expect("benchmark limits are positive");
     let scheduling = DeliverySchedulingConfig::new(
@@ -57,7 +57,7 @@ fn sample() -> io::Result<Duration> {
         .with_provider_options(LocalEventBusConfig::default().provider_options())
         .with_facade_config(facade);
     let bus = registry.create(&config).map_err(io::Error::other)?;
-    let result = run_sample(&bus);
+    let result = measure_independent_delivery_wait(&bus);
     let shutdown_result = bus.shutdown(ShutdownMode::Immediate).map_err(io::Error::other);
     match (result, shutdown_result) {
         (Ok(wait), Ok(_)) => Ok(wait),
@@ -67,7 +67,7 @@ fn sample() -> io::Result<Duration> {
 }
 
 /// Creates four occupied handlers, then measures one independent delivery.
-fn run_sample(bus: &EventBus) -> io::Result<Duration> {
+fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
     let barrier = Arc::new(Barrier::new(HANDLER_SLOTS + 1));
     let retry_options = SubscribeOptions::<u8>::builder()
         .retry_policy(
@@ -132,13 +132,13 @@ fn run_sample(bus: &EventBus) -> io::Result<Duration> {
 /// Runs warmups and prints seven independent-message wait measurements.
 fn main() -> io::Result<()> {
     for _ in 0..WARMUPS {
-        black_box(sample()?);
+        black_box(retry_saturation_sample()?);
     }
 
     let mut waits = Vec::with_capacity(SAMPLES);
     println!("iteration,independent_handler_wait_ms");
     for iteration in 1..=SAMPLES {
-        let wait = black_box(sample()?);
+        let wait = black_box(retry_saturation_sample()?);
         println!("{iteration},{}", wait.as_secs_f64() * 1_000.0);
         waits.push(wait);
     }

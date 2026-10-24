@@ -21,6 +21,10 @@ thread_local! {
 }
 
 /// Future wrapper that marks its owning bus during every poll.
+///
+/// # Type Parameters
+///
+/// - `F`: Future whose polls should carry the associated bus identity.
 pub(in crate::facade) struct BusContextFuture<F: Future> {
     /// Identity of the facade associated with the wrapped operation.
     bus_key: usize,
@@ -79,7 +83,7 @@ impl<F: Future> Future for BusContextFuture<F> {
 /// # Returns
 ///
 /// `true` if that identity is present; otherwise, `false`.
-#[must_use = "Use the returned query result."]
+#[must_use = "check whether this bus is currently being polled"]
 #[inline]
 pub(in crate::facade) fn is_current_bus_poll(bus_key: usize) -> bool {
     ACTIVE_BUS_POLLS.with(|active| active.borrow().contains(&bus_key))

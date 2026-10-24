@@ -47,7 +47,7 @@ impl SettlementProgress {
     ///
     /// # Returns
     /// Persistent accounting ready for its first actual SPI attempt.
-    #[must_use]
+    #[must_use = "settlement progress must be retained for the delivery lifetime"]
     #[inline]
     pub(in crate::facade) fn new(config: SettlementRetryConfig) -> Self {
         Self {

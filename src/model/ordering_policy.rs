@@ -13,9 +13,13 @@
 ///
 /// ```
 /// use qubit_event_bus::model::OrderingPolicy;
+/// use qubit_event_bus::model::SubscribeOptions;
 ///
 /// let policy = OrderingPolicy::PerKey;
-/// assert_eq!(policy, OrderingPolicy::PerKey);
+/// let options = SubscribeOptions::<String>::builder()
+///     .ordering_policy(policy)
+///     .build();
+/// assert_eq!(options.ordering_policy(), OrderingPolicy::PerKey);
 /// ```
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]

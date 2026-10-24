@@ -149,7 +149,10 @@ fn test_lifecycle_error_subscription_close_preserves_public_failure_chain() {
     let close_failure = Error::source(&error).expect("lifecycle error should expose close failure");
     assert_eq!(
         close_failure.to_string(),
-        "subscription worker: provider lifecycle-close-test failed close_subscription (close_failed): close failed"
+        concat!(
+            "subscription worker: provider lifecycle-close-test failed close_subscription ",
+            "(close_failed): close failed"
+        )
     );
     let spi_error = Error::source(close_failure).expect("close failure should expose SPI error");
     assert!(spi_error.is::<SpiError>());

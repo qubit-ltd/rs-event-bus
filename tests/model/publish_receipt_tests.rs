@@ -8,6 +8,7 @@
 //! Public publication receipt behavior tests.
 
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::AdmissionSummary;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
@@ -41,5 +42,35 @@ fn test_retry_evidence_is_preserved_without_changing_provider_acknowledgement() 
             .check_admission(AdmissionRequirement::AtLeastOneAccepted)
             .is_err(),
         "possibly duplicated delivery must not satisfy the admission requirement"
+    );
+}
+
+#[test]
+fn test_empty_visible_snapshot_and_opaque_acceptance_keep_distinct_summaries() {
+    let empty = PublishReceipt::new(
+        EventId::new("receipt-event").expect("valid event ID"),
+        None,
+        ProviderId::new("receipt-provider").expect("valid provider ID"),
+        PublishAcknowledgement::DestinationAdmissions(Vec::new()),
+    );
+    let opaque = PublishReceipt::new(
+        EventId::new("receipt-event").expect("valid event ID"),
+        None,
+        ProviderId::new("receipt-provider").expect("valid provider ID"),
+        PublishAcknowledgement::Accepted {
+            provider_message_id: None,
+            metadata: Default::default(),
+        },
+    );
+
+    assert_eq!(
+        empty.admission_summary(),
+        Some(AdmissionSummary::default()),
+        "an empty visible snapshot must produce an empty admission summary",
+    );
+    assert_eq!(
+        opaque.admission_summary(),
+        None,
+        "opaque acceptance must not expose a destination summary",
     );
 }

@@ -5,8 +5,11 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Private attempt lifetime evidence for asynchronous publication retries.
+//! Private helpers and attempt lifetime evidence for asynchronous publication
+//! retries.
 
+mod catch_unwind_future;
 mod in_flight_publish;
 
+pub(super) use catch_unwind_future::CatchUnwindFuture;
 pub(super) use in_flight_publish::InFlightPublish;

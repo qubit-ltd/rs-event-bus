@@ -242,15 +242,19 @@ impl FakeEventBusSpi {
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
     }
+
     pub(crate) fn capabilities_calls(&self) -> usize {
         self.capabilities_calls.load(Ordering::Acquire)
     }
+
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
     }
+
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
     }
+
     pub(crate) fn inject_gap(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
             queue.0.lock().unwrap().gaps += 1;
@@ -394,10 +398,12 @@ impl FakeEventSubscriptionSpi {
     pub(crate) fn settlement_count(&self) -> usize {
         self.queue.0.lock().unwrap().settled.len()
     }
+
     #[allow(dead_code)]
     pub(crate) fn fail_next_receive(&self) {
         self.queue.0.lock().unwrap().fail_next_receive = true;
     }
+
     #[allow(dead_code)]
     pub(crate) fn inject_gap(&self) {
         self.queue.0.lock().unwrap().gaps += 1;
@@ -439,6 +445,7 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
         }
         Ok(ReceiveOutcome::TimedOut)
     }
+
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("settle");
         if !token.belongs_to(self.id) {
@@ -458,6 +465,7 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
             }
         }
     }
+
     fn close(&mut self) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("close");
         self.queue.0.lock().unwrap().closed = true;
@@ -523,27 +531,35 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn capabilities_calls(&self) -> usize {
         self.capabilities_calls.load(Ordering::Acquire)
     }
+
     pub(crate) fn panic_on_subscribe_call(&self) {
         self.subscribe_panics.store(true, Ordering::Release);
     }
+
     pub(crate) fn panic_on_shutdown_call(&self) {
         self.shutdown_panics.store(true, Ordering::Release);
     }
+
     pub(crate) fn panic_on_close_call(&self) {
         self.close_panics.store(true, Ordering::Release);
     }
+
     pub(crate) fn panic_on_settle_call(&self) {
         self.settle_panics.store(true, Ordering::Release);
     }
+
     pub(crate) fn shutdown_transition_count(&self) -> usize {
         *self.shutdown_transitions.lock().unwrap()
     }
+
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
     }
+
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
     }
+
     /// Fails an already polled receive future through its shared queue state.
     pub(crate) fn fail_next_receive(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
@@ -554,11 +570,13 @@ impl FakeAsyncEventBusSpi {
             }
         }
     }
+
     pub(crate) fn panic_next_receive(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
             queue.lock().unwrap().panic_next_receive = true;
         }
     }
+
     pub(crate) fn enqueue(&self, message: InboundMessage) {
         if let Some((_, queue)) = self.queues.lock().unwrap().first() {
             let mut state = queue.lock().unwrap();
@@ -568,6 +586,7 @@ impl FakeAsyncEventBusSpi {
             }
         }
     }
+
     pub(crate) fn settlement_count(&self) -> usize {
         self.queues
             .lock()
@@ -576,9 +595,11 @@ impl FakeAsyncEventBusSpi {
             .map(|(_, queue)| queue.lock().unwrap().settled.len())
             .sum()
     }
+
     pub(crate) fn receiver_drop_recoveries(&self) -> usize {
         self.receiver_drop_recoveries.load(Ordering::Acquire)
     }
+
     pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
         self.queues
             .lock()
@@ -587,6 +608,7 @@ impl FakeAsyncEventBusSpi {
             .flat_map(|(_, queue)| queue.lock().unwrap().settlement_dispositions.clone())
             .collect()
     }
+
     pub(crate) fn fail_next_settle(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
             queue.lock().unwrap().fail_next_settle = true;
@@ -604,28 +626,34 @@ impl FakeAsyncEventBusSpi {
             queue.lock().unwrap().pause_next_settle = true;
         }
     }
+
     pub(crate) fn pause_subscribe(&self) {
         self.subscribe_paused.store(true, Ordering::Release);
     }
+
     pub(crate) fn release_subscribe(&self) {
         self.subscribe_paused.store(false, Ordering::Release);
         for waker in take(&mut *self.subscribe_wakers.lock().unwrap()) {
             waker.wake();
         }
     }
+
     pub(crate) fn pause_close(&self) {
         self.close_paused.store(true, Ordering::Release);
     }
+
     pub(crate) fn release_close(&self) {
         self.close_paused.store(false, Ordering::Release);
         for waker in take(&mut *self.close_wakers.lock().unwrap()) {
             waker.wake();
         }
     }
+
     /// Makes provider shutdown remain pending after recording its state change.
     pub(crate) fn pause_shutdown(&self) {
         self.shutdown_paused.store(true, Ordering::Release);
     }
+
     /// Wakes provider shutdown calls paused by [`Self::pause_shutdown`].
     pub(crate) fn release_shutdown(&self) {
         self.shutdown_paused.store(false, Ordering::Release);
@@ -633,6 +661,7 @@ impl FakeAsyncEventBusSpi {
             waker.wake();
         }
     }
+
     pub(crate) fn inject_gap(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
             let mut s = queue.lock().unwrap();
@@ -663,6 +692,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         );
         self.capabilities
     }
+
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.lock().unwrap().push("publish");
         if take(&mut *self.fail_next_publish.lock().unwrap()) {
@@ -689,6 +719,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
             })
         })
     }
+
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
@@ -732,6 +763,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
+
     fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.calls.lock().unwrap().push("shutdown");
         if self.shutdown_panics.swap(false, Ordering::AcqRel) {
@@ -791,10 +823,12 @@ impl FakeAsyncEventSubscriptionSpi {
             w.wake();
         }
     }
+
     #[allow(dead_code)]
     pub(crate) fn settlement_count(&self) -> usize {
         self.queue.lock().unwrap().settled.len()
     }
+
     #[allow(dead_code)]
     pub(crate) fn fail_next_receive(&self) {
         self.queue.lock().unwrap().fail_next_receive = true;
@@ -817,6 +851,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             deadline: None,
         })
     }
+
     fn settle<'a>(
         &'a mut self,
         token: &SettlementToken,
@@ -863,6 +898,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
         };
         Box::pin(async move { result })
     }
+
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.calls.lock().unwrap().push("close");
         if self.close_panics.swap(false, Ordering::AcqRel) {
@@ -902,6 +938,7 @@ struct ReceiveFuture {
     timeout: Duration,
     deadline: Option<Duration>,
 }
+
 impl Future for ReceiveFuture {
     type Output = Result<ReceiveOutcome, SpiError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

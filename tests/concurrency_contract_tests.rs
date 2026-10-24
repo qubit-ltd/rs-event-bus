@@ -124,7 +124,10 @@ mod local_spi_contract {
             receiver.close().unwrap();
             assert_race_result(publish.join().unwrap(), expected_id);
             let after_close = spi.publish(outbound("race.target", "after-close")).unwrap();
-            assert!(matches!(after_close, PublishAcknowledgement::DestinationAdmissions(items) if items.is_empty()));
+            assert!(matches!(
+                after_close,
+                PublishAcknowledgement::DestinationAdmissions(items) if items.is_empty()
+            ));
 
             let shutdown_spi = create();
             let _receiver = shutdown_spi.subscribe(request(1, "race.target")).unwrap();

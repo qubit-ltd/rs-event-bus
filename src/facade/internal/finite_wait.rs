@@ -15,6 +15,7 @@ use std::time::Instant;
 const MAX_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
 
 /// Tracks a finite timeout using monotonic elapsed time.
+#[must_use]
 pub(in crate::facade) struct FiniteWait {
     /// Monotonic instant when this finite budget started.
     started: Instant,

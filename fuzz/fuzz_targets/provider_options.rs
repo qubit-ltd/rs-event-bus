@@ -5,6 +5,9 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Fuzzes bounded provider-option validation and error redaction through public
+//! APIs.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

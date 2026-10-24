@@ -8,6 +8,15 @@
 //! Application decisions after examining publication evidence.
 
 /// A decision for the application; this enum performs no publication itself.
+///
+/// # Examples
+///
+/// ```
+/// use event_bus_documentation_consumer::republish_action::RepublishAction;
+///
+/// let action = RepublishAction::RepublishWhole;
+/// assert_eq!(action, RepublishAction::RepublishWhole);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 pub enum RepublishAction {

@@ -47,6 +47,13 @@ impl EventBus {
     /// It does not verify that encoding, payload limits, transport
     /// availability, or message persistence will succeed.
     ///
+    /// # Type Parameters
+    /// - `T`: payload type associated with the topic.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose payload mode is checked against provider
+    ///   capabilities and the configured codec registry.
+    ///
     /// # Errors
     /// Returns [`CapabilityError::CodecRequired`] when the provider accepts
     /// only encoded payloads and neither the topic nor facade registry has
@@ -122,6 +129,7 @@ impl EventBus {
             }),
         }
     }
+
     /// Publishes one typed request through publisher interceptors, retry, and
     /// SPI.
     ///

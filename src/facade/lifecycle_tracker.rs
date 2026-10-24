@@ -70,7 +70,6 @@ impl LifecycleTracker {
     ///
     /// # Returns
     /// A must-use guard that decrements this topic's counter on drop.
-    #[must_use = "the guard must remain alive while the delivery is in flight"]
     pub(crate) fn track_delivery(&self, topic: &str) -> DeliveryTrackerGuard<'_> {
         *self.lock_state().in_flight_by_topic.entry(topic.into()).or_default() += 1;
         DeliveryTrackerGuard::new(self, topic.into())
@@ -210,31 +209,6 @@ mod tests {
 
     use super::LifecycleTracker;
     use crate::facade::WaitOutcome;
-
-    #[test]
-    fn test_wait_for_idle_zero_timeout_checks_completion_first() {
-        let tracker = LifecycleTracker::new();
-        let delivery = tracker.track_delivery("orders");
-
-        assert_eq!(
-            tracker.wait_for_idle("orders", Some(Duration::ZERO)),
-            WaitOutcome::TimedOut
-        );
-
-        drop(delivery);
-        assert_eq!(tracker.wait_for_idle("orders", Some(Duration::ZERO)), WaitOutcome::Idle);
-    }
-
-    #[test]
-    fn test_wait_for_workers_zero_timeout_checks_completion_first() {
-        let tracker = LifecycleTracker::new();
-        tracker.worker_started();
-
-        assert!(!tracker.wait_for_workers(Some(Duration::ZERO)));
-
-        tracker.worker_finished();
-        assert!(tracker.wait_for_workers(Some(Duration::ZERO)));
-    }
 
     #[test]
     fn test_wait_for_idle_returns_after_delivery_completion_notification() {

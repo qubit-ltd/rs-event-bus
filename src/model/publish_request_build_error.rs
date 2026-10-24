@@ -14,10 +14,14 @@ use crate::error::EventIdGenerationError;
 /// # Examples
 ///
 /// ```
+/// use qubit_event_bus::model::PublishRequest;
 /// use qubit_event_bus::model::PublishRequestBuildError;
 ///
-/// let error = PublishRequestBuildError::MissingField("event_id");
-/// assert!(matches!(error, PublishRequestBuildError::MissingField("event_id")));
+/// let result = PublishRequest::<String>::builder().build();
+/// assert!(matches!(
+///     result,
+///     Err(PublishRequestBuildError::MissingField("topic"))
+/// ));
 /// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

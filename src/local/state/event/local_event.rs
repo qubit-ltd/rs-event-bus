@@ -7,6 +7,7 @@
 // =============================================================================
 //! Queue-ready event data shared by matching local subscriptions.
 
+use std::num::NonZeroUsize;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -66,9 +67,7 @@ impl LocalEvent {
             headers: message.headers().clone(),
             ordering_key: message.ordering_key().cloned(),
             payload: SharedPayload::from_transport(message.payload()),
-            weight_bytes: message
-                .native_payload_weight_bytes()
-                .map_or(0, std::num::NonZeroUsize::get),
+            weight_bytes: message.native_payload_weight_bytes().map_or(0, NonZeroUsize::get),
             not_before,
         })
     }

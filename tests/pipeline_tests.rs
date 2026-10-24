@@ -29,6 +29,7 @@ use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::manual_async::block_on;
 use crate::support::manual_async::poll_once;
 
+mod pipeline;
 mod support;
 
 /// Confirms that an asynchronous retry-rule panic requeues the original token.

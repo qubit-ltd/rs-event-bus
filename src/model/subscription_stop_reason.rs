@@ -18,9 +18,9 @@ use crate::spi::DeliveryGap;
 
 /// Why new receives stopped; durable source deliveries remain unsettled.
 ///
-/// The handle retains the first terminal cause in a shared owner. Restoring
-/// compatibility or correcting the provider requires creating a new
-/// subscription.
+/// The subscription retains the first terminal cause in a shared owner.
+/// Receiving can resume only through a new subscription after compatibility is
+/// restored or the provider is corrected.
 ///
 /// # Examples
 ///

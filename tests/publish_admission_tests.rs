@@ -396,10 +396,13 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
             AdmissionRequirement::ProviderOrDestinationAccepted,
         )
         .expect_err("no destinations accepted");
-    assert!(
-        matches!(error, CheckedPublishError::Admission { receipt, reason: AdmissionCheckError::NoAcceptedDestination }
-        if receipt.admission_outcome() == AdmissionOutcome::NoDestinations)
-    );
+    assert!(matches!(
+        error,
+        CheckedPublishError::Admission {
+            receipt,
+            reason: AdmissionCheckError::NoAcceptedDestination
+        } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations
+    ));
     assert_eq!(visible_provider.publish_calls.load(Ordering::Acquire), 1);
 }
 

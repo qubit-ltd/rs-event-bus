@@ -27,11 +27,17 @@ use super::Topic;
 /// # Examples
 ///
 /// ```
-/// use qubit_event_bus::model::PublishFailureContext;
+/// use qubit_event_bus::model::PublishOptions;
 ///
-/// fn inspect<T: 'static>(context: &PublishFailureContext<T>) -> (&str, &str) {
-///     (context.topic().name(), context.event_id().as_str())
-/// }
+/// let options = PublishOptions::<String>::builder()
+///     .error_handler(|context, _failure| {
+///         let topic_name = context.topic().name();
+///         let event_id = context.event_id().as_str();
+///         assert!(!topic_name.is_empty());
+///         assert!(!event_id.is_empty());
+///     })
+///     .build();
+/// assert_eq!(options.error_handlers().len(), 1);
 /// ```
 pub struct PublishFailureContext<T: 'static> {
     /// Shared ownership of the original event payload.
@@ -103,7 +109,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// A new shared owner of the original payload allocation.
-    #[must_use]
+    #[must_use = "Use the returned shared payload handle."]
     #[inline]
     pub fn payload_arc(&self) -> Arc<T> {
         self.payload.clone()
@@ -133,7 +139,7 @@ impl<T: 'static> PublishFailureContext<T> {
     ///
     /// # Returns
     /// The complete event header map.
-    #[must_use]
+    #[must_use = "Use the returned headers."]
     #[inline]
     pub fn headers(&self) -> &Headers {
         &self.headers

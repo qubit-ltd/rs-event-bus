@@ -26,6 +26,33 @@ pub(in crate::facade) struct AsyncTracker {
 }
 
 impl AsyncTracker {
+    /// Starts tracking a close operation until its guard is dropped.
+    ///
+    /// # Returns
+    /// A guard that decrements the active-close count when dropped.
+    pub(in crate::facade) fn close_started(self: &Arc<Self>) -> AsyncCloseGuard {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).active_closes += 1;
+        AsyncCloseGuard::new(self.clone())
+    }
+
+    /// Tracks one received delivery until its terminal path releases the guard.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose in-flight delivery count is incremented.
+    ///
+    /// # Returns
+    /// A guard that decrements the topic count when dropped.
+    pub(in crate::facade) fn track(self: &Arc<Self>, topic: &str) -> AsyncDeliveryGuard {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .in_flight
+            .entry(topic.into())
+            .or_default() += 1;
+        AsyncDeliveryGuard::new(self.clone(), topic.into())
+    }
+
     /// Reports whether a topic has no received deliveries in any processing
     /// stage.
     ///
@@ -58,16 +85,6 @@ impl AsyncTracker {
             && state.active_publishes == 0
             && state.active_subscribes == 0
             && state.active_closes == 0
-    }
-
-    /// Starts tracking a close operation until its guard is dropped.
-    ///
-    /// # Returns
-    /// A guard that decrements the active-close count when dropped.
-    #[must_use = "Keep the guard alive while the close operation is active."]
-    pub(in crate::facade) fn close_started(self: &Arc<Self>) -> AsyncCloseGuard {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).active_closes += 1;
-        AsyncCloseGuard::new(self.clone())
     }
 
     /// Increments the number of active subscription runners.
@@ -142,24 +159,5 @@ impl AsyncTracker {
         state.active_closes = state.active_closes.saturating_sub(1);
         drop(state);
         self.signal.notify();
-    }
-
-    /// Tracks one received delivery until its terminal path releases the guard.
-    ///
-    /// # Parameters
-    /// - `topic`: topic whose in-flight delivery count is incremented.
-    ///
-    /// # Returns
-    /// A guard that decrements the topic count when dropped.
-    #[must_use = "Keep the guard alive while the delivery is in flight."]
-    pub(in crate::facade) fn track(self: &Arc<Self>, topic: &str) -> AsyncDeliveryGuard {
-        *self
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .in_flight
-            .entry(topic.into())
-            .or_default() += 1;
-        AsyncDeliveryGuard::new(self.clone(), topic.into())
     }
 }

@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Crate-internal regressions for asynchronous local waiter notification.
+//! Regression tests for asynchronous local waiter notification.
 
 use std::any::TypeId;
 use std::future::Future;
@@ -19,22 +19,21 @@ use std::task::Waker;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use qubit_event_bus::local::AsyncLocalEventBusSpi;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::Headers;
+use qubit_event_bus::model::ProviderOptions;
+use qubit_event_bus::model::StartPosition;
+use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::SubscriptionDurability;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::TopicAddress;
+use qubit_event_bus::spi::TransportPayload;
 use qubit_id::Id;
-
-use crate::local::AsyncLocalEventBusSpi;
-use crate::local::LocalEventBusConfig;
-use crate::model::EventId;
-use crate::model::Headers;
-use crate::model::ProviderOptions;
-use crate::model::StartPosition;
-use crate::model::SubscriberId;
-use crate::model::SubscriptionDurability;
-use crate::spi::AsyncEventBusSpi;
-use crate::spi::OutboundMessage;
-use crate::spi::ReceiveOutcome;
-use crate::spi::SpiSubscriptionRequest;
-use crate::spi::TopicAddress;
-use crate::spi::TransportPayload;
 
 #[derive(Default)]
 struct CountWake(AtomicUsize);
@@ -62,6 +61,7 @@ fn subscription_request() -> SpiSubscriptionRequest {
     )
 }
 
+/// Polls an operation once and fails if the deterministic setup is pending.
 fn ready<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     match future.as_mut().poll(&mut Context::from_waker(std::task::Waker::noop())) {
@@ -77,10 +77,13 @@ fn test_pending_receive_is_woken_by_publish_and_keeps_message_available() {
     let counter = Arc::new(CountWake::default());
     let waker = Waker::from(counter.clone());
     let mut pending_receive = receiver.receive(Duration::MAX);
-    assert!(matches!(
-        pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
-        Poll::Pending
-    ));
+    assert!(
+        matches!(
+            pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        ),
+        "receive should wait while the subscription queue is empty"
+    );
 
     let message = OutboundMessage::new(
         TopicAddress::new("internal.async.signal").expect("valid topic"),
@@ -92,9 +95,15 @@ fn test_pending_receive_is_woken_by_publish_and_keeps_message_available() {
         TransportPayload::Native(Arc::new(17_u32)),
     );
     let _ = ready(spi.publish(message)).expect("publish succeeds");
-    assert!(counter.0.load(Ordering::Relaxed) > 0);
-    assert!(matches!(
-        pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
-        Poll::Ready(Ok(ReceiveOutcome::Message(_)))
-    ));
+    assert!(
+        counter.0.load(Ordering::Relaxed) > 0,
+        "publishing should wake the pending receive"
+    );
+    assert!(
+        matches!(
+            pending_receive.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(ReceiveOutcome::Message(_)))
+        ),
+        "the published message should remain available to the receiver"
+    );
 }

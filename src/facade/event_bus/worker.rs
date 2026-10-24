@@ -63,6 +63,11 @@ use crate::spi::EventSubscriptionSpi;
 use crate::spi::InboundMessage;
 use crate::spi::ReceiveOutcome;
 
+#[path = "worker/internal/coordinator_messages.rs"]
+mod coordinator_messages;
+#[path = "worker/internal/stop_cleanup.rs"]
+mod stop_cleanup;
+
 /// Owns a receiver on one thread until all started handlers and provider
 /// cleanup finish. Payloads move to granted jobs, while tracking, lanes and
 /// retries remain here. Provider failures are recorded on `control` and emitted
@@ -109,46 +114,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
         let mut receive_closed = false;
         let mut stop_published = false;
         loop {
-            while let Ok(message) = receiver.try_recv() {
-                match message {
-                    CoordinatorMessage::AttemptFinished {
-                        lease_id,
-                        outcome,
-                        directive,
-                    } => {
-                        if let Some(delivery) = owned.get_mut(&lease_id) {
-                            delivery.result = Some((outcome, directive));
-                        }
-                    }
-                    CoordinatorMessage::Abandoned(lease) => {
-                        if let Some(delivery) = owned.get_mut(&lease) {
-                            delivery.abandoned = true;
-                        }
-                    }
-                    CoordinatorMessage::HandlerFinished(lease) => {
-                        if let Some(delivery) = owned.get_mut(&lease) {
-                            delivery.handler_finished = true;
-                            delivery.running = false;
-                        }
-                    }
-                    message @ CoordinatorMessage::Settlement { lease_id, .. } => {
-                        if let Some(delivery) = owned.get_mut(&lease_id) {
-                            if let Some(previous) = delivery.settlement.as_ref() {
-                                if settlement_disposition(previous) != settlement_disposition(&message) {
-                                    fail_internal(&inner, &control, "conflicting_settlement_intent");
-                                }
-                            } else {
-                                delivery.settlement = Some(message);
-                            }
-                        } else {
-                            inner.emit_internal(
-                                "settlement_owner_disconnected",
-                                "settlement lease is no longer owned".into(),
-                            );
-                        }
-                    }
-                }
-            }
+            coordinator_messages::drain(&receiver, &mut owned, &inner, &control);
             let draining = inner.scheduler.should_drain(control.id);
             let stopping = control.is_cancelled() && !draining;
             if control.is_cancelled() {
@@ -158,177 +124,26 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                 receive_closed = true;
                 stop_published = true;
                 inner.scheduler.cancel_subscription(control.id);
-                for (&lease, delivery) in &mut owned {
-                    if let Some((message, _)) = delivery.inbound.take() {
-                        delivery.handler_finished = true;
-                        if control.terminal_failure().is_none() {
-                            delivery.settlement = canceled_intent(&inner, lease, control.id, &subscriber_id, message);
-                            delivery.abandoned = delivery.settlement.is_none();
-                        } else {
-                            count_abandoned(&inner, control.id);
-                        }
-                    } else if !delivery.running
-                        && !delivery.abandoned
-                        && delivery.result.is_none()
-                        && delivery.settlement.is_none()
-                        && let Some(prepared) = delivery.delivery.as_ref()
-                    {
-                        delivery.due = None;
-                        delivery.handler_finished = true;
-                        delivery.retry_pending = false;
-                        let event = prepared.event_arc();
-                        delivery.settlement = if delivery.token.is_some()
-                            && inner.capabilities.settlement() == crate::spi::SettlementCapabilities::AcceptRetryReject
-                        {
-                            Some(CoordinatorMessage::Settlement {
-                                lease_id: lease,
-                                token: delivery.token.take(),
-                                disposition: DeliveryDisposition::Retry,
-                                event_id: event.id().clone(),
-                                topic: topic.name().into(),
-                                subscription_id: control.id,
-                                subscriber_id: subscriber_id.clone(),
-                            })
-                        } else {
-                            count_abandoned(&inner, control.id);
-                            delivery.abandoned = true;
-                            None
-                        };
-                        delivery.result = None;
-                    }
-                }
+                stop_cleanup::prepare_stopping_deliveries(&inner, &control, &subscriber_id, &topic, &mut owned);
             }
 
             let terminal = control.terminal_failure().is_some();
-            let mut completed = Vec::new();
-            let mut wait = receive_poll_interval();
-            if !terminal {
-                for (&lease, delivery) in &mut owned {
-                    let router = OwnerSettlementRouter {
-                        lease_id: lease,
-                        sender: sender.clone(),
-                        inner: Arc::downgrade(&inner),
-                    };
-                    if delivery.handler_finished
-                        && let Some((outcome, directive)) = delivery.result.take()
-                    {
-                        *delivery.directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(directive);
-                        let terminal_result = if stopping {
-                            Some(match outcome {
-                                DeliveryOutcome::Success => Ok(()),
-                                DeliveryOutcome::Failure(error) => Err((
-                                    error,
-                                    if directive == FailureDirective::Retry {
-                                        FailureDirective::Requeue
-                                    } else {
-                                        directive
-                                    },
-                                )),
-                            })
-                        } else if let Some(session) = &mut delivery.session {
-                            let result = match outcome {
-                                DeliveryOutcome::Success => Ok(()),
-                                DeliveryOutcome::Failure(error) => Err(DeliveryAttemptError::new(
-                                    "delivery",
-                                    Some(directive == FailureDirective::Retry),
-                                    error,
-                                )),
-                            };
-                            match session.record_result(result) {
-                                RetrySessionStep::Complete(_) => {
-                                    delivery.retry_pending = false;
-                                    Some(Ok(()))
-                                }
-                                RetrySessionStep::Failed(error) => {
-                                    delivery.retry_pending = false;
-                                    Some(Err(terminal_retry_error(&inner, error, directive)))
-                                }
-                                RetrySessionStep::RetryAt(due) => {
-                                    delivery.retry_pending = true;
-                                    delivery.due = Some(due);
-                                    inner.scheduler.finish_attempt_waiting(lease);
-                                    None
-                                }
-                            }
-                        } else {
-                            Some(match outcome {
-                                DeliveryOutcome::Success => Ok(()),
-                                DeliveryOutcome::Failure(error) => Err((
-                                    error,
-                                    if directive == FailureDirective::Retry {
-                                        FailureDirective::Discard
-                                    } else {
-                                        directive
-                                    },
-                                )),
-                            })
-                        };
-                        if let Some(result) = terminal_result {
-                            delivery.retry_pending = false;
-                            finish_attempt(&inner, &router, &control, &subscriber_id, &options, delivery, result);
-                        }
-                    }
-                    if let Some(due) = delivery.due
-                        && !stopping
-                    {
-                        let now = inner.clock.now();
-                        let cancelled = options
-                            .retry_cancellation_token()
-                            .is_some_and(RetryCancellationToken::is_cancelled);
-                        let remaining = due.duration_since(now).unwrap_or(Duration::ZERO);
-                        if cancelled || remaining.is_zero() {
-                            delivery.due = None;
-                            inner.scheduler.wake_retry(lease);
-                        } else {
-                            wait = wait.min(remaining);
-                        }
-                    }
-                }
-                if !stopping {
-                    while let Some(lease) = inner.scheduler.take_settlement_ready(control.id) {
-                        if let Some(delivery) = owned.get_mut(&lease) {
-                            delivery.settlement_granted = true;
-                        }
-                    }
-                }
-                for (&lease, delivery) in &mut owned {
-                    if !delivery.handler_finished
-                        || delivery.retry_pending
-                        || delivery.due.is_some()
-                        || (!delivery.settlement_granted && !stopping)
-                    {
-                        continue;
-                    }
-                    if delivery.settlement.is_none() {
-                        completed.push(lease);
-                        continue;
-                    }
-                    // Cancellation gets one best-effort call for a fresh intent;
-                    // a previously failed token remains provider-owned on close.
-                    if stopping && delivery.retry.attempts() > 0 {
-                        continue;
-                    }
-                    match attempt_settlement(&inner, &control, &mut *spi_subscription, delivery, stopping) {
-                        Some(delay) => wait = wait.min(delay),
-                        None => {
-                            if delivery.settlement.is_none() {
-                                completed.push(lease);
-                            }
-                        }
-                    }
-                    if control.terminal_failure().is_some() {
-                        break;
-                    }
-                }
-            }
-            for lease in completed {
-                if let Some(delivery) = owned.remove(&lease)
-                    && !delivery.abandoned
-                    && !delivery.lifecycle_failed
-                {
-                    control.delivery_metrics.record_completed();
-                }
-            }
+            let (completed, wait) = if terminal {
+                (Vec::new(), receive_poll_interval())
+            } else {
+                progress_owned_settlements(
+                    &inner,
+                    &control,
+                    &subscriber_id,
+                    &options,
+                    &sender,
+                    &mut *spi_subscription,
+                    &mut owned,
+                    stopping,
+                    receive_poll_interval(),
+                )
+            };
+            remove_completed_deliveries(&mut owned, completed, &control);
             if control.is_cancelled() && !draining {
                 if !stop_published {
                     continue;
@@ -735,9 +550,217 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     }
 }
 
-/// Applies a terminal attempt result on the receiver owner. The opaque token
-/// moves only to this owner's settlement channel. Completion is queued after
-/// settlement intent so the next loop cannot drop the lease too early.
+/// Advances handler results and provider settlements for receiver-owned work.
+///
+/// This owner-thread phase preserves retry admission, settlement ordering, and
+/// completion collection before the worker removes finished leases.
+///
+/// # Type Parameters
+/// - `'tracking`: lifetime of delivery tracker guards stored in `owned`.
+/// - `T`: decoded payload retained by each delivery.
+///
+/// # Parameters
+/// - `inner`: shared scheduler, clock, and provider operation context.
+/// - `control`: subscription state used for settlement admission and failure.
+/// - `subscriber_id`: identity included in provider diagnostics.
+/// - `options`: retry policy and handler behavior selected for this
+///   subscription.
+/// - `sender`: owner channel used by settlement routers.
+/// - `spi_subscription`: receiver used for provider settlement calls.
+/// - `owned`: receiver-thread delivery state advanced by this phase.
+/// - `stopping`: whether cancellation limits settlement attempts.
+/// - `wait`: current bounded owner wait, reduced by retry deadlines.
+///
+/// # Returns
+/// The completed leases and the shortest wait required by pending retries.
+fn progress_owned_settlements<'tracking, T: Send + Sync + 'static>(
+    inner: &Arc<EventBusInner>,
+    control: &SubscriptionControl,
+    subscriber_id: &SubscriberId,
+    options: &SubscribeOptions<T>,
+    sender: &mpsc::Sender<CoordinatorMessage>,
+    spi_subscription: &mut dyn EventSubscriptionSpi,
+    owned: &mut HashMap<u64, OwnedSyncDelivery<'tracking, T>>,
+    stopping: bool,
+    mut wait: Duration,
+) -> (Vec<u64>, Duration) {
+    let mut completed = Vec::new();
+    for (&lease, delivery) in &mut *owned {
+        let router = OwnerSettlementRouter {
+            lease_id: lease,
+            sender: sender.clone(),
+            inner: Arc::downgrade(inner),
+        };
+        if delivery.handler_finished
+            && let Some((outcome, directive)) = delivery.result.take()
+        {
+            *delivery.directive.lock().unwrap_or_else(PoisonError::into_inner) = Some(directive);
+            let terminal_result = if stopping {
+                Some(match outcome {
+                    DeliveryOutcome::Success => Ok(()),
+                    DeliveryOutcome::Failure(error) => Err((
+                        error,
+                        if directive == FailureDirective::Retry {
+                            FailureDirective::Requeue
+                        } else {
+                            directive
+                        },
+                    )),
+                })
+            } else if let Some(session) = &mut delivery.session {
+                let result = match outcome {
+                    DeliveryOutcome::Success => Ok(()),
+                    DeliveryOutcome::Failure(error) => Err(DeliveryAttemptError::new(
+                        "delivery",
+                        Some(directive == FailureDirective::Retry),
+                        error,
+                    )),
+                };
+                match session.record_result(result) {
+                    RetrySessionStep::Complete(_) => {
+                        delivery.retry_pending = false;
+                        Some(Ok(()))
+                    }
+                    RetrySessionStep::Failed(error) => {
+                        delivery.retry_pending = false;
+                        Some(Err(terminal_retry_error(inner, error, directive)))
+                    }
+                    RetrySessionStep::RetryAt(due) => {
+                        delivery.retry_pending = true;
+                        delivery.due = Some(due);
+                        inner.scheduler.finish_attempt_waiting(lease);
+                        None
+                    }
+                }
+            } else {
+                Some(match outcome {
+                    DeliveryOutcome::Success => Ok(()),
+                    DeliveryOutcome::Failure(error) => Err((
+                        error,
+                        if directive == FailureDirective::Retry {
+                            FailureDirective::Discard
+                        } else {
+                            directive
+                        },
+                    )),
+                })
+            };
+            if let Some(result) = terminal_result {
+                delivery.retry_pending = false;
+                finish_attempt(inner, &router, control, subscriber_id, options, delivery, result);
+            }
+        }
+        if let Some(due) = delivery.due
+            && !stopping
+        {
+            let now = inner.clock.now();
+            let cancelled = options
+                .retry_cancellation_token()
+                .is_some_and(RetryCancellationToken::is_cancelled);
+            let remaining = due.duration_since(now).unwrap_or(Duration::ZERO);
+            if cancelled || remaining.is_zero() {
+                delivery.due = None;
+                inner.scheduler.wake_retry(lease);
+            } else {
+                wait = wait.min(remaining);
+            }
+        }
+    }
+    if !stopping {
+        grant_ready_settlements(inner, control, owned);
+    }
+    for (&lease, delivery) in &mut *owned {
+        if !delivery.handler_finished
+            || delivery.retry_pending
+            || delivery.due.is_some()
+            || (!delivery.settlement_granted && !stopping)
+        {
+            continue;
+        }
+        if delivery.settlement.is_none() {
+            completed.push(lease);
+            continue;
+        }
+        // Cancellation gets one best-effort call for a fresh intent;
+        // a previously failed token remains provider-owned on close.
+        if stopping && delivery.retry.attempts() > 0 {
+            continue;
+        }
+        match attempt_settlement(inner, control, spi_subscription, delivery, stopping) {
+            Some(delay) => wait = wait.min(delay),
+            None => {
+                if delivery.settlement.is_none() {
+                    completed.push(lease);
+                }
+            }
+        }
+        if control.terminal_failure().is_some() {
+            break;
+        }
+    }
+    (completed, wait)
+}
+
+/// Grants owner settlement slots to deliveries that are ready for provider
+/// settlement. Missing leases are ignored because ownership may have completed
+/// between scheduler admission and this owner-thread phase.
+///
+/// # Parameters
+/// - `inner`: scheduler that owns settlement admission.
+/// - `control`: subscription whose ready settlements are consumed.
+/// - `owned`: receiver-thread delivery state updated with each grant.
+fn grant_ready_settlements<T: 'static>(
+    inner: &EventBusInner,
+    control: &SubscriptionControl,
+    owned: &mut HashMap<u64, OwnedSyncDelivery<'_, T>>,
+) {
+    while let Some(lease) = inner.scheduler.take_settlement_ready(control.id) {
+        if let Some(delivery) = owned.get_mut(&lease) {
+            delivery.settlement_granted = true;
+        }
+    }
+}
+
+/// Removes completed leases and records completion for deliveries that were
+/// neither abandoned nor failed during lifecycle handling.
+///
+/// # Parameters
+/// - `owned`: receiver-thread delivery state from which leases are removed.
+/// - `completed`: leases selected by the preceding settlement phase.
+/// - `control`: subscription metrics updated for successful lifecycle
+///   completion.
+fn remove_completed_deliveries<T: 'static>(
+    owned: &mut HashMap<u64, OwnedSyncDelivery<'_, T>>,
+    completed: Vec<u64>,
+    control: &SubscriptionControl,
+) {
+    for lease in completed {
+        if let Some(delivery) = owned.remove(&lease)
+            && !delivery.abandoned
+            && !delivery.lifecycle_failed
+        {
+            control.delivery_metrics.record_completed();
+        }
+    }
+}
+
+/// Applies a terminal handler result on the receiver owner, routing its opaque
+/// token for settlement before queuing completion so the lease remains owned.
+///
+/// # Type Parameters
+/// - `T`: payload type retained by the owned delivery.
+///
+/// # Parameters
+/// - `inner`: bus state used to finish the delivery and emit diagnostics.
+/// - `router`: owner channel that retains settlement ordering.
+/// - `control`: subscription state used to associate settlement with its owner.
+/// - `subscriber_id`: logical subscriber included in provider diagnostics.
+/// - `options`: retry and failure policy applied to the terminal result.
+/// - `delivery`: receiver-owned state whose token remains on the owner thread.
+/// - `result`: completed handler result and its failure directive.
+///
+/// # Side Effects
+/// May enqueue settlement work and always queues handler completion.
 fn finish_attempt<T: Send + Sync + 'static>(
     inner: &Arc<EventBusInner>,
     router: &OwnerSettlementRouter,
@@ -801,6 +824,10 @@ fn settlement_disposition(message: &CoordinatorMessage) -> Option<DeliveryDispos
 /// - `inner`: bus that fences the owner and emits diagnostics.
 /// - `control`: first-cause terminal state to publish before callbacks.
 /// - `kind`: stable invariant-failure identifier.
+///
+/// # Side Effects
+/// Cancels scheduler admission and emits the diagnostic only when this call
+/// records the first terminal failure.
 fn fail_internal(inner: &EventBusInner, control: &SubscriptionControl, kind: &'static str) {
     let error = SpiError::Operation {
         provider_id: inner.provider_id.as_str().into(),
@@ -842,7 +869,7 @@ fn fail_internal(inner: &EventBusInner, control: &SubscriptionControl, kind: &'s
 fn attempt_settlement<T>(
     inner: &EventBusInner,
     control: &SubscriptionControl,
-    receiver: &mut dyn crate::spi::EventSubscriptionSpi,
+    receiver: &mut dyn EventSubscriptionSpi,
     delivery: &mut OwnedSyncDelivery<'_, T>,
     stopping: bool,
 ) -> Option<Duration> {

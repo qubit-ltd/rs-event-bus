@@ -254,6 +254,7 @@ pub(in crate::facade) fn new_retry_session<T>(
 ///
 /// # Returns
 /// The mapped delivery error and the final failure directive.
+#[must_use = "the retry error and directive must be handled"]
 pub(in crate::facade) fn terminal_retry_error(
     inner: &EventBusInner,
     error: qubit_retry::RetryError<DeliveryAttemptError>,

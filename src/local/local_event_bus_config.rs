@@ -139,7 +139,6 @@ impl LocalEventBusConfig {
     ///
     /// # Returns
     /// `Some` for an explicit positive budget, or `None` by default.
-    #[must_use]
     #[inline]
     pub const fn get_max_total_outstanding_weight_bytes(&self) -> Option<NonZeroUsize> {
         self.max_total_outstanding_weight_bytes

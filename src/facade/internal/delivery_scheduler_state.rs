@@ -94,7 +94,6 @@ impl DeliverySchedulerState {
     ///
     /// # Returns
     /// Accurate live gauges with zero cumulative counters and no owned age.
-    #[must_use = "scheduler gauges are the current delivery snapshot"]
     pub(super) fn snapshot_gauges(&self, subscription_id: Option<Id>) -> DeliveryMetricsSnapshot {
         let mut snapshot = DeliveryMetricsSnapshot::default();
         for record in self.owned.values() {
@@ -140,7 +139,6 @@ impl DeliverySchedulerState {
     /// `Some((id, index))` identifies the next grantable subscription and lane.
     /// `None` means no unlocked lane can currently execute or begin owner
     /// settlement.
-    #[must_use]
     pub(super) fn selected_ready(&self) -> Option<(Id, usize)> {
         let handler_available = self.running < self.config.max_running_handlers().get();
         self.ready.iter().find_map(|id| {

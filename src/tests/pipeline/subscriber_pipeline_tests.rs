@@ -76,7 +76,10 @@ fn test_manual_ack_matrix_and_handler_error_precedence_are_enforced() {
             source: Box::new(IoError::other("handler failed")),
         }),
     );
-    assert!(matches!(outcome, DeliveryOutcome::Failure(error) if error.to_string().contains("handler failed")));
+    assert!(matches!(
+        outcome,
+        DeliveryOutcome::Failure(error) if error.to_string().contains("handler failed")
+    ));
 
     let auto = delivery();
     assert!(matches!(

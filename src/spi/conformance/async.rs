@@ -210,49 +210,15 @@ async fn run_payload_case(
         }
     };
 
-    let result = spi.publish(probe_message(payload)).await;
-    let published = result.is_ok();
-    report.push(publish_case(case_id, result.map(|_| ()), "async"));
-    if published {
-        match subscription.receive(Duration::from_secs(1)).await {
-            Ok(ReceiveOutcome::Message(mut message)) => {
-                report.push(if payload_matches(message.payload(), case_id) {
-                    ConformanceCase::Passed {
-                        case_id: "receive-payload".into(),
-                    }
-                } else {
-                    ConformanceCase::Failed {
-                        case_id: "receive-payload".into(),
-                        detail: "received payload mode or type does not match the declaration".into(),
-                    }
-                });
-                let token = message.take_settlement();
-                report.push(
-                    async_settlement_idempotence_case(subscription.as_mut(), capabilities.settlement(), token.as_ref())
-                        .await,
-                );
-                report.push(
-                    async_conflicting_settlement_case(subscription.as_mut(), capabilities.settlement(), token.as_ref())
-                        .await,
-                );
-            }
-            Ok(_) => report.push(ConformanceCase::Failed {
-                case_id: "receive-payload".into(),
-                detail: "publish was not followed by a message".into(),
-            }),
-            Err(error) => report.push(ConformanceCase::Failed {
-                case_id: "receive-payload".into(),
-                detail: format!("async receive failed: {error}"),
-            }),
-        }
-    } else {
-        report.push(ConformanceCase::Skipped {
-            case_id: "receive-payload".into(),
-            reason: ConformanceSkipReason::MissingFixture {
-                detail: "publish failed".into(),
-            },
-        });
-    }
+    record_async_publish_receive(
+        report,
+        spi.as_ref(),
+        subscription.as_mut(),
+        case_id,
+        payload,
+        capabilities.settlement(),
+    )
+    .await;
 
     record_async_subscription_close(report, subscription.as_mut(), "close", "async receiver close").await;
     record_async_subscription_close(
@@ -271,6 +237,62 @@ async fn run_payload_case(
         "repeated async shutdown",
     )
     .await;
+}
+
+/// Publishes one probe, observes its delivery, and checks settlement behavior.
+///
+/// # Parameters
+/// - `report`: report receiving the publish, receive, and settlement results.
+/// - `spi`: provider used to publish the probe.
+/// - `subscription`: receiver used to observe and settle the probe.
+/// - `case_id`: identifier of the payload probe being exercised.
+/// - `payload`: transport representation sent through the provider.
+/// - `capabilities`: settlement capability declared by the provider.
+async fn record_async_publish_receive(
+    report: &mut ConformanceReport,
+    spi: &dyn AsyncEventBusSpi,
+    subscription: &mut dyn AsyncEventSubscriptionSpi,
+    case_id: &'static str,
+    payload: TransportPayload,
+    capabilities: SettlementCapabilities,
+) {
+    let result = spi.publish(probe_message(payload)).await;
+    let published = result.is_ok();
+    report.push(publish_case(case_id, result.map(|_| ()), "async"));
+    if published {
+        match subscription.receive(Duration::from_secs(1)).await {
+            Ok(ReceiveOutcome::Message(mut message)) => {
+                report.push(if payload_matches(message.payload(), case_id) {
+                    ConformanceCase::Passed {
+                        case_id: "receive-payload".into(),
+                    }
+                } else {
+                    ConformanceCase::Failed {
+                        case_id: "receive-payload".into(),
+                        detail: "received payload mode or type does not match the declaration".into(),
+                    }
+                });
+                let token = message.take_settlement();
+                report.push(async_settlement_idempotence_case(subscription, capabilities, token.as_ref()).await);
+                report.push(async_conflicting_settlement_case(subscription, capabilities, token.as_ref()).await);
+            }
+            Ok(_) => report.push(ConformanceCase::Failed {
+                case_id: "receive-payload".into(),
+                detail: "publish was not followed by a message".into(),
+            }),
+            Err(error) => report.push(ConformanceCase::Failed {
+                case_id: "receive-payload".into(),
+                detail: format!("async receive failed: {error}"),
+            }),
+        }
+    } else {
+        report.push(ConformanceCase::Skipped {
+            case_id: "receive-payload".into(),
+            reason: ConformanceSkipReason::MissingFixture {
+                detail: "publish failed".into(),
+            },
+        });
+    }
 }
 
 /// Checks repeated acceptance when the provider issued a settlement token.

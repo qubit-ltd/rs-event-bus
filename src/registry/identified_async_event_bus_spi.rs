@@ -22,6 +22,7 @@ use crate::spi::SpiFuture;
 use crate::spi::SpiSubscriptionRequest;
 
 /// Delegates each asynchronous operation and records the creating provider ID.
+#[must_use]
 pub(crate) struct IdentifiedAsyncEventBusSpi {
     /// Canonical identity snapshotted from provider metadata at registration.
     provider_id: ProviderId,
@@ -41,7 +42,6 @@ impl IdentifiedAsyncEventBusSpi {
     ///
     /// # Returns
     /// An identity proxy that delegates to `inner`.
-    #[must_use]
     #[inline]
     pub(crate) fn new(
         provider_id: ProviderId,
@@ -85,6 +85,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Errors
     /// The future returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.inner.publish(message)
     }
@@ -99,6 +100,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Errors
     /// The future returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn subscribe<'a>(
         &'a self,
         request: SpiSubscriptionRequest,
@@ -116,6 +118,7 @@ impl AsyncEventBusSpi for IdentifiedAsyncEventBusSpi {
     ///
     /// # Errors
     /// The future returns the SPI failure produced by the wrapped provider.
+    #[inline]
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         self.inner.shutdown(mode)
     }

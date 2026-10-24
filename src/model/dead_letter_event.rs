@@ -21,20 +21,84 @@ use super::SubscriberId;
 /// facade creates this payload when a delivery reaches its terminal policy;
 /// consumers inspect the event received from that topic.
 ///
+/// # Type Parameters
+/// - `T`: original event payload type, which must be `'static` for facade
+///   delivery.
+///
 /// # Examples
 ///
 /// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::io::Error as IoError;
+/// use std::sync::mpsc;
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// use qubit_event_bus::local::LocalEventBusConfig;
 /// use qubit_event_bus::model::DeadLetterEvent;
+/// use qubit_event_bus::model::EventId;
+/// use qubit_event_bus::model::DeadLetterPolicy;
+/// use qubit_event_bus::model::FailureDirective;
+/// use qubit_event_bus::model::PublishRequest;
+/// use qubit_event_bus::model::SubscribeRequest;
+/// use qubit_event_bus::model::Topic;
+/// use qubit_event_bus::spi::ShutdownMode;
+/// use qubit_event_bus::DeliveryError;
+/// use qubit_event_bus::EventBus;
 ///
-/// fn inspect_dead_letter<T: 'static>(event: &DeadLetterEvent<T>) {
-///     let original = event.original_event();
-///     let shared_original = event.original_event_arc();
-///     let subscriber = event.subscriber_id();
-///     let reason = event.reason();
+/// struct NonClonePayload;
 ///
-///     assert!(std::sync::Arc::strong_count(&shared_original) >= 2);
-///     let _ = (original, subscriber, reason);
-/// }
+/// let bus = EventBus::local(LocalEventBusConfig::default())?;
+/// let source_topic = Topic::<NonClonePayload>::new("orders.created")?;
+/// let dead_letter_topic = Topic::<DeadLetterEvent<NonClonePayload>>::new("dead.events")?;
+/// let (sender, receiver) = mpsc::channel();
+/// let dead_letter_subscription = bus.subscribe(
+///     SubscribeRequest::new("dead-letter-reader", dead_letter_topic)?,
+///     move |delivery| {
+///         let dead_letter = delivery.payload();
+///         let original = dead_letter.original_event_arc();
+///         sender
+///             .send((
+///                 dead_letter.original_event().id().as_str().to_owned(),
+///                 Arc::strong_count(&original),
+///                 dead_letter.subscriber_id().as_str().to_owned(),
+///                 dead_letter.reason().to_owned(),
+///             ))
+///             .expect("dead-letter receiver remains available");
+///     },
+/// )?;
+/// let source_subscription = bus.subscribe(
+///     SubscribeRequest::new("failing-worker", source_topic.clone())?
+///         .with_options(
+///             qubit_event_bus::model::SubscribeOptions::builder()
+///                 .error_handler(|_, _| FailureDirective::DeadLetter)
+///                 .dead_letter(DeadLetterPolicy::with_topic_name("dead.events")?)
+///                 .build(),
+///         ),
+///     |_| -> Result<(), DeliveryError> {
+///         Err(DeliveryError::Handler {
+///             source: Box::new(IoError::other("forced delivery failure")),
+///         })
+///     },
+/// )?;
+/// bus.publish(
+///     PublishRequest::builder()
+///         .topic(source_topic)
+///         .payload(NonClonePayload)
+///         .event_id(EventId::new("event-1")?)
+///         .build()?,
+/// )?;
+/// let (event_id, owners, subscriber_id, reason) =
+///     receiver.recv_timeout(Duration::from_secs(2))?;
+/// assert_eq!(event_id, "event-1");
+/// assert!(owners >= 2);
+/// assert_eq!(subscriber_id, "failing-worker");
+/// assert!(reason.contains("forced delivery failure"));
+/// source_subscription.cancel()?;
+/// dead_letter_subscription.cancel()?;
+/// bus.shutdown(ShutdownMode::Immediate)?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct DeadLetterEvent<T: 'static> {
     /// Original event retained by shared ownership without a `Clone` bound.

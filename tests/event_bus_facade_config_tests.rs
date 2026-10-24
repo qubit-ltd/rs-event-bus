@@ -5,6 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
+//! Public contract tests for facade-level configuration.
 
 use std::sync::Arc;
 

@@ -9,6 +9,7 @@
 
 mod support;
 
+use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -134,7 +135,7 @@ fn test_handler_clock_error_is_first_cause_before_observer_snapshot() {
     };
     assert_eq!(error.kind(), "handler_clock_failure");
     assert_eq!(error.operation(), "handler");
-    assert!(std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
+    assert!(Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
     assert_eq!(callbacks.load(Ordering::SeqCst), 1);
     assert_eq!(fake.settlement_count(), 0);
 }
@@ -184,7 +185,7 @@ fn test_settlement_clock_error_is_first_cause_before_observer_snapshot() {
     assert_eq!(*termination, SettlementTermination::InfrastructureFailure);
     assert_eq!(error.kind(), "settlement_clock_failure");
     assert_eq!(error.operation(), "settle");
-    assert!(std::error::Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
+    assert!(Error::source(error.as_ref()).is_some_and(|source| source.is::<TimeError>()));
     assert_eq!(clock_callbacks.load(Ordering::SeqCst), 1);
     let stopped = stopped.lock().expect("stopped diagnostics");
     assert_eq!(stopped.len(), 1);

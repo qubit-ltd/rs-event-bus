@@ -183,7 +183,6 @@ impl<T: 'static> PublishOptions<T> {
     /// # Returns
     /// `Some` for an explicit declaration callback, or `None` when no weight
     /// is configured. Calling this accessor does not invoke the callback.
-    #[must_use]
     #[inline]
     pub fn native_payload_weight(&self) -> Option<&Arc<NativePayloadWeight<T>>> {
         self.native_payload_weight.as_ref()

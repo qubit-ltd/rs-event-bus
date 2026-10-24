@@ -64,7 +64,8 @@ fn test_discovered_async_provider_is_creatable() {
         registry
             .provider_ids()
             .iter()
-            .any(|id| id.as_str() == "test-async-discovered")
+            .any(|id| id.as_str() == "test-async-discovered"),
+        "discovered async provider should be listed"
     );
     let config = EventBusConfig::default().with_selection(ProviderSelection::named("test-async-discovered").unwrap());
     let _bus = block_on(registry.create(&config)).unwrap();

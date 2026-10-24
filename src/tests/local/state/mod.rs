@@ -8,4 +8,3 @@
 //! Crate-internal tests for local provider queue state.
 
 mod bus_state_tests;
-mod event;

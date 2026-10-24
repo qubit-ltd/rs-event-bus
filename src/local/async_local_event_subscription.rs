@@ -304,7 +304,6 @@ fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Result<Optio
 
 #[cfg(all(test, not(loom)))]
 mod tests {
-
     use std::any::TypeId;
     use std::future::Future;
     use std::num::NonZeroUsize;
@@ -378,7 +377,7 @@ mod tests {
             let result = ready(receiver.receive(timeout));
             let state = queue.lock();
             assert_eq!(state.pending_count(), 1, "failed receive must retain the event");
-            assert!(state.in_flight.is_empty());
+            assert!(state.in_flight.is_empty(), "failed receive must not issue a token");
             assert_eq!(state.next_delivery_token, u64::MAX);
             drop(state);
             assert!(matches!(

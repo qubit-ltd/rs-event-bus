@@ -111,7 +111,8 @@ fn middleware_gate(stop: Stop, retry: bool) {
     if retry {
         options = options.retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"));
     }
-    let request = SubscribeRequest::new("handler-gate", Topic::<u32>::new("orders.created").expect("topic"))
+    let topic = Topic::<u32>::new("orders.created").expect("topic");
+    let request = SubscribeRequest::new("handler-gate", topic)
         .expect("request")
         .with_options(options.build());
     let mut sub = block_on(bus.subscribe(request)).expect("subscribe");
@@ -228,30 +229,37 @@ fn middleware_gate(stop: Stop, retry: bool) {
 fn test_immediate_stop_after_middleware_blocks_actual_handler() {
     middleware_gate(Stop::Immediate, false);
 }
+
 #[test]
 fn test_terminal_stop_after_middleware_preserves_original_source() {
     middleware_gate(Stop::Terminal, false);
 }
+
 #[test]
 fn test_graceful_stop_after_middleware_drains_actual_handler() {
     middleware_gate(Stop::Graceful, false);
 }
+
 #[test]
 fn test_retry_cancellation_after_middleware_blocks_actual_handler() {
     middleware_gate(Stop::RetryCancellation, false);
 }
+
 #[test]
 fn test_pause_after_middleware_preserves_original_handler() {
     middleware_gate(Stop::Pause, false);
 }
+
 #[test]
 fn test_immediate_stop_gates_each_local_retry_attempt() {
     middleware_gate(Stop::Immediate, true);
 }
+
 #[test]
 fn test_retry_cancellation_gates_local_retry_attempt() {
     middleware_gate(Stop::RetryCancellation, true);
 }
+
 #[test]
 fn test_graceful_stop_drains_local_retry_attempt() {
     middleware_gate(Stop::Graceful, true);

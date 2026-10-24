@@ -12,6 +12,11 @@ use crate::model::EventId;
 use crate::model::PublishOptions;
 
 /// Input identity, options, and immutable outbound retained across attempts.
+///
+/// # Type Parameters
+/// - `T`: original event payload retained by publication options and outbound
+///   failure context. The `'static` bound allows provider retries and failure
+///   callbacks to outlive the caller's stack frame.
 #[must_use]
 pub(in crate::pipeline::publisher) struct PreparedPublish<T: 'static> {
     /// Identity supplied before any interceptor executes.

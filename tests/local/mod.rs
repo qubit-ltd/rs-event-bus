@@ -11,6 +11,7 @@ mod support;
 
 mod async_local_event_bus_spi_tests;
 mod async_local_event_subscription_tests;
+mod async_signal_tests;
 mod internal;
 mod local_event_bus_config_tests;
 mod local_event_bus_spi_tests;

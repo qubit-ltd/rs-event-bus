@@ -15,11 +15,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-mod catch_unwind_future;
 // Tracks in-flight provider attempts and conservative admission evidence.
 mod internal;
 
-use catch_unwind_future::CatchUnwindFuture;
+use internal::CatchUnwindFuture;
 use internal::InFlightPublish;
 use qubit_clock::Timer;
 use qubit_retry::AsyncRetry;

@@ -15,6 +15,11 @@ use crate::facade::internal::DeliverySchedulerCore;
 
 /// Returns receive, lane, and handler capacity when the actual delivery is
 /// dropped.
+///
+/// This guard owns a claimed scheduler credit across the delivery's payload,
+/// handler, and settlement stages. Dropping it completes the credit and
+/// notifies the bus if the bus is still alive; its weak bus reference avoids
+/// extending the bus's lifetime or creating an ownership cycle.
 #[must_use]
 pub(in crate::facade) struct OwnedDeliveryLease {
     /// Stable scheduler identity.

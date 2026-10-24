@@ -20,7 +20,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use super::shutdown_coordinator_state::ShutdownCoordinatorState;
+use super::internal::ShutdownCoordinatorState;
 use super::shutdown_result::ShutdownResult;
 use crate::error::SpiError;
 use crate::facade::internal::FiniteWait;

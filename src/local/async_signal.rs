@@ -34,7 +34,6 @@ impl AsyncSignal {
     ///
     /// # Returns
     /// A guard that unregisters this waiter when dropped.
-    #[must_use = "keep the waiter guard alive while the task is waiting"]
     pub(super) fn register(&self, waker: &Waker) -> AsyncWaiter {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let owned_waker = waker.clone();

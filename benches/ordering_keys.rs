@@ -203,7 +203,8 @@ fn timed_drain<F: Future>(
 /// default admission can keep all these lanes simultaneously active. Same-key
 /// input has one distinct key; churn has one distinct key per operation.
 fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: usize) -> Sample {
-    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(operations)).unwrap());
+    let provider_config = LocalEventBusConfig::new().queue_capacity(operations);
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&provider_config).unwrap());
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
             NonZeroUsize::new(limit).unwrap(),
@@ -213,7 +214,8 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
         )
         .unwrap(),
     );
-    let bus = AsyncEventBus::with_config(ProviderId::new("ordering-bench").unwrap(), spi, config).unwrap();
+    let provider_id = ProviderId::new("ordering-bench").unwrap();
+    let bus = AsyncEventBus::with_config(provider_id, spi, config).unwrap();
     let topic = Topic::<usize>::new("bench.ordering.facade").unwrap();
     let options = SubscribeOptions::builder()
         .ordering_policy(OrderingPolicy::PerKey)

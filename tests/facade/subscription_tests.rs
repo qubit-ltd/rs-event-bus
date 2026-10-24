@@ -27,11 +27,25 @@ fn test_subscription_handle_exposes_identity_and_repeated_cancel_is_safe() {
         .expect("subscription starts");
 
     let object_id = subscription.id();
-    assert_eq!(&expected_id, subscription.subscriber_id());
-    assert!(!subscription.is_cancelled());
+    assert_eq!(
+        &expected_id,
+        subscription.subscriber_id(),
+        "subscription should retain the requested subscriber identity",
+    );
+    assert!(
+        !subscription.is_cancelled(),
+        "a newly created subscription should not be cancelled",
+    );
     subscription.cancel().expect("first cancel joins worker");
-    assert!(subscription.is_cancelled());
-    assert_eq!(object_id, subscription.id());
+    assert!(
+        subscription.is_cancelled(),
+        "cancellation should be observable on the subscription",
+    );
+    assert_eq!(
+        object_id,
+        subscription.id(),
+        "cancellation should not change the subscription identity",
+    );
     subscription.cancel().expect("repeated cancel remains idempotent");
     let _ = bus
         .shutdown(ShutdownMode::Immediate)

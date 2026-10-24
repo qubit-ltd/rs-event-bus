@@ -69,6 +69,7 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns [`FacadeBuildError::Spi`] if querying provider capabilities
     /// fails or panics.
+    #[inline]
     pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Result<Self, FacadeBuildError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())
     }
@@ -90,6 +91,7 @@ impl AsyncEventBus {
     /// Returns [`FacadeBuildError::Configuration`] for synchronous subscriber
     /// middleware, or [`FacadeBuildError::Spi`] if the provider capability call
     /// fails or panics.
+    #[inline]
     pub fn with_config(
         provider_id: ProviderId,
         spi: Arc<dyn AsyncEventBusSpi>,
@@ -112,6 +114,7 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns [`FacadeBuildError::Spi`] if querying provider capabilities
     /// fails or panics.
+    #[inline]
     pub fn with_timer(
         provider_id: ProviderId,
         spi: Arc<dyn AsyncEventBusSpi>,

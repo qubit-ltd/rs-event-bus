@@ -70,6 +70,7 @@ pub(crate) const fn is_valid_topic_name(value: &str) -> bool {
 ///
 /// # Panics
 /// Panics if `index` does not identify an existing code point in `bytes`.
+#[must_use = "Use the decoded code point and byte width."]
 #[inline]
 const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
     let first = bytes[index];
@@ -111,8 +112,17 @@ const fn decode_utf8_code_point(bytes: &[u8], index: usize) -> (u32, usize) {
 const fn is_unicode_whitespace(code_point: u32) -> bool {
     matches!(
         code_point,
-        0x0009..=0x000D | 0x0020 | 0x0085 | 0x00A0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F
-            | 0x205F | 0x3000
+        0x0009..=0x000D
+            | 0x0020
+            | 0x0085
+            | 0x00A0
+            | 0x1680
+            | 0x2000..=0x200A
+            | 0x2028
+            | 0x2029
+            | 0x202F
+            | 0x205F
+            | 0x3000
     )
 }
 

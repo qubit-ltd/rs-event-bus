@@ -224,6 +224,7 @@ impl SyncDeliveryScheduler {
         self.core.request_receive(id);
         self.route_notifications();
     }
+
     /// Claims the reserved receive lease, or None while capacity is
     /// unavailable.
     ///
@@ -239,6 +240,7 @@ impl SyncDeliveryScheduler {
         self.route_notifications();
         result
     }
+
     /// Transfers a received message's credit to its optional ordering lane.
     ///
     /// # Parameters
@@ -249,6 +251,7 @@ impl SyncDeliveryScheduler {
         self.core.enqueue(lease, lane);
         self.route_notifications();
     }
+
     /// Claims a fair handler grant, or None while another owner or lane must
     /// proceed.
     ///
@@ -264,6 +267,7 @@ impl SyncDeliveryScheduler {
         self.route_notifications();
         result
     }
+
     /// Returns execution capacity while retaining delivery ownership and its
     /// lane.
     ///
@@ -303,6 +307,7 @@ impl SyncDeliveryScheduler {
         self.core.complete(lease);
         self.route_notifications();
     }
+
     /// Reports permanently exhausted lease identifiers without wrapping them.
     #[must_use]
     #[inline]
@@ -320,6 +325,7 @@ impl SyncDeliveryScheduler {
         self.core.record_owned_start(lease, now);
         self.route_notifications();
     }
+
     /// Captures metadata before sampling the clock outside locks, avoiding
     /// races with newer leases.
     ///
@@ -341,6 +347,7 @@ impl SyncDeliveryScheduler {
         let captured = self.core.snapshot_input(scope);
         captured.at(clock.now())
     }
+
     /// Returns exact active gauges without computing a possibly invalid age.
     ///
     /// # Parameters
@@ -351,6 +358,7 @@ impl SyncDeliveryScheduler {
     pub(super) fn snapshot_gauges(&self, scope: Option<Id>) -> DeliveryMetricsSnapshot {
         self.core.snapshot_gauges(scope)
     }
+
     /// Queues a decode rejection in its ordering lane without consuming a
     /// handler slot.
     ///
@@ -362,6 +370,7 @@ impl SyncDeliveryScheduler {
         self.core.enqueue_settlement(lease, lane);
         self.route_notifications();
     }
+
     /// Claims lane authorization for owner settlement independently of handler
     /// capacity.
     ///

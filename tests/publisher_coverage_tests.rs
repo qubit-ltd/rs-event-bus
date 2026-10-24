@@ -1020,7 +1020,7 @@ fn test_async_publisher_accepts_distinct_native_payload_types_without_clone_boun
     );
     let _ = publish!(
         "result",
-        PublishRequest::new(Topic::new("async.result").unwrap(), Ok::<i32, &'static str>(6)).unwrap()
+        PublishRequest::new(Topic::new("async.result").unwrap(), Ok::<i32, &'static str>(6),).unwrap()
     );
     let _ = publish!(
         "non-clone domain",

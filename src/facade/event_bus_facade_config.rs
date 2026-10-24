@@ -80,40 +80,6 @@ impl Default for EventBusFacadeConfig {
 }
 
 impl EventBusFacadeConfig {
-    /// Validates that no asynchronous subscriber middleware is installed for a
-    /// synchronous facade.
-    ///
-    /// # Errors
-    /// Returns the invalid middleware field when any payload type has an
-    /// asynchronous chain.
-    pub(crate) fn validate_for_sync(&self) -> Result<(), ConfigurationError> {
-        if self.async_subscriber_interceptors.is_empty() {
-            Ok(())
-        } else {
-            Err(ConfigurationError::InvalidField {
-                field: "async_subscriber_interceptor",
-                message: "asynchronous subscriber middleware requires an async facade".into(),
-            })
-        }
-    }
-
-    /// Validates that no synchronous subscriber middleware is installed for an
-    /// asynchronous facade.
-    ///
-    /// # Errors
-    /// Returns the invalid middleware field when any payload type has a
-    /// synchronous chain.
-    pub(crate) fn validate_for_async(&self) -> Result<(), ConfigurationError> {
-        if self.sync_subscriber_interceptors.is_empty() {
-            Ok(())
-        } else {
-            Err(ConfigurationError::InvalidField {
-                field: "sync_subscriber_interceptor",
-                message: "synchronous subscriber middleware requires a sync facade".into(),
-            })
-        }
-    }
-
     /// Creates facade configuration with an empty codec registry.
     ///
     /// # Returns
@@ -245,15 +211,6 @@ impl EventBusFacadeConfig {
         self
     }
 
-    /// Returns facade-wide publisher interceptors in registration order.
-    ///
-    /// # Returns
-    /// The immutable interceptor slice applied after request-scoped hooks.
-    #[inline]
-    pub(crate) fn global_publisher_interceptors(&self) -> &[GlobalPublisherInterceptor] {
-        &self.global_publisher_interceptors
-    }
-
     /// Appends facade-wide synchronous subscriber middleware for payload type
     /// `T`.
     ///
@@ -325,6 +282,49 @@ impl EventBusFacadeConfig {
         self.async_subscriber_interceptors
             .insert(type_id, Arc::new(middleware_list));
         self
+    }
+
+    /// Returns facade-wide publisher interceptors in registration order.
+    ///
+    /// # Returns
+    /// The immutable interceptor slice applied after request-scoped hooks.
+    #[inline]
+    pub(crate) fn global_publisher_interceptors(&self) -> &[GlobalPublisherInterceptor] {
+        &self.global_publisher_interceptors
+    }
+
+    /// Validates that no asynchronous subscriber middleware is installed for a
+    /// synchronous facade.
+    ///
+    /// # Errors
+    /// Returns the invalid middleware field when any payload type has an
+    /// asynchronous chain.
+    pub(crate) fn validate_for_sync(&self) -> Result<(), ConfigurationError> {
+        if self.async_subscriber_interceptors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigurationError::InvalidField {
+                field: "async_subscriber_interceptor",
+                message: "asynchronous subscriber middleware requires an async facade".into(),
+            })
+        }
+    }
+
+    /// Validates that no synchronous subscriber middleware is installed for an
+    /// asynchronous facade.
+    ///
+    /// # Errors
+    /// Returns the invalid middleware field when any payload type has a
+    /// synchronous chain.
+    pub(crate) fn validate_for_async(&self) -> Result<(), ConfigurationError> {
+        if self.sync_subscriber_interceptors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigurationError::InvalidField {
+                field: "sync_subscriber_interceptor",
+                message: "synchronous subscriber middleware requires a sync facade".into(),
+            })
+        }
     }
 
     /// Clones the registered synchronous middleware chain for payload type `T`.

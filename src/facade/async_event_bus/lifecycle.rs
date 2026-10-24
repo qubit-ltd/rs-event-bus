@@ -12,6 +12,8 @@ use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use qubit_clock::TimerFuture;
+
 use crate::AsyncEventBus;
 use crate::LifecycleError;
 use crate::ShutdownError;
@@ -164,68 +166,9 @@ impl AsyncEventBus {
                 for control in controls {
                     control.stop(requested_mode);
                 }
-                let close = self.close_unstarted_subscriptions(requested_mode);
-                if await_until_deadline(close, deadline.as_mut()).await?.is_none() {
-                    return Err(ShutdownError::TimedOut {
-                        timeout: timeout.expect("a deadline exists for graceful shutdown"),
-                    });
-                }
-                let stopped = wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), || {
-                    self.inner.tracker.runners_stopped()
-                })
-                .await?;
-                if stopped == WaitOutcome::TimedOut {
-                    return Err(ShutdownError::TimedOut {
-                        timeout: timeout.expect("a deadline exists for graceful shutdown"),
-                    });
-                }
-                let outcome = loop {
-                    let requested_mode = self.requested_shutdown_mode(mode);
-                    let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
-                        self.inner.spi.shutdown(requested_mode)
-                    })?;
-                    let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
-                    if requested_mode == ShutdownMode::Immediate {
-                        let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
-                            return Err(ShutdownError::TimedOut {
-                                timeout: timeout.expect("a deadline exists for graceful shutdown"),
-                            });
-                        };
-                        break outcome?;
-                    }
-                    match await_shutdown_or_immediate(
-                        shutdown,
-                        deadline.as_mut(),
-                        &self.inner.shutdown_mode_signal,
-                        &self.inner.shutdown_immediate,
-                    )
-                    .await?
-                    {
-                        ShutdownWait::Complete(result) => break result?,
-                        ShutdownWait::TimedOut => {
-                            return Err(ShutdownError::TimedOut {
-                                timeout: timeout.expect("a deadline exists for graceful shutdown"),
-                            });
-                        }
-                        ShutdownWait::ImmediateRequested => continue,
-                    }
-                };
-                let report = ShutdownReport::new(
-                    outcome,
-                    self.inner.abandoned_deliveries.load(Ordering::Acquire),
-                    self.inner.capabilities.durability() == DurabilityCapability::Ephemeral
-                        || outcome == ShutdownOutcome::TimedOut,
-                );
-                *self
-                    .inner
-                    .shutdown_report
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(report);
-                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
-                if let Some(errors) = self.inner.close_errors_snapshot() {
-                    return Err(ShutdownError::SubscriptionClose(errors));
-                }
-                return Ok(report);
+                return self
+                    .shutdown_as_leader(mode, requested_mode, timeout, &mut deadline)
+                    .await;
             }
             let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
                 !self.inner.shutdown_active.load(Ordering::Acquire)
@@ -235,6 +178,113 @@ impl AsyncEventBus {
                 return Err(ShutdownError::TimedOut {
                     timeout: timeout.expect("a deadline exists for graceful shutdown"),
                 });
+            }
+        }
+    }
+
+    /// Completes ordered cleanup after this caller becomes the shutdown leader.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown policy selected by this caller.
+    /// - `requested_mode`: strongest mode observed before receiver cleanup.
+    /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
+    /// - `deadline`: shared absolute deadline for all graceful cleanup stages.
+    ///
+    /// # Returns
+    /// The provider outcome and facade-known abandoned-delivery count.
+    ///
+    /// # Errors
+    /// Returns a timeout, timer, provider, or receiver-close error without
+    /// marking the bus closed before provider shutdown completes.
+    async fn shutdown_as_leader(
+        &self,
+        mode: ShutdownMode,
+        requested_mode: ShutdownMode,
+        timeout: Option<Duration>,
+        deadline: &mut Option<TimerFuture>,
+    ) -> Result<ShutdownReport, ShutdownError> {
+        let close = self.close_unstarted_subscriptions(requested_mode);
+        if await_until_deadline(close, deadline.as_mut()).await?.is_none() {
+            return Err(ShutdownError::TimedOut {
+                timeout: timeout.expect("a deadline exists for graceful shutdown"),
+            });
+        }
+        let stopped = wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), || {
+            self.inner.tracker.runners_stopped()
+        })
+        .await?;
+        if stopped == WaitOutcome::TimedOut {
+            return Err(ShutdownError::TimedOut {
+                timeout: timeout.expect("a deadline exists for graceful shutdown"),
+            });
+        }
+
+        let outcome = self.shutdown_provider(mode, timeout, deadline).await?;
+        let report = ShutdownReport::new(
+            outcome,
+            self.inner.abandoned_deliveries.load(Ordering::Acquire),
+            self.inner.capabilities.durability() == DurabilityCapability::Ephemeral
+                || outcome == ShutdownOutcome::TimedOut,
+        );
+        *self
+            .inner
+            .shutdown_report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(report);
+        *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
+        if let Some(errors) = self.inner.close_errors_snapshot() {
+            return Err(ShutdownError::SubscriptionClose(errors));
+        }
+        Ok(report)
+    }
+
+    /// Shuts down the provider, restarting with immediate mode when requested.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown policy selected by this caller.
+    /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
+    /// - `deadline`: shared absolute deadline for provider shutdown.
+    ///
+    /// # Returns
+    /// The outcome reported by the provider.
+    ///
+    /// # Errors
+    /// Returns timer or provider shutdown failures, or a graceful timeout.
+    async fn shutdown_provider(
+        &self,
+        mode: ShutdownMode,
+        timeout: Option<Duration>,
+        deadline: &mut Option<TimerFuture>,
+    ) -> Result<ShutdownOutcome, ShutdownError> {
+        loop {
+            let requested_mode = self.requested_shutdown_mode(mode);
+            let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
+                self.inner.spi.shutdown(requested_mode)
+            })?;
+            let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
+            if requested_mode == ShutdownMode::Immediate {
+                let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
+                    return Err(ShutdownError::TimedOut {
+                        timeout: timeout.expect("a deadline exists for graceful shutdown"),
+                    });
+                };
+                return Ok(outcome?);
+            }
+            match await_shutdown_or_immediate(
+                shutdown,
+                deadline.as_mut(),
+                &self.inner.shutdown_mode_signal,
+                &self.inner.shutdown_immediate,
+            )
+            .await?
+            {
+                ShutdownWait::Complete(result) => return Ok(result?),
+                ShutdownWait::TimedOut => {
+                    return Err(ShutdownError::TimedOut {
+                        timeout: timeout.expect("a deadline exists for graceful shutdown"),
+                    });
+                }
+                ShutdownWait::ImmediateRequested => {}
             }
         }
     }

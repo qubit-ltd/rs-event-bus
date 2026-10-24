@@ -116,7 +116,6 @@ impl PublishError {
     /// The effect of the terminal publication attempt, with uncertain
     /// acceptance preserved when the original failure may have reached the
     /// provider.
-    #[must_use = "publication admission evidence must be observed"]
     #[inline]
     pub(crate) fn publish_effect(&self) -> PublishEffect {
         match self {

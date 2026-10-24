@@ -23,6 +23,7 @@ use crate::util::validated_text::is_nonblank_without_controls;
 /// assert_eq!(provider.as_str(), "local");
 /// ```
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[must_use]
 pub struct ProviderId(
     /// Validated provider name, borrowed for static IDs or owned for runtime
     /// IDs.
@@ -46,7 +47,6 @@ impl ProviderId {
     /// use qubit_event_bus::model::ProviderId;
     /// const INVALID_PROVIDER: ProviderId = ProviderId::new_static(" local");
     /// ```
-    #[must_use]
     pub const fn new_static(value: &'static str) -> Self {
         assert!(is_nonblank_without_controls(value), "invalid provider ID");
         Self(Cow::Borrowed(value))

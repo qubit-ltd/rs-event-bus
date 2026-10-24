@@ -45,6 +45,7 @@ impl Acknowledgement {
     pub fn new() -> Self {
         Self::default()
     }
+
     /// Returns the current state from the atomic handle.
     ///
     /// # Returns
@@ -58,6 +59,7 @@ impl Acknowledgement {
             _ => AcknowledgementState::Pending,
         }
     }
+
     /// Returns whether an ACK won the first completion race.
     ///
     /// # Returns
@@ -67,6 +69,7 @@ impl Acknowledgement {
     pub fn is_acked(&self) -> bool {
         self.state() == AcknowledgementState::Acknowledged
     }
+
     /// Returns whether a NACK won the first completion race.
     ///
     /// # Returns
@@ -77,6 +80,7 @@ impl Acknowledgement {
     pub fn is_nacked(&self) -> bool {
         self.state() == AcknowledgementState::NegativelyAcknowledged
     }
+
     /// Returns whether either terminal decision has been made.
     ///
     /// # Returns

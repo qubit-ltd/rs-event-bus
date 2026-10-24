@@ -29,7 +29,8 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// `true` only when this call records the first terminal cause.
     #[must_use]
     fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool;
-    /// Requests the subscription runner to stop receiving.
+    /// Stops the subscription runner from receiving according to the selected
+    /// shutdown policy.
     ///
     /// # Parameters
     /// - `mode`: shutdown policy to apply to the runner.
@@ -38,7 +39,8 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// Returns the canonical receiver close failure, if one has been recorded.
     ///
     /// # Returns
-    /// Some with the retained failure, or None before a failure is recorded.
+    /// `Some` with the retained failure, or `None` before a failure is
+    /// recorded.
     fn close_error(&self) -> Option<Arc<SubscriptionCloseFailure>>;
 
     /// Stores and returns the canonical receiver close failure.

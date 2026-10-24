@@ -32,7 +32,10 @@ use crate::support::manual_async::block_on;
 fn test_async_facade_capability_panic_is_a_terminal_spi_error() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.panic_on_capabilities();
-    let result = AsyncEventBus::from_spi(ProviderId::new("panic-capabilities").unwrap(), spi.clone());
+    let result = AsyncEventBus::from_spi(
+        ProviderId::new("panic-capabilities").expect("valid provider ID"),
+        spi.clone(),
+    );
     match result {
         Err(FacadeBuildError::Spi(SpiError::Operation {
             operation: "capabilities",
@@ -76,18 +79,22 @@ fn test_async_facade_constructors_initialize_provider_capabilities_once() {
     let timer = StdMonotonicClock::new().new_timer();
 
     let buses = [
-        AsyncEventBus::from_spi(ProviderId::new("from-spi").unwrap(), spi.clone())
+        AsyncEventBus::from_spi(ProviderId::new("from-spi").expect("valid provider ID"), spi.clone())
             .expect("from_spi constructs the facade"),
         AsyncEventBus::with_config(
-            ProviderId::new("with-config").unwrap(),
+            ProviderId::new("with-config").expect("valid provider ID"),
             spi.clone(),
             EventBusFacadeConfig::default(),
         )
         .expect("with_config constructs the facade"),
-        AsyncEventBus::with_timer(ProviderId::new("with-timer").unwrap(), spi.clone(), timer.clone())
-            .expect("with_timer constructs the facade"),
+        AsyncEventBus::with_timer(
+            ProviderId::new("with-timer").expect("valid provider ID"),
+            spi.clone(),
+            timer.clone(),
+        )
+        .expect("with_timer constructs the facade"),
         AsyncEventBus::with_config_and_timer(
-            ProviderId::new("with-config-and-timer").unwrap(),
+            ProviderId::new("with-config-and-timer").expect("valid provider ID"),
             spi.clone(),
             EventBusFacadeConfig::default(),
             timer,

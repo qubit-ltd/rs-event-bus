@@ -72,8 +72,11 @@ fn test_dead_letter_topic_exposes_original_payload_and_terminal_reason() {
     let (payload, reason) = receiver
         .recv_timeout(Duration::from_secs(2))
         .expect("dead letter delivered");
-    assert_eq!(payload, 9);
-    assert!(reason.contains("model dead-letter failure"));
+    assert_eq!(payload, 9, "dead letter should preserve the original payload");
+    assert!(
+        reason.contains("model dead-letter failure"),
+        "dead letter should preserve the terminal delivery reason"
+    );
     source_subscription.cancel().expect("source cancellation");
     dead_subscription.cancel().expect("dead-letter cancellation");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shutdown");

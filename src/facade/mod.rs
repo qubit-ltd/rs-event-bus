@@ -23,7 +23,6 @@ mod observer_entry;
 mod publish_metrics;
 mod publish_metrics_snapshot;
 mod shutdown_coordinator;
-mod shutdown_coordinator_state;
 mod shutdown_report;
 mod shutdown_result;
 mod subscription;

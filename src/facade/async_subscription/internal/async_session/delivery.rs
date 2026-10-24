@@ -50,6 +50,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// # Returns
     /// A session ready for a caller-driven runner.
+    #[must_use]
     pub(in crate::facade) fn new(
         inner: Arc<AsyncEventBusInner>,
         id: Id,

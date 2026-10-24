@@ -81,6 +81,11 @@ impl AsyncServiceProvider<EventBusSpec> for AsyncEventBusProviderAdapter {
     /// # Errors
     /// Returns the provider's creation failure, a capability-query failure, or
     /// an unsupported-capability failure when the SPI cannot meet `config`.
+    ///
+    /// # Panics
+    /// Propagates a panic from the provider's asynchronous SPI factory. Panics
+    /// raised by the capability query are converted into initialization
+    /// failures.
     fn create_configured<'a>(
         &'a self,
         config: &'a EventBusConfig,

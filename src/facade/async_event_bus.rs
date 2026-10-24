@@ -17,6 +17,7 @@ pub(super) use internal::AsyncShutdownDriver;
 pub(super) use internal::AsyncSignal;
 pub(super) use internal::AsyncTracker;
 pub(super) use internal::BusState;
+pub(in crate::facade) use internal::PublishCompletionGuard;
 pub(in crate::facade::async_event_bus) use internal::ShutdownLeaderGuard;
 pub(in crate::facade::async_event_bus) use internal::ShutdownWait;
 pub(super) use internal::SignalRegistration;

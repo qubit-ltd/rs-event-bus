@@ -30,6 +30,7 @@ use crate::model::SubscriberId;
 /// assert_eq!(snapshot.metrics.running_handlers, 0);
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
 pub struct SubscriptionDeliveryMetricsSnapshot {
     /// Identifies the subscription within the event bus that created it.
     pub subscription_id: Id,

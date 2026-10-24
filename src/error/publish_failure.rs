@@ -66,6 +66,7 @@ impl PublishFailure {
             cause,
         }
     }
+
     /// Returns the original event identity supplied by the caller.
     ///
     /// # Returns
@@ -75,6 +76,7 @@ impl PublishFailure {
     pub fn event_id(&self) -> &EventId {
         &self.event_id
     }
+
     /// Returns admission evidence aggregated for the logical publication.
     ///
     /// # Returns
@@ -83,6 +85,7 @@ impl PublishFailure {
     pub fn effect(&self) -> PublishEffect {
         self.effect
     }
+
     /// Returns the final error without discarding its original source chain.
     ///
     /// # Returns
@@ -92,11 +95,11 @@ impl PublishFailure {
     pub fn cause(&self) -> &PublishError {
         &self.cause
     }
+
     /// Consumes the wrapper and returns its original final error.
     ///
     /// # Returns
     /// The owned cause; the wrapper identity and effect are no longer retained.
-    #[must_use = "the owned cause must be handled after consuming the failure"]
     #[inline]
     pub fn into_cause(self) -> PublishError {
         self.cause

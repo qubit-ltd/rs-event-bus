@@ -29,7 +29,8 @@ use qubit_event_bus::spi::ShutdownMode;
 /// Builds a real public receipt; uncertainty is the evidence attached by retry.
 fn receipt(acknowledgement: PublishAcknowledgement, unknown_history: bool) -> PublishReceipt {
     let id = EventId::new("order-42").expect("valid ID");
-    let dispatched = (!matches!(acknowledgement, PublishAcknowledgement::DroppedByInterceptor)).then(|| id.clone());
+    let dispatched =
+        (!matches!(acknowledgement, PublishAcknowledgement::DroppedByInterceptor)).then(|| id.clone());
     PublishReceipt::new(
         id,
         dispatched,
@@ -100,9 +101,15 @@ async fn test_history_precedes_final_rejection_and_partial_acceptance_repairs_on
         accepting_subscription.subscriber_id().clone(),
         AdmissionStatus::Accepted,
     );
-    let full = receipt(PublishAcknowledgement::DestinationAdmissions(vec![accepted.clone()]), false);
+    let full = receipt(
+        PublishAcknowledgement::DestinationAdmissions(vec![accepted.clone()]),
+        false,
+    );
     assert_eq!(republish_action(&full), RepublishAction::NoRepublish);
-    let partial = receipt(PublishAcknowledgement::DestinationAdmissions(vec![accepted, rejected]), false);
+    let partial = receipt(
+        PublishAcknowledgement::DestinationAdmissions(vec![accepted, rejected]),
+        false,
+    );
     assert_eq!(republish_action(&partial), RepublishAction::RetryRejectedDestinations);
     let _ = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),

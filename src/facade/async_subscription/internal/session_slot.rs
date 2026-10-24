@@ -14,7 +14,7 @@ use super::AsyncSession;
 /// # Type Parameters
 /// - `T`: payload type retained by the subscription session.
 pub(in crate::facade::async_subscription) struct SessionSlot<T: 'static> {
-    /// Session available to the active runner or shutdown caller.
+    /// Session retained for the next runner or shutdown caller to lease.
     pub(in crate::facade::async_subscription) session: Option<AsyncSession<T>>,
     /// Whether a caller currently owns the session lease.
     pub(in crate::facade::async_subscription) active: bool,

@@ -11,12 +11,16 @@ mod async_session;
 mod async_subscription_control;
 mod bus_context_future;
 mod delivery_task_context;
+mod handler_duration_guard;
+mod owned_delivery_lease;
 mod owned_delivery_task;
 mod pending_delivery;
 mod run_state_guard;
 mod session_lease;
 mod session_signals;
 mod session_slot;
+mod settlement_attempt_guard;
+mod settlement_progress;
 
 pub(in crate::facade::async_subscription) use async_session::AsyncSession;
 pub(in crate::facade) use async_subscription_control::AsyncSubscriptionControl;
@@ -28,10 +32,3 @@ pub(in crate::facade::async_subscription) use run_state_guard::RunStateGuard;
 pub(in crate::facade::async_subscription) use session_lease::SessionLease;
 pub(super) use session_signals::SessionSignals;
 pub(in crate::facade::async_subscription) use session_slot::SessionSlot;
-
-mod owned_delivery_lease;
-mod settlement_progress;
-
-mod handler_duration_guard;
-
-mod settlement_attempt_guard;

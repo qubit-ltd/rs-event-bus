@@ -99,7 +99,10 @@ use crate::model::PublishAcknowledgement;
 ///         Err(unsupported("publish", Some(message.topic().as_str())))
 ///     }
 ///
-///     fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+///     fn subscribe(
+///         &self,
+///         request: SpiSubscriptionRequest,
+///     ) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
 ///         Err(unsupported("subscribe", Some(request.topic().as_str())))
 ///     }
 ///
@@ -134,7 +137,6 @@ pub trait EventBusSpi: Send + Sync + 'static {
     ///
     /// # Returns
     /// The immutable capabilities supported by this provider instance.
-    #[must_use = "Use the returned query result."]
     fn capabilities(&self) -> EventBusCapabilities;
 
     /// Publishes one type-erased transport message.

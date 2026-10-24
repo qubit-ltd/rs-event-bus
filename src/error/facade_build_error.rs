@@ -14,6 +14,16 @@ use crate::error::SpiError;
 ///
 /// Each variant retains its source so callers can distinguish an invalid
 /// middleware execution model from a provider capability failure.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::error::ConfigurationError;
+/// use qubit_event_bus::error::FacadeBuildError;
+///
+/// let error = FacadeBuildError::from(ConfigurationError::invalid_subscriber_id("_audit"));
+/// assert!(matches!(error, FacadeBuildError::Configuration(_)));
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 #[must_use]

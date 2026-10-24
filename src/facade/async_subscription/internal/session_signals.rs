@@ -41,7 +41,6 @@ impl SessionSignals {
     /// # Returns
     ///
     /// A reference-counted signal coordinator with no stop request recorded.
-    #[must_use = "the session signal coordinator must be retained"]
     pub(in crate::facade) fn new() -> Arc<Self> {
         Arc::new(Self {
             stopped: false.into(),

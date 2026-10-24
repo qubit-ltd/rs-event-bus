@@ -146,7 +146,7 @@ impl DeliveryContext {
     ///
     /// # Returns
     /// The provider identifier that received the event.
-    #[must_use]
+    #[must_use = "the provider ID identifies the source of this delivery"]
     #[inline]
     pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id

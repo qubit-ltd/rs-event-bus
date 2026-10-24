@@ -8,6 +8,8 @@
 //! Crate-internal tests for contracts hidden from public callers.
 
 mod codec;
+mod error;
+mod facade;
 mod local;
 mod model;
 mod pipeline;

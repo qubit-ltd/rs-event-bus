@@ -21,11 +21,13 @@ use crate::model::SubscriberId;
 /// # Examples
 ///
 /// ```
+/// use qubit_event_bus::error::SubscriptionCloseErrors;
 /// use qubit_event_bus::error::SubscriptionCloseFailure;
 /// use qubit_event_bus::model::SubscriberId;
 ///
-/// fn failed_subscriber(failure: &SubscriptionCloseFailure) -> &SubscriberId {
-///     failure.subscriber_id()
+/// fn inspect_failure(errors: &SubscriptionCloseErrors) -> Option<(&SubscriberId, &str)> {
+///     let failure: &SubscriptionCloseFailure = errors.iter().next()?;
+///     Some((failure.subscriber_id(), failure.error().kind()))
 /// }
 /// ```
 #[derive(Debug)]

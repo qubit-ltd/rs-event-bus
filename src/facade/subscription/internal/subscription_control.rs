@@ -134,6 +134,7 @@ impl SubscriptionControl {
     /// # Returns
     /// True only for the first cause; callers must fence scheduling before
     /// diagnostics.
+    #[must_use = "observe whether this call published the first receive failure"]
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
         let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
@@ -154,6 +155,7 @@ impl SubscriptionControl {
     /// # Returns
     /// True when this invocation is admitted; the lock is released before user
     /// code.
+    #[must_use = "observe whether the handler invocation was admitted"]
     pub(in crate::facade) fn try_start_handler(&self, allowed: impl FnOnce(bool) -> bool) -> bool {
         let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         self.terminal_failure().is_none() && allowed(self.is_cancelled())
