@@ -924,7 +924,7 @@ Some third-party crates register themselves. At link time the crate places its d
 
 ```toml
 qubit-event-bus = { version = "0.20", features = ["discovery"] }
-qubit-spi = "0.13"
+qubit-spi = "0.14"
 # Also add the chosen provider crate's real package name and version.
 ```
 

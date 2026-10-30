@@ -158,7 +158,7 @@ For shutdown, call `Subscription::cancel()` on each sync handle, then shut down 
 
 ### Assemble one shared bus at startup
 
-Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.13"` dependency for `ProviderSelection`. The built-in `local` provider is automatically submitted to the synchronous catalog. `AsyncEventBusRegistry::discover()` does not include the async local provider; register it explicitly with `AsyncEventBusRegistry::with_local()`. In the application's startup wiring, select the sync provider before creating one bus and pass cloned handles to services:
+Enable the `discovery` feature on `qubit-event-bus` and add a direct `qubit-spi = "0.14"` dependency for `ProviderSelection`. The built-in `local` provider is automatically submitted to the synchronous catalog. `AsyncEventBusRegistry::discover()` does not include the async local provider; register it explicitly with `AsyncEventBusRegistry::with_local()`. In the application's startup wiring, select the sync provider before creating one bus and pass cloned handles to services:
 
 ```rust
 use qubit_event_bus::EventBusConfig;

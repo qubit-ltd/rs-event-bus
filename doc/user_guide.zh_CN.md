@@ -924,7 +924,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 
 ```toml
 qubit-event-bus = { version = "0.20", features = ["discovery"] }
-qubit-spi = "0.13"
+qubit-spi = "0.14"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
 

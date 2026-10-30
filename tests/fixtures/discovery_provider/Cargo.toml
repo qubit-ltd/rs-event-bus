@@ -8,4 +8,4 @@ publish = false
 
 [dependencies]
 qubit-event-bus = { version = "0.20.0", path = "../../..", features = ["discovery"] }
-qubit-spi = { version = "0.13", features = ["inventory"] }
+qubit-spi = { version = "0.14", features = ["inventory"] }

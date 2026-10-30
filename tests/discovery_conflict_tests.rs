@@ -66,7 +66,10 @@ fn test_duplicate_discovered_id_reports_source() {
     assert!(error.source_location().file().ends_with("discovery_conflict_tests.rs"));
     assert!(matches!(
         error.registration_error(),
-        RegistryMutationError::DuplicateSelector { .. }
+        Some(RegistryMutationError::DuplicateSelector { .. })
     ));
-    assert_eq!(error.registration_error().selector(), Some("test-duplicate-discovered"));
+    assert_eq!(
+        Some("test-duplicate-discovered"),
+        error.registration_error().and_then(|cause| cause.selector())
+    );
 }
