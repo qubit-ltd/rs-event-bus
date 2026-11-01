@@ -20,10 +20,12 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ShutdownError;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
@@ -106,6 +108,13 @@ fn test_close_drains_all_started_handlers() {
     let mut close = Box::pin(subscription.close());
     assert!(poll_once(close.as_mut(), Waker::noop()).is_pending());
     assert_eq!(1, finished.load(Ordering::SeqCst));
+    drop(close);
+
+    let mut close = Box::pin(subscription.close());
+    assert!(poll_once(close.as_mut(), Waker::noop()).is_pending());
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut(), Waker::noop()).is_pending());
+    drop(shutdown);
 
     gates[1].store(true, Ordering::SeqCst);
     assert!(poll_once(close.as_mut(), Waker::noop()).is_ready());
@@ -114,6 +123,102 @@ fn test_close_drains_all_started_handlers() {
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
     assert_eq!(report.known_abandoned_deliveries, 0);
     assert!(report.provider_may_have_abandoned_deliveries);
+}
+
+#[test]
+fn test_close_rejects_bus_already_closing_after_cancelled_shutdown() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.close-after-cancelled-shutdown").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("close-after-cancelled-shutdown", topic.clone()).expect("request")))
+            .expect("subscription");
+    let _ = ready(bus.publish(PublishRequest::new(topic, 1).expect("publish request"))).expect("publish");
+
+    let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut run = {
+        let started = started.clone();
+        let finished = finished.clone();
+        let gate = gate.clone();
+        Box::pin(subscription.run(move |_| {
+            let started = started.clone();
+            let finished = finished.clone();
+            let gate = gate.clone();
+            async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                poll_fn(|_| {
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+                finished.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    assert_eq!(1, started.load(Ordering::SeqCst));
+    drop(run);
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut(), Waker::noop()).is_pending());
+    drop(shutdown);
+
+    assert!(matches!(ready(subscription.close()), Err(LifecycleError::Closed)));
+    assert_eq!(0, finished.load(Ordering::SeqCst));
+
+    gate.store(true, Ordering::SeqCst);
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("retry bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert!(matches!(ready(subscription.close()), Err(LifecycleError::Closed)));
+}
+
+#[test]
+fn test_close_rejects_bus_after_graceful_shutdown_timeout() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.close-after-graceful-timeout").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("close-after-graceful-timeout", topic.clone()).expect("request")))
+            .expect("subscription");
+    let _ = ready(bus.publish(PublishRequest::new(topic, 1).expect("publish request"))).expect("publish");
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut run = {
+        let gate = gate.clone();
+        Box::pin(subscription.run(move |_| {
+            let gate = gate.clone();
+            async move {
+                poll_fn(|_| {
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::ZERO,
+    }));
+    assert!(matches!(
+        poll_once(shutdown.as_mut(), Waker::noop()),
+        Poll::Ready(Err(ShutdownError::TimedOut { .. }))
+    ));
+    drop(shutdown);
+    drop(run);
+    assert!(matches!(ready(subscription.close()), Err(LifecycleError::Closed)));
+
+    gate.store(true, Ordering::SeqCst);
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("retry bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }
 
 #[test]

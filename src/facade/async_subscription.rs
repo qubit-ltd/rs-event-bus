@@ -266,8 +266,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// `Ok(())` after receiver cleanup completes.
     ///
     /// # Errors
-    /// Returns `LifecycleError::Closed` when the session is already closed,
-    /// or a lifecycle error when provider receiver close fails.
+    /// Returns `LifecycleError::Closed` when the bus has begun shutdown or the
+    /// session is already closed. This error does not indicate that cleanup is
+    /// complete; continue driving `AsyncEventBus::shutdown` and inspect its
+    /// result. Other lifecycle errors report provider receiver close failures.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
@@ -279,7 +281,7 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
             .upgrade()
             .is_none_or(|inner| *inner.state.lock().unwrap_or_else(PoisonError::into_inner) != BusState::Running)
         {
-            return Ok(());
+            return Err(LifecycleError::Closed);
         }
         self.control.signals.stop(ShutdownMode::Immediate);
         let mut lease = self.control.lease().await.ok_or(LifecycleError::Closed)?;

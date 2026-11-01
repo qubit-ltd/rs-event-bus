@@ -42,7 +42,9 @@ pub enum LifecycleError {
         /// Blocking operation requested by the caller.
         operation: &'static str,
     },
-    /// The bus has already closed.
+    /// The bus has begun or completed shutdown, so the requested lifecycle
+    /// operation cannot proceed. For subscription close, this does not mean
+    /// that bus cleanup has completed; observe the result of bus shutdown.
     #[error("event bus is closed")]
     Closed,
     /// The selected provider cannot report whether its topic queue is empty.
