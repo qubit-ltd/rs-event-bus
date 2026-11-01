@@ -14,9 +14,10 @@ use super::conformance_hooks::ConformanceHooks;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
-use super::conformance_report::payload_matches;
+use super::conformance_report::message_difference;
 use super::conformance_report::payload_probes;
 use super::conformance_report::probe_message;
+use super::conformance_report::probe_payload;
 use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
 use super::conformance_report::push_hook;
@@ -120,21 +121,22 @@ where
                 continue;
             }
         };
-        let result = spi.publish(probe_message(payload));
+        let expected = probe_message(probe_payload(case_id), capabilities);
+        let result = spi.publish(probe_message(payload, capabilities));
         let published = result.is_ok();
         report.push(publish_case(case_id, result.map(|_| ()), "sync"));
         if published {
             match subscription.receive(Duration::from_secs(1)) {
                 Ok(ReceiveOutcome::Message(mut message)) => {
-                    let payload_matches = payload_matches(message.payload(), case_id);
-                    report.push(if payload_matches {
+                    let difference = message_difference(&message, &expected);
+                    report.push(if difference.is_none() {
                         ConformanceCase::Passed {
                             case_id: "receive-payload".into(),
                         }
                     } else {
                         ConformanceCase::Failed {
                             case_id: "receive-payload".into(),
-                            detail: "received payload mode or type does not match the declaration".into(),
+                            detail: format!("received message differs at {}", difference.unwrap_or("unknown field")),
                         }
                     });
                     let token = message.take_settlement();

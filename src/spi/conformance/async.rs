@@ -16,9 +16,10 @@ use super::async_conformance_hooks::AsyncConformanceHooks;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
-use super::conformance_report::payload_matches;
+use super::conformance_report::message_difference;
 use super::conformance_report::payload_probes;
 use super::conformance_report::probe_message;
+use super::conformance_report::probe_payload;
 use super::conformance_report::probe_request;
 use super::conformance_report::publish_case;
 use super::conformance_skip_reason::ConformanceSkipReason;
@@ -26,6 +27,7 @@ use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
+use crate::spi::EventBusCapabilities;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
@@ -216,6 +218,7 @@ async fn run_payload_case(
         subscription.as_mut(),
         case_id,
         payload,
+        capabilities,
         capabilities.settlement(),
     )
     .await;
@@ -254,27 +257,30 @@ async fn record_async_publish_receive(
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     case_id: &'static str,
     payload: TransportPayload,
-    capabilities: SettlementCapabilities,
+    capabilities: EventBusCapabilities,
+    settlement: SettlementCapabilities,
 ) {
-    let result = spi.publish(probe_message(payload)).await;
+    let expected = probe_message(probe_payload(case_id), capabilities);
+    let result = spi.publish(probe_message(payload, capabilities)).await;
     let published = result.is_ok();
     report.push(publish_case(case_id, result.map(|_| ()), "async"));
     if published {
         match subscription.receive(Duration::from_secs(1)).await {
             Ok(ReceiveOutcome::Message(mut message)) => {
-                report.push(if payload_matches(message.payload(), case_id) {
+                let difference = message_difference(&message, &expected);
+                report.push(if difference.is_none() {
                     ConformanceCase::Passed {
                         case_id: "receive-payload".into(),
                     }
                 } else {
                     ConformanceCase::Failed {
                         case_id: "receive-payload".into(),
-                        detail: "received payload mode or type does not match the declaration".into(),
+                        detail: format!("received message differs at {}", difference.unwrap_or("unknown field")),
                     }
                 });
                 let token = message.take_settlement();
-                report.push(async_settlement_idempotence_case(subscription, capabilities, token.as_ref()).await);
-                report.push(async_conflicting_settlement_case(subscription, capabilities, token.as_ref()).await);
+                report.push(async_settlement_idempotence_case(subscription, settlement, token.as_ref()).await);
+                report.push(async_conflicting_settlement_case(subscription, settlement, token.as_ref()).await);
             }
             Ok(_) => report.push(ConformanceCase::Failed {
                 case_id: "receive-payload".into(),

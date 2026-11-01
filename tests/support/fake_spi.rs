@@ -71,6 +71,19 @@ use qubit_id::Id;
 type SyncQueue = Arc<(Mutex<QueueState>, Condvar)>;
 type AsyncQueue = Arc<Mutex<QueueState>>;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ConformanceTamper {
+    NativeValue,
+    EncodedBytes,
+    ContentType,
+    Schema,
+    Topic,
+    EventId,
+    Timestamp,
+    Headers,
+    OrderingKey,
+}
+
 #[derive(Default)]
 struct QueueState {
     topic: Option<TopicAddress>,
@@ -212,6 +225,7 @@ pub(crate) struct FakeEventBusSpi {
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
+    conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
 }
 
 impl FakeEventBusSpi {
@@ -229,6 +243,7 @@ impl FakeEventBusSpi {
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
+            conformance_tamper: Arc::default(),
         }
     }
 
@@ -255,6 +270,9 @@ impl FakeEventBusSpi {
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
+    }
+    pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
+        *self.conformance_tamper.lock().unwrap() = Some(tamper);
     }
     pub(crate) fn inject_gap(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
@@ -301,10 +319,33 @@ fn inbound_from_outbound(
     message: &OutboundMessage,
     subscription_id: Id,
     settlement: SettlementCapabilities,
+    tamper: Option<ConformanceTamper>,
 ) -> InboundMessage {
-    let payload = match message.payload() {
-        TransportPayload::Native(value) => TransportPayload::Native(value.clone()),
-        TransportPayload::Encoded(value) => TransportPayload::Encoded(EncodedPayload::new(
+    let payload = match (message.payload(), tamper) {
+        (TransportPayload::Native(_), Some(ConformanceTamper::NativeValue)) => TransportPayload::Native(Arc::new(1_u8)),
+        (TransportPayload::Encoded(value), Some(ConformanceTamper::EncodedBytes)) => {
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(&b"tampered"[..]),
+                value.content_type().clone(),
+                value.schema_id().cloned(),
+            ))
+        }
+        (TransportPayload::Encoded(value), Some(ConformanceTamper::ContentType)) => {
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(value.bytes()),
+                qubit_event_bus::model::ContentType::TEXT_PLAIN,
+                value.schema_id().cloned(),
+            ))
+        }
+        (TransportPayload::Encoded(value), Some(ConformanceTamper::Schema)) => {
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(value.bytes()),
+                value.content_type().clone(),
+                Some(qubit_event_bus::model::SchemaId::new("tampered").unwrap()),
+            ))
+        }
+        (TransportPayload::Native(value), _) => TransportPayload::Native(value.clone()),
+        (TransportPayload::Encoded(value), _) => TransportPayload::Encoded(EncodedPayload::new(
             Arc::from(value.bytes()),
             value.content_type().clone(),
             value.schema_id().cloned(),
@@ -314,11 +355,31 @@ fn inbound_from_outbound(
     let token = (!matches!(settlement, SettlementCapabilities::None))
         .then(|| SettlementToken::new(subscription_id, message.id().as_str().to_owned()));
     InboundMessage::new(
-        message.topic().clone(),
-        message.id().clone(),
-        message.timestamp(),
-        message.headers().clone(),
-        message.ordering_key().cloned(),
+        if matches!(tamper, Some(ConformanceTamper::Topic)) {
+            TopicAddress::new("wrong.topic").unwrap()
+        } else {
+            message.topic().clone()
+        },
+        if matches!(tamper, Some(ConformanceTamper::EventId)) {
+            EventId::new("wrong-event").unwrap()
+        } else {
+            message.id().clone()
+        },
+        if matches!(tamper, Some(ConformanceTamper::Timestamp)) {
+            SystemTime::UNIX_EPOCH
+        } else {
+            message.timestamp()
+        },
+        if matches!(tamper, Some(ConformanceTamper::Headers)) {
+            Default::default()
+        } else {
+            message.headers().clone()
+        },
+        if matches!(tamper, Some(ConformanceTamper::OrderingKey)) {
+            None
+        } else {
+            message.ordering_key().cloned()
+        },
         payload,
         token,
         ProviderMessageMetadata::default(),
@@ -347,6 +408,7 @@ impl EventBusSpi for FakeEventBusSpi {
                 &message,
                 subscription_id,
                 self.capabilities.settlement(),
+                take(&mut *self.conformance_tamper.lock().unwrap()),
             ));
             ready.notify_one();
         }
@@ -485,6 +547,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
+    conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
     subscribe_paused: Arc<AtomicBool>,
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
@@ -517,6 +580,7 @@ impl FakeAsyncEventBusSpi {
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
+            conformance_tamper: Arc::default(),
             subscribe_paused: Arc::default(),
             subscribe_wakers: Arc::default(),
             close_paused: Arc::default(),
@@ -590,6 +654,9 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
+    }
+    pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
+        *self.conformance_tamper.lock().unwrap() = Some(tamper);
     }
     /// Fails an already polled receive future through its shared queue state.
     pub(crate) fn fail_next_receive(&self) {
@@ -705,6 +772,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 &message,
                 subscription_id,
                 self.capabilities.settlement(),
+                take(&mut *self.conformance_tamper.lock().unwrap()),
             ));
             for waker in state.wakers.drain(..) {
                 waker.wake();

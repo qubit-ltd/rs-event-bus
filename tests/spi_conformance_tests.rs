@@ -86,6 +86,8 @@ use qubit_event_bus::spi::conformance::run_sync_with_profile;
 use qubit_id::Id;
 use qubit_spi::ServiceProvider;
 
+#[cfg(feature = "conformance")]
+use crate::support::fake_spi::ConformanceTamper;
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
 use crate::support::fake_spi::full_capabilities;
@@ -312,6 +314,80 @@ fn test_public_conformance_runner_probes_encoded_only_providers() {
             .iter()
             .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "declared-encoded-publish"))
     );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_conformance_detects_payload_and_envelope_corruption_in_sync_and_async_providers() {
+    let native_cases = [
+        (ConformanceTamper::NativeValue, "native payload value"),
+        (ConformanceTamper::Topic, "topic"),
+        (ConformanceTamper::EventId, "event ID"),
+        (ConformanceTamper::Timestamp, "timestamp"),
+        (ConformanceTamper::Headers, "headers"),
+        (ConformanceTamper::OrderingKey, "ordering key"),
+    ];
+    for (tamper, field) in native_cases {
+        let sync = run_sync(
+            || {
+                let spi = Arc::new(FakeEventBusSpi::new());
+                spi.tamper_conformance_message(tamper);
+                spi
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                let spi = Arc::new(FakeAsyncEventBusSpi::new());
+                spi.tamper_conformance_message(tamper);
+                spi as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id, detail }
+                        if case_id == "receive-payload" && detail == &format!("received message differs at {field}")
+                )),
+                "tampering {field} must fail: {report:?}"
+            );
+        }
+    }
+    let encoded_cases = [
+        (ConformanceTamper::EncodedBytes, "encoded bytes"),
+        (ConformanceTamper::ContentType, "encoded content type"),
+        (ConformanceTamper::Schema, "encoded schema"),
+    ];
+    for (tamper, field) in encoded_cases {
+        let sync = run_sync(
+            || {
+                let spi = Arc::new(FakeEventBusSpi::with_capabilities(encoded_settlement_capabilities()));
+                spi.tamper_conformance_message(tamper);
+                spi
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                    encoded_settlement_capabilities(),
+                ));
+                spi.tamper_conformance_message(tamper);
+                spi as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id, detail }
+                        if case_id == "receive-payload" && detail == &format!("received message differs at {field}")
+                )),
+                "tampering {field} must fail: {report:?}"
+            );
+        }
+    }
 }
 
 #[cfg(feature = "conformance")]

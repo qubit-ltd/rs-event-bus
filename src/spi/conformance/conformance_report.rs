@@ -28,10 +28,14 @@ use crate::model::ContentType;
 use crate::model::EventId;
 use crate::model::Headers;
 use crate::model::ProviderOptions;
+use crate::model::SchemaId;
 use crate::model::StartPosition;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
 use crate::spi::DurabilityCapability;
+use crate::spi::EventBusCapabilities;
+use crate::spi::InboundMessage;
+use crate::spi::OrderingKey;
 use crate::spi::SpiSubscriptionRequest;
 
 /// Results collected from one provider conformance run.
@@ -151,6 +155,14 @@ pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, Transport
     }
 }
 
+pub(super) fn probe_payload(case_id: &str) -> TransportPayload {
+    match case_id {
+        "declared-native-publish" => TransportPayload::Native(Arc::new(0_u8)),
+        "declared-encoded-publish" => encoded_probe(),
+        _ => unreachable!("payload case IDs are selected by payload_probes"),
+    }
+}
+
 /// Creates the standard encoded conformance payload.
 ///
 /// # Returns
@@ -159,7 +171,7 @@ pub(super) fn encoded_probe() -> TransportPayload {
     TransportPayload::Encoded(EncodedPayload::new(
         Arc::<[u8]>::from(&b"spi-conformance"[..]),
         ContentType::APPLICATION_OCTET_STREAM,
-        None,
+        Some(SchemaId::new("spi-conformance-v1").expect("static schema is valid")),
     ))
 }
 
@@ -172,14 +184,19 @@ pub(super) fn encoded_probe() -> TransportPayload {
 /// A message addressed to the conformance probe topic.
 ///
 /// # Panics
-/// Panics only if the fixed probe topic or event ID is rejected as invalid.
-pub(super) fn probe_message(payload: TransportPayload) -> OutboundMessage {
+/// Panics only if a fixed conformance probe field is rejected as invalid.
+pub(super) fn probe_message(payload: TransportPayload, capabilities: EventBusCapabilities) -> OutboundMessage {
+    let mut headers = Headers::new();
+    headers.insert("x-conformance-probe".into(), "fixed-value".into());
     OutboundMessage::new(
         TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
         EventId::new("spi-conformance-probe").expect("static event ID is valid"),
-        SystemTime::UNIX_EPOCH,
-        Headers::new(),
-        None,
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567),
+        headers,
+        capabilities
+            .ordering()
+            .supports_per_key()
+            .then(|| OrderingKey::new("spi-conformance-key").expect("static ordering key is valid")),
         None,
         payload,
     )
@@ -216,24 +233,59 @@ pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapabili
         .expect("all conformance request fields are configured")
 }
 
-/// Checks whether a received transport payload matches the named probe.
+/// Finds the first received-message field that differs from the probe.
 ///
 /// # Parameters
-/// - `payload`: payload returned by the provider.
-/// - `expected`: probe identifier selected before publication.
+/// - `message`: message returned by the provider.
+/// - `expected`: fixed outbound probe sent to the provider.
 ///
 /// # Returns
-/// `true` when the received representation and native type match.
+/// The name of the first differing field, or `None` when all checked fields
+/// match. Provider-generated settlement data is intentionally excluded.
 #[must_use]
 #[inline]
-pub(super) fn payload_matches(payload: &TransportPayload, expected: &str) -> bool {
-    matches!(
-        (expected, payload),
-        ("declared-native-publish", TransportPayload::Native(value)) if value.is::<u8>()
-    ) || matches!(
-        (expected, payload),
-        ("declared-encoded-publish", TransportPayload::Encoded(_))
-    )
+pub(super) fn message_difference(message: &InboundMessage, expected: &OutboundMessage) -> Option<&'static str> {
+    if message.topic().as_str() != expected.topic().as_str() {
+        return Some("topic");
+    }
+    if message.id().as_str() != expected.id().as_str() {
+        return Some("event ID");
+    }
+    if message.timestamp() != expected.timestamp() {
+        return Some("timestamp");
+    }
+    if message.headers() != expected.headers() {
+        return Some("headers");
+    }
+    if message.ordering_key() != expected.ordering_key() {
+        return Some("ordering key");
+    }
+    match (message.payload(), expected.payload()) {
+        (TransportPayload::Native(actual), TransportPayload::Native(wanted)) => {
+            let Some(actual) = actual.downcast_ref::<u8>() else {
+                return Some("native payload type");
+            };
+            let Some(wanted) = wanted.downcast_ref::<u8>() else {
+                return Some("native probe type");
+            };
+            if actual != wanted {
+                return Some("native payload value");
+            }
+        }
+        (TransportPayload::Encoded(actual), TransportPayload::Encoded(wanted)) => {
+            if actual.bytes() != wanted.bytes() {
+                return Some("encoded bytes");
+            }
+            if actual.content_type() != wanted.content_type() {
+                return Some("encoded content type");
+            }
+            if actual.schema_id() != wanted.schema_id() {
+                return Some("encoded schema");
+            }
+        }
+        _ => return Some("payload mode"),
+    }
+    None
 }
 
 /// Produces a conformance result for settlement capability consistency.
