@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCAL = "examples/local_delivery.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
+PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
 CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
@@ -17,8 +18,8 @@ REQUIRED = {
     "README.zh_CN.md": {LOCAL},
     "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
     "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
-    "doc/design.md": {SPEC},
-    "doc/design.zh_CN.md": {SPEC},
+    "doc/design.md": {SPEC, PROVIDER_CONTRACT},
+    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT},
 }
 PATTERN = re.compile(
     r"<!-- event-bus-source: (?P<path>[^\n]+?) -->\s*"

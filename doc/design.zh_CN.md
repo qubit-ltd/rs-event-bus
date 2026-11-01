@@ -385,12 +385,15 @@ pub trait EventBusSpi: Send + Sync + 'static {
 }
 
 pub trait EventSubscriptionSpi: Send + 'static {
-    fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError>;
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
     fn close(&mut self) -> Result<(), SpiError>;
 }
 ```
+
+订阅 ID 由 `SpiSubscriptionRequest` 提供，并不是
+`EventSubscriptionSpi` 的方法。请参阅[同步 SPI 公共定义](../src/spi/event_subscription_spi.rs)
+和[请求访问器](../src/spi/spi_subscription_request.rs)确认 provider 实际可调用的路径。
 
 `provider_id()` 是 `#[doc(hidden)]` 的内部钩子：registry 用
 `IdentifiedEventBusSpi` 代理包住真实 provider 并覆写它，这样 facade 可以在
@@ -411,12 +414,14 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
 }
 
 pub trait AsyncEventSubscriptionSpi: Send + 'static {
-    fn id(&self) -> subscription::Id;
     fn receive(&mut self, timeout: Duration) -> SpiFuture<'_, Result<ReceiveOutcome, SpiError>>;
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
     fn close(&mut self) -> SpiFuture<'_, Result<(), SpiError>>;
 }
 ```
+
+异步 SPI 同样从 request 取得 receiver ID，而不是调用 `id()`；真实公共 trait
+见[`AsyncEventSubscriptionSpi`](../src/spi/async_event_subscription_spi.rs)。
 
 选择 `Pin<Box<dyn Future + Send>>` 而不是 `async fn in trait` 是为了对象安全
 并明确 `Send` 约束（P5）。异步 facade 只会对 `receive` 传 `Duration::MAX`
@@ -468,8 +473,9 @@ pub struct SettlementToken {
   也可用 `SpiError::InvalidSettlementToken` 拒绝错配 token。
 - **幂等**：同一 `(token, disposition)` 重复 settle 必须返回 `Ok(())`（异步 facade
   失败后会重试同一 disposition）。
-- **冲突**：同一 token 用不同 disposition 二次 settle，provider 应报错或忽略，
-  但不能造成重复投递以外的状态破坏。
+- **冲突**：同一 token 使用不同 disposition 再次 settle 时，必须返回
+  `SpiError::InvalidSettlementToken`；不能作为成功处理，也不能造成重复投递以外的状态破坏。
+  见[公共错误变体](../src/error/spi_error.rs)。
 - `DeliveryDisposition::{Accept, Retry, Reject}`：`Retry` 请求 provider 重投
   （需要 `SettlementCapabilities::AcceptRetryReject`），`Reject` 表示终态丢弃
   （死信已由 facade 处理）。
@@ -901,8 +907,9 @@ I/O 与 settlement，handler 统一在有界共享池里跑，`max_running_handl
 
 `Subscription`：`id()`、`subscriber_id()`、`is_cancelled()`、`cancel()`。**drop 不取消**——订阅随
 bus 生命周期存活直到 `cancel()` 或 `shutdown()`。`cancel()` 先让调度器归还排队任务，
-再设置取消标志并 `join` 协调线程；如果 `cancel()` 是在 bus 上下文
-（handler/中间件/协调线程）内调用，会跳过 join 以避免自我死锁。
+再设置取消标志；仅在 bus-owned context 外 join 协调线程。handler 或中间件回调可以调用
+`cancel()` 请求取消，但此时会跳过 join；返回不代表当前回调或 receiver 清理已完成。
+若在协调线程内发起取消，也会跳过对自身的 join。
 
 ### 8.5 等待原语
 
@@ -922,7 +929,8 @@ bus 生命周期存活直到 `cancel()` 或 `shutdown()`。`cancel()` 先让调�
 在这些上下文中调用会阻塞等待自己的操作（`shutdown` 同步等待、`cancel()` join、
 `wait_for_*`）时，facade 返回 `LifecycleError::WouldDeadlock { operation }`
 （停机场景包在 `ShutdownError::Lifecycle` 里）而不是真的死锁。停机在 bus 上下文里仍然可以**发起**（切换到后台线程执行），只是
-不能同步等待完成。
+不能同步等待完成。按 §8.4 所述，handler 或中间件内调用 `cancel()` 会请求取消并跳过
+协调线程 join；当前回调必须先返回，清理才能完成。
 
 ### 8.7 停机：`ShutdownCoordinator`
 
@@ -1423,6 +1431,222 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ## Provider specification compile probe
 
+### Provider 订阅实现示例
+
+下面的同步与异步 provider receiver 完整示例由 consumer fixture 编译验证。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_contract.rs -->
+```rust
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
+//! Minimal provider subscription implementations using the public SPI paths.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use qubit_event_bus::error::SpiError;
+use qubit_event_bus::spi::{
+    AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken, SpiFuture,
+    SpiSubscriptionRequest,
+};
+use qubit_id::Id;
+
+/// A synchronous receiver that records settlement by provider token value.
+pub struct SyncSubscription {
+    subscription_id: Id,
+    settled: HashMap<u64, DeliveryDisposition>,
+    closed: bool,
+}
+
+impl SyncSubscription {
+    /// Creates a receiver and retains the ID supplied in the provider request.
+    pub fn from_request(request: &SpiSubscriptionRequest) -> Self {
+        let subscription_id = request.subscription_id();
+        Self {
+            subscription_id,
+            settled: HashMap::new(),
+            closed: false,
+        }
+    }
+}
+
+impl EventSubscriptionSpi for SyncSubscription {
+    fn receive(&mut self, _timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        Ok(if self.closed {
+            ReceiveOutcome::Closed
+        } else {
+            ReceiveOutcome::TimedOut
+        })
+    }
+
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+        if !token.belongs_to(self.subscription_id) {
+            return Err(invalid_token("subscription_mismatch"));
+        }
+        record_settlement(&mut self.settled, token, disposition)
+    }
+
+    fn close(&mut self) -> Result<(), SpiError> {
+        self.closed = true;
+        Ok(())
+    }
+}
+
+/// An asynchronous receiver with the same token semantics as the sync example.
+pub struct AsyncSubscription {
+    subscription_id: Id,
+    settled: HashMap<u64, DeliveryDisposition>,
+    closed: bool,
+}
+
+impl AsyncSubscription {
+    /// Creates a receiver and retains the ID supplied in the provider request.
+    pub fn from_request(request: &SpiSubscriptionRequest) -> Self {
+        let subscription_id = request.subscription_id();
+        Self {
+            subscription_id,
+            settled: HashMap::new(),
+            closed: false,
+        }
+    }
+}
+
+impl AsyncEventSubscriptionSpi for AsyncSubscription {
+    fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        Box::pin(async move {
+            Ok(if self.closed {
+                ReceiveOutcome::Closed
+            } else {
+                ReceiveOutcome::TimedOut
+            })
+        })
+    }
+
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        let result = if !token.belongs_to(self.subscription_id) {
+            Err(invalid_token("subscription_mismatch"))
+        } else {
+            record_settlement(&mut self.settled, token, disposition)
+        };
+        Box::pin(async move { result })
+    }
+
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.closed = true;
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn record_settlement(
+    settled: &mut HashMap<u64, DeliveryDisposition>,
+    token: &SettlementToken,
+    disposition: DeliveryDisposition,
+) -> Result<(), SpiError> {
+    let Some(value) = token.downcast_ref::<u64>() else {
+        return Err(invalid_token("token_type_mismatch"));
+    };
+    match settled.get(value) {
+        Some(previous) if *previous == disposition => Ok(()),
+        Some(_) => Err(invalid_token("conflicting_disposition")),
+        None => {
+            settled.insert(*value, disposition);
+            Ok(())
+        }
+    }
+}
+
+fn invalid_token(reason: &'static str) -> SpiError {
+    SpiError::InvalidSettlementToken {
+        provider_id: "documentation".into(),
+        operation: "settle",
+        resource: None,
+        reason,
+        retryable: Some(false),
+        source: Box::new(std::io::Error::other("settlement token rejected")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AsyncSubscription, SyncSubscription};
+    use qubit_event_bus::error::SpiError;
+    use qubit_event_bus::model::{ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability};
+    use qubit_event_bus::spi::{
+        AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken,
+        SpiSubscriptionRequest, TopicAddress,
+    };
+    use qubit_id::Id;
+    use std::any::TypeId;
+    use std::time::Duration;
+
+    fn request(id: Id) -> SpiSubscriptionRequest {
+        SpiSubscriptionRequest::new(
+            id,
+            TopicAddress::new("documentation.events").expect("valid topic"),
+            SubscriberId::new("documentation").expect("valid subscriber id"),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<()>(),
+        )
+    }
+
+    #[test]
+    fn sync_provider_contract_is_idempotent_and_rejects_conflict() {
+        let request = request(Id::new(1));
+        let mut receiver = SyncSubscription::from_request(&request);
+        assert!(matches!(receiver.receive(Duration::ZERO), Ok(ReceiveOutcome::TimedOut)));
+        let token = SettlementToken::new(request.subscription_id(), 7_u64);
+        assert!(receiver.settle(&token, DeliveryDisposition::Accept).is_ok());
+        assert!(receiver.settle(&token, DeliveryDisposition::Accept).is_ok());
+        assert!(matches!(
+            receiver.settle(&token, DeliveryDisposition::Reject),
+            Err(SpiError::InvalidSettlementToken {
+                reason: "conflicting_disposition",
+                ..
+            })
+        ));
+        assert!(receiver.close().is_ok());
+        assert!(matches!(receiver.receive(Duration::ZERO), Ok(ReceiveOutcome::Closed)));
+    }
+
+    #[tokio::test]
+    async fn async_provider_contract_is_idempotent_and_rejects_conflict() {
+        let request = request(Id::new(2));
+        let mut receiver = AsyncSubscription::from_request(&request);
+        assert!(matches!(
+            receiver.receive(Duration::ZERO).await,
+            Ok(ReceiveOutcome::TimedOut)
+        ));
+        let token = SettlementToken::new(request.subscription_id(), 9_u64);
+        assert!(receiver.settle(&token, DeliveryDisposition::Retry).await.is_ok());
+        assert!(receiver.settle(&token, DeliveryDisposition::Retry).await.is_ok());
+        assert!(matches!(
+            receiver.settle(&token, DeliveryDisposition::Accept).await,
+            Err(SpiError::InvalidSettlementToken {
+                reason: "conflicting_disposition",
+                ..
+            })
+        ));
+        assert!(receiver.close().await.is_ok());
+        assert!(matches!(
+            receiver.receive(Duration::ZERO).await,
+            Ok(ReceiveOutcome::Closed)
+        ));
+    }
+}
+```
+
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
 ```rust
 // =============================================================================
@@ -1456,6 +1680,18 @@ pub type SyncOutput = <EventBusSpec as SyncServiceSpec>::Output;
 pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
 
 /// Performs one nonblocking receive attempt on a synchronous subscription.
+///
+/// # Parameters
+///
+/// - `receiver`: The subscription to poll once.
+///
+/// # Returns
+///
+/// The outcome of the receive attempt, including whether a message is available.
+///
+/// # Errors
+///
+/// Returns the subscription's SPI error if the receive attempt fails.
 pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOutcome, SpiError> {
     receiver.receive(Duration::ZERO)
 }
@@ -1464,6 +1700,19 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
 ///
 /// The future borrows the receiver for `'a`; the caller may release the token
 /// borrow independently after this method returns.
+///
+/// # Parameters
+///
+/// - `receiver`: The asynchronous subscription that performs settlement.
+/// - `token`: The delivery token to accept.
+///
+/// # Returns
+///
+/// A future borrowing the receiver for `'a` and resolving when settlement completes.
+///
+/// # Errors
+///
+/// The future resolves to an SPI error if the subscription cannot accept the token.
 pub fn settle_without_borrowing_token<'a>(
     receiver: &'a mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,

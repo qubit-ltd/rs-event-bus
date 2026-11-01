@@ -304,10 +304,17 @@ ORDERING_SMOKE=1 cargo bench --locked --bench ordering_keys
 ```
 
 `ORDERING_FILTER` selects one exact output case label for paired execution;
-`ORDERING_PROFILE=1` selects the real high-key registry source workload and
+`ORDERING_PROFILE=1` selects the high-key workload through the current public
+asynchronous facade and
 `ORDERING_PROFILE_OPERATIONS` controls its operation count. A full run without
 filter covers every configuration. CPU-clock validity filtering lives entirely
 in the standalone benchmark, never in production code or ordinary unit tests.
+
+The registry-only measurements above are historical results for the retired
+workload; they remain unchanged and are not rewritten as facade measurements.
+The current profile exercises the public facade, while the smoke mode checks
+workload correctness and admission only. A correctness smoke run is not
+performance evidence and is not compared with those historical registry values.
 
 The measured comparison commands were `cargo bench --locked --bench
 ordering_keys --no-run` for both frozen manifests followed by the same benchmark

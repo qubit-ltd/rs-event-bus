@@ -13,6 +13,7 @@ pub mod order_created_codec;
 #[path = "orders/mod.rs"]
 pub mod orders;
 pub mod provider_spec;
+pub mod provider_contract;
 pub mod receipt_safety;
 pub mod republish_action;
 pub mod retry_policy;

@@ -367,6 +367,15 @@ fn publish_to_redis<T: Send + Sync + 'static>(
 //! Application decisions after examining publication evidence.
 
 /// A decision for the application; this enum performs no publication itself.
+///
+/// # Examples
+///
+/// ```
+/// use event_bus_documentation_consumer::republish_action::RepublishAction;
+///
+/// let action = RepublishAction::RepublishWhole;
+/// assert_eq!(action, RepublishAction::RepublishWhole);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 pub enum RepublishAction {
@@ -390,8 +399,24 @@ use qubit_event_bus::model::PublishReceipt;
 
 use crate::republish_action::RepublishAction;
 
-/// Chooses an application action without publishing or altering the receipt.
-#[must_use]
+/// Chooses a retry or reconciliation action from the final receipt.
+///
+/// Uncertain history takes precedence and requires reconciliation by event ID.
+/// With certain history, an empty or fully rejected destination snapshot can
+/// be republished as a whole; partial acceptance retries only rejected
+/// destinations. Accepted, opaque, and interceptor-dropped publications are
+/// not automatically republished.
+///
+/// This function only classifies the receipt. It does not publish, reconcile,
+/// or modify the receipt.
+///
+/// # Parameters
+/// - `receipt`: the final receipt, including any uncertainty retained from
+///   earlier attempts.
+///
+/// # Returns
+/// The application action selected from the receipt's history and admission
+/// outcome.
 #[inline]
 pub fn republish_action(receipt: &PublishReceipt) -> RepublishAction {
     if receipt.duplicate_possible() {
@@ -537,6 +562,8 @@ let subscription = bus.subscribe(request, handler)?;
 | 同一客户的消息按顺序处理 | `ordering_policy(OrderingPolicy::PerKey)` | 发布方须为事件设置顺序键，所用实现还须支持此能力；见[保证同一对象的处理顺序](#保证同一对象的处理顺序)。 |
 | 多个实例分工或读取旧消息 | `consumer_group`、`durability`、`start_position` | 只有支持这些能力的传递实现可使用；local 不支持持久订阅和历史读取。 |
 | 底层实现专有参数 | `provider_option` | 具体含义由该实现说明；不要放密码。 |
+
+`DeadLetterPolicy::with_topic_name` 要求主题名非空、最多 255 个 UTF-8 字节、没有首尾空白或控制字符。`with_topic` 接受已经校验过的 `Topic`。provider option 的 key 必须带命名空间（包含点号），不能以点号开头或结尾，key 和 value 都不能包含控制字符。请求 builder 和 facade 执行订阅时都会校验；非法配置会在调用 provider 的 `subscribe` 前被拒绝。边界用例可运行 `cargo test --locked --test request_validation_regression_tests`。
 
 处理函数可返回 `()` 或 `Result<(), DeliveryError>`。如果数据库写入失败，应返回错误，让库按订阅策略处理。`delivery.payload()` 取得业务数据，`delivery.event()` 可取得事件 ID 和附带信息，`delivery.context()` 可取得传递实现、订阅者以及当前是第几次尝试（`retry_attempt()`，从 1 开始）。重试可能带来重复处理，因此处理方应使用业务唯一键。下面以客户视图和审计两个订阅为例，给出三种最常用的配置。
 
@@ -1384,7 +1411,7 @@ view_cancel_result?;
 shutdown_result?;
 ```
 
-片段会尝试两次取消和总线关闭，即使先前步骤失败；随后按上述顺序返回第一个错误。仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。下文的有界停机 helper 处理总线关闭超时。
+片段会尝试两次取消和总线关闭，即使先前步骤失败；随后按上述顺序返回第一个错误。仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。如果在 handler 或 middleware 回调中调用 `cancel()`，它会请求取消，但跳过 join 协调线程，以免等待当前回调自己结束。调用返回不代表 receiver 清理已完成；应让回调返回，并通过总线停机结果观察清理。异步 close 行为可运行 `cargo test --locked --test async_lifecycle_regression_tests` 验证。下文的有界停机 helper 处理总线关闭超时。
 
 ### 同步总线的停机流程
 
@@ -1545,7 +1572,7 @@ shutdown_result?;
 if let Some(result) = run_result { result?; }
 ```
 
-即使 `run` 或 `close` 出错，片段也会尝试两个清理步骤；若应用要保留全部错误，应在返回前逐项记录结果。显式等待 `close().await` 才能获取 provider 关闭错误。丢弃 `AsyncSubscription` 会请求处置，却不能返回异步关闭错误；需要处理该错误时不可只依赖 drop。需要有界重试时，使用上面完整编译源中的 `try_shutdown_async(&bus).await`，其中两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
+即使 `run` 或 `close` 出错，片段也会尝试两个清理步骤；若应用要保留全部错误，应在返回前逐项记录结果。总线仍为 `Running` 时，显式等待 `close().await` 可获取 provider receiver 的关闭错误；如果总线停机已开始，`close().await` 会返回 `LifecycleError::Closed`，这不代表清理完成，也不包含停机结果。此时应继续驱动并等待总线 shutdown，获取最终清理结果。丢弃 `AsyncSubscription` 会请求处置，却不能返回异步关闭错误；需要处理该错误时不可只依赖 drop。需要有界重试时，使用上面完整编译源中的 `try_shutdown_async(&bus).await`，其中两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 
@@ -1567,6 +1594,8 @@ if let Some(result) = run_result { result?; }
 ## 投递缺口与接纳检查
 
 provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
+
+`Stop` 策略会先保留终止 Gap 并停止接收和启动新的 handler，再调用诊断回调；`Continue` 仍会发出诊断并允许处理后续消息。可用 `cargo test --locked --test gap_policy_sync_tests` 与 `cargo test --locked --test gap_policy_async_tests` 验证。
 
 只有 provider 能提供逐目标回执（如 local）时，才使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。Redis 应选择 `ProviderOrDestinationAccepted`；逐目标条件会在发布前返回 `UnsupportedVisibility`。可见 provider 的条件不满足时，`CheckedPublishError::Admission` 保留完整回执；部分目标已接纳时重试可能造成重复。provider 接纳不等于 handler 完成、磁盘 fsync 或业务写入成功。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
 

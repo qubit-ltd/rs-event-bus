@@ -9,6 +9,7 @@ CHECKER = ROOT / "scripts/check_documentation_examples.py"
 LOCAL = "examples/local_delivery.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
+PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
 CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
 RECEIPT = "tests/fixtures/documentation_consumer/src/receipt_safety.rs"
 SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
@@ -20,8 +21,8 @@ REQUIRED = {
     "README.zh_CN.md": {LOCAL},
     "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
     "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
-    "doc/design.md": {SPEC},
-    "doc/design.zh_CN.md": {SPEC},
+    "doc/design.md": {SPEC, PROVIDER_CONTRACT},
+    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT},
 }
 FILE_HEADER = (
     "// =============================================================================\n"
@@ -41,7 +42,7 @@ def run_case(mutator):
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, ASYNC, SPEC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY):
+        for source in (LOCAL, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             header = FILE_HEADER if source == LOCAL else ""
@@ -127,8 +128,11 @@ def symlink_escape(root):
     add_source(root, "examples/escape.rs")
 
 
-for source in (RECEIPT, SHUTDOWN, REPUBLISH):
-    for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md"):
+for source, documents in (
+    *((source, ("doc/user_guide.md", "doc/user_guide.zh_CN.md")) for source in (RECEIPT, SHUTDOWN, REPUBLISH)),
+    (PROVIDER_CONTRACT, ("doc/design.md", "doc/design.zh_CN.md")),
+):
+    for document in documents:
         expect_failure(lambda root: remove_safety_marker(root, source, document),
                        f"missing checked example {source}")
     expect_failure(lambda root: safety_drift(root, source), f"example drift from {source}")
@@ -144,4 +148,4 @@ expect_failure(add_file_header, f"example drift from {LOCAL}")
 expect_failure(traversal, "invalid source path ../../outside.rs")
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print("documentation example checker: 17 cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")
+print("documentation example checker: 20 cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")

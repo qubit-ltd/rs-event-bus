@@ -222,7 +222,7 @@ let orders = OrderService::new(bus.clone());
 
 `OrderService` 是应用中的示意类型，上面仅展示启动装配片段。若 provider 位于独立 crate，应用需依赖该 crate，并在装配模块写入 `use provider_crate as _;`，让它链接进可执行程序。应用应持有总线和订阅句柄；关闭时先取消订阅，再关闭总线。发现机制和配置边界见[用户手册](doc/user_guide.zh_CN.md)。
 
-停机时，对每个同步句柄调用 `Subscription::cancel()`，再关闭总线；仅丢弃同步句柄不会取消订阅。异步总线需在后台任务中驱动 `AsyncSubscription::run()`，停机时等待句柄的 `close().await`，然后关闭总线。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)显式等待 `close()`。
+停机时，对每个同步句柄调用 `Subscription::cancel()`，再关闭总线；仅丢弃同步句柄不会取消订阅。异步总线需在后台任务中驱动 `AsyncSubscription::run()`，并在总线仍运行时等待句柄的 `close().await`，然后关闭总线。若总线停机已经开始，`close()` 会返回 `LifecycleError::Closed`；应继续驱动 shutdown 并获取其结果。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)显式等待 `close()`。
 
 ## 能力与边界
 
@@ -249,7 +249,7 @@ let orders = OrderService::new(bus.clone());
 
 ## 投递缺口与接纳检查
 
-provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
+provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断；`Stop` 会在调用诊断回调前建立停止屏障。
 
 只有 provider 能报告 `DestinationAdmissions`（例如 local）时，才用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` 要求具体目标接纳。Redis 等不公开目标的 provider 遇到两种逐目标条件，会在发布前返回 `CheckedPublishError::UnsupportedVisibility`。对 Redis 应改用 `AdmissionRequirement::ProviderOrDestinationAccepted`：成功只代表 broker 接纳事件，不能说明订阅者已执行、数据已持久化或业务写入已完成。可见 provider 的接纳条件不满足时，`CheckedPublishError::Admission` 仍保留完整回执；部分目标已接纳时重试可能造成重复。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
 

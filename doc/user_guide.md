@@ -367,6 +367,15 @@ Check history for the whole logical publication before interpreting the final ad
 //! Application decisions after examining publication evidence.
 
 /// A decision for the application; this enum performs no publication itself.
+///
+/// # Examples
+///
+/// ```
+/// use event_bus_documentation_consumer::republish_action::RepublishAction;
+///
+/// let action = RepublishAction::RepublishWhole;
+/// assert_eq!(action, RepublishAction::RepublishWhole);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[must_use]
 pub enum RepublishAction {
@@ -390,8 +399,24 @@ use qubit_event_bus::model::PublishReceipt;
 
 use crate::republish_action::RepublishAction;
 
-/// Chooses an application action without publishing or altering the receipt.
-#[must_use]
+/// Chooses a retry or reconciliation action from the final receipt.
+///
+/// Uncertain history takes precedence and requires reconciliation by event ID.
+/// With certain history, an empty or fully rejected destination snapshot can
+/// be republished as a whole; partial acceptance retries only rejected
+/// destinations. Accepted, opaque, and interceptor-dropped publications are
+/// not automatically republished.
+///
+/// This function only classifies the receipt. It does not publish, reconcile,
+/// or modify the receipt.
+///
+/// # Parameters
+/// - `receipt`: the final receipt, including any uncertainty retained from
+///   earlier attempts.
+///
+/// # Returns
+/// The application action selected from the receipt's history and admission
+/// outcome.
 #[inline]
 pub fn republish_action(receipt: &PublishReceipt) -> RepublishAction {
     if receipt.duplicate_possible() {
@@ -537,6 +562,8 @@ Also keep these limits in mind:
 | Handle one customer's messages in order | `ordering_policy(OrderingPolicy::PerKey)` | The publisher must set an ordering key, and the transport must support the capability. See [Keep events for one object in order](#keep-events-for-one-object-in-order). |
 | Share work across instances, or read older messages | `consumer_group`, `durability`, `start_position` | Only a transport that supports these capabilities can use them. local does not support durable subscriptions or historical reads. |
 | Transport-specific parameters | `provider_option` | The implementation defines the meaning. Do not put a password here. |
+
+`DeadLetterPolicy::with_topic_name` accepts a nonempty topic of at most 255 UTF-8 bytes, without surrounding whitespace or control characters. `with_topic` accepts an already validated `Topic`. Provider option keys must be namespaced (contain a dot), cannot start or end with a dot, and neither keys nor values may contain control characters. These checks apply to request builders and facade subscriptions; invalid options are rejected before the provider's `subscribe` call. Run `cargo test --locked --test request_validation_regression_tests` for boundary cases.
 
 A handler may return `()` or `Result<(), DeliveryError>`. Return an error when a database write fails, so the crate applies the subscription policy. `delivery.payload()` is the business data. `delivery.event()` carries the event id and attached information. `delivery.context()` carries the transport, the subscriber, and which attempt this is (`retry_attempt()`, starting at 1). Retries can deliver the same event more than once, so handlers should use a business unique key. The two subscriptions below show the three settings used most often.
 
@@ -1386,7 +1413,7 @@ view_cancel_result?;
 shutdown_result?;
 ```
 
-The snippet attempts both cancellations and bus shutdown even if an earlier step fails, then returns the first error in that order. Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. The bounded shutdown helper below handles bus shutdown timeouts.
+The snippet attempts both cancellations and bus shutdown even if an earlier step fails, then returns the first error in that order. Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. If `cancel()` is called from a handler or middleware callback, it requests cancellation but skips joining the coordinator to avoid waiting for that callback itself. Its return does not mean receiver cleanup has completed; let the callback return and observe cleanup through the bus shutdown result. Check async close behavior with `cargo test --locked --test async_lifecycle_regression_tests`. The bounded shutdown helper below handles bus shutdown timeouts.
 
 ### Shut down a sync bus
 
@@ -1547,7 +1574,7 @@ shutdown_result?;
 if let Some(result) = run_result { result?; }
 ```
 
-The excerpt attempts both cleanup steps even if `run` or `close` fails; applications that need every error should record each result before returning. `close().await` exposes provider close errors. Dropping `AsyncSubscription` requests disposal but cannot report errors from asynchronous close, so it is unsuitable when the application needs that result. Use `try_shutdown_async(&bus).await` from the complete compiled source above when bounded retries are needed: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
+The excerpt attempts both cleanup steps even if `run` or `close` fails; applications that need every error should record each result before returning. `close().await` exposes provider receiver close errors while the bus is `Running`. If bus shutdown has already started, `close().await` returns `LifecycleError::Closed`; that result does not mean cleanup finished or report the shutdown outcome. Continue driving and await shutdown for its cleanup result. Dropping `AsyncSubscription` requests disposal but cannot report errors from asynchronous close, so it is unsuitable when the application needs that result. Use `try_shutdown_async(&bus).await` from the complete compiled source above when bounded retries are needed: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 
@@ -1568,7 +1595,7 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 
 ## Delivery gaps and admission checks
 
-Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode.
+Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode. With `GapPolicy::Stop`, the facade retains the terminal gap and stops receiving and starting newly admitted handlers before it invokes the diagnostic callback. With `Continue`, later messages may be processed. Verify with `cargo test --locked --test gap_policy_sync_tests` and `cargo test --locked --test gap_policy_async_tests`.
 
 Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only when the provider exposes destination admission, as local does. For Redis, choose `ProviderOrDestinationAccepted`; per-destination conditions return `UnsupportedVisibility` before publishing. A visible provider retains the complete receipt in `CheckedPublishError::Admission` when the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Provider acceptance does not mean handler completion, disk fsync, or a successful business write. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
 

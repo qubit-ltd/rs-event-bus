@@ -154,7 +154,7 @@ fn publish_order_created(
 
 At startup, call both subscription functions and keep their `Subscription` handles in application state; cancel them during shutdown. After a successful order commit, call `publish_order_created`. Its receipt reports provider admission, not successful audit or view writes. The `AuditLog` and `CustomerOrderView` traits are application interfaces; connect them to your actual stores. See the [user guide](doc/user_guide.md) for admission failures and delivery policy.
 
-For shutdown, call `Subscription::cancel()` on each sync handle, then shut down the bus; dropping a sync handle does not cancel it. With the async facade, drive `AsyncSubscription::run()` in a background task, await `close()` on its handle, then shut down the bus. Async handle drop requests disposal but cannot return an asynchronous provider close error. See the [lifecycle guide](doc/user_guide.md#lifecycle-waiting-and-shutdown) when that error must be observed.
+For shutdown, call `Subscription::cancel()` on each sync handle, then shut down the bus; dropping a sync handle does not cancel it. With the async facade, drive `AsyncSubscription::run()` in a background task and await `close()` while the bus is still running, then shut down the bus. If shutdown has already started, `close()` returns `LifecycleError::Closed`; continue driving shutdown to observe its result. Async handle drop requests disposal but cannot return an asynchronous provider close error. See the [lifecycle guide](doc/user_guide.md#lifecycle-waiting-and-shutdown) when that error must be observed.
 
 ### Assemble one shared bus at startup
 
@@ -203,7 +203,7 @@ The coordinated versions are core 0.20, Redis 0.7, and task 0.10. Codec registra
 
 ## Delivery gaps and admission checks
 
-Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode.
+Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode; `Stop` establishes the stop barrier before invoking it.
 
 Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only with a provider that reports `DestinationAdmissions`, such as local. An opaque provider such as Redis returns `CheckedPublishError::UnsupportedVisibility` before publishing for either per-destination requirement. Use `AdmissionRequirement::ProviderOrDestinationAccepted` for Redis: success means the broker accepted the event, not that a subscriber ran, data was durably stored, or a business write completed. A visible provider still returns the complete receipt in `CheckedPublishError::Admission` when the condition fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
 
