@@ -36,6 +36,7 @@ use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishRequest;
@@ -157,7 +158,10 @@ fn observe_first_wave<F: Future>(
 ) -> usize {
     // The shared scheduler bounds work per poll; fill the blocked first wave
     // with explicit executor turns before starting measurement.
-    for _ in 0..operations * 4 {
+    let poll_limit = operations
+        .checked_mul(4)
+        .expect("ordering sample operations overflow the first-wave poll limit");
+    for _ in 0..poll_limit {
         assert!(runner.as_mut().poll(context).is_pending());
         if peak.load(Ordering::Relaxed) == expected {
             break;
@@ -203,7 +207,13 @@ fn timed_drain<F: Future>(
 /// default admission can keep all these lanes simultaneously active. Same-key
 /// input has one distinct key; churn has one distinct key per operation.
 fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: usize) -> Sample {
-    let provider_config = LocalEventBusConfig::new().queue_capacity(operations);
+    assert!(operations > 0, "ordering sample operations must be positive");
+    operations
+        .checked_mul(4)
+        .expect("ordering sample operations overflow the first-wave poll limit");
+    let provider_config = LocalEventBusConfig::new()
+        .queue_capacity(operations)
+        .max_total_outstanding(operations);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&provider_config).unwrap());
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
@@ -236,7 +246,10 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
     };
     let mut requests = requests.into_iter();
     for request in requests.by_ref().take(initial_queue) {
-        let _ = black_box(block_on(bus.publish(request)).unwrap());
+        let receipt = black_box(block_on(bus.publish(request)).unwrap());
+        receipt
+            .check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+            .expect("ordering sample must admit every delivery");
     }
     let released = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicUsize::new(0));
@@ -273,7 +286,10 @@ fn facade_sample(active_keys: usize, limit: usize, workload: &str, operations: u
     // Complete publication outside timing without polling the gated runner.
     // The fixed same-key setup backlog matches the previous facade workload.
     for request in requests {
-        let _ = black_box(block_on(bus.publish(request)).unwrap());
+        let receipt = black_box(block_on(bus.publish(request)).unwrap());
+        receipt
+            .check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+            .expect("ordering sample must admit every delivery");
     }
     let (elapsed, cpu_ns, process_cpu_ns, runner_stopped) =
         timed_drain(&mut runner, &mut context, &released, &completed, operations);
@@ -371,7 +387,14 @@ fn main() {
     }
     if env::var_os("ORDERING_PROFILE").is_some() {
         let operations = env::var("ORDERING_PROFILE_OPERATIONS")
-            .map(|value| value.parse().expect("profile operations must be an integer"))
+            .map(|value| {
+                let operations: usize = value.parse().expect("profile operations must be a positive integer");
+                assert!(operations > 0, "profile operations must be positive");
+                operations
+                    .checked_mul(4)
+                    .expect("profile operations overflow derived poll count");
+                operations
+            })
             .unwrap_or(65_536);
         let _ = black_box(facade_sample(4096, 64, "balanced", operations));
         return;
