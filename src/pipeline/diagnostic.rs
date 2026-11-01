@@ -54,7 +54,12 @@ pub enum Diagnostic {
         /// Provider-supplied rejection reason.
         reason: Box<str>,
     },
-    /// A provider reported a non-fatal gap while receiving.
+    /// A provider reported a gap while receiving.
+    ///
+    /// This diagnostic is emitted for both gap policies. `GapPolicy::Stop`
+    /// records the gap as the subscription's terminal receive failure before
+    /// invoking observers; `GapPolicy::Continue` reports the gap and keeps
+    /// receiving.
     ReceiveGap {
         /// Subscription whose receiver observed the gap.
         subscription_id: Id,

@@ -464,16 +464,16 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             drop(lease_guard);
                             let stop_gap =
                                 (options.gap_policy() == crate::model::GapPolicy::Stop).then(|| Arc::new(gap.clone()));
+                            if let Some(gap) = stop_gap {
+                                control.fail_receive(SubscriptionStopReason::Gap { gap });
+                                inner.scheduler.cancel_subscription(control.id);
+                            }
                             inner.emit(Diagnostic::ReceiveGap {
                                 subscription_id: control.id,
                                 subscriber_id: subscriber_id.clone(),
                                 topic: topic.name().into(),
                                 gap,
                             });
-                            if let Some(gap) = stop_gap {
-                                control.fail_receive(SubscriptionStopReason::Gap { gap });
-                                inner.scheduler.cancel_subscription(control.id);
-                            }
                         }
                         Err(error) => {
                             drop(lease_guard);

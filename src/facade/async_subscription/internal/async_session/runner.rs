@@ -345,17 +345,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     match outcome {
                         Some(Ok(ReceiveOutcome::Message(message))) => self.prepare_message(message, lease),
                         Some(Ok(ReceiveOutcome::Gap(gap))) => {
+                            if self.options.gap_policy() == crate::model::GapPolicy::Stop {
+                                let _ = self.signals.fail_receive(SubscriptionStopReason::Gap {
+                                    gap: Arc::new(gap.clone()),
+                                });
+                            }
                             self.inner.emit(&Diagnostic::ReceiveGap {
                                 subscription_id: self.id,
                                 subscriber_id: self.subscriber_id.clone(),
                                 topic: self.topic.name().into(),
-                                gap: gap.clone(),
+                                gap,
                             });
-                            if self.options.gap_policy() == crate::model::GapPolicy::Stop {
-                                let _ = self
-                                    .signals
-                                    .fail_receive(SubscriptionStopReason::Gap { gap: Arc::new(gap) });
-                            }
                         }
                         Some(Ok(ReceiveOutcome::Closed)) => {
                             self.receiver_closed = true;
