@@ -241,9 +241,26 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
             |_: Delivery<String>| Ok::<(), DeliveryError>(()),
         )
         .expect("subscription starts");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.receive_calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(backend.receive_calls.load(Ordering::Acquire), 1, "worker entered receive");
+    let failure_deadline = Instant::now() + Duration::from_secs(2);
+    while subscription.terminal_failure().is_none() && Instant::now() < failure_deadline {
+        thread::yield_now();
+    }
+    match subscription.terminal_failure().as_deref() {
+        Some(SubscriptionStopReason::Provider { error }) => {
+            assert_eq!(error.operation(), "receive");
+            assert_eq!(error.kind(), "provider_panicked");
+        }
+        reason => panic!("expected structured receive panic, got {reason:?}"),
+    }
     subscription
         .cancel()
         .expect("receive panic is contained and the worker closes");
+    assert_eq!(backend.close_calls(), 1, "receiver is closed after receive panic");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown succeeds");
 
     let (bus, backend) = create_bus();
@@ -329,6 +346,7 @@ struct TestBackend {
     close_panics: Arc<AtomicBool>,
     close_fails: Arc<AtomicBool>,
     receive_panics: Arc<AtomicBool>,
+    receive_calls: Arc<AtomicUsize>,
     settle_panics: Arc<AtomicBool>,
     receive_gate: Arc<Mutex<Option<ReceiveGate>>>,
     publish_gate: Arc<Mutex<Option<SpiCallGate>>>,
@@ -362,6 +380,7 @@ impl TestBackend {
             close_panics: Arc::new(AtomicBool::new(false)),
             close_fails: Arc::new(AtomicBool::new(false)),
             receive_panics: Arc::new(AtomicBool::new(false)),
+            receive_calls: Arc::new(AtomicUsize::new(0)),
             settle_panics: Arc::new(AtomicBool::new(false)),
             receive_gate: Arc::new(Mutex::new(None)),
             publish_gate: Arc::default(),
@@ -764,6 +783,7 @@ impl EventBusSpi for TestBackend {
             received_messages: self.received_messages.clone(),
             close_gate: self.close_gate.clone(),
             receive_panics: self.receive_panics.clone(),
+            receive_calls: self.receive_calls.clone(),
             settle_panics: self.settle_panics.clone(),
         }))
     }
@@ -807,11 +827,13 @@ struct TestSubscription {
     received_messages: Arc<AtomicUsize>,
     close_gate: Arc<Mutex<Option<SpiCallGate>>>,
     receive_panics: Arc<AtomicBool>,
+    receive_calls: Arc<AtomicUsize>,
     settle_panics: Arc<AtomicBool>,
 }
 
 impl EventSubscriptionSpi for TestSubscription {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        self.receive_calls.fetch_add(1, Ordering::AcqRel);
         assert!(
             !self.receive_panics.load(Ordering::Acquire),
             "synthetic provider receive panic"

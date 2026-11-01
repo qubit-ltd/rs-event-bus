@@ -5,12 +5,11 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Measures synchronous handler-pool saturation while four handlers back off.
+//! Verifies synchronous handler-pool availability while four handlers back off.
 
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::Barrier;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -20,15 +19,14 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use qubit_clock::ManualMonotonicClock;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusFacadeConfig;
-use qubit_event_bus::EventBusRegistry;
 use qubit_event_bus::error::DeliveryAttemptError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
-use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::FailureDirective;
 use qubit_event_bus::model::OrderingPolicy;
@@ -38,7 +36,6 @@ use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
-use qubit_event_bus::registry::EventBusConfig;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
@@ -60,101 +57,120 @@ use crate::support::fake_spi::FakeEventBusSpi;
 
 const HANDLER_SLOTS: usize = 4;
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(5);
-const RETRY_BACKOFF: Duration = Duration::from_secs(1);
-const PUBLISH_OFFSET: Duration = Duration::from_millis(10);
 
-/// Runs one fresh local bus sample and returns independent-message queue wait.
-fn sample() -> io::Result<Duration> {
-    let registry = EventBusRegistry::with_local().map_err(io::Error::other)?;
-    let positive = |value| NonZeroUsize::new(value).expect("benchmark limits are positive");
+struct RetryCancellationOnDrop(RetryCancellationToken);
+
+impl Drop for RetryCancellationOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+/// Verifies independent work runs while all four failed handlers await retry.
+fn retry_backoff_releases_four_handler_slots() {
+    let spi = Arc::new(FakeEventBusSpi::new());
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let positive = |value| NonZeroUsize::new(value).expect("handler limits are positive");
     let scheduling = DeliverySchedulingConfig::new(
         positive(HANDLER_SLOTS),
         positive(HANDLER_SLOTS * 2),
         positive(2),
         positive(HANDLER_SLOTS + 1),
     )
-    .map_err(io::Error::other)?;
-    let facade = EventBusFacadeConfig::new().with_delivery_scheduling(scheduling);
-    let config = EventBusConfig::default()
-        .with_provider_options(LocalEventBusConfig::default().provider_options())
-        .with_facade_config(facade);
-    let bus = registry.create(&config).map_err(io::Error::other)?;
-    let result = run_sample(&bus);
-    let shutdown_result = bus.shutdown(ShutdownMode::Immediate).map_err(io::Error::other);
-    match (result, shutdown_result) {
-        (Ok(wait), Ok(_)) => Ok(wait),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-    }
-}
-
-/// Creates four occupied handlers, then measures one independent delivery.
-fn run_sample(bus: &EventBus) -> io::Result<Duration> {
-    let barrier = Arc::new(Barrier::new(HANDLER_SLOTS + 1));
+    .expect("valid handler scheduler");
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(scheduling);
+    let bus = EventBus::with_config_and_clock(
+        ProviderId::new("retry-slot-test").expect("provider ID"),
+        spi.clone(),
+        config,
+        clock.clone(),
+    )
+    .expect("fake bus");
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let attempts: Vec<_> = (0..HANDLER_SLOTS).map(|_| Arc::new(AtomicUsize::new(0))).collect();
+    let cancellation = RetryCancellationToken::new();
+    let _cancel_retries_on_test_exit = RetryCancellationOnDrop(cancellation.clone());
     let retry_options = SubscribeOptions::<u8>::builder()
+        .retry_cancellation_token(cancellation.clone())
         .retry_policy(
             RetryPolicy::builder()
                 .max_attempts(2)
-                .backoff(BackoffPolicy::fixed(RETRY_BACKOFF))
+                .backoff(BackoffPolicy::fixed(Duration::from_secs(1)))
                 .build()
-                .map_err(io::Error::other)?,
+                .expect("retry policy"),
         )
         .build();
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).expect("topic");
         let request = SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
-            .map_err(io::Error::other)?
+            .expect("request")
             .with_options(retry_options.clone());
-        let barrier = barrier.clone();
-        let first_attempt = Arc::new(AtomicBool::new(true));
+        let entry = entered_tx.clone();
+        let count = attempts[index].clone();
         let _ = bus
             .subscribe(request, move |_| {
-                if first_attempt.swap(false, Ordering::AcqRel) {
-                    barrier.wait();
-                    Err(DeliveryError::Handler {
-                        source: Box::new(io::Error::other("intentional first-attempt failure")),
-                    })
+                let attempt = count.fetch_add(1, Ordering::AcqRel);
+                if attempt == 0 {
+                    entry.send(index).expect("test is waiting for first attempts");
+                    failed_attempt()
                 } else {
                     Ok(())
                 }
             })
-            .map_err(io::Error::other)?;
+            .expect("subscription");
     }
 
-    let (started_tx, started_rx) = mpsc::channel();
-    let independent_topic = Topic::<u8>::new("retry-saturation.independent").map_err(io::Error::other)?;
+    let (independent_tx, independent_rx) = mpsc::channel();
+    let independent_topic = Topic::<u8>::new("retry-saturation.independent").expect("topic");
     let independent_request =
-        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone()).map_err(io::Error::other)?;
+        SubscribeRequest::new("retry-saturation-independent", independent_topic.clone()).expect("request");
     let _ = bus
         .subscribe(independent_request, move |_| {
-            started_tx.send(Instant::now()).map_err(|error| DeliveryError::Handler {
-                source: Box::new(io::Error::other(error.to_string())),
-            })
+            independent_tx.send(()).expect("test is waiting for independent handler");
+            Ok::<(), DeliveryError>(())
         })
-        .map_err(io::Error::other)?;
+        .expect("independent subscription");
 
     for index in 0..HANDLER_SLOTS {
-        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).map_err(io::Error::other)?;
+        let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).expect("topic");
         let _ = bus
-            .publish(PublishRequest::new(topic, index as u8).map_err(io::Error::other)?)
-            .map_err(io::Error::other)?;
+            .publish(PublishRequest::new(topic, index as u8).expect("publish request"))
+            .expect("publish first attempt");
     }
 
-    barrier.wait();
-    thread::sleep(PUBLISH_OFFSET);
-    let publish_started = Instant::now();
+    let mut entered = Vec::with_capacity(HANDLER_SLOTS);
+    for _ in 0..HANDLER_SLOTS {
+        entered.push(entered_rx.recv_timeout(SAMPLE_TIMEOUT).expect("handler first attempt entered"));
+    }
+    entered.sort_unstable();
+    assert_eq!(entered, (0..HANDLER_SLOTS).collect::<Vec<_>>());
+    wait_for(|| {
+        bus.delivery_metrics().running_handlers == 0 && bus.delivery_metrics().queued == HANDLER_SLOTS as u64
+    });
     let _ = bus
-        .publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
-        .map_err(io::Error::other)?;
-    let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(io::Error::other)?;
-    Ok(handler_started.duration_since(publish_started))
+        .publish(PublishRequest::new(independent_topic, 0).expect("independent request"))
+        .expect("publish independent message");
+    independent_rx
+        .recv_timeout(SAMPLE_TIMEOUT)
+        .expect("independent handler runs during retry backoff");
+    assert_eq!(
+        attempts.iter().map(|count| count.load(Ordering::Acquire)).sum::<usize>(),
+        HANDLER_SLOTS,
+        "retry timers remain pending until the test advances the clock"
+    );
+
+    clock.advance(Duration::from_secs(1)).expect("advance retry clock");
+    wait_for(|| bus.delivery_metrics().completed == (HANDLER_SLOTS + 1) as u64);
+    let _ = bus
+        .shutdown(ShutdownMode::Graceful { timeout: SAMPLE_TIMEOUT })
+        .expect("shutdown");
+    assert!(attempts.iter().all(|count| count.load(Ordering::Acquire) == 2));
 }
 
 #[test]
 fn test_retry_backoff_releases_four_handler_slots() {
-    let wait = sample().expect("saturation sample completes");
-    assert!(wait < Duration::from_millis(200), "independent handler waited {wait:?}");
+    retry_backoff_releases_four_handler_slots();
 }
 
 #[derive(Default)]
