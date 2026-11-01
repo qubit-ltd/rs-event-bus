@@ -101,22 +101,37 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
             let mut timer_future: Option<ReceiveTimer> = None;
             let mut timer_wait = None;
             poll_fn(|cx| {
+                let new_waiter = queue.async_ready.register(cx.waker());
                 let mut state = queue.lock();
                 if state.closed {
+                    drop(state);
+                    drop(new_waiter);
                     return Poll::Ready(Ok(ReceiveOutcome::Closed));
                 }
                 match pop_message(&mut state, subscription_id) {
-                    Ok(Some(message)) => return Poll::Ready(Ok(message)),
-                    Err(error) => return Poll::Ready(Err(error)),
+                    Ok(Some(message)) => {
+                        drop(state);
+                        drop(new_waiter);
+                        return Poll::Ready(Ok(message));
+                    }
+                    Err(error) => {
+                        drop(state);
+                        drop(new_waiter);
+                        return Poll::Ready(Err(error));
+                    }
                     Ok(None) => {}
                 }
                 let remaining = if timeout == Duration::MAX {
                     None
                 } else {
                     let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                        drop(state);
+                        drop(new_waiter);
                         return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
                     };
                     if remaining.is_zero() {
+                        drop(state);
+                        drop(new_waiter);
                         return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
                     }
                     Some(remaining)
@@ -129,10 +144,12 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                     (None, Some(remaining)) => Some(remaining),
                     (None, None) => None,
                 };
+                let mut retired_timer_future = None;
                 if let Some(wait_for) = wait_for {
                     let deadline = now.checked_add(wait_for);
                     if timer_wait.is_none_or(|previous| deadline.is_some_and(|current| current < previous)) {
                         timer_wait = deadline;
+                        retired_timer_future = timer_future.take();
                         let timer = Arc::clone(&timer);
                         timer_future = Some(Box::pin(async move {
                             let timer = timer.after(wait_for)?;
@@ -141,15 +158,18 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                     }
                 } else {
                     timer_wait = None;
-                    timer_future = None;
+                    retired_timer_future = timer_future.take();
                 }
-                waiter = Some(queue.async_ready.register(cx.waker()));
+                let replaced_waiter = waiter.replace(new_waiter);
                 drop(state);
+                drop(replaced_waiter);
+                drop(retired_timer_future);
                 if let Some(timer) = timer_future.as_mut()
                     && let Poll::Ready(result) = Future::poll(timer.as_mut(), cx)
                 {
-                    timer_future = None;
+                    let completed_timer_future = timer_future.take();
                     timer_wait = None;
+                    drop(completed_timer_future);
                     match result {
                         Ok(()) => {
                             cx.waker().wake_by_ref();

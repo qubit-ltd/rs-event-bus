@@ -122,13 +122,15 @@ impl SessionSignals {
     /// Records the strongest requested mode, marks the session stopped, and
     /// wakes waiters.
     pub(in crate::facade) fn stop(&self, mode: ShutdownMode) {
-        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut stop_mode = self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner);
-        if !matches!(*stop_mode, Some(ShutdownMode::Immediate)) || mode == ShutdownMode::Immediate {
-            *stop_mode = Some(mode);
+        {
+            let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut stop_mode = self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner);
+            if !matches!(*stop_mode, Some(ShutdownMode::Immediate)) || mode == ShutdownMode::Immediate {
+                *stop_mode = Some(mode);
+            }
+            drop(stop_mode);
+            self.stopped.store(true, Ordering::Release);
         }
-        drop(stop_mode);
-        self.stopped.store(true, Ordering::Release);
         self.signal.notify();
     }
 
@@ -139,15 +141,18 @@ impl SessionSignals {
     /// `true` if this call records the first cause; otherwise, `false`.
     #[must_use]
     pub(in crate::facade) fn fail_receive(&self, reason: SubscriptionStopReason) -> bool {
-        let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
-        let first = stored.is_none();
-        if first {
-            *stored = Some(Arc::new(reason));
-        }
-        drop(stored);
-        *self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner) = Some(ShutdownMode::Immediate);
-        self.stopped.store(true, Ordering::Release);
+        let first = {
+            let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut stored = self.terminal_failure.lock().unwrap_or_else(PoisonError::into_inner);
+            let first = stored.is_none();
+            if first {
+                *stored = Some(Arc::new(reason));
+            }
+            drop(stored);
+            *self.stop_mode.lock().unwrap_or_else(PoisonError::into_inner) = Some(ShutdownMode::Immediate);
+            self.stopped.store(true, Ordering::Release);
+            first
+        };
         self.signal.notify();
         first
     }
