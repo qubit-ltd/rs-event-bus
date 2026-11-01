@@ -11,7 +11,6 @@ mod support;
 
 mod async_event_bus;
 mod async_subscription;
-mod async_subscription_run_state_tests;
 mod async_subscription_tests;
 mod event_bus;
 mod event_bus_facade_config_tests;

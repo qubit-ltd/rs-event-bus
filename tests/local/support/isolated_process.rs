@@ -37,7 +37,20 @@ pub(crate) fn run_case(test_name: &str, case: &str) {
 /// Panics if the child process cannot be started or polled, exits
 /// unsuccessfully, or exceeds `timeout` and cannot be killed and reaped.
 pub(crate) fn run_case_with_timeout(test_name: &str, case: &str, timeout: Duration) {
-    let mut child = Command::new(current_exe().unwrap())
+    let executable = current_exe().unwrap();
+    let listing = Command::new(&executable)
+        .args(["--list", "--format", "terse"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success(), "cannot list child tests");
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    let expected = format!("{test_name}: test");
+    assert_eq!(
+        listing.lines().filter(|line| *line == expected).count(),
+        1,
+        "isolated test must match exactly once: {test_name}"
+    );
+    let mut child = Command::new(executable)
         .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
         .env("QUBIT_EVENT_BUS_ISOLATED_CASE", case)
         .spawn()

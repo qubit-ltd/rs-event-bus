@@ -77,7 +77,7 @@ impl Wake for Reenter {
 
 #[test]
 fn test_shutdown_waker_can_reenter_publish() {
-    let test_name = "test_shutdown_waker_can_reenter_publish";
+    let test_name = "local::async_local_event_subscription_tests::test_shutdown_waker_can_reenter_publish";
     let Ok(case) = var("QUBIT_EVENT_BUS_ISOLATED_CASE") else {
         for case in ["immediate", "graceful"] {
             support::isolated_process::run_case(test_name, case);
