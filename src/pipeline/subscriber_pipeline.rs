@@ -85,7 +85,8 @@ impl SubscriberPipeline {
     where
         H: Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync + 'static,
     {
-        let chain = global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>();
+        let chain: Arc<[Arc<SubscriberInterceptor<T>>]> =
+            global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>().into();
         sync_next(0, chain, Arc::new(handler))(delivery)
     }
 
@@ -116,7 +117,8 @@ impl SubscriberPipeline {
     where
         H: Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync + 'static,
     {
-        let chain = global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>();
+        let chain: Arc<[Arc<AsyncSubscriberInterceptor<T>>]> =
+            global.iter().chain(typed.iter()).cloned().collect::<Vec<_>>().into();
         let next = async_next(0, chain, Arc::new(handler));
         catch_async_panic(next(delivery))
     }
@@ -363,7 +365,7 @@ impl SubscriberPipeline {
 /// A callback representing the remaining middleware and handler chain.
 fn sync_next<T: 'static>(
     index: usize,
-    chain: Vec<Arc<SubscriberInterceptor<T>>>,
+    chain: Arc<[Arc<SubscriberInterceptor<T>>]>,
     handler: Arc<SyncDeliveryHandler<T>>,
 ) -> Arc<SyncDeliveryHandler<T>> {
     Arc::new(move |delivery| {
@@ -371,7 +373,7 @@ fn sync_next<T: 'static>(
             return catch_unwind(AssertUnwindSafe(|| handler(delivery)))
                 .unwrap_or_else(|panic| Err(panic_to_delivery_error(panic)));
         }
-        let next = sync_next(index + 1, chain.clone(), handler.clone());
+        let next = sync_next(index + 1, Arc::clone(&chain), handler.clone());
         catch_unwind(AssertUnwindSafe(|| {
             (chain[index])(delivery, Box::new(move |delivery| next(delivery)))
         }))
@@ -393,7 +395,7 @@ fn sync_next<T: 'static>(
 /// A callback representing the remaining middleware and handler chain.
 fn async_next<T: 'static>(
     index: usize,
-    chain: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
+    chain: Arc<[Arc<AsyncSubscriberInterceptor<T>>]>,
     handler: Arc<AsyncDeliveryHandler<T>>,
 ) -> Arc<AsyncDeliveryHandler<T>> {
     Arc::new(move |delivery| {
@@ -402,7 +404,7 @@ fn async_next<T: 'static>(
                 .unwrap_or_else(|panic| Box::pin(async move { Err(panic_to_delivery_error(panic)) }));
             return catch_async_panic(future);
         }
-        let next = async_next(index + 1, chain.clone(), handler.clone());
+        let next = async_next(index + 1, Arc::clone(&chain), handler.clone());
         let future = catch_unwind(AssertUnwindSafe(|| {
             (chain[index])(delivery, Box::new(move |delivery| next(delivery)))
         }))

@@ -67,6 +67,10 @@ name = "facade_delivery"
 harness = false
 
 [[bench]]
+name = "subscriber_middleware"
+harness = false
+
+[[bench]]
 name = "ordering_keys"
 harness = false
 
