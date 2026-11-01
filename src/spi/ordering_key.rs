@@ -39,7 +39,6 @@ impl OrderingKey {
     ///
     /// # Returns
     /// `Some` with the validated key, or `None` when invalid.
-    #[must_use]
     pub fn new(value: &str) -> Option<Self> {
         is_nonblank_without_controls(value).then(|| Self(value.into()))
     }

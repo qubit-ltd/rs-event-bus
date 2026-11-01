@@ -76,7 +76,6 @@ impl SettlementToken {
     /// # Returns
     /// `Some` with a shared reference when the stored state is `T`, otherwise
     /// `None`.
-    #[must_use]
     #[inline]
     pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
         self.state.downcast_ref()
@@ -90,7 +89,6 @@ impl SettlementToken {
     /// # Returns
     /// `Some` with a mutable reference when the stored state is `T`, otherwise
     /// `None`.
-    #[must_use]
     #[inline]
     pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
         self.state.downcast_mut()

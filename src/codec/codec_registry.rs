@@ -50,7 +50,6 @@ impl CodecRegistry {
     ///
     /// # Returns
     /// A cloned shared codec handle, or `None` when no codec is registered.
-    #[must_use]
     #[inline]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<dyn EventCodec<T>>> {
         self.codecs

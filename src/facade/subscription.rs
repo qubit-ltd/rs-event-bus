@@ -150,7 +150,6 @@ impl Subscription {
     /// # Returns
     /// The canonical failure after a terminal receive failure, or `None` while
     /// no terminal receive failure has been recorded.
-    #[must_use]
     #[inline]
     pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.control.terminal_failure()

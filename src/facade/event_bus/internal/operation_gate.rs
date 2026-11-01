@@ -29,7 +29,6 @@ impl OperationGate {
     ///
     /// # Returns
     /// A permit when admission is open, otherwise None.
-    #[must_use]
     pub(in crate::facade) fn enter(&self) -> Option<OperationPermit<'_>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.closing {

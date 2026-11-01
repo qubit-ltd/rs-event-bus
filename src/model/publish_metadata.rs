@@ -53,7 +53,6 @@ impl PublishMetadata {
     ///
     /// # Returns
     /// The header value when present, otherwise `None`.
-    #[must_use]
     #[inline]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
@@ -108,7 +107,6 @@ impl PublishMetadata {
     ///
     /// # Returns
     /// The removed value, or `None` if the key was absent or reserved.
-    #[must_use]
     pub fn remove_header(&mut self, key: &str) -> Option<String> {
         if key.eq_ignore_ascii_case(super::DEAD_LETTER_HEADER) {
             return None;

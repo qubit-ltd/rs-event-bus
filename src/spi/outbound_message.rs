@@ -156,7 +156,6 @@ impl OutboundMessage {
     /// # Returns
     /// `Some` for an explicit declaration, or `None` when absent. This is
     /// application metadata and does not measure the payload's heap usage.
-    #[must_use]
     #[inline]
     pub fn native_payload_weight_bytes(&self) -> Option<NonZeroUsize> {
         self.native_payload_weight_bytes

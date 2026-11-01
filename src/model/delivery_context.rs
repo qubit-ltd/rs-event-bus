@@ -186,7 +186,6 @@ impl DeliveryContext {
     ///
     /// # Returns
     /// The provider-reported attempt count, when supplied.
-    #[must_use]
     #[inline]
     pub fn provider_attempt(&self) -> Option<u32> {
         self.provider_attempt

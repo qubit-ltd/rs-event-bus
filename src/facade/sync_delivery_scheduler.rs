@@ -234,7 +234,6 @@ impl SyncDeliveryScheduler {
     /// # Returns
     /// Some lease when reserved; None while capacity or eligibility is
     /// unavailable.
-    #[must_use]
     pub(super) fn take_receive_reservation(&self, id: Id) -> Option<u64> {
         let result = self.core.take_receive_reservation(id);
         self.route_notifications();
@@ -261,7 +260,6 @@ impl SyncDeliveryScheduler {
     /// # Returns
     /// Some owned lease with H and lane authorization; None when no grant is
     /// available.
-    #[must_use]
     pub(super) fn take_ready(&self, id: Id) -> Option<u64> {
         let result = self.core.take_ready(id);
         self.route_notifications();
@@ -380,7 +378,6 @@ impl SyncDeliveryScheduler {
     /// # Returns
     /// Some lease authorized for settlement; None when no lane grant is
     /// available.
-    #[must_use]
     pub(super) fn take_settlement_ready(&self, id: Id) -> Option<u64> {
         let result = self.core.take_settlement_ready(id);
         self.route_notifications();

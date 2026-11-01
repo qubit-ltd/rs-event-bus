@@ -242,7 +242,6 @@ pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapabili
 /// # Returns
 /// The name of the first differing field, or `None` when all checked fields
 /// match. Provider-generated settlement data is intentionally excluded.
-#[must_use]
 #[inline]
 pub(super) fn message_difference(message: &InboundMessage, expected: &OutboundMessage) -> Option<&'static str> {
     if message.topic().as_str() != expected.topic().as_str() {

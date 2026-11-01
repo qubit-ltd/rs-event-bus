@@ -193,7 +193,6 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// # Returns
     /// `Some` with the immutable first cause after a terminal receive failure;
     /// `None` when no terminal failure has been recorded.
-    #[must_use]
     #[inline]
     pub fn terminal_failure(&self) -> Option<Arc<SubscriptionStopReason>> {
         self.control.signals.terminal_failure()

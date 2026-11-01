@@ -50,7 +50,6 @@ impl EventBusConfig {
     ///
     /// # Returns
     /// The configured selection, or `None` to use the registry default.
-    #[must_use]
     #[inline]
     pub fn selection(&self) -> Option<&ProviderSelection> {
         self.selection.as_ref()
