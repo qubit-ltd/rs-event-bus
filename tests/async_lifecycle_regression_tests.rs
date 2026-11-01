@@ -7,6 +7,8 @@
 // =============================================================================
 //! Public regression tests for asynchronous event bus lifecycle contracts.
 
+mod support;
+
 use std::future::Future;
 use std::future::poll_fn;
 use std::num::NonZeroUsize;
@@ -35,6 +37,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use support::fake_spi::FakeAsyncEventBusSpi;
 
 fn poll_once<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
@@ -123,6 +126,37 @@ fn test_close_drains_all_started_handlers() {
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
     assert_eq!(report.known_abandoned_deliveries, 0);
     assert!(report.provider_may_have_abandoned_deliveries);
+}
+
+#[test]
+fn test_running_close_and_shutdown_share_receiver_close() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    provider.pause_close();
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("close-race").expect("provider ID"), provider.clone()).expect("facade");
+    let topic = Topic::<usize>::new("regression.close-shutdown-race").expect("topic");
+    let mut subscription = ready(bus.subscribe(SubscribeRequest::new("close-shutdown-race", topic).expect("request")))
+        .expect("subscription");
+
+    let mut close = Box::pin(subscription.close());
+    assert!(poll_once(close.as_mut(), Waker::noop()).is_pending());
+    assert_eq!(1, provider.close_call_count());
+    assert_eq!(1, provider.max_concurrent_close_calls());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut(), Waker::noop()).is_pending());
+    assert_eq!(1, provider.close_call_count());
+    assert_eq!(1, provider.max_concurrent_close_calls());
+
+    provider.release_close();
+    assert!(matches!(poll_once(close.as_mut(), Waker::noop()), Poll::Ready(Ok(()))));
+    let report = match poll_once(shutdown.as_mut(), Waker::noop()) {
+        Poll::Ready(Ok(report)) => report,
+        _ => panic!("shutdown should complete after receiver close is released"),
+    };
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(1, provider.close_call_count());
+    assert_eq!(1, provider.max_concurrent_close_calls());
 }
 
 #[test]

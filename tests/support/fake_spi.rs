@@ -489,6 +489,9 @@ pub(crate) struct FakeAsyncEventBusSpi {
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
     close_wakers: Arc<Mutex<Vec<Waker>>>,
+    close_calls: Arc<AtomicUsize>,
+    active_close_calls: Arc<AtomicUsize>,
+    max_concurrent_close_calls: Arc<AtomicUsize>,
     shutdown_paused: Arc<AtomicBool>,
     shutdown_wakers: Arc<Mutex<Vec<Waker>>>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
@@ -518,6 +521,9 @@ impl FakeAsyncEventBusSpi {
             subscribe_wakers: Arc::default(),
             close_paused: Arc::default(),
             close_wakers: Arc::default(),
+            close_calls: Arc::default(),
+            active_close_calls: Arc::default(),
+            max_concurrent_close_calls: Arc::default(),
             shutdown_paused: Arc::default(),
             shutdown_wakers: Arc::default(),
             receiver_drop_recoveries: Arc::default(),
@@ -535,6 +541,14 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn operation_log(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
+    }
+    #[must_use]
+    pub(crate) fn close_call_count(&self) -> usize {
+        self.close_calls.load(Ordering::Acquire)
+    }
+    #[must_use]
+    pub(crate) fn max_concurrent_close_calls(&self) -> usize {
+        self.max_concurrent_close_calls.load(Ordering::Acquire)
     }
     #[must_use]
     pub(crate) fn settlement_count(&self) -> usize {
@@ -740,6 +754,9 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 calls: self.calls.clone(),
                 close_paused: self.close_paused.clone(),
                 close_wakers: self.close_wakers.clone(),
+                close_calls: self.close_calls.clone(),
+                active_close_calls: self.active_close_calls.clone(),
+                max_concurrent_close_calls: self.max_concurrent_close_calls.clone(),
                 receiver_drop_recoveries: self.receiver_drop_recoveries.clone(),
                 close_panics: self.close_panics.clone(),
                 settle_panics: self.settle_panics.clone(),
@@ -782,6 +799,9 @@ struct FakeAsyncEventSubscriptionSpi {
     calls: Arc<Mutex<Vec<&'static str>>>,
     close_paused: Arc<AtomicBool>,
     close_wakers: Arc<Mutex<Vec<Waker>>>,
+    close_calls: Arc<AtomicUsize>,
+    active_close_calls: Arc<AtomicUsize>,
+    max_concurrent_close_calls: Arc<AtomicUsize>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
     close_panics: Arc<AtomicBool>,
     settle_panics: Arc<AtomicBool>,
@@ -880,13 +900,27 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
     }
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.calls.lock().unwrap().push("close");
+        self.close_calls.fetch_add(1, Ordering::AcqRel);
         if self.close_panics.swap(false, Ordering::AcqRel) {
             panic!("fake async close call panic");
         }
         let queue = self.queue.clone();
         let paused = self.close_paused.clone();
         let wakers = self.close_wakers.clone();
+        let active_close_calls = self.active_close_calls.clone();
+        let max_concurrent_close_calls = self.max_concurrent_close_calls.clone();
         Box::pin(async move {
+            struct ActiveClose(Arc<AtomicUsize>);
+
+            impl Drop for ActiveClose {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
+            let active = active_close_calls.fetch_add(1, Ordering::AcqRel) + 1;
+            max_concurrent_close_calls.fetch_max(active, Ordering::AcqRel);
+            let _active = ActiveClose(active_close_calls);
             {
                 let mut state = queue.lock().unwrap();
                 state.closed = true;
