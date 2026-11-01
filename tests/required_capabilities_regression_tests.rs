@@ -23,6 +23,8 @@ use qubit_event_bus::EventBusSpec;
 use qubit_event_bus::RequiredCapabilities;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EventBusCapabilities;
@@ -37,10 +39,13 @@ use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
+use qubit_spi::AsyncServiceProvider;
 use qubit_spi::FallbackPolicy;
 use qubit_spi::ProviderDescriptor;
+use qubit_spi::ProviderFuture;
 use qubit_spi::ProviderId as SpiProviderId;
 use qubit_spi::ProviderMetadata;
 use qubit_spi::ProviderSelection;
@@ -66,6 +71,57 @@ impl ServiceProvider<EventBusSpec> for OrderingProvider {
         Ok(Arc::new(OrderingSpi {
             ordering: self.ordering,
         }))
+    }
+}
+
+struct AsyncOrderingProvider {
+    id: &'static str,
+    ordering: OrderingCapability,
+}
+
+impl ProviderMetadata for AsyncOrderingProvider {
+    fn descriptor(&self) -> ProviderDescriptor {
+        ProviderDescriptor::new(SpiProviderId::new(self.id).expect("test provider ID is valid"))
+    }
+}
+
+impl AsyncServiceProvider<EventBusSpec> for AsyncOrderingProvider {
+    fn create_configured<'a>(
+        &'a self,
+        _: &'a EventBusConfig,
+    ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
+        let ordering = self.ordering;
+        Box::pin(async move { Ok(Arc::new(AsyncOrderingSpi { ordering }) as Arc<dyn AsyncEventBusSpi>) })
+    }
+}
+
+struct AsyncOrderingSpi {
+    ordering: OrderingCapability,
+}
+
+impl AsyncEventBusSpi for AsyncOrderingSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        capabilities(self.ordering)
+    }
+
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async {
+            Ok(PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            })
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        _: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async { Err(unused_spi_error("subscribe")) })
+    }
+
+    fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        Box::pin(async { Ok(ShutdownOutcome::Complete) })
     }
 }
 
@@ -217,6 +273,40 @@ fn test_fallback_keeps_candidate_that_satisfies_per_key_requirement() {
         .expect("fallback selects a provider satisfying per-key ordering");
     assert_eq!("per-subscription", bus.provider_id().as_str());
     let _report = bus.shutdown(ShutdownMode::Immediate).expect("selected bus shuts down");
+}
+
+#[test]
+fn test_async_fallback_keeps_candidate_that_satisfies_per_key_requirement() {
+    block_on(async {
+        let registry = AsyncEventBusRegistry::new();
+        registry
+            .register(AsyncOrderingProvider {
+                id: "async-partition-only",
+                ordering: OrderingCapability::PerPartition,
+            })
+            .expect("first async provider registers");
+        registry
+            .register(AsyncOrderingProvider {
+                id: "async-per-subscription",
+                ordering: OrderingCapability::PerSubscription,
+            })
+            .expect("second async provider registers");
+        let selection = ProviderSelection::chain(["async-partition-only", "async-per-subscription"])
+            .expect("selection is valid")
+            .with_fallback_policy(FallbackPolicy::OnAbsence);
+        let config = EventBusConfig::default()
+            .with_required_capabilities(RequiredCapabilities::new().with_ordering(OrderingCapability::PerKey));
+
+        let bus = registry
+            .create_selected(&selection, &config)
+            .await
+            .expect("fallback selects an async provider satisfying per-key ordering");
+        assert_eq!("async-per-subscription", bus.provider_id().as_str());
+        let _report = bus
+            .shutdown(ShutdownMode::Immediate)
+            .await
+            .expect("selected async bus shuts down");
+    });
 }
 
 fn block_on<F: Future>(future: F) -> F::Output {
