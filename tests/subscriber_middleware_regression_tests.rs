@@ -191,6 +191,45 @@ fn test_sync_middleware_panic_is_reported_and_retry_rebuilds_the_chain() {
 }
 
 #[test]
+fn test_handler_failure_retries_through_the_middleware_chain() {
+    let spi = Arc::new(FakeEventBusSpi::new());
+    let bus = EventBus::from_spi(ProviderId::new("middleware-handler-retry").unwrap(), spi.clone()).unwrap();
+    let middleware_calls = Arc::new(AtomicUsize::new(0));
+    let middleware_count = middleware_calls.clone();
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let handler_count = handler_calls.clone();
+    let options = SubscribeOptions::<u32>::builder()
+        .retry_policy(qubit_retry::RetryPolicy::builder().max_attempts(2).build().unwrap())
+        .error_handler(|_, _| FailureDirective::Retry)
+        .interceptor(move |delivery, next| {
+            middleware_count.fetch_add(1, Ordering::AcqRel);
+            next(delivery)
+        })
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("middleware-handler-retry", Topic::<u32>::new("test.topic").unwrap())
+                .unwrap()
+                .with_options(options),
+            move |_| {
+                if handler_count.fetch_add(1, Ordering::AcqRel) == 0 {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(std::io::Error::other("retry handler once")),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+    spi.enqueue(support::fake_spi::inbound_message(None));
+    wait_until(|| handler_calls.load(Ordering::Acquire) == 2);
+    assert_eq!(middleware_calls.load(Ordering::Acquire), 2);
+    subscription.cancel().unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
 fn test_async_chain_preserves_registration_order_and_layer_counts() {
     for layer_count in [0, 1, 8, 32] {
         let spi = Arc::new(FakeAsyncEventBusSpi::new());
