@@ -243,10 +243,10 @@ impl RequiredCapabilities {
         }
         if let Some(required) = self.ordering {
             let actual = capabilities.ordering();
-            let satisfied = if required == OrderingCapability::PerKey {
-                actual.supports_per_key()
-            } else {
-                actual == required
+            let satisfied = match required {
+                OrderingCapability::None => true,
+                OrderingCapability::PerKey => actual.supports_per_key(),
+                _ => actual == required,
             };
             if !satisfied {
                 missing.push("ordering");
