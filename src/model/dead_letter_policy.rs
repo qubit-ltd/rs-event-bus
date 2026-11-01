@@ -10,7 +10,7 @@
 use super::DeadLetterAdmissionPolicy;
 use super::Topic;
 use crate::error::ConfigurationError;
-use crate::util::validated_text::is_nonblank_without_controls;
+use crate::util::validated_text::is_valid_topic_name;
 
 /// Policy used when forwarding a failed delivery to a dead-letter topic.
 ///
@@ -67,8 +67,9 @@ impl DeadLetterPolicy {
     /// [`DeadLetterAdmissionPolicy::TransportAccepted`].
     ///
     /// # Errors
-    /// Returns [`ConfigurationError::InvalidField`] when `name` is blank,
-    /// has surrounding whitespace, or contains a control character.
+    /// Returns [`ConfigurationError::InvalidField`] when `name` is empty,
+    /// longer than 255 UTF-8 bytes, has surrounding whitespace, or contains a
+    /// control character.
     pub fn with_topic_name(name: &str) -> Result<Self, ConfigurationError> {
         Self::with_admission(name, DeadLetterAdmissionPolicy::TransportAccepted)
     }
@@ -114,7 +115,8 @@ impl DeadLetterPolicy {
     ///
     /// # Errors
     /// Returns [`ConfigurationError::InvalidField`] when `topic_name` is
-    /// blank, has surrounding whitespace, or contains a control character.
+    /// empty, longer than 255 UTF-8 bytes, has surrounding whitespace, or
+    /// contains a control character.
     pub fn with_known_destination(topic_name: &str) -> Result<Self, ConfigurationError> {
         Self::with_admission(topic_name, DeadLetterAdmissionPolicy::KnownDestination)
     }
@@ -137,13 +139,13 @@ impl DeadLetterPolicy {
     ///
     /// # Errors
     /// Returns [`ConfigurationError::InvalidField`] with field `dead_letter`
-    /// when `topic_name` is blank, has surrounding whitespace, or contains a
-    /// control character.
+    /// when `topic_name` is empty, longer than 255 UTF-8 bytes, has
+    /// surrounding whitespace, or contains a control character.
     pub fn with_admission(topic_name: &str, admission: DeadLetterAdmissionPolicy) -> Result<Self, ConfigurationError> {
-        if !is_nonblank_without_controls(topic_name) {
+        if !is_valid_topic_name(topic_name) {
             return Err(ConfigurationError::InvalidField {
                 field: "dead_letter",
-                message: "topic must be nonblank and contain no controls".into(),
+                message: "topic must be 1..=255 UTF-8 bytes without surrounding whitespace or controls".into(),
             });
         }
         Ok(Self {
@@ -156,8 +158,9 @@ impl DeadLetterPolicy {
     ///
     /// # Returns
     /// The validated topic name, borrowed for the lifetime of the policy. It
-    /// is guaranteed nonblank, free of surrounding whitespace and control
-    /// characters, so it can be handed to a provider without re-validation.
+    /// is guaranteed to be 1..=255 UTF-8 bytes, free of surrounding whitespace
+    /// and control characters, so it can be handed to a provider without
+    /// re-validation.
     #[must_use]
     #[inline]
     pub fn topic_name(&self) -> &str {

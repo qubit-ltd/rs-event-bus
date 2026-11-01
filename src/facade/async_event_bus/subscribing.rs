@@ -60,6 +60,12 @@ impl AsyncEventBus {
     ) -> Result<AsyncSubscription<T>, SubscribeError> {
         let _subscribe = self.inner.begin_subscribe().ok_or(SubscribeError::Closed)?;
         let (subscriber_id, topic, options) = request.into_parts();
+        options.validate_provider_options().map_err(|_| {
+            SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "provider_options",
+                message: "contains an invalid key or control character".into(),
+            })
+        })?;
         if !options.interceptors().is_empty() || self.inner.facade_config.has_sync_subscriber_interceptors::<T>() {
             return Err(SubscribeError::Configuration(ConfigurationError::InvalidField {
                 field: "sync_subscriber_interceptor",

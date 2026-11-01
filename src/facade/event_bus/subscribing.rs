@@ -98,6 +98,12 @@ impl EventBus {
         let bus_identity = Arc::as_ptr(&self.inner) as usize;
         let _call_context = BusContextGuard::enter(bus_identity);
         let (subscriber_id, topic, options) = request.into_parts();
+        options.validate_provider_options().map_err(|_| {
+            SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "provider_options",
+                message: "contains an invalid key or control character".into(),
+            })
+        })?;
         let codec = self.validate_subscription(&topic, &options)?;
         let id = self.next_subscription_id()?;
         let spi_subscription = self.create_spi_subscription(id, &subscriber_id, &topic, &options)?;

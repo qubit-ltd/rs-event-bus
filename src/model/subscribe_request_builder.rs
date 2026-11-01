@@ -377,16 +377,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
         {
             return Err(SubscribeRequestBuildError::InvalidRetryConfiguration);
         }
-        for (key, value) in &self.options.provider_options {
-            if !key.contains('.')
-                || key.starts_with('.')
-                || key.ends_with('.')
-                || key.chars().any(char::is_control)
-                || value.chars().any(char::is_control)
-            {
-                return Err(SubscribeRequestBuildError::InvalidProviderOption(key.clone()));
-            }
-        }
+        self.options.validate_provider_options()?;
         Ok(SubscribeRequest::from_validated_parts(
             subscriber_id,
             topic,

@@ -23,6 +23,7 @@ use super::FailureDirective;
 use super::GapPolicy;
 use super::OrderingPolicy;
 use super::StartPosition;
+use super::SubscribeRequestBuildError;
 use super::SubscriptionDurability;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
@@ -195,6 +196,30 @@ impl<T: 'static> SubscribeOptions<T> {
     #[inline]
     pub fn builder() -> super::SubscribeOptionsBuilder<T> {
         super::SubscribeOptionsBuilder::new()
+    }
+
+    /// Validates provider options shared by the request builder and facades.
+    ///
+    /// # Returns
+    /// Success when every key is namespaced and neither keys nor values
+    /// contain control characters.
+    ///
+    /// # Errors
+    /// Returns `InvalidProviderOption` with the invalid key when a key is not
+    /// namespaced, starts or ends with a dot, or a key or value contains a
+    /// control character.
+    pub(crate) fn validate_provider_options(&self) -> Result<(), SubscribeRequestBuildError> {
+        for (key, value) in &self.provider_options {
+            if !key.contains('.')
+                || key.starts_with('.')
+                || key.ends_with('.')
+                || key.chars().any(char::is_control)
+                || value.chars().any(char::is_control)
+            {
+                return Err(SubscribeRequestBuildError::InvalidProviderOption(key.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Returns the behavior used after a delivery gap.
