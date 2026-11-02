@@ -297,7 +297,7 @@ A request object, rather than a long argument list, exists so that:
 `provider_options: ProviderOptions` (`BTreeMap<String, String>`).
 
 `RequiredCapabilities` keeps subscription acceptance separate from message
-retention: `with_subscription_modes(None)` leaves provider selection
+retention: the default `RequiredCapabilities::new()` leaves provider selection
 unconstrained, `BOTH` requires both Ephemeral and Durable subscription modes,
 and either mode can be required independently. This requirement is optional
 and does not change the existing defaults or make `.durable()` imply Durable

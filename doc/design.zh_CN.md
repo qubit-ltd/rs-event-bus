@@ -280,7 +280,7 @@ pub struct EventEnvelope<T> {
 `provider_options: ProviderOptions`（`BTreeMap<String, String>`）。
 
 `RequiredCapabilities` 将订阅接纳模式与消息保留能力分开：
-`with_subscription_modes(None)` 不限制 provider 选择，`BOTH` 要求同时支持
+默认构造 `RequiredCapabilities::new()` 不限制 provider 选择，`BOTH` 要求同时支持
 Ephemeral 和 Durable，单独模式也可分别要求。该要求默认可选，不改变既有默认值；
 `.durable()` 不会隐式要求 Durable 订阅。
 
