@@ -81,3 +81,45 @@ impl<F: Future> Future for CatchSpiFuture<F> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::panic::panic_any;
+    use std::pin::pin;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+
+    use super::catch_spi_future;
+    use crate::SpiError;
+    use crate::model::ProviderId;
+
+    struct PanicPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor");
+        }
+    }
+
+    #[test]
+    fn test_async_poll_panic_payload_is_disposed_and_classified() {
+        let provider_id = ProviderId::new("async-panic-test").expect("valid provider ID");
+        let future = async {
+            panic_any(PanicPayload);
+            #[allow(unreachable_code)]
+            Ok::<(), SpiError>(())
+        };
+        let guarded = catch_spi_future(future, &provider_id, "publish", Some("topic"));
+        let mut guarded = pin!(guarded);
+        let mut context = Context::from_waker(Waker::noop());
+        let result = match Future::poll(guarded.as_mut(), &mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("panic future should finish in one poll"),
+        };
+        assert!(matches!(result, Err(SpiError::Operation {
+            provider_id, operation: "publish", resource: Some(resource),
+            kind: "provider_panicked", retryable: Some(false), ..
+        }) if provider_id.as_ref() == "async-panic-test" && resource.as_ref() == "topic"));
+    }
+}

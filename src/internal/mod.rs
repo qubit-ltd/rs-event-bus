@@ -7,4 +7,5 @@
 // =============================================================================
 //! Implementation primitives shared by otherwise independent internal modules.
 
+pub(crate) mod panic_payload;
 pub(crate) mod sync;

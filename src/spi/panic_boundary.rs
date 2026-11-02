@@ -13,6 +13,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 
 use crate::error::SpiError;
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Runs one synchronous portion of a provider call and classifies an unwind.
 ///
@@ -61,12 +62,14 @@ pub(crate) fn provider_panic(
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("provider panicked");
-    SpiError::Operation {
+    let error = SpiError::Operation {
         provider_id: provider_id.into(),
         operation,
         resource: resource.map(Into::into),
         kind: "provider_panicked",
         retryable: Some(false),
         source: Box::new(IoError::other(message.to_owned())),
-    }
+    };
+    dispose_panic_payload(payload);
+    error
 }

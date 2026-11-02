@@ -12,6 +12,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 
 use crate::error::CodecError;
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Runs a codec callback and converts a panic into a structured error.
 ///
@@ -37,10 +38,14 @@ pub(crate) fn call_codec<R>(
 ) -> Result<R, CodecError> {
     match catch_unwind(AssertUnwindSafe(call)) {
         Ok(result) => result,
-        Err(payload) => Err(CodecError::Panicked {
-            operation,
-            message: panic_message(payload.as_ref()),
-        }),
+        Err(payload) => {
+            let error = CodecError::Panicked {
+                operation,
+                message: panic_message(payload.as_ref()),
+            };
+            dispose_panic_payload(payload);
+            Err(error)
+        }
     }
 }
 

@@ -7,5 +7,6 @@
 // =============================================================================
 //! Tests for codec internals.
 
+mod codec_boundary_tests;
 mod decode_payload_tests;
 mod resolve_codec_tests;
