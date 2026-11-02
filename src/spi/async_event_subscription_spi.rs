@@ -42,17 +42,17 @@ use crate::error::SpiError;
 /// }
 /// ```
 pub trait AsyncEventSubscriptionSpi: Send + 'static {
-    /// Receives one outcome without losing a message if the returned future is
-    /// cancelled.
+    /// Receives one outcome without losing an unsettled message when the
+    /// returned future is cancelled while the receiver is retained.
     ///
-    /// If cancellation happens after a message has been consumed from the
-    /// provider, that message must remain buffered for or be redelivered to the
-    /// next `receive` call. A provider whose receive operation is not
-    /// inherently cancellation-safe must continuously consume in an
-    /// internal task and buffer messages, placing the cancellable boundary
-    /// at the buffer read. This guarantee applies while retaining the receiver;
-    /// it does not require ephemeral messages to survive receiver close or
-    /// drop.
+    /// After cancellation, a message already consumed from the provider must
+    /// remain available to a later `receive` call or be redelivered according
+    /// to the provider protocol. A provider may satisfy this contract with
+    /// broker-side pending/redelivery, an RAII recovery guard, a
+    /// cancellation-safe buffer, or an internal task that buffers messages.
+    /// This contract applies while retaining the receiver; receiver close or
+    /// drop may discard ephemeral messages. Closing or dropping a durable
+    /// receiver must not implicitly acknowledge an unsettled delivery.
     ///
     /// # Parameters
     /// - `timeout`: maximum receive wait duration.

@@ -556,7 +556,7 @@ Also keep these limits in mind:
 | --- | --- | --- |
 | Filter events | `filter` | After the bus has taken the message and before the handler runs, inspect the event and decide whether to skip it. On local, a skipped message is still `Accepted` on the publish receipt. A skip is not a rejection. See [Filter or intercept a message](#filter-or-intercept-a-message). |
 | Let the handler decide when to acknowledge | `ack_mode(AckMode::Manual)` | After the business write, call `delivery.acknowledgement().ack()`. On failure, call `nack()`. Returning without a decision counts as failure. See [Let the handler decide when to acknowledge](#let-the-handler-decide-when-to-acknowledge). |
-| Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and the delay. A classification rule alone does not enable retries. These types require a direct `qubit-retry = "0.26"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
+| Retry after failure | `retry_policy`, optionally `retry_rule` / `retry_cancellation_token` | The policy sets the attempt count and delay. A rule or cancellation token without a policy is rejected during request building or before facade callbacks and provider work. These types require a direct `qubit-retry = "0.26"` dependency. See [Retry after a database write fails](#retry-after-a-database-write-fails). |
 | Choose an action after failure | `error_handler` | The handler can ask for a retry, a requeue, a move to a failure topic, or a discard. Requeue requires support from the transport. |
 | Keep an event that fails for good | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | Forward the failed message to another topic (the dead-letter topic). Someone still has to subscribe and handle it. See [Keep an event that fails for good](#keep-an-event-that-fails-for-good). |
 | Handle one customer's messages in order | `ordering_policy(OrderingPolicy::PerKey)` | The publisher must set an ordering key, and the transport must support the capability. See [Keep events for one object in order](#keep-events-for-one-object-in-order). |
@@ -606,7 +606,7 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
 }
 ```
 
-Pass the returned request to `bus.subscribe` with the customer-view handler. When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; setting only the rule does not start retries. The message keeps its local outstanding slot for the whole retry.
+Pass the returned request to `bus.subscribe` with the customer-view handler. When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; a rule or cancellation token without a policy is rejected instead of being silently ignored. The message keeps its local outstanding slot for the whole retry.
 
 ### Let the handler decide when to acknowledge
 
@@ -713,7 +713,10 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let timestamp = original
+            .timestamp()
+            .duration_since(UNIX_EPOCH)
+            .map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -736,7 +739,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
         put_text(&mut bytes, value.subscriber_id().as_str())?;
         put_text(&mut bytes, value.reason())?;
         if bytes.len() > MAX_ENCODED_BYTES {
-            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+            return Err(encode_error("encoded dead letter exceeds fixture limit"));
         }
         Ok(Arc::from(bytes))
     }
@@ -808,6 +811,10 @@ fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
 
 fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
     CodecError::Decode { source: error.into() }
+}
+
+fn encode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Encode { source: error.into() }
 }
 
 struct Cursor<'a> {
@@ -904,6 +911,8 @@ let subscription = bus.subscribe(request, move |delivery| store.append_order_cre
 `next(delivery)` is the rest of the chain. The log line appears, then the store write. Returning without calling `next` skips the handler. The value returned from the interceptor is the delivery result.
 
 The same synchronous callback can wrap every `OrderCreated` subscription on one bus. It runs outside the per-subscription interceptor, and only after that subscription's filter returns `true`. Install it while building the bus settings, then pass those settings through `EventBusConfig`. `EventBus::local` does not accept this configuration:
+
+An async filter is polled by the receiver owner within that bus's lifecycle context. Calling `shutdown().await` or waiting for received deliveries on the same bus from the filter returns `WouldDeadlock` (`ShutdownError::Lifecycle` for shutdown). Let the filter return, then request and drive shutdown from an application lifecycle task outside the filter. Operations on a different bus are not treated as self-waits.
 
 ```rust
 use qubit_event_bus::EventBusFacadeConfig;
@@ -1157,6 +1166,8 @@ Replace `provider_crate` and `your-provider-id` with the real crate name and the
 
 `EventBusConfig::with_provider_options` passes that implementation's own configuration. `with_facade_config` configures how the bus handles messages. `with_required_capabilities` states what the application requires. `RequiredCapabilities::new().durable()` means “messages must be persistable.” The built-in local provider cannot do that, so creation fails. `with_subscription_modes(SubscriptionModes::DURABLE)` separately requires Durable subscriptions; `SubscriptionModes::BOTH` requires support for both Ephemeral and Durable. The default has no subscription-mode requirement, and this requirement does not follow from `.durable()`. The registry tries another candidate only **when the bus is created**. A publish or receive failure at runtime does not switch implementations. `ProviderOptions` can appear in debug output. Do not put a password or a token there.
 
+After creating a bus, compare its declared capabilities with `RequiredCapabilities::missing_from(bus.capabilities())`. An empty list means the declarations meet the requirements. This is a local value comparison: it does not call the provider, change metrics, trigger registry fallback, or prove that the backend is healthy. The application decides how to report a non-empty list.
+
 ### Compare local and Redis capabilities
 
 These are the actual `EventBusCapabilities` values for both sync and async providers:
@@ -1199,6 +1210,8 @@ This section is for developers who **write the transport library**. If you only 
 3. **Install it and verify it.** The application can call `registry.register(MyProvider)`. For automatic discovery, submit the provider to the matching catalog. The `conformance` feature runs the crate's interface contract checks, including zero-time receive on an empty queue and `Closed` after a successful close. Also test a non-zero receive timeout, a full queue, cancellation, a repeated acknowledgement, a repeated shutdown, and error text.
 
 An in-process implementation can pass Rust objects directly (`TransportPayload::Native`). A cross-process transport usually encodes them to bytes first (`Encoded`). The return value of `publish(OutboundMessage)` must match what actually happened: return `DestinationAdmissions` only when each destination's admission is known; return `Accepted` without destinations when only the message server's acceptance is known. Do not describe “written to a local buffer” as “persisted.” `receive` must distinguish a message, a wait timeout, a gap, and closed. If settlement is supported, repeating the same result must be safe, and a conflicting result must be an error. When an async operation is cancelled, a message that has not been acknowledged must not be treated as successfully handled.
+
+Providers that enable `Strict` async conformance must also supply the `subscribe_cancellation` hook. Its fixture should acquire a partial resource, remain pending before returning a receiver, then prove that dropping the subscribe future releases the resource and permits a later subscription. The Redis provider's [`async_standalone_tests.rs`](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/tests/async_standalone_tests.rs) contains a cancellation resource-recovery test that can guide this hook.
 
 The code that creates the implementation validates configuration before it connects. When it cannot connect, the configuration is invalid, or the backend is temporarily unavailable, return the matching `ProviderFailure<EventBusProviderError>`. Application handlers, filters, retries, and dead letters belong to the bus object. The transport only delivers messages and performs the acknowledgement modes it explicitly declares.
 
@@ -1446,7 +1459,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. When provider `receive` returns `Closed`, `run` stops receiving and drains deliveries already owned by the facade, including their handler, settlement, and retry work, before returning `Ok(())`. Explicit `Immediate` shutdown keeps its cancellation behavior. `close().await` ends the subscription and reports provider close errors. Dropping the handle requests disposal but cannot await provider close or report its errors; explicitly await `close()` when those errors matter. When the async local implementation closes, it discards messages that are still queued inside the provider. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
+At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. When provider `receive` returns `Closed`, `run` stops receiving and drains deliveries already owned by the facade, including their handler, settlement, and retry work, before returning `Ok(())`. Explicit `Immediate` shutdown keeps its cancellation behavior. A successful `close().await` releases the session's handler callback and captures after receiver cleanup; a paused run or failed close retains the callback so the session can resume or retry. The handle continues to expose its run state, terminal failure, and delivery metrics. `close().await` reports provider close errors. Dropping the handle requests disposal but cannot await provider close or report its errors; explicitly await `close()` when those errors matter. When the async local implementation closes, it discards messages that are still queued inside the provider. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
 
 Keep the handle available to the application monitor while the runner borrows it. Allow an application-defined startup grace period before alerting on `Unstarted`; alert on an unexpected `Paused` or `Stopped` state. Call `monitor_run_state(subscription.run_state(), startup_grace_elapsed, alert)` with the handle's state, whether the grace period has elapsed, and the application alert callback:
 
@@ -1814,11 +1827,21 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 
 `observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. Its `cancelled` counter counts async publish futures that were first polled and then dropped before returning; it does not mean the provider failed to accept the event, because a dropped call may already have been accepted. It does not count message reception or successful business writes. Logs should record the order id, the event id, the subscriber id, the retry count, and the final error together.
 
+Shutdown close-error history retains detailed records for the first 256 failed subscriptions. `SubscriptionCloseErrors::len()` and `iter()` describe those retained samples; `total_count()`, `omitted_count()`, and `is_truncated()` describe the full failure count. Shutdown still returns an error when the sample is truncated, and its source points to the first retained failure. This bounds the number of records retained by the bus, not the bytes held by each provider error or snapshots kept by the application. Applications that need a complete archive should record each explicit subscription-close error as it occurs.
+
+If a provider supplies a settlement token owned by another subscription, the affected subscription stops with an invalid-token terminal failure. The facade does not settle through the wrong receiver or count the delivery as completed. Fix token ownership in the provider; recovery after close depends on its durable or ephemeral contract.
+
 ## Delivery gaps and admission checks
 
 Subscriptions stop receiving after a provider-reported delivery gap by default. Inspect the stable `SubscriptionStopReason::Gap` through `Subscription::terminal_failure()` (sync) or the `ReceiveError::Stopped` returned by async `run()`. Set `GapPolicy::Continue` only when the consumer accepts missed messages and wants later messages to continue. The gap diagnostic is emitted in either mode. With `GapPolicy::Stop`, the facade retains the terminal gap and stops receiving and starting newly admitted handlers before it invokes the diagnostic callback. With `Continue`, later messages may be processed. Verify with `cargo test --locked --test gap_policy_sync_tests` and `cargo test --locked --test gap_policy_async_tests`.
 
 Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only when the provider exposes destination admission, as local does. For Redis, choose `ProviderOrDestinationAccepted`; per-destination conditions return `UnsupportedVisibility` before publishing. A visible provider retains the complete receipt in `CheckedPublishError::Admission` when the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Provider acceptance does not mean handler completion, disk fsync, or a successful business write. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
+
+### Compatibility notes for the next minor release (0.21.x)
+
+- `SubscriptionCloseErrors::len()` and `iter()` will expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
+- A `retry_rule` or `retry_cancellation_token` without `retry_policy` is rejected by request builders and facade execution. Add an explicit policy or remove the unused rule/token.
+- Strict async conformance requires `AsyncConformanceHooks::subscribe_cancellation`. Add a fixture that cancels a partially allocated, pending subscription and proves its resources are reusable. Complete struct literals must initialize the new field or use `..Default::default()`.
 
 ## Boundaries and a practice checklist
 

@@ -183,7 +183,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 | `codec` | 编码能力接口与注册表 | `EventCodec<T>`、`CodecRegistry`、`ContentType`、`SchemaId`、`EncodedPayload`、`resolve_codec` |
 | `spi` | provider 契约 | `EventBusSpi`、`EventSubscriptionSpi`、`AsyncEventBusSpi`、`AsyncEventSubscriptionSpi`、`SpiFuture`、`OutboundMessage`、`InboundMessage`、`TransportPayload`、`ReceiveOutcome`、`SettlementToken`、`DeliveryDisposition`、`SpiSubscriptionRequest`、`EventBusCapabilities` 及各能力枚举、`ShutdownOutcome`、`DeliveryGap`、`conformance` |
 | `registry` | provider 目录与装配 | `EventBusSpec`、`EventBusProvider`/`AsyncEventBusProvider`（`qubit-spi` 定义 trait 的别名）、`EventBusRegistry`、`AsyncEventBusRegistry`、`EventBusConfig`、`RequiredCapabilities`、`EventBusProviderError`、内部 `EventBusProviderAdapter`/`IdentifiedEventBusSpi`、`sync_provider_inventory`/`async_provider_inventory`（discovery） |
-| `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`AdmissionTracker`、`OrderingLaneKey`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
+| `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`OrderingLaneKey`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
 | `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`DeliverySchedulingConfig`、`SettlementRetryConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
 | `local` | 内置进程内 provider | `LocalEventBusConfig`、`LocalEventBusProvider`、`AsyncLocalEventBusProvider`、`LocalEventBusSpi`、`AsyncLocalEventBusSpi`、`LocalQueue`、`OutstandingBudget` |
 | `notification` | 在 `EventBus` 前面加一层永不阻塞的有界发布队列 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
@@ -405,7 +405,10 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let timestamp = original
+            .timestamp()
+            .duration_since(UNIX_EPOCH)
+            .map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -428,7 +431,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
         put_text(&mut bytes, value.subscriber_id().as_str())?;
         put_text(&mut bytes, value.reason())?;
         if bytes.len() > MAX_ENCODED_BYTES {
-            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+            return Err(encode_error("encoded dead letter exceeds fixture limit"));
         }
         Ok(Arc::from(bytes))
     }
@@ -500,6 +503,10 @@ fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
 
 fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
     CodecError::Decode { source: error.into() }
+}
+
+fn encode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Encode { source: error.into() }
 }
 
 struct Cursor<'a> {
@@ -596,10 +603,12 @@ Rustdoc 是方法签名、接收端生命周期、结算与重试行为的权威
 并依靠 `Waker` 被唤醒；provider 若需要定时（如延迟投递），应在自己内部使用
 注入的 `Timer`（`AsyncLocalEventBusSpi` 就是这么做的）。
 
-**取消安全要求**：`receive` 返回的 future 在被 drop 时不得让消息丢失
-（应留在队列或 in-flight 中），因为 `AsyncSubscription::run` 在停机或暂停时会
-drop 正在等待的 `receive`。`settle` 与 `close` 的 future 应尽量短小且在被 drop
-时留下可重试的状态——facade 对 settlement 有重试退避（§9.6）。
+**取消安全要求**：receiver 仍存活时，丢弃 `receive` 返回的 future 后消息必须仍可用，
+或由 provider 协议负责重新投递。订阅暂停或总线停机时，`AsyncSubscription::run`
+会 drop 等待中的 `receive`。provider 可使用 broker redelivery、RAII delivery guard、
+取消安全缓冲或内部缓冲任务。关闭/丢弃 ephemeral receiver 可以丢弃消息；durable
+receiver 不得隐式确认消息。`settle` 与 `close` future 应尽量短小，即使被 drop 也保持
+可重试状态；facade 对 settlement 有重试退避（§9.6）。
 
 ### 4.4 传输消息
 
@@ -765,7 +774,8 @@ impl AsyncServiceSpec for EventBusSpec {
 它把"选哪个 provider""facade 怎么配""provider 私有参数"放在同一个对象里，
 调用方可以整体从配置文件映射。
 
-`RequiredCapabilities::missing_from(&caps)` 返回缺失项列表；
+`RequiredCapabilities::missing_from(&caps)` 返回缺失项列表。这是创建 bus 后可用的
+公开本地比较，不会调用 provider、改变 metrics、触发 fallback，也不能证明后端健康。
 `EventBusProviderAdapter` 在 provider 构造完后立即检查，缺失则该候选失败并进入下一个候选。
 **这是唯一一处 registry 会因能力做回退的地方**；facade 建好后再也不会因能力切换 provider。
 
@@ -890,7 +900,10 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
    `ordering_key.is_some()` 且 `OrderingCapability::None` → `PublishError::Capability`。
 6. **载荷准备**：依据 `PayloadModes` 选 `Native`/`Encoded`；`Encoded` 时用 codec 编码，
    得到 `OutboundMessage`。
-7. **重试发布**：若配置 `retry_policy`，用 `qubit_retry::Retry`（同步）/
+7. **重试配置校验**：没有 `retry_policy` 却配置 `retry_rule` 或 cancellation token 时，
+   返回配置错误；校验发生在拦截器、错误处理器和 SPI 调用之前。请求 builder 与执行路径
+   都会检查这组配对关系。
+8. **重试发布**：若配置 `retry_policy`，用 `qubit_retry::Retry`（同步）/
    `AsyncRetry`（异步，带 `Timer`）包裹 `spi.publish`。重试判定综合
    `SpiError::retryable()` 与用户 `RetryRule<PublishAttemptError>`；
    `RetryFallback::Abort`；耗尽 → `PublishError::Retry(Box<RetryError<...>>)`。
@@ -900,12 +913,12 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
    `AllowDuplicates` 仅允许原策略继续判断。未知效果跨尝试保留，后续成功回执
    的 `duplicate_possible()` 为 true。进行中的尝试被取消并返回错误时效果未知；
    RetryPolicy 预算是软预算，不是通用的 I/O 硬超时。
-8. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`；
+9. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`；
    任何一个 panic → 最终错误替换为 `PublishError::ErrorHandlerPanicked`，
    其余处理器仍继续执行。
-9. **接纳诊断**：回执携带 `DestinationAdmissions` 时，对每个被拒绝的目的地发
+10. **接纳诊断**：回执携带 `DestinationAdmissions` 时，对每个被拒绝的目的地发
    `Diagnostic::AdmissionRejected { event_id, topic, subscriber_id, reason }`。
-10. **指标**：更新 `PublishMetricsSnapshot`（`attempts`、`errors`、`dropped`、
+11. **指标**：更新 `PublishMetricsSnapshot`（`attempts`、`errors`、`dropped`、
     `opaque_accepted`、`zero_destinations`、`accepted_destinations`、
     `filtered_destinations`、`rejected_destinations`），通过 `publish_metrics()` 读取。
 
@@ -952,8 +965,8 @@ InboundMessage
 | `Manual` | `Ok` | `nack()` 已调用 | 失败：`DeliveryError::Handler`（"delivery was negatively acknowledged"） |
 | `Manual` | `Err(e)` | 任意 | 失败 `e` |
 
-handler 或中间件 panic 同样被包装成 `DeliveryError::Handler`（附带 panic 信息），
-进入同样的失败流程。`DeliveryError` 刻意只有四个变体（`Handler`、`Codec`、`Spi`、
+handler 或中间件 panic 同样被包装成 `DeliveryError::Handler`，消息只按 string 与
+non-string payload 区分，不暴露 panic 原文，然后进入同样的失败流程。`DeliveryError` 刻意只有四个变体（`Handler`、`Codec`、`Spi`、
 `Retry`），让错误处理器与 `RetryRule` 只需区分"应用失败 / 解码失败 / 后端失败 / 重试耗尽"。
 
 ### 7.5 失败处理：本地重试、错误处理器、`FailureDirective`
@@ -1061,6 +1074,9 @@ I/O 与 settlement，handler 统一在有界共享池里跑，`max_running_handl
 
 ### 8.3 协调线程（`run_subscription_worker`）
 
+外来 token 会在调用 receiver 的 SPI 前被检测；owner 以 `InvalidToken` / `foreign_owner`
+终止该订阅，不发起结算尝试、不计为完成，也不会把 token 路由到错误 receiver。
+
 每个 receiver 的 receive、settle、close 始终由同一个 owner 串行调用。owner 在接收前预留额度，保存 owned map 与 ready 队列；接收超时、Gap、Closed 归还预留。handler 通过 `OwnerSettlementRouter` 发送不可变的 token/disposition 意图及完成通知，不等待零容量结算回执；owner 关联两种通知，不因先后到达顺序提前释放消息。
 
 结算失败交给共享 `SettlementRetryState`；handler 不重跑，token/disposition 不变。首次永久失败、未知重试性、预算耗尽、panic、无效 token 或基础设施错误发布终止原因，停止所属订阅接收与启动新 handler。未启动的 durable 工作交 provider close 恢复；ephemeral 工作计弃置。已启动的 handler 可以结束，但终止后不再向该 receiver 发起新结算。close 错误另记，不覆盖首因。正在阻塞的 SPI 或 handler 不保证被强行终止。
@@ -1158,7 +1174,7 @@ lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 
 
 每轮先轮转 poll 已启动任务，再推进单个 receiver 操作，最后在有额度时 receive/dispatch。结算退避以及在途异步 settle 仍允许 poll 已启动 handler，但同一个 receiver 不并发 receive。自然 `ReceiveOutcome::Closed` 会停止后续 receive reservation，并排空 facade 已接收的 buffered delivery、task、handler completion、settlement 和 retry 后再成功返回；provider 队列中尚未被 facade 接收的消息不在排空范围内。显式 `Immediate` 仍沿用原有取消语义。丢弃 `run` future 是暂停：owned 工作、lane、token、计时状态仍归 session；恢复 run 或 shutdown 接管继续推进，不隐式 spawn。
 
-`close().await` 停止并关闭订阅；Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
+`close().await` 停止并关闭订阅；receiver 清理成功并注销后，session 会在释放内部锁后丢弃自己的 handler 回调及捕获对象。暂停 session 或关闭失败时保留回调，以便恢复或重试。已关闭句柄仍可读取 run state、terminal failure 和 delivery metrics；应用的其他引用仍会独立延长回调生命周期。Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
 
 ### 9.5 `AsyncEventBus::subscribe` 与未启动订阅
 
@@ -1199,7 +1215,9 @@ shutdown(mode: ShutdownMode).await
 
 异步侧没有线程可绑定，因此用 **poll 作用域**：投递任务在 poll handler/中间件时进入
 bus 上下文，poll 返回后退出。在此作用域内调用 `wait_for_received_deliveries` 或
-`shutdown().await` 会立刻得到 `WouldDeadlock`，因为等待自己所在的投递完成必然死锁。
+`shutdown().await` 会立刻得到 `WouldDeadlock`，因为等待自己所在的投递完成必然死锁。poll scope 覆盖
+runner 一轮中的 filter、decode、handler 与 diagnostic 回调；poll 返回 `Pending` 时
+即清除。操作其他 bus 不会匹配当前上下文。
 
 ---
 
@@ -1276,12 +1294,14 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 - 总线状态按 topic 分桶：每个桶记录 `payload_type_id: Option<TypeId>` 与
   `queues: BTreeMap<subscription::Id, Weak<LocalQueue>>`。以 `Weak` 持有，
   订阅句柄被 drop 后自动从路由中消失，publish 时顺带清理失效项。
-- **类型绑定**：一个 topic 第一次被 publish/subscribe 时记录 `TypeId`；后续不同类型
-  → `SpiError { kind: InvalidArgument, reason: "topic_type_conflict" }`。这弥补了
-  类型擦除后 `Topic<T>` 相等性中 `TypeId` 那一半的检查。
+- **类型绑定**：成功 subscribe 时记录 payload `TypeId`，只在 topic 有活跃订阅期间
+  保留；publish 会将原生 payload 与该绑定比较。最后一个活跃订阅关闭时移除绑定。
+  冲突的 subscribe 或 publish 返回 kind 为 `"topic_type_conflict"` 的
+  `SpiError::Operation`。这弥补了类型擦除后 `Topic<T>` 相等性中 `TypeId` 那一半的检查。
 - `receive(timeout)`：条件变量等待到有可投递消息、到期延迟消息、超时或关闭。
-- `settle`：解析 token 中的 `"{event_id}:{seq}"`，找到 in-flight 项，按 disposition
-  处理；未知 token → `InvalidSettlementToken`；同 token 重复 `Accept` 幂等返回 `Ok`。
+- `settle`：读取 provider 私有 token ID 找到 in-flight 项，并用
+  `Arc::ptr_eq` 校验 provider 私有 settlement handle 后按 disposition 处理；未知或
+  handle 不匹配的 token → `InvalidSettlementToken`；同 token 重复 `Accept` 幂等返回 `Ok`。
 - `close`：标记关闭、清空 pending 与 in-flight（Ephemeral 语义：未 settle 的消息丢弃），
   从路由移除。
 - `wait_for_topic_idle`：遍历该 topic 全部活跃队列，等待 `pending == 0 && in_flight == 0`。
@@ -1542,7 +1562,7 @@ settlement token 是否存在、重复 Accept、冲突 disposition 报错，以�
 Provider hook 提供只有 provider 自身才能观察的 fixture：重复/冲突 settlement 的效果、
 receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral cleanup。
 Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持的模式仍是带类型的 skip。
-默认结构检查模式可以跳过缺少的 hook。
+默认结构检查模式可以跳过缺少的 hook。异步 `subscribe-cancellation` hook 会创建部分分配的订阅、让操作保持 pending、取消并检查 provider 资源可复用；Strict 模式要求提供此 hook。
 
 Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、非零 receive
 timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、错误上下文与 source，
@@ -1558,6 +1578,13 @@ timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有�
 ---
 
 ## 16. 公开 API 稳定性
+
+下一个 minor release 将停机关闭错误历史限制为最早的 256 条记录。`len()` 和 `iter()`
+描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。
+总数在 `u64::MAX` 饱和。限制的是记录数，不是 provider 错误自身大小或应用保留的快照；
+即使截断，shutdown 仍返回错误。没有 retry policy 的 retry rule/token 将成为配置错误，
+并在回调或 provider 工作前验证。Strict 异步 conformance 还要求新增
+`subscribe_cancellation` hook；完整 hook 字面量须初始化它，或使用 `..Default::default()`。
 
 以下类型构成需要谨慎演进的稳定边界：
 

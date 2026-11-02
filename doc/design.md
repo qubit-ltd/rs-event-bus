@@ -200,7 +200,7 @@ are defined.
 | `codec` | Codec trait and registry | `EventCodec<T>`, `CodecRegistry`, `ContentType`, `SchemaId`, `EncodedPayload`, `resolve_codec` |
 | `spi` | Provider contract | `EventBusSpi`, `EventSubscriptionSpi`, `AsyncEventBusSpi`, `AsyncEventSubscriptionSpi`, `SpiFuture`, `OutboundMessage`, `InboundMessage`, `TransportPayload`, `ReceiveOutcome`, `SettlementToken`, `DeliveryDisposition`, `SpiSubscriptionRequest`, `EventBusCapabilities` and the capability enums, `ShutdownOutcome`, `DeliveryGap`, `conformance` |
 | `registry` | Provider catalog and assembly | `EventBusSpec`, `EventBusProvider` / `AsyncEventBusProvider` (aliases of `qubit-spi` definition traits), `EventBusRegistry`, `AsyncEventBusRegistry`, `EventBusConfig`, `RequiredCapabilities`, `EventBusProviderError`, internal `EventBusProviderAdapter` / `IdentifiedEventBusSpi`, `sync_provider_inventory` / `async_provider_inventory` (discovery) |
-| `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `AdmissionTracker`, `OrderingLaneKey`, `DeadLetter*`, retry adapters, `Diagnostic` |
+| `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `OrderingLaneKey`, `DeadLetter*`, retry adapters, `Diagnostic` |
 | `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `DeliverySchedulingConfig`, `SettlementRetryConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
 | `local` | Built-in in-process provider | `LocalEventBusConfig`, `LocalEventBusProvider`, `AsyncLocalEventBusProvider`, `LocalEventBusSpi`, `AsyncLocalEventBusSpi`, `LocalQueue`, `OutstandingBudget` |
 | `notification` | A bounded, never-blocking publish queue in front of `EventBus` | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
@@ -435,7 +435,10 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let timestamp = original
+            .timestamp()
+            .duration_since(UNIX_EPOCH)
+            .map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -458,7 +461,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
         put_text(&mut bytes, value.subscriber_id().as_str())?;
         put_text(&mut bytes, value.reason())?;
         if bytes.len() > MAX_ENCODED_BYTES {
-            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+            return Err(encode_error("encoded dead letter exceeds fixture limit"));
         }
         Ok(Arc::from(bytes))
     }
@@ -530,6 +533,10 @@ fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
 
 fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
     CodecError::Decode { source: error.into() }
+}
+
+fn encode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Encode { source: error.into() }
 }
 
 struct Cursor<'a> {
@@ -626,11 +633,15 @@ stay object-safe and the `Send` bound is explicit (P5). The async facade calls
 timer (delayed delivery, for example) uses an injected `Timer` internally.
 `AsyncLocalEventBusSpi` does this.
 
-**Cancellation safety:** dropping the future returned by `receive` must not lose
-the message. It stays queued or in-flight, because `AsyncSubscription::run` drops
-a waiting `receive` when the subscription pauses or the bus shuts down. `settle`
-and `close` futures should be short and, if dropped, leave a state that can be
-retried. The facade retries settlement with backoff (§9.6).
+**Cancellation safety:** while the receiver remains alive, dropping the future
+returned by `receive` must leave the message available or cause redelivery under
+the provider protocol. `AsyncSubscription::run` drops a waiting `receive` when
+the subscription pauses or the bus shuts down. Providers may use broker
+redelivery, an RAII delivery guard, a cancellation-safe buffer, or an internal
+buffering task. Closing/dropping an ephemeral receiver may discard its messages;
+a durable receiver must not implicitly acknowledge them. `settle` and `close`
+futures should be short and, if dropped, leave a state that can be retried.
+The facade retries settlement with backoff (§9.6).
 
 ### 4.4 Transport messages
 
@@ -796,7 +807,9 @@ fails, the errors are aggregated as `ProviderError::Resolution` or `Creation` (P
 Provider choice, facade configuration, and provider-private parameters travel together,
 so a caller can map one configuration object onto the call.
 
-`RequiredCapabilities::missing_from(&caps)` returns the missing items.
+`RequiredCapabilities::missing_from(&caps)` returns the missing items. This
+public comparison is available after bus creation and is local: it does not call
+the provider, change metrics, trigger fallback, or establish backend health.
 `EventBusProviderAdapter` checks them immediately after the provider is constructed.
 A miss fails that candidate and the registry tries the next one.
 **This is the only place the registry falls back because of capabilities.**
@@ -933,7 +946,8 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
 5. **Capability checks.** `delay.is_some()` with `DelayedDeliveryCapability::None`,
    or `ordering_key.is_some()` with `OrderingCapability::None`, returns `PublishError::Capability`.
 6. **Payload preparation.** Choose `Native` or `Encoded` from `PayloadModes`. `Encoded` encodes with the codec and produces an `OutboundMessage`.
-7. **Publish with retry.** When `retry_policy` is set, `qubit_retry::Retry` (synchronous)
+7. **Retry configuration validation.** A `retry_rule` or cancellation token without `retry_policy` is rejected as a configuration error before interceptors, error handlers, or SPI calls. The same pairing is checked by request builders and execution paths.
+8. **Publish with retry.** When `retry_policy` is set, `qubit_retry::Retry` (synchronous)
    or `AsyncRetry` (asynchronous, with a `Timer`) wraps `spi.publish`. The retry decision
    combines `SpiError::retryable()` with the caller's `RetryRule<PublishAttemptError>`.
    The fallback is `RetryFallback::Abort`. Exhaustion becomes
@@ -945,12 +959,12 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
    Uncertainty is retained across attempts and sets `duplicate_possible()` on a
    later successful receipt. In-flight cancellation that returns an error is
    uncertain; RetryPolicy budgets are soft, not universal hard I/O timeouts.
-8. **Error handlers.** On failure, `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`
+9. **Error handlers.** On failure, `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`
    runs in registration order. If any handler panics, the final error becomes
    `PublishError::ErrorHandlerPanicked` and the remaining handlers still run.
-9. **Admission diagnostics.** When the receipt carries `DestinationAdmissions`, each
+10. **Admission diagnostics.** When the receipt carries `DestinationAdmissions`, each
    rejected destination emits `Diagnostic::AdmissionRejected { event_id, topic, subscriber_id, reason }`.
-10. **Metrics.** Update `PublishMetricsSnapshot` (`attempts`, `errors`, `dropped`,
+11. **Metrics.** Update `PublishMetricsSnapshot` (`attempts`, `errors`, `dropped`,
     `opaque_accepted`, `zero_destinations`, `accepted_destinations`,
     `filtered_destinations`, `rejected_destinations`), readable through `publish_metrics()`.
 
@@ -1000,7 +1014,8 @@ Calling it twice is impossible at the type level. The async form,
 | `Manual` | `Err(e)` | any | failure `e` |
 
 A panic in the handler or middleware is also wrapped as `DeliveryError::Handler`
-(with the panic message) and follows the same failure path. `DeliveryError` has
+with a fixed message that identifies string versus non-string payloads without
+exposing the original panic text, and follows the same failure path. `DeliveryError` has
 four variants on purpose (`Handler`, `Codec`, `Spi`, `Retry`), so an error handler
 and a `RetryRule` only distinguish application failure, decode failure, backend failure, and retry exhaustion.
 
@@ -1122,7 +1137,7 @@ Fairness requires already-received eligible candidates and executors that keep p
 
 ### 8.3 Coordinator thread (`run_subscription_worker`)
 
-One owner serializes receive, settle, and close for each receiver. It reserves before receiving and retains an owned map plus ready queue; timeout, Gap and Closed release reservations. Handlers send immutable token/disposition intents and completion notifications through `OwnerSettlementRouter`, without waiting on a zero-capacity settlement reply. The owner correlates both messages without releasing ownership early because of their arrival order.
+One owner serializes receive, settle, and close for each receiver. It reserves before receiving and retains an owned map plus ready queue; timeout, Gap and Closed release reservations. Handlers send immutable token/disposition intents and completion notifications through `OwnerSettlementRouter`, without waiting on a zero-capacity settlement reply. The owner correlates both messages without releasing ownership early because of their arrival order. A foreign token is detected before settlement is sent to the receiver; the owner stops that subscription with `InvalidToken` / `foreign_owner`, records no settlement attempt or completion, and does not route the token to the wrong SPI receiver.
 
 Settlement failures use shared `SettlementRetryState`, preserving token/disposition without rerunning the handler. Permanent errors, unknown retryability, exhausted budgets, panic, invalid token, or infrastructure failure publish the first terminal cause and stop receiving/starting handlers for that subscription. Unstarted durable work follows provider close recovery; ephemeral work is counted as abandoned. Started handlers may finish, but a terminated receiver receives no new settlement attempts. Close errors do not replace the first cause. A blocked SPI call or handler cannot be forcibly terminated.
 
@@ -1228,7 +1243,7 @@ Lanes are keyed by `(topic, key, subscription_id)`. Queued same-key messages con
 
 Each turn polls started tasks in rotation, advances one receiver operation, then receives/dispatches when capacity allows. Settlement backoff and an in-flight async settle still allow polling started handlers, while that receiver never receives concurrently. A natural `ReceiveOutcome::Closed` disables further receive reservations and drains the facade-owned buffered deliveries, tasks, handler completions, settlements, and retries before `run` returns successfully. It does not recover messages still queued inside a provider. Explicit `Immediate` shutdown retains its cancellation behavior. Dropping `run` pauses: owned work, lanes, tokens, and timing remain in the session. Resuming run or shutdown takes over without implicit spawn.
 
-`close().await` stops and closes one subscription; Drop disposes its receiver under the provider's durable/ephemeral semantics. This differs from the non-cancelling synchronous handle Drop. Cancelling receive is not destroying the receiver. Cancelling settlement fabricates neither Accept nor Reject; a started attempt remains charged to the budget.
+`close().await` stops and closes one subscription; after successful receiver cleanup and deregistration, the session drops its handler callback and captures outside internal locks. A paused session or failed close retains the callback for resume/retry. The closed handle still exposes run state, terminal cause, and delivery metrics; external references to the callback remain alive independently. Drop disposes its receiver under the provider's durable/ephemeral semantics. This differs from the non-cancelling synchronous handle Drop. Cancelling receive is not destroying the receiver. Cancelling settlement fabricates neither Accept nor Reject; a started attempt remains charged to the budget.
 
 ### 9.5 `AsyncEventBus::subscribe` and subscriptions that never start
 
@@ -1271,7 +1286,7 @@ A bounded caller wait is not forced process exit. Use two `Graceful` waits with 
 The async side has no thread to bind, so it uses a **poll scope**. A delivery task
 enters bus context while polling the handler or middleware and leaves it when the
 poll returns. Inside that scope, `wait_for_received_deliveries` or `shutdown().await`
-returns `WouldDeadlock` immediately, because waiting for the delivery that is currently being polled cannot succeed.
+returns `WouldDeadlock` immediately, because waiting for the delivery that is currently being polled cannot succeed. The poll scope covers the full runner turn, including filter, decode, handler, and diagnostic callbacks. It is cleared when the poll returns `Pending`; work on another bus does not match this context.
 
 ---
 
@@ -1356,15 +1371,19 @@ allocation size, handler memory, or total process memory.
 - Bus state is bucketed by topic. Each bucket stores `payload_type_id: Option<TypeId>`
   and `queues: BTreeMap<subscription::Id, Weak<LocalQueue>>`. Queues are held by
   `Weak`, so a dropped subscription disappears from routing, and publish cleans up dead entries.
-- **Type binding.** The first publish or subscribe on a topic records its `TypeId`.
-  A later use with a different type returns `SpiError` with kind `InvalidArgument`
-  and reason `"topic_type_conflict"`. This restores the `TypeId` half of `Topic<T>`
-  equality after type erasure.
+- **Type binding.** A successful subscribe records its payload `TypeId` while the
+  topic has a live subscription. Publish checks its native payload against that
+  active binding. When the last live subscription closes, the binding is removed.
+  A conflicting subscribe or publish returns `SpiError::Operation` with kind
+  `"topic_type_conflict"`. This restores the `TypeId` half of `Topic<T>` equality
+  after type erasure.
 - `receive(timeout)` waits on a condition variable until a message can be delivered,
   a delayed message is due, the wait times out, or the queue closes.
-- `settle` parses `"{event_id}:{seq}"` from the token, finds the in-flight entry,
-  and applies the disposition. An unknown token is `InvalidSettlementToken`.
-  Repeating `Accept` for the same token returns `Ok` (idempotent).
+- `settle` reads the provider-private token ID, finds the in-flight entry, and
+  verifies the provider-private settlement handle with `Arc::ptr_eq` before
+  applying the disposition. An unknown or mismatched token is
+  `InvalidSettlementToken`. Repeating `Accept` for the same token returns `Ok`
+  (idempotent).
 - `close` marks the queue closed and clears pending and in-flight. That is Ephemeral
   semantics: unsettled messages are discarded. The queue is removed from routing.
 - `wait_for_topic_idle` walks every live queue of the topic and waits until `pending == 0 && in_flight == 0`.
@@ -1650,7 +1669,7 @@ Provider hooks supply fixtures for behavior only the provider can observe:
 repeat/conflicting settlement effects, receive/settlement/close/shutdown
 cancellation, durable recovery, and ephemeral cleanup. Under `Strict`, a
 required hook missing for a declared supported mode fails; unsupported modes
-remain typed skips. The default structural profile may skip absent hooks.
+remain typed skips. The default structural profile may skip absent hooks. The async `subscribe-cancellation` hook specifically creates a partially allocated subscription, leaves an operation pending, cancels it, and checks that the provider resource is reusable; Strict mode requires this hook.
 
 Provider authors still need additional tests for descriptor and provider
 selection/creation, complete capability behavior, non-zero receive timeout,
@@ -1669,6 +1688,16 @@ completion as three separate facts (P6).
 ---
 
 ## 16. Public API stability
+
+The next minor release bounds shutdown close-error history to the first 256
+records. `len()` and `iter()` describe retained samples; `total_count()`,
+`omitted_count()`, and `is_truncated()` describe the complete count. The total
+count saturates at `u64::MAX`; this bounds record count, not provider error size
+or application-held snapshots. Shutdown still returns an error when truncated.
+Retry rule/token options without a retry policy become configuration errors,
+validated before callbacks or provider work. Strict async conformance also
+requires the new `subscribe_cancellation` hook; complete hook literals must add
+it or use `..Default::default()`.
 
 These types are the stable boundary and should change deliberately:
 

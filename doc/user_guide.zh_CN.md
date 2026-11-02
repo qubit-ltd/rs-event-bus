@@ -556,7 +556,7 @@ let subscription = bus.subscribe(request, handler)?;
 | --- | --- | --- |
 | 过滤事件 | `filter` | 总线取到消息后、处理函数运行前，查看事件内容并决定是否跳过。在 local 上，被跳过的消息在发布回执里仍是 `Accepted`；跳过不等于拒绝。示例见[需要拦截或过滤消息时](#需要拦截或过滤消息时)。 |
 | 由处理函数决定何时确认 | `ack_mode(AckMode::Manual)` | 写入业务数据后调用 `delivery.acknowledgement().ack()`；处理失败可调用 `nack()`。未作决定就返回会被视为失败。示例见[由处理函数决定何时确认](#由处理函数决定何时确认)。 |
-| 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；单独设置错误分类规则不会启动重试。使用这些类型时需直接依赖 `qubit-retry = "0.26"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
+| 失败后重试 | `retry_policy`，可配 `retry_rule` / `retry_cancellation_token` | 重试次数和间隔由策略决定；没有 policy 的 rule 或取消 token 会在构造请求或调用 facade 回调/provider 操作前被拒绝。使用这些类型时需直接依赖 `qubit-retry = "0.26"`。示例见[数据库写入失败后自动重试](#数据库写入失败后自动重试)。 |
 | 失败后选择动作 | `error_handler` | 可要求重试、重新放回队列、转入失败消息主题或放弃；重新入队需要所用实现支持。 |
 | 保存最终处理失败的事件 | `dead_letter(DeadLetterPolicy::with_topic_name(name)?)` | 把失败消息转发到另一个主题（死信主题），还需有人订阅并处理它。示例见[保存最终处理失败的事件](#保存最终处理失败的事件)。 |
 | 同一客户的消息按顺序处理 | `ordering_policy(OrderingPolicy::PerKey)` | 发布方须为事件设置顺序键，所用实现还须支持此能力；见[保证同一对象的处理顺序](#保证同一对象的处理顺序)。 |
@@ -606,7 +606,7 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
 }
 ```
 
-将返回的请求传给 `bus.subscribe`，并提供客户视图处理函数。处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题；`observe_diagnostics` 登记的回调会收到一条 `Diagnostic::DeliveryFailed`，其中包含尝试次数和最终错误。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型判断哪些失败值得重试，单独设置它不会启动重试。重试期间这条消息一直占用 local 的积压名额。
+将返回的请求传给 `bus.subscribe`，并提供客户视图处理函数。处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题；`observe_diagnostics` 登记的回调会收到一条 `Diagnostic::DeliveryFailed`，其中包含尝试次数和最终错误。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型判断哪些失败值得重试，没有 policy 的 rule 或取消 token 会直接报配置错误，不会被静默忽略。重试期间这条消息一直占用 local 的积压名额。
 
 ### 由处理函数决定何时确认
 
@@ -713,7 +713,10 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let timestamp = original
+            .timestamp()
+            .duration_since(UNIX_EPOCH)
+            .map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -736,7 +739,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
         put_text(&mut bytes, value.subscriber_id().as_str())?;
         put_text(&mut bytes, value.reason())?;
         if bytes.len() > MAX_ENCODED_BYTES {
-            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+            return Err(encode_error("encoded dead letter exceeds fixture limit"));
         }
         Ok(Arc::from(bytes))
     }
@@ -808,6 +811,10 @@ fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
 
 fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
     CodecError::Decode { source: error.into() }
+}
+
+fn encode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Encode { source: error.into() }
 }
 
 struct Cursor<'a> {
@@ -902,6 +909,8 @@ let subscription = bus.subscribe(request, move |delivery| store.append_order_cre
 ```
 
 `next(delivery)` 表示继续后面的链。日志输出之后才会写存储。拦截器直接返回、没有调用 `next` 时，处理函数不会执行。拦截器返回的值就是这次投递的结果。
+
+异步 filter 在对应总线的生命周期上下文中由 receiver owner poll。在 filter 内对同一总线调用 `shutdown().await` 或等待已接收投递会返回 `WouldDeadlock`（shutdown 时包装为 `ShutdownError::Lifecycle`）。让 filter 先返回，再由应用生命周期任务发起并驱动停机；操作另一条总线不视为等待自身。
 
 同一段同步回调也可以包住这条总线上所有 `OrderCreated` 订阅。它位于该订阅自己的拦截器外侧，而且只在这条订阅的 `filter` 返回 `true` 之后运行。它要在组装总线配置时登记；`EventBus::local` 接不了这份配置：
 
@@ -1157,6 +1166,8 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 `EventBusConfig::with_provider_options` 传递这个实现自己的配置，`with_facade_config` 配置总线的处理方式，`with_required_capabilities` 说明应用必须具备什么能力。例如 `RequiredCapabilities::new().durable()` 表示“消息必须能持久保存”；内置 local 做不到，创建时就会报错。`with_subscription_modes(SubscriptionModes::DURABLE)` 单独要求 Durable 订阅；`SubscriptionModes::BOTH` 要求 Ephemeral 和 Durable 都受支持。默认不要求任何订阅模式，而且 `.durable()` 不会隐式添加该要求。注册表只会在**创建总线时**尝试其他候选；运行中发布或接收失败不会自动换实现。`ProviderOptions` 可能出现在调试输出中，不要放密码或 token。
 
+总线创建后，可用 `RequiredCapabilities::missing_from(bus.capabilities())` 比较已声明的能力。空列表表示声明满足要求。这只是本地值比较：不会调用 provider、改变 metrics 或触发注册表 fallback，也不能证明后端当前健康。非空结果如何报告由应用决定。
+
 ### 对照 local 与 Redis 的实际能力
 
 以下是同步和异步 provider 实际返回的 `EventBusCapabilities`：
@@ -1188,6 +1199,8 @@ cargo run --locked --all-features --example sync_orders -- "$EVENT_BUS_REDIS_URL
 cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_URL" "$EVENT_BUS_EXAMPLE_NAMESPACE-async"
 ```
 
+严格异步 conformance 会通过 `subscribe_cancellation` hook 检查“订阅资源已部分分配、操作仍 pending 时取消，并确认资源可复用”；Redis provider 的 fixture 示例见 [async_standalone_tests.rs](https://github.com/qubit-ltd/rs-event-bus-redis/blob/main/tests/async_standalone_tests.rs)。
+
 两个示例为 `String` 注册 `Utf8Codec`（`ContentType("text/plain")`），选择 `redis-streams`，传入 `redis.url` 和 `redis.namespace`，先以 `StartPosition::Earliest` 创建持久组 `billing`，再发布事件。同步示例输出 `consumed order event: order-42`；异步示例输出 `consumed order event: order-43`，看到这行消费成功信息后再按 Enter 结束。每次使用唯一 namespace，避免旧组和旧记录干扰结果；缺少 codec 会导致配置失败，Redis 连接失败不能算接纳。自动验证在 provider 工作副本先运行 `cargo build --locked --all-features --examples`，再运行 `cargo test --locked --all-features --test documentation_examples_tests`，由专用 `RedisServer` fixture 管理服务与 namespace。core 文档 fixture 不引入 Redis 依赖，外部源码只作为链接，不能绕过 checker 的根目录保护。
 
 ### 自己开发一种传递实现
@@ -1196,7 +1209,7 @@ cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_UR
 
 1. **实现消息传递。** 库把这组接口叫 SPI。同步实现要提供 `EventBusSpi` 的能力说明、发布、订阅和关闭方法；每次订阅还要返回一个 `EventSubscriptionSpi`，负责收消息、确认处理结果和关闭。异步实现对应 `AsyncEventBusSpi` 与 `AsyncEventSubscriptionSpi`。能力说明要如实填写，不能把不支持的持久化或排序能力报成支持。
 2. **让应用能创建它。** 实现 `ProviderMetadata`，给它一个唯一 ID；再实现 `ServiceProvider<EventBusSpec>` 或异步的 `AsyncServiceProvider<EventBusSpec>`。创建方法 `create_configured` 读取配置、连接后端，返回上一步的实现。配置错误要明确报告。
-3. **加入应用并验证。** 应用可显式调用 `registry.register(MyProvider)`；如果需要自动发现，再提交到相应目录。启用 `conformance` feature 可运行库提供的接口契约检查，其中包括空队列零时长 receive 和成功 close 后返回 `Closed`。还要测试非零等待超时、队列满、取消、重复确认、重复关闭和错误信息。
+3. **加入应用并验证。** 应用可显式调用 `registry.register(MyProvider)`；如果需要自动发现，再提交到相应目录。启用 `conformance` feature 可运行库提供的接口契约检查，其中包括空队列零时长 receive 和成功 close 后返回 `Closed`。Strict 异步 profile 还要求 `subscribe_cancellation` hook：测试应部分分配订阅资源、保持操作 pending、取消它，并确认资源可再次使用。新增 `AsyncConformanceHooks` 完整字面量时需初始化该字段，或用 `..Default::default()`。还要测试非零等待超时、队列满、取消、重复确认、重复关闭和错误信息。
 
 进程内实现可以直接传递 Rust 对象（`TransportPayload::Native`）；跨进程传输通常要先把对象编码成字节（`Encoded`）。`publish(OutboundMessage)` 的返回值要反映实际接收情况：能判断每个处理方是否接收，才返回 `DestinationAdmissions`；只知道消息服务器接收时，返回不列出处理方的 `Accepted`。不要把“只写入本地缓冲”描述成“已经持久保存”。`receive` 要能区分收到消息、等待超时、消息缺口和已关闭。如果支持确认处理结果，重复提交同一结果应安全，提交冲突结果要报错。异步操作被取消时，尚未确认的消息不能被当成成功处理。
 
@@ -1446,7 +1459,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。provider 的 `receive` 返回 `Closed` 后，`run` 停止继续接收，并在返回 `Ok(())` 前排空 facade 已接收的 delivery，包括 handler、settlement 和 retry；显式 `Immediate` 仍按原有取消语义处理。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在 provider 队列中的消息；这类消息尚未被 facade 接收，EOF 排空无法恢复它们。再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
+应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。provider 的 `receive` 返回 `Closed` 后，`run` 停止继续接收，并在返回 `Ok(())` 前排空 facade 已接收的 delivery，包括 handler、settlement 和 retry；显式 `Immediate` 仍按原有取消语义处理。成功执行 `close().await` 并完成 receiver 清理后，session 会释放自己的 handler 回调及其捕获对象；run 暂停或 close 失败时仍保留回调，以便恢复或重试。关闭句柄仍可读取 run state、terminal failure 和 delivery metrics。`close().await` 会将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在 provider 队列中的消息；这类消息尚未被 facade 接收，EOF 排空无法恢复它们。再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
 运行器借用订阅句柄期间，应用监控器应保留该句柄。应用可设置启动宽限期，在宽限期结束前不对 `Unstarted` 告警；对意外的 `Paused` 或 `Stopped` 告警。调用 `monitor_run_state(subscription.run_state(), startup_grace_elapsed, alert)`，传入句柄状态、宽限期是否已结束以及应用的告警回调；遇到未来新增的未知状态时也会进入告警分支：
 
@@ -1810,6 +1823,10 @@ if !cleanup_errors.is_empty() {
 
 用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、处理方 ID、重试次数和最终错误。
 
+停机时的关闭错误历史保留最早 256 条详细记录。`SubscriptionCloseErrors::len()` 和 `iter()` 只描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。即使截断，shutdown 仍返回错误，source 指向首个保留错误。此限制只约束记录数，不约束单条 provider 错误的大小或应用保留的快照；需要完整归档时，应在显式关闭订阅时记录每条错误。
+
+如果 provider 把属于另一订阅的 settlement token 交给 facade，该订阅会以 invalid-token 终止，不会通过错误 receiver 结算，也不会把投递计为完成。修复 provider 的 token 所有权；后续恢复取决于 durable/ephemeral 契约。
+
 ## 投递缺口与接纳检查
 
 provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过 `Subscription::terminal_failure()` 查看稳定的 `SubscriptionStopReason::Gap`；异步 `run()` 会返回包含该原因的 `ReceiveError::Stopped`。只有消费者能够接受消息遗漏并希望继续处理后续消息时，才设置 `GapPolicy::Continue`。两种策略都会发出缺口诊断。
@@ -1817,6 +1834,13 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `Stop` 策略会先保留终止 Gap 并停止接收和启动新的 handler，再调用诊断回调；`Continue` 仍会发出诊断并允许处理后续消息。可用 `cargo test --locked --test gap_policy_sync_tests` 与 `cargo test --locked --test gap_policy_async_tests` 验证。
 
 只有 provider 能提供逐目标回执（如 local）时，才使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。Redis 应选择 `ProviderOrDestinationAccepted`；逐目标条件会在发布前返回 `UnsupportedVisibility`。可见 provider 的条件不满足时，`CheckedPublishError::Admission` 保留完整回执；部分目标已接纳时重试可能造成重复。provider 接纳不等于 handler 完成、磁盘 fsync 或业务写入成功。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
+
+
+### 下一个次版本的兼容性说明（0.21.x）
+
+- `SubscriptionCloseErrors::len()` 和 `iter()` 最多返回 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
+- 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
+- Strict 异步 conformance 要求 `AsyncConformanceHooks::subscribe_cancellation`。fixture 应取消一个已部分分配且仍 pending 的订阅，并证明资源可复用。完整 struct 字面量须初始化新字段，或使用 `..Default::default()`。
 
 ## 边界与实践清单
 
