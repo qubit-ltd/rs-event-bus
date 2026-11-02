@@ -4,6 +4,29 @@ These local measurements compare the pre-change baseline with the 2026-10-07
 retry-scheduler run. They describe resource shape on one machine, not
 performance guarantees or portable capacity thresholds.
 
+## Evidence status
+
+The exact temporary paths cited below were checked and are unavailable:
+complete raw logs and the exact source baseline are missing, so the historical
+excerpts cannot be fully reverified. The dates, commands, environment details,
+and measurements below are retained as recorded; the tables are not a
+replacement for the original output or a reproducible source snapshot. No
+current benchmark was run to recreate this historical evidence.
+
+For future measurements, archive the following together:
+
+- Every command and its exit code, plus complete stdout and stderr logs.
+- UTC run time, Rust/tool versions, OS, CPU, and relevant concurrency/load
+  conditions.
+- Source HEAD and relevant dirty diff, plus SHA-256 hashes for the manifest,
+  lockfile, and benchmark source.
+- Warmup and measured sample parameters, and the exact summary method (for
+  example, which samples feed a median and how failures are treated).
+- A SHA-256 checksum for each archived artifact.
+
+Remove or redact sensitive environment values before archiving; retain enough
+environment detail to explain the measurement conditions.
+
 ## Pre-change baseline: environment and commands
 
 - Rust: `rustc 1.94.0 (4a4ef493e 2026-03-02)`

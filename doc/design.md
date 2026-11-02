@@ -1077,7 +1077,7 @@ Details:
     envelope construction failure, publish failure) are recorded as
     `Diagnostic::InternalFailure` and stop the subscription. Ephemeral loss is
     counted where the facade can identify it.
-- Every terminal failure emits `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }`.
+- Every terminal handler failure emits `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }` once when the owned delivery reaches its terminal facade exit. This reports handler failure; it does not assert transport settlement or business completion.
 
 ### 7.6 Dead-letter recursion
 
@@ -1686,8 +1686,12 @@ Each payload-mode and durability combination also checks that, after publish
 returns successfully and before receive is called, closing makes a later
 receive return `Closed`. The runner does not verify that an opaque transport
 had a broker-readable backlog; it records the publish result and checks the
-post-close receive result. These checks use fresh factory instances. Case
-IDs may repeat across combinations; enumerate `report.cases()` and query
+post-close receive result. These checks use fresh factory instances and an
+independent identity for each durable probe. A provider author running against
+persistent infrastructure is responsible for supplying a disposable test
+namespace and cleaning up that namespace; the core runner does not delete
+provider state. Case IDs may repeat across combinations; enumerate
+`report.cases()` and query
 `report.case_context(index)` for the API, single payload mode, and durability.
 Global hook results and out-of-range indices have no context.
 
@@ -1737,6 +1741,16 @@ SPI input structs use private fields, constructors, and accessors, so adding a f
 is not a breaking change. Backend-specific extensions go through namespaced
 `ProviderOptions` or a separate extension trait. They do not keep adding methods to the minimal SPI.
 
+`ReceiveError::DeadLetterForwardFailed` has a required `source` field, and
+`pipeline::DeadLetterForwardError` is public. Callers that construct this
+variant or destructure all its fields must migrate; pattern matches that need
+selected fields should use `{ event_id, message, .. }`. Walk the standard
+`Error::source()` chain to inspect retained causes. When a cause is
+`qubit_retry::RetryError<DeadLetterForwardError>`, inspect `reason()`,
+`context()`, and `last_error()`; the last method may return `None` for
+cancellation or infrastructure termination. Applications that need this
+structure should depend on `qubit-retry` directly; core does not re-export it.
+
 ---
 
 ## 17. Non-goals and known limits
@@ -1746,7 +1760,7 @@ is not a breaking change. Backend-specific extensions go through namespaced
 - **Retry paths have different resource costs.** Ordinary synchronous handler retry backoff is scheduled by the receiver owner through `RetrySession`; it releases the handler execution permit while retaining the owned delivery and ordering lane. A blocking handler still occupies a permit. Synchronous publish retries and dead-letter forwarding have separate paths and are not claimed to be non-blocking; async execution avoids blocking an OS thread but does not by itself prove every scheduling permit is released.
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
-- **`provider_attempt` is provider-specific and may be unknown.** The SPI transports a non-zero count when a provider can establish it. Redis reports `Some(1)` for a newly read stream entry; pending and claimed entries remain `None` because their prior delivery count is not currently propagated. Facade-local retries remain in `retry_attempt`.
+- **`provider_attempt` is provider-specific and may be unknown.** In the referenced `rs-event-bus-redis` 0.7 checkout (HEAD `159b2b863c0afe17ae5db2286ecb01c3357b2df7`), a new stream entry reports `Some(1)`. Pending and claimed recovery performs an additional detailed `XPENDING` query; a value is trusted only if exactly one row matches the entry ID and current consumer owner, and the count is nonzero and representable as `u32`. Otherwise it is `None`. This is source verification, not integration validation with core 0.21; the provider dependency baseline is not aligned with core 0.21. The count does not prove exactly-once delivery, business completion, or complete recovery history. Facade-local retries remain in `retry_attempt`.
 - Async local rejects subscription-ID exhaustion before registering a mailbox.
   Sync and async local also preserve a ready message when settlement-token
   allocation is exhausted and return a structured receive error; they never wrap

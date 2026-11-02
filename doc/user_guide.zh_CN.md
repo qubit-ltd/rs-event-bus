@@ -606,7 +606,7 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
 }
 ```
 
-将返回的请求传给 `bus.subscribe`，并提供客户视图处理函数。处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题；`observe_diagnostics` 登记的回调会收到一条 `Diagnostic::DeliveryFailed`，其中包含尝试次数和最终错误。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型判断哪些失败值得重试，没有 policy 的 rule 或取消 token 会直接报配置错误，不会被静默忽略。重试期间这条消息一直占用 local 的积压名额。
+将返回的请求传给 `bus.subscribe`，并提供客户视图处理函数。处理函数返回 `Err` 时，库间隔 200 毫秒再次调用它，总共最多尝试 3 次。三次都失败后，这条消息按 `Discard` 处理：不再重试，也不会进入死信主题；`observe_diagnostics` 登记的回调会收到一条 `Diagnostic::DeliveryFailed`，其中包含尝试次数和最终错误。它只报告 handler 到达终态失败，不表示 transport 已结算或业务已完成。只设置 `retry_policy` 就会重试；`retry_rule` 用于按错误类型判断哪些失败值得重试，没有 policy 的 rule 或取消 token 会直接报配置错误，不会被静默忽略。重试期间这条消息一直占用 local 的积压名额。
 
 ### 由处理函数决定何时确认
 
@@ -866,6 +866,32 @@ impl Cursor<'_> {
 ```
 
 `error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发失败，异步 runner 会以 `ReceiveError::DeadLetterForwardFailed` 停止；同步 facade 会取消该订阅。源 token 保持未结算，诊断中会报告该失败。恢复方式取决于 provider 的 durability 和 close 语义：durable provider 可在恢复或重建订阅后重新投递未结算消息；ephemeral provider 关闭时可能丢弃消息。不要假设转发持续失败期间 facade 会重新运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::with_known_destination(topic_name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
+
+
+`ReceiveError::DeadLetterForwardFailed` 的 `source` 字段会保留转发错误对象。这是源码兼容性变化：显式构造该变体或完整解构字段的代码需要补上新字段；只需读取事件和消息时可写成 `ReceiveError::DeadLetterForwardFailed { event_id, message, .. }`。要检查重试信息，从 receive error 开始沿 `std::error::Error::source()` 链遍历，并将其中的原因向下转型为 `qubit_retry::RetryError<qubit_event_bus::pipeline::DeadLetterForwardError>`。随后读取 `reason()`、`context()` 和 `last_error()`；若重试因取消或基础设施错误终止，`last_error()` 可能是 `None`。要查看保留的应用错误，可检查 `retry_error.last_error()`，再继续遍历该错误的 `Error::source()` 链。应用需要这些类型时应直接依赖 `qubit-retry`；`qubit-event-bus` 不会重新导出它们。下面的代码放在相应 match 分支中，沿 source 链查找重试错误并读取终态元数据：
+
+```rust
+use std::error::Error;
+use qubit_event_bus::pipeline::DeadLetterForwardError;
+
+// `source` 是 DeadLetterForwardFailed 变体中的 boxed source 字段。
+let mut cause: &(dyn Error + 'static) = source.as_ref();
+loop {
+    if let Some(retry) = cause.downcast_ref::<
+        qubit_retry::RetryError<DeadLetterForwardError>
+    >() {
+        let reason = retry.reason();
+        let context = retry.context();
+        let last_error = retry.last_error();
+        // 记录或分类这些值；last_error 可能为 None。
+        let _ = (reason, context, last_error);
+    }
+    match cause.source() {
+        Some(parent) => cause = parent,
+        None => break,
+    }
+}
+```
 
 ## 需要拦截或过滤消息时
 
@@ -1846,6 +1872,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 0.21 版本包含自 0.20 以来累积的源码变化。请同步更新 core 依赖和受影响调用点。
 
 - 构造 `Diagnostic::AdmissionRejected` 时须提供真实 `subscription_id`；完整解构须添加该字段或使用 `..`。
+- 构造 `ReceiveError::DeadLetterForwardFailed` 时须提供新的 `source`，完整解构也须处理该字段；只匹配部分字段时可用 `..`。本手册前面的死信失败说明展示了如何遍历错误链、读取 `qubit_retry::RetryError<DeadLetterForwardError>` 元数据。应用应直接依赖 `qubit-retry`；core 不会重新导出它。
 - 完整 `AsyncConformanceHooks` 字面量须设置 `subscribe_cancellation` 或使用 `..Default::default()`。Strict provider 须提供 fixture：取消一个已部分分配且仍 pending 的订阅，并证明资源可复用。
 - `SubscriptionCloseErrors::len()` 与 `iter()` 最多暴露 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。

@@ -1018,7 +1018,7 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
   - 死信构造/发布过程中的内部错误（策略缺失、envelope 构造失败、发布失败）都以
     `Diagnostic::InternalFailure` 记录，并停止当前订阅；源 token 保持未结算，留给
     receiver 关闭后的 provider recovery 处理。
-- 每次终态失败都会发 `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }`。
+- 每次 handler 终态失败都会在 owned delivery 到达 facade 终态出口时恰好发送一次 `Diagnostic::DeliveryFailed { event_id, topic, subscription_id, subscriber_id, attempts, error }`。它报告 handler 失败，不表示 transport 已结算或业务已完成。
 
 ### 7.6 死信递归防护
 
@@ -1573,7 +1573,7 @@ Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持�
 
 每个载荷模式与 durability 组合还会检查：publish 返回成功后、调用 receive 前关闭，后续
 receive 返回 `Closed`。runner 不验证不透明 transport 是否真的有 broker 可读取的积压消息；
-它只记录 publish 结果并检查关闭后的 receive 结果。这些检查使用新的 factory 实例。不同组合可能出现相同 case ID；
+它只记录 publish 结果并检查关闭后的 receive 结果。这些检查为每个持久化探针使用独立身份和新的 factory 实例。provider 作者若连接持久化基础设施，须提供可丢弃的测试 namespace 并负责清理；core runner 不删除 provider 状态。不同组合可能出现相同 case ID；
 调用方可枚举 `report.cases()`，再用 `report.case_context(index)` 取得 API、单一载荷模式和
 durability。全局 hook 结果和越界索引没有组合上下文。
 
@@ -1615,6 +1615,13 @@ timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有�
 SPI 输入结构使用私有字段、构造函数和访问器，避免新增字段成为破坏性修改。
 后端特有扩展走命名空间化的 `ProviderOptions` 或独立扩展 trait，不向最小 SPI 持续加方法。
 
+`ReceiveError::DeadLetterForwardFailed` 现在必须提供 `source` 字段，
+`pipeline::DeadLetterForwardError` 也已公开。构造该变体或完整解构全部字段的调用方需要迁移；
+只读取部分字段时可写成 `{ event_id, message, .. }`。通过标准 `Error::source()` 链遍历保留的原因。
+若其中包含 `qubit_retry::RetryError<DeadLetterForwardError>`，可读取 `reason()`、`context()` 和
+`last_error()`；取消或基础设施终止时，`last_error()` 可能为 `None`。需要访问该结构的应用应直接依赖
+`qubit-retry`；core 不会重新导出它。
+
 ---
 
 ## 17. 非目标与已知边界
@@ -1626,7 +1633,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
-- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。Redis 新读到的 stream entry 报告 `Some(1)`；pending 和 claim 恢复路径暂不传递历史次数，因此保持 `None`。facade 本地重试仍单独记录在 `retry_attempt`。
+- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。本文参考的 `rs-event-bus-redis` 0.7 checkout（HEAD `159b2b863c0afe17ae5db2286ecb01c3357b2df7`）对新读到的 stream entry 报告 `Some(1)`。pending 与 claim 恢复会额外查询详细 `XPENDING`；仅当结果恰有一行、entry ID 与当前 consumer owner 均匹配，且 count 非零并可表示为 `u32` 时才采用该次数，否则为 `None`。这只是源码核对，不是该 provider 与 core 0.21 的集成验证；provider 依赖基线也未与 core 0.21 对齐。facade 本地重试仍单独记录在 `retry_attempt`。该次数不能证明恰好一次、业务完成或完整恢复历史。
 - Async local 在注册 mailbox 前拒绝订阅 ID 耗尽。同步和异步 local 在 settlement token
   耗尽时保留可接收消息并返回结构化 receive 错误；不会回绕 token 计数或静默丢弃事件。
 

@@ -606,7 +606,7 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
 }
 ```
 
-Pass the returned request to `bus.subscribe` with the customer-view handler. When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; a rule or cancellation token without a policy is rejected instead of being silently ignored. The message keeps its local outstanding slot for the whole retry.
+Pass the returned request to `bus.subscribe` with the customer-view handler. When the handler returns `Err`, the crate calls it again after 200 milliseconds, up to 3 attempts in total. After the third failure the message is `Discard`: no further retry and no dead-letter topic. The callback registered with `observe_diagnostics` receives one `Diagnostic::DeliveryFailed` carrying the attempt count and the final error. This reports the handler terminal failure; it does not mean transport settlement or business work completed. Setting `retry_policy` alone enables retries. `retry_rule` chooses which errors are worth retrying; a rule or cancellation token without a policy is rejected instead of being silently ignored. The message keeps its local outstanding slot for the whole retry.
 
 ### Let the handler decide when to acknowledge
 
@@ -866,6 +866,32 @@ impl Cursor<'_> {
 ```
 
 When `error_handler` returns `DeadLetter`, the facade forwards the failure to the dead-letter topic, even if `retry_policy` is also set. If forwarding fails, the async runner stops with `ReceiveError::DeadLetterForwardFailed`; the sync facade cancels that subscription. The source token remains unsettled and diagnostics report the failure. Recovery depends on provider durability and close semantics: a durable provider can redeliver the unsettled message after the subscription is resumed or recreated, while an ephemeral provider may discard it when closed. Do not assume the facade will rerun the handler while forwarding remains broken. The dead-letter event ID is stable for the same original event and subscriber, which helps consumers deduplicate, but does not promise exactly-once delivery. The dead-letter topic is ordinary: someone must subscribe to it, and an empty topic can still lose the record. Encoded transports also need a codec for `DeadLetterEvent<OrderCreated>`. `NoDestinations`, `NoneAccepted`, `Dropped`, and publish errors do not count as forwarding. Known partial acceptance completes the source delivery with a diagnostic because republishing the whole record may duplicate it. An opaque provider such as Redis meets the default policy only when its publish guarantee is at least `Accepted`. Use `DeadLetterPolicy::with_known_destination(topic_name)` when a reported consumer admission is required; subscription creation rejects that policy for opaque providers. Watch diagnostics for forwarding failures.
+
+
+The `source` field on `ReceiveError::DeadLetterForwardFailed` preserves the forwarding error. Adding it is a source compatibility change: explicit constructors and full field destructuring must be updated; a match that only needs the event and message can use `ReceiveError::DeadLetterForwardFailed { event_id, message, .. }`. To inspect retry metadata, walk `std::error::Error::source()` from the receive error and downcast a cause to `qubit_retry::RetryError<qubit_event_bus::pipeline::DeadLetterForwardError>`. Read `reason()`, `context()`, and `last_error()`; `last_error()` can be `None` when cancellation or an infrastructure failure ends the retry flow. For the retained application error, inspect `retry_error.last_error()` and then its `Error::source()` chain. Add a direct `qubit-retry` dependency when your application needs these types; `qubit-event-bus` does not re-export them. Inside the match arm below, walk the retained source chain and inspect the retry terminal metadata when present:
+
+```rust
+use std::error::Error;
+use qubit_event_bus::pipeline::DeadLetterForwardError;
+
+// `source` is the boxed source field from DeadLetterForwardFailed.
+let mut cause: &(dyn Error + 'static) = source.as_ref();
+loop {
+    if let Some(retry) = cause.downcast_ref::<
+        qubit_retry::RetryError<DeadLetterForwardError>
+    >() {
+        let reason = retry.reason();
+        let context = retry.context();
+        let last_error = retry.last_error();
+        // Record or classify these values; last_error can be None.
+        let _ = (reason, context, last_error);
+    }
+    match cause.source() {
+        Some(parent) => cause = parent,
+        None => break,
+    }
+}
+```
 
 ## Filter or intercept a message
 
@@ -1847,6 +1873,7 @@ Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only wh
 The 0.21 release includes source-level changes accumulated since 0.20. Update the core dependency and the affected call sites together.
 
 - `Diagnostic::AdmissionRejected` construction requires the actual `subscription_id`; exhaustive destructuring must add the field or use `..`.
+- `ReceiveError::DeadLetterForwardFailed` now requires a `source` when constructed, and full field destructuring must include it; matches that use selected fields can add `..`. The dead-letter failure guidance above shows how to traverse sources and inspect `qubit_retry::RetryError<DeadLetterForwardError>` metadata. Depend directly on `qubit-retry`; core does not re-export it.
 - Complete `AsyncConformanceHooks` literals must initialize `subscribe_cancellation` or use `..Default::default()`. Strict providers must supply a fixture that cancels a partially allocated pending subscription and proves its resources are reusable.
 - `SubscriptionCloseErrors::len()` and `iter()` expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
 - A `retry_rule` or `retry_cancellation_token` without `retry_policy` is rejected by request builders and facade execution. Add an explicit policy or remove the unused rule/token.
