@@ -18,6 +18,7 @@ use std::sync::mpsc;
 use std::task::Poll;
 use std::thread;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use qubit_clock::StdTimer;
 use qubit_event_bus::AsyncEventBus;
@@ -28,10 +29,15 @@ use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::ProviderOptions;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::StartPosition;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriberId;
@@ -39,6 +45,7 @@ use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
@@ -113,6 +120,121 @@ fn test_async_local_reports_capacity_rejection_per_destination() {
     assert!(matches!(first.admission_outcome(), AdmissionOutcome::Accepted(_)));
     assert!(matches!(second.admission_outcome(), AdmissionOutcome::NoneAccepted(_)));
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+}
+
+fn assert_async_pre_admission_error(error: &qubit_event_bus::error::SpiError, expected_kind: &str) {
+    assert_eq!(expected_kind, error.kind());
+    assert_eq!(Some(false), error.retryable());
+    assert_eq!(PublishEffect::NotAccepted, error.publish_effect());
+    assert!(matches!(
+        error,
+        qubit_event_bus::error::SpiError::Publish {
+            effect: PublishEffect::NotAccepted,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_async_local_pre_admission_failures_report_not_accepted() {
+    let make_message = |topic: &str, id: &str, payload, delay| {
+        qubit_event_bus::spi::OutboundMessage::new(
+            TopicAddress::new(topic).unwrap(),
+            EventId::new(id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            delay,
+            payload,
+        )
+    };
+    let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap();
+    let unsupported = make_message(
+        "invalid.payload",
+        "invalid-payload",
+        TransportPayload::Encoded(EncodedPayload::new(
+            Arc::from([1_u8, 2_u8]),
+            ContentType::APPLICATION_OCTET_STREAM,
+            None::<SchemaId>,
+        )),
+        None,
+    );
+    assert_async_pre_admission_error(
+        &block_on(spi.publish(unsupported)).unwrap_err(),
+        "unsupported_payload_mode",
+    );
+    let overflow = make_message(
+        "invalid.delay",
+        "invalid-delay",
+        TransportPayload::Native(Arc::new(1_u32)),
+        Some(Duration::MAX),
+    );
+    assert_async_pre_admission_error(&block_on(spi.publish(overflow)).unwrap_err(), "delay_deadline_overflow");
+
+    let closed = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap();
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        block_on(closed.shutdown(ShutdownMode::Immediate)).unwrap()
+    );
+    let closed_message = make_message(
+        "closed.topic",
+        "closed-topic",
+        TransportPayload::Native(Arc::new(1_u32)),
+        None,
+    );
+    assert_async_pre_admission_error(
+        &block_on(closed.publish(closed_message)).unwrap_err(),
+        "provider_closed",
+    );
+
+    let weighted = AsyncLocalEventBusSpi::new(
+        &LocalEventBusConfig::new().max_total_outstanding_weight_bytes(std::num::NonZeroUsize::new(16).unwrap()),
+    )
+    .unwrap();
+    let missing_weight = make_message(
+        "missing.weight",
+        "missing-weight",
+        TransportPayload::Native(Arc::new(1_u32)),
+        None,
+    );
+    assert_async_pre_admission_error(
+        &block_on(weighted.publish(missing_weight)).unwrap_err(),
+        "missing_native_payload_weight",
+    );
+
+    let conflict_spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap();
+    let mut first = block_on(conflict_spi.subscribe(spi_request_with_type(
+        990,
+        "first",
+        "typed.publish",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let mut second = block_on(conflict_spi.subscribe(spi_request_with_type(
+        991,
+        "second",
+        "typed.publish",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let conflict = make_message(
+        "typed.publish",
+        "typed-conflict",
+        TransportPayload::Native(Arc::new(String::from("wrong type"))),
+        None,
+    );
+    assert_async_pre_admission_error(
+        &block_on(conflict_spi.publish(conflict)).unwrap_err(),
+        "topic_type_conflict",
+    );
+    assert!(matches!(
+        block_on(first.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    assert!(matches!(
+        block_on(second.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
 }
 
 #[test]

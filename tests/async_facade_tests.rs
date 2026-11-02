@@ -847,42 +847,61 @@ fn test_async_subscription_runs_different_ordering_keys_concurrently() {
         )
         .unwrap();
     }
-    let state = Arc::new(std::sync::Mutex::new((false, 0_usize, Vec::<Waker>::new())));
-    let handler_state = state.clone();
-    let runner = std::thread::spawn(move || {
-        block_on(subscription.run(move |_| {
-            let state = handler_state.clone();
-            async move {
-                {
-                    state.lock().unwrap().1 += 1;
+    let gate = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+    let handler_gate = gate.clone();
+    let handler_started = started.clone();
+    let mut run = Box::pin(subscription.run(move |delivery| {
+        let gate = handler_gate.clone();
+        let started = handler_started.clone();
+        let payload = *delivery.payload();
+        async move {
+            started.lock().unwrap().push(payload);
+            std::future::poll_fn(|_| {
+                if gate.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
                 }
-                std::future::poll_fn(move |context| {
-                    let mut state = state.lock().unwrap();
-                    if state.0 {
-                        return std::task::Poll::Ready(());
-                    }
-                    state.2.push(context.waker().clone());
-                    std::task::Poll::Pending
-                })
-                .await;
-                Ok::<(), DeliveryError>(())
-            }
-        }))
-    });
+            })
+            .await;
+            Ok::<(), DeliveryError>(())
+        }
+    }));
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let observed = state.lock().unwrap().1;
-    let wakers = {
-        let mut state = state.lock().unwrap();
-        state.0 = true;
-        std::mem::take(&mut state.2)
-    };
-    for waker in wakers {
-        waker.wake();
+    let mut observed = Vec::new();
+    let mut snapshot = subscription.delivery_metrics().metrics;
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
+        observed = started.lock().unwrap().clone();
+        snapshot = subscription.delivery_metrics().metrics;
+        if observed.len() == 2 && snapshot.running_handlers == 2 {
+            break;
+        }
     }
+    let gate_was_closed = !gate.load(Ordering::Acquire);
+    let mut observed_payloads = observed.clone();
+    observed_payloads.sort_unstable();
+    gate.store(true, Ordering::Release);
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
+        observed = started.lock().unwrap().clone();
+        if observed.len() == 2 {
+            break;
+        }
+    }
+    drop(run);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
-    runner.join().unwrap().unwrap();
-    assert_eq!(observed, 2, "different ordering keys should make progress in parallel");
+    assert_eq!(
+        observed_payloads,
+        vec![1, 2],
+        "both payloads must start; last snapshot: {snapshot:?}"
+    );
+    assert!(gate_was_closed, "both handlers must start while the gate is closed");
+    assert_eq!(
+        snapshot.running_handlers, 2,
+        "both handlers must be running concurrently"
+    );
 }
 
 #[test]
@@ -913,42 +932,59 @@ fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
         )
         .unwrap();
     }
-    let state = Arc::new(std::sync::Mutex::new((false, 0_usize, Vec::<Waker>::new())));
-    let handler_state = state.clone();
-    let runner = std::thread::spawn(move || {
-        block_on(subscription.run(move |_| {
-            let state = handler_state.clone();
-            async move {
-                state.lock().unwrap().1 += 1;
-                std::future::poll_fn(move |context| {
-                    let mut state = state.lock().unwrap();
-                    if state.0 {
-                        return std::task::Poll::Ready(());
-                    }
-                    state.2.push(context.waker().clone());
-                    std::task::Poll::Pending
-                })
-                .await;
-                Ok::<(), DeliveryError>(())
-            }
-        }))
-    });
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let observed = state.lock().unwrap().1;
-    let wakers = {
-        let mut state = state.lock().unwrap();
-        state.0 = true;
-        std::mem::take(&mut state.2)
-    };
-    for waker in wakers {
-        waker.wake();
+    let gate = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+    let handler_gate = gate.clone();
+    let handler_started = started.clone();
+    let mut run = Box::pin(subscription.run(move |delivery| {
+        let gate = handler_gate.clone();
+        let started = handler_started.clone();
+        let payload = *delivery.payload();
+        async move {
+            started.lock().unwrap().push(payload);
+            std::future::poll_fn(|_| {
+                if gate.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            Ok::<(), DeliveryError>(())
+        }
+    }));
+
+    let mut snapshot = subscription.delivery_metrics().metrics;
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
+        snapshot = subscription.delivery_metrics().metrics;
+        if snapshot.lane_waiting == 1 {
+            break;
+        }
     }
+    let started_before_release = started.lock().unwrap().clone();
+    let lane_waiting = snapshot.lane_waiting;
+    gate.store(true, Ordering::Release);
+    let mut started_after_release = started_before_release.clone();
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(run.as_mut());
+        started_after_release = started.lock().unwrap().clone();
+        if started_after_release == [1, 2] {
+            break;
+        }
+    }
+    drop(run);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
-    runner.join().unwrap().unwrap();
     assert_eq!(
-        observed, 1,
-        "a later message with the same key must wait for its predecessor"
+        lane_waiting, 1,
+        "second delivery must already be owned; last snapshot: {snapshot:?}"
     );
+    assert_eq!(
+        started_before_release,
+        vec![1],
+        "the successor must not bypass its predecessor"
+    );
+    assert_eq!(started_after_release, vec![1, 2], "both payloads must start in order");
 }
 
 #[test]

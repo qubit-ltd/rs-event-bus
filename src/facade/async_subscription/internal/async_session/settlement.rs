@@ -46,19 +46,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let mut selected = None;
         for (index, delivery) in self.completed.iter_mut().enumerate() {
             let progress = &mut delivery.settlement;
-            if progress.infrastructure_error.is_some()
-                || progress.cancelled
-                || stopping_immediately
-                || progress.elapsed(self.inner.timer.as_ref()).is_err()
-                || progress
-                    .elapsed(self.inner.timer.as_ref())
-                    .is_ok_and(|elapsed| elapsed >= progress.due)
-            {
-                selected = Some(index);
+            if progress.infrastructure_error.is_some() || progress.cancelled || stopping_immediately {
+                selected = Some((index, None));
+                break;
+            }
+            let elapsed = progress.elapsed(self.inner.timer.as_ref());
+            if elapsed.as_ref().map_or(true, |value| *value >= progress.due) {
+                selected = Some((index, Some(elapsed)));
                 break;
             }
         }
-        let Some(index) = selected else {
+        let Some((index, elapsed_sample)) = selected else {
             return false;
         };
         if self.signals.terminal_failure().is_some() {
@@ -134,7 +132,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.stop_infrastructure(index, error, None);
             return true;
         }
-        let elapsed = match pending.settlement.elapsed(self.inner.timer.as_ref()) {
+        let elapsed_result = elapsed_sample.unwrap_or_else(|| pending.settlement.elapsed(self.inner.timer.as_ref()));
+        let elapsed = match elapsed_result {
             Ok(elapsed) => elapsed,
             Err(error) => {
                 self.stop_infrastructure(index, error, None);
@@ -460,6 +459,338 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             && !delivery.settlement.confirmed
         {
             self.record_abandoned_delivery();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::io::Error;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    use std::time::Duration;
+    use std::time::SystemTime;
+
+    use qubit_clock::ManualMonotonicClock;
+    use qubit_clock::MonotonicClock;
+    use qubit_clock::MonotonicInstant;
+    use qubit_clock::TimeError;
+    use qubit_clock::Timer;
+    use qubit_clock::TimerFuture;
+
+    use crate::Diagnostic;
+    use crate::EventBusFacadeConfig;
+    use crate::SpiError;
+    use crate::facade::AsyncEventBus;
+    use crate::model::EventId;
+    use crate::model::ProviderId;
+    use crate::model::PublishAcknowledgement;
+    use crate::model::SubscribeRequest;
+    use crate::model::Topic;
+    use crate::spi::AsyncEventBusSpi;
+    use crate::spi::AsyncEventSubscriptionSpi;
+    use crate::spi::DelayedDeliveryCapability;
+    use crate::spi::DeliveryDisposition;
+    use crate::spi::DurabilityCapability;
+    use crate::spi::EventBusCapabilities;
+    use crate::spi::InboundMessage;
+    use crate::spi::OrderingCapability;
+    use crate::spi::OutboundMessage;
+    use crate::spi::PayloadModes;
+    use crate::spi::PublishGuarantee;
+    use crate::spi::PublishVisibility;
+    use crate::spi::ReceiveOutcome;
+    use crate::spi::ReplayCapability;
+    use crate::spi::SettlementCapabilities;
+    use crate::spi::SettlementToken;
+    use crate::spi::ShutdownMode;
+    use crate::spi::ShutdownOutcome;
+    use crate::spi::SpiFuture;
+    use crate::spi::SpiSubscriptionRequest;
+    use crate::spi::SubscriptionModes;
+    use crate::spi::TopicAddress;
+    use crate::spi::TransportPayload;
+
+    #[derive(Clone, Copy)]
+    enum InjectedClockFault {
+        ForeignDomain,
+        EarlierInstant,
+    }
+
+    struct SingleErrorTimer {
+        normal: ManualMonotonicClock,
+        foreign: ManualMonotonicClock,
+        earlier: MonotonicInstant,
+        fault: InjectedClockFault,
+        armed: AtomicBool,
+        samples: AtomicUsize,
+    }
+
+    impl SingleErrorTimer {
+        fn new(fault: InjectedClockFault) -> Self {
+            let normal = ManualMonotonicClock::new();
+            let earlier = normal.now();
+            normal.advance(Duration::from_secs(1)).expect("advance normal clock");
+            Self {
+                normal,
+                foreign: ManualMonotonicClock::new(),
+                earlier,
+                fault,
+                armed: AtomicBool::new(false),
+                samples: AtomicUsize::new(0),
+            }
+        }
+
+        fn arm(&self) {
+            self.armed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl MonotonicClock for SingleErrorTimer {
+        fn domain(&self) -> qubit_clock::ClockDomain {
+            self.normal.domain()
+        }
+
+        fn now(&self) -> MonotonicInstant {
+            self.samples.fetch_add(1, Ordering::SeqCst);
+            if self.armed.swap(false, Ordering::SeqCst) {
+                match self.fault {
+                    InjectedClockFault::ForeignDomain => self.foreign.now(),
+                    InjectedClockFault::EarlierInstant => self.earlier,
+                }
+            } else {
+                self.normal.now()
+            }
+        }
+
+        fn new_timer(&self) -> std::sync::Arc<dyn Timer> {
+            self.normal.new_timer()
+        }
+    }
+
+    impl Timer for SingleErrorTimer {
+        fn clock(&self) -> &dyn MonotonicClock {
+            self
+        }
+
+        fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+            self.normal.new_timer().at(deadline)
+        }
+    }
+
+    struct ProviderState {
+        message: Option<InboundMessage>,
+        settle_calls: usize,
+    }
+
+    struct RetryProvider {
+        state: std::sync::Arc<Mutex<ProviderState>>,
+    }
+
+    impl AsyncEventBusSpi for RetryProvider {
+        fn capabilities(&self) -> EventBusCapabilities {
+            EventBusCapabilities::new(
+                PayloadModes::Native,
+                SettlementCapabilities::AcceptRetryReject,
+                OrderingCapability::None,
+                DelayedDeliveryCapability::None,
+                DurabilityCapability::Ephemeral,
+                SubscriptionModes::EPHEMERAL,
+                false,
+                ReplayCapability::None,
+                PublishGuarantee::Accepted,
+                PublishVisibility::Opaque,
+            )
+        }
+
+        fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+            Box::pin(async {
+                Err(SpiError::Operation {
+                    provider_id: "single-clock".into(),
+                    operation: "publish",
+                    resource: None,
+                    kind: "unused",
+                    retryable: Some(false),
+                    source: Box::new(Error::other("unused")),
+                })
+            })
+        }
+
+        fn subscribe<'a>(
+            &'a self,
+            request: SpiSubscriptionRequest,
+        ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                Ok(Box::new(RetryReceiver {
+                    id: request.subscription_id(),
+                    state,
+                }) as Box<dyn AsyncEventSubscriptionSpi>)
+            })
+        }
+
+        fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+            Box::pin(async { Ok(ShutdownOutcome::Complete) })
+        }
+    }
+
+    struct RetryReceiver {
+        id: qubit_id::Id,
+        state: std::sync::Arc<Mutex<ProviderState>>,
+    }
+
+    impl AsyncEventSubscriptionSpi for RetryReceiver {
+        fn receive<'a>(&'a mut self, _: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                if let Some(message) = state.lock().expect("provider state").message.take() {
+                    Ok(ReceiveOutcome::Message(message))
+                } else {
+                    std::future::pending().await
+                }
+            })
+        }
+
+        fn settle<'a>(
+            &'a mut self,
+            token: &SettlementToken,
+            _: DeliveryDisposition,
+        ) -> SpiFuture<'a, Result<(), SpiError>> {
+            assert!(token.belongs_to(self.id));
+            self.state.lock().expect("provider state").settle_calls += 1;
+            Box::pin(async {
+                Err(SpiError::Operation {
+                    provider_id: "single-clock".into(),
+                    operation: "settle",
+                    resource: None,
+                    kind: "temporary",
+                    retryable: Some(true),
+                    source: Box::new(Error::other("injected retryable settlement failure")),
+                })
+            })
+        }
+
+        fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        loop {
+            if let Poll::Ready(result) = Future::poll(Pin::as_mut(&mut future), &mut context) {
+                return result;
+            }
+        }
+    }
+
+    #[test]
+    fn test_settlement_single_clock_error_is_retained() {
+        assert_single_clock_error_is_retained(InjectedClockFault::ForeignDomain);
+        assert_single_clock_error_is_retained(InjectedClockFault::EarlierInstant);
+    }
+
+    fn assert_single_clock_error_is_retained(fault: InjectedClockFault) {
+        let state = std::sync::Arc::new(Mutex::new(ProviderState {
+            message: None,
+            settle_calls: 0,
+        }));
+        let timer = std::sync::Arc::new(SingleErrorTimer::new(fault));
+        let bus = AsyncEventBus::with_config_and_timer(
+            ProviderId::new("single-clock").expect("provider id"),
+            std::sync::Arc::new(RetryProvider { state: state.clone() }),
+            EventBusFacadeConfig::default(),
+            timer.clone(),
+        )
+        .expect("bus");
+        let subscription = block_on(bus.subscribe(
+            SubscribeRequest::new("single-clock", Topic::<u32>::new("clock.topic").expect("topic")).expect("request"),
+        ))
+        .expect("subscription");
+        let token = SettlementToken::new(subscription.id(), "single-token");
+        state.lock().expect("provider state").message = Some(InboundMessage::new(
+            TopicAddress::new("clock.topic").expect("topic address"),
+            EventId::new("clock-event").expect("event id"),
+            SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            TransportPayload::Native(std::sync::Arc::new(7_u32)),
+            Some(token),
+            Default::default(),
+        ));
+        let handler_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed_calls = handler_calls.clone();
+        let mut run = Box::pin(subscription.run(move |_| {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        for _ in 0..256 {
+            assert!(matches!(run.as_mut().poll(&mut context), Poll::Pending));
+            if state.lock().expect("provider state").settle_calls == 1 {
+                break;
+            }
+        }
+        assert_eq!(state.lock().expect("provider state").settle_calls, 1);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+        drop(run);
+
+        let stopped_diagnostics = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed_stops = stopped_diagnostics.clone();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            if matches!(diagnostic, Diagnostic::SettlementStopped { .. }) {
+                observed_stops.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let mut lease = block_on(subscription.control.lease()).expect("retained session lease");
+        timer.arm();
+        timer.samples.store(0, Ordering::SeqCst);
+        let session = lease.session.as_mut().expect("leased session");
+        let progressed = block_on(session.settle_ready());
+
+        assert_eq!(
+            timer.samples.load(Ordering::SeqCst),
+            2,
+            "one-shot error must hit filter sampling, then recovery sampling"
+        );
+        assert_eq!(
+            state.lock().expect("provider state").settle_calls,
+            1,
+            "no provider retry before due"
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1, "completed handler is retained");
+        assert_eq!(stopped_diagnostics.load(Ordering::SeqCst), 1);
+        assert!(progressed, "the filter error must be retained and published terminally");
+        let Some(reason) = session.signals.terminal_failure() else {
+            panic!("the original one-shot clock error must become the first stop cause");
+        };
+        let crate::model::SubscriptionStopReason::Settlement {
+            termination: crate::model::SettlementTermination::InfrastructureFailure,
+            error,
+            ..
+        } = reason.as_ref()
+        else {
+            panic!("one-shot clock failure must be classified as InfrastructureFailure");
+        };
+        let Some(source) =
+            std::error::Error::source(error.as_ref()).and_then(|source| source.downcast_ref::<TimeError>())
+        else {
+            panic!("the original TimeError source must be retained");
+        };
+        match (fault, source) {
+            (InjectedClockFault::ForeignDomain, TimeError::ClockDomainMismatch { .. })
+            | (InjectedClockFault::EarlierInstant, TimeError::InvalidInstantOrder { .. }) => {}
+            _ => panic!("the source must match the injected clock fault"),
         }
     }
 }

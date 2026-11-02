@@ -4509,6 +4509,7 @@ fn test_sync_settlement_terminal_classification_preserves_error_arc_and_first_re
         );
         let bus = EventBus::with_config(ProviderId::new("sync-test").expect("provider"), backend.clone(), config)
             .expect("bus");
+        let cleanup = SyncBusCleanup::new(bus.clone());
         let (failed_tx, failed_rx) = mpsc::channel();
         let (stopped_tx, stopped_rx) = mpsc::channel();
         let _observer = bus.observe_diagnostics(move |diagnostic| match diagnostic {
@@ -4587,6 +4588,8 @@ fn test_sync_settlement_terminal_classification_preserves_error_arc_and_first_re
             0
         );
         assert_eq!(bus.delivery_metrics(), metrics);
+        let report = cleanup.finish().expect("release the shared handler pool");
+        assert_eq!(report.outcome, ShutdownOutcome::Complete);
         drop(bus);
         assert_eq!(
             subscription.delivery_metrics().metrics,

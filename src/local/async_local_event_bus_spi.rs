@@ -27,6 +27,7 @@ use super::internal::AsyncMailbox;
 use super::internal::MailboxKey;
 use super::local_event_bus_spi::missing_native_payload_weight_error;
 use super::local_event_bus_spi::operation_error;
+use super::local_event_bus_spi::pre_admission_publish_error;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
@@ -157,14 +158,13 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
         Box::pin(async move {
             let topic = message.topic().clone();
             if !matches!(message.payload(), TransportPayload::Native(_)) {
-                return Err(operation_error(
-                    "publish",
+                return Err(pre_admission_publish_error(
                     Some(topic.as_str()),
                     "unsupported_payload_mode",
                 ));
             }
             let mut event = LocalEvent::transport(topic.clone(), &message)
-                .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
+                .ok_or_else(|| pre_admission_publish_error(Some(topic.as_str()), "delay_deadline_overflow"))?;
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),
@@ -172,14 +172,14 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             let mailboxes = {
                 let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if bus.closed {
-                    return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
+                    return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
                 }
                 if bus
                     .payload_types
                     .get(&topic)
                     .is_some_and(|previous| *previous != payload_type)
                 {
-                    return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
+                    return Err(pre_admission_publish_error(Some(topic.as_str()), "topic_type_conflict"));
                 }
                 bus.mailboxes_for_topic(&topic)
             };

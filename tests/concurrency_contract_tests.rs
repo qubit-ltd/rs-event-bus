@@ -27,6 +27,7 @@ mod local_spi_contract {
     use qubit_event_bus::model::Headers;
     use qubit_event_bus::model::ProviderOptions;
     use qubit_event_bus::model::PublishAcknowledgement;
+    use qubit_event_bus::model::PublishEffect;
     use qubit_event_bus::model::StartPosition;
     use qubit_event_bus::model::SubscriberId;
     use qubit_event_bus::model::SubscriptionDurability;
@@ -94,9 +95,9 @@ mod local_spi_contract {
                     ));
                 }
             }
-            Err(SpiError::Operation {
-                operation: "publish",
+            Err(SpiError::Publish {
                 kind: "provider_closed",
+                effect: PublishEffect::NotAccepted,
                 ..
             }) => {}
             Err(error) => panic!("unexpected publish error during lifecycle race: {error}"),
@@ -147,9 +148,9 @@ mod local_spi_contract {
                 .unwrap_err();
             assert!(matches!(
                 error,
-                SpiError::Operation {
-                    operation: "publish",
+                SpiError::Publish {
                     kind: "provider_closed",
+                    effect: PublishEffect::NotAccepted,
                     ..
                 }
             ));

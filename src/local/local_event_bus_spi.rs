@@ -190,17 +190,17 @@ impl EventBusSpi for LocalEventBusSpi {
         let topic = message.topic().clone();
         validate_message(&message, &topic)?;
         let mut event = LocalEvent::transport(topic.clone(), &message)
-            .ok_or_else(|| operation_error("publish", Some(topic.as_str()), "delay_deadline_overflow"))?;
+            .ok_or_else(|| pre_admission_publish_error(Some(topic.as_str()), "delay_deadline_overflow"))?;
         let payload_type_id = native_payload_type_id(message.payload());
         let queues = {
             let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.closed {
-                return Err(operation_error("publish", Some(topic.as_str()), "provider_closed"));
+                return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
             }
             let queues = state.live_queues_for_topic(&topic);
             let bucket = state.topics.get(&topic);
             if bucket.is_some_and(|bucket| bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)) {
-                return Err(operation_error("publish", Some(topic.as_str()), "topic_type_conflict"));
+                return Err(pre_admission_publish_error(Some(topic.as_str()), "topic_type_conflict"));
             }
             queues
         };
@@ -431,8 +431,7 @@ impl EventBusSpi for LocalEventBusSpi {
 fn validate_message(message: &OutboundMessage, topic: &TopicAddress) -> Result<(), SpiError> {
     match message.payload() {
         TransportPayload::Native(_) => Ok(()),
-        TransportPayload::Encoded(_) => Err(operation_error(
-            "publish",
+        TransportPayload::Encoded(_) => Err(pre_admission_publish_error(
             Some(topic.as_str()),
             "unsupported_payload_mode",
         )),
@@ -478,25 +477,30 @@ pub(super) fn operation_error(operation: &'static str, resource: Option<&str>, k
     }
 }
 
-/// Builds a pre-admission rejection when a required local payload weight is
-/// absent.
+/// Builds a local publish error for a failure before any destination is
+/// admitted.
 ///
 /// # Parameters
-/// - `topic`: topic whose publication omitted its required native weight.
+/// - `resource`: optional topic or resource identity.
+/// - `kind`: stable provider error kind.
 ///
 /// # Returns
 /// A non-retryable publish error that explicitly proves no destination was
 /// admitted.
-pub(super) fn missing_native_payload_weight_error(topic: &str) -> SpiError {
-    const KIND: &str = "missing_native_payload_weight";
+pub(super) fn pre_admission_publish_error(resource: Option<&str>, kind: &'static str) -> SpiError {
     SpiError::Publish {
         provider_id: "local".into(),
-        resource: Some(topic.into()),
-        kind: KIND,
+        resource: resource.map(Into::into),
+        kind,
         retryable: Some(false),
         effect: PublishEffect::NotAccepted,
-        source: Box::new(IoError::other(KIND)) as Box<dyn Error + Send + Sync>,
+        source: Box::new(IoError::other(kind)) as Box<dyn Error + Send + Sync>,
     }
+}
+
+/// Builds the stable local error for a missing required native payload weight.
+pub(super) fn missing_native_payload_weight_error(topic: &str) -> SpiError {
+    pre_admission_publish_error(Some(topic), "missing_native_payload_weight")
 }
 
 /// Builds a provider-tagged invalid-token failure with its stable reason.

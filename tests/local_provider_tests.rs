@@ -397,13 +397,7 @@ fn test_topic_type_conflict_publish_is_atomic() {
     );
 
     let error = spi.publish(message).unwrap_err();
-    assert!(matches!(
-        error,
-        SpiError::Operation {
-            kind: "topic_type_conflict",
-            ..
-        }
-    ));
+    assert_pre_admission_publish_error(&error, "topic_type_conflict");
     assert!(matches!(
         first.receive(Duration::ZERO).unwrap(),
         ReceiveOutcome::TimedOut
@@ -412,6 +406,98 @@ fn test_topic_type_conflict_publish_is_atomic() {
         second.receive(Duration::ZERO).unwrap(),
         ReceiveOutcome::TimedOut
     ));
+
+    let bus = EventBus::local(LocalEventBusConfig::default()).unwrap();
+    let topic = Topic::<u32>::new("facade.typed.publish").unwrap();
+    let _subscription = bus
+        .subscribe(SubscribeRequest::new("facade-typed-subscriber", topic).unwrap(), |_| {})
+        .unwrap();
+    let event_id = EventId::new("facade-typed-conflict").unwrap();
+    let request = PublishRequest::<String>::builder()
+        .topic(Topic::new("facade.typed.publish").unwrap())
+        .payload(String::from("wrong type"))
+        .event_id(event_id.clone())
+        .build()
+        .unwrap();
+    let failure = bus.publish(request).unwrap_err();
+    assert_eq!(event_id, *failure.event_id());
+    assert_eq!(qubit_event_bus::model::PublishEffect::NotAccepted, failure.effect());
+    assert!(matches!(
+        failure.cause(),
+        qubit_event_bus::error::PublishError::Spi(SpiError::Publish {
+            kind: "topic_type_conflict",
+            ..
+        })
+    ));
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+}
+
+fn assert_pre_admission_publish_error(error: &SpiError, expected_kind: &str) {
+    assert_eq!(expected_kind, error.kind());
+    assert_eq!(Some(false), error.retryable());
+    assert_eq!(
+        qubit_event_bus::model::PublishEffect::NotAccepted,
+        error.publish_effect()
+    );
+    assert!(matches!(
+        error,
+        SpiError::Publish {
+            effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_local_pre_admission_failures_report_not_accepted() {
+    use std::num::NonZeroUsize;
+
+    use qubit_event_bus::model::ContentType;
+    use qubit_event_bus::model::SchemaId;
+    use qubit_event_bus::spi::EncodedPayload;
+
+    let unsupported = OutboundMessage::new(
+        TopicAddress::new("invalid.payload").unwrap(),
+        EventId::new("invalid-payload").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Encoded(EncodedPayload::new(
+            Arc::from([1_u8, 2_u8]),
+            ContentType::APPLICATION_OCTET_STREAM,
+            None::<SchemaId>,
+        )),
+    );
+    assert_pre_admission_publish_error(
+        &create(&LocalEventBusConfig::default())
+            .publish(unsupported)
+            .unwrap_err(),
+        "unsupported_payload_mode",
+    );
+
+    let overflow = outbound_with_delay("invalid.delay", 1, Some(Duration::MAX));
+    assert_pre_admission_publish_error(
+        &create(&LocalEventBusConfig::default()).publish(overflow).unwrap_err(),
+        "delay_deadline_overflow",
+    );
+
+    let closed = create(&LocalEventBusConfig::default());
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        closed.shutdown(ShutdownMode::Immediate).unwrap()
+    );
+    assert_pre_admission_publish_error(
+        &closed.publish(outbound("closed.topic", 1)).unwrap_err(),
+        "provider_closed",
+    );
+
+    let weighted =
+        create(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(NonZeroUsize::new(16).unwrap()));
+    assert_pre_admission_publish_error(
+        &weighted.publish(outbound("missing.weight", 1)).unwrap_err(),
+        "missing_native_payload_weight",
+    );
 }
 
 #[test]

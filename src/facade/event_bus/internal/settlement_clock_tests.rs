@@ -33,11 +33,13 @@ use qubit_retry::RetryPolicy;
 
 use crate::DeliveryError;
 use crate::Diagnostic;
+use crate::error::ShutdownError;
 use crate::error::SpiError;
 use crate::facade::DeliverySchedulingConfig;
 use crate::facade::EventBus;
 use crate::facade::EventBusFacadeConfig;
 use crate::facade::SettlementRetryConfig;
+use crate::facade::ShutdownReport;
 use crate::model::Delivery;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
@@ -58,6 +60,39 @@ use crate::spi::SettlementToken;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::SpiSubscriptionRequest;
+
+/// Owns a clock test bus and shuts down its handler pool on every exit path.
+struct TestBusCleanup(Option<EventBus>);
+
+impl TestBusCleanup {
+    /// Creates a cleanup guard for a test bus.
+    fn new(bus: EventBus) -> Self {
+        Self(Some(bus))
+    }
+
+    /// Shuts down the bus and returns the completed shutdown report.
+    fn finish(mut self) -> Result<ShutdownReport, ShutdownError> {
+        self.0
+            .take()
+            .expect("cleanup owns its bus")
+            .shutdown(ShutdownMode::Immediate)
+    }
+}
+
+impl Drop for TestBusCleanup {
+    fn drop(&mut self) {
+        if let Some(bus) = self.0.take()
+            && let Err(error) = bus.shutdown(ShutdownMode::Immediate)
+        {
+            eprintln!("clock test shutdown failed: {error}");
+        }
+    }
+}
+
+fn finish_test_bus_cleanup(cleanup: TestBusCleanup) {
+    let report = cleanup.finish().expect("clock test bus shutdown succeeds");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+}
 
 /// Samples immutable instants before notifying the test, avoiding clock-advance
 /// races.
@@ -173,6 +208,7 @@ fn test_sync_settlement_clock_wake_respects_backoff_and_total_deadline() {
     );
     let bus = EventBus::with_config_and_clock(ProviderId::new("clock-test").expect("provider"), spi, config, clock)
         .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let (failed_tx, failed_rx) = mpsc::channel();
     let (stopped_tx, stopped_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| match diagnostic {
@@ -233,6 +269,7 @@ fn test_sync_settlement_clock_wake_respects_backoff_and_total_deadline() {
         })
     ));
     subscription.cancel().expect("cleanup");
+    finish_test_bus_cleanup(cleanup);
 }
 
 /// Changes domains only after the provider was called, exercising checked
@@ -277,6 +314,7 @@ fn test_sync_settlement_clock_domain_failure_keeps_structured_source_and_attempt
         clock,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let (stopped_tx, stopped_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementStopped { error, .. } = diagnostic {
@@ -315,6 +353,7 @@ fn test_sync_settlement_clock_domain_failure_keeps_structured_source_and_attempt
             .is_some()
     );
     subscription.cancel().expect("cleanup");
+    finish_test_bus_cleanup(cleanup);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
@@ -332,6 +371,7 @@ fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
         config,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let topic = Topic::<u32>::new("registry.churn").expect("topic");
     let mut closed = Vec::with_capacity(1000);
     for index in 0..1000 {
@@ -368,6 +408,7 @@ fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
             .completed,
         1
     );
+    finish_test_bus_cleanup(cleanup);
     drop(bus);
     assert_eq!(
         closed
@@ -428,6 +469,7 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
         clock.clone(),
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let callback_gate = gate.clone();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -500,6 +542,7 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
     );
     drop(release);
     subscription.cancel().expect("cleanup");
+    finish_test_bus_cleanup(cleanup);
     assert!(Arc::ptr_eq(
         &reason,
         &subscription.terminal_failure().expect("first cause retained")
@@ -571,6 +614,7 @@ fn test_sync_successful_settlement_clock_failure_is_terminal_without_completed_o
         clock,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let (stopped_tx, stopped_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementStopped { error, .. } = diagnostic {
@@ -623,6 +667,7 @@ fn test_sync_successful_settlement_clock_failure_is_terminal_without_completed_o
     );
     assert_eq!(metrics.settlement_duration_count, 0);
     assert_eq!(bus.delivery_metrics(), metrics);
+    finish_test_bus_cleanup(cleanup);
 }
 
 /// Panics exactly once at the first claimed receive reservation.
@@ -778,6 +823,7 @@ fn test_sync_tokenless_handler_start_clock_panic_counts_abandoned_not_completed(
         clock,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let topic = Topic::<u32>::new("clock.tokenless-panic").expect("topic");
     let called = Arc::new(AtomicBool::new(false));
     let handler_called = called.clone();
@@ -888,6 +934,7 @@ fn test_sync_tokenless_handler_start_clock_panic_counts_abandoned_not_completed(
     );
     assert!(bus.inner.tracker.workers_are_idle());
     drop(bus);
+    finish_test_bus_cleanup(cleanup);
     drop(local);
 }
 
@@ -914,6 +961,7 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
             clock,
         )
         .expect("bus");
+        let cleanup = TestBusCleanup::new(bus.clone());
         let topic = Topic::<u32>::new("clock.panic").expect("topic");
         let subscription = bus
             .subscribe(SubscribeRequest::new("panic", topic.clone()).expect("request"), |_| {})
@@ -956,6 +1004,7 @@ fn test_sync_claimed_receive_clock_panic_releases_lease_and_finishes_owner() {
             .recv_timeout(Duration::from_secs(5))
             .expect("healthy handler after owner panic");
         healthy.cancel().expect("healthy cleanup");
+        finish_test_bus_cleanup(cleanup);
         drop(bus);
         drop(local);
         let _ = finished_tx.send(());
@@ -972,6 +1021,7 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
     for mode in ["terminal", "cancel", "immediate", "graceful"] {
         for stage in ["filter", "middleware", "retry"] {
             let bus = EventBus::local(Default::default()).expect("local bus");
+            let cleanup = TestBusCleanup::new(bus.clone());
             let topic = Topic::<u32>::new("handler.admission").expect("topic");
             let (entered_tx, entered_rx) = mpsc::channel();
             let (release_tx, release_rx) = mpsc::channel();
@@ -1107,6 +1157,7 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
                 subscription.delivery_metrics().metrics.handler_duration_count,
                 expected as u64
             );
+            finish_test_bus_cleanup(cleanup);
         }
     }
 }
@@ -1220,6 +1271,7 @@ fn test_sync_receive_stop_fences_scheduler_before_observer_callback() {
         config,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let blocker_topic = Topic::<u32>::new("fence.blocker").expect("topic");
     let bad_topic = Topic::<u32>::new("fence.bad").expect("topic");
     let healthy_topic = Topic::<u32>::new("fence.healthy").expect("topic");
@@ -1287,6 +1339,7 @@ fn test_sync_receive_stop_fences_scheduler_before_observer_callback() {
     bad.cancel().expect("cleanup");
     healthy.cancel().expect("cleanup");
     healthy_result.expect("healthy owner must advance while terminal observer remains blocked");
+    finish_test_bus_cleanup(cleanup);
 }
 
 /// Terminal attempt observers must see the first cause and admission fence
@@ -1313,6 +1366,7 @@ fn test_sync_terminal_settlement_failed_observer_sees_published_stop() {
         config,
     )
     .expect("bus");
+    let cleanup = TestBusCleanup::new(bus.clone());
     let weak = Arc::downgrade(&bus.inner);
     let (observed_tx, observed_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
@@ -1346,4 +1400,5 @@ fn test_sync_terminal_settlement_failed_observer_sees_published_stop() {
         published,
         "terminal SettlementFailed callbacks cannot precede stop publication"
     );
+    finish_test_bus_cleanup(cleanup);
 }
