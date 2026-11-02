@@ -12,11 +12,14 @@ mod support;
 use std::env::var;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
@@ -40,8 +43,11 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::TopicAddress;
 use qubit_event_bus::spi::TransportPayload;
 use support::manual_async::block_on;
@@ -214,6 +220,164 @@ impl Wake for CountWake {
     }
 }
 
+struct SettleOnClone {
+    callback: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+unsafe fn clone_settle_on_clone(pointer: *const ()) -> RawWaker {
+    // SAFETY: The pointer is an owned Arc<SettleOnClone> for each raw waker.
+    let probe = unsafe { &*pointer.cast::<SettleOnClone>() };
+    if let Some(callback) = probe.callback.lock().expect("callback lock").take() {
+        callback();
+    }
+    // SAFETY: Cloning adds one owned strong reference for the returned RawWaker.
+    unsafe { Arc::<SettleOnClone>::increment_strong_count(pointer.cast()) };
+    RawWaker::new(pointer, &SETTLE_ON_CLONE_VTABLE)
+}
+
+unsafe fn drop_settle_on_clone(pointer: *const ()) {
+    // SAFETY: This callback consumes one reference originating from Arc::into_raw.
+    drop(unsafe { Arc::<SettleOnClone>::from_raw(pointer.cast()) });
+}
+
+unsafe fn wake_settle_on_clone(pointer: *const ()) {
+    // SAFETY: wake consumes the same owned reference as drop.
+    unsafe { drop_settle_on_clone(pointer) };
+}
+
+unsafe fn wake_settle_on_clone_by_ref(_: *const ()) {}
+
+static SETTLE_ON_CLONE_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_settle_on_clone,
+    wake_settle_on_clone,
+    wake_settle_on_clone_by_ref,
+    drop_settle_on_clone,
+);
+
+fn raw_waker_settling_on_clone(callback: impl FnOnce() + Send + 'static) -> (Waker, Arc<SettleOnClone>) {
+    let probe = Arc::new(SettleOnClone {
+        callback: Mutex::new(Some(Box::new(callback))),
+    });
+    let pointer = Arc::into_raw(probe.clone()).cast();
+    // SAFETY: The vtable owns and releases the Arc reference represented by
+    // pointer.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &SETTLE_ON_CLONE_VTABLE)) };
+    (waker, probe)
+}
+
+fn busy_local_mailbox() -> (
+    Arc<AsyncLocalEventBusSpi>,
+    Box<dyn AsyncEventSubscriptionSpi>,
+    SettlementToken,
+) {
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).expect("local SPI"));
+    let mut receiver = block_on(spi.subscribe(support::fake_spi::subscription_request())).expect("receiver");
+    let message = OutboundMessage::new(
+        TopicAddress::new("test.topic").expect("topic"),
+        EventId::new("graceful-shutdown").expect("event id"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(73_u32)),
+    );
+    let _ = block_on(spi.publish(message)).expect("message admitted");
+    let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).expect("receive") else {
+        panic!("message must enter flight before graceful shutdown");
+    };
+    let token = message
+        .take_settlement()
+        .expect("in-flight message has settlement token");
+    (spi, receiver, token)
+}
+
+fn graceful_shutdown_registers_before_last_settlement() {
+    let (spi, receiver, token) = busy_local_mailbox();
+    let receiver = Arc::new(Mutex::new(receiver));
+    let settled = Arc::new(AtomicBool::new(false));
+    let callback_receiver = receiver.clone();
+    let callback_settled = settled.clone();
+    let (waker, _probe) = raw_waker_settling_on_clone(move || {
+        let mut receiver = callback_receiver.lock().expect("receiver lock");
+        block_on(receiver.settle(&token, DeliveryDisposition::Accept)).expect("settle last delivery");
+        callback_settled.store(true, Ordering::SeqCst);
+    });
+    let mut shutdown = spi.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful { timeout: Duration::MAX });
+    assert!(
+        matches!(
+            shutdown.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(qubit_event_bus::spi::ShutdownOutcome::Complete))
+        ),
+        "poll must observe the settlement performed by waker clone"
+    );
+    assert!(
+        settled.load(Ordering::SeqCst),
+        "clone settled the in-flight delivery exactly during poll"
+    );
+}
+
+fn graceful_shutdown_last_settlement_wakes_pending_waiter() {
+    let (spi, mut receiver, token) = busy_local_mailbox();
+    let wake = Arc::new(CountWake::default());
+    let waker = Waker::from(wake.clone());
+    let mut shutdown = spi.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful { timeout: Duration::MAX });
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    block_on(receiver.settle(&token, DeliveryDisposition::Accept)).expect("settle last delivery");
+    assert!(
+        wake.0.load(Ordering::SeqCst) > 0,
+        "settlement wakes the registered shutdown task"
+    );
+    assert!(
+        matches!(
+            shutdown.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(qubit_event_bus::spi::ShutdownOutcome::Complete))
+        ),
+        "next poll observes an idle mailbox"
+    );
+}
+
+fn graceful_shutdown_old_waker_drop_reenters_publish() {
+    let (spi, _receiver, _token) = busy_local_mailbox();
+    let message = OutboundMessage::new(
+        TopicAddress::new("test.topic").expect("topic"),
+        EventId::new("drop-reentry-shutdown").expect("event id"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(74_u32)),
+    );
+    let drops = Arc::new(AtomicUsize::new(0));
+    let publishes = Arc::new(AtomicUsize::new(0));
+    let probe = Arc::new(PublishOnDrop {
+        spi: spi.clone(),
+        message: Some(message),
+        drops: drops.clone(),
+        publishes: publishes.clone(),
+    });
+    let waker = Waker::from(probe.clone());
+    let mut shutdown = spi.shutdown(qubit_event_bus::spi::ShutdownMode::Graceful { timeout: Duration::MAX });
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    drop(waker);
+    drop(probe);
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert_eq!(
+        1,
+        drops.load(Ordering::SeqCst),
+        "retired registration drops its final old waker"
+    );
+    assert_eq!(
+        1,
+        publishes.load(Ordering::SeqCst),
+        "Drop callback's same-SPI publish returns"
+    );
+}
+
 fn test_local_waiter_interleavings() {
     let topic = TopicAddress::new("test.topic").expect("topic");
     let message = || {
@@ -298,4 +462,26 @@ fn test_b_old_registration_drop_reenters_publish() {
     }
     old_waker_drop_reenters_same_spi_publish();
     test_local_waiter_interleavings();
+}
+
+#[test]
+fn test_graceful_shutdown_registers_before_last_settlement() {
+    graceful_shutdown_registers_before_last_settlement();
+}
+
+#[test]
+fn test_graceful_shutdown_last_settlement_wakes_pending_waiter() {
+    graceful_shutdown_last_settlement_wakes_pending_waiter();
+}
+
+#[test]
+fn test_graceful_shutdown_old_waker_drop_reenters_publish() {
+    if var("QUBIT_EVENT_BUS_ISOLATED_CASE").is_err() {
+        support::isolated_process::run_case(
+            "test_graceful_shutdown_old_waker_drop_reenters_publish",
+            "graceful-shutdown",
+        );
+        return;
+    }
+    graceful_shutdown_old_waker_drop_reenters_publish();
 }

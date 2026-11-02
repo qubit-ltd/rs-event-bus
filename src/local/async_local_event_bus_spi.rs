@@ -317,11 +317,16 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     let mut wait_registration = None;
                     let mut timer_future = None;
                     poll_fn(|cx| {
-                        let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        let busy = bus.mailboxes.values().any(|mailbox| {
-                            let queue = mailbox.queue.lock();
-                            !queue.is_pending_empty() || !queue.in_flight.is_empty()
-                        });
+                        let next_registration = self.shared.changed.register(cx.waker());
+                        let busy = {
+                            let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                            bus.mailboxes.values().any(|mailbox| {
+                                let queue = mailbox.queue.lock();
+                                !queue.is_pending_empty() || !queue.in_flight.is_empty()
+                            })
+                        };
+                        let retired = wait_registration.replace(next_registration);
+                        drop(retired);
                         if !busy {
                             return Poll::Ready(Ok(ShutdownOutcome::Complete));
                         }
@@ -358,8 +363,6 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                             })
                                 as Pin<Box<dyn Future<Output = Result<(), SpiError>> + Send>>);
                         }
-                        wait_registration = Some(self.shared.changed.register(cx.waker()));
-                        drop(bus);
                         if let Some(timer) = timer_future.as_mut()
                             && let Poll::Ready(result) = timer.as_mut().poll(cx)
                         {
