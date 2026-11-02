@@ -672,6 +672,191 @@ let dead_letter_subscription = bus.subscribe(
 )?;
 ```
 
+
+编码传递需要 codec 能从字节重建 `DeadLetterEvent<T>`。公开构造器共享重建后的事件，不会发布消息；reason 应按不可信诊断文本处理。下面 fixture 使用私有示例格式，不是标准 wire 协议。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/dead_letter_codec.rs -->
+```rust
+//! Example codec that reconstructs dead-letter events from encoded bytes.
+
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+use qubit_event_bus::CodecError;
+use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DeadLetterEvent;
+use qubit_event_bus::model::EventId;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscriberId;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::EncodedPayload;
+
+const MAX_ENCODED_BYTES: usize = 1_048_576;
+const CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
+
+/// Codec for the documentation fixture's private dead-letter byte format.
+///
+/// This format demonstrates external reconstruction and is not a wire protocol
+/// for applications to adopt.
+pub struct DeadLetterCodec;
+
+impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
+    fn content_type(&self) -> &ContentType {
+        &CONTENT_TYPE
+    }
+
+    fn schema_id(&self) -> Option<&qubit_event_bus::model::SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
+        let original = value.original_event();
+        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let mut bytes = Vec::new();
+        put_text(&mut bytes, original.id().as_str())?;
+        put_text(&mut bytes, original.topic().name())?;
+        bytes.extend_from_slice(&timestamp.as_secs().to_be_bytes());
+        bytes.extend_from_slice(&timestamp.subsec_nanos().to_be_bytes());
+        let headers = original.headers();
+        put_count(&mut bytes, headers.len())?;
+        for (key, value) in headers {
+            put_text(&mut bytes, key)?;
+            put_text(&mut bytes, value)?;
+        }
+        match original.ordering_key() {
+            Some(key) => {
+                bytes.push(1);
+                put_text(&mut bytes, key)?;
+            }
+            None => bytes.push(0),
+        }
+        put_text(&mut bytes, original.payload())?;
+        put_text(&mut bytes, value.subscriber_id().as_str())?;
+        put_text(&mut bytes, value.reason())?;
+        if bytes.len() > MAX_ENCODED_BYTES {
+            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+        }
+        Ok(Arc::from(bytes))
+    }
+
+    fn decode(&self, payload: &EncodedPayload) -> Result<DeadLetterEvent<String>, CodecError> {
+        let bytes = payload.bytes();
+        if bytes.len() > MAX_ENCODED_BYTES {
+            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+        }
+        let mut cursor = Cursor { bytes, offset: 0 };
+        let event_id = EventId::new(cursor.text()?).map_err(decode_error)?;
+        let topic_name = cursor.text()?.to_owned();
+        let seconds = u64::from_be_bytes(cursor.array()?);
+        let nanoseconds = u32::from_be_bytes(cursor.array()?);
+        if nanoseconds >= 1_000_000_000 {
+            return Err(decode_error("invalid timestamp nanoseconds"));
+        }
+        let timestamp = UNIX_EPOCH
+            .checked_add(Duration::new(seconds, nanoseconds))
+            .ok_or_else(|| decode_error("timestamp is out of range"))?;
+        let header_count = cursor.u32()? as usize;
+        if header_count > 1024 {
+            return Err(decode_error("too many headers"));
+        }
+        let mut headers = Vec::with_capacity(header_count);
+        for _ in 0..header_count {
+            headers.push((cursor.text()?.to_owned(), cursor.text()?.to_owned()));
+        }
+        let ordering_key = match cursor.byte()? {
+            0 => None,
+            1 => Some(cursor.text()?.to_owned()),
+            _ => return Err(decode_error("invalid ordering-key flag")),
+        };
+        let event_payload = cursor.text()?.to_owned();
+        let subscriber_id = SubscriberId::new(cursor.text()?).map_err(decode_error)?;
+        let reason = cursor.text()?.to_owned();
+        if cursor.offset != bytes.len() {
+            return Err(decode_error("trailing bytes after dead letter"));
+        }
+        let mut builder = PublishRequest::builder()
+            .topic(Topic::<String>::new(&topic_name).map_err(decode_error)?)
+            .payload(event_payload)
+            .event_id(event_id)
+            .timestamp(timestamp)
+            .headers(headers);
+        if let Some(key) = ordering_key {
+            builder = builder.ordering_key(key);
+        }
+        let (original_event, _) = builder.build().map_err(decode_error)?.into_parts();
+        Ok(DeadLetterEvent::new(
+            Arc::new(original_event),
+            subscriber_id,
+            reason.into_boxed_str(),
+        ))
+    }
+}
+
+fn put_count(bytes: &mut Vec<u8>, value: usize) -> Result<(), CodecError> {
+    let value = u32::try_from(value).map_err(decode_error)?;
+    bytes.extend_from_slice(&value.to_be_bytes());
+    Ok(())
+}
+
+fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
+    put_count(bytes, value.len())?;
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Decode { source: error.into() }
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl Cursor<'_> {
+    fn byte(&mut self) -> Result<u8, CodecError> {
+        let byte = *self
+            .bytes
+            .get(self.offset)
+            .ok_or_else(|| decode_error("truncated byte"))?;
+        self.offset += 1;
+        Ok(byte)
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], CodecError> {
+        let end = self
+            .offset
+            .checked_add(N)
+            .ok_or_else(|| decode_error("length overflow"))?;
+        let field = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or_else(|| decode_error("truncated integer"))?;
+        self.offset = end;
+        field.try_into().map_err(decode_error)
+    }
+
+    fn u32(&mut self) -> Result<u32, CodecError> {
+        Ok(u32::from_be_bytes(self.array()?))
+    }
+
+    fn text(&mut self) -> Result<&str, CodecError> {
+        let length = self.u32()? as usize;
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or_else(|| decode_error("length overflow"))?;
+        let field = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or_else(|| decode_error("truncated text"))?;
+        self.offset = end;
+        std::str::from_utf8(field).map_err(decode_error)
+    }
+}
+```
+
 `error_handler` 返回 `DeadLetter` 时，facade 会把失败消息转发到死信主题，即使同时配置了 `retry_policy` 也是如此。如果转发失败，异步 runner 会以 `ReceiveError::DeadLetterForwardFailed` 停止；同步 facade 会取消该订阅。源 token 保持未结算，诊断中会报告该失败。恢复方式取决于 provider 的 durability 和 close 语义：durable provider 可在恢复或重建订阅后重新投递未结算消息；ephemeral provider 关闭时可能丢弃消息。不要假设转发持续失败期间 facade 会重新运行 handler。同一原始事件和 subscriber 的死信事件 ID 保持稳定，可帮助消费者去重，但不保证 exactly-once。死信主题仍是普通主题，必须有人订阅；空主题仍可能丢失记录。使用编码传递实现时，还要为 `DeadLetterEvent<OrderCreated>` 注册 codec。`NoDestinations`、`NoneAccepted`、`Dropped` 和发布错误都不算转发成功。已知的部分接纳会结束源投递并记录诊断，因为整体重发可能造成重复。Redis 等 opaque provider 只有在发布保证至少为 Accepted 时才满足默认策略。需要确认具体消费者接纳时，配置 `DeadLetterPolicy::with_known_destination(topic_name)`；opaque provider 会在订阅创建时拒绝该配置。请监控转发失败诊断。
 
 ## 需要拦截或过滤消息时

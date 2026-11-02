@@ -112,15 +112,20 @@ pub struct DeadLetterEvent<T: 'static> {
 impl<T: 'static> DeadLetterEvent<T> {
     /// Creates a dead-letter view over an existing event.
     ///
+    /// This constructor is available to codecs that reconstruct a dead-letter
+    /// value from encoded bytes. The original envelope is shared, not cloned.
+    /// `reason` is retained as untrusted diagnostic text and may be empty.
+    /// Constructing this value has no publication or other side effect.
+    ///
     /// # Parameters
     /// - `original_event`: source envelope retained by the dead-letter payload.
     /// - `subscriber_id`: logical subscriber that reached its terminal policy.
-    /// - `reason`: display text describing the terminal failure.
+    /// - `reason`: untrusted display text describing the terminal failure.
     ///
     /// # Returns
     /// A dead-letter payload sharing the original event allocation.
     #[must_use]
-    pub(crate) fn new(original_event: Arc<EventEnvelope<T>>, subscriber_id: SubscriberId, reason: Box<str>) -> Self {
+    pub fn new(original_event: Arc<EventEnvelope<T>>, subscriber_id: SubscriberId, reason: Box<str>) -> Self {
         Self {
             original_event,
             subscriber_id,

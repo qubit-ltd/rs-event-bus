@@ -8,6 +8,7 @@
 //! Public dead-letter payload behavior tests.
 
 use std::io::Error as IoError;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -24,6 +25,29 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 
 struct NonClonePayload(u8);
+
+#[test]
+fn test_dead_letter_constructor_shares_non_clone_original_event() {
+    let original_event = PublishRequest::builder()
+        .topic(Topic::<NonClonePayload>::new("model.dead.constructed").expect("valid topic"))
+        .payload(NonClonePayload(17))
+        .event_id(qubit_event_bus::model::EventId::new("constructed-17").expect("valid event ID"))
+        .build()
+        .expect("valid request")
+        .into_parts()
+        .0;
+    let shared_event = Arc::new(original_event);
+    let dead_letter = DeadLetterEvent::new(
+        Arc::clone(&shared_event),
+        SubscriberId::new("model-dead-worker").expect("valid subscriber ID"),
+        "diagnostic".into(),
+    );
+
+    assert!(Arc::ptr_eq(&dead_letter.original_event_arc(), &shared_event));
+    assert_eq!(dead_letter.original_event().payload().0, 17);
+    assert_eq!(dead_letter.subscriber_id().as_str(), "model-dead-worker");
+    assert_eq!(dead_letter.reason(), "diagnostic");
+}
 
 #[test]
 fn test_dead_letter_topic_exposes_original_payload_and_terminal_reason() {

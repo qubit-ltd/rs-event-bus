@@ -18,13 +18,14 @@ REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 RETRY = "tests/fixtures/documentation_consumer/src/retry_policy.rs"
 README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
+DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
 REQUIRED = {
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
-    "doc/design.md": {SPEC, PROVIDER_CONTRACT},
-    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
+    "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
+    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
 }
 FILE_HEADER = (
     "// =============================================================================\n"
@@ -48,7 +49,7 @@ def run_case(mutator):
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR):
+        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             header = FILE_HEADER if source in {LOCAL, README_ORDERS} else ""
@@ -161,6 +162,11 @@ for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md"):
                    f"missing checked example {MONITOR}")
     expect_failure(lambda root, document=document: drift_monitor(root, document),
                    f"example drift from {MONITOR}")
+
+for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md", "doc/design.md", "doc/design.zh_CN.md"):
+    expect_failure(lambda root, document=document: remove_safety_marker(root, DEAD_LETTER, document),
+                   f"missing checked example {DEAD_LETTER}")
+    expect_failure(lambda root: safety_drift(root, DEAD_LETTER), f"example drift from {DEAD_LETTER}")
 
 expect_failure(existing_escape, "invalid source path ../outside.rs")
 expect_failure(symlink_escape, "invalid source path examples/escape.rs")
