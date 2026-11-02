@@ -67,20 +67,21 @@
 //!
 //! ## Admission and lifecycle
 //!
-//! A [`model::PublishReceipt`] reports provider admission, not handler execution or
-//! business completion. With partial admission, retrying the whole publish may
-//! duplicate deliveries already accepted by some destinations. A synchronous
-//! [`Subscription`] handle drop does not cancel its receiver; call its explicit
-//! cancellation operation. Shut down the bus explicitly with a bounded graceful
-//! shutdown when the application needs a completion report. The built-in local
-//! provider is in-memory and non-persistent: process exit, close, or drop can
-//! discard pending work.
+//! A [`model::PublishReceipt`] reports provider admission, not handler
+//! execution or business completion. With partial admission, retrying the whole
+//! publish may duplicate deliveries already accepted by some destinations. A
+//! synchronous [`Subscription`] handle drop does not cancel its receiver; call
+//! its explicit cancellation operation. Shut down the bus explicitly with a
+//! bounded graceful shutdown when the application needs a completion report.
+//! The built-in local provider is in-memory and non-persistent: process exit,
+//! close, or drop can discard pending work.
 //!
-//! [`model::AdmissionRequirement`] selects the admission condition a checked publish
-//! must meet. [`EventBusRegistry`] and [`AsyncEventBusRegistry`] create facades
-//! from registered providers. Providers implement the low-level contracts
-//! [`spi::AsyncEventBusSpi`] and [`spi::EventBusSpi`], with the built-in
-//! [`local::AsyncLocalEventBusSpi`] and [`local::LocalEventBusSpi`] as examples.
+//! [`model::AdmissionRequirement`] selects the admission condition a checked
+//! publish must meet. [`EventBusRegistry`] and [`AsyncEventBusRegistry`] create
+//! facades from registered providers. Providers implement the low-level
+//! contracts [`spi::AsyncEventBusSpi`] and [`spi::EventBusSpi`]. The built-in
+//! [`local::AsyncLocalEventBusProvider`] and [`local::LocalEventBusProvider`]
+//! provide in-process implementations.
 //!
 //! ## Further reading
 //!
@@ -88,7 +89,6 @@
 //! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/user_guide.zh_CN.md)
 //! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.md)
 //! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.zh_CN.md)
-//!
 
 #![deny(missing_docs)]
 pub use error::CapabilityError;
