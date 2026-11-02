@@ -30,9 +30,16 @@ use qubit_event_bus::EventBus;
 use qubit_event_bus::NotificationOutcome;
 use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::TryPublishError;
+use qubit_event_bus::WaitOutcome;
+use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishEffect;
+use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
@@ -55,6 +62,134 @@ use qubit_event_bus::spi::TransportPayload;
 mod support;
 
 use crate::support::isolated_process;
+
+#[test]
+fn test_notification_publisher_publish_options_enforce_and_release_weight_budget() {
+    let weight = NonZeroUsize::new(4).unwrap();
+    let bus = EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
+        .expect("local bus with outstanding weight budget");
+    let topic = Topic::<String>::new("notification.weighted").unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("weighted-subscriber", topic.clone()).unwrap(),
+            move |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            },
+        )
+        .unwrap();
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(move |_| weight)
+        .build();
+    let publisher = NotificationPublisher::with_publish_options(
+        bus.clone(),
+        topic.clone(),
+        NonZeroUsize::new(3).unwrap(),
+        options,
+        move |outcome| outcome_tx.send(outcome).unwrap(),
+    )
+    .unwrap();
+
+    publisher.try_publish("one".into()).unwrap();
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first handler is holding the outstanding weight");
+    let NotificationOutcome::Published(first) = outcome_rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+        panic!("first weighted request should yield a receipt");
+    };
+    assert!(matches!(first.admission_outcome(), AdmissionOutcome::Accepted(_)));
+
+    publisher.try_publish("two".into()).unwrap();
+    let NotificationOutcome::Published(second) = outcome_rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+        panic!("second weighted request should yield a receipt");
+    };
+    assert!(matches!(second.admission_outcome(), AdmissionOutcome::NoneAccepted(_)));
+
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        WaitOutcome::Idle,
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap()
+    );
+    publisher.try_publish("tri".into()).unwrap();
+    let NotificationOutcome::Published(third) = outcome_rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+        panic!("third weighted request should yield a receipt");
+    };
+    assert!(matches!(third.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        WaitOutcome::Idle,
+        bus.wait_for_idle(&topic, Some(Duration::from_secs(2))).unwrap()
+    );
+
+    publisher.close().unwrap();
+    subscription.cancel().unwrap();
+    let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn test_notification_publisher_default_options_preserve_missing_weight_failure() {
+    let bus =
+        EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(NonZeroUsize::new(4).unwrap()))
+            .expect("local bus with outstanding weight budget");
+    let topic = Topic::<String>::new("notification.default-weight").unwrap();
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let publisher = NotificationPublisher::new(
+        bus.clone(),
+        topic.clone(),
+        NonZeroUsize::new(1).unwrap(),
+        move |outcome| outcome_tx.send(outcome).unwrap(),
+    )
+    .unwrap();
+
+    publisher.try_publish("payload".into()).unwrap();
+    let NotificationOutcome::PublishFailed(failure) = outcome_rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+        panic!("default options must not invent a payload weight");
+    };
+    assert_eq!(PublishEffect::NotAccepted, failure.effect());
+    assert!(matches!(failure.cause(), PublishError::Spi(_)));
+
+    publisher.close().unwrap();
+    let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn test_notification_publisher_weight_callback_panic_is_reported_as_publish_failure() {
+    let bus =
+        EventBus::local(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(NonZeroUsize::new(4).unwrap()))
+            .expect("local bus with outstanding weight budget");
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(|_| -> NonZeroUsize { panic!("weight callback panic") })
+        .build();
+    let publisher = NotificationPublisher::with_publish_options(
+        bus.clone(),
+        Topic::<String>::new("notification.weight-panic").unwrap(),
+        NonZeroUsize::new(1).unwrap(),
+        options,
+        move |outcome| outcome_tx.send(outcome).unwrap(),
+    )
+    .unwrap();
+
+    publisher.try_publish("payload".into()).unwrap();
+    let NotificationOutcome::PublishFailed(failure) = outcome_rx.recv_timeout(Duration::from_secs(2)).unwrap() else {
+        panic!("callback panic should become PublishFailed");
+    };
+    assert_eq!(PublishEffect::NotAccepted, failure.effect());
+    assert!(matches!(
+        failure.cause(),
+        PublishError::InterceptorPanicked {
+            scope: "payload_weight",
+            ..
+        }
+    ));
+
+    publisher.close().unwrap();
+    let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
+}
 
 #[test]
 fn test_notification_publisher_bounds_queue_and_drains_in_order_on_close() {

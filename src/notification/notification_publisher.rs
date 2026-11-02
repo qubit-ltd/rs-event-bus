@@ -31,6 +31,7 @@ use super::notification_stats::NotificationStats;
 use super::notification_stats_snapshot::NotificationStatsSnapshot;
 use super::try_publish_error::TryPublishError;
 use crate::EventBus;
+use crate::model::PublishOptions;
 use crate::model::PublishRequest;
 use crate::model::Topic;
 
@@ -102,6 +103,76 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     where
         F: Fn(NotificationOutcome) + Send + Sync + 'static,
     {
+        Self::with_publish_options(bus, topic, capacity, PublishOptions::default(), observer)
+    }
+
+    /// Starts a bounded notification publisher using options for each request.
+    ///
+    /// The worker creates each request and applies a clone of `options` before
+    /// calling the event bus. Option callbacks, including a native payload
+    /// weight callback, therefore run on the background publication path. The
+    /// notification queue remains bounded by item count; a declared weight is
+    /// used by providers that enforce an outstanding-weight budget.
+    ///
+    /// # Type Parameters
+    /// - `F`: observer callback type.
+    ///
+    /// # Parameters
+    /// - `bus`: event bus used by the worker to publish queued payloads.
+    /// - `topic`: topic assigned to every queued payload.
+    /// - `capacity`: maximum number of queued payloads awaiting publication.
+    /// - `options`: options cloned onto each request published by the worker.
+    /// - `observer`: callback invoked on the worker after each publish result.
+    ///
+    /// # Returns
+    /// A publisher handle that performs nonblocking queue admission.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the worker thread cannot be started.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::num::NonZeroUsize;
+    /// use qubit_event_bus::EventBus;
+    /// use qubit_event_bus::NotificationPublisher;
+    /// use qubit_event_bus::local::LocalEventBusConfig;
+    /// use qubit_event_bus::model::PublishOptions;
+    /// use qubit_event_bus::model::Topic;
+    ///
+    /// let bus = EventBus::local(
+    ///     LocalEventBusConfig::new()
+    ///         .max_total_outstanding_weight_bytes(NonZeroUsize::new(1024).unwrap()),
+    /// )?;
+    /// let options = PublishOptions::<String>::builder()
+    ///     .native_payload_weight(|payload| {
+    ///         NonZeroUsize::new(payload.len().max(1)).expect("positive declared weight")
+    ///     })
+    ///     .build();
+    /// let publisher = NotificationPublisher::with_publish_options(
+    ///     bus.clone(),
+    ///     Topic::<String>::new("notifications")?,
+    ///     NonZeroUsize::new(16).unwrap(),
+    ///     options,
+    ///     |_| {},
+    /// )?;
+    /// publisher.try_publish("task changed".to_owned())?;
+    /// publisher.close()?;
+    /// bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_publish_options<F>(
+        bus: EventBus,
+        topic: Topic<T>,
+        capacity: NonZeroUsize,
+        options: PublishOptions<T>,
+        observer: F,
+    ) -> io::Result<Self>
+    where
+        F: Fn(NotificationOutcome) + Send + Sync + 'static,
+    {
         let (sender, receiver) = sync_channel(capacity.get());
         let stats = Arc::new(NotificationStats::default());
         let worker_stats = stats.clone();
@@ -117,7 +188,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 let result = catch_unwind(AssertUnwindSafe(move || {
                     while let Ok(payload) = receiver.recv() {
                         let outcome = match PublishRequest::new(topic.clone(), payload) {
-                            Ok(request) => match bus.publish(request) {
+                            Ok(request) => match bus.publish(request.with_options(options.clone())) {
                                 Ok(receipt) => {
                                     NotificationStats::increment(&worker_stats.published);
                                     NotificationOutcome::Published(receipt)
@@ -138,6 +209,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                     }
                     drop(receiver);
                     drop(topic);
+                    drop(options);
                     drop(bus);
                     drop(observer);
                 }));
