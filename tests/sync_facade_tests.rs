@@ -201,7 +201,8 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
         )
         .expect("cancellation releases the subscription budget");
     third.cancel().expect("third subscription is cancelled");
-    cleanup.finish().expect("event bus shutdown succeeds");
+    let report = cleanup.finish().expect("event bus shutdown succeeds");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }
 
 #[test]

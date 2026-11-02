@@ -363,16 +363,27 @@ fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
             profile,
         ));
         for report in [&sync, &asynchronous] {
-            assert!(
-                report.cases().iter().any(|case| matches!(
-                    case,
-                    ConformanceCase::Skipped {
-                        case_id,
-                        reason: ConformanceSkipReason::MissingFixture { detail },
-                    } if case_id == "receive-after-close" && detail == "receiver close failed"
-                )),
-                "failed close must skip post-close receive: {report:?}"
-            );
+            if profile == ConformanceProfile::Structural {
+                assert!(
+                    report.cases().iter().any(|case| matches!(
+                        case,
+                        ConformanceCase::Skipped {
+                            case_id,
+                            reason: ConformanceSkipReason::MissingFixture { detail },
+                        } if case_id == "receive-after-close" && detail == "receiver close failed"
+                    )),
+                    "failed close must skip post-close receive: {report:?}"
+                );
+            } else {
+                assert!(
+                    report.cases().iter().any(|case| matches!(
+                        case,
+                        ConformanceCase::Failed { case_id, detail }
+                            if case_id == "receive-after-close" && detail.contains("strict profile requires")
+                    )),
+                    "strict profile must promote the missing close fixture: {report:?}"
+                );
+            }
         }
     }
 }
