@@ -15,17 +15,19 @@ use super::SubscriptionCloseFailure;
 
 /// A stable, shareable collection of subscription close failures.
 ///
-/// The collection is produced by facade shutdown and preserves each provider
-/// error as an inspectable [`SubscriptionCloseFailure`]. Its iterator borrows
-/// the snapshot, so examining failures does not clone error sources.
+/// The collection is produced by facade shutdown. It retains at most 256
+/// inspectable [`SubscriptionCloseFailure`] samples; use [`Self::total_count`]
+/// for the complete observed failure count and [`Self::omitted_count`] for
+/// failures without retained samples. The sample limit counts records, not
+/// bytes. The total count saturates at `u64::MAX`.
 ///
 /// # Examples
 ///
 /// ```
 /// use qubit_event_bus::error::SubscriptionCloseErrors;
 ///
-/// fn failed_close_count(errors: &SubscriptionCloseErrors) -> usize {
-///     errors.iter().count()
+/// fn close_failure_summary(errors: &SubscriptionCloseErrors) -> (u64, u64, bool) {
+///     (errors.total_count(), errors.omitted_count(), errors.is_truncated())
 /// }
 /// ```
 #[derive(Debug)]
@@ -100,10 +102,13 @@ impl SubscriptionCloseErrors {
         self.total_count == 0
     }
 
-    /// Iterates over every failed subscription and its original provider error.
+    /// Iterates over retained failed-subscription samples and their provider
+    /// errors.
     ///
     /// # Returns
-    /// A borrowing iterator in the order failures were recorded.
+    /// A borrowing iterator over at most 256 retained samples in recorded
+    /// order. This may omit failures; use [`Self::total_count`] for the
+    /// complete count.
     #[must_use = "Use the returned iter."]
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &SubscriptionCloseFailure> {
@@ -112,7 +117,7 @@ impl SubscriptionCloseErrors {
 }
 
 impl fmt::Display for SubscriptionCloseErrors {
-    /// Formats the total failure count and every affected subscriber.
+    /// Formats the total failure count and retained failure samples.
     ///
     /// # Parameters
     /// - `formatter`: Destination that receives the failure summary.
@@ -138,11 +143,12 @@ impl fmt::Display for SubscriptionCloseErrors {
 }
 
 impl Error for SubscriptionCloseErrors {
-    /// Exposes the first close failure while callers can inspect all via
-    /// [`Self::iter`].
+    /// Exposes the first retained close failure; [`Self::iter`] also yields
+    /// retained samples only, while [`Self::total_count`] reports the full
+    /// count.
     ///
     /// # Returns
-    /// The first recorded close failure, or `None` when this snapshot is empty.
+    /// The first retained close failure, or `None` when no sample was retained.
     #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.failures

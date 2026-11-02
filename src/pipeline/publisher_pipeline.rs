@@ -530,6 +530,7 @@ impl PublisherPipeline {
                 &Diagnostic::AdmissionRejected {
                     event_id: event_id.clone(),
                     topic: topic.into(),
+                    subscription_id: admission.subscription_id(),
                     subscriber_id: admission.subscriber_id().clone(),
                     reason: reason.clone(),
                 },

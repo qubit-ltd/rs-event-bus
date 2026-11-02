@@ -31,10 +31,12 @@ use crate::spi::DeliveryGap;
 /// use qubit_event_bus::model::EventId;
 /// use qubit_event_bus::model::SubscriberId;
 /// use qubit_event_bus::pipeline::Diagnostic;
+/// use qubit_id::Id;
 ///
 /// let diagnostic = Diagnostic::AdmissionRejected {
 ///     event_id: EventId::new("event-1").unwrap(),
 ///     topic: "orders.created".into(),
+///     subscription_id: Id::new(1),
 ///     subscriber_id: SubscriberId::new("audit-log").unwrap(),
 ///     reason: "queue is full".into(),
 /// };
@@ -49,6 +51,8 @@ pub enum Diagnostic {
         event_id: EventId,
         /// Topic associated with the rejected admission.
         topic: Box<str>,
+        /// Bus-local subscription object ID for the rejected destination.
+        subscription_id: Id,
         /// Logical subscriber that was rejected.
         subscriber_id: SubscriberId,
         /// Provider-supplied rejection reason.

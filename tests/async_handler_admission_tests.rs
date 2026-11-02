@@ -268,6 +268,11 @@ fn test_graceful_stop_drains_local_retry_attempt() {
 /// admission.
 #[test]
 fn test_filter_stop_cannot_authorize_handler_or_settlement() {
+    const CASE: &str = "filter-stop-admission";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        support::isolated_process::run_case("test_filter_stop_cannot_authorize_handler_or_settlement", CASE);
+        return;
+    }
     for accepted in [true, false] {
         let fake = Arc::new(FakeAsyncEventBusSpi::new());
         let bus =
@@ -282,8 +287,8 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
                 filter_continue_in_closure
                     .lock()
                     .expect("filter continuation lock")
-                    .recv()
-                    .expect("test driver releases filter");
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("test driver releases filter within the handshake deadline");
                 accepted
             })
             .build();
@@ -300,7 +305,9 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
                 async { Ok(()) }
             }))
         });
-        filter_entered.recv().expect("filter entered");
+        filter_entered
+            .recv_timeout(Duration::from_secs(3))
+            .expect("filter enters before the handshake deadline");
         let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
         assert!(poll_once(shutdown.as_mut()).is_pending());
         continue_filter.send(()).expect("filter continues");
@@ -416,6 +423,11 @@ fn test_filter_reentrant_received_wait_is_rejected_in_isolated_process() {
 
 #[test]
 fn test_filter_poll_context_is_limited_to_its_own_bus() {
+    const CASE: &str = "filter-own-bus-context";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        support::isolated_process::run_case("test_filter_poll_context_is_limited_to_its_own_bus", CASE);
+        return;
+    }
     let fake = Arc::new(FakeAsyncEventBusSpi::new());
     let other_fake = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("filter-owner").expect("provider"), fake.clone()).expect("bus");
@@ -437,8 +449,8 @@ fn test_filter_poll_context_is_limited_to_its_own_bus() {
             filter_continue_in_closure
                 .lock()
                 .expect("filter continuation lock")
-                .recv()
-                .expect("test driver releases filter");
+                .recv_timeout(Duration::from_secs(3))
+                .expect("test driver releases filter within the handshake deadline");
             false
         })
         .build();
@@ -448,7 +460,9 @@ fn test_filter_poll_context_is_limited_to_its_own_bus() {
     let sub = block_on(bus.subscribe(request)).expect("subscribe");
     fake.enqueue(inbound_message(None));
     let runner = std::thread::spawn(move || block_on(sub.run(|_| async { Ok(()) })));
-    filter_entered.recv().expect("filter entered");
+    filter_entered
+        .recv_timeout(Duration::from_secs(3))
+        .expect("filter enters before the handshake deadline");
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(poll_once(shutdown.as_mut()).is_pending());
     continue_filter.send(()).expect("filter continues");

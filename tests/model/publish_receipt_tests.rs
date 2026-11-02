@@ -7,12 +7,17 @@
 // =============================================================================
 //! Public publication receipt behavior tests.
 
+use qubit_event_bus::model::AdmissionCheckError;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AdmissionSummary;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishReceipt;
+use qubit_event_bus::model::SubscriberId;
+use qubit_id::Id;
 
 #[test]
 fn test_retry_evidence_is_preserved_without_changing_provider_acknowledgement() {
@@ -37,12 +42,24 @@ fn test_retry_evidence_is_preserved_without_changing_provider_acknowledgement() 
         &acknowledgement,
         "retry evidence should preserve the provider acknowledgement"
     );
-    assert!(
-        receipt
-            .check_admission(AdmissionRequirement::AtLeastOneAccepted)
-            .is_err(),
-        "possibly duplicated delivery must not satisfy the admission requirement"
-    );
+    for duplicate_possible in [false, true] {
+        let opaque = PublishReceipt::new(
+            EventId::new("opaque-event").expect("valid event ID"),
+            None,
+            ProviderId::new("opaque-provider").expect("valid provider ID"),
+            acknowledgement.clone(),
+        )
+        .with_duplicate_possible(duplicate_possible);
+        assert!(matches!(
+            opaque.check_admission(AdmissionRequirement::AtLeastOneAccepted),
+            Err(AdmissionCheckError::VisibilityUnavailable)
+        ));
+        assert!(
+            opaque
+                .check_admission(AdmissionRequirement::ProviderOrDestinationAccepted)
+                .is_ok()
+        );
+    }
 }
 
 #[test]
@@ -73,4 +90,32 @@ fn test_empty_visible_snapshot_and_opaque_acceptance_keep_distinct_summaries() {
         None,
         "opaque acceptance must not expose a destination summary",
     );
+}
+
+#[test]
+fn test_duplicate_evidence_does_not_override_visible_admission() {
+    let acknowledgement = PublishAcknowledgement::DestinationAdmissions(vec![DestinationAdmission::new(
+        Id::new(1),
+        SubscriberId::new("audit").expect("valid subscriber ID"),
+        AdmissionStatus::Accepted,
+    )]);
+    let receipt = PublishReceipt::new(
+        EventId::new("duplicate-admission-event").expect("valid event ID"),
+        None,
+        ProviderId::new("duplicate-admission-provider").expect("valid provider ID"),
+        acknowledgement.clone(),
+    )
+    .with_duplicate_possible(true);
+
+    assert!(receipt.duplicate_possible());
+    assert_eq!(receipt.acknowledgement(), &acknowledgement);
+    for requirement in [
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+        AdmissionRequirement::AtLeastOneAccepted,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    ] {
+        assert!(receipt.check_admission(requirement).is_ok());
+    }
+    assert_eq!(receipt.acknowledgement(), &acknowledgement);
+    assert!(receipt.duplicate_possible());
 }
