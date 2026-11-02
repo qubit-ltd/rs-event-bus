@@ -7,6 +7,8 @@
 // =============================================================================
 //! Measures sync and async local subscription creation and teardown resources.
 
+mod local_threads_support;
+
 use std::any::TypeId;
 use std::env;
 use std::fs;
@@ -31,6 +33,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use local_threads_support::sample_batch::run_measured_batch;
+use local_threads_support::sample_batch::sample_succeeded;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::error::ConfigurationError;
@@ -626,8 +630,15 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
         }
     }
 
-    for iteration in 1..=SAMPLES {
-        let (timed_out, fields) = run_isolated_sample(subscription_count, asynchronous)?;
+    let mut sample_io_failed = false;
+    let result = run_measured_batch(SAMPLES, |iteration| {
+        let (timed_out, fields) = match run_isolated_sample(subscription_count, asynchronous) {
+            Ok(sample) => sample,
+            Err(error) => {
+                sample_io_failed = true;
+                return Err(error);
+            }
+        };
         let mut fields = fields.split(',');
         let status = fields.next().unwrap_or("child_failed");
         let creation_ns = fields.next().unwrap_or("");
@@ -639,8 +650,16 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
             "{},{subscription_count},{iteration},{outcome},{creation_ns},{close_ns},{baseline_threads},{peak_threads}",
             if asynchronous { "async" } else { "sync" }
         );
+        Ok(sample_succeeded(timed_out, status))
+    });
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if sample_io_failed => Err(error),
+        Err(error) => Err(io::Error::other(format!(
+            "{} benchmark failed for {subscription_count} subscriptions: {error}",
+            if asynchronous { "async" } else { "sync" }
+        ))),
     }
-    Ok(())
 }
 
 /// Dispatches child-sample mode or prints the documented seven-sample CSV.

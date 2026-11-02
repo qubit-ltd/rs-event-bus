@@ -82,4 +82,8 @@ path = "tests/model/mod.rs"
 name = "error_tests"
 path = "tests/error/mod.rs"
 
+[[test]]
+name = "local_threads_batch_tests"
+path = "benches/local_threads_support/sample_batch.rs"
+
 [workspace]
