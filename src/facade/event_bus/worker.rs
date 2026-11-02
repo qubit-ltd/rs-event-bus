@@ -96,7 +96,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
     inner: Arc<EventBusInner>,
     bus_identity: usize,
     control: Arc<SubscriptionControl>,
-    mut spi_subscription: Box<dyn EventSubscriptionSpi>,
+    spi_subscription: Box<dyn EventSubscriptionSpi>,
     topic: Topic<T>,
     codec: Option<Arc<dyn EventCodec<T>>>,
     subscriber_id: SubscriberId,
@@ -107,6 +107,53 @@ pub(in crate::facade) fn run_subscription_worker<T>(
 {
     let _worker_context = BusContextGuard::enter(bus_identity);
     let _lifecycle = crate::facade::event_bus::internal::OwnerLifecycleGuard::new(inner.clone(), control.clone());
+    run_subscription_worker_body(
+        inner,
+        bus_identity,
+        control,
+        spi_subscription,
+        topic,
+        codec,
+        subscriber_id,
+        options,
+        handler,
+    );
+}
+
+/// Runs the owner loop so all receiver, delivery, and callback captures are
+/// dropped before the outer lifecycle guard publishes worker completion.
+///
+/// # Type Parameters
+/// - `T`: decoded payload shared safely with handler threads.
+///
+/// # Parameters
+/// - `inner`: shared bus resources and scheduling metadata.
+/// - `bus_identity`: reentrancy identity for callbacks on this bus.
+/// - `control`: cancellation, terminal-cause and completion state.
+/// - `spi_subscription`: receiver exclusively owned by this thread through
+///   close.
+/// - `topic`: typed destination used for tracking and ordering.
+/// - `codec`: optional decoder selected when subscribing.
+/// - `subscriber_id`: logical subscriber included in diagnostics.
+/// - `options`: filter, middleware, ordering and retry policy.
+/// - `handler`: actual user callback wrapper with final admission checks.
+///
+/// # Side Effects
+/// Blocks in provider operations and bounded parks, dispatches pool work, and
+/// closes the receiver after all started jobs finish.
+fn run_subscription_worker_body<T>(
+    inner: Arc<EventBusInner>,
+    bus_identity: usize,
+    control: Arc<SubscriptionControl>,
+    mut spi_subscription: Box<dyn EventSubscriptionSpi>,
+    topic: Topic<T>,
+    codec: Option<Arc<dyn EventCodec<T>>>,
+    subscriber_id: SubscriberId,
+    options: SubscribeOptions<T>,
+    handler: Arc<dyn Fn(Delivery<T>) -> Result<(), DeliveryError> + Send + Sync>,
+) where
+    T: Send + Sync + 'static,
+{
     let mut owned: HashMap<u64, OwnedSyncDelivery<'_, T>> = HashMap::new();
     let (sender, receiver) = mpsc::channel();
     let worker_result = catch_unwind(AssertUnwindSafe(|| {
@@ -128,7 +175,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
             }
 
             let terminal = control.terminal_failure().is_some();
-            let (completed, wait) = if terminal {
+            let (completed, mut wait) = if terminal {
                 (Vec::new(), receive_poll_interval())
             } else {
                 progress_owned_settlements(
@@ -465,7 +512,7 @@ pub(in crate::facade) fn run_subscription_worker<T>(
                             let stop_gap =
                                 (options.gap_policy() == crate::model::GapPolicy::Stop).then(|| Arc::new(gap.clone()));
                             if let Some(gap) = stop_gap {
-                                control.fail_receive(SubscriptionStopReason::Gap { gap });
+                                let _ = control.fail_receive(SubscriptionStopReason::Gap { gap });
                                 inner.scheduler.cancel_subscription(control.id);
                             }
                             inner.emit(Diagnostic::ReceiveGap {

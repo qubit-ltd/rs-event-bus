@@ -296,7 +296,8 @@ impl EventBusInner {
                 source: Box::new(Error::other(panic_message(panic.as_ref()))),
             })
         });
-        let failure_message = result.as_ref().err().map(ToString::to_string);
+        let failure_message = catch_unwind(AssertUnwindSafe(|| result.as_ref().err().map(ToString::to_string)))
+            .unwrap_or_else(|_| Some(String::from("shutdown error formatting panicked")));
         self.shutdown_coordinator.finish(generation, result);
         if let Some(message) = failure_message {
             self.emit_internal("shutdown_coordinator", message);
@@ -510,7 +511,7 @@ mod tests {
         let control = SubscriptionControl::new(id, SubscriberId::new("terminal-error-drop").expect("subscriber ID"));
         let (drop_entered_tx, drop_entered_rx) = mpsc::channel();
         let (drop_release_tx, drop_release_rx) = mpsc::channel();
-        control.fail_receive(SubscriptionStopReason::Provider {
+        let _ = control.fail_receive(SubscriptionStopReason::Provider {
             error: Arc::new(SpiError::Operation {
                 provider_id: "local".into(),
                 operation: "receive",
