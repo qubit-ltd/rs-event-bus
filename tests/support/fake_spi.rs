@@ -528,7 +528,11 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
     }
     fn close(&mut self) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("close");
-        self.queue.0.lock().unwrap().closed = true;
+        let mut state = self.queue.0.lock().unwrap();
+        state.closed = true;
+        state.messages.clear();
+        state.in_flight = None;
+        drop(state);
         self.queue.1.notify_all();
         Ok(())
     }
@@ -1023,6 +1027,8 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             .await;
             let mut state = queue.lock().unwrap();
             state.closed = true;
+            state.messages.clear();
+            state.in_flight = None;
             for waker in state.wakers.drain(..) {
                 waker.wake();
             }

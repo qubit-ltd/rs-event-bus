@@ -28,6 +28,7 @@ pub use async_conformance_hooks::AsyncConformanceHooks;
 pub use async_runner::run_async;
 pub use async_runner::run_async_with_profile;
 pub use conformance_case::ConformanceCase;
+pub use conformance_case_context::ConformanceCaseContext;
 pub use conformance_hooks::ConformanceHooks;
 pub use conformance_profile::ConformanceProfile;
 pub use conformance_report::ConformanceReport;
@@ -39,6 +40,7 @@ mod async_conformance_hooks;
 #[path = "async.rs"]
 mod async_runner;
 mod conformance_case;
+mod conformance_case_context;
 mod conformance_hooks;
 mod conformance_profile;
 mod conformance_report;

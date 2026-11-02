@@ -41,6 +41,8 @@ use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeRequest;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::model::SubscriberId;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 #[cfg(feature = "conformance")]
@@ -84,6 +86,8 @@ use qubit_event_bus::spi::conformance::AsyncConformanceHooks;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::ConformanceCase;
 #[cfg(feature = "conformance")]
+use qubit_event_bus::spi::conformance::ConformanceCaseContext;
+#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::ConformanceHooks;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::ConformanceProfile;
@@ -120,6 +124,7 @@ use crate::support::provider_shapes::encoded_settlement_capabilities;
 enum ReceiveStateFault {
     EmptyClosed,
     AfterCloseTimedOut,
+    PendingMessageAfterClose,
     CloseFails,
 }
 
@@ -145,6 +150,7 @@ impl EventBusSpi for FaultySyncProvider {
             fault: self.fault,
             published: self.published.clone(),
             closed: false,
+            received: false,
         }))
     }
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
@@ -158,11 +164,16 @@ struct FaultySyncReceiver {
     fault: ReceiveStateFault,
     published: Arc<std::sync::atomic::AtomicBool>,
     closed: bool,
+    received: bool,
 }
 
 #[cfg(feature = "conformance")]
 impl EventSubscriptionSpi for FaultySyncReceiver {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        if matches!(self.fault, ReceiveStateFault::PendingMessageAfterClose) && self.closed && !self.received {
+            self.received = true;
+            return Ok(ReceiveOutcome::Message(inbound_message(None)));
+        }
         if matches!(self.fault, ReceiveStateFault::EmptyClosed)
             && timeout.is_zero()
             && !self.published.load(std::sync::atomic::Ordering::Acquire)
@@ -172,7 +183,11 @@ impl EventSubscriptionSpi for FaultySyncReceiver {
         if matches!(self.fault, ReceiveStateFault::AfterCloseTimedOut) && self.closed {
             return Ok(ReceiveOutcome::TimedOut);
         }
-        self.inner.receive(timeout)
+        let result = self.inner.receive(timeout);
+        if matches!(&result, Ok(ReceiveOutcome::Message(_))) {
+            self.received = true;
+        }
+        result
     }
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         self.inner.settle(token, disposition)
@@ -220,6 +235,7 @@ impl AsyncEventBusSpi for FaultyAsyncProvider {
                 fault: self.fault,
                 published: self.published.clone(),
                 closed: false,
+                received: false,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
@@ -234,11 +250,16 @@ struct FaultyAsyncReceiver {
     fault: ReceiveStateFault,
     published: Arc<std::sync::atomic::AtomicBool>,
     closed: bool,
+    received: bool,
 }
 
 #[cfg(feature = "conformance")]
 impl AsyncEventSubscriptionSpi for FaultyAsyncReceiver {
     fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        if matches!(self.fault, ReceiveStateFault::PendingMessageAfterClose) && self.closed && !self.received {
+            self.received = true;
+            return Box::pin(async { Ok(ReceiveOutcome::Message(inbound_message(None))) });
+        }
         if matches!(self.fault, ReceiveStateFault::EmptyClosed)
             && timeout.is_zero()
             && !self.published.load(std::sync::atomic::Ordering::Acquire)
@@ -248,6 +269,7 @@ impl AsyncEventSubscriptionSpi for FaultyAsyncReceiver {
         if matches!(self.fault, ReceiveStateFault::AfterCloseTimedOut) && self.closed {
             return Box::pin(async { Ok(ReceiveOutcome::TimedOut) });
         }
+        self.received = true;
         self.inner.receive(timeout)
     }
     fn settle<'a>(
@@ -301,7 +323,11 @@ fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id
 #[cfg(feature = "conformance")]
 #[test]
 fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
-    for fault in [ReceiveStateFault::EmptyClosed, ReceiveStateFault::AfterCloseTimedOut] {
+    for fault in [
+        ReceiveStateFault::EmptyClosed,
+        ReceiveStateFault::AfterCloseTimedOut,
+        ReceiveStateFault::PendingMessageAfterClose,
+    ] {
         for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
             let sync = run_sync_with_profile(
                 || {
@@ -328,17 +354,27 @@ fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
             let case_id = match fault {
                 ReceiveStateFault::EmptyClosed => "receive-empty-zero-timeout",
                 ReceiveStateFault::AfterCloseTimedOut => "receive-after-close",
+                ReceiveStateFault::PendingMessageAfterClose => "receive-after-close-with-pending",
                 ReceiveStateFault::CloseFails => unreachable!(),
             };
             for report in [&sync, &asynchronous] {
-                assert!(
-                    report.cases().iter().any(|case| matches!(
-                        case,
-                        ConformanceCase::Failed { case_id: actual, detail }
-                            if actual == case_id && (detail.contains("sync ") || detail.contains("async "))
-                    )),
-                    "fault {case_id} must be reported with mode context: {report:?}"
-                );
+                let failed_index = report
+                    .cases()
+                    .iter()
+                    .position(|case| {
+                        matches!(
+                            case,
+                            ConformanceCase::Failed { case_id: actual, detail }
+                                if actual == case_id && (detail.contains("sync ") || detail.contains("async "))
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("fault {case_id} must be reported with mode context: {report:?}"));
+                if matches!(fault, ReceiveStateFault::PendingMessageAfterClose) {
+                    assert!(
+                        report.case_context(failed_index).is_some(),
+                        "pending-message failure must retain its combination: {report:?}"
+                    );
+                }
             }
         }
     }
@@ -447,12 +483,76 @@ fn test_subscription_mode_runner_exercises_both_declared_modes_for_sync_and_asyn
     use qubit_event_bus::model::SubscriptionDurability;
     assert_eq!(
         *sync_seen.lock().unwrap(),
-        vec![SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+        vec![
+            SubscriptionDurability::Ephemeral,
+            SubscriptionDurability::Ephemeral,
+            SubscriptionDurability::Durable,
+            SubscriptionDurability::Durable,
+        ]
     );
     assert_eq!(
         *async_seen.lock().unwrap(),
-        vec![SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+        vec![
+            SubscriptionDurability::Ephemeral,
+            SubscriptionDurability::Ephemeral,
+            SubscriptionDurability::Durable,
+            SubscriptionDurability::Durable,
+        ]
     );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_conformance_report_context_tracks_each_payload_and_durability_combination() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::NativeAndEncoded,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Durable,
+        SubscriptionModes::BOTH,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let sync = run_sync(
+        || Arc::new(FakeEventBusSpi::with_capabilities(capabilities)),
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async { Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities)) as Arc<dyn AsyncEventBusSpi> },
+        &AsyncConformanceHooks::default(),
+    ));
+
+    for (report, api) in [(&sync, "sync"), (&asynchronous, "async")] {
+        let subscriptions = report
+            .cases()
+            .iter()
+            .enumerate()
+            .filter(|(_, case)| matches!(case, ConformanceCase::Passed { case_id } if case_id == "subscribe"))
+            .map(|(index, _)| report.case_context(index).expect("combination has context"))
+            .collect::<Vec<&ConformanceCaseContext>>();
+        assert_eq!(subscriptions.len(), 4);
+        for payload_mode in [PayloadModes::Native, PayloadModes::Encoded] {
+            for durability in [SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable] {
+                assert!(subscriptions.iter().any(|context| {
+                    context.api() == api && context.payload_mode() == payload_mode && context.durability() == durability
+                }));
+            }
+        }
+        assert!(report.cases().iter().enumerate().any(|(index, case)| {
+            matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "settlement-idempotence")
+                && report.case_context(index).is_some()
+        }));
+        assert!(report.case_context(report.cases().len()).is_none());
+        let global_case = report
+            .cases()
+            .iter()
+            .position(|case| matches!(case, ConformanceCase::Skipped { case_id, .. } if case_id == "provider-settlement-idempotence"))
+            .expect("global settlement hook result exists");
+        assert!(report.case_context(global_case).is_none());
+    }
 }
 
 #[cfg(feature = "conformance")]
@@ -525,7 +625,10 @@ fn test_subscription_mode_probe_is_independent_of_retention_capability() {
         &ConformanceHooks::default(),
     );
     assert!(report.all_passed(), "{report:?}");
-    assert_eq!(*seen.lock().unwrap(), vec![SubscriptionDurability::Durable]);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![SubscriptionDurability::Durable, SubscriptionDurability::Durable]
+    );
     let async_seen = Arc::new(Mutex::new(Vec::new()));
     let async_report = block_on(run_async(
         || async {
@@ -539,7 +642,10 @@ fn test_subscription_mode_probe_is_independent_of_retention_capability() {
         &AsyncConformanceHooks::default(),
     ));
     assert!(async_report.all_passed(), "{async_report:?}");
-    assert_eq!(*async_seen.lock().unwrap(), vec![SubscriptionDurability::Durable]);
+    assert_eq!(
+        *async_seen.lock().unwrap(),
+        vec![SubscriptionDurability::Durable, SubscriptionDurability::Durable]
+    );
 }
 
 #[cfg(feature = "conformance")]
@@ -886,6 +992,27 @@ fn test_conformance_publish_failures_skip_receive_and_still_close_providers() {
             );
         }
     }
+
+    let strict_report = run_sync_with_profile(
+        || {
+            let spi = Arc::new(FakeEventBusSpi::new());
+            spi.fail_next_publish();
+            spi
+        },
+        &ConformanceHooks::default(),
+        ConformanceProfile::Strict,
+    );
+    let strict_failure_index = strict_report
+        .cases()
+        .iter()
+        .position(|case| {
+            matches!(case,
+                ConformanceCase::Failed { case_id, detail }
+                    if case_id == "receive-payload" && detail.contains("strict profile requires")
+            )
+        })
+        .expect("strict profile promotes the missing receive fixture");
+    assert!(strict_report.case_context(strict_failure_index).is_some());
 }
 
 #[cfg(feature = "conformance")]
@@ -1690,6 +1817,31 @@ fn test_bounded_channel_fixture_reports_bounded_admission_and_supports_typed_fac
     assert_eq!(ShutdownOutcome::Complete, report.outcome);
     assert_eq!(0, report.known_abandoned_deliveries);
     assert!(report.provider_may_have_abandoned_deliveries);
+}
+
+#[test]
+#[cfg(feature = "conformance")]
+fn test_bounded_channel_close_discards_unreceived_publication() {
+    let spi = create_flume_spi();
+    let request = subscription_request();
+    let subscription_id = request.subscription_id();
+    let mut receiver = spi
+        .subscribe(request)
+        .expect("bounded-channel provider must accept the subscription");
+    accepted_publication(
+        spi.publish(outbound_message())
+            .expect("publication setup must succeed before close"),
+        subscription_id,
+    )
+    .expect("publication must be admitted to the receiver before close");
+    receiver.close().expect("subscription close must succeed");
+    assert!(matches!(
+        receiver
+            .receive(Duration::ZERO)
+            .expect("receive after close must return an outcome"),
+        ReceiveOutcome::Closed
+    ));
+    receiver.close().expect("repeated close must remain successful");
 }
 
 /// Exercises synchronous provider behavior and records unsupported cases.

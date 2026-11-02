@@ -21,6 +21,7 @@ use super::super::SettlementToken;
 use super::super::TopicAddress;
 use super::super::TransportPayload;
 pub(super) use super::conformance_case::ConformanceCase;
+use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_skip_reason::ConformanceSkipReason;
 use crate::error::SpiError;
@@ -56,6 +57,9 @@ use crate::spi::SpiSubscriptionRequest;
 pub struct ConformanceReport {
     /// Pass, failure, and skip outcomes in their execution order.
     cases: Vec<ConformanceCase>,
+    /// Context aligned with each case; global checks have no combination.
+    contexts: Vec<Option<ConformanceCaseContext>>,
+    active_context: Option<ConformanceCaseContext>,
 }
 
 impl ConformanceReport {
@@ -67,6 +71,15 @@ impl ConformanceReport {
     #[inline]
     pub fn cases(&self) -> &[ConformanceCase] {
         &self.cases
+    }
+
+    /// Returns the payload and subscription combination associated with a case.
+    ///
+    /// Enumerate [`Self::cases`] to obtain a valid index. Global checks and
+    /// out-of-range indices have no context.
+    #[must_use]
+    pub fn case_context(&self, index: usize) -> Option<&ConformanceCaseContext> {
+        self.contexts.get(index).and_then(Option::as_ref)
     }
 
     /// Returns whether every executed case passed; skipped cases are allowed.
@@ -89,8 +102,12 @@ impl ConformanceReport {
         let failures = self
             .cases
             .iter()
-            .filter_map(|case| match case {
-                ConformanceCase::Failed { case_id, detail } => Some(format!("{case_id}: {detail}")),
+            .enumerate()
+            .filter_map(|(index, case)| match case {
+                ConformanceCase::Failed { case_id, detail } => Some(match self.case_context(index) {
+                    Some(context) => format!("{case_id} ({context:?}): {detail}"),
+                    None => format!("{case_id}: {detail}"),
+                }),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -102,7 +119,12 @@ impl ConformanceReport {
     /// # Parameters
     /// - `case`: conformance outcome to append.
     pub(super) fn push(&mut self, case: ConformanceCase) {
+        self.contexts.push(self.active_context.clone());
         self.cases.push(case);
+    }
+
+    pub(super) fn set_case_context(&mut self, context: Option<ConformanceCaseContext>) {
+        self.active_context = context;
     }
 
     /// Records a check outside the selected API or capability contract.

@@ -162,7 +162,7 @@ impl EventBusSpi for FlumeSpi {
         drop(state);
         Ok(Box::new(FlumeSubscription {
             id,
-            receiver,
+            receiver: Some(receiver),
             state: Arc::clone(&self.state),
             closed: false,
         }))
@@ -179,14 +179,17 @@ impl EventBusSpi for FlumeSpi {
 
 struct FlumeSubscription {
     id: Id,
-    receiver: Receiver<InboundMessage>,
+    receiver: Option<Receiver<InboundMessage>>,
     state: Arc<Mutex<State>>,
     closed: bool,
 }
 
 impl EventSubscriptionSpi for FlumeSubscription {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
-        match self.receiver.recv_timeout(timeout) {
+        let Some(receiver) = self.receiver.as_ref() else {
+            return Ok(ReceiveOutcome::Closed);
+        };
+        match receiver.recv_timeout(timeout) {
             Ok(message) => Ok(ReceiveOutcome::Message(message)),
             Err(RecvTimeoutError::Timeout) => Ok(ReceiveOutcome::TimedOut),
             Err(RecvTimeoutError::Disconnected) => Ok(ReceiveOutcome::Closed),
@@ -207,7 +210,9 @@ impl EventSubscriptionSpi for FlumeSubscription {
         {
             state.payload_types.remove(&route.topic);
         }
+        drop(state);
         self.closed = true;
+        drop(self.receiver.take());
         Ok(())
     }
 }

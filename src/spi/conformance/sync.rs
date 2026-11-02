@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_hooks::ConformanceHooks;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
@@ -89,6 +90,13 @@ where
     let mut first_combination = true;
     for (case_id, _) in payloads {
         for durability in modes.iter().copied() {
+            let payload_mode = if case_id == "declared-native-publish" {
+                crate::spi::PayloadModes::Native
+            } else {
+                crate::spi::PayloadModes::Encoded
+            };
+            report.set_case_context(Some(ConformanceCaseContext::new("sync", payload_mode, durability)));
+            record_pending_close(&factory, case_id, durability, &mut report);
             let spi = if first_combination {
                 first_combination = false;
                 capability_spi.clone()
@@ -307,6 +315,7 @@ where
             });
         }
     }
+    report.set_case_context(None);
     let capabilities = capability_spi.capabilities();
     if capabilities.settlement() == SettlementCapabilities::None {
         report.push(ConformanceCase::Skipped {
@@ -364,4 +373,90 @@ where
     }
     report.apply_profile(profile);
     report
+}
+
+fn record_pending_close<F>(
+    factory: &F,
+    case_id: &'static str,
+    durability: SubscriptionDurability,
+    report: &mut ConformanceReport,
+) where
+    F: Fn() -> Arc<dyn EventBusSpi>,
+{
+    let spi = factory();
+    let mut subscription = match spi.subscribe(probe_request(1, durability)) {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            report.push(ConformanceCase::Failed {
+                case_id: "close-with-pending-setup".into(),
+                detail: format!("sync pending-close subscribe failed: {error}"),
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "receive-after-close-with-pending".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "subscription could not be created".into(),
+                },
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "close-with-pending-idempotent".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "subscription could not be created".into(),
+                },
+            });
+            let _ = spi.shutdown(ShutdownMode::Immediate);
+            return;
+        }
+    };
+    let publish = spi.publish(probe_message(probe_payload(case_id), spi.capabilities()));
+    if let Err(error) = publish {
+        report.push(ConformanceCase::Failed {
+            case_id: "close-with-pending-setup".into(),
+            detail: format!("sync pending-close probe publish failed: {error}"),
+        });
+        report.push(ConformanceCase::Skipped {
+            case_id: "receive-after-close-with-pending".into(),
+            reason: ConformanceSkipReason::MissingFixture {
+                detail: "pending-close probe publish failed".into(),
+            },
+        });
+        report.push(ConformanceCase::Skipped {
+            case_id: "close-with-pending-idempotent".into(),
+            reason: ConformanceSkipReason::MissingFixture {
+                detail: "pending-close probe publish failed".into(),
+            },
+        });
+    } else {
+        report.push(ConformanceCase::Passed {
+            case_id: "close-with-pending-setup".into(),
+        });
+        report.push(match subscription.close() {
+            Ok(()) => match subscription.receive(Duration::ZERO) {
+                Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                    case_id: "receive-after-close-with-pending".into(),
+                },
+                Ok(_) => ConformanceCase::Failed {
+                    case_id: "receive-after-close-with-pending".into(),
+                    detail: "sync close with pending probe returned a non-Closed outcome".into(),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "receive-after-close-with-pending".into(),
+                    detail: format!("sync receive after pending close failed: {error}"),
+                },
+            },
+            Err(error) => ConformanceCase::Failed {
+                case_id: "receive-after-close-with-pending".into(),
+                detail: format!("sync pending-close close failed: {error}"),
+            },
+        });
+        report.push(match subscription.close() {
+            Ok(()) => ConformanceCase::Passed {
+                case_id: "close-with-pending-idempotent".into(),
+            },
+            Err(error) => ConformanceCase::Failed {
+                case_id: "close-with-pending-idempotent".into(),
+                detail: format!("repeated sync pending-close failed: {error}"),
+            },
+        });
+    }
+    let _ = spi.shutdown(ShutdownMode::Immediate);
 }
