@@ -41,6 +41,9 @@ pub struct AsyncConformanceHooks {
     pub settlement: Option<AsyncConformanceCheck>,
     /// Checks cancellation safety using a provider-owned receive fixture.
     pub receive_cancellation: Option<AsyncConformanceCheck>,
+    /// Checks that cancelling a partially created subscription releases its
+    /// provider-side creation resources.
+    pub subscribe_cancellation: Option<AsyncConformanceCheck>,
     /// Checks that closing with an unsettled durable delivery leaves it
     /// available after reconnecting the same logical subscription.
     pub durable_recovery: Option<AsyncConformanceCheck>,

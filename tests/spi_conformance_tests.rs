@@ -15,7 +15,11 @@ use std::sync::Arc;
 #[cfg(feature = "conformance")]
 use std::sync::Mutex;
 use std::sync::mpsc::channel;
+#[cfg(feature = "conformance")]
+use std::task::Context;
 use std::task::Poll;
+#[cfg(feature = "conformance")]
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -1110,6 +1114,9 @@ fn test_public_async_conformance_runner_executes_provider_hooks() {
     let hooks = AsyncConformanceHooks {
         settlement: Some(successful_check.clone()),
         receive_cancellation: Some(successful_check.clone()),
+        subscribe_cancellation: Some(subscribe_cancellation_check(Arc::new(PartialSubscribeProvider::new(
+            false,
+        )))),
         durable_recovery: None,
         ephemeral_cleanup: Some(successful_check.clone()),
         settlement_cancellation: Some(successful_check.clone()),
@@ -1365,6 +1372,9 @@ fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
     let hooks = AsyncConformanceHooks {
         settlement: Some(check.clone()),
         receive_cancellation: Some(check.clone()),
+        subscribe_cancellation: Some(subscribe_cancellation_check(Arc::new(PartialSubscribeProvider::new(
+            false,
+        )))),
         durable_recovery: Some(check),
         ephemeral_cleanup: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
         settlement_cancellation: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
@@ -1385,6 +1395,206 @@ fn test_strict_async_conformance_awaits_a_provider_durable_recovery_check() {
             .iter()
             .any(|case| matches!(case, ConformanceCase::Passed { case_id } if case_id == "durable-unsettled-recovery"))
     );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_async_subscribe_cancellation_case_is_profiled_once_and_ungated() {
+    let missing_structural = block_on(run_async(
+        || async {
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                native_no_settlement_capabilities(),
+            )) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    assert!(missing_structural.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::MissingFixture { .. } }
+            if case_id == "subscribe-cancellation"
+    )));
+    let missing_strict = block_on(run_async_with_profile(
+        || async {
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                native_no_settlement_capabilities(),
+            )) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+        ConformanceProfile::Strict,
+    ));
+    assert!(missing_strict.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Failed { case_id, detail }
+            if case_id == "subscribe-cancellation" && detail.contains("strict profile requires")
+    )));
+
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    let hooks = AsyncConformanceHooks {
+        subscribe_cancellation: Some(Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            Box::pin(async { Err("subscribe cancellation fixture failed".into()) })
+        })),
+        ..AsyncConformanceHooks::default()
+    };
+    let report = block_on(run_async(
+        || async {
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                native_no_settlement_capabilities(),
+            )) as Arc<dyn AsyncEventBusSpi>
+        },
+        &hooks,
+    ));
+    assert_eq!(count.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert!(report.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Failed { case_id, detail }
+            if case_id == "subscribe-cancellation" && detail == "subscribe cancellation fixture failed"
+    )));
+
+    let provider = Arc::new(PartialSubscribeProvider::new(false));
+    let fixture = subscribe_cancellation_check(provider);
+    assert_eq!(
+        block_on(fixture()).expect("partial subscribe cancellation must release its guard"),
+        ()
+    );
+    let broken = Arc::new(PartialSubscribeProvider::new(true));
+    let fixture = subscribe_cancellation_check(broken);
+    assert!(
+        block_on(fixture())
+            .expect_err("leaked guard must be detected")
+            .contains("permission")
+    );
+
+    let successful_hooks = AsyncConformanceHooks {
+        subscribe_cancellation: Some(subscribe_cancellation_check(Arc::new(PartialSubscribeProvider::new(
+            false,
+        )))),
+        ..AsyncConformanceHooks::default()
+    };
+    let successful_report = block_on(run_async(
+        || async {
+            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+                native_no_settlement_capabilities(),
+            )) as Arc<dyn AsyncEventBusSpi>
+        },
+        &successful_hooks,
+    ));
+    let subscribe_cases = successful_report
+        .cases()
+        .iter()
+        .filter(|case| {
+            matches!(case,
+                ConformanceCase::Passed { case_id } | ConformanceCase::Failed { case_id, .. }
+                    if case_id == "subscribe-cancellation"
+            )
+        })
+        .count();
+    assert_eq!(subscribe_cases, 1, "subscribe cancellation hook must run exactly once");
+    assert!(successful_report.cases().iter().any(|case| matches!(case,
+        ConformanceCase::Passed { case_id } if case_id == "subscribe-cancellation"
+    )));
+}
+
+#[cfg(feature = "conformance")]
+fn subscribe_cancellation_check(provider: Arc<PartialSubscribeProvider>) -> AsyncConformanceCheck {
+    Arc::new(move || {
+        let provider = provider.clone();
+        Box::pin(async move {
+            {
+                let mut creation = provider.subscribe(subscription_request());
+                let mut context = Context::from_waker(Waker::noop());
+                assert!(creation.as_mut().poll(&mut context).is_pending());
+            }
+            let mut subscription = provider
+                .subscribe(subscription_request())
+                .await
+                .map_err(|error| format!("provider did not release subscribe permission: {error}"))?;
+            subscription.close().await.map_err(|error| error.to_string())
+        })
+    })
+}
+
+#[cfg(feature = "conformance")]
+struct PartialSubscribeProvider {
+    inner: FakeAsyncEventBusSpi,
+    permission: Arc<std::sync::atomic::AtomicBool>,
+    attempts: std::sync::atomic::AtomicUsize,
+    leak_guard: bool,
+}
+
+#[cfg(feature = "conformance")]
+impl PartialSubscribeProvider {
+    fn new(leak_guard: bool) -> Self {
+        Self {
+            inner: FakeAsyncEventBusSpi::new(),
+            permission: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+            leak_guard,
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SubscribePermissionGuard {
+    permission: Arc<std::sync::atomic::AtomicBool>,
+    leak: bool,
+}
+
+#[cfg(feature = "conformance")]
+impl Drop for SubscribePermissionGuard {
+    fn drop(&mut self) {
+        if !self.leak {
+            self.permission.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventBusSpi for PartialSubscribeProvider {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async move {
+            if self
+                .permission
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_err()
+            {
+                return Err(SpiError::Operation {
+                    provider_id: "partial-subscribe-fixture".into(),
+                    operation: "subscribe",
+                    resource: None,
+                    kind: "permission_unavailable",
+                    retryable: Some(true),
+                    source: Box::new(std::io::Error::other("subscribe permission is still held")),
+                });
+            }
+            let _guard = SubscribePermissionGuard {
+                permission: self.permission.clone(),
+                leak: self.leak_guard,
+            };
+            if self.attempts.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0 {
+                std::future::poll_fn(|_| std::task::Poll::<()>::Pending).await;
+            }
+            self.inner.subscribe(request).await
+        })
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
 }
 
 /// Declares both durability modes so strict checks require both cleanup hooks.

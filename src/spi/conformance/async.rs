@@ -124,6 +124,12 @@ where
         .await;
     }
     push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
+    push_async_hook(
+        &mut report,
+        "subscribe-cancellation",
+        hooks.subscribe_cancellation.as_ref(),
+    )
+    .await;
     if capabilities.settlement() == SettlementCapabilities::None {
         report.push(ConformanceCase::Skipped {
             case_id: "settlement-cancellation".into(),
