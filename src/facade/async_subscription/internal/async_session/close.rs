@@ -119,11 +119,15 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         self.receiver.take();
         let _ = self.inner.scheduler.unregister(self.id);
         self.inner.notify_scheduler();
-        self.inner
-            .controls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.id);
+        {
+            self.inner
+                .controls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&self.id);
+        }
+        let finished_handler = self.handler.take();
+        drop(finished_handler);
         Ok(())
     }
 

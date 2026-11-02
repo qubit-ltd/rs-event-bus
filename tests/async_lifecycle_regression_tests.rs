@@ -15,6 +15,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -25,6 +26,7 @@ use std::task::Waker;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::AsyncSubscriptionRunState;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::ShutdownError;
@@ -51,6 +53,14 @@ fn ready<F: Future>(future: F) -> F::Output {
     match poll_once(future.as_mut(), Waker::noop()) {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("expected local operation to complete on first poll"),
+    }
+}
+
+struct DropProbe(Arc<AtomicBool>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
     }
 }
 
@@ -126,6 +136,208 @@ fn test_close_drains_all_started_handlers() {
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
     assert_eq!(report.known_abandoned_deliveries, 0);
     assert!(report.provider_may_have_abandoned_deliveries);
+}
+
+#[test]
+fn test_successful_close_releases_handler_capture_and_keeps_metrics() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.close-handler-release").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("close-handler-release", topic).expect("request")))
+            .expect("subscription");
+    let dropped = Arc::new(AtomicBool::new(false));
+    let capture = Arc::new(DropProbe(dropped.clone()));
+    let capture_weak: Weak<DropProbe> = Arc::downgrade(&capture);
+    let mut run = {
+        let capture = capture.clone();
+        Box::pin(subscription.run(move |_| {
+            let _capture = capture.clone();
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    drop(run);
+    drop(capture);
+    assert!(capture_weak.upgrade().is_some());
+    assert!(!dropped.load(Ordering::SeqCst));
+    let metrics = subscription.delivery_metrics();
+    let run_state = subscription.run_state();
+    assert_eq!(AsyncSubscriptionRunState::Paused, run_state);
+    let terminal_failure = subscription.terminal_failure();
+
+    ready(subscription.close()).expect("subscription close");
+
+    assert!(capture_weak.upgrade().is_none());
+    assert!(dropped.load(Ordering::SeqCst));
+    assert_eq!(metrics, subscription.delivery_metrics());
+    assert_eq!(AsyncSubscriptionRunState::Stopped, subscription.run_state());
+    assert_eq!(terminal_failure.is_some(), subscription.terminal_failure().is_some());
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+}
+
+#[test]
+fn test_cancelled_run_retains_handler_and_resumes_with_it() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.paused-handler-retained").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("paused-handler-retained", topic.clone()).expect("request")))
+            .expect("subscription");
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Arc::new(DropProbe(dropped.clone()));
+    let probe_weak = Arc::downgrade(&probe);
+    let original_calls = Arc::new(AtomicUsize::new(0));
+    let mut run = {
+        let probe = probe.clone();
+        let original_calls = original_calls.clone();
+        Box::pin(subscription.run(move |_| {
+            let _probe = probe.clone();
+            let original_calls = original_calls.clone();
+            async move {
+                original_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    drop(run);
+    drop(probe);
+    assert!(probe_weak.upgrade().is_some());
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    let _ = ready(bus.publish(PublishRequest::new(topic, 7).expect("publish request"))).expect("publish");
+    let replacement_dropped = Arc::new(AtomicBool::new(false));
+    let replacement_probe = Arc::new(DropProbe(replacement_dropped.clone()));
+    let replacement_probe_weak = Arc::downgrade(&replacement_probe);
+    let replacement_calls = Arc::new(AtomicUsize::new(0));
+    let mut resumed = {
+        let replacement_probe = replacement_probe.clone();
+        let replacement_calls = replacement_calls.clone();
+        Box::pin(subscription.run(move |_| {
+            let _replacement_probe = replacement_probe.clone();
+            let replacement_calls = replacement_calls.clone();
+            async move {
+                replacement_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    for _ in 0..8 {
+        if replacement_calls.load(Ordering::SeqCst) != 0 {
+            break;
+        }
+        assert!(poll_once(resumed.as_mut(), Waker::noop()).is_pending());
+    }
+    assert_eq!(0, original_calls.load(Ordering::SeqCst));
+    assert_eq!(1, replacement_calls.load(Ordering::SeqCst));
+    assert!(probe_weak.upgrade().is_none());
+    assert!(replacement_probe_weak.upgrade().is_some());
+    drop(resumed);
+    drop(replacement_probe);
+    ready(subscription.close()).expect("subscription close");
+    assert!(replacement_probe_weak.upgrade().is_none());
+    assert!(replacement_dropped.load(Ordering::SeqCst));
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+}
+
+#[test]
+fn test_failed_close_retains_handler_until_successful_retry() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("close-retry").expect("provider ID"), provider.clone())
+        .expect("facade");
+    let topic = Topic::<usize>::new("regression.close-handler-retry").expect("topic");
+    let mut subscription = ready(bus.subscribe(SubscribeRequest::new("close-handler-retry", topic).expect("request")))
+        .expect("subscription");
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Arc::new(DropProbe(dropped.clone()));
+    let probe_weak = Arc::downgrade(&probe);
+    let mut run = {
+        let probe = probe.clone();
+        Box::pin(subscription.run(move |_| {
+            let _probe = probe.clone();
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    drop(run);
+    drop(probe);
+
+    provider.panic_on_close_call();
+    assert!(matches!(
+        ready(subscription.close()),
+        Err(LifecycleError::SubscriptionClose(_))
+    ));
+    assert!(probe_weak.upgrade().is_some());
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    ready(subscription.close()).expect("successful close retry");
+    assert!(probe_weak.upgrade().is_none());
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(matches!(
+        ready(bus.shutdown(ShutdownMode::Immediate)),
+        Err(ShutdownError::SubscriptionClose(_))
+    ));
+}
+
+#[test]
+fn test_bus_shutdown_releases_handler_capture() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.shutdown-handler-release").expect("topic");
+    let _subscription =
+        ready(bus.subscribe(SubscribeRequest::new("shutdown-handler-release", topic).expect("request")))
+            .expect("subscription");
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Arc::new(DropProbe(dropped.clone()));
+    let probe_weak = Arc::downgrade(&probe);
+    let mut run = {
+        let probe = probe.clone();
+        Box::pin(_subscription.run(move |_| {
+            let _probe = probe.clone();
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    drop(run);
+    drop(probe);
+    assert!(probe_weak.upgrade().is_some());
+
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+
+    assert!(probe_weak.upgrade().is_none());
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_natural_receive_close_then_subscription_close_releases_handler_capture() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("natural-close").expect("provider ID"), provider.clone())
+        .expect("facade");
+    let topic = Topic::<usize>::new("regression.natural-close-handler-release").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("natural-close", topic).expect("request"))).expect("subscription");
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Arc::new(DropProbe(dropped.clone()));
+    let probe_weak = Arc::downgrade(&probe);
+    let mut run = {
+        let probe = probe.clone();
+        Box::pin(subscription.run(move |_| {
+            let _probe = probe.clone();
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    drop(probe);
+    provider.close_receiver(subscription.id());
+    assert!(matches!(poll_once(run.as_mut(), Waker::noop()), Poll::Ready(Ok(()))));
+    drop(run);
+    assert!(probe_weak.upgrade().is_none());
+    assert!(dropped.load(Ordering::SeqCst));
+
+    ready(subscription.close()).expect("subscription close after provider EOF");
+    assert!(probe_weak.upgrade().is_none());
+    assert!(dropped.load(Ordering::SeqCst));
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
 }
 
 #[test]

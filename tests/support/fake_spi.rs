@@ -628,6 +628,23 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn receiver_drop_recoveries(&self) -> usize {
         self.receiver_drop_recoveries.load(Ordering::Acquire)
     }
+
+    pub(crate) fn close_receiver(&self, id: Id) {
+        let queue = self
+            .queues
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(subscription_id, _)| *subscription_id == id)
+            .map(|(_, queue)| queue.clone())
+            .expect("subscription queue");
+        let mut state = queue.lock().unwrap();
+        state.closed = true;
+        for waker in state.wakers.drain(..) {
+            waker.wake();
+        }
+    }
+
     pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
         self.queues
             .lock()
