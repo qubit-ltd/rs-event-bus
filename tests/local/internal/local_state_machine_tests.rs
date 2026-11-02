@@ -470,11 +470,16 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DeliveryDisposition, Id, PendingByLane, PendingEvent, SettlementToken, TokenRecord, consume_lane,
-        record_disposition,
-    };
     use std::collections::VecDeque;
+
+    use super::DeliveryDisposition;
+    use super::Id;
+    use super::PendingByLane;
+    use super::PendingEvent;
+    use super::SettlementToken;
+    use super::TokenRecord;
+    use super::consume_lane;
+    use super::record_disposition;
 
     fn event(id: u64, lane: u8, weight: usize) -> PendingEvent {
         PendingEvent { id, lane, weight }
