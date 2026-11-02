@@ -155,7 +155,7 @@ let orders = OrderService::new(bus.clone());
 
 应用可以用 `EventBus::local(LocalEventBusConfig::default())` 创建总线，在启动时调用前述两个订阅函数并持有返回的句柄；订单事务提交后调用 `publish_order_created`，并在关闭时显式取消订阅、关闭总线。回执只报告 provider 接纳情况，不代表审计和客户视图已写入；事务提交后、发布前进程退出也不会自动补发。接纳结果和投递策略见[用户手册](doc/user_guide.zh_CN.md)。
 
-停机时，对每个同步句柄调用 `Subscription::cancel()`，再关闭总线；仅丢弃同步句柄不会取消订阅。异步总线需在后台任务中驱动 `AsyncSubscription::run()`，并在总线仍运行时等待句柄的 `close().await`，然后关闭总线。若总线停机已经开始，`close()` 会返回 `LifecycleError::Closed`；应继续驱动 shutdown 并获取其结果。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)显式等待 `close()`。
+停机时，对每个同步句柄调用 `Subscription::cancel()`，再关闭总线；仅丢弃同步句柄不会取消订阅。异步总线应在后台任务中驱动 `AsyncSubscription::run()`，然后直接驱动有界总线停机；停机会接管保留的 session。如果总线仍在运行，且应用需要单独观察 provider receiver 的关闭错误，可在应用 deadline 内等待 `close()`。若总线停机已经开始，`close()` 会返回 `LifecycleError::Closed`；应继续驱动 shutdown 并获取其结果。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要单独观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)在期限内等待 `close()`。
 
 ## 能力与边界
 

@@ -309,7 +309,8 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
     /// Replaces the requested start position.
     ///
     /// # Parameters
-    /// - `value`: initial position from which to receive events.
+    /// - `value`: requested provider position. Existing state recovery follows
+    ///   the provider's cursor and unsettled-delivery policy.
     ///
     /// # Returns
     /// The updated builder.

@@ -279,6 +279,11 @@ pub struct EventEnvelope<T> {
 `start_position: StartPosition`、`consumer_group: Option<ConsumerGroup>`、
 `provider_options: ProviderOptions`（`BTreeMap<String, String>`）。
 
+`RequiredCapabilities` 将订阅接纳模式与消息保留能力分开：
+`with_subscription_modes(None)` 不限制 provider 选择，`BOTH` 要求同时支持
+Ephemeral 和 Durable，单独模式也可分别要求。该要求默认可选，不改变既有默认值；
+`.durable()` 不会隐式要求 Durable 订阅。
+
 同一份 `SubscribeRequest<T>` 既能给 `EventBus` 也能给 `AsyncEventBus`，
 区别只在于：同步 facade 拒绝带 `async_interceptors` 的请求（`SubscribeError::Configuration`），
 异步 facade 会拒绝同步 `interceptors`；其 handler 链只接受异步 `async_interceptors`。
@@ -1331,39 +1336,24 @@ crate 内的 `loom` 测试对预算准入、操作许可和调度器容量进行
 
 ### 15.3 `conformance` feature
 
-`qubit_event_bus::spi::conformance::{run_sync, run_async}` 接受一个 provider 工厂
-（`Fn() -> Arc<dyn EventBusSpi>` / 异步返回 future；每个用例新建实例避免相互污染）
-与 `ConformanceHooks`（可选的 settlement、receive/settlement/close/shutdown cancellation 和 durable recovery 钩子，让 provider
-作者补充只有自己能验证的幂等/取消检查），返回 `ConformanceReport`
+`run_sync` 和 `run_async` 都接收每个用例都会新建 provider 的工厂，以及对应 hook：
+同步 `ConformanceHooks` 使用同步回调；`AsyncConformanceHooks` 使用可发送的 future，
+runner 会等待它们且不阻塞 executor。二者均返回 `ConformanceReport`
 （`Vec<ConformanceCase::{Passed, Failed, Skipped}>`）。
-当前用例覆盖：能力/载荷模式一致性、`subscribe`、`publish`、`receive-payload`、
-settlement 幂等/冲突、`shutdown`。Structural profile 用于 smoke check；Strict profile 会把缺失必需 hook
-转为失败，同时保留 typed unsupported-capability skip。异步 hook 以 future 形式运行，不阻塞 executor。
-Strict profile 配置 provider 专属 fixture 后才可作为验收门。
 
-公共 runner 不覆盖、需要 provider 作者自己补充的检查：
+公共 runner 自动检查载荷/订阅模式组合、subscribe、publish 后 receive、接收字段和载荷、
+settlement token 是否存在、重复 Accept、冲突 disposition 报错，以及 close 和 shutdown
+幂等。这些检查只证明操作报告的结果；例如重复 Accept 返回 `Ok`，不能证明远端副作用
+恰好执行一次。
 
-- descriptor、provider 选择与创建；
-- capability 声明稳定且与真实行为一致；
-- native / encoded 载荷契约；
-- `publish` 之后能 `receive`；
-- `receive` 超时；
-- `close` 之后 `receive` 返回 `Closed`；
-- gap 映射为 `ReceiveOutcome::Gap`；
-- settlement token 的 subscription 归属；
-- 重复 settlement 幂等、冲突 disposition 不造成额外投递；
-- `shutdown` 幂等；
-- 异步 `receive` 被取消后消息不丢；
-- 错误携带 provider 上下文，且 `source` 可追溯；
-- `Debug` 输出不泄漏敏感的 provider options。
+Provider hook 提供只有 provider 自身才能观察的 fixture：重复/冲突 settlement 的效果、
+receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral cleanup。
+Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持的模式仍是带类型的 skip。
+默认结构检查模式可以跳过缺少的 hook。
 
-Strict 恢复检查由 provider 声明的订阅模式决定：Durable 模式必须提供 durable
-恢复 fixture，Ephemeral 模式必须提供清理 fixture。provider 不支持的模式会以带类型的
-skip 报告；缺少必需 fixture 则让报告失败。同步方法没有可取消的 future，因此同步
-cancellation 用例标记为 `NotApplicable`。取消异步 receive future 与销毁 receiver
-不同：provider 已取出的消息仍须能由后续 receive 或恢复流程取得。Durable receiver
-close 或 drop 后必须保留已接纳但未结算的消息；Ephemeral provider 可以丢弃这些消息。
-close 和 drop 都不能隐式确认未结算消息。
+Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、receive timeout、
+close 后返回 `Closed`、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、
+错误上下文与 source，以及敏感数据暴露。hook 被调用本身不证明这些独立属性。
 
 ### 15.4 文档验证
 

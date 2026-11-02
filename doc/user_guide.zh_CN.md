@@ -969,7 +969,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 把示例中的 `provider_crate` 和 `your-provider-id` 换成真实 crate 名称及其文档给出的 ID。如果程序找不到实现，先查看 `provider_ids()`；若两个实现使用同一选择名称，`discover()` 会报错。内置 `local` 只自动登记在**同步**目录；异步 local 要用 `AsyncEventBusRegistry::with_local()` 显式加入。同步与异步目录互不通用。两种 local 实现的 ID 都是 `local`，还可用 `memory` 或 `in-process` 选择。同步 local 也可通过 `EventBusRegistry::with_local()` 显式加入。
 
-`EventBusConfig::with_provider_options` 传递这个实现自己的配置，`with_facade_config` 配置总线的处理方式，`with_required_capabilities` 说明应用必须具备什么能力。例如 `RequiredCapabilities::new().durable()` 表示“消息必须能持久保存”；内置 local 做不到，创建时就会报错。注册表只会在**创建总线时**尝试其他候选；运行中发布或接收失败不会自动换实现。`ProviderOptions` 可能出现在调试输出中，不要放密码或 token。
+`EventBusConfig::with_provider_options` 传递这个实现自己的配置，`with_facade_config` 配置总线的处理方式，`with_required_capabilities` 说明应用必须具备什么能力。例如 `RequiredCapabilities::new().durable()` 表示“消息必须能持久保存”；内置 local 做不到，创建时就会报错。`with_subscription_modes(SubscriptionModes::DURABLE)` 单独要求 Durable 订阅；`SubscriptionModes::BOTH` 要求 Ephemeral 和 Durable 都受支持。默认不要求任何订阅模式，而且 `.durable()` 不会隐式添加该要求。注册表只会在**创建总线时**尝试其他候选；运行中发布或接收失败不会自动换实现。`ProviderOptions` 可能出现在调试输出中，不要放密码或 token。
 
 ### 对照 local 与 Redis 的实际能力
 
@@ -1564,42 +1564,48 @@ use qubit_event_bus::LifecycleError;
 use qubit_event_bus::WaitOutcome;
 
 let timeout = Some(Duration::from_secs(10));
-let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
+let (outcome, provider_idle_supported) = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
     Err(LifecycleError::IdleWaitUnsupported) => {
-        // 所用传递实现不能报告主题是否空闲，只能等总线已经取到的消息。
-        bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?
+        // 这里只观察本总线已经取到的消息。
+        (bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?, false)
     }
-    other => other?,
+    other => (other?, true),
 };
 if outcome == WaitOutcome::TimedOut {
     eprintln!("10 秒内 orders.created 仍有消息排队或未处理完");
+} else if outcome == WaitOutcome::Idle && provider_idle_supported {
+    eprintln!("provider 报告此刻没有排队或未结算的订单");
+} else if outcome == WaitOutcome::Idle {
+    eprintln!("总线已接收的工作已完成；provider backlog 未知");
 }
 ```
 
-`Idle` 表示此刻传递实现里这个主题没有排队消息，总线也没有正在处理的投递；停止新业务请求之后得到 `Idle`，再取消订阅就不会留下已接纳却未处理的订单事件。`TimedOut` 只说明等待期满，处理函数可能还在运行。这两个方法只看本进程内的这个总线对象，对于连接消息服务器的实现，它不能说明其他进程的消费者也处理完了。
+只有 provider 支持 `wait_for_idle` 时，`Idle` 才表示 provider 报告此刻没有排队或未结算的主题投递，且总线没有正在处理的投递；它不提供原子排空保证。fallback 的 `Idle` 只表示 facade 已接收的工作完成，provider backlog 未知。`TimedOut` 只说明等待期满，处理函数可能还在运行。这两个方法只看本进程内的这个总线对象，对于连接消息服务器的实现，它不能说明其他进程的消费者也处理完了。
 
 ### 异步总线的停机流程
 
-应用运行期间要持续驱动异步 `run`。收到停止信号后，先结束该 `run` future，等待句柄关闭，再关闭总线。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
+应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
 
 ```rust
 use std::time::Duration;
-use qubit_event_bus::spi::ShutdownMode;
-
 let run_result = tokio::select! {
     result = subscription.run(handler) => Some(result),
     _ = shutdown_signal => None,
 };
-let close_result = subscription.close().await;
-let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
-    timeout: Duration::from_secs(3),
-}).await;
-close_result?;
-shutdown_result?;
-if let Some(result) = run_result { result?; }
+let shutdown_result = try_shutdown_async(&bus).await;
+let mut cleanup_errors = Vec::new();
+if let Some(Err(error)) = run_result { cleanup_errors.push(error.to_string()); }
+match shutdown_result {
+    Ok(true) => {}
+    Ok(false) => cleanup_errors.push("停机仍未完成".into()),
+    Err(error) => cleanup_errors.push(error.to_string()),
+}
+if !cleanup_errors.is_empty() {
+    for error in cleanup_errors { eprintln!("清理错误：{error}"); }
+}
 ```
 
-即使 `run` 或 `close` 出错，片段也会尝试两个清理步骤；若应用要保留全部错误，应在返回前逐项记录结果。总线仍为 `Running` 时，显式等待 `close().await` 可获取 provider receiver 的关闭错误；如果总线停机已开始，`close().await` 会返回 `LifecycleError::Closed`，这不代表清理完成，也不包含停机结果。此时应继续驱动并等待总线 shutdown，获取最终清理结果。丢弃 `AsyncSubscription` 会请求处置，却不能返回异步关闭错误；需要处理该错误时不可只依赖 drop。需要有界重试时，使用上面完整编译源中的 `try_shutdown_async(&bus).await`，其中两次 await 都带 `Graceful` timeout。返回 `false` 后不要再无限期 await runner 的 JoinHandle，应把快照与进程处置交给外部监督器。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
+示例保留 runner 结果和 shutdown 错误，供应用记录。`try_shutdown_async` 最多执行两轮有界 Graceful 停机；它会返回 shutdown 错误，不会让应用跳过其他清理。返回 `false` 表示清理仍未完成，不要再无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会暂停当前驱动，后续 shutdown 按协调器保留的状态继续；库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 

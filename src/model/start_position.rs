@@ -5,9 +5,15 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Initial provider position for a new subscription.
+//! Requested provider position for creating or recovering a subscription.
 
-/// Position from which a capable provider starts a subscription.
+/// Requested position from which a capable provider starts or resumes a
+/// subscription.
+///
+/// Providers may use this value only when creating new persistent state. When
+/// recovering existing state, a provider can preserve its saved cursor and
+/// apply its own policy for unsettled deliveries. The exact behavior is
+/// provider-specific; conflicting positions may be rejected.
 ///
 /// # Examples
 ///
@@ -21,12 +27,21 @@
 #[non_exhaustive]
 #[must_use]
 pub enum StartPosition {
-    /// Begin with events published after subscription creation.
+    /// For new provider state, begin with events published after creation.
+    ///
+    /// This does not require a provider to reset an existing subscription's
+    /// cursor when recovering it.
     #[default]
     New,
-    /// Begin with the earliest retained event.
+    /// For new provider state, begin with the earliest retained event.
+    ///
+    /// Recovery of existing state remains provider-specific; for example, a
+    /// provider may retain the saved cursor and recover unsettled deliveries.
     Earliest,
-    /// Resume at a provider-specific position.
+    /// Request a provider-specific offset or cursor.
+    ///
+    /// A provider may apply this when creating new state, preserve existing
+    /// state during recovery, or reject a conflicting request.
     At(
         /// Provider-defined offset or cursor.
         Box<str>,

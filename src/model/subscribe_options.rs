@@ -127,7 +127,7 @@ pub struct SubscribeOptions<T: 'static> {
     pub(crate) consumer_group: Option<ConsumerGroup>,
     /// Requested persistence guarantee.
     pub(crate) durability: SubscriptionDurability,
-    /// Provider offset from which this subscription should begin.
+    /// Requested provider offset or cursor for new state or recovery.
     pub(crate) start_position: StartPosition,
     /// Namespaced options passed to the selected provider.
     pub(crate) provider_options: ProviderOptions,
@@ -343,10 +343,13 @@ impl<T: 'static> SubscribeOptions<T> {
         self.durability
     }
 
-    /// Returns the requested start position.
+    /// Returns the position requested for subscription creation or recovery.
+    /// Providers may preserve an existing cursor or reject a conflicting
+    /// position according to their recovery policy.
     ///
     /// # Returns
-    /// The provider offset or cursor request.
+    /// The provider offset or cursor request. This does not prescribe how an
+    /// implementation recovers existing persistent state.
     #[must_use = "Use the returned start position."]
     #[inline]
     pub fn start_position(&self) -> &StartPosition {

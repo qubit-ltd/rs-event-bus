@@ -60,7 +60,7 @@ pub struct SpiSubscriptionRequest {
     group: Option<ConsumerGroup>,
     /// Requested subscription persistence mode.
     durability: SubscriptionDurability,
-    /// Requested initial position in the provider's event stream.
+    /// Requested provider position for new state or recovery.
     start_position: StartPosition,
     /// Non-sensitive namespaced options interpreted by the backend.
     provider_options: ProviderOptions,
@@ -87,7 +87,8 @@ impl SpiSubscriptionRequest {
     /// - `subscriber_id`: validated logical subscriber identity.
     /// - `group`: optional shared consumer group.
     /// - `durability`: requested persistence mode.
-    /// - `start_position`: requested initial provider position.
+    /// - `start_position`: requested provider position. Providers decide how it
+    ///   applies to new state and recovery of existing state.
     /// - `provider_options`: namespaced options passed to the backend.
     /// - `payload_type_id`: Rust payload type for native routing.
     ///

@@ -126,11 +126,15 @@ impl SpiSubscriptionRequestBuilder {
         self
     }
 
-    /// Sets the provider position from which the subscription should begin.
+    /// Sets the provider position requested for new state or recovery.
+    ///
+    /// The provider determines whether the position initializes new state,
+    /// conflicts with an existing cursor, or is superseded by its recovery
+    /// policy.
     ///
     /// # Parameters
-    /// `start_position` specifies the initial position requested from the
-    /// provider.
+    /// `start_position` specifies the position requested from the provider;
+    /// it does not prescribe how the provider recovers existing state.
     ///
     /// # Returns
     /// The builder with the initial provider position configured.

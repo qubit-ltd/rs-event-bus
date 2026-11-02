@@ -263,10 +263,11 @@ impl<T: 'static> SubscribeOptionsBuilder<T> {
         self
     }
 
-    /// Replaces the starting position.
+    /// Replaces the provider position requested for new state or recovery.
     ///
     /// # Parameters
-    /// - `value`: provider offset from which delivery should begin.
+    /// - `value`: requested provider position. Existing state recovery follows
+    ///   the provider's cursor and unsettled-delivery policy.
     ///
     /// # Returns
     /// The updated builder.

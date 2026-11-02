@@ -969,7 +969,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 Replace `provider_crate` and `your-provider-id` with the real crate name and the id from its documentation. If the program cannot find an implementation, inspect `provider_ids()` first. `discover()` fails when two implementations use the same selection name. The built-in `local` provider auto-registers only in the **synchronous** catalog. Async local has to be added explicitly with `AsyncEventBusRegistry::with_local()`. The sync and async catalogs are not interchangeable. Both local implementations use the id `local`, and they can also be selected as `memory` or `in-process`. Sync local can also be added explicitly with `EventBusRegistry::with_local()`.
 
-`EventBusConfig::with_provider_options` passes that implementation's own configuration. `with_facade_config` configures how the bus handles messages. `with_required_capabilities` states what the application requires. `RequiredCapabilities::new().durable()` means “messages must be persistable.” The built-in local provider cannot do that, so creation fails. The registry tries another candidate only **when the bus is created**. A publish or receive failure at runtime does not switch implementations. `ProviderOptions` can appear in debug output. Do not put a password or a token there.
+`EventBusConfig::with_provider_options` passes that implementation's own configuration. `with_facade_config` configures how the bus handles messages. `with_required_capabilities` states what the application requires. `RequiredCapabilities::new().durable()` means “messages must be persistable.” The built-in local provider cannot do that, so creation fails. `with_subscription_modes(SubscriptionModes::DURABLE)` separately requires Durable subscriptions; `SubscriptionModes::BOTH` requires support for both Ephemeral and Durable. The default has no subscription-mode requirement, and this requirement does not follow from `.durable()`. The registry tries another candidate only **when the bus is created**. A publish or receive failure at runtime does not switch implementations. `ProviderOptions` can appear in debug output. Do not put a password or a token there.
 
 ### Compare local and Redis capabilities
 
@@ -1566,23 +1566,27 @@ use qubit_event_bus::LifecycleError;
 use qubit_event_bus::WaitOutcome;
 
 let timeout = Some(Duration::from_secs(10));
-let outcome = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
+let (outcome, provider_idle_supported) = match bus.wait_for_idle(&OrderCreated::TOPIC, timeout) {
     Err(LifecycleError::IdleWaitUnsupported) => {
-        // The transport cannot report topic idleness; wait only for deliveries the bus has taken.
-        bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?
+        // This fallback observes only deliveries already taken by this bus.
+        (bus.wait_for_received_deliveries(&OrderCreated::TOPIC, timeout)?, false)
     }
-    other => other?,
+    other => (other?, true),
 };
 if outcome == WaitOutcome::TimedOut {
     eprintln!("orders.created still had queued or unfinished messages after 10 seconds");
+} else if outcome == WaitOutcome::Idle && provider_idle_supported {
+    eprintln!("provider reported no queued or unsettled orders at this observation");
+} else if outcome == WaitOutcome::Idle {
+    eprintln!("facade-received work finished; provider backlog is unknown");
 }
 ```
 
-`Idle` means that, at that moment, the transport holds no queued message for the topic and the bus has no delivery in progress. After new business requests have stopped, an `Idle` result followed by cancellation leaves no admitted-but-unhandled order event behind. `TimedOut` only means the wait expired; a handler may still be running. Both methods look at this bus object in this process only. For a transport connected to a message server, they say nothing about consumers in other processes.
+When `wait_for_idle` is supported, `Idle` means the provider reported no queued or unsettled delivery for the topic at that observation, and the bus has no delivery in progress. It is not an atomic drain guarantee. The fallback `Idle` from `wait_for_received_deliveries` says only that this facade's received work finished; provider backlog is unknown. `TimedOut` only means the wait expired; a handler may still be running. Both methods look at this bus object in this process only. For a transport connected to a message server, they say nothing about consumers in other processes.
 
 ### Shut down an async bus
 
-The async runner must be driven while the application receives events. On a stop signal, end that `run` future, await the handle's close, then shut down the bus. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
+The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
 
 ```rust
 use std::time::Duration;
@@ -1592,16 +1596,20 @@ let run_result = tokio::select! {
     result = subscription.run(handler) => Some(result),
     _ = shutdown_signal => None,
 };
-let close_result = subscription.close().await;
-let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
-    timeout: Duration::from_secs(3),
-}).await;
-close_result?;
-shutdown_result?;
-if let Some(result) = run_result { result?; }
+let shutdown_result = try_shutdown_async(&bus).await;
+let mut cleanup_errors = Vec::new();
+if let Some(Err(error)) = run_result { cleanup_errors.push(error.to_string()); }
+match shutdown_result {
+    Ok(true) => {}
+    Ok(false) => cleanup_errors.push("shutdown remains incomplete".into()),
+    Err(error) => cleanup_errors.push(error.to_string()),
+}
+if !cleanup_errors.is_empty() {
+    for error in cleanup_errors { eprintln!("cleanup error: {error}"); }
+}
 ```
 
-The excerpt attempts both cleanup steps even if `run` or `close` fails; applications that need every error should record each result before returning. `close().await` exposes provider receiver close errors while the bus is `Running`. If bus shutdown has already started, `close().await` returns `LifecycleError::Closed`; that result does not mean cleanup finished or report the shutdown outcome. Continue driving and await shutdown for its cleanup result. Dropping `AsyncSubscription` requests disposal but cannot report errors from asynchronous close, so it is unsuitable when the application needs that result. Use `try_shutdown_async(&bus).await` from the complete compiled source above when bounded retries are needed: both awaits have a `Graceful` timeout. After `false`, do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
+The example retains both the runner result and shutdown error for reporting. `try_shutdown_async` makes two bounded Graceful attempts; it records a shutdown error rather than skipping other application cleanup. When the helper returns `false`, cleanup remains incomplete. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 

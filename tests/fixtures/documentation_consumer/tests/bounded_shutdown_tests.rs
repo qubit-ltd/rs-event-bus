@@ -8,6 +8,8 @@
 //! Real handlers remain blocked until the application releases their gates.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
@@ -16,13 +18,26 @@ use std::time::Duration;
 use event_bus_documentation_consumer::bounded_shutdown::try_shutdown;
 use event_bus_documentation_consumer::bounded_shutdown::try_shutdown_async;
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::EventBusCapabilities;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::timeout;
@@ -156,4 +171,107 @@ async fn test_async_idle_shutdown_completes() {
         try_shutdown_async(&bus).await.expect("shutdown"),
         "async shutdown should complete when no handler is active"
     );
+}
+
+struct CloseGate {
+    released: AtomicBool,
+    notify: Notify,
+}
+
+impl CloseGate {
+    async fn wait(&self) {
+        while !self.released.load(Ordering::Acquire) {
+            let notified = self.notify.notified();
+            if self.released.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+struct CloseGatedProvider {
+    inner: Arc<AsyncLocalEventBusSpi>,
+    gate: Arc<CloseGate>,
+}
+
+impl AsyncEventBusSpi for CloseGatedProvider {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let gate = self.gate.clone();
+        Box::pin(async move {
+            let inner = self.inner.subscribe(request).await?;
+            Ok(Box::new(CloseGatedSubscription { inner, gate }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+struct CloseGatedSubscription {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    gate: Arc<CloseGate>,
+}
+
+impl AsyncEventSubscriptionSpi for CloseGatedSubscription {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        self.inner.receive(timeout)
+    }
+
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        Box::pin(async move {
+            self.gate.wait().await;
+            self.inner.close().await
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_async_pending_provider_close_is_bounded_and_resumable() {
+    let gate = Arc::new(CloseGate {
+        released: AtomicBool::new(false),
+        notify: Notify::new(),
+    });
+    let inner = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI"));
+    let provider = Arc::new(CloseGatedProvider { inner, gate: gate.clone() });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-gated").expect("provider id"),
+        provider,
+    )
+    .expect("bus");
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("close-gated", Topic::<String>::new("shutdown.close").expect("topic"))
+            .expect("request"),
+    )
+    .await
+    .expect("subscription");
+
+    assert!(!try_shutdown_async(&bus).await.expect("bounded shutdown"));
+    gate.release();
+    assert!(try_shutdown_async(&bus).await.expect("resumed shutdown"));
 }

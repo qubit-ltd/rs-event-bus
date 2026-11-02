@@ -296,6 +296,13 @@ A request object, rather than a long argument list, exists so that:
 `start_position: StartPosition`, `consumer_group: Option<ConsumerGroup>`, and
 `provider_options: ProviderOptions` (`BTreeMap<String, String>`).
 
+`RequiredCapabilities` keeps subscription acceptance separate from message
+retention: `with_subscription_modes(None)` leaves provider selection
+unconstrained, `BOTH` requires both Ephemeral and Durable subscription modes,
+and either mode can be required independently. This requirement is optional
+and does not change the existing defaults or make `.durable()` imply Durable
+subscriptions.
+
 The same `SubscribeRequest<T>` can be given to `EventBus` or `AsyncEventBus`.
 The synchronous facade rejects a request that carries `async_interceptors`
 (`SubscribeError::Configuration`). The asynchronous facade rejects requests that carry synchronous
@@ -1431,45 +1438,30 @@ a strict documentation build with
 
 ### 15.3 The `conformance` feature
 
-`qubit_event_bus::spi::conformance::{run_sync, run_async}` takes a provider factory
-(`Fn() -> Arc<dyn EventBusSpi>`, or an async factory that returns a future; each case
-builds a fresh instance so cases do not contaminate each other) and `ConformanceHooks`.
-The hooks cover optional settlement, receive/settlement/close/shutdown cancellation,
-and durable recovery. Strict runs turn missing required hooks into failures while
-typed skips remain available for unsupported capabilities. Async hooks are awaited by
-the runner and do not block its executor. It returns a `ConformanceReport`
-(`Vec<ConformanceCase::{Passed, Failed, Skipped}>`). Current cases cover capability and
-payload-mode consistency, `subscribe`, `publish`, `receive-payload`, settlement
-idempotence and conflicts, and `shutdown`. A provider that does not support a case
-should record it as `Skipped`, not return a vague error after the test has already
-called the operation. Structural runs are smoke checks; strict runs are the fixture-backed provider acceptance gate.
+`run_sync` and `run_async` take a factory returning a fresh provider for each
+case and their respective hooks: `ConformanceHooks` uses synchronous callbacks;
+`AsyncConformanceHooks` uses sendable futures awaited by the runner without
+blocking its executor. Both return `ConformanceReport`
+(`Vec<ConformanceCase::{Passed, Failed, Skipped}>`).
 
-Checks the public runner does not cover, which a provider author supplies:
+The public runner automatically checks payload/subscription-mode combinations,
+subscribe, publish followed by receive, received fields and payload, settlement
+token presence, repeated Accept, conflicting disposition errors, and close and
+shutdown idempotence. These checks establish the operation's reported result;
+for example, repeated Accept returning `Ok` does not prove that a remote side
+effect occurred exactly once.
 
-- descriptor, provider selection, and creation;
-- capability declarations that stay stable and match real behavior;
-- native and encoded payload contracts;
-- `receive` after `publish`;
-- `receive` timeout;
-- `receive` returns `Closed` after `close`;
-- a gap mapped to `ReceiveOutcome::Gap`;
-- settlement-token subscription ownership;
-- repeated settlement is idempotent, and a conflicting disposition does not cause an extra delivery;
-- `shutdown` is idempotent;
-- dropping an async `receive` does not lose the message;
-- errors carry provider context and a traceable `source`;
-- `Debug` output does not leak sensitive provider options.
+Provider hooks supply fixtures for behavior only the provider can observe:
+repeat/conflicting settlement effects, receive/settlement/close/shutdown
+cancellation, durable recovery, and ephemeral cleanup. Under `Strict`, a
+required hook missing for a declared supported mode fails; unsupported modes
+remain typed skips. The default structural profile may skip absent hooks.
 
-Strict recovery checks follow the provider's declared subscription modes. A
-durable mode requires a durable-recovery fixture; an ephemeral mode requires an
-ephemeral-cleanup fixture. Unsupported modes are reported with a typed skip,
-and a missing required fixture fails the report. Synchronous cancellation cases
-are `NotApplicable` because synchronous methods return no cancellable future.
-Cancelling an asynchronous receive future is distinct from destroying its
-receiver: a message already consumed by the provider must remain available to a
-later receive or recovery attempt. Closing or dropping a durable receiver must
-preserve accepted, unsettled deliveries; ephemeral providers may discard them.
-Neither close nor drop implicitly acknowledges an unsettled delivery.
+Provider authors still need additional tests for descriptor and provider
+selection/creation, complete capability behavior, receive timeout, `Closed`
+after close, Gap delivery, foreign-token ownership, deeper side effects such as
+absence of extra deliveries, error context and sources, and sensitive-data
+exposure. A hook being called does not establish these separate properties.
 
 ### 15.4 Documentation checks
 
