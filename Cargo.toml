@@ -35,9 +35,9 @@ conformance = []
 
 [dependencies]
 thiserror = "^2.0"
-qubit-clock = "0.13"
-qubit-id = { version = "0.7", features = ["uuid"] }
-qubit-retry = { version = "0.26", features = ["worker", "async"] }
+qubit-clock = "^0.13"
+qubit-id = { version = "^0.7", features = ["uuid"] }
+qubit-retry = { version = "^0.26", features = ["worker", "async"] }
 qubit-spi = "^0.14"
 
 [lints.rust]
