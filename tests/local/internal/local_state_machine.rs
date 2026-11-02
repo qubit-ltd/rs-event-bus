@@ -13,8 +13,10 @@
 //! network.
 
 use std::any::TypeId;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -56,9 +58,39 @@ const MAX_MESSAGES: usize = 64;
 const MAX_PAYLOAD: usize = 256;
 const QUEUE_CAPACITY: usize = 4;
 const TOTAL_CAPACITY: usize = 8;
+const WEIGHT_LIMIT: usize = 12;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingEvent {
+    id: u64,
+    lane: u8,
+    weight: usize,
+}
+
+type PendingByLane = BTreeMap<u8, VecDeque<PendingEvent>>;
+
+fn consume_lane(pending: &mut PendingByLane, lane: u8, id: u64) -> Result<PendingEvent, &'static str> {
+    let queue = pending.get_mut(&lane).ok_or("receive lane has no pending event")?;
+    if queue.front().is_none_or(|event| event.id != id) {
+        return Err("receive must consume the same-key FIFO head");
+    }
+    let event = queue.pop_front().expect("validated queue head");
+    if queue.is_empty() {
+        pending.remove(&lane);
+    }
+    Ok(event)
+}
+
+fn record_disposition(record: &mut TokenRecord, disposition: DeliveryDisposition) -> bool {
+    if record.disposition.is_some() {
+        return false;
+    }
+    record.disposition = Some(disposition);
+    true
+}
 
 struct TokenRecord {
-    event: u64,
+    event: PendingEvent,
     token: SettlementToken,
     disposition: Option<DeliveryDisposition>,
 }
@@ -66,7 +98,7 @@ struct TokenRecord {
 struct Subscription {
     id: Id,
     receiver: Option<Box<dyn AsyncEventSubscriptionSpi>>,
-    pending: BTreeSet<u64>,
+    pending: PendingByLane,
     tokens: Vec<TokenRecord>,
     closed: bool,
 }
@@ -78,7 +110,22 @@ impl Subscription {
         if self.closed {
             0
         } else {
-            self.pending.len() + self.tokens.iter().filter(|record| record.disposition.is_none()).count()
+            self.pending.values().map(VecDeque::len).sum::<usize>()
+                + self.tokens.iter().filter(|record| record.disposition.is_none()).count()
+        }
+    }
+
+    fn outstanding_weight(&self) -> usize {
+        if self.closed {
+            0
+        } else {
+            self.pending.values().flatten().map(|event| event.weight).sum::<usize>()
+                + self
+                    .tokens
+                    .iter()
+                    .filter(|record| record.disposition.is_none())
+                    .map(|record| record.event.weight)
+                    .sum::<usize>()
         }
     }
 
@@ -90,10 +137,13 @@ impl Subscription {
             .as_str()
             .parse::<u64>()
             .expect("deterministic numeric event ID");
-        assert!(
-            self.pending.remove(&event),
-            "receive must consume an admitted pending event"
-        );
+        let lane = message
+            .ordering_key()
+            .expect("every modeled event has a lane")
+            .as_str()
+            .parse::<u8>()
+            .expect("numeric lane");
+        let event = consume_lane(&mut self.pending, lane, event).expect("receive must consume the same-key FIFO head");
         assert!(
             matches!(message.payload(), TransportPayload::Native(payload) if payload.downcast_ref::<Vec<u8>>().is_some_and(|bytes| bytes.len() <= MAX_PAYLOAD))
         );
@@ -134,18 +184,21 @@ fn request(id: u64) -> SpiSubscriptionRequest {
     )
 }
 
-/// Creates a bounded native message with one independent ordering lane per
-/// event.
-fn message(event: u64, timestamp: SystemTime, payload: &[u8]) -> OutboundMessage {
-    OutboundMessage::new(
+/// Creates a bounded native message with an input-selected lane and weight.
+fn message(event: u64, lane: u8, weight: usize, timestamp: SystemTime, payload: &[u8]) -> OutboundMessage {
+    let declared = NonZeroUsize::new(weight).expect("positive bounded test weight");
+    let message = OutboundMessage::new(
         TopicAddress::new("fuzz.local").expect("valid topic"),
         EventId::new(event.to_string()).expect("valid event ID"),
         timestamp,
         Default::default(),
-        Some(OrderingKey::new(&event.to_string()).expect("valid ordering key")),
+        Some(OrderingKey::new(&lane.to_string()).expect("valid ordering key")),
         None,
         TransportPayload::Native(Arc::new(payload[..payload.len().min(MAX_PAYLOAD)].to_vec())),
     )
+    .with_native_payload_weight_bytes(declared);
+    assert_eq!(message.native_payload_weight_bytes(), Some(declared));
+    message
 }
 
 /// Runs at most 64 input-selected public SPI operations, with at most eight
@@ -155,12 +208,23 @@ fn message(event: u64, timestamp: SystemTime, payload: &[u8]) -> OutboundMessage
 /// bytes per publication are accepted by the driver. Receive uses zero timeout,
 /// and the cancellation operation polls an infinite receive at most once.
 pub(crate) fn run(input: &[u8]) {
+    run_scenario(input, None);
+    run_scenario(input, NonZeroUsize::new(WEIGHT_LIMIT));
+}
+
+fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
     let clock = ManualMonotonicClock::new();
     let timer = Arc::new(ManualTimer::from_clock(&clock));
     let spi = AsyncLocalEventBusSpi::with_timer(
-        &LocalEventBusConfig::new()
-            .queue_capacity(QUEUE_CAPACITY)
-            .max_total_outstanding(TOTAL_CAPACITY),
+        &{
+            let mut config = LocalEventBusConfig::new()
+                .queue_capacity(QUEUE_CAPACITY)
+                .max_total_outstanding(TOTAL_CAPACITY);
+            if let Some(limit) = weight_limit {
+                config = config.max_total_outstanding_weight_bytes(limit);
+            }
+            config
+        },
         timer,
     )
     .expect("positive bounded local capacities");
@@ -184,7 +248,7 @@ pub(crate) fn run(input: &[u8]) {
                         subscriptions[index] = Some(Subscription {
                             id: Id::new(next_id),
                             receiver: Some(result.expect("valid new subscription")),
-                            pending: BTreeSet::new(),
+                            pending: PendingByLane::new(),
                             tokens: Vec::new(),
                             closed: false,
                         });
@@ -195,8 +259,12 @@ pub(crate) fn run(input: &[u8]) {
             1 if publications < MAX_MESSAGES => {
                 publications += 1;
                 let event = publications as u64;
+                let lane = (argument % 4) as u8;
+                let weight = 1 + (argument / 4) % 8;
                 let acknowledgement = ready(spi.publish(message(
                     event,
+                    lane,
+                    weight,
                     SystemTime::UNIX_EPOCH + elapsed,
                     chunk.get(3..).unwrap_or_default(),
                 )));
@@ -209,6 +277,11 @@ pub(crate) fn run(input: &[u8]) {
                         panic!("local provider reports per-destination admission");
                     };
                     let mut outstanding: usize = subscriptions.iter().flatten().map(Subscription::outstanding).sum();
+                    let mut outstanding_weight: usize = subscriptions
+                        .iter()
+                        .flatten()
+                        .map(Subscription::outstanding_weight)
+                        .sum();
                     let live = subscriptions
                         .iter()
                         .flatten()
@@ -221,15 +294,22 @@ pub(crate) fn run(input: &[u8]) {
                             .flatten()
                             .find(|subscription| subscription.id == destination.subscription_id())
                             .expect("admission belongs to a live receiver");
-                        let available = subscription.outstanding() < QUEUE_CAPACITY && outstanding < TOTAL_CAPACITY;
+                        let available = subscription.outstanding() < QUEUE_CAPACITY
+                            && outstanding < TOTAL_CAPACITY
+                            && weight_limit.is_none_or(|_| outstanding_weight + weight <= WEIGHT_LIMIT);
                         assert_eq!(
                             destination.status() == &AdmissionStatus::Accepted,
                             available,
                             "capacity admission matches externally tracked ownership"
                         );
                         if available {
-                            assert!(subscription.pending.insert(event));
+                            subscription.pending.entry(lane).or_default().push_back(PendingEvent {
+                                id: event,
+                                lane,
+                                weight,
+                            });
                             outstanding += 1;
+                            outstanding_weight += weight;
                         }
                     }
                 }
@@ -245,12 +325,12 @@ pub(crate) fn run(input: &[u8]) {
                     match result {
                         Poll::Ready(Ok(ReceiveOutcome::Message(message))) => subscription.received(message),
                         Poll::Ready(Ok(ReceiveOutcome::TimedOut)) => {
-                            assert!(subscription.pending.is_empty())
+                            assert!(subscription.pending.values().all(VecDeque::is_empty))
                         }
                         Poll::Ready(Ok(ReceiveOutcome::Closed)) => assert!(subscription.closed),
                         Poll::Pending => {
                             assert_eq!(opcode, 7);
-                            assert!(subscription.pending.is_empty());
+                            assert!(subscription.pending.values().all(VecDeque::is_empty));
                         }
                         _ => panic!("unexpected local receive outcome"),
                     }
@@ -284,12 +364,22 @@ pub(crate) fn run(input: &[u8]) {
                         assert!(result.is_err(), "close invalidates unsettled tokens");
                     } else {
                         result.expect("owner settles its live token");
-                        record.disposition = Some(disposition);
+                        assert!(record_disposition(record, disposition));
                         if disposition == DeliveryDisposition::Retry {
                             assert!(
-                                subscription.pending.insert(record.event),
+                                subscription
+                                    .pending
+                                    .entry(record.event.lane)
+                                    .or_default()
+                                    .front()
+                                    .is_none_or(|first| first.id != record.event.id),
                                 "retry restores pending ownership without releasing capacity"
                             );
+                            subscription
+                                .pending
+                                .entry(record.event.lane)
+                                .or_default()
+                                .push_front(record.event.clone());
                         }
                     }
                 }
@@ -324,8 +414,7 @@ pub(crate) fn run(input: &[u8]) {
                         .expect("idempotent close");
                     subscription.closed = true;
                     subscription.pending.clear();
-                    // Unsettled tokens remain owned but close discards their
-                    // deliveries.
+                    // Close discards pending and unsettled deliveries from the model.
                 }
             }
             9 => {
@@ -364,6 +453,69 @@ pub(crate) fn run(input: &[u8]) {
                 .flatten()
                 .all(|subscription| subscription.closed || subscription.outstanding() <= QUEUE_CAPACITY)
         );
+        if weight_limit.is_some() {
+            assert!(
+                subscriptions
+                    .iter()
+                    .flatten()
+                    .map(Subscription::outstanding_weight)
+                    .sum::<usize>()
+                    <= WEIGHT_LIMIT
+            );
+        }
     }
     drop(subscriptions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(id: u64, lane: u8, weight: usize) -> PendingEvent {
+        PendingEvent { id, lane, weight }
+    }
+
+    #[test]
+    fn test_local_state_machine_oracle_rejects_same_key_reordering() {
+        let mut pending = PendingByLane::from([(1, VecDeque::from([event(1, 1, 1), event(2, 1, 1)]))]);
+        assert_eq!(
+            consume_lane(&mut pending, 1, 2),
+            Err("receive must consume the same-key FIFO head")
+        );
+    }
+
+    #[test]
+    fn test_local_state_machine_oracle_duplicate_accept_does_not_release_twice() {
+        let mut record = TokenRecord {
+            event: event(1, 0, 4),
+            token: SettlementToken::new(Id::new(1), 1_u64),
+            disposition: None,
+        };
+        let outstanding_weight = |record: &TokenRecord| {
+            if record.disposition.is_none() {
+                record.event.weight
+            } else {
+                0
+            }
+        };
+        assert_eq!(outstanding_weight(&record), 4);
+        assert!(record_disposition(&mut record, DeliveryDisposition::Accept));
+        assert_eq!(outstanding_weight(&record), 0);
+        assert!(!record_disposition(&mut record, DeliveryDisposition::Accept));
+        assert_eq!(outstanding_weight(&record), 0);
+    }
+
+    #[test]
+    fn test_local_state_machine_oracle_counts_fanout_weight_per_destination() {
+        let mut subscriptions = [PendingByLane::new(), PendingByLane::new()];
+        for pending in &mut subscriptions {
+            pending.entry(0).or_default().push_back(event(1, 0, 4));
+        }
+        let outstanding_weight: usize = subscriptions
+            .iter()
+            .flat_map(|pending| pending.values().flatten())
+            .map(|pending| pending.weight)
+            .sum();
+        assert_eq!(outstanding_weight, 8);
+    }
 }
