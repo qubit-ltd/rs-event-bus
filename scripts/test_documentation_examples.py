@@ -17,11 +17,12 @@ CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
 REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 RETRY = "tests/fixtures/documentation_consumer/src/retry_policy.rs"
 README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
+MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
 REQUIRED = {
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
     "doc/design.md": {SPEC, PROVIDER_CONTRACT},
     "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT},
 }
@@ -36,14 +37,18 @@ FILE_HEADER = (
 )
 
 
+case_count = 0
+
 def run_case(mutator):
+    global case_count
+    case_count += 1
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory) / "repository"
         root.mkdir()
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY):
+        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             header = FILE_HEADER if source in {LOCAL, README_ORDERS} else ""
@@ -79,6 +84,19 @@ def missing_marker(root):
 def drift(root):
     path = root / "README.md"
     path.write_text(path.read_text(encoding="utf-8").replace("/* examples", "/* changed"), encoding="utf-8")
+
+
+def remove_monitor_marker(root, document):
+    remove_safety_marker(root, MONITOR, document)
+
+
+def drift_monitor(root, document):
+    path = root / document
+    text = path.read_text(encoding="utf-8")
+    marker = f"<!-- event-bus-source: {MONITOR} -->"
+    before, block = text.split(marker, 1)
+    block = block.replace("fn example()", "fn changed_example()", 1)
+    path.write_text(before + marker + block, encoding="utf-8")
 
 
 def add_file_header(root):
@@ -138,6 +156,12 @@ for source, documents in (
                        f"missing checked example {source}")
     expect_failure(lambda root: safety_drift(root, source), f"example drift from {source}")
 
+for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md"):
+    expect_failure(lambda root, document=document: remove_monitor_marker(root, document),
+                   f"missing checked example {MONITOR}")
+    expect_failure(lambda root, document=document: drift_monitor(root, document),
+                   f"example drift from {MONITOR}")
+
 expect_failure(existing_escape, "invalid source path ../outside.rs")
 expect_failure(symlink_escape, "invalid source path examples/escape.rs")
 result = run_case(legal_nested_path)
@@ -149,4 +173,4 @@ expect_failure(add_file_header, f"example drift from {LOCAL}")
 expect_failure(traversal, "invalid source path ../../outside.rs")
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print("documentation example checker: 20 cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")
+print(f"documentation example checker: {case_count} cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")

@@ -503,7 +503,7 @@ To publish several events of the same type, call `publish_all`. It tries each in
 
 ## Keep events for one object in order
 
-By default the bus does **not** promise that a subscriber handles events in publish order. The default `ordering_policy` is `OrderingPolicy::None`. On the built-in local bus, both the sync and async buses allow up to 4 handlers to run at once. Two events received by the same subscriber can be in progress together, and a later publication can finish first. Other transports decide their own behavior. Do not assume order.
+By default the bus does **not** promise that a subscriber handles events in publish order. The default `ordering_policy` is `OrderingPolicy::Unordered`. On the built-in local bus, both the sync and async buses allow up to 4 handlers to run at once. Two events received by the same subscriber can be in progress together, and a later publication can finish first. Other transports decide their own behavior. Do not assume order.
 
 Many cases depend on order. The customer-view module keeps “the latest order” for each customer. Customer `customer-7` places `order-42` and then `order-43`. If the two `OrderCreated` events run concurrently, `order-43` can be written first and then overwritten by `order-42`, so the view treats the earlier order as the latest. Balance changes and order-status transitions have the same problem whenever a later event depends on the earlier result.
 
@@ -1262,17 +1262,27 @@ subscription.run(move |delivery| {
 
 At startup, put `run(...)` on a background task before opening the business entry point. Awaiting it directly inside the startup function stops the rest of startup. Cancelling that `run` while keeping the subscription handle allows a later run. `close().await` ends the subscription and reports provider close errors. Dropping the handle requests disposal but cannot await provider close or report its errors; explicitly await `close()` when those errors matter. When the async local implementation closes, it discards messages that are still queued or unfinished. Subscribing again with the same id starts from an empty queue. If a direct local SPI `receive` future is cancelled while waiting, it has not taken a message; a later `receive` can still get that message. Closing the receiver wakes a pending `receive` with `Closed`. `wait_for_received_deliveries` waits only for messages the bus has already taken. It does not look for messages still queued inside the transport. The async bus has no sync equivalent of `wait_for_idle`.
 
-Keep the handle available to the application monitor while the runner borrows it. Allow an application-defined startup grace period before alerting on `Unstarted`; alert on an unexpected `Paused` or `Stopped` state:
+Keep the handle available to the application monitor while the runner borrows it. Allow an application-defined startup grace period before alerting on `Unstarted`; alert on an unexpected `Paused` or `Stopped` state. Call `monitor_run_state(subscription.run_state(), startup_grace_elapsed, alert)` with the handle's state, whether the grace period has elapsed, and the application alert callback:
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/run_state_monitor.rs -->
 ```rust
+//! Compiled run-state monitoring example used by both user guides.
+
 use qubit_event_bus::AsyncSubscriptionRunState;
 
-match subscription.run_state() {
-    AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
-    AsyncSubscriptionRunState::Unstarted => alert("subscription runner did not start"),
-    AsyncSubscriptionRunState::Running => {}
-    AsyncSubscriptionRunState::Paused => alert("subscription runner is paused"),
-    AsyncSubscriptionRunState::Stopped => alert("subscription runner stopped"),
+pub fn monitor_run_state(
+    state: AsyncSubscriptionRunState,
+    startup_grace_elapsed: bool,
+    mut alert: impl FnMut(&'static str),
+) {
+    match state {
+        AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
+        AsyncSubscriptionRunState::Unstarted => alert("subscription runner did not start"),
+        AsyncSubscriptionRunState::Running => {}
+        AsyncSubscriptionRunState::Paused => alert("subscription runner is paused"),
+        AsyncSubscriptionRunState::Stopped => alert("subscription runner stopped"),
+        _ => alert("subscription runner reported an unknown state"),
+    }
 }
 ```
 

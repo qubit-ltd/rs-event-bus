@@ -917,7 +917,7 @@ bounded pool. `max_running_handlers` limits running handlers; owned work has its
 
 Sync and async adapters share a metadata-only `DeliverySchedulerCore`; each owner retains its receiver, payloads, and handler futures. Before receive, reserve global and per-subscription owned capacity atomically. Backpressure occurs before pulling a message. A single owned lease transfers through reserved, queued, running, and settling stages, with no extra pending message outside the limits.
 
-Eligible work rotates across subscriptions, then keys. Only an executor actually taking a ready candidate acquires a handler slot and lane. Same-key queues and settlement backoff consume no handler slot. Handler completion releases its execution slot; the lane remains owned until settlement succeeds or the subscription terminates. `OrderingPolicy::None` makes each delivery independently eligible. `PerKey` preserves FIFO within `(topic, key, subscription_id)`; keyless messages share that subscription/topic's None lane.
+Eligible work rotates across subscriptions, then keys. Only an executor actually taking a ready candidate acquires a handler slot and lane. Same-key queues and settlement backoff consume no handler slot. Handler completion releases its execution slot; the lane remains owned until settlement succeeds or the subscription terminates. `OrderingPolicy::Unordered` makes each delivery independently eligible. `PerKey` preserves FIFO within `(topic, key, subscription_id)`; keyless messages share that subscription/topic's None lane.
 
 Fairness requires already-received eligible candidates and executors that keep progressing. Receiving B still needs owned capacity; an infinite upstream backlog of A cannot be bypassed. With H=4, D=256, S=256: running≤H, owned≤D, receivers≤S, lanes≤D and waiters≤S. Count bounds do not bound payload bytes.
 
@@ -1021,7 +1021,7 @@ Async uses the same `DeliverySchedulerCore` and four-parameter configuration as 
 
 ### 9.3 Per-key lanes
 
-Lanes are keyed by `(topic, key, subscription_id)`. Queued same-key messages consume no handler slot, and successors cannot bypass an unsettled predecessor. `OrderingPolicy::None` uses independently eligible deliveries. The fairness conditions and resource bounds are those in §8.2.
+Lanes are keyed by `(topic, key, subscription_id)`. Queued same-key messages consume no handler slot, and successors cannot bypass an unsettled predecessor. `OrderingPolicy::Unordered` uses independently eligible deliveries. The fairness conditions and resource bounds are those in §8.2.
 
 ### 9.4 `AsyncSubscription`: resumable sessions
 

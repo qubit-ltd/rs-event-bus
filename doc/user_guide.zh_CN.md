@@ -503,7 +503,7 @@ let receipt = bus.publish(request)?;
 
 ## 保证同一对象的处理顺序
 
-默认情况下，总线**不保证**订阅者按发布顺序处理事件。订阅选项 `ordering_policy` 的默认值是 `OrderingPolicy::None`：以内置 local 为例，同步和异步总线默认都允许最多 4 个处理函数同时执行，同一订阅者先后收到的两条事件可能并发处理，后发布的一条也可能先处理完。其他传递实现的行为由其自身决定，同样不能假设有序。
+默认情况下，总线**不保证**订阅者按发布顺序处理事件。订阅选项 `ordering_policy` 的默认值是 `OrderingPolicy::Unordered`：以内置 local 为例，同步和异步总线默认都允许最多 4 个处理函数同时执行，同一订阅者先后收到的两条事件可能并发处理，后发布的一条也可能先处理完。其他传递实现的行为由其自身决定，同样不能假设有序。
 
 很多场景依赖顺序。例如客户视图模块为每个客户维护“最近一笔订单”。客户 `customer-7` 在短时间内先后下了 `order-42` 和 `order-43`，两条 `OrderCreated` 若被并发处理，`order-43` 可能先写入视图，随后被 `order-42` 覆盖，视图就把较早的订单当成了最近一笔。账户余额变更、订单状态流转等“后一条依赖前一条结果”的处理都有同样的问题。
 
@@ -1262,17 +1262,27 @@ subscription.run(move |delivery| {
 
 应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
-监控任务运行时应保留可访问的订阅句柄，供 runner 借用。启动宽限期由应用按启动流程设定；宽限期内允许 `Unstarted`，超时后告警；非预期的 `Paused` 或 `Stopped` 也应告警：
+运行器借用订阅句柄期间，应用监控器应保留该句柄。应用可设置启动宽限期，在宽限期结束前不对 `Unstarted` 告警；对意外的 `Paused` 或 `Stopped` 告警。调用 `monitor_run_state(subscription.run_state(), startup_grace_elapsed, alert)`，传入句柄状态、宽限期是否已结束以及应用的告警回调；遇到未来新增的未知状态时也会进入告警分支：
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/run_state_monitor.rs -->
 ```rust
+//! Compiled run-state monitoring example used by both user guides.
+
 use qubit_event_bus::AsyncSubscriptionRunState;
 
-match subscription.run_state() {
-    AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
-    AsyncSubscriptionRunState::Unstarted => alert("订阅 runner 未启动"),
-    AsyncSubscriptionRunState::Running => {}
-    AsyncSubscriptionRunState::Paused => alert("订阅 runner 已暂停"),
-    AsyncSubscriptionRunState::Stopped => alert("订阅 runner 已停止"),
+pub fn monitor_run_state(
+    state: AsyncSubscriptionRunState,
+    startup_grace_elapsed: bool,
+    mut alert: impl FnMut(&'static str),
+) {
+    match state {
+        AsyncSubscriptionRunState::Unstarted if !startup_grace_elapsed => {}
+        AsyncSubscriptionRunState::Unstarted => alert("subscription runner did not start"),
+        AsyncSubscriptionRunState::Running => {}
+        AsyncSubscriptionRunState::Paused => alert("subscription runner is paused"),
+        AsyncSubscriptionRunState::Stopped => alert("subscription runner stopped"),
+        _ => alert("subscription runner reported an unknown state"),
+    }
 }
 ```
 

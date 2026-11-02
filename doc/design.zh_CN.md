@@ -858,7 +858,7 @@ I/O 与 settlement，handler 统一在有界共享池里跑，`max_running_handl
 
 同步和异步执行适配器共用只保存元数据的 `DeliverySchedulerCore`；receiver、payload 和 handler future 由各自 owner 持有。receive 之前原子预留全局与每订阅 owned 额度，超限停止接收。预留、排队、running、settling 在同一份 owned lease 内转移，不重复计数，也没有额度外的一条 pending。
 
-可运行集合先按订阅、再按键轮转。只有执行者真正取走 ready 候选时才占 handler 额度与 lane；同键排队和结算退避不占 handler 额度。handler 完成后释放执行额度，lane 要等结算成功或订阅终止才释放。`OrderingPolicy::None` 把各条投递视为独立候选；`PerKey` 按 `(topic, key, subscription_id)` 保持 FIFO，无键消息共享该订阅/topic 的 None lane。
+可运行集合先按订阅、再按键轮转。只有执行者真正取走 ready 候选时才占 handler 额度与 lane；同键排队和结算退避不占 handler 额度。handler 完成后释放执行额度，lane 要等结算成功或订阅终止才释放。`OrderingPolicy::Unordered` 把各条投递视为独立候选；`PerKey` 按 `(topic, key, subscription_id)` 保持 FIFO，无键消息共享该订阅/topic 的 None lane。
 
 公平保证要求候选已接收且可运行、执行者持续推进；接收 B 仍需 owned 空间，不能越过 provider 中 A 的无限积压。H=4、D=256、S=256 时，running≤H、owned≤D、receiver≤S、lane≤D、waiter≤S。条数有限不等于 payload 字节数有限。
 
@@ -953,7 +953,7 @@ shutdown(mode)                         → request_shutdown(mode) + ticket.wait(
 
 ### 9.3 同键通道
 
-lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 handler 额度，前一条结算前后继不能越过。`OrderingPolicy::None` 使用独立 delivery 候选。公平条件与资源边界见 §8.2。
+lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 handler 额度，前一条结算前后继不能越过。`OrderingPolicy::Unordered` 使用独立 delivery 候选。公平条件与资源边界见 §8.2。
 
 ### 9.4 `AsyncSubscription`：可恢复 session
 
