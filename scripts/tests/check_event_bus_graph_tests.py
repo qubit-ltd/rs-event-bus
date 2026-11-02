@@ -37,18 +37,45 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiple"):
             gate.validate_graph(metadata("0.20.1", "0.21.0"), require_bus=True)
 
-    def test_controlled_layout_covers_exactly_the_seven_event_bus_consumers(self):
+    def test_controlled_layout_covers_exactly_the_ten_event_bus_consumers(self):
         expected = (
             "rs-event-bus/tests/fixtures/discovery_provider",
             "rs-event-bus/tests/fixtures/discovery_consumer",
             "rs-event-bus/tests/fixtures/documentation_consumer",
             "rs-event-bus-redis/tests/fixtures/business_consumer",
+            "rs-event-bus-redis/tests/fixtures/async_tokio_consumer",
+            "rs-event-bus-redis/tests/fixtures/async_smol_consumer",
+            "rs-event-bus-redis/tests/fixtures/task_notifications",
             "rs-task/tests/fixtures/doc-examples",
             "rs-ioc/tests/fixtures/application_consumer_current",
             "rs-execution-services/tests/fixtures/ioc_application_consumer",
         )
         self.assertEqual(gate.FIXTURES, expected)
-        self.assertEqual(len(set(gate.FIXTURES)), 7)
+        self.assertEqual(len(set(gate.FIXTURES)), 10)
+
+    def test_controlled_layout_requires_each_new_consumer_manifest(self):
+        added = (
+            "rs-event-bus-redis/tests/fixtures/async_tokio_consumer",
+            "rs-event-bus-redis/tests/fixtures/async_smol_consumer",
+            "rs-event-bus-redis/tests/fixtures/task_notifications",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (*gate.REPOSITORIES, *gate.FIXTURES):
+                manifest = root / name / "Cargo.toml"
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text("[workspace]\n", encoding="utf-8")
+            self.assertEqual(len(gate.layout_manifests(root)), 15)
+            for name in added:
+                with self.subTest(consumer=name):
+                    manifest = root / name / "Cargo.toml"
+                    manifest.unlink()
+                    try:
+                        with self.assertRaises(ValueError) as error:
+                            gate.layout_manifests(root)
+                        self.assertIn(str(manifest), str(error.exception))
+                    finally:
+                        manifest.write_text("[workspace]\n", encoding="utf-8")
 
     def test_non_bus_fixtures_do_not_require_bus(self):
         root = Path("/layout")
