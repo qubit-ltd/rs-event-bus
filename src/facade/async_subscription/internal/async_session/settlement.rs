@@ -42,12 +42,13 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// retaining the preceding error required to classify that attempt.
     #[must_use]
     pub(super) async fn settle_ready(&mut self) -> bool {
+        let stopping_immediately = self.signals.is_stopped() && !self.signals.stopping_gracefully();
         let mut selected = None;
         for (index, delivery) in self.completed.iter_mut().enumerate() {
             let progress = &mut delivery.settlement;
             if progress.infrastructure_error.is_some()
                 || progress.cancelled
-                || self.signals.is_stopped()
+                || stopping_immediately
                 || progress.elapsed(self.inner.timer.as_ref()).is_err()
                 || progress
                     .elapsed(self.inner.timer.as_ref())
@@ -69,7 +70,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.abandon_completed(index);
             return true;
         };
-        if self.signals.is_stopped() && pending.settlement.retry.attempts() > 0 {
+        if stopping_immediately && pending.settlement.retry.attempts() > 0 {
             self.abandon_completed(index);
             return true;
         }
