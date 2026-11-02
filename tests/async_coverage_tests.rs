@@ -820,6 +820,9 @@ struct CloseFailingSpi {
     close_attempts: Arc<AtomicUsize>,
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
+    fail_every_close: bool,
+    pending_provider_shutdown_once: bool,
+    provider_shutdown_attempts: AtomicUsize,
 }
 
 impl AsyncEventBusSpi for CloseFailingSpi {
@@ -844,6 +847,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let close_attempts = self.close_attempts.clone();
         let receiver_drops = self.receiver_drops.clone();
         let receive_future_drops = self.receive_future_drops.clone();
+        let fail_every_close = self.fail_every_close;
         Box::pin(async move {
             Ok(Box::new(CloseFailingReceiver {
                 receives,
@@ -851,12 +855,18 @@ impl AsyncEventBusSpi for CloseFailingSpi {
                 total_close_attempts: close_attempts,
                 receiver_drops,
                 receive_future_drops,
+                fail_every_close,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
 
     fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
-        Box::pin(async { Ok(ShutdownOutcome::Complete) })
+        let attempt = self.provider_shutdown_attempts.fetch_add(1, Ordering::AcqRel);
+        if self.pending_provider_shutdown_once && attempt == 0 {
+            Box::pin(async { pending_future::<Result<ShutdownOutcome, SpiError>>().await })
+        } else {
+            Box::pin(async { Ok(ShutdownOutcome::Complete) })
+        }
     }
 }
 
@@ -867,6 +877,7 @@ struct CloseFailingReceiver {
     total_close_attempts: Arc<AtomicUsize>,
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
+    fail_every_close: bool,
 }
 
 impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
@@ -888,8 +899,9 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.total_close_attempts.fetch_add(1, Ordering::AcqRel);
         let attempt = self.close_attempts.fetch_add(1, Ordering::AcqRel);
+        let fail_every_close = self.fail_every_close;
         Box::pin(async move {
-            if attempt == 0 {
+            if fail_every_close || attempt == 0 {
                 Err(SpiError::Operation {
                     provider_id: "close-failing".into(),
                     operation: "close",
@@ -955,11 +967,173 @@ fn test_explicit_subscription_close_returns_a_single_close_failure() {
         let failure = errors.iter().next().expect("one close failure");
         assert_eq!(failure.subscriber_id().as_str(), "single-close-failure");
         assert_eq!(failure.error().kind(), "close_failed");
-        assert!(matches!(
-            bus.shutdown(ShutdownMode::Immediate).await,
-            Err(ShutdownError::SubscriptionClose(errors)) if errors.len() == 1
+        let original_error = failure.error();
+        let original_source = std::error::Error::source(original_error).expect("SPI source is retained");
+        assert!(subscription.close().await.is_ok(), "the second close attempt succeeds");
+        let Err(ShutdownError::SubscriptionClose(errors)) = bus.shutdown(ShutdownMode::Immediate).await else {
+            panic!("the first close failure remains in shutdown history");
+        };
+        assert_eq!(errors.len(), 1);
+        let retained = errors.iter().next().expect("one retained failure");
+        assert!(std::ptr::eq(retained.error(), original_error));
+        assert!(std::ptr::eq(
+            std::error::Error::source(retained.error()).expect("SPI source is retained"),
+            original_source,
         ));
     });
+}
+
+#[test]
+fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
+    let spi = Arc::new(CloseFailingSpi {
+        fail_every_close: true,
+        pending_provider_shutdown_once: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("cancelled-close-retry", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+
+    let LifecycleError::SubscriptionClose(first_errors) =
+        block_on(subscription.close()).expect_err("first explicit close must fail")
+    else {
+        panic!("first close failure must be retained in the lifecycle error");
+    };
+    assert_eq!(first_errors.len(), 1);
+    let first_failure = first_errors.iter().next().expect("one canonical failure");
+    assert_eq!(first_failure.subscriber_id().as_str(), "cancelled-close-retry");
+    let first_error = first_failure.error();
+    let first_source = std::error::Error::source(first_error).expect("SPI source is retained");
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(
+        poll_once(shutdown.as_mut()).is_pending(),
+        "provider shutdown remains pending"
+    );
+    drop(shutdown);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(spi.close_attempts.load(Ordering::Acquire), 2);
+
+    let Err(ShutdownError::SubscriptionClose(retried_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("retry must finish shutdown and report the retained close failure");
+    };
+    assert_eq!(
+        retried_errors.len(),
+        1,
+        "retry must not append the canonical failure again"
+    );
+    let retried_failure = retried_errors.iter().next().expect("one retained failure");
+    assert!(
+        std::ptr::eq(first_failure, retried_failure),
+        "retry returns the same canonical failure"
+    );
+    assert!(std::ptr::eq(first_error, retried_failure.error()));
+    assert!(std::ptr::eq(
+        first_source,
+        std::error::Error::source(retried_failure.error()).expect("SPI source remains retained"),
+    ));
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 2);
+    assert_eq!(spi.close_attempts.load(Ordering::Acquire), 3);
+    drop(subscription);
+}
+
+#[test]
+fn test_shutdown_unstarted_subscription_records_one_close_failure() {
+    let spi = Arc::new(CloseFailingSpi::default());
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi,
+    )
+    .expect("valid provider capabilities");
+
+    block_on(async {
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("unstarted-close", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created");
+        let Err(ShutdownError::SubscriptionClose(errors)) = bus.shutdown(ShutdownMode::Immediate).await else {
+            panic!("close failure must be observable");
+        };
+        assert_eq!(errors.len(), 1, "one receiver failure must be recorded once");
+        let failure = errors.iter().next().expect("one close failure");
+        assert_eq!(failure.subscriber_id().as_str(), "unstarted-close");
+        assert_eq!(failure.error().kind(), "close_failed");
+        let source = std::error::Error::source(failure.error()).expect("SPI error must preserve its source");
+        assert_eq!(source.to_string(), "test close failure");
+        drop(subscription);
+    });
+}
+
+#[test]
+fn test_shutdown_unstarted_subscriptions_record_one_close_failure_each() {
+    let spi = Arc::new(CloseFailingSpi::default());
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi,
+    )
+    .expect("valid provider capabilities");
+
+    block_on(async {
+        let first = bus
+            .subscribe(SubscribeRequest::new("unstarted-a", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("first subscription");
+        let second = bus
+            .subscribe(SubscribeRequest::new("unstarted-b", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("second subscription");
+        let Err(ShutdownError::SubscriptionClose(errors)) = bus.shutdown(ShutdownMode::Immediate).await else {
+            panic!("close failures must be observable");
+        };
+        assert_eq!(errors.len(), 2, "each failed receiver contributes one entry");
+        let subscriber_ids: Vec<_> = errors.iter().map(|failure| failure.subscriber_id().as_str()).collect();
+        assert!(subscriber_ids.contains(&"unstarted-a"));
+        assert!(subscriber_ids.contains(&"unstarted-b"));
+        drop((first, second));
+    });
+}
+
+#[test]
+fn test_shutdown_after_paused_subscription_records_one_close_failure() {
+    let spi = Arc::new(CloseFailingSpi::default());
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi,
+    )
+    .expect("valid provider capabilities");
+
+    let subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("paused-close", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+    let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(
+        poll_once(run.as_mut()).is_pending(),
+        "receiver run reaches pending receive"
+    );
+    drop(run);
+
+    let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("close failure must be observable");
+    };
+    assert_eq!(errors.len(), 1, "paused session close failure must be recorded once");
+    assert_eq!(
+        errors
+            .iter()
+            .next()
+            .expect("one close failure")
+            .subscriber_id()
+            .as_str(),
+        "paused-close"
+    );
 }
 
 #[test]

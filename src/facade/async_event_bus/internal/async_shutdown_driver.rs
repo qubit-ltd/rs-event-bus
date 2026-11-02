@@ -58,10 +58,13 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// - `mode`: graceful or immediate receiver shutdown policy.
     ///
     /// # Returns
-    /// A future resolving to success or the canonical close failure.
+    /// A future resolving to success or the canonical close failure. A
+    /// returned failure has already been recorded by the session's first
+    /// failure path; callers must not record it again.
     ///
     /// # Errors
-    /// Resolves with the provider receiver close failure if close fails.
+    /// Resolves with the canonical provider receiver close failure if close
+    /// fails. That failure has already been registered with the event bus.
     fn shutdown<'a>(
         &'a self,
         mode: ShutdownMode,

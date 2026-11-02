@@ -185,18 +185,6 @@ impl AsyncEventBusInner {
         failure
     }
 
-    /// Adds a close failure reported by an unstarted subscription.
-    ///
-    /// # Parameters
-    /// - `failure`: close failure to include in the bus aggregate.
-    pub(in crate::facade) fn record_close_failure(&self, failure: Arc<SubscriptionCloseFailure>) {
-        self.close_errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(failure);
-        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    }
-
     /// Returns a cached aggregate of recorded close failures, if any exist.
     ///
     /// # Returns

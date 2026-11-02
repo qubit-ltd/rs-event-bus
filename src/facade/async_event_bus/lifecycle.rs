@@ -320,8 +320,7 @@ impl AsyncEventBus {
             .map(|(id, control)| (*id, control.clone()))
             .collect();
         for (id, control) in controls {
-            if let Err(failure) = control.shutdown(mode).await {
-                self.inner.record_close_failure(failure);
+            if control.shutdown(mode).await.is_err() {
                 continue;
             }
             self.inner
