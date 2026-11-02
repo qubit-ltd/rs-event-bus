@@ -11,6 +11,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use qubit_id::Id;
+
 use super::async_conformance_hooks::AsyncConformanceCheck;
 use super::async_conformance_hooks::AsyncConformanceHooks;
 use super::conformance_case_context::ConformanceCaseContext;
@@ -24,6 +26,7 @@ use super::conformance_report::probe_payload;
 use super::conformance_report::probe_request;
 use super::conformance_report::probe_subscription_modes;
 use super::conformance_report::publish_case;
+use super::conformance_report::validate_probe_acknowledgement;
 use super::conformance_skip_reason::ConformanceSkipReason;
 use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
@@ -206,6 +209,7 @@ async fn record_pending_close<F, Fut>(
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
 {
     let spi = factory().await;
+    let capabilities = spi.capabilities();
     let mut subscription = match spi.subscribe(probe_request(1, durability)).await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -225,23 +229,61 @@ async fn record_pending_close<F, Fut>(
                     detail: "subscription could not be created".into(),
                 },
             });
-            let _ = spi.shutdown(ShutdownMode::Immediate).await;
+            report.push(match spi.shutdown(ShutdownMode::Immediate).await {
+                Ok(_) => ConformanceCase::Passed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                    detail: format!("async pending-close SPI shutdown failed after setup failure: {error}"),
+                },
+            });
             return;
         }
     };
-    let publish = spi
-        .publish(probe_message(probe_payload(case_id), spi.capabilities()))
-        .await;
-    if let Err(error) = publish {
+    let publish = spi.publish(probe_message(probe_payload(case_id), capabilities)).await;
+    let setup = match publish {
+        Ok(acknowledgement) => {
+            validate_probe_acknowledgement(&acknowledgement, capabilities.publish_visibility(), Id::new(1))
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = setup {
         report.push(ConformanceCase::Failed {
             case_id: "close-with-pending-setup".into(),
-            detail: format!("async pending-close probe publish failed: {error}"),
+            detail: format!("async pending-close probe setup failed: {error}"),
         });
         report.push(ConformanceCase::Skipped {
             case_id: "receive-after-close-with-pending".into(),
             reason: ConformanceSkipReason::MissingFixture {
                 detail: "pending-close probe publish failed".into(),
             },
+        });
+        let close_result = subscription.close().await;
+        let shutdown_result = spi.shutdown(ShutdownMode::Immediate).await;
+        let cleanup_errors = [
+            close_result
+                .err()
+                .map(|error| format!("receiver close failed: {error}")),
+            shutdown_result
+                .err()
+                .map(|error| format!("SPI shutdown failed: {error}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        report.push(if cleanup_errors.is_empty() {
+            ConformanceCase::Passed {
+                case_id: "close-with-pending-setup-cleanup".into(),
+            }
+        } else {
+            ConformanceCase::Failed {
+                case_id: "close-with-pending-setup-cleanup".into(),
+                detail: format!(
+                    "async pending-close setup cleanup errors: {}",
+                    cleanup_errors.join("; ")
+                ),
+            }
         });
         report.push(ConformanceCase::Skipped {
             case_id: "close-with-pending-idempotent".into(),

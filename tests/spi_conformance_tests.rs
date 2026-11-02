@@ -902,6 +902,145 @@ fn test_publication_acknowledgement_matrix_for_sync_and_async_runners() {
 
 #[cfg(feature = "conformance")]
 #[test]
+fn test_pending_close_acknowledgement_matrix_for_sync_and_async_runners() {
+    let opaque = || PublishAcknowledgement::Accepted {
+        provider_message_id: None,
+        metadata: Default::default(),
+    };
+    let admission = |subscription_id, status| {
+        DestinationAdmission::new(Id::new(subscription_id), SubscriberId::new("probe").unwrap(), status)
+    };
+    let cases = vec![
+        (
+            "empty admissions",
+            PublishAcknowledgement::DestinationAdmissions(vec![]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "filtered",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Filtered)]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "rejected",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Rejected("full".into()))]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "wrong target",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(2, AdmissionStatus::Accepted)]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "interceptor drop",
+            PublishAcknowledgement::DroppedByInterceptor,
+            PublishVisibility::Opaque,
+            false,
+        ),
+        ("opaque accepted", opaque(), PublishVisibility::Opaque, true),
+        (
+            "target accepted",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Accepted)]),
+            PublishVisibility::DestinationAdmissions,
+            true,
+        ),
+    ];
+    for (label, acknowledgement, visibility, expected_pass) in cases {
+        let capabilities = EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            visibility,
+        );
+        let sync = run_sync(
+            || {
+                Arc::new(SubscriptionModeSyncAdapter {
+                    inner: FakeEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                })
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                Arc::new(SubscriptionModeAsyncAdapter {
+                    inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                }) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for (api, report) in [("sync", &sync), ("async", &asynchronous)] {
+            let setup_index = report
+                .cases()
+                .iter()
+                .enumerate()
+                .find_map(|(index, case)| {
+                    (matches!(case,
+                        ConformanceCase::Passed { case_id } | ConformanceCase::Failed { case_id, .. }
+                            if case_id == "close-with-pending-setup")
+                        && report.case_context(index).is_some_and(|context| context.api() == api))
+                    .then_some(index)
+                })
+                .unwrap_or_else(|| panic!("{api} {label}: pending setup case was not reported: {report:?}"));
+            assert_eq!(
+                matches!(report.cases()[setup_index], ConformanceCase::Passed { .. }),
+                expected_pass,
+                "{api} {label}: unexpected pending setup result: {report:?}"
+            );
+            let case_for_api = |target: &str| {
+                report.cases().iter().enumerate().any(|(index, case)| {
+                    matches!(case,
+                        ConformanceCase::Passed { case_id } | ConformanceCase::Failed { case_id, .. }
+                            if case_id == target)
+                        && report.case_context(index).is_some_and(|context| context.api() == api)
+                })
+            };
+            let passed_for_api = |target: &str| {
+                report.cases().iter().enumerate().any(|(index, case)| {
+                    matches!(case, ConformanceCase::Passed { case_id } if case_id == target)
+                        && report.case_context(index).is_some_and(|context| context.api() == api)
+                })
+            };
+            assert!(
+                case_for_api("close-with-pending-setup"),
+                "{api} {label}: setup assertion must target its report"
+            );
+            if expected_pass {
+                assert!(
+                    passed_for_api("receive-after-close-with-pending"),
+                    "{api} {label}: close receive must proceed"
+                );
+            } else {
+                assert!(
+                    passed_for_api("close-with-pending-setup-cleanup"),
+                    "{api} {label}: failed setup must still close the receiver and shut down the SPI"
+                );
+                assert!(
+                    !passed_for_api("receive-after-close-with-pending"),
+                    "{api} {label}: failed setup must not report the dependent receive as passed"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
 fn test_durable_only_conformance_does_not_invoke_ephemeral_cleanup_hooks() {
     let capabilities = EventBusCapabilities::new(
         PayloadModes::Native,
