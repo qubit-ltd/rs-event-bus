@@ -176,6 +176,21 @@ impl LocalQueueState {
         self.schedule_lane_head_at(key, Instant::now());
     }
 
+    /// Registers a lane head as ready or delayed using an explicit monotonic
+    /// time.
+    ///
+    /// Does nothing when the lane is absent. Under exclusive queue-state
+    /// access, advances its generation to invalidate older entries, updates
+    /// live and stale delayed-head counts, and compacts the delayed heap
+    /// when needed.
+    ///
+    /// # Parameters
+    /// - `key`: lane whose current head is registered.
+    /// - `now`: monotonic time used to classify the head as ready or delayed.
+    ///
+    /// # Panics
+    /// Panics if internal delayed-head accounting underflows or a scheduled
+    /// lane disappears before its delayed generation is stored.
     fn schedule_lane_head_at(&mut self, key: QueueKey, now: Instant) {
         let Some((version, deadline, invalidated_delayed_head)) = (|| {
             let lane = self.lanes.get_mut(&key)?;

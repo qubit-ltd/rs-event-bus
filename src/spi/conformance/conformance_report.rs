@@ -186,6 +186,16 @@ pub(super) fn probe_subscription_modes(capabilities: EventBusCapabilities) -> Ve
         .collect()
 }
 
+/// Reconstructs the payload for a stable case ID emitted by `payload_probes`.
+///
+/// # Parameters
+/// - `case_id`: `declared-native-publish` or `declared-encoded-publish`.
+///
+/// # Returns
+/// A shared native zero-valued `u8`, or the standard `encoded_probe` payload.
+///
+/// # Panics
+/// Panics when an internal caller supplies an unknown case ID.
 pub(super) fn probe_payload(case_id: &str) -> TransportPayload {
     match case_id {
         "declared-native-publish" => TransportPayload::Native(Arc::new(0_u8)),
