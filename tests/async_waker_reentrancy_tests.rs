@@ -34,6 +34,7 @@ use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncSubscription;
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::facade::AsyncSubscriptionRunState;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::EventId;
@@ -363,6 +364,11 @@ fn session_lease_waiter_cancellation_and_return() {
     drop(active);
     assert!(wake.0.load(Ordering::SeqCst) > 0, "returning the lease wakes its waiter");
     assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert_eq!(
+        subscription.run_state(),
+        AsyncSubscriptionRunState::Running,
+        "the woken waiter acquires the session before waiting for receive"
+    );
     assert_eq!(cancelled_wake.0.load(Ordering::SeqCst), 0, "cancelled waiter is not woken");
     drop(waiting);
 }
