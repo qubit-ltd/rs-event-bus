@@ -35,7 +35,7 @@ fn make_dead_letter(reason: &str, payload: &str) -> DeadLetterEvent<String> {
         .into_parts();
     DeadLetterEvent::new(
         Arc::new(envelope),
-        SubscriberId::new("worker-α").expect("valid subscriber ID"),
+        SubscriberId::new("worker-alpha").expect("valid subscriber ID"),
         reason.into(),
     )
 }
@@ -86,8 +86,8 @@ fn test_decoder_rejects_malformed_bytes_as_decode_errors() {
         .to_vec();
     let mut invalid_event_id = valid_bytes.clone();
     let event_id_length = u32::from_be_bytes(invalid_event_id[..4].try_into().expect("length"));
-    invalid_event_id.splice(4..4 + event_id_length as usize, [b'!']);
-    invalid_event_id[..4].copy_from_slice(&1_u32.to_be_bytes());
+    invalid_event_id.splice(4..4 + event_id_length as usize, []);
+    invalid_event_id[..4].copy_from_slice(&0_u32.to_be_bytes());
 
     let mut overflowing_timestamp = valid_bytes.clone();
     let event_id_length = u32::from_be_bytes(overflowing_timestamp[..4].try_into().expect("length"));

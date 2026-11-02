@@ -385,7 +385,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
-const CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
+static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
 ///
