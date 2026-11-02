@@ -57,6 +57,8 @@ use qubit_spi::error::ProviderFailure;
 struct OrderingProvider {
     id: &'static str,
     ordering: OrderingCapability,
+    subscription_modes: SubscriptionModes,
+    durability: DurabilityCapability,
 }
 
 impl ProviderMetadata for OrderingProvider {
@@ -72,6 +74,8 @@ impl ServiceProvider<EventBusSpec> for OrderingProvider {
     ) -> Result<Arc<dyn EventBusSpi>, ProviderFailure<EventBusProviderError>> {
         Ok(Arc::new(OrderingSpi {
             ordering: self.ordering,
+            subscription_modes: self.subscription_modes,
+            durability: self.durability,
         }))
     }
 }
@@ -79,6 +83,8 @@ impl ServiceProvider<EventBusSpec> for OrderingProvider {
 struct AsyncOrderingProvider {
     id: &'static str,
     ordering: OrderingCapability,
+    subscription_modes: SubscriptionModes,
+    durability: DurabilityCapability,
 }
 
 impl ProviderMetadata for AsyncOrderingProvider {
@@ -93,17 +99,27 @@ impl AsyncServiceProvider<EventBusSpec> for AsyncOrderingProvider {
         _: &'a EventBusConfig,
     ) -> ProviderFuture<'a, Result<Arc<dyn AsyncEventBusSpi>, ProviderFailure<EventBusProviderError>>> {
         let ordering = self.ordering;
-        Box::pin(async move { Ok(Arc::new(AsyncOrderingSpi { ordering }) as Arc<dyn AsyncEventBusSpi>) })
+        let subscription_modes = self.subscription_modes;
+        let durability = self.durability;
+        Box::pin(async move {
+            Ok(Arc::new(AsyncOrderingSpi {
+                ordering,
+                subscription_modes,
+                durability,
+            }) as Arc<dyn AsyncEventBusSpi>)
+        })
     }
 }
 
 struct AsyncOrderingSpi {
     ordering: OrderingCapability,
+    subscription_modes: SubscriptionModes,
+    durability: DurabilityCapability,
 }
 
 impl AsyncEventBusSpi for AsyncOrderingSpi {
     fn capabilities(&self) -> EventBusCapabilities {
-        capabilities(self.ordering)
+        capabilities(self.ordering, self.subscription_modes, self.durability)
     }
 
     fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
@@ -129,11 +145,13 @@ impl AsyncEventBusSpi for AsyncOrderingSpi {
 
 struct OrderingSpi {
     ordering: OrderingCapability,
+    subscription_modes: SubscriptionModes,
+    durability: DurabilityCapability,
 }
 
 impl EventBusSpi for OrderingSpi {
     fn capabilities(&self) -> EventBusCapabilities {
-        capabilities(self.ordering)
+        capabilities(self.ordering, self.subscription_modes, self.durability)
     }
 
     fn publish(&self, _: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
@@ -152,14 +170,18 @@ impl EventBusSpi for OrderingSpi {
     }
 }
 
-fn capabilities(ordering: OrderingCapability) -> EventBusCapabilities {
+fn capabilities(
+    ordering: OrderingCapability,
+    subscription_modes: SubscriptionModes,
+    durability: DurabilityCapability,
+) -> EventBusCapabilities {
     EventBusCapabilities::new(
         PayloadModes::Native,
         SettlementCapabilities::AcceptOnly,
         ordering,
         DelayedDeliveryCapability::None,
-        DurabilityCapability::Ephemeral,
-        SubscriptionModes::EPHEMERAL,
+        durability,
+        subscription_modes,
         false,
         ReplayCapability::None,
         PublishGuarantee::Accepted,
@@ -176,6 +198,219 @@ fn unused_spi_error(operation: &'static str) -> SpiError {
         retryable: Some(false),
         source: Box::new(Error::other("unused by ordering capability test")),
     }
+}
+
+#[test]
+fn test_subscription_mode_requirement_matrix_and_replacement() {
+    let modes = [
+        SubscriptionModes::EPHEMERAL,
+        SubscriptionModes::DURABLE,
+        SubscriptionModes::BOTH,
+    ];
+    for actual in modes {
+        let registry = EventBusRegistry::new();
+        registry
+            .register(OrderingProvider {
+                id: "mode-matrix",
+                ordering: OrderingCapability::None,
+                subscription_modes: actual,
+                durability: DurabilityCapability::Ephemeral,
+            })
+            .expect("provider registers");
+        let selection = ProviderSelection::named("mode-matrix").expect("selection is valid");
+        for required in modes {
+            let config = EventBusConfig::default()
+                .with_required_capabilities(RequiredCapabilities::new().with_subscription_modes(required));
+            let result = registry.create_selected(&selection, &config);
+            let accepted = (required == SubscriptionModes::EPHEMERAL
+                && actual.supports(qubit_event_bus::model::SubscriptionDurability::Ephemeral))
+                || (required == SubscriptionModes::DURABLE
+                    && actual.supports(qubit_event_bus::model::SubscriptionDurability::Durable))
+                || (required == SubscriptionModes::BOTH && actual == SubscriptionModes::BOTH);
+            assert_eq!(accepted, result.is_ok(), "actual {actual:?}, required {required:?}");
+            if let Ok(bus) = result {
+                let _report = bus.shutdown(ShutdownMode::Immediate).expect("test bus shuts down");
+            } else {
+                match result {
+                    Err(error) => assert!(format!("{error:?}").contains("subscription_modes"), "{error:?}"),
+                    Ok(_) => unreachable!("matrix cell was expected to fail"),
+                }
+            }
+        }
+    }
+
+    let registry = EventBusRegistry::new();
+    registry
+        .register(OrderingProvider {
+            id: "mode-none",
+            ordering: OrderingCapability::None,
+            subscription_modes: SubscriptionModes::EPHEMERAL,
+            durability: DurabilityCapability::Ephemeral,
+        })
+        .expect("provider registers");
+    let selection = ProviderSelection::named("mode-none").expect("selection is valid");
+    let unconstrained = registry
+        .create_selected(&selection, &EventBusConfig::default())
+        .expect("None imposes no subscription mode requirement");
+    let _report = unconstrained
+        .shutdown(ShutdownMode::Immediate)
+        .expect("test bus shuts down");
+    let overwritten = RequiredCapabilities::new()
+        .with_subscription_modes(SubscriptionModes::DURABLE)
+        .with_subscription_modes(SubscriptionModes::EPHEMERAL);
+    let bus = registry
+        .create_selected(
+            &selection,
+            &EventBusConfig::default().with_required_capabilities(overwritten),
+        )
+        .expect("the last subscription mode requirement replaces the first");
+    let _report = bus.shutdown(ShutdownMode::Immediate).expect("test bus shuts down");
+}
+
+#[test]
+fn test_async_subscription_mode_requirement_matrix() {
+    block_on(async {
+        let modes = [
+            SubscriptionModes::EPHEMERAL,
+            SubscriptionModes::DURABLE,
+            SubscriptionModes::BOTH,
+        ];
+        for actual in modes {
+            let registry = AsyncEventBusRegistry::new();
+            registry
+                .register(AsyncOrderingProvider {
+                    id: "async-mode-matrix",
+                    ordering: OrderingCapability::None,
+                    subscription_modes: actual,
+                    durability: DurabilityCapability::Ephemeral,
+                })
+                .expect("provider registers");
+            let selection = ProviderSelection::named("async-mode-matrix").expect("selection is valid");
+            for required in modes {
+                let config = EventBusConfig::default()
+                    .with_required_capabilities(RequiredCapabilities::new().with_subscription_modes(required));
+                let result = registry.create_selected(&selection, &config).await;
+                let accepted = match required {
+                    SubscriptionModes::EPHEMERAL => {
+                        actual.supports(qubit_event_bus::model::SubscriptionDurability::Ephemeral)
+                    }
+                    SubscriptionModes::DURABLE => {
+                        actual.supports(qubit_event_bus::model::SubscriptionDurability::Durable)
+                    }
+                    SubscriptionModes::BOTH => actual == SubscriptionModes::BOTH,
+                    _ => unreachable!(),
+                };
+                assert_eq!(accepted, result.is_ok(), "actual {actual:?}, required {required:?}");
+                if let Ok(bus) = result {
+                    let _report = bus
+                        .shutdown(ShutdownMode::Immediate)
+                        .await
+                        .expect("test bus shuts down");
+                } else {
+                    match result {
+                        Err(error) => assert!(format!("{error:?}").contains("subscription_modes"), "{error:?}"),
+                        Ok(_) => unreachable!("matrix cell was expected to fail"),
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn test_subscription_mode_requirement_is_independent_of_durability() {
+    let registry = EventBusRegistry::new();
+    registry
+        .register(OrderingProvider {
+            id: "retention-mode",
+            ordering: OrderingCapability::None,
+            subscription_modes: SubscriptionModes::EPHEMERAL,
+            durability: DurabilityCapability::Durable,
+        })
+        .expect("provider registers");
+    let selection = ProviderSelection::named("retention-mode").expect("selection is valid");
+    let retained = registry
+        .create_selected(
+            &selection,
+            &EventBusConfig::default().with_required_capabilities(RequiredCapabilities::new().durable()),
+        )
+        .expect("durability requirement remains independent of subscription modes");
+    let _report = retained.shutdown(ShutdownMode::Immediate).expect("test bus shuts down");
+    let required_mode = registry.create_selected(
+        &selection,
+        &EventBusConfig::default().with_required_capabilities(
+            RequiredCapabilities::new()
+                .durable()
+                .with_subscription_modes(SubscriptionModes::DURABLE),
+        ),
+    );
+    match required_mode {
+        Err(error) => assert!(format!("{error:?}").contains("subscription_modes"), "{error:?}"),
+        Ok(_) => unreachable!("durable mode requirement was expected to fail"),
+    }
+}
+
+#[test]
+fn test_fallback_skips_candidate_missing_subscription_mode() {
+    let registry = EventBusRegistry::new();
+    for (id, subscription_modes) in [
+        ("ephemeral-first", SubscriptionModes::EPHEMERAL),
+        ("durable-second", SubscriptionModes::DURABLE),
+    ] {
+        registry
+            .register(OrderingProvider {
+                id,
+                ordering: OrderingCapability::None,
+                subscription_modes,
+                durability: DurabilityCapability::Ephemeral,
+            })
+            .expect("provider registers");
+    }
+    let selection = ProviderSelection::chain(["ephemeral-first", "durable-second"])
+        .expect("selection is valid")
+        .with_fallback_policy(FallbackPolicy::OnAbsence);
+    let config = EventBusConfig::default()
+        .with_required_capabilities(RequiredCapabilities::new().with_subscription_modes(SubscriptionModes::DURABLE));
+    let bus = registry
+        .create_selected(&selection, &config)
+        .expect("second candidate satisfies mode requirement");
+    assert_eq!("durable-second", bus.provider_id().as_str());
+    let _report = bus.shutdown(ShutdownMode::Immediate).expect("test bus shuts down");
+}
+
+#[test]
+fn test_async_fallback_skips_candidate_missing_subscription_mode() {
+    block_on(async {
+        let registry = AsyncEventBusRegistry::new();
+        for (id, subscription_modes) in [
+            ("async-ephemeral-first", SubscriptionModes::EPHEMERAL),
+            ("async-durable-second", SubscriptionModes::DURABLE),
+        ] {
+            registry
+                .register(AsyncOrderingProvider {
+                    id,
+                    ordering: OrderingCapability::None,
+                    subscription_modes,
+                    durability: DurabilityCapability::Ephemeral,
+                })
+                .expect("provider registers");
+        }
+        let selection = ProviderSelection::chain(["async-ephemeral-first", "async-durable-second"])
+            .expect("selection is valid")
+            .with_fallback_policy(FallbackPolicy::OnAbsence);
+        let config = EventBusConfig::default().with_required_capabilities(
+            RequiredCapabilities::new().with_subscription_modes(SubscriptionModes::DURABLE),
+        );
+        let bus = registry
+            .create_selected(&selection, &config)
+            .await
+            .expect("second candidate satisfies mode requirement");
+        assert_eq!("async-durable-second", bus.provider_id().as_str());
+        let _report = bus
+            .shutdown(ShutdownMode::Immediate)
+            .await
+            .expect("test bus shuts down");
+    });
 }
 
 #[test]
@@ -219,6 +454,8 @@ fn test_ordering_requirement_matrix_preserves_existing_capability_relationships(
             .register(OrderingProvider {
                 id: "matrix",
                 ordering: actual,
+                subscription_modes: SubscriptionModes::EPHEMERAL,
+                durability: DurabilityCapability::Ephemeral,
             })
             .expect("provider registers");
         let selection = ProviderSelection::named("matrix").expect("selection is valid");
@@ -256,12 +493,16 @@ fn test_fallback_keeps_candidate_that_satisfies_per_key_requirement() {
         .register(OrderingProvider {
             id: "partition-only",
             ordering: OrderingCapability::PerPartition,
+            subscription_modes: SubscriptionModes::EPHEMERAL,
+            durability: DurabilityCapability::Ephemeral,
         })
         .expect("first provider registers");
     registry
         .register(OrderingProvider {
             id: "per-subscription",
             ordering: OrderingCapability::PerSubscription,
+            subscription_modes: SubscriptionModes::EPHEMERAL,
+            durability: DurabilityCapability::Ephemeral,
         })
         .expect("second provider registers");
     let selection = ProviderSelection::chain(["partition-only", "per-subscription"])
@@ -285,12 +526,16 @@ fn test_async_fallback_keeps_candidate_that_satisfies_per_key_requirement() {
             .register(AsyncOrderingProvider {
                 id: "async-partition-only",
                 ordering: OrderingCapability::PerPartition,
+                subscription_modes: SubscriptionModes::EPHEMERAL,
+                durability: DurabilityCapability::Ephemeral,
             })
             .expect("first async provider registers");
         registry
             .register(AsyncOrderingProvider {
                 id: "async-per-subscription",
                 ordering: OrderingCapability::PerSubscription,
+                subscription_modes: SubscriptionModes::EPHEMERAL,
+                durability: DurabilityCapability::Ephemeral,
             })
             .expect("second async provider registers");
         let selection = ProviderSelection::chain(["async-partition-only", "async-per-subscription"])

@@ -7,6 +7,7 @@
 // =============================================================================
 //! Creation-time requirements checked against provider SPI capabilities.
 
+use crate::model::SubscriptionDurability;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
@@ -16,6 +17,7 @@ use crate::spi::PublishGuarantee;
 use crate::spi::PublishVisibility;
 use crate::spi::ReplayCapability;
 use crate::spi::SettlementCapabilities;
+use crate::spi::SubscriptionModes;
 
 /// Optional minimum behavior required from a provider before facade creation.
 ///
@@ -30,9 +32,12 @@ use crate::spi::SettlementCapabilities;
 /// use qubit_event_bus::registry::EventBusRegistry;
 /// use qubit_event_bus::registry::RequiredCapabilities;
 /// use qubit_event_bus::spi::PayloadModes;
+/// use qubit_event_bus::spi::SubscriptionModes;
 /// use qubit_event_bus::spi::ShutdownMode;
 ///
-/// let requirements = RequiredCapabilities::new().with_payload(PayloadModes::Native);
+/// let requirements = RequiredCapabilities::new()
+///     .with_payload(PayloadModes::Native)
+///     .with_subscription_modes(SubscriptionModes::EPHEMERAL);
 /// let config = EventBusConfig::default().with_required_capabilities(requirements);
 /// let registry = EventBusRegistry::with_local()?;
 /// let bus = registry.create(&config)?;
@@ -52,6 +57,8 @@ pub struct RequiredCapabilities {
     delayed_delivery: Option<DelayedDeliveryCapability>,
     /// Minimum retention behavior, or `None` when persistence is unconstrained.
     durability: Option<DurabilityCapability>,
+    /// Required accepted subscription modes, or `None` when unconstrained.
+    subscription_modes: Option<SubscriptionModes>,
     /// Whether provider-managed consumer groups are mandatory.
     consumer_groups: bool,
     /// Required replay positions, or `None` when replay is unconstrained.
@@ -77,6 +84,7 @@ impl RequiredCapabilities {
             ordering: None,
             delayed_delivery: None,
             durability: None,
+            subscription_modes: None,
             consumer_groups: false,
             replay: None,
             publish_guarantee: None,
@@ -162,6 +170,23 @@ impl RequiredCapabilities {
     #[inline]
     pub const fn with_durability(mut self, durability: DurabilityCapability) -> Self {
         self.durability = Some(durability);
+        self
+    }
+
+    /// Sets the subscription durability modes the selected SPI must accept.
+    ///
+    /// Both modes require support for ephemeral and durable subscriptions.
+    /// This requirement is independent of message retention durability.
+    ///
+    /// # Parameters
+    /// - `modes`: subscription modes required from the SPI.
+    ///
+    /// # Returns
+    /// The updated requirement set.
+    #[must_use]
+    #[inline]
+    pub const fn with_subscription_modes(mut self, modes: SubscriptionModes) -> Self {
+        self.subscription_modes = Some(modes);
         self
     }
 
@@ -263,6 +288,15 @@ impl RequiredCapabilities {
             && capabilities.durability() != DurabilityCapability::Durable
         {
             missing.push("durability");
+        }
+        if let Some(required) = self.subscription_modes {
+            let actual = capabilities.subscription_modes();
+            let missing_mode = [SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+                .into_iter()
+                .any(|mode| required.supports(mode) && !actual.supports(mode));
+            if missing_mode {
+                missing.push("subscription_modes");
+            }
         }
         if self.consumer_groups && !capabilities.consumer_groups() {
             missing.push("consumer_groups");
