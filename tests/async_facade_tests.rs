@@ -10,6 +10,7 @@
 mod support;
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -22,6 +23,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 
 use qubit_clock::ManualMonotonicClock;
+use qubit_clock::ManualTimer;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::CodecError;
@@ -43,6 +45,7 @@ use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::facade::AsyncSubscriptionRunState;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::facade::SettlementRetryConfig;
 use qubit_event_bus::model::AckMode;
 use qubit_event_bus::model::AdmissionCheckError;
 use qubit_event_bus::model::AdmissionOutcome;
@@ -2981,69 +2984,114 @@ fn test_dropping_idle_wait_unregisters_signal_waker() {
 #[test]
 fn test_async_settlement_failure_retries_the_same_token_without_rerunning_handler() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
-    let bus =
-        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
-    let settlement_failed = Arc::new(AtomicBool::new(false));
-    let observed = settlement_failed.clone();
-    let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::SettlementFailed { .. }) {
-            observed.store(true, Ordering::Release);
-        }
-    });
+    let clock = ManualMonotonicClock::new();
+    let timer = Arc::new(ManualTimer::from_clock(&clock));
+    let config = EventBusFacadeConfig::new().with_settlement_retry(
+        SettlementRetryConfig::new(
+            NonZeroU32::new(3).expect("positive attempts"),
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        )
+        .expect("valid retry policy"),
+    );
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("fake").expect("provider ID"),
+        spi.clone(),
+        config,
+        timer,
+    )
+    .expect("valid provider capabilities");
     let handler_calls = Arc::new(AtomicUsize::new(0));
     let request = SubscribeRequest::new("async-settle-failure", topic()).expect("valid subscriber ID");
+    let subscription = block_on(bus.subscribe(request)).expect("subscription");
+    spi.fail_next_settle();
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "settlement-fail",
+    ))));
+    let calls = handler_calls.clone();
+    let mut runner = Box::pin(subscription.run(move |_| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    let mut context = Context::from_waker(Waker::noop());
+    let mut first_settle_registered = false;
+    for _ in 0..8 {
+        assert!(
+            runner.as_mut().poll(&mut context).is_pending(),
+            "runner remains active while it reaches the first settlement"
+        );
+        if spi.operation_log().iter().filter(|op| **op == "settle").count() == 1 {
+            first_settle_registered = true;
+            break;
+        }
+    }
+    assert!(
+        first_settle_registered,
+        "first failed settlement registers the retry delay"
+    );
+    assert_eq!(0, spi.settlement_count(), "a failed attempt is not recorded as settled");
+    assert_eq!(1, spi.operation_log().iter().filter(|op| **op == "settle").count());
+    assert_eq!(1, handler_calls.load(Ordering::SeqCst), "handler has run once");
+    assert_eq!(
+        WaitOutcome::TimedOut,
+        block_on(bus.wait_for_received_deliveries(&topic(), Some(Duration::ZERO))).expect("zero-time wait"),
+        "received guard remains held during settlement backoff",
+    );
 
-    block_on(async {
-        let subscription = bus.subscribe(request).await.unwrap();
-        spi.fail_next_settle();
-        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
-            subscription.id(),
-            "settlement-fail",
-        ))));
-        let calls = handler_calls.clone();
-        let runner = std::thread::spawn(move || {
-            block_on(subscription.run(move |_| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { Ok(()) }
-            }))
-        });
-        for _ in 0..100 {
-            if settlement_failed.load(Ordering::Acquire) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+    clock.advance(Duration::from_millis(10)).expect("advance retry clock");
+    let mut retry_completed = false;
+    for _ in 0..8 {
+        assert!(
+            runner.as_mut().poll(&mut context).is_pending(),
+            "runner waits for another message"
+        );
+        if spi.operation_log().iter().filter(|op| **op == "settle").count() == 2 {
+            retry_completed = true;
+            break;
         }
-        assert!(settlement_failed.load(Ordering::Acquire));
-        assert_eq!(
-            bus.wait_for_received_deliveries(&topic(), Some(std::time::Duration::ZERO))
-                .await
-                .unwrap(),
-            WaitOutcome::TimedOut,
-            "the received-delivery guard remains held while settlement is retried",
-        );
-        for _ in 0..100 {
-            if spi.settlement_count() == 1 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(
+        retry_completed,
+        "one manual backoff advance permits the retry to finish"
+    );
+    assert_eq!(1, spi.settlement_count(), "successful settlement is recorded once");
+    assert_eq!(
+        1,
+        handler_calls.load(Ordering::SeqCst),
+        "settlement retry does not rerun handler"
+    );
+    assert_eq!(2, spi.operation_log().iter().filter(|op| **op == "settle").count());
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    let mut shutdown_report = None;
+    let mut runner_finished = false;
+    for _ in 0..16 {
+        if let Poll::Ready(result) = shutdown.as_mut().poll(&mut context) {
+            shutdown_report = Some(result.expect("bus shutdown"));
+            break;
         }
-        assert_eq!(spi.settlement_count(), 1, "the retained token is retried");
-        assert_eq!(
-            handler_calls.load(Ordering::SeqCst),
-            1,
-            "settlement retry does not rerun the handler"
-        );
-        assert_eq!(spi.operation_log().iter().filter(|op| **op == "settle").count(), 2);
-        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
-        runner.join().unwrap().unwrap();
-        assert_eq!(
-            bus.wait_for_received_deliveries(&topic(), Some(std::time::Duration::ZERO))
-                .await
-                .unwrap(),
-            WaitOutcome::Idle,
-            "successful settlement releases the received-delivery guard",
-        );
-    });
+        if !runner_finished {
+            runner_finished = matches!(runner.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+        }
+    }
+    assert_eq!(
+        Some(ShutdownOutcome::Complete),
+        shutdown_report.map(|report| report.outcome),
+        "bus shutdown completes while the runner is manually polled"
+    );
+    for _ in 0..8 {
+        if runner_finished {
+            break;
+        }
+        runner_finished = matches!(runner.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+    }
+    assert!(runner_finished, "closed receiver ends runner successfully");
+    assert_eq!(
+        WaitOutcome::Idle,
+        block_on(bus.wait_for_received_deliveries(&topic(), Some(Duration::ZERO))).expect("zero-time wait"),
+        "successful settlement releases the received-delivery guard",
+    );
 }
 
 #[test]

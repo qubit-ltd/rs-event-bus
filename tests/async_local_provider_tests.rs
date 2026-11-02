@@ -233,39 +233,91 @@ fn test_async_local_drop_racing_publish_releases_capacity_after_close() {
     let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second")))
         .expect("async subscription must be created");
     let _ = block_on(
-        bus.publish(PublishRequest::new(first_topic, "occupy".to_owned()).expect("test publish request must be valid")),
+        bus.publish(
+            PublishRequest::new(first_topic.clone(), "occupy".to_owned())
+                .expect("test publish request must be valid"),
+        ),
     )
     .expect("publish request must be admitted");
 
-    let barrier = Arc::new(Barrier::new(2));
-    let worker_barrier = Arc::clone(&barrier);
+    let blocked = block_on(
+        bus.publish(
+            PublishRequest::new(second_topic.clone(), "publish-before-drop".to_owned())
+                .expect("test publish request must be valid"),
+        ),
+    )
+    .expect("publish request must be admitted");
+    assert!(matches!(blocked.admission_outcome(), AdmissionOutcome::NoneAccepted(_)));
+    drop(first);
+    let unblocked = block_on(
+        bus.publish(
+            PublishRequest::new(second_topic.clone(), "drop-before-publish".to_owned())
+                .expect("test publish request must be valid"),
+        ),
+    )
+    .expect("publish request must be admitted");
+    assert!(matches!(unblocked.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    let ReceiveOutcome::Message(mut ordered) = block_on(second.receive(Duration::ZERO)).expect("receive") else {
+        panic!("drop-before-publish event is available");
+    };
+    block_on(second.settle(
+        &ordered.take_settlement().expect("settlement token"),
+        DeliveryDisposition::Accept,
+    ))
+    .expect("settlement succeeds");
+
+    let racing_first = block_on(spi.subscribe(spi_request(705, "racing-first", "async.local.drop-publish-first")))
+        .expect("async subscription must be created");
+    let occupied = block_on(bus.publish(
+        PublishRequest::new(first_topic, "occupy-again".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
+    assert!(matches!(occupied.admission_outcome(), AdmissionOutcome::Accepted(_)));
+    let barrier = Arc::new(Barrier::new(3));
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let drop_barrier = Arc::clone(&barrier);
+    let drop_ready = ready_tx.clone();
+    let dropper = thread::spawn(move || {
+        drop_ready.send(()).expect("main thread waits for drop worker");
+        drop_barrier.wait();
+        drop(racing_first);
+    });
+    let publish_barrier = Arc::clone(&barrier);
+    let publish_ready = ready_tx;
     let worker_bus = bus.clone();
     let worker_topic = second_topic.clone();
-    let worker = thread::spawn(move || {
-        worker_barrier.wait();
-        drop(first);
+    let publisher = thread::spawn(move || {
+        publish_ready.send(()).expect("main thread waits for publish worker");
+        publish_barrier.wait();
         block_on(worker_bus.publish(
             PublishRequest::new(worker_topic, "racing".to_owned()).expect("test publish request must be valid"),
         ))
         .expect("publish request must be admitted")
     });
+    ready_rx.recv().expect("drop worker is ready");
+    ready_rx.recv().expect("publish worker is ready");
     barrier.wait();
-    let raced = worker.join().expect("worker thread must not panic");
-    if matches!(raced.admission_outcome(), AdmissionOutcome::Accepted(_)) {
-        let ReceiveOutcome::Message(mut message) =
-            block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
-        else {
-            panic!("racing accepted message remains available");
-        };
-        block_on(
-            second.settle(
-                &message
-                    .take_settlement()
-                    .expect("message must carry its expected settlement token"),
-                DeliveryDisposition::Accept,
-            ),
-        )
-        .expect("local settlement operation must succeed");
+    dropper.join().expect("drop worker must not panic");
+    let raced = publisher.join().expect("publish worker must not panic");
+    match raced.admission_outcome() {
+        AdmissionOutcome::Accepted(_) => {
+            let ReceiveOutcome::Message(mut message) =
+                block_on(second.receive(Duration::ZERO)).expect("local receiver must return an outcome")
+            else {
+                panic!("racing accepted message remains available");
+            };
+            block_on(
+                second.settle(
+                    &message
+                        .take_settlement()
+                        .expect("message must carry its expected settlement token"),
+                    DeliveryDisposition::Accept,
+                ),
+            )
+            .expect("local settlement operation must succeed");
+        }
+        AdmissionOutcome::NoneAccepted(_) => {}
+        other => panic!("drop/publish race returned an unsupported admission result: {other:?}"),
     }
     let after_close = block_on(bus.publish(
         PublishRequest::new(second_topic, "after-close".to_owned()).expect("test publish request must be valid"),

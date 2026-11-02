@@ -346,6 +346,7 @@ mod tests {
     use crate::model::SubscriptionDurability;
     use crate::spi::AsyncEventBusSpi;
     use crate::spi::OutboundMessage;
+    use crate::spi::ReceiveOutcome;
     use crate::spi::SpiSubscriptionRequest;
     use crate::spi::TopicAddress;
     use crate::spi::TransportPayload;
@@ -363,9 +364,11 @@ mod tests {
     /// close.
     #[test]
     fn test_token_exhaustion_preserves_pending_weight_until_close() {
-        let weight = NonZeroUsize::new(5).expect("positive weight");
-        let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new().max_total_outstanding_weight_bytes(weight))
-            .expect("valid config");
+        let weight = NonZeroUsize::new(7).expect("positive weight");
+        let config = LocalEventBusConfig::new()
+            .max_total_outstanding(1)
+            .max_total_outstanding_weight_bytes(weight);
+        let spi = AsyncLocalEventBusSpi::new(&config).expect("valid config");
         let topic = TopicAddress::new("local.token.exhaustion").expect("valid topic");
         let request = SpiSubscriptionRequest::new(
             Id::new(1),
@@ -410,12 +413,89 @@ mod tests {
                 })
             ));
         }
-        assert!(!spi.shared.outstanding.try_acquire(1), "pending event keeps its weight");
+        assert!(
+            !spi.shared.outstanding.try_acquire(1),
+            "pending event keeps the only count slot"
+        );
         ready(receiver.close()).expect("close removes retained event");
         assert!(
             spi.shared.outstanding.try_acquire(weight.get()),
-            "close returns the entire reservation"
+            "close returns the full count and weight reservation"
+        );
+        assert!(!spi.shared.outstanding.try_acquire(1), "the count limit is exactly one");
+        spi.shared.outstanding.release(1, weight.get());
+    }
+
+    #[test]
+    fn test_settle_and_shutdown_release_the_full_shared_budget() {
+        let weight = NonZeroUsize::new(7).expect("positive weight");
+        let config = LocalEventBusConfig::new()
+            .max_total_outstanding(1)
+            .max_total_outstanding_weight_bytes(weight);
+        let spi = AsyncLocalEventBusSpi::new(&config).expect("valid config");
+        let topic = TopicAddress::new("local.settle.shutdown.budget").expect("valid topic");
+        let request = SpiSubscriptionRequest::new(
+            Id::new(2),
+            topic.clone(),
+            SubscriberId::new("budget").expect("valid subscriber"),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<u32>(),
+        );
+        let mut receiver = ready(spi.subscribe(request)).expect("subscription");
+        let publish = |id: &str| {
+            OutboundMessage::new(
+                topic.clone(),
+                EventId::new(id).expect("valid ID"),
+                SystemTime::UNIX_EPOCH,
+                Default::default(),
+                None,
+                None,
+                TransportPayload::Native(Arc::new(7_u32)),
+            )
+            .with_native_payload_weight_bytes(weight)
+        };
+
+        let _ = ready(spi.publish(publish("settled"))).expect("admitted event");
+        let ReceiveOutcome::Message(mut message) = ready(receiver.receive(Duration::ZERO)).expect("receive") else {
+            panic!("published event must be received");
+        };
+        ready(receiver.settle(
+            &message.take_settlement().expect("settlement token"),
+            crate::spi::DeliveryDisposition::Accept,
+        ))
+        .expect("settlement succeeds");
+        assert!(
+            spi.shared.outstanding.try_acquire(weight.get()),
+            "terminal settlement releases budget"
+        );
+        assert!(
+            !spi.shared.outstanding.try_acquire(1),
+            "only one count slot is available"
         );
         spi.shared.outstanding.release(1, weight.get());
+
+        let _ = ready(spi.publish(publish("shutdown"))).expect("admitted event");
+        assert_eq!(
+            crate::spi::ShutdownOutcome::Complete,
+            ready(spi.shutdown(crate::spi::ShutdownMode::Immediate)).expect("shutdown")
+        );
+        ready(receiver.close()).expect("repeated close is harmless");
+        drop(receiver);
+        assert!(
+            spi.shared.outstanding.try_acquire(weight.get()),
+            "shutdown releases pending budget"
+        );
+        assert!(
+            !spi.shared.outstanding.try_acquire(1),
+            "shutdown leaves no count reservation"
+        );
+        spi.shared.outstanding.release(1, weight.get());
+        assert_eq!(
+            crate::spi::ShutdownOutcome::Complete,
+            ready(spi.shutdown(crate::spi::ShutdownMode::Immediate)).expect("repeated shutdown")
+        );
     }
 }

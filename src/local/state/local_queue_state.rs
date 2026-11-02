@@ -142,7 +142,7 @@ impl LocalQueueState {
             if lane.events.is_empty() {
                 self.lanes.remove(&key);
             } else {
-                self.schedule_lane_head(key);
+                self.schedule_lane_head_at(key, now);
             }
             return Some(event);
         }
@@ -173,6 +173,10 @@ impl LocalQueueState {
     /// # Panics
     /// Panics if scheduling loses the lane before its delayed entry is stored.
     pub(in crate::local) fn schedule_lane_head(&mut self, key: QueueKey) {
+        self.schedule_lane_head_at(key, Instant::now());
+    }
+
+    fn schedule_lane_head_at(&mut self, key: QueueKey, now: Instant) {
         let Some((version, deadline, invalidated_delayed_head)) = (|| {
             let lane = self.lanes.get_mut(&key)?;
             let invalidated_delayed_head = lane.delayed_version.take().is_some();
@@ -190,7 +194,7 @@ impl LocalQueueState {
             self.delayed_live_count -= 1;
             self.delayed_stale_count += 1;
         }
-        if deadline.is_none_or(|deadline| deadline <= Instant::now()) {
+        if deadline.is_none_or(|deadline| deadline <= now) {
             self.ready_lanes.push_back((key, version));
         } else if let Some(deadline) = deadline {
             self.next_delay_sequence = self.next_delay_sequence.wrapping_add(1);
@@ -284,5 +288,98 @@ impl LocalQueueState {
         self.delayed_lanes = delayed_lanes;
         self.delayed_live_count = live_count;
         self.delayed_stale_count = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+    use std::time::SystemTime;
+
+    use super::super::event::LocalEvent;
+    use super::LocalQueueState;
+    use crate::model::EventId;
+    use crate::model::Headers;
+    use crate::spi::OrderingKey;
+    use crate::spi::OutboundMessage;
+    use crate::spi::TopicAddress;
+    use crate::spi::TransportPayload;
+
+    fn event(id: &str, key: Option<&str>, not_before: Option<Instant>) -> LocalEvent {
+        let message = OutboundMessage::new(
+            TopicAddress::new("queue-state.test").expect("valid topic"),
+            EventId::new(id).expect("valid event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::default(),
+            key.map(|value| OrderingKey::new(value).expect("valid ordering key")),
+            None,
+            TransportPayload::Native(Arc::new(1_u8)),
+        );
+        let mut event = LocalEvent::transport(message.topic().clone(), &message).expect("event");
+        event.not_before = not_before;
+        event
+    }
+
+    fn pop_id(state: &mut LocalQueueState, now: Instant) -> Option<String> {
+        state.pop_ready(now).map(|event| event.event_id().to_owned())
+    }
+
+    #[test]
+    fn test_explicit_time_schedules_delays_fifo_and_retried_head() {
+        let t0 = Instant::now();
+        let t20 = t0 + Duration::from_millis(20);
+        let t250 = t0 + Duration::from_millis(250);
+        let a = Some(OrderingKey::new("a").expect("key"));
+        let b = Some(OrderingKey::new("b").expect("key"));
+        let mut state = LocalQueueState::default();
+        state
+            .lanes
+            .entry(a.clone())
+            .or_default()
+            .events
+            .push_back(event("a-head", Some("a"), Some(t250)));
+        state
+            .lanes
+            .entry(a.clone())
+            .or_default()
+            .events
+            .push_back(event("a-successor", Some("a"), Some(t20)));
+        state
+            .lanes
+            .entry(b.clone())
+            .or_default()
+            .events
+            .push_back(event("b-head", Some("b"), Some(t20)));
+        state
+            .lanes
+            .entry(b.clone())
+            .or_default()
+            .events
+            .push_back(event("b-successor", Some("b"), Some(t20)));
+        state.pending_count = 4;
+        state.schedule_lane_head_at(a.clone(), t0);
+        state.schedule_lane_head_at(b, t0);
+
+        assert_eq!(None, pop_id(&mut state, t0));
+        assert_eq!(None, pop_id(&mut state, t0 + Duration::from_millis(19)));
+        assert_eq!(Some("b-head".to_owned()), pop_id(&mut state, t20));
+        assert_eq!(Some("b-successor".to_owned()), pop_id(&mut state, t20));
+        assert_eq!(None, pop_id(&mut state, t0 + Duration::from_millis(249)));
+
+        let retried = state.pop_ready(t250).expect("a head is due at its exact deadline");
+        assert_eq!("a-head", retried.event_id());
+        state
+            .lanes
+            .get_mut(&a)
+            .expect("a lane remains")
+            .events
+            .push_front(retried);
+        state.pending_count += 1;
+        state.schedule_lane_head_at(a, t250);
+        assert_eq!(Some("a-head".to_owned()), pop_id(&mut state, t250));
+        assert_eq!(Some("a-successor".to_owned()), pop_id(&mut state, t250));
+        assert_eq!(None, pop_id(&mut state, t250));
     }
 }

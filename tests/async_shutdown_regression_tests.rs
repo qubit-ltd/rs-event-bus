@@ -10,16 +10,19 @@
 use std::future::Future;
 use std::future::pending;
 use std::io::Error;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
+use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
@@ -56,12 +59,14 @@ impl Wake for WakeCounter {
 struct ShutdownGateSpi {
     calls: Mutex<Vec<ShutdownMode>>,
     capabilities: EventBusCapabilities,
+    fail_immediate: bool,
 }
 
 impl ShutdownGateSpi {
-    fn new() -> Self {
+    fn new(fail_immediate: bool) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            fail_immediate,
             capabilities: EventBusCapabilities::new(
                 PayloadModes::Native,
                 SettlementCapabilities::AcceptRetryReject,
@@ -105,9 +110,20 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
 
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<SpiShutdownOutcome, SpiError>> {
         self.calls.lock().expect("calls lock").push(mode);
+        let fail_immediate = self.fail_immediate;
         Box::pin(async move {
             if matches!(mode, ShutdownMode::Graceful { .. }) {
                 pending::<()>().await;
+            }
+            if fail_immediate && mode == ShutdownMode::Immediate {
+                return Err(SpiError::Operation {
+                    provider_id: "shutdown-gate".into(),
+                    operation: "shutdown",
+                    resource: None,
+                    kind: "immediate_shutdown_failed",
+                    retryable: Some(false),
+                    source: Box::new(Error::other("injected immediate shutdown failure")),
+                });
             }
             Ok(SpiShutdownOutcome::Complete)
         })
@@ -116,7 +132,7 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
 
 #[test]
 fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
-    let provider = Arc::new(ShutdownGateSpi::new());
+    let provider = Arc::new(ShutdownGateSpi::new(false));
     let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-gate").expect("provider ID"), provider.clone())
         .expect("facade");
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -148,10 +164,11 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
         counter.0.load(Ordering::SeqCst) > 0,
         "escalating shutdown should wake the graceful shutdown task",
     );
-    assert!(
-        graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_ready(),
-        "the graceful shutdown task should complete after escalation",
-    );
+    let Poll::Ready(Ok(graceful_report)) = graceful.as_mut().poll(&mut Context::from_waker(&waker)) else {
+        panic!("escalated graceful shutdown must return a successful report");
+    };
+    assert_eq!(graceful_report.outcome, SpiShutdownOutcome::Complete);
+    assert_eq!(graceful_report.known_abandoned_deliveries, 0);
     assert_eq!(
         vec![
             ShutdownMode::Graceful {
@@ -162,11 +179,55 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
         *provider.calls.lock().expect("calls lock"),
         "the provider should receive graceful and immediate shutdown requests in order",
     );
-    assert!(
-        immediate
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_ready(),
-        "the immediate shutdown task should complete after escalation",
+    let Poll::Ready(Ok(immediate_report)) = immediate.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("immediate shutdown must return a successful report");
+    };
+    assert_eq!(immediate_report.outcome, SpiShutdownOutcome::Complete);
+    assert_eq!(immediate_report.known_abandoned_deliveries, 0);
+}
+
+#[test]
+fn test_immediate_shutdown_provider_error_reaches_both_waiters() {
+    let provider = Arc::new(ShutdownGateSpi::new(true));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-gate").expect("provider ID"), provider.clone())
+        .expect("facade");
+    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+    let waker = Waker::from(counter.clone());
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    let mut immediate = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(immediate.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+
+    for result in [
+        graceful.as_mut().poll(&mut Context::from_waker(&waker)),
+        immediate.as_mut().poll(&mut Context::from_waker(&waker)),
+    ] {
+        let Poll::Ready(Err(ShutdownError::Spi(SpiError::Operation {
+            operation: "shutdown",
+            kind: "immediate_shutdown_failed",
+            source,
+            ..
+        }))) = result
+        else {
+            panic!("both shutdown waiters must observe the provider failure");
+        };
+        assert_eq!(
+            ErrorKind::Other,
+            source.downcast_ref::<Error>().expect("source is IO error").kind()
+        );
+    }
+    let calls = provider.calls.lock().expect("calls lock");
+    assert_eq!(
+        &[
+            ShutdownMode::Graceful {
+                timeout: Duration::from_secs(30)
+            },
+            ShutdownMode::Immediate,
+        ],
+        &calls[..2],
+        "graceful shutdown is escalated before any immediate retry",
     );
+    assert!(calls[2..].iter().all(|mode| *mode == ShutdownMode::Immediate));
 }

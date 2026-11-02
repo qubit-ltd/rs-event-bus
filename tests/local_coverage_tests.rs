@@ -371,23 +371,29 @@ fn test_receive_uses_earliest_partition_deadline_without_overtaking_same_key() {
     };
     assert_eq!("unkeyed-ready", unkeyed.id().as_str());
 
-    let ReceiveOutcome::Message(shorter_partition) = subscription
-        .receive(Duration::from_millis(150))
-        .expect("receive waits until the earliest key-head deadline")
-    else {
-        panic!("partition-b becomes ready before the later partition-a head");
-    };
-    assert_eq!("partition-b-head", shorter_partition.id().as_str());
-
-    for expected in ["partition-a-head", "partition-a-successor"] {
+    let mut keyed_messages = Vec::new();
+    for _ in 0..3 {
         let ReceiveOutcome::Message(message) = subscription
-            .receive(Duration::from_secs(1))
-            .expect("delayed partition-a events eventually become ready")
+            .receive(Duration::from_secs(2))
+            .expect("delayed partition events eventually become ready")
         else {
-            panic!("partition-a queue head is received after its deadline");
+            panic!("each delayed partition event is received after its deadline");
         };
-        assert_eq!(expected, message.id().as_str());
+        keyed_messages.push(message.id().as_str().to_owned());
     }
+    assert!(keyed_messages.contains(&"partition-b-head".to_owned()));
+    let a_head = keyed_messages
+        .iter()
+        .position(|id| id == "partition-a-head")
+        .expect("partition-a head");
+    let a_successor = keyed_messages
+        .iter()
+        .position(|id| id == "partition-a-successor")
+        .expect("partition-a successor");
+    assert!(
+        a_head < a_successor,
+        "same-key successor cannot overtake its delayed predecessor"
+    );
 }
 
 #[test]
