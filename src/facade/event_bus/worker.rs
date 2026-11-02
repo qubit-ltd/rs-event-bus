@@ -1206,11 +1206,11 @@ fn stop_settlement_with_failure(
 pub(in crate::facade) fn count_abandoned(inner: &EventBusInner, subscription_id: Id) {
     if inner.capabilities.durability() == crate::spi::DurabilityCapability::Ephemeral {
         inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
-        if let Some(control) = inner
-            .subscription_snapshot()
-            .into_iter()
-            .find(|control| control.id == subscription_id)
-        {
+        let control = {
+            let subscriptions = inner.subscriptions.lock().unwrap_or_else(PoisonError::into_inner);
+            subscriptions.get(&subscription_id).cloned()
+        };
+        if let Some(control) = control {
             control.delivery_metrics.record_abandoned_ephemeral();
         }
     }

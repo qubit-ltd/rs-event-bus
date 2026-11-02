@@ -40,12 +40,13 @@ impl OwnedDeliveryLease {
     /// A guard retaining the credit through payload, handler, and settlement
     /// stages. Creation samples the clock and records the owned age origin.
     pub(in crate::facade) fn new(id: u64, bus: &Arc<AsyncEventBusInner>) -> Self {
-        bus.scheduler.record_owned_start(id, bus.timer.clock().now());
-        Self {
+        let lease = Self {
             id,
             scheduler: bus.scheduler.clone(),
             bus: Arc::downgrade(bus),
-        }
+        };
+        lease.scheduler.record_owned_start(id, bus.timer.clock().now());
+        lease
     }
 }
 impl Drop for OwnedDeliveryLease {

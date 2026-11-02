@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -37,21 +38,34 @@ use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EncodedPayload;
 use qubit_event_bus::spi::EventBusCapabilities;
+use qubit_event_bus::spi::EventBusSpi;
+use qubit_event_bus::spi::EventSubscriptionSpi;
 use qubit_event_bus::spi::InboundMessage;
+use qubit_event_bus::spi::OrderingCapability;
 use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::PayloadModes;
+use qubit_event_bus::spi::PublishGuarantee;
+use qubit_event_bus::spi::PublishVisibility;
 use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::ReplayCapability;
+use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use qubit_event_bus::spi::SubscriptionModes;
 use qubit_event_bus::spi::TransportPayload;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::fake_spi::FakeEventBusSpi;
@@ -433,4 +447,107 @@ fn test_sync_delivery_metrics_retry_and_permanent_final_counters() {
         assert_phases(metrics, 0, 0, 0, 0);
         assert_eq!(bus.delivery_metrics(), metrics);
     }
+}
+
+struct DurableFailingSettleBus {
+    inner: FakeEventBusSpi,
+    settlement_started: mpsc::Sender<()>,
+}
+
+impl EventBusSpi for DurableFailingSettleBus {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        Ok(Box::new(DurableFailingSettleSubscription {
+            inner: self.inner.subscribe(request)?,
+            settlement_started: self.settlement_started.clone(),
+        }))
+    }
+
+    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        self.inner.shutdown(mode)
+    }
+}
+
+struct DurableFailingSettleSubscription {
+    inner: Box<dyn EventSubscriptionSpi>,
+    settlement_started: mpsc::Sender<()>,
+}
+
+impl EventSubscriptionSpi for DurableFailingSettleSubscription {
+    fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        self.inner.receive(timeout)
+    }
+
+    fn settle(&mut self, _token: &SettlementToken, _disposition: DeliveryDisposition) -> Result<(), SpiError> {
+        let _ = self.settlement_started.send(());
+        Err(SpiError::Operation {
+            provider_id: "durable-metrics".into(),
+            operation: "settle",
+            resource: None,
+            kind: "injected_failure",
+            retryable: Some(false),
+            source: Box::new(std::io::Error::other("injected durable settlement failure")),
+        })
+    }
+
+    fn close(&mut self) -> Result<(), SpiError> {
+        self.inner.close()
+    }
+}
+
+#[test]
+fn test_durable_settlement_failure_is_not_counted_as_ephemeral_abandonment() {
+    let capabilities = EventBusCapabilities::builder()
+        .payload_modes(PayloadModes::Native)
+        .settlement(SettlementCapabilities::AcceptRetryReject)
+        .ordering(OrderingCapability::None)
+        .delayed_delivery(DelayedDeliveryCapability::None)
+        .durability(DurabilityCapability::Durable)
+        .subscription_modes(SubscriptionModes::DURABLE)
+        .consumer_groups(false)
+        .replay(ReplayCapability::None)
+        .publish_guarantee(PublishGuarantee::Accepted)
+        .publish_visibility(PublishVisibility::Opaque)
+        .build()
+        .expect("durable test capabilities should be complete");
+    let fake = FakeEventBusSpi::with_capabilities(capabilities);
+    let (settlement_started_tx, settlement_started_rx) = mpsc::channel();
+    let spi = Arc::new(DurableFailingSettleBus {
+        inner: fake.clone(),
+        settlement_started: settlement_started_tx,
+    });
+    let bus = EventBus::from_spi(ProviderId::new("durable-metrics").unwrap(), spi).unwrap();
+    let topic = Topic::<u32>::new("test.topic").unwrap();
+    let options = SubscribeOptions::<u32>::builder()
+        .durability(SubscriptionDurability::Durable)
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("durable-metrics", topic.clone())
+                .unwrap()
+                .with_options(options),
+            |_: Delivery<u32>| Ok::<(), DeliveryError>(()),
+        )
+        .unwrap();
+    let receipt = bus
+        .publish(PublishRequest::new(topic, 42).unwrap())
+        .expect("durable fake provider should admit the event");
+    assert!(matches!(
+        receipt.acknowledgement(),
+        PublishAcknowledgement::Accepted { .. }
+    ));
+    settlement_started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should attempt durable settlement");
+    subscription.cancel().unwrap();
+
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 0);
+    assert_eq!(bus.delivery_metrics().abandoned_ephemeral, 0);
 }

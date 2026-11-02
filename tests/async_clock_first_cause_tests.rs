@@ -10,6 +10,9 @@
 mod support;
 
 use std::error::Error;
+use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -30,8 +33,10 @@ use qubit_event_bus::Diagnostic;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::SpiError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SettlementTermination;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscriptionStopReason;
@@ -70,6 +75,39 @@ impl Timer for SwitchingTimer {
 
     fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
         self.clock().new_timer().at(deadline)
+    }
+}
+
+/// Panics exactly once when the runner samples the clock for an owned lease.
+struct PanicOnceTimer {
+    clock: ManualMonotonicClock,
+    panic_next: AtomicBool,
+}
+
+impl MonotonicClock for PanicOnceTimer {
+    fn domain(&self) -> qubit_clock::ClockDomain {
+        self.clock.domain()
+    }
+
+    fn now(&self) -> MonotonicInstant {
+        if self.panic_next.swap(false, Ordering::SeqCst) {
+            panic!("injected clock panic after receive reservation");
+        }
+        self.clock.now()
+    }
+
+    fn new_timer(&self) -> Arc<dyn Timer> {
+        self.clock.new_timer()
+    }
+}
+
+impl Timer for PanicOnceTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        self.clock.new_timer().at(deadline)
     }
 }
 
@@ -343,4 +381,92 @@ fn test_successful_spi_then_clock_failure_is_not_abandoned_or_retried() {
             .count(),
         1
     );
+}
+
+/// A panic while constructing the owned lease returns the already claimed
+/// receive credit, allowing the queued delivery to be received on a later run.
+#[test]
+fn test_clock_panic_after_receive_reservation_returns_owned_credit() {
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let timer = Arc::new(PanicOnceTimer {
+        clock: ManualMonotonicClock::new(),
+        panic_next: AtomicBool::new(false),
+    });
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).expect("nonzero"),
+            NonZeroUsize::new(1).expect("nonzero"),
+            NonZeroUsize::new(1).expect("nonzero"),
+            NonZeroUsize::new(2).expect("nonzero"),
+        )
+        .expect("valid scheduling"),
+    );
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("owned-credit-panic").expect("provider"),
+        fake.clone(),
+        config,
+        timer.clone(),
+    )
+    .expect("bus");
+    let sub = subscribe(&bus, &fake);
+    let healthy = block_on(bus.subscribe(
+        SubscribeRequest::new("healthy", Topic::<u32>::new("test.topic").expect("topic")).expect("request"),
+    ))
+    .expect("healthy subscription");
+    let receipt = block_on(
+        bus.publish(PublishRequest::new(Topic::<u32>::new("test.topic").expect("topic"), 9).expect("publish request")),
+    )
+    .expect("fake SPI queues a message for each subscription");
+    assert!(matches!(
+        receipt.acknowledgement(),
+        PublishAcknowledgement::Accepted { .. }
+    ));
+    timer.panic_next.store(true, Ordering::SeqCst);
+    let mut failed_run = Box::pin(sub.run(|_| async { Ok(()) }));
+    let panic = catch_unwind(AssertUnwindSafe(|| poll_once(failed_run.as_mut())));
+    assert!(panic.is_err(), "clock panic must occur after reservation is claimed");
+    drop(failed_run);
+
+    let handled = Arc::new(AtomicBool::new(false));
+    let observed = handled.clone();
+    let mut recovery_run = Box::pin(sub.run(move |_| {
+        let observed = observed.clone();
+        async move {
+            observed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }));
+    for _ in 0..32 {
+        if handled.load(Ordering::SeqCst) {
+            break;
+        }
+        let _ = poll_once(recovery_run.as_mut());
+    }
+    assert!(
+        handled.load(Ordering::SeqCst),
+        "original subscription receives its queued delivery"
+    );
+    drop(recovery_run);
+
+    let healthy_handled = Arc::new(AtomicBool::new(false));
+    let observed = healthy_handled.clone();
+    let mut healthy_run = Box::pin(healthy.run(move |_| {
+        let observed = observed.clone();
+        async move {
+            observed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }));
+    for _ in 0..32 {
+        if healthy_handled.load(Ordering::SeqCst) {
+            break;
+        }
+        let _ = poll_once(healthy_run.as_mut());
+    }
+    assert!(
+        healthy_handled.load(Ordering::SeqCst),
+        "another subscription receives its queued delivery after shared owned credit is restored",
+    );
+    drop(healthy_run);
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
 }

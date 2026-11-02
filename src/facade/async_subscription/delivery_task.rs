@@ -60,12 +60,11 @@ pub(in crate::facade) async fn run_one_attempt<T: Send + Sync + 'static>(
     attempt: u32,
     global_interceptors: &[Arc<AsyncSubscriberInterceptor<T>>],
 ) -> DeliveryOutcome {
-    let interceptors = options.async_interceptors().to_vec();
     SubscriberPipeline::attempt_async(
         options.ack_mode(),
         delivery.next_attempt(attempt),
         global_interceptors,
-        &interceptors,
+        options.async_interceptors(),
         move |delivery| handler(delivery),
     )
     .await
