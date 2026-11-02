@@ -29,6 +29,7 @@ use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::SignalRegistration;
 use crate::facade::async_subscription::internal::AsyncSession;
 use crate::facade::async_subscription::internal::AsyncSubscriptionControl;
+use crate::facade::async_subscription::internal::BusContextFuture;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
@@ -195,6 +196,22 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// if an active receiver owner is unexpectedly absent. Handler and SPI
     /// futures are polled on this caller; no background task is created.
     pub(in crate::facade) async fn run_loop(&mut self, handler: SharedAsyncHandler<T>) -> Result<(), ReceiveError> {
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        BusContextFuture::new(bus_key, self.run_loop_inner(handler)).await
+    }
+
+    /// Runs the receiver loop while its caller poll carries this bus identity.
+    ///
+    /// # Parameters
+    /// - `handler`: Factory used for newly granted handler work.
+    ///
+    /// # Returns
+    /// Success after natural receiver closure or stop has drained owned work.
+    ///
+    /// # Errors
+    /// Returns a retained terminal processing cause or `ReceiveError::Closed`
+    /// if an active receiver owner is unexpectedly absent.
+    async fn run_loop_inner(&mut self, handler: SharedAsyncHandler<T>) -> Result<(), ReceiveError> {
         self.inner.scheduler.set_dispatch_active(self.id, true);
         self.inner.notify_scheduler();
         let mut turns = 0;

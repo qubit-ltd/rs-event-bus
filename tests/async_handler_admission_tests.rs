@@ -27,6 +27,8 @@ use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::ReceiveError;
+use qubit_event_bus::ShutdownError;
+use qubit_event_bus::WaitOutcome;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::FailureDirective;
@@ -107,10 +109,11 @@ fn middleware_gate(stop: Stop, retry: bool) {
                 failures.fetch_add(1, Ordering::SeqCst);
                 FailureDirective::Retry
             }
-        })
-        .retry_cancellation_token(cancellation.clone());
+        });
     if retry {
-        options = options.retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"));
+        options = options
+            .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"))
+            .retry_cancellation_token(cancellation.clone());
     }
     let topic = Topic::<u32>::new("orders.created").expect("topic");
     let request = SubscribeRequest::new("handler-gate", topic)
@@ -242,11 +245,6 @@ fn test_graceful_stop_after_middleware_drains_actual_handler() {
 }
 
 #[test]
-fn test_retry_cancellation_after_middleware_blocks_actual_handler() {
-    middleware_gate(Stop::RetryCancellation, false);
-}
-
-#[test]
 fn test_pause_after_middleware_preserves_original_handler() {
     middleware_gate(Stop::Pause, false);
 }
@@ -274,11 +272,18 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
         let fake = Arc::new(FakeAsyncEventBusSpi::new());
         let bus =
             AsyncEventBus::from_spi(ProviderId::new("filter-gate").expect("provider"), fake.clone()).expect("bus");
-        let filter_bus = bus.clone();
+        let (entered_filter, filter_entered) = std::sync::mpsc::channel();
+        let (continue_filter, filter_continue) = std::sync::mpsc::channel();
+        let filter_continue = Arc::new(std::sync::Mutex::new(filter_continue));
+        let filter_continue_in_closure = filter_continue.clone();
         let options = SubscribeOptions::builder()
             .filter(move |_| {
-                let mut shutdown = Box::pin(filter_bus.shutdown(ShutdownMode::Immediate));
-                let _ = poll_once(shutdown.as_mut());
+                entered_filter.send(()).expect("test driver is waiting");
+                filter_continue_in_closure
+                    .lock()
+                    .expect("filter continuation lock")
+                    .recv()
+                    .expect("test driver releases filter");
                 accepted
             })
             .build();
@@ -289,12 +294,199 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
         fake.enqueue(inbound_message(Some(SettlementToken::new(sub.id(), "token"))));
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
-        block_on(sub.run(move |_| {
-            observed.fetch_add(1, Ordering::SeqCst);
-            async { Ok(()) }
-        }))
-        .expect("stopped runner");
+        let runner = std::thread::spawn(move || {
+            block_on(sub.run(move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }))
+        });
+        filter_entered.recv().expect("filter entered");
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(poll_once(shutdown.as_mut()).is_pending());
+        continue_filter.send(()).expect("filter continues");
+        let _ = block_on(shutdown).expect("external shutdown");
+        runner.join().expect("runner thread").expect("stopped runner");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(fake.settlement_count(), 0);
     }
+}
+
+#[test]
+fn test_filter_reentrant_shutdown_is_rejected_in_isolated_process() {
+    const CASE: &str = "filter-reentrant-shutdown";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        support::isolated_process::run_case("test_filter_reentrant_shutdown_is_rejected_in_isolated_process", CASE);
+        return;
+    }
+
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("filter-shutdown").expect("provider"), fake.clone()).expect("bus");
+    let filter_bus = bus.clone();
+    let filter_fake = fake.clone();
+    let (entered_filter, filter_entered) = std::sync::mpsc::channel();
+    let (continue_filter, filter_continue) = std::sync::mpsc::channel();
+    let filter_continue = Arc::new(std::sync::Mutex::new(filter_continue));
+    let filter_continue_in_closure = filter_continue.clone();
+    let options = SubscribeOptions::builder()
+        .filter(move |_| {
+            assert!(matches!(
+                block_on(filter_bus.shutdown(ShutdownMode::Immediate)),
+                Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                    operation: "shutdown"
+                }))
+            ));
+            assert_eq!(filter_fake.shutdown_transition_count(), 0);
+            entered_filter.send(()).expect("test driver is waiting");
+            filter_continue_in_closure
+                .lock()
+                .expect("filter continuation lock")
+                .recv()
+                .expect("test driver releases filter");
+            false
+        })
+        .build();
+    let topic = Topic::<u32>::new("filter.shutdown").expect("topic");
+    let request = SubscribeRequest::new("filter-shutdown", topic)
+        .expect("request")
+        .with_options(options);
+    let sub = block_on(bus.subscribe(request)).expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let runner = std::thread::spawn(move || block_on(sub.run(|_| async { Ok(()) })));
+    filter_entered.recv().expect("filter entered");
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut()).is_pending());
+    continue_filter.send(()).expect("filter continues");
+    let _ = block_on(shutdown).expect("external shutdown");
+    runner.join().expect("runner thread").expect("runner");
+}
+
+#[test]
+fn test_filter_reentrant_received_wait_is_rejected_in_isolated_process() {
+    const CASE: &str = "filter-reentrant-received-wait";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        support::isolated_process::run_case(
+            "test_filter_reentrant_received_wait_is_rejected_in_isolated_process",
+            CASE,
+        );
+        return;
+    }
+
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("filter-wait").expect("provider"), fake.clone()).expect("bus");
+    let topic = Topic::<u32>::new("filter.wait").expect("topic");
+    let filter_bus = bus.clone();
+    let filter_topic = topic.clone();
+    let filter_fake = fake.clone();
+    let (entered_filter, filter_entered) = std::sync::mpsc::channel();
+    let (continue_filter, filter_continue) = std::sync::mpsc::channel();
+    let filter_continue = Arc::new(std::sync::Mutex::new(filter_continue));
+    let filter_continue_in_closure = filter_continue.clone();
+    let options = SubscribeOptions::builder()
+        .filter(move |_| {
+            assert!(matches!(
+                block_on(filter_bus.wait_for_received_deliveries(&filter_topic, None)),
+                Err(LifecycleError::WouldDeadlock {
+                    operation: "wait_for_received_deliveries"
+                })
+            ));
+            assert_eq!(filter_fake.shutdown_transition_count(), 0);
+            entered_filter.send(()).expect("test driver is waiting");
+            filter_continue_in_closure
+                .lock()
+                .expect("filter continuation lock")
+                .recv()
+                .expect("test driver releases filter");
+            false
+        })
+        .build();
+    let request = SubscribeRequest::new("filter-wait", topic)
+        .expect("request")
+        .with_options(options);
+    let sub = block_on(bus.subscribe(request)).expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let runner = std::thread::spawn(move || block_on(sub.run(|_| async { Ok(()) })));
+    filter_entered.recv().expect("filter entered");
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut()).is_pending());
+    continue_filter.send(()).expect("filter continues");
+    let _ = block_on(shutdown).expect("external shutdown");
+    runner.join().expect("runner thread").expect("runner");
+}
+
+#[test]
+fn test_filter_poll_context_is_limited_to_its_own_bus() {
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let other_fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("filter-owner").expect("provider"), fake.clone()).expect("bus");
+    let other_bus = AsyncEventBus::from_spi(ProviderId::new("filter-other").expect("provider"), other_fake.clone())
+        .expect("other bus");
+    let filter_bus = other_bus.clone();
+    let other_topic = Topic::<u32>::new("filter.owner").expect("other topic");
+    let (entered_filter, filter_entered) = std::sync::mpsc::channel();
+    let (continue_filter, filter_continue) = std::sync::mpsc::channel();
+    let filter_continue = Arc::new(std::sync::Mutex::new(filter_continue));
+    let filter_continue_in_closure = filter_continue.clone();
+    let options = SubscribeOptions::builder()
+        .filter(move |_| {
+            assert!(matches!(
+                block_on(filter_bus.wait_for_received_deliveries(&other_topic, Some(Duration::ZERO))),
+                Ok(WaitOutcome::Idle)
+            ));
+            entered_filter.send(()).expect("test driver is waiting");
+            filter_continue_in_closure
+                .lock()
+                .expect("filter continuation lock")
+                .recv()
+                .expect("test driver releases filter");
+            false
+        })
+        .build();
+    let request = SubscribeRequest::new("filter-owner", Topic::<u32>::new("filter.owner").expect("topic"))
+        .expect("request")
+        .with_options(options);
+    let sub = block_on(bus.subscribe(request)).expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let runner = std::thread::spawn(move || block_on(sub.run(|_| async { Ok(()) })));
+    filter_entered.recv().expect("filter entered");
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(poll_once(shutdown.as_mut()).is_pending());
+    continue_filter.send(()).expect("filter continues");
+    let _ = block_on(shutdown).expect("owner shutdown");
+    runner.join().expect("runner thread").expect("runner");
+    assert_eq!(other_fake.shutdown_transition_count(), 0);
+    assert_eq!(fake.shutdown_transition_count(), 1);
+}
+
+#[test]
+fn test_pending_runner_poll_does_not_leave_bus_context_active() {
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("pending-poll").expect("provider"), fake.clone()).expect("bus");
+    let topic = Topic::<u32>::new("pending.poll").expect("topic");
+    let sub = block_on(bus.subscribe(SubscribeRequest::new("pending-poll", topic.clone()).expect("request")))
+        .expect("subscribe");
+    let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
+    assert!(poll_once(run.as_mut()).is_pending());
+    assert!(block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).is_ok());
+    drop(run);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+}
+
+#[test]
+fn test_filter_panic_does_not_leave_bus_context_active() {
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("panic-poll").expect("provider"), fake.clone()).expect("bus");
+    let topic = Topic::<u32>::new("panic.poll").expect("topic");
+    let options = SubscribeOptions::builder().filter(|_| panic!("filter panic")).build();
+    let request = SubscribeRequest::new("panic-poll", topic.clone())
+        .expect("request")
+        .with_options(options);
+    let sub = block_on(bus.subscribe(request)).expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
+    assert!(poll_once(run.as_mut()).is_pending());
+    drop(run);
+    assert!(block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).is_ok());
+    assert_eq!(fake.shutdown_transition_count(), 0);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
 }
