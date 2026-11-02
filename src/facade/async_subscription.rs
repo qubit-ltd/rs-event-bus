@@ -213,8 +213,11 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// The bus-wide delivery scheduling configuration independently bounds
     /// running handlers, owned deliveries, and registered subscriptions.
-    /// Different ordering keys may run concurrently; messages with the same
-    /// key retain receive order through settlement completion.
+    /// With [`crate::model::OrderingPolicy::PerKey`], deliveries with the same
+    /// ordering key in this subscription retain receive order through
+    /// settlement completion. The default
+    /// [`crate::model::OrderingPolicy::Unordered`] does not provide this
+    /// serialization.
     /// Dropping this future pauses the session. A later call resumes existing
     /// handler futures before using its handler for new messages.
     ///
