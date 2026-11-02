@@ -783,8 +783,11 @@ attempt ──失败──▶ 错误处理器链 (SubscribeErrorHandler<T>) ─�
   只有 directive 为 `Retry` 才交给 `qubit-retry` 的规则链继续判定
   （用户 `RetryRule` → `DeliveryAttemptError::retryable` → 策略默认）。
   同步侧 retry rule 本身 panic 时结果改为 `Requeue`（把决定权交还 provider）；
-  未配置策略时 `Retry` 等价于 `Discard`。重试间隔同步用 `qubit_retry::Retry`
-  （阻塞 sleep，在 handler 池线程上），异步用 `AsyncRetry` + `Timer`。
+  未配置策略时 `Retry` 等价于 `Discard`。普通同步 handler 重试由 receiver owner
+  保存 `RetrySession` 和到期时间；退避期间释放 handler 执行额度，但继续持有
+  owned delivery 与 ordering lane。到期后重新竞争 handler 额度；正在运行且阻塞的
+  handler 仍占用额度。异步退避用 `AsyncRetry` + `Timer`，但这不表示同步发布重试或
+  死信转发也不会阻塞。
 - **`DeliveryFailureAction`** 是 directive 与能力结合后的终态：
   - `DeadLetter`：有 `DeadLetterPolicy` 且消息**不是**死信 → 通过内部 publish 发布
     `DeadLetterEvent<T>`（**不经过**全局发布拦截器，避免死信被再次改写/丢弃），
@@ -1149,6 +1152,9 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> { ... }
 impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize, observer: F) -> io::Result<Self>
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn with_publish_options<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        options: PublishOptions<T>, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub const fn default_capacity() -> NonZeroUsize;                     // 256
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T)，原样归还 payload
     pub fn stats(&self) -> NotificationStatsSnapshot;
@@ -1168,6 +1174,10 @@ pub enum NotificationOutcome {
 - **有界 `sync_channel(capacity)` + 单 worker 线程 `event-notification-publisher`**：
   worker 逐条构造 `PublishRequest::new(topic.clone(), payload)` 并调用 `bus.publish`，
   因此全部 facade 语义（拦截器、重试、回执）仍然生效，只是搬到了后台线程。
+- **发布选项**：`new` 委托给 `PublishOptions::default()`；
+  `with_publish_options` 在后台发布路径应用传入的选项。native 权重回调是应用声明的
+  正数估值，供已配置的 local outstanding 权重预算使用；它不是堆内存统计，通知队列
+  自身仍按条数限额。
 - **`try_publish` 永不阻塞**：队列满返回 `TryPublishError::Full(payload)`，
   已关闭返回 `Closed(payload)`，都把 payload 还给调用方决定如何处置（P7）。
 - **结果通过 observer 回推**：每次发布的 `NotificationOutcome` 交给 observer；
@@ -1387,8 +1397,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **没有 exactly-once**：facade 只能在 provider 声明的 settlement 能力内工作；
   `AcceptOnly` provider 下失败消息可能被重投也可能丢失，取决于 provider。
 - **顺序范围**：只保证同一订阅、同一 key 的 handler 串行；跨订阅、跨 topic 无序。
-- **同步重试会占用 handler 线程**：`Retry` 的退避 sleep 在池线程上进行，
-  长退避会降低有效并发；需要长退避时应使用 `Requeue` 让 provider 重投，或改用异步 facade。
+- **不同重试路径的资源成本不同**：普通同步 handler 重试由 receiver owner 通过 `RetrySession` 调度退避，期间释放 handler 执行额度，但仍持有 owned delivery 与 ordering lane；正在运行且阻塞的 handler 仍占用额度。同步发布重试和死信转发各有独立路径，不据此宣称无阻塞。异步执行不会阻塞 OS 线程，但也不能单独证明所有调度额度都已释放。
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。

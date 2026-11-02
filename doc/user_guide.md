@@ -1296,20 +1296,29 @@ When the code that produces a message cannot stop to wait for a synchronous publ
 
 Back in the order scenario: the request thread of the order service wants to hand off `OrderCreated` after the commit without waiting for `bus.publish` to consult every subscriber. Create one notification publisher at startup, after the bus and both subscriptions exist. One publisher serves one topic. The receipt check that used to run on the request path moves into the observer:
 
+When using the local provider's outstanding-weight budget, configure `max_total_outstanding_weight_bytes` on `LocalEventBusConfig` and declare a positive estimate with `PublishOptions::native_payload_weight`. The estimate is application-defined, not a measurement of heap usage; accepted weight remains outstanding until the provider settles the delivery.
+
 ```rust
 use std::num::NonZeroUsize;
 
 use qubit_event_bus::NotificationOutcome;
 use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishOptions;
 
 // `bus` is the EventBus that already holds the audit-log and customer-view subscriptions.
 // Pass NotificationPublisher::<OrderCreated>::default_capacity() as the third argument
 // when the default capacity is fine.
-let notifier = NotificationPublisher::new(
+let options = PublishOptions::<OrderCreated>::builder()
+    .native_payload_weight(|event| {
+        NonZeroUsize::new(event.order_id.len().max(1)).expect("positive declared weight")
+    })
+    .build();
+let notifier = NotificationPublisher::with_publish_options(
     bus.clone(),
     OrderCreated::TOPIC,
     NonZeroUsize::new(1_024).expect("capacity is non-zero"),
+    options,
     |outcome| match outcome {
         NotificationOutcome::Published(receipt) => {
             if receipt.duplicate_possible() {
@@ -1328,7 +1337,7 @@ let notifier = NotificationPublisher::new(
 )?;
 ```
 
-`new` starts a background thread named `event-notification-publisher` and returns an `io::Error` if the thread cannot be created. The observer runs on that thread, once per published item. `receipt` is the same receipt `bus.publish` would return, so the checks from [Check the publication result](#check-the-publication-result) apply. Keep the observer to work that returns quickly, such as logging or updating a metric.
+`with_publish_options` starts a background thread named `event-notification-publisher` and returns an `io::Error` if the thread cannot be created. `new` remains the default-options convenience constructor. The example declares a positive application estimate of native payload weight; it is not heap accounting, and the notification queue remains bounded by item count. The observer runs on that thread, once per published item. `receipt` is the same receipt `bus.publish` would return, so the checks from [Check the publication result](#check-the-publication-result) apply. Keep the observer to work that returns quickly, such as logging or updating a metric.
 
 ### Enqueue on the request path
 
@@ -1351,7 +1360,15 @@ match notifier.try_publish(event) {
 }
 ```
 
-`Ok(())` means the event is in the queue. The background thread calls `bus.publish` later, and the result reaches the application through the observer above. When the queue is full or closed, the original `event` comes back inside the error, so the caller can republish or record it without keeping a copy. The queue is measured in items. A slow handler fills it gradually, and `Full` is a signal the application should watch.
+`Ok(())` means the event is in the queue. The background thread calls `bus.publish` later, and the result reaches the application through the observer above. When the queue is full or closed, the original `event` comes back inside the error, so the caller can republish or record it without keeping a copy. The notification queue is measured in items. A slow provider call, publish pipeline, or observer can slow its worker and let this queue accumulate. A slow local handler can instead fill the provider outstanding queue and cause destination rejections while the notification queue remains available; `queue_full` can stay zero.
+
+The three stages have different evidence:
+
+| Stage | Evidence | What it tells you |
+| --- | --- | --- |
+| Notification queue admission | `try_publish`: `Ok`, `Full`, or `Closed` | Whether the background queue accepted the item; there is no provider receipt yet. |
+| Provider publication | `NotificationOutcome` and its complete receipt | Publish errors, destination admissions/rejections, opaque acceptance, and duplicate risk. |
+| Handler and settlement | Delivery gauges, diagnostics, and application business state | Consumption and processing progress; `Published` alone does not prove business success. |
 
 `stats()` reports the counters at runtime:
 

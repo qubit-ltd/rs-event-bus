@@ -831,8 +831,12 @@ Details:
   directive is `Retry` (caller `RetryRule`, then `DeliveryAttemptError::retryable`,
   then the policy default). If the synchronous retry rule itself panics, the outcome
   becomes `Requeue`, handing the decision back to the provider. With no policy, `Retry`
-  is the same as `Discard`. Synchronous backoff uses `qubit_retry::Retry` and sleeps
-  on a handler-pool thread. Asynchronous backoff uses `AsyncRetry` and the `Timer`.
+  is the same as `Discard`. Ordinary synchronous handler retries are retained by the
+  receiver owner as a `RetrySession` with a due time. During backoff the handler
+  execution permit is released; the owned delivery and ordering lane remain held.
+  When due, the delivery competes for a handler permit again. A handler that blocks
+  while running still occupies its permit. Async backoff uses `AsyncRetry` and `Timer`;
+  this does not make synchronous publish retries or dead-letter forwarding non-blocking.
 - **`DeliveryFailureAction`** is the directive combined with settlement capability:
   - `DeadLetter`: when a `DeadLetterPolicy` exists and the message is **not** already
     a dead-letter, an internal publish sends `DeadLetterEvent<T>`. That publish
@@ -1240,6 +1244,9 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> { ... }
 impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize, observer: F) -> io::Result<Self>
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn with_publish_options<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        options: PublishOptions<T>, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub const fn default_capacity() -> NonZeroUsize;                     // 256
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T); the payload is returned
     pub fn stats(&self) -> NotificationStatsSnapshot;
@@ -1257,6 +1264,11 @@ pub enum NotificationOutcome {
 - **A bounded `sync_channel(capacity)` and one worker thread named `event-notification-publisher`.**
   The worker builds `PublishRequest::new(topic.clone(), payload)` and calls `bus.publish`,
   so facade semantics (interceptors, retry, receipts) still apply. They run on the background thread.
+- **Publication options.** `new` delegates with `PublishOptions::default()`;
+  `with_publish_options` applies the supplied options on the worker's publish path.
+  A native weight callback is an application-declared positive estimate used by a
+  configured local outstanding-weight budget. It is not heap accounting, and the
+  notification queue itself remains bounded by item count.
 - **`try_publish` never blocks.** A full queue returns `TryPublishError::Full(payload)`.
   A closed publisher returns `Closed(payload)`. In both cases the payload is given
   back so the caller can decide what to do with it (P7).
@@ -1492,7 +1504,7 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 - **No exactly-once.** The facade can only work within the settlement capability the provider declared. Under `AcceptOnly`, a failed message may be redelivered or lost, depending on the provider.
 - **Ordering scope.** Handlers for one subscription and one key are serialized. Across subscriptions and topics there is no order.
-- **Synchronous retry occupies a handler thread.** `Retry` backoff sleeps on a pool thread, so a long backoff reduces effective concurrency. A long backoff should use `Requeue` and let the provider redeliver, or use the async facade.
+- **Retry paths have different resource costs.** Ordinary synchronous handler retry backoff is scheduled by the receiver owner through `RetrySession`; it releases the handler execution permit while retaining the owned delivery and ordering lane. A blocking handler still occupies a permit. Synchronous publish retries and dead-letter forwarding have separate paths and are not claimed to be non-blocking; async execution avoids blocking an OS thread but does not by itself prove every scheduling permit is released.
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
 - **`provider_attempt` is provider-specific and may be unknown.** The SPI transports a non-zero count when a provider can establish it. Redis reports `Some(1)` for a newly read stream entry; pending and claimed entries remain `None` because their prior delivery count is not currently propagated. Facade-local retries remain in `retry_attempt`.

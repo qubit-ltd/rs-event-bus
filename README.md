@@ -67,90 +67,72 @@ The complete, runnable sync and runtime-neutral async applications live in
 [`examples/async_local_minimal.rs`](examples/async_local_minimal.rs). They show
 subscription ownership, publication, and explicit shutdown.
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/readme_orders.rs -->
 ```rust
 use std::sync::Arc;
 
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::Subscription;
-use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 
 // Published after the order transaction commits.
-struct OrderCreated {
-    order_id: String,
-    customer_id: String,
-    total_cents: u64,
+pub struct OrderCreated {
+    pub order_id: String,
+    pub customer_id: String,
+    pub total_cents: u64,
 }
 
 impl OrderCreated {
-    const TOPIC_CREATED: Topic<Self> = Topic::new_static("orders.created");
+    pub const TOPIC_CREATED: Topic<Self> = Topic::new_static("orders.created");
 }
 
 // The application supplies implementations backed by its audit and view stores.
-trait AuditLog: Send + Sync {
+pub trait AuditLog: Send + Sync {
     fn append_order_created(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
 }
-trait CustomerOrderView: Send + Sync {
+pub trait CustomerOrderView: Send + Sync {
     fn upsert_order(&self, event: &OrderCreated) -> Result<(), DeliveryError>;
 }
 
 // Called during application startup; retain the returned subscription.
-fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>)
-    -> Result<Subscription, Box<dyn std::error::Error>>
-{
+pub fn subscribe_audit(bus: &EventBus, audit: Arc<dyn AuditLog>) -> Result<Subscription, Box<dyn std::error::Error>> {
     let topic = OrderCreated::TOPIC_CREATED;
     let request = SubscribeRequest::new("audit-log", topic)?;
-    Ok(bus.subscribe(request, move |delivery| {
-        audit.append_order_created(delivery.payload())
-    })?)
+    Ok(bus.subscribe(request, move |delivery| audit.append_order_created(delivery.payload()))?)
 }
 
-fn subscribe_customer_view(bus: &EventBus, view: Arc<dyn CustomerOrderView>)
-    -> Result<Subscription, Box<dyn std::error::Error>>
-{
+pub fn subscribe_customer_view(
+    bus: &EventBus,
+    view: Arc<dyn CustomerOrderView>,
+) -> Result<Subscription, Box<dyn std::error::Error>> {
     let topic = OrderCreated::TOPIC_CREATED;
     let request = SubscribeRequest::new("customer-view", topic)?;
-    Ok(bus.subscribe(request, move |delivery| {
-        view.upsert_order(delivery.payload())
-    })?)
+    Ok(bus.subscribe(request, move |delivery| view.upsert_order(delivery.payload()))?)
 }
 
 // Called by the order service only after its database commit succeeds.
-fn publish_order_created(
+pub fn publish_order_created(
     bus: &EventBus,
     order_id: String,
     customer_id: String,
     total_cents: u64,
 ) -> Result<PublishReceipt, Box<dyn std::error::Error>> {
     let topic = OrderCreated::TOPIC_CREATED;
-    let event = OrderCreated { order_id, customer_id, total_cents };
+    let event = OrderCreated {
+        order_id,
+        customer_id,
+        total_cents,
+    };
     let receipt = bus.publish(PublishRequest::new(topic, event)?)?;
-    if receipt.duplicate_possible() {
-        // Retain the receipt and reconcile by event ID before deciding to republish.
-        return Ok(receipt);
-    }
-    match receipt.admission_outcome() {
-        AdmissionOutcome::Accepted(_) => Ok(receipt),
-        AdmissionOutcome::OpaqueAccepted => {
-            // The provider reports broker acceptance, not individual subscribers.
-            Ok(receipt)
-        }
-        AdmissionOutcome::PartiallyAccepted(summary) => {
-            // Some subscribers already admitted it; repair rejected destinations individually.
-            Err(std::io::Error::other(format!("{} subscribers rejected the event", summary.rejected)).into())
-        }
-        AdmissionOutcome::NoDestinations
-        | AdmissionOutcome::NoneAccepted(_) => {
-            Err(std::io::Error::other("no subscriber admitted the event").into())
-        }
-        other => Err(std::io::Error::other(format!("admission needs an application policy: {other:?}")).into()),
-    }
+    Ok(receipt)
 }
 ```
+
+Check `duplicate_possible` first. If it is true, reconcile by input event ID before considering a republish. Otherwise inspect `admission_outcome` and individual admissions. For partial acceptance, retain the input/dispatched event IDs, subscriber IDs, and rejection reasons, then design compensation only for rejected destinations; the receipt does not provide targeted redelivery. `OpaqueAccepted` means the provider accepted the publication, not that every subscriber accepted it or completed business work. Keep receipts for `NoDestinations` and `NoneAccepted` too; the application chooses whether to retry.
 
 At startup, call both subscription functions and keep their `Subscription` handles in application state; cancel them during shutdown. After a successful order commit, call `publish_order_created`. Its receipt reports provider admission, not successful audit or view writes. The `AuditLog` and `CustomerOrderView` traits are application interfaces; connect them to your actual stores. See the [user guide](doc/user_guide.md) for admission failures and delivery policy.
 

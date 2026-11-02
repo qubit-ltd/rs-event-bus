@@ -13,9 +13,10 @@ SHUTDOWN = "tests/fixtures/documentation_consumer/src/bounded_shutdown.rs"
 CAPACITY = "tests/fixtures/documentation_consumer/src/local_capacity.rs"
 REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 RETRY = "tests/fixtures/documentation_consumer/src/retry_policy.rs"
+README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 REQUIRED = {
-    "README.md": {LOCAL},
-    "README.zh_CN.md": {LOCAL},
+    "README.md": {LOCAL, README_ORDERS},
+    "README.zh_CN.md": {LOCAL, README_ORDERS},
     "doc/user_guide.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
     "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY},
     "doc/design.md": {SPEC, PROVIDER_CONTRACT},

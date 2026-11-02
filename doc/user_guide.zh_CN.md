@@ -1296,19 +1296,28 @@ Redis 等持久 provider 的恢复步骤是：停止旧 handle，修复 codec/�
 
 回到订单场景：订单服务的请求线程只想在事务提交后把 `OrderCreated` 交出去，不想在请求路径上等待 `bus.publish` 逐个询问订阅者。应用启动时，在总线和两个订阅建立之后创建一个通知发布器；一个发布器只服务一个主题。原本在请求路径上做的回执检查，改到观察回调里完成：
 
+使用 local provider 的 outstanding 权重预算时，应在 `LocalEventBusConfig` 设置 `max_total_outstanding_weight_bytes`，并通过 `PublishOptions::native_payload_weight` 声明正数估值。该估值由应用提供，不是堆内存测量；provider 接纳的权重会一直占用到投递结算。
+
 ```rust
 use std::num::NonZeroUsize;
 
 use qubit_event_bus::NotificationOutcome;
 use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishOptions;
 
 // bus 是已经建立好 audit-log 和 customer-view 订阅的 EventBus。
 // 不想自定义容量时，第三个参数可以传 NotificationPublisher::<OrderCreated>::default_capacity()。
-let notifier = NotificationPublisher::new(
+let options = PublishOptions::<OrderCreated>::builder()
+    .native_payload_weight(|event| {
+        NonZeroUsize::new(event.order_id.len().max(1)).expect("正数权重声明")
+    })
+    .build();
+let notifier = NotificationPublisher::with_publish_options(
     bus.clone(),
     OrderCreated::TOPIC,
     NonZeroUsize::new(1_024).expect("capacity is non-zero"),
+    options,
     |outcome| match outcome {
         NotificationOutcome::Published(receipt) => {
             if receipt.duplicate_possible() {
@@ -1327,7 +1336,7 @@ let notifier = NotificationPublisher::new(
 )?;
 ```
 
-`new` 会启动名为 `event-notification-publisher` 的后台线程；线程无法创建时返回 `io::Error`。观察回调在这个后台线程上运行，每发布一条就被调用一次，`receipt` 与直接调用 `bus.publish` 得到的回执相同，可以按[检查发布结果](#检查发布结果)中的方法判断。回调里只应做记录日志、更新指标这类很快返回的工作。
+`with_publish_options` 会启动名为 `event-notification-publisher` 的后台线程；线程无法创建时返回 `io::Error`。`new` 仍是使用默认发布选项的便捷入口。示例声明的是应用估算的正数 native payload 权重，不是堆内存统计；通知队列自身仍按条数限额。观察回调在这个后台线程上运行，每发布一条就被调用一次，`receipt` 与直接调用 `bus.publish` 得到的回执相同，可以按[检查发布结果](#检查发布结果)中的方法判断。回调里只应做记录日志、更新指标这类很快返回的工作。
 
 ### 在请求路径上入队
 
@@ -1349,7 +1358,15 @@ match notifier.try_publish(event) {
 }
 ```
 
-`Ok(())` 表示事件已经进入队列；后台线程随后调用 `bus.publish`，结果通过上面的观察回调交给应用。队列满或已关闭时，原来的 `event` 会随错误一起还回来，调用方可以自行决定补发或记录，不必再复制一份。队列长度按条数计，处理函数变慢会让队列逐渐填满，`Full` 是应用需要关注的信号。
+`Ok(())` 表示事件已经进入队列；后台线程随后调用 `bus.publish`，结果通过上面的观察回调交给应用。队列满或已关闭时，原来的 `event` 会随错误一起还回来，调用方可以自行决定补发或记录，不必再复制一份。通知队列按条数计。慢 provider 调用、发布管线或观察回调会拖慢 worker，使该队列积压。慢 local handler 则可能填满 provider 的 outstanding 队列并导致目的地拒绝，此时通知队列仍可能畅通，`queue_full` 也可能一直为零。
+
+三个阶段应分别观察：
+
+| 阶段 | 证据 | 能说明什么 |
+| --- | --- | --- |
+| 通知队列接纳 | `try_publish` 返回 `Ok`、`Full` 或 `Closed` | 后台队列是否接纳；此时还没有 provider 回执。 |
+| provider 发布结果 | `NotificationOutcome` 及完整回执 | 发布错误、目的地接纳/拒绝、opaque 接纳与重复风险。 |
+| handler 与 settlement | delivery gauges、诊断和应用业务状态 | 消费与处理进度；`Published` 本身不能证明业务成功。 |
 
 运行期间可用 `stats()` 查看计数：
 
