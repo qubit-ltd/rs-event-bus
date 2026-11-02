@@ -372,7 +372,8 @@ encoded provider 可解码自己持久化的字节，再调用公开的 `DeadLet
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
@@ -1534,17 +1535,18 @@ runner 会等待它们且不阻塞 executor。二者均返回 `ConformanceReport
 
 公共 runner 自动检查载荷/订阅模式组合、subscribe、publish 后 receive、接收字段和载荷、
 settlement token 是否存在、重复 Accept、冲突 disposition 报错，以及 close 和 shutdown
-幂等。这些检查只证明操作报告的结果；例如重复 Accept 返回 `Ok`，不能证明远端副作用
-恰好执行一次。
+幂等。它还会在 publish 前验证空队列的零时长 receive 返回 `TimedOut`，并在成功 close 后
+验证 receive 返回 `Closed`（`receive-empty-zero-timeout` 和 `receive-after-close`）。
+这些检查只证明操作报告的结果；例如重复 Accept 返回 `Ok`，不能证明远端副作用恰好执行一次。
 
 Provider hook 提供只有 provider 自身才能观察的 fixture：重复/冲突 settlement 的效果、
 receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral cleanup。
 Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持的模式仍是带类型的 skip。
 默认结构检查模式可以跳过缺少的 hook。
 
-Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、receive timeout、
-close 后返回 `Closed`、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、
-错误上下文与 source，以及敏感数据暴露。hook 被调用本身不证明这些独立属性。
+Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、非零 receive
+timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、错误上下文与 source，
+以及敏感数据暴露。hook 被调用本身不证明这些独立属性。
 
 ### 15.4 文档验证
 

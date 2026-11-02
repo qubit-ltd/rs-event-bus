@@ -8,7 +8,8 @@
 //! External dead-letter codec round-trip tests.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use event_bus_documentation_consumer::dead_letter_codec::DeadLetterCodec;
 use qubit_event_bus::codec::EventCodec;

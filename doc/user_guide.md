@@ -680,7 +680,8 @@ Encoded providers need a codec that can rebuild `DeadLetterEvent<T>` from bytes.
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
@@ -1195,7 +1196,7 @@ This section is for developers who **write the transport library**. If you only 
 
 1. **Deliver messages.** The crate calls this set of interfaces the SPI. A sync implementation provides the capability description, publish, subscribe, and shutdown methods of `EventBusSpi`. Each subscription returns an `EventSubscriptionSpi` that receives messages, acknowledges the handling result, and shuts down. The async counterparts are `AsyncEventBusSpi` and `AsyncEventSubscriptionSpi`. Report capabilities honestly. Do not claim persistence or ordering that the implementation does not have.
 2. **Let the application create it.** Implement `ProviderMetadata` with a unique id, then `ServiceProvider<EventBusSpec>` or the async `AsyncServiceProvider<EventBusSpec>`. `create_configured` reads configuration, connects to the backend, and returns the implementation from the previous step. Report configuration errors explicitly.
-3. **Install it and verify it.** The application can call `registry.register(MyProvider)`. For automatic discovery, submit the provider to the matching catalog. The `conformance` feature runs the crate's interface contract checks. Also test a full queue, cancellation, a repeated acknowledgement, a repeated shutdown, and error text.
+3. **Install it and verify it.** The application can call `registry.register(MyProvider)`. For automatic discovery, submit the provider to the matching catalog. The `conformance` feature runs the crate's interface contract checks, including zero-time receive on an empty queue and `Closed` after a successful close. Also test a non-zero receive timeout, a full queue, cancellation, a repeated acknowledgement, a repeated shutdown, and error text.
 
 An in-process implementation can pass Rust objects directly (`TransportPayload::Native`). A cross-process transport usually encodes them to bytes first (`Encoded`). The return value of `publish(OutboundMessage)` must match what actually happened: return `DestinationAdmissions` only when each destination's admission is known; return `Accepted` without destinations when only the message server's acceptance is known. Do not describe “written to a local buffer” as “persisted.” `receive` must distinguish a message, a wait timeout, a gap, and closed. If settlement is supported, repeating the same result must be safe, and a conflicting result must be an error. When an async operation is cancelled, a message that has not been acknowledged must not be treated as successfully handled.
 

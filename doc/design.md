@@ -402,7 +402,8 @@ An encoded provider can reconstruct this value by decoding its own persisted byt
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
@@ -1638,7 +1639,10 @@ blocking its executor. Both return `ConformanceReport`
 The public runner automatically checks payload/subscription-mode combinations,
 subscribe, publish followed by receive, received fields and payload, settlement
 token presence, repeated Accept, conflicting disposition errors, and close and
-shutdown idempotence. These checks establish the operation's reported result;
+shutdown idempotence. It also verifies that an empty queue returns `TimedOut`
+for a zero-duration receive before publish, and that receive returns `Closed`
+after a successful close (`receive-empty-zero-timeout` and
+`receive-after-close`). These checks establish the operation's reported result;
 for example, repeated Accept returning `Ok` does not prove that a remote side
 effect occurred exactly once.
 
@@ -1649,10 +1653,10 @@ required hook missing for a declared supported mode fails; unsupported modes
 remain typed skips. The default structural profile may skip absent hooks.
 
 Provider authors still need additional tests for descriptor and provider
-selection/creation, complete capability behavior, receive timeout, `Closed`
-after close, Gap delivery, foreign-token ownership, deeper side effects such as
-absence of extra deliveries, error context and sources, and sensitive-data
-exposure. A hook being called does not establish these separate properties.
+selection/creation, complete capability behavior, non-zero receive timeout,
+Gap delivery, foreign-token ownership, deeper side effects such as absence of
+extra deliveries, error context and sources, and sensitive-data exposure. A
+hook being called does not establish these separate properties.
 
 ### 15.4 Documentation checks
 

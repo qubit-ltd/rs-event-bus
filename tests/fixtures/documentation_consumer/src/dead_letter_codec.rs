@@ -8,7 +8,8 @@
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use qubit_event_bus::CodecError;
 use qubit_event_bus::codec::EventCodec;
