@@ -41,7 +41,10 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(decode_error)?;
+        let timestamp = original
+            .timestamp()
+            .duration_since(UNIX_EPOCH)
+            .map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -64,7 +67,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
         put_text(&mut bytes, value.subscriber_id().as_str())?;
         put_text(&mut bytes, value.reason())?;
         if bytes.len() > MAX_ENCODED_BYTES {
-            return Err(decode_error("encoded dead letter exceeds fixture limit"));
+            return Err(encode_error("encoded dead letter exceeds fixture limit"));
         }
         Ok(Arc::from(bytes))
     }
@@ -136,6 +139,10 @@ fn put_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
 
 fn decode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
     CodecError::Decode { source: error.into() }
+}
+
+fn encode_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> CodecError {
+    CodecError::Encode { source: error.into() }
 }
 
 struct Cursor<'a> {
