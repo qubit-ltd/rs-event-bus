@@ -258,6 +258,15 @@ impl PublisherPipeline {
     ) -> Result<PublishPreparation<T>, PipelineFailure> {
         let (mut envelope, options) = request.into_parts();
         let input_event_id = envelope.id().clone();
+        options.validate_retry_configuration().map_err(|_| {
+            failure(
+                PipelineFailureOrigin::Configuration,
+                ConfigurationError::InvalidField {
+                    field: "retry_configuration",
+                    message: "retry rule or cancellation token requires a retry policy".into(),
+                },
+            )
+        })?;
         let is_dead_letter = envelope.header(DEAD_LETTER_HEADER) == Some(DEAD_LETTER_HEADER_VALUE);
         for interceptor in options.interceptors() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| interceptor(envelope))) {
@@ -543,10 +552,10 @@ impl PublisherPipeline {
 #[inline]
 #[must_use]
 fn publish_failure_origin(error: &PublishError) -> PipelineFailureOrigin {
-    if matches!(error, PublishError::Retry(_)) {
-        PipelineFailureOrigin::Retry
-    } else {
-        PipelineFailureOrigin::Provider
+    match error {
+        PublishError::Configuration(_) => PipelineFailureOrigin::Configuration,
+        PublishError::Retry(_) => PipelineFailureOrigin::Retry,
+        _ => PipelineFailureOrigin::Provider,
     }
 }
 

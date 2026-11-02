@@ -180,6 +180,18 @@ impl<T: 'static> Clone for SubscribeOptions<T> {
 }
 
 impl<T: 'static> SubscribeOptions<T> {
+    /// Validates that retry customization is paired with a retry policy.
+    ///
+    /// # Errors
+    /// Returns `InvalidRetryConfiguration` when a retry rule or cancellation
+    /// token is configured without a retry policy.
+    pub(crate) fn validate_retry_configuration(&self) -> Result<(), SubscribeRequestBuildError> {
+        if self.retry_policy.is_none() && (self.retry_rule.is_some() || self.retry_cancellation_token.is_some()) {
+            return Err(SubscribeRequestBuildError::InvalidRetryConfiguration);
+        }
+        Ok(())
+    }
+
     /// Returns default options: automatic ACK, ephemeral, and new messages.
     ///
     /// # Returns

@@ -373,11 +373,7 @@ impl<T: Send + Sync + 'static> SubscribeRequestBuilder<T> {
             .subscriber_id
             .ok_or(SubscribeRequestBuildError::MissingField("subscriber_id"))?;
         let topic = self.topic.ok_or(SubscribeRequestBuildError::MissingField("topic"))?;
-        if self.options.retry_policy.is_none()
-            && (self.options.retry_rule.is_some() || self.options.retry_cancellation_token.is_some())
-        {
-            return Err(SubscribeRequestBuildError::InvalidRetryConfiguration);
-        }
+        self.options.validate_retry_configuration()?;
         self.options.validate_provider_options()?;
         Ok(SubscribeRequest::from_validated_parts(
             subscriber_id,

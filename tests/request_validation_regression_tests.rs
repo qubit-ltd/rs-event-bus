@@ -15,17 +15,27 @@ use std::sync::Arc;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventId;
+use qubit_event_bus::PublishError;
 use qubit_event_bus::SubscribeError;
 use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::model::DeadLetterAdmissionPolicy;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishEffect;
+use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::PublishRequestBuildError;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::SubscribeRequestBuildError;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_retry::RetryCancellationToken;
+use qubit_retry::RetryDecision;
+use qubit_retry::RetryPolicy;
+use qubit_retry::RetryRule;
 use support::fake_spi::FakeAsyncEventBusSpi;
 use support::fake_spi::FakeEventBusSpi;
 
@@ -43,6 +53,209 @@ fn invalid_provider_options_error(error: SubscribeError) {
             ..
         })
     ));
+}
+
+struct NoopPublishRetryRule;
+
+impl RetryRule<qubit_event_bus::error::PublishAttemptError> for NoopPublishRetryRule {
+    fn decide(
+        &self,
+        _failure: &qubit_retry::AttemptFailure<qubit_event_bus::error::PublishAttemptError>,
+        _context: &qubit_retry::RetryContext,
+    ) -> RetryDecision {
+        RetryDecision::UseDefault
+    }
+}
+
+#[test]
+fn test_publish_builder_rejects_rule_and_token_without_policy() {
+    let topic = Topic::<u32>::new("events.publish").expect("topic");
+    for options in [
+        PublishOptions::builder().retry_rule(NoopPublishRetryRule).build(),
+        PublishOptions::builder()
+            .retry_cancellation_token(RetryCancellationToken::new())
+            .build(),
+        PublishOptions::builder()
+            .retry_rule(NoopPublishRetryRule)
+            .retry_cancellation_token(RetryCancellationToken::new())
+            .build(),
+    ] {
+        let result = PublishRequest::builder()
+            .topic(topic.clone())
+            .payload(1_u32)
+            .options(options)
+            .build();
+        assert!(matches!(
+            result,
+            Err(PublishRequestBuildError::InvalidRetryConfiguration)
+        ));
+    }
+}
+
+#[test]
+fn test_subscribe_builder_rejects_rule_and_token_without_policy() {
+    for options in [
+        SubscribeOptions::builder()
+            .retry_rule(
+                |_: &qubit_retry::AttemptFailure<qubit_event_bus::error::DeliveryAttemptError>,
+                 _: &qubit_retry::RetryContext| RetryDecision::UseDefault,
+            )
+            .build(),
+        SubscribeOptions::builder()
+            .retry_cancellation_token(RetryCancellationToken::new())
+            .build(),
+        SubscribeOptions::builder()
+            .retry_rule(
+                |_: &qubit_retry::AttemptFailure<qubit_event_bus::error::DeliveryAttemptError>,
+                 _: &qubit_retry::RetryContext| RetryDecision::UseDefault,
+            )
+            .retry_cancellation_token(RetryCancellationToken::new())
+            .build(),
+    ] {
+        let result = SubscribeRequest::builder()
+            .subscriber_id(SubscriberId::new("worker").expect("subscriber ID"))
+            .topic(Topic::<u32>::new("events.subscribe").expect("topic"))
+            .options(options)
+            .build();
+        assert!(matches!(
+            result,
+            Err(SubscribeRequestBuildError::InvalidRetryConfiguration)
+        ));
+    }
+}
+
+#[test]
+fn test_retry_rule_and_token_are_valid_when_policy_is_present() {
+    let retry_policy = RetryPolicy::builder().build().expect("default retry policy");
+    let publish = PublishRequest::builder()
+        .topic(Topic::<u32>::new("events.publish").expect("topic"))
+        .payload(1_u32)
+        .retry_policy(retry_policy.clone())
+        .retry_rule(NoopPublishRetryRule)
+        .retry_cancellation_token(RetryCancellationToken::new())
+        .build();
+    assert!(publish.is_ok());
+
+    let subscribe = SubscribeRequest::builder()
+        .subscriber_id(SubscriberId::new("worker").expect("subscriber ID"))
+        .topic(Topic::<u32>::new("events.subscribe").expect("topic"))
+        .retry_policy(retry_policy)
+        .retry_rule(
+            |_: &qubit_retry::AttemptFailure<qubit_event_bus::error::DeliveryAttemptError>,
+             _: &qubit_retry::RetryContext| RetryDecision::UseDefault,
+        )
+        .retry_cancellation_token(RetryCancellationToken::new())
+        .build();
+    assert!(subscribe.is_ok());
+}
+
+#[test]
+fn test_sync_publish_options_route_rejects_orphan_retry_before_callbacks_and_spi() {
+    let spi = Arc::new(FakeEventBusSpi::new());
+    let bus = EventBus::from_spi(ProviderId::new("test.publish").expect("provider ID"), spi.clone())
+        .expect("facade construction");
+    let interceptor_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let options = PublishOptions::builder()
+        .retry_cancellation_token(RetryCancellationToken::new())
+        .interceptor({
+            let calls = interceptor_calls.clone();
+            move |event| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(event))
+            }
+        })
+        .error_handler({
+            let calls = handler_calls.clone();
+            move |_, _| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        })
+        .build();
+    let event_id = EventId::new("fixed-event").expect("event ID");
+    let request = PublishRequest::builder()
+        .topic(Topic::<u32>::new("events.publish").expect("topic"))
+        .payload(1_u32)
+        .event_id(event_id.clone())
+        .build()
+        .expect("valid default request")
+        .with_options(options);
+    let error = bus.publish(request).expect_err("orphan token is invalid");
+    assert_eq!(error.event_id(), &event_id);
+    assert_eq!(error.effect(), PublishEffect::NotAccepted);
+    assert!(
+        matches!(error.cause(), PublishError::Configuration(ConfigurationError::InvalidField { field: "retry_configuration", message }) if message.contains("cancellation") && message.contains("policy"))
+    );
+    assert_eq!(interceptor_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(handler_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!spi.operation_log().contains(&"publish"));
+    let _ = bus.shutdown(ShutdownMode::Immediate);
+}
+
+#[test]
+fn test_async_publish_options_route_rejects_orphan_retry_before_spi() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("test.async.publish").expect("provider ID"), spi.clone())
+        .expect("facade construction");
+    let request = PublishRequest::new(Topic::<u32>::new("events.publish").expect("topic"), 1_u32)
+        .expect("request")
+        .with_options(
+            PublishOptions::builder()
+                .retry_cancellation_token(RetryCancellationToken::new())
+                .build(),
+        );
+    let error = support::manual_async::block_on(bus.publish(request)).expect_err("orphan token is invalid");
+    assert!(matches!(
+        error.cause(),
+        PublishError::Configuration(ConfigurationError::InvalidField {
+            field: "retry_configuration",
+            ..
+        })
+    ));
+    assert_eq!(error.effect(), PublishEffect::NotAccepted);
+    assert!(!spi.operation_log().contains(&"publish"));
+    let _ = support::manual_async::block_on(bus.shutdown(ShutdownMode::Immediate));
+}
+
+#[test]
+fn test_sync_and_async_subscribe_options_routes_reject_orphan_retry_before_spi() {
+    let sync_spi = Arc::new(FakeEventBusSpi::new());
+    let sync_bus = EventBus::from_spi(
+        ProviderId::new("test.sync.subscribe.retry").expect("provider ID"),
+        sync_spi.clone(),
+    )
+    .expect("facade construction");
+    let sync_request = SubscribeRequest::new("worker", Topic::<u32>::new("events.subscribe").expect("topic"))
+        .expect("request")
+        .with_options(
+            SubscribeOptions::builder()
+                .retry_cancellation_token(RetryCancellationToken::new())
+                .build(),
+        );
+    assert!(
+        matches!(sync_bus.subscribe(sync_request, |_| Ok::<(), DeliveryError>(())), Err(SubscribeError::Configuration(ConfigurationError::InvalidField { field: "retry_configuration", message })) if message.contains("cancellation") && message.contains("policy"))
+    );
+    assert!(!sync_spi.operation_log().contains(&"subscribe"));
+    let _ = sync_bus.shutdown(ShutdownMode::Immediate);
+
+    let async_spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let async_bus = AsyncEventBus::from_spi(
+        ProviderId::new("test.async.subscribe.retry").expect("provider ID"),
+        async_spi.clone(),
+    )
+    .expect("facade construction");
+    let async_request = SubscribeRequest::new("worker", Topic::<u32>::new("events.subscribe").expect("topic"))
+        .expect("request")
+        .with_options(
+            SubscribeOptions::builder()
+                .retry_cancellation_token(RetryCancellationToken::new())
+                .build(),
+        );
+    assert!(
+        matches!(support::manual_async::block_on(async_bus.subscribe(async_request)), Err(SubscribeError::Configuration(ConfigurationError::InvalidField { field: "retry_configuration", message })) if message.contains("cancellation") && message.contains("policy"))
+    );
+    assert!(!async_spi.operation_log().contains(&"subscribe"));
+    let _ = support::manual_async::block_on(async_bus.shutdown(ShutdownMode::Immediate));
 }
 
 #[test]

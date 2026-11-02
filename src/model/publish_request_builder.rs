@@ -433,11 +433,7 @@ impl<T: Send + Sync + 'static> PublishRequestBuilder<T> {
         {
             return Err(PublishRequestBuildError::InvalidOrderingKey);
         }
-        if self.options.retry_policy.is_none()
-            && (self.options.retry_rule.is_some() || self.options.retry_cancellation_token.is_some())
-        {
-            return Err(PublishRequestBuildError::InvalidRetryConfiguration);
-        }
+        self.options.validate_retry_configuration()?;
         let mut envelope = match self.event_id {
             Some(id) => EventEnvelope::with_id(topic, payload, id),
             None => EventEnvelope::with_id(

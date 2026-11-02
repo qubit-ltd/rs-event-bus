@@ -21,6 +21,7 @@ use crate::error::PublishAttemptError;
 use crate::error::PublishError;
 use crate::error::PublishFailure;
 use crate::model::DuplicateRiskPolicy;
+use crate::model::PublishRequestBuildError;
 
 /// A terminal publish failure observer; callbacks run in registration order.
 ///
@@ -108,6 +109,18 @@ impl<T: 'static> Clone for PublishOptions<T> {
 }
 
 impl<T: 'static> PublishOptions<T> {
+    /// Validates that retry customization is paired with a retry policy.
+    ///
+    /// # Errors
+    /// Returns `InvalidRetryConfiguration` when a retry rule or cancellation
+    /// token is configured without a retry policy.
+    pub(crate) fn validate_retry_configuration(&self) -> Result<(), PublishRequestBuildError> {
+        if self.retry_policy.is_none() && (self.retry_rule.is_some() || self.retry_cancellation_token.is_some()) {
+            return Err(PublishRequestBuildError::InvalidRetryConfiguration);
+        }
+        Ok(())
+    }
+
     /// Returns a default options value with no application retry.
     ///
     /// # Returns

@@ -11,6 +11,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(crate) enum PipelineFailureOrigin {
+    /// Configuration failed preflight validation.
+    Configuration,
     /// Typed or global publisher interceptor failed.
     Interceptor,
     /// The selected SPI does not support the requested payload mode.

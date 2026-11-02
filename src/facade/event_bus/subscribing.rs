@@ -87,6 +87,15 @@ impl EventBus {
         R: IntoHandlerResult + 'static,
     {
         let _operation = self.inner.operations.enter().ok_or(SubscribeError::Closed)?;
+        let (subscriber_id, topic, options) = request.into_parts();
+        options.validate_retry_configuration().map_err(|_| {
+            SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "retry_configuration",
+                message: "retry rule or cancellation token requires a retry policy".into(),
+            })
+        })?;
+        let bus_identity = Arc::as_ptr(&self.inner) as usize;
+        let _call_context = BusContextGuard::enter(bus_identity);
         let worker_permit =
             self.inner
                 .subscription_worker_budget
@@ -95,9 +104,6 @@ impl EventBus {
                     resource: "subscriptions",
                     limit: self.inner.subscription_worker_budget.limit,
                 })?;
-        let bus_identity = Arc::as_ptr(&self.inner) as usize;
-        let _call_context = BusContextGuard::enter(bus_identity);
-        let (subscriber_id, topic, options) = request.into_parts();
         options.validate_provider_options().map_err(|_| {
             SubscribeError::Configuration(ConfigurationError::InvalidField {
                 field: "provider_options",

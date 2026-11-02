@@ -60,6 +60,12 @@ impl AsyncEventBus {
     ) -> Result<AsyncSubscription<T>, SubscribeError> {
         let _subscribe = self.inner.begin_subscribe().ok_or(SubscribeError::Closed)?;
         let (subscriber_id, topic, options) = request.into_parts();
+        options.validate_retry_configuration().map_err(|_| {
+            SubscribeError::Configuration(ConfigurationError::InvalidField {
+                field: "retry_configuration",
+                message: "retry rule or cancellation token requires a retry policy".into(),
+            })
+        })?;
         options.validate_provider_options().map_err(|_| {
             SubscribeError::Configuration(ConfigurationError::InvalidField {
                 field: "provider_options",
