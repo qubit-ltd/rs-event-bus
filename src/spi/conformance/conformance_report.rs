@@ -24,18 +24,20 @@ pub(super) use super::conformance_case::ConformanceCase;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_skip_reason::ConformanceSkipReason;
 use crate::error::SpiError;
+use crate::model::AdmissionStatus;
 use crate::model::ContentType;
 use crate::model::EventId;
 use crate::model::Headers;
 use crate::model::ProviderOptions;
+use crate::model::PublishAcknowledgement;
 use crate::model::SchemaId;
 use crate::model::StartPosition;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
-use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
 use crate::spi::InboundMessage;
 use crate::spi::OrderingKey;
+use crate::spi::PublishVisibility;
 use crate::spi::SpiSubscriptionRequest;
 
 /// Results collected from one provider conformance run.
@@ -155,6 +157,15 @@ pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, Transport
     }
 }
 
+/// Returns supported subscription modes in stable probe order.
+#[must_use]
+pub(super) fn probe_subscription_modes(capabilities: EventBusCapabilities) -> Vec<SubscriptionDurability> {
+    [SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+        .into_iter()
+        .filter(|mode| capabilities.subscription_modes().supports(*mode))
+        .collect()
+}
+
 pub(super) fn probe_payload(case_id: &str) -> TransportPayload {
     match case_id {
         "declared-native-publish" => TransportPayload::Native(Arc::new(0_u8)),
@@ -206,7 +217,7 @@ pub(super) fn probe_message(payload: TransportPayload, capabilities: EventBusCap
 ///
 /// # Parameters
 /// - `subscription_id`: unique bus-local ID for this case.
-/// - `durability`: provider durability used to select a compatible mode.
+/// - `durability`: subscription mode declared by the provider.
 ///
 /// # Returns
 /// A request subscribed to the conformance probe topic.
@@ -214,7 +225,7 @@ pub(super) fn probe_message(payload: TransportPayload, capabilities: EventBusCap
 /// # Panics
 /// Panics if the generated subscriber ID or the fully configured request is
 /// rejected by its constructor or builder.
-pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapability) -> SpiSubscriptionRequest {
+pub(super) fn probe_request(subscription_id: u64, durability: SubscriptionDurability) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::builder()
         .subscription_id(Id::new(subscription_id))
         .topic(TopicAddress::new("spi.conformance.probe").expect("static topic is valid"))
@@ -222,10 +233,7 @@ pub(super) fn probe_request(subscription_id: u64, durability: DurabilityCapabili
             SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
         )
         .group(None)
-        .durability(match durability {
-            DurabilityCapability::Durable => SubscriptionDurability::Durable,
-            DurabilityCapability::Ephemeral => SubscriptionDurability::Ephemeral,
-        })
+        .durability(durability)
         .start_position(StartPosition::New)
         .provider_options(ProviderOptions::default())
         .payload_type_id(TypeId::of::<u8>())
@@ -337,14 +345,55 @@ pub(super) fn settlement_case(
 ///
 /// # Returns
 /// A passed or failed conformance case.
-pub(super) fn publish_case(case_id: &str, result: Result<(), SpiError>, model: &str) -> ConformanceCase {
+pub(super) fn validate_probe_acknowledgement(
+    acknowledgement: &PublishAcknowledgement,
+    visibility: PublishVisibility,
+    subscription_id: Id,
+) -> Result<(), String> {
+    match acknowledgement {
+        PublishAcknowledgement::DroppedByInterceptor => Err("publication was dropped by an interceptor".into()),
+        PublishAcknowledgement::Accepted { .. } if visibility == PublishVisibility::Opaque => Ok(()),
+        PublishAcknowledgement::Accepted { .. } => {
+            Err("provider declared destination admissions but returned opaque acceptance".into())
+        }
+        PublishAcknowledgement::DestinationAdmissions(admissions) => {
+            if admissions.is_empty() {
+                return Err("provider returned an empty destination admission list".into());
+            }
+            if !admissions.iter().any(|admission| {
+                admission.subscription_id() == subscription_id
+                    && matches!(admission.status(), AdmissionStatus::Accepted)
+            }) {
+                return Err(format!(
+                    "no accepted admission for probe subscription {subscription_id}"
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(super) fn publish_case(
+    case_id: &str,
+    result: Result<PublishAcknowledgement, SpiError>,
+    model: &str,
+    visibility: PublishVisibility,
+    subscription_id: Id,
+    durability: SubscriptionDurability,
+) -> ConformanceCase {
     match result {
-        Ok(()) => ConformanceCase::Passed {
-            case_id: case_id.into(),
+        Ok(acknowledgement) => match validate_probe_acknowledgement(&acknowledgement, visibility, subscription_id) {
+            Ok(()) => ConformanceCase::Passed {
+                case_id: case_id.into(),
+            },
+            Err(reason) => ConformanceCase::Failed {
+                case_id: case_id.into(),
+                detail: format!("{model} publish acknowledgement failed for {durability:?} mode: {reason}"),
+            },
         },
         Err(error) => ConformanceCase::Failed {
             case_id: case_id.into(),
-            detail: format!("{model} publish rejected a declared payload: {error}"),
+            detail: format!("{model} publish rejected a declared payload for {durability:?} mode: {error}"),
         },
     }
 }

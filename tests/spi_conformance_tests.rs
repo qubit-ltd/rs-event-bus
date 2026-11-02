@@ -12,6 +12,8 @@ mod support;
 #[cfg(feature = "conformance")]
 use std::panic::catch_unwind;
 use std::sync::Arc;
+#[cfg(feature = "conformance")]
+use std::sync::Mutex;
 use std::sync::mpsc::channel;
 use std::task::Poll;
 use std::thread;
@@ -25,12 +27,16 @@ use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscribeRequest;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 #[cfg(feature = "conformance")]
@@ -58,6 +64,8 @@ use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::SubscriptionModes;
@@ -121,6 +129,408 @@ fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id
             Err("conformance publication was dropped by an interceptor".into())
         }
         _ => Err("provider returned an unsupported publication acknowledgement".into()),
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_subscription_mode_runner_exercises_both_declared_modes_for_sync_and_async() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Durable,
+        SubscriptionModes::BOTH,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let sync_seen = Arc::new(Mutex::new(Vec::new()));
+    let async_seen = Arc::new(Mutex::new(Vec::new()));
+    let sync = run_sync(
+        || {
+            Arc::new(SubscriptionModeSyncAdapter {
+                inner: FakeEventBusSpi::with_capabilities(capabilities),
+                seen: sync_seen.clone(),
+                reject: None,
+                acknowledgement: None,
+            })
+        },
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async {
+            Arc::new(SubscriptionModeAsyncAdapter {
+                inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                seen: async_seen.clone(),
+                reject: None,
+                acknowledgement: None,
+            }) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync, &asynchronous] {
+        assert_eq!(
+            report
+                .cases()
+                .iter()
+                .filter(|case| matches!(case,
+                    ConformanceCase::Passed { case_id } if case_id == "subscribe"
+                ))
+                .count(),
+            2,
+            "BOTH must cause one subscribe probe for each declared mode"
+        );
+    }
+    use qubit_event_bus::model::SubscriptionDurability;
+    assert_eq!(
+        *sync_seen.lock().unwrap(),
+        vec![SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+    );
+    assert_eq!(
+        *async_seen.lock().unwrap(),
+        vec![SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
+    );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_subscription_mode_runner_records_declared_mode_rejections() {
+    let capabilities = durable_test_capabilities();
+    use qubit_event_bus::model::SubscriptionDurability;
+    let sync = run_sync(
+        || {
+            Arc::new(SubscriptionModeSyncAdapter {
+                inner: FakeEventBusSpi::with_capabilities(capabilities),
+                seen: Arc::default(),
+                reject: Some(SubscriptionDurability::Ephemeral),
+                acknowledgement: None,
+            })
+        },
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async {
+            Arc::new(SubscriptionModeAsyncAdapter {
+                inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                seen: Arc::default(),
+                reject: Some(SubscriptionDurability::Ephemeral),
+                acknowledgement: None,
+            }) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync, &asynchronous] {
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Failed { case_id, detail }
+                if case_id == "subscribe" && detail.contains("ephemeral mode")
+        )));
+        assert!(
+            report.cases().iter().any(|case| matches!(case,
+                ConformanceCase::Passed { case_id } if case_id == "subscribe"
+            )),
+            "durable subscription should still be attempted after ephemeral rejection"
+        );
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_subscription_mode_probe_is_independent_of_retention_capability() {
+    use qubit_event_bus::model::SubscriptionDurability;
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::DURABLE,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let report = run_sync(
+        || {
+            Arc::new(SubscriptionModeSyncAdapter {
+                inner: FakeEventBusSpi::with_capabilities(capabilities),
+                seen: seen.clone(),
+                reject: None,
+                acknowledgement: None,
+            })
+        },
+        &ConformanceHooks::default(),
+    );
+    assert!(report.all_passed(), "{report:?}");
+    assert_eq!(*seen.lock().unwrap(), vec![SubscriptionDurability::Durable]);
+    let async_seen = Arc::new(Mutex::new(Vec::new()));
+    let async_report = block_on(run_async(
+        || async {
+            Arc::new(SubscriptionModeAsyncAdapter {
+                inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                seen: async_seen.clone(),
+                reject: None,
+                acknowledgement: None,
+            }) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    assert!(async_report.all_passed(), "{async_report:?}");
+    assert_eq!(*async_seen.lock().unwrap(), vec![SubscriptionDurability::Durable]);
+}
+
+#[cfg(feature = "conformance")]
+struct SubscriptionModeSyncAdapter {
+    inner: FakeEventBusSpi,
+    seen: Arc<Mutex<Vec<qubit_event_bus::model::SubscriptionDurability>>>,
+    reject: Option<qubit_event_bus::model::SubscriptionDurability>,
+    acknowledgement: Option<PublishAcknowledgement>,
+}
+
+#[cfg(feature = "conformance")]
+impl EventBusSpi for SubscriptionModeSyncAdapter {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+        let acknowledgement = self.inner.publish(message)?;
+        Ok(self.acknowledgement.clone().unwrap_or(acknowledgement))
+    }
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        let mode = request.durability();
+        self.seen.lock().unwrap().push(mode);
+        if self.reject == Some(mode) {
+            return Err(SpiError::Operation {
+                provider_id: "subscription-mode-test".into(),
+                operation: "subscribe",
+                resource: None,
+                kind: "unsupported",
+                retryable: Some(false),
+                source: Box::new(std::io::Error::other("test adapter rejected declared mode")),
+            });
+        }
+        self.inner.subscribe(request)
+    }
+    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SubscriptionModeAsyncAdapter {
+    inner: FakeAsyncEventBusSpi,
+    seen: Arc<Mutex<Vec<qubit_event_bus::model::SubscriptionDurability>>>,
+    reject: Option<qubit_event_bus::model::SubscriptionDurability>,
+    acknowledgement: Option<PublishAcknowledgement>,
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventBusSpi for SubscriptionModeAsyncAdapter {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        let acknowledgement = self.acknowledgement.clone();
+        let publish = self.inner.publish(message);
+        Box::pin(async move {
+            let actual = publish.await?;
+            Ok(acknowledgement.unwrap_or(actual))
+        })
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn qubit_event_bus::spi::AsyncEventSubscriptionSpi>, SpiError>> {
+        let mode = request.durability();
+        self.seen.lock().unwrap().push(mode);
+        if self.reject == Some(mode) {
+            return Box::pin(async {
+                Err(SpiError::Operation {
+                    provider_id: "subscription-mode-test".into(),
+                    operation: "subscribe",
+                    resource: None,
+                    kind: "unsupported",
+                    retryable: Some(false),
+                    source: Box::new(std::io::Error::other("test adapter rejected declared mode")),
+                })
+            });
+        }
+        self.inner.subscribe(request)
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_publication_acknowledgement_visibility_mismatch_keeps_receive_and_cleanup_path() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::DestinationAdmissions,
+    );
+    let sync = run_sync(
+        || Arc::new(FakeEventBusSpi::with_capabilities(capabilities)),
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async { Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities)) as Arc<dyn AsyncEventBusSpi> },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync, &asynchronous] {
+        assert!(report.cases().iter().any(|case| matches!(case,
+            ConformanceCase::Failed { case_id, detail }
+                if case_id == "declared-native-publish" && detail.contains("opaque acceptance")
+        )));
+        assert!(
+            report.cases().iter().any(|case| matches!(case,
+                ConformanceCase::Passed { case_id } if case_id == "receive-payload"
+            )),
+            "an invalid acknowledgement must not bypass receive"
+        );
+        for case_id in ["close", "shutdown"] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Passed { case_id: actual } if actual == case_id
+                )),
+                "{case_id} must still run after acknowledgement failure"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_publication_acknowledgement_matrix_for_sync_and_async_runners() {
+    let opaque = || PublishAcknowledgement::Accepted {
+        provider_message_id: None,
+        metadata: Default::default(),
+    };
+    let admission = |subscription_id, status| {
+        DestinationAdmission::new(Id::new(subscription_id), SubscriberId::new("probe").unwrap(), status)
+    };
+    let cases = vec![
+        (
+            "opaque acknowledgement with visible declaration",
+            opaque(),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "interceptor drop",
+            PublishAcknowledgement::DroppedByInterceptor,
+            PublishVisibility::Opaque,
+            false,
+        ),
+        (
+            "empty admissions",
+            PublishAcknowledgement::DestinationAdmissions(vec![]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "filtered only",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Filtered)]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "rejected only",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Rejected("full".into()))]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        (
+            "other subscription accepted",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(2, AdmissionStatus::Accepted)]),
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+        ("opaque accepted", opaque(), PublishVisibility::Opaque, true),
+        (
+            "target subscription accepted",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Accepted)]),
+            PublishVisibility::DestinationAdmissions,
+            true,
+        ),
+        (
+            "opaque declaration with detailed target acceptance",
+            PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Accepted)]),
+            PublishVisibility::Opaque,
+            true,
+        ),
+    ];
+    for (label, acknowledgement, visibility, expected_pass) in cases {
+        let capabilities = EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            visibility,
+        );
+        let sync = run_sync(
+            || {
+                Arc::new(SubscriptionModeSyncAdapter {
+                    inner: FakeEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                })
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                Arc::new(SubscriptionModeAsyncAdapter {
+                    inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                }) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert_eq!(
+                report.cases().iter().find_map(|case| match case {
+                    ConformanceCase::Passed { case_id } if case_id == "declared-native-publish" => Some(true),
+                    ConformanceCase::Failed { case_id, .. } if case_id == "declared-native-publish" => Some(false),
+                    _ => None,
+                }),
+                Some(expected_pass),
+                "unexpected acknowledgement outcome for {label}: {report:?}"
+            );
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Passed { case_id } if case_id == "receive-payload"
+                )),
+                "{label}: successful publish must retain the receive path"
+            );
+            for case_id in ["close", "shutdown"] {
+                assert!(
+                    report.cases().iter().any(|case| matches!(case,
+                        ConformanceCase::Passed { case_id: actual } if actual == case_id
+                    )),
+                    "{label}: {case_id} cleanup must run"
+                );
+            }
+        }
     }
 }
 
@@ -348,7 +758,9 @@ fn test_conformance_detects_payload_and_envelope_corruption_in_sync_and_async_pr
             assert!(
                 report.cases().iter().any(|case| matches!(case,
                     ConformanceCase::Failed { case_id, detail }
-                        if case_id == "receive-payload" && detail == &format!("received message differs at {field}")
+                        if case_id == "receive-payload"
+                            && (detail == &format!("ephemeral mode: received message differs at {field}")
+                                || detail == &format!("durable mode: received message differs at {field}"))
                 )),
                 "tampering {field} must fail: {report:?}"
             );
@@ -382,7 +794,9 @@ fn test_conformance_detects_payload_and_envelope_corruption_in_sync_and_async_pr
             assert!(
                 report.cases().iter().any(|case| matches!(case,
                     ConformanceCase::Failed { case_id, detail }
-                        if case_id == "receive-payload" && detail == &format!("received message differs at {field}")
+                        if case_id == "receive-payload"
+                            && (detail == &format!("ephemeral mode: received message differs at {field}")
+                                || detail == &format!("durable mode: received message differs at {field}"))
                 )),
                 "tampering {field} must fail: {report:?}"
             );

@@ -21,6 +21,7 @@ use super::conformance_report::payload_probes;
 use super::conformance_report::probe_message;
 use super::conformance_report::probe_payload;
 use super::conformance_report::probe_request;
+use super::conformance_report::probe_subscription_modes;
 use super::conformance_report::publish_case;
 use super::conformance_skip_reason::ConformanceSkipReason;
 use crate::model::SubscriptionDurability;
@@ -36,8 +37,9 @@ use crate::spi::ShutdownOutcome;
 use crate::spi::TransportPayload;
 
 /// Runs common structural checks against a fresh asynchronous provider.
-/// The factory is called again for each payload mode so one case cannot
-/// contaminate later cases through shared provider state.
+/// The factory is called again for each payload and subscription-mode
+/// combination so one case cannot contaminate later cases through shared
+/// provider state.
 ///
 /// # Type Parameters
 /// - `F`: asynchronous provider factory type.
@@ -92,13 +94,18 @@ where
     report.push(ConformanceCase::Passed {
         case_id: "capability-payload-mode".into(),
     });
-    for (index, (case_id, payload)) in payloads.into_iter().enumerate() {
-        let spi = if index == 0 {
-            capability_spi.clone()
-        } else {
-            factory().await
-        };
-        run_payload_case(spi, case_id, payload, &mut report).await;
+    let modes = probe_subscription_modes(capability_spi.capabilities());
+    let mut first_combination = true;
+    for (case_id, _) in payloads {
+        for durability in modes.iter().copied() {
+            let spi = if first_combination {
+                first_combination = false;
+                capability_spi.clone()
+            } else {
+                factory().await
+            };
+            run_payload_case(spi, case_id, durability, &mut report).await;
+        }
     }
     let capabilities = capability_spi.capabilities();
     if capabilities.settlement() == SettlementCapabilities::None {
@@ -175,21 +182,25 @@ where
 }
 
 /// Runs publish, receive, settlement, close, and shutdown checks for one
-/// payload.
+/// payload and subscription mode.
 ///
 /// # Parameters
 /// - `spi`: fresh provider instance used only for this payload case.
 /// - `case_id`: identifier of the payload probe being exercised.
-/// - `payload`: transport representation sent through the provider.
+/// - `durability`: declared subscription mode used by the probe.
 /// - `report`: report receiving the ordered case results.
 async fn run_payload_case(
     spi: Arc<dyn AsyncEventBusSpi>,
     case_id: &'static str,
-    payload: TransportPayload,
+    durability: SubscriptionDurability,
     report: &mut ConformanceReport,
 ) {
     let capabilities = spi.capabilities();
-    let mut subscription = match spi.subscribe(probe_request(1, capabilities.durability())).await {
+    let mode_name = match durability {
+        SubscriptionDurability::Ephemeral => "ephemeral",
+        SubscriptionDurability::Durable => "durable",
+    };
+    let mut subscription = match spi.subscribe(probe_request(1, durability)).await {
         Ok(subscription) => {
             report.push(ConformanceCase::Passed {
                 case_id: "subscribe".into(),
@@ -199,7 +210,7 @@ async fn run_payload_case(
         Err(error) => {
             report.push(ConformanceCase::Failed {
                 case_id: "subscribe".into(),
-                detail: format!("async subscribe failed: {error}"),
+                detail: format!("async subscribe failed for {mode_name} mode: {error}"),
             });
             report.push(ConformanceCase::Skipped {
                 case_id: "publish-receive".into(),
@@ -217,9 +228,10 @@ async fn run_payload_case(
         spi.as_ref(),
         subscription.as_mut(),
         case_id,
-        payload,
+        probe_payload(case_id),
         capabilities,
         capabilities.settlement(),
+        durability,
     )
     .await;
 
@@ -259,11 +271,23 @@ async fn record_async_publish_receive(
     payload: TransportPayload,
     capabilities: EventBusCapabilities,
     settlement: SettlementCapabilities,
+    durability: SubscriptionDurability,
 ) {
+    let mode_name = match durability {
+        SubscriptionDurability::Ephemeral => "ephemeral",
+        SubscriptionDurability::Durable => "durable",
+    };
     let expected = probe_message(probe_payload(case_id), capabilities);
     let result = spi.publish(probe_message(payload, capabilities)).await;
     let published = result.is_ok();
-    report.push(publish_case(case_id, result.map(|_| ()), "async"));
+    report.push(publish_case(
+        case_id,
+        result,
+        "async",
+        capabilities.publish_visibility(),
+        qubit_id::Id::new(1),
+        durability,
+    ));
     if published {
         match subscription.receive(Duration::from_secs(1)).await {
             Ok(ReceiveOutcome::Message(mut message)) => {
@@ -275,7 +299,10 @@ async fn record_async_publish_receive(
                 } else {
                     ConformanceCase::Failed {
                         case_id: "receive-payload".into(),
-                        detail: format!("received message differs at {}", difference.unwrap_or("unknown field")),
+                        detail: format!(
+                            "{mode_name} mode: received message differs at {}",
+                            difference.unwrap_or("unknown field")
+                        ),
                     }
                 });
                 let token = message.take_settlement();
@@ -284,11 +311,11 @@ async fn record_async_publish_receive(
             }
             Ok(_) => report.push(ConformanceCase::Failed {
                 case_id: "receive-payload".into(),
-                detail: "publish was not followed by a message".into(),
+                detail: format!("{mode_name} mode: publish was not followed by a message"),
             }),
             Err(error) => report.push(ConformanceCase::Failed {
                 case_id: "receive-payload".into(),
-                detail: format!("async receive failed: {error}"),
+                detail: format!("{mode_name} mode: async receive failed: {error}"),
             }),
         }
     } else {
