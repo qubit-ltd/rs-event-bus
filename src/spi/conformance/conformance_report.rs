@@ -336,15 +336,17 @@ pub(super) fn settlement_case(
     }
 }
 
-/// Converts a publish result into a named conformance case.
+/// Validates one provider acknowledgement against the probe's declared
+/// visibility and target subscription.
 ///
 /// # Parameters
-/// - `case_id`: stable identifier for the payload probe.
-/// - `result`: provider publish result.
-/// - `model`: sync/async label included in failure details.
+/// - `acknowledgement`: provider's publish acknowledgement.
+/// - `visibility`: acknowledgement visibility declared by the provider.
+/// - `subscription_id`: target subscription created for this probe.
 ///
 /// # Returns
-/// A passed or failed conformance case.
+/// `Ok(())` when the acknowledgement satisfies the declared visibility and
+/// admits the probe subscription; otherwise an explanation of the mismatch.
 pub(super) fn validate_probe_acknowledgement(
     acknowledgement: &PublishAcknowledgement,
     visibility: PublishVisibility,
@@ -373,6 +375,18 @@ pub(super) fn validate_probe_acknowledgement(
     }
 }
 
+/// Converts a publish result into a named conformance case.
+///
+/// # Parameters
+/// - `case_id`: stable identifier for the payload probe.
+/// - `result`: provider publish result and acknowledgement.
+/// - `model`: sync/async label included in failure details.
+/// - `visibility`: acknowledgement visibility declared by the provider.
+/// - `subscription_id`: target subscription created for this probe.
+/// - `durability`: subscription mode used by this probe.
+///
+/// # Returns
+/// A passed case or a failure with the provider or acknowledgement mismatch.
 pub(super) fn publish_case(
     case_id: &str,
     result: Result<PublishAcknowledgement, SpiError>,
