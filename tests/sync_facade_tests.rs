@@ -245,7 +245,11 @@ fn test_sync_receiver_receive_and_settle_panics_do_not_escape_or_retry_forever()
     while backend.receive_calls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
         thread::yield_now();
     }
-    assert_eq!(backend.receive_calls.load(Ordering::Acquire), 1, "worker entered receive");
+    assert_eq!(
+        backend.receive_calls.load(Ordering::Acquire),
+        1,
+        "worker entered receive"
+    );
     let failure_deadline = Instant::now() + Duration::from_secs(2);
     while subscription.terminal_failure().is_none() && Instant::now() < failure_deadline {
         thread::yield_now();

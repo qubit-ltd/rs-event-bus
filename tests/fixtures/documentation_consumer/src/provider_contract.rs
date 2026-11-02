@@ -138,16 +138,25 @@ fn invalid_token(reason: &'static str) -> SpiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncSubscription, SyncSubscription};
-    use qubit_event_bus::error::SpiError;
-    use qubit_event_bus::model::{ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability};
-    use qubit_event_bus::spi::{
-        AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken,
-        SpiSubscriptionRequest, TopicAddress,
-    };
-    use qubit_id::Id;
     use std::any::TypeId;
     use std::time::Duration;
+
+    use qubit_event_bus::error::SpiError;
+    use qubit_event_bus::model::ProviderOptions;
+    use qubit_event_bus::model::StartPosition;
+    use qubit_event_bus::model::SubscriberId;
+    use qubit_event_bus::model::SubscriptionDurability;
+    use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+    use qubit_event_bus::spi::DeliveryDisposition;
+    use qubit_event_bus::spi::EventSubscriptionSpi;
+    use qubit_event_bus::spi::ReceiveOutcome;
+    use qubit_event_bus::spi::SettlementToken;
+    use qubit_event_bus::spi::SpiSubscriptionRequest;
+    use qubit_event_bus::spi::TopicAddress;
+    use qubit_id::Id;
+
+    use super::AsyncSubscription;
+    use super::SyncSubscription;
 
     fn request(id: Id) -> SpiSubscriptionRequest {
         SpiSubscriptionRequest::new(

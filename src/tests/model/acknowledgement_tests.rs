@@ -39,8 +39,7 @@ fn test_competing_clones_publish_exactly_one_terminal_state() {
     assert_ne!(ack_result.is_ok(), nack_result.is_ok());
     assert!(matches!(
         (ack_result, nack_result),
-        (Ok(()), Err(AcknowledgementError::AlreadyCompleted))
-            | (Err(AcknowledgementError::AlreadyCompleted), Ok(()))
+        (Ok(()), Err(AcknowledgementError::AlreadyCompleted)) | (Err(AcknowledgementError::AlreadyCompleted), Ok(()))
     ));
     assert!(matches!(
         state.state(),

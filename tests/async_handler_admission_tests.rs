@@ -25,6 +25,7 @@ use qubit_clock::MonotonicClock;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::LifecycleError;
 use qubit_event_bus::ReceiveError;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::Delivery;
@@ -216,7 +217,7 @@ fn middleware_gate(stop: Stop, retry: bool) {
         };
         assert!(Arc::ptr_eq(&retained, &reason));
     }
-    block_on(sub.close()).expect("cleanup receiver");
+    assert!(matches!(block_on(sub.close()), Ok(()) | Err(LifecycleError::Closed)));
     let snapshot = sub.delivery_metrics().metrics;
     assert_eq!(
         snapshot.reserved_receives + snapshot.queued + snapshot.running_handlers + snapshot.settling,

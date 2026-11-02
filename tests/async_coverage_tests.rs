@@ -1131,7 +1131,7 @@ fn test_shutdown_cancels_pending_receive_before_closing_receiver() {
 }
 
 #[test]
-fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
+fn test_close_during_shutdown_reports_closed_for_a_nonrunning_subscription() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("fake").expect("static test provider ID must be valid"),
@@ -1197,7 +1197,10 @@ fn test_close_during_shutdown_is_a_noop_for_a_nonrunning_subscription() {
         .iter()
         .filter(|operation| **operation == "close")
         .count();
-    block_on(idle_subscription.close()).expect("close after shutdown starts is a no-op");
+    assert!(matches!(
+        block_on(idle_subscription.close()),
+        Err(LifecycleError::Closed)
+    ));
     let closes_after = spi
         .operation_log()
         .iter()

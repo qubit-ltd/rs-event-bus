@@ -28,7 +28,6 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::SpiFuture;
 
-#[path = "support/mod.rs"]
 mod support;
 
 use support::fake_spi::FakeAsyncEventBusSpi;

@@ -394,24 +394,10 @@ event and subscriber to aid deduplication, but do not provide exactly-once deliv
 
 ### 4.2 Synchronous contract
 
-```rust
-pub trait EventBusSpi: Send + Sync + 'static {
-    fn capabilities(&self) -> EventBusCapabilities;
-    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError>;
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>;
-    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError>;
-    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
-        Ok(None)   // default: unsupported; Some(true) = idle, Some(false) = timed out
-    }
-    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
-}
-
-pub trait EventSubscriptionSpi: Send + 'static {
-    fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError>;
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
-    fn close(&mut self) -> Result<(), SpiError>;
-}
-```
+The provider-facing contracts are defined by [`EventBusSpi`](../src/spi/event_bus_spi.rs)
+and [`EventSubscriptionSpi`](../src/spi/event_subscription_spi.rs). These source
+definitions and their Rustdoc are authoritative for method signatures, receiver
+lifecycle, settlement, and retry behavior.
 
 The subscription ID is supplied in `SpiSubscriptionRequest`; it is not an
 `EventSubscriptionSpi` method. See the [public synchronous SPI definition](../src/spi/event_subscription_spi.rs)
@@ -425,23 +411,11 @@ provider implementing it.
 
 ### 4.3 Asynchronous contract
 
-```rust
-pub type SpiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-pub trait AsyncEventBusSpi: Send + Sync + 'static {
-    fn capabilities(&self) -> EventBusCapabilities;
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
-    fn subscribe<'a>(&'a self, request: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>>;
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
-    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
-}
-
-pub trait AsyncEventSubscriptionSpi: Send + 'static {
-    fn receive(&mut self, timeout: Duration) -> SpiFuture<'_, Result<ReceiveOutcome, SpiError>>;
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
-    fn close(&mut self) -> SpiFuture<'_, Result<(), SpiError>>;
-}
-```
+The asynchronous provider-facing contracts are defined by
+[`AsyncEventBusSpi`](../src/spi/async_event_bus_spi.rs) and
+[`AsyncEventSubscriptionSpi`](../src/spi/async_event_subscription_spi.rs).
+Consult those definitions and their Rustdoc for cancellation safety, settlement
+borrowing, and close/drop retry semantics.
 
 As with the synchronous SPI, the receiver ID comes from the request rather
 than an `id()` method. The real public trait is
@@ -1679,16 +1653,25 @@ fn invalid_token(reason: &'static str) -> SpiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncSubscription, SyncSubscription};
-    use qubit_event_bus::error::SpiError;
-    use qubit_event_bus::model::{ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability};
-    use qubit_event_bus::spi::{
-        AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken,
-        SpiSubscriptionRequest, TopicAddress,
-    };
-    use qubit_id::Id;
     use std::any::TypeId;
     use std::time::Duration;
+
+    use qubit_event_bus::error::SpiError;
+    use qubit_event_bus::model::ProviderOptions;
+    use qubit_event_bus::model::StartPosition;
+    use qubit_event_bus::model::SubscriberId;
+    use qubit_event_bus::model::SubscriptionDurability;
+    use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+    use qubit_event_bus::spi::DeliveryDisposition;
+    use qubit_event_bus::spi::EventSubscriptionSpi;
+    use qubit_event_bus::spi::ReceiveOutcome;
+    use qubit_event_bus::spi::SettlementToken;
+    use qubit_event_bus::spi::SpiSubscriptionRequest;
+    use qubit_event_bus::spi::TopicAddress;
+    use qubit_id::Id;
+
+    use super::AsyncSubscription;
+    use super::SyncSubscription;
 
     fn request(id: Id) -> SpiSubscriptionRequest {
         SpiSubscriptionRequest::new(

@@ -16,10 +16,7 @@ use std::time::Duration;
 #[test]
 fn test_run_case_rejects_a_missing_exact_test_name() {
     let result = catch_unwind(|| {
-        support::isolated_process::run_case(
-            "this_test_name_does_not_exist",
-            "missing-test-contract",
-        );
+        support::isolated_process::run_case("this_test_name_does_not_exist", "missing-test-contract");
     });
 
     assert!(result.is_err(), "a missing child test must fail the helper");
@@ -45,10 +42,7 @@ fn test_run_case_reports_a_failing_child() {
     }
 
     let result = catch_unwind(|| {
-        support::isolated_process::run_case(
-            "test_run_case_reports_a_failing_child",
-            "failing-test-contract",
-        );
+        support::isolated_process::run_case("test_run_case_reports_a_failing_child", "failing-test-contract");
     });
 
     assert!(result.is_err(), "a failing child must fail the helper");

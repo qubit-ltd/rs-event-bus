@@ -101,13 +101,13 @@ fn retry_backoff_releases_four_handler_slots() {
         )
         .build();
 
-    for index in 0..HANDLER_SLOTS {
+    for (index, count) in attempts.iter().enumerate() {
         let topic = Topic::<u8>::new(&format!("retry-saturation.slot-{index}")).expect("topic");
         let request = SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
             .expect("request")
             .with_options(retry_options.clone());
         let entry = entered_tx.clone();
-        let count = attempts[index].clone();
+        let count = count.clone();
         let _ = bus
             .subscribe(request, move |_| {
                 let attempt = count.fetch_add(1, Ordering::AcqRel);
@@ -127,7 +127,9 @@ fn retry_backoff_releases_four_handler_slots() {
         SubscribeRequest::new("retry-saturation-independent", independent_topic.clone()).expect("request");
     let _ = bus
         .subscribe(independent_request, move |_| {
-            independent_tx.send(()).expect("test is waiting for independent handler");
+            independent_tx
+                .send(())
+                .expect("test is waiting for independent handler");
             Ok::<(), DeliveryError>(())
         })
         .expect("independent subscription");
@@ -141,13 +143,15 @@ fn retry_backoff_releases_four_handler_slots() {
 
     let mut entered = Vec::with_capacity(HANDLER_SLOTS);
     for _ in 0..HANDLER_SLOTS {
-        entered.push(entered_rx.recv_timeout(SAMPLE_TIMEOUT).expect("handler first attempt entered"));
+        entered.push(
+            entered_rx
+                .recv_timeout(SAMPLE_TIMEOUT)
+                .expect("handler first attempt entered"),
+        );
     }
     entered.sort_unstable();
     assert_eq!(entered, (0..HANDLER_SLOTS).collect::<Vec<_>>());
-    wait_for(|| {
-        bus.delivery_metrics().running_handlers == 0 && bus.delivery_metrics().queued == HANDLER_SLOTS as u64
-    });
+    wait_for(|| bus.delivery_metrics().running_handlers == 0 && bus.delivery_metrics().queued == HANDLER_SLOTS as u64);
     let _ = bus
         .publish(PublishRequest::new(independent_topic, 0).expect("independent request"))
         .expect("publish independent message");
@@ -155,7 +159,10 @@ fn retry_backoff_releases_four_handler_slots() {
         .recv_timeout(SAMPLE_TIMEOUT)
         .expect("independent handler runs during retry backoff");
     assert_eq!(
-        attempts.iter().map(|count| count.load(Ordering::Acquire)).sum::<usize>(),
+        attempts
+            .iter()
+            .map(|count| count.load(Ordering::Acquire))
+            .sum::<usize>(),
         HANDLER_SLOTS,
         "retry timers remain pending until the test advances the clock"
     );
@@ -163,7 +170,9 @@ fn retry_backoff_releases_four_handler_slots() {
     clock.advance(Duration::from_secs(1)).expect("advance retry clock");
     wait_for(|| bus.delivery_metrics().completed == (HANDLER_SLOTS + 1) as u64);
     let _ = bus
-        .shutdown(ShutdownMode::Graceful { timeout: SAMPLE_TIMEOUT })
+        .shutdown(ShutdownMode::Graceful {
+            timeout: SAMPLE_TIMEOUT,
+        })
         .expect("shutdown");
     assert!(attempts.iter().all(|count| count.load(Ordering::Acquire) == 2));
 }

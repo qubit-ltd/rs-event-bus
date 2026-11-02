@@ -372,24 +372,9 @@ pub enum PublishAcknowledgement {
 
 ### 4.2 同步契约
 
-```rust
-pub trait EventBusSpi: Send + Sync + 'static {
-    fn capabilities(&self) -> EventBusCapabilities;
-    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError>;
-    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError>;
-    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError>;
-    fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
-        Ok(None)   // 默认：不支持；Some(true) = 已空闲，Some(false) = 超时
-    }
-    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
-}
-
-pub trait EventSubscriptionSpi: Send + 'static {
-    fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError>;
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError>;
-    fn close(&mut self) -> Result<(), SpiError>;
-}
-```
+provider 实际使用的契约定义在 [`EventBusSpi`](../src/spi/event_bus_spi.rs) 和
+[`EventSubscriptionSpi`](../src/spi/event_subscription_spi.rs)。这些源码定义及其
+Rustdoc 是方法签名、接收端生命周期、结算与重试行为的权威说明。
 
 订阅 ID 由 `SpiSubscriptionRequest` 提供，并不是
 `EventSubscriptionSpi` 的方法。请参阅[同步 SPI 公共定义](../src/spi/event_subscription_spi.rs)
@@ -402,23 +387,9 @@ pub trait EventSubscriptionSpi: Send + 'static {
 
 ### 4.3 异步契约
 
-```rust
-pub type SpiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-pub trait AsyncEventBusSpi: Send + Sync + 'static {
-    fn capabilities(&self) -> EventBusCapabilities;
-    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>>;
-    fn subscribe<'a>(&'a self, request: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>>;
-    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>>;
-    #[doc(hidden)] fn provider_id(&self) -> Option<ProviderId> { None }
-}
-
-pub trait AsyncEventSubscriptionSpi: Send + 'static {
-    fn receive(&mut self, timeout: Duration) -> SpiFuture<'_, Result<ReceiveOutcome, SpiError>>;
-    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> SpiFuture<'_, Result<(), SpiError>>;
-    fn close(&mut self) -> SpiFuture<'_, Result<(), SpiError>>;
-}
-```
+异步 provider 实际使用的契约定义在 [`AsyncEventBusSpi`](../src/spi/async_event_bus_spi.rs)
+和 [`AsyncEventSubscriptionSpi`](../src/spi/async_event_subscription_spi.rs)。请以这些
+定义及其 Rustdoc 为准，了解取消安全、settle 的借用关系以及 close/drop 的重试语义。
 
 异步 SPI 同样从 request 取得 receiver ID，而不是调用 `id()`；真实公共 trait
 见[`AsyncEventSubscriptionSpi`](../src/spi/async_event_subscription_spi.rs)。
@@ -1577,16 +1548,25 @@ fn invalid_token(reason: &'static str) -> SpiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncSubscription, SyncSubscription};
-    use qubit_event_bus::error::SpiError;
-    use qubit_event_bus::model::{ProviderOptions, StartPosition, SubscriberId, SubscriptionDurability};
-    use qubit_event_bus::spi::{
-        AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken,
-        SpiSubscriptionRequest, TopicAddress,
-    };
-    use qubit_id::Id;
     use std::any::TypeId;
     use std::time::Duration;
+
+    use qubit_event_bus::error::SpiError;
+    use qubit_event_bus::model::ProviderOptions;
+    use qubit_event_bus::model::StartPosition;
+    use qubit_event_bus::model::SubscriberId;
+    use qubit_event_bus::model::SubscriptionDurability;
+    use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+    use qubit_event_bus::spi::DeliveryDisposition;
+    use qubit_event_bus::spi::EventSubscriptionSpi;
+    use qubit_event_bus::spi::ReceiveOutcome;
+    use qubit_event_bus::spi::SettlementToken;
+    use qubit_event_bus::spi::SpiSubscriptionRequest;
+    use qubit_event_bus::spi::TopicAddress;
+    use qubit_id::Id;
+
+    use super::AsyncSubscription;
+    use super::SyncSubscription;
 
     fn request(id: Id) -> SpiSubscriptionRequest {
         SpiSubscriptionRequest::new(
