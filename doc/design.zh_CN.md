@@ -1478,7 +1478,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 | --- | --- |
 | `AdmissionRejected` | 发布回执中某目的地被拒绝；`subscription_id` 标识具体实例（仅 `DestinationAdmissions` provider） |
 | `ReceiveGap` | provider `receive` 返回 `Gap` |
-| `DeliveryFailed` | 一条投递到达终态失败（含 attempts、`DeliveryFailureAction`、错误） |
+| `DeliveryFailed` | handler 终态失败在其 owned delivery 到达 facade 终态出口时发出一次；这不表示 transport 已结算或业务已完成 |
 | `SettlementFailed` | 一次结算失败；保留结构化 error 与 attempt，是否重试由策略决定 |
 | `SettlementStopped` | 首个结算终止原因，停止所属订阅 |
 | `SettlementUnavailable` | 需要 settle 但能力不允许或已放弃（如 `Immediate` 停机） |

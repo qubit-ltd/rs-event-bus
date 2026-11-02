@@ -872,23 +872,30 @@ The `source` field on `ReceiveError::DeadLetterForwardFailed` preserves the forw
 
 ```rust
 use std::error::Error;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::pipeline::DeadLetterForwardError;
 
-// `source` is the boxed source field from DeadLetterForwardFailed.
-let mut cause: &(dyn Error + 'static) = source.as_ref();
-loop {
-    if let Some(retry) = cause.downcast_ref::<
-        qubit_retry::RetryError<DeadLetterForwardError>
-    >() {
-        let reason = retry.reason();
-        let context = retry.context();
-        let last_error = retry.last_error();
-        // Record or classify these values; last_error can be None.
-        let _ = (reason, context, last_error);
-    }
-    match cause.source() {
-        Some(parent) => cause = parent,
-        None => break,
+fn inspect(error: ReceiveError) {
+    match error {
+        ReceiveError::DeadLetterForwardFailed { source, .. } => {
+            let mut cause: &(dyn Error + 'static) = source.as_ref();
+            loop {
+                if let Some(retry) = cause.downcast_ref::<
+                    qubit_retry::RetryError<DeadLetterForwardError>
+                >() {
+                    let reason = retry.reason();
+                    let context = retry.context();
+                    let last_error = retry.last_error();
+                    // Record or classify these values; last_error can be None.
+                    let _ = (reason, context, last_error);
+                }
+                match cause.source() {
+                    Some(parent) => cause = parent,
+                    None => break,
+                }
+            }
+        }
+        _ => {}
     }
 }
 ```

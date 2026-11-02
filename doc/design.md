@@ -1584,7 +1584,7 @@ An observer panic is isolated and does not affect other observers or the main pa
 | --- | --- |
 | `AdmissionRejected` | A destination in a publish receipt was rejected; `subscription_id` identifies that instance (only `DestinationAdmissions` providers) |
 | `ReceiveGap` | Provider `receive` returned `Gap` |
-| `DeliveryFailed` | A delivery reached a terminal failure (includes attempts, the `DeliveryFailureAction`, and the error) |
+| `DeliveryFailed` | A handler terminal failure is emitted once when its owned delivery reaches the terminal facade exit; this does not mean transport settlement or business completion |
 | `SettlementFailed` | An attempt failed; structured error and attempt are preserved, retry depends on policy |
 | `SettlementStopped` | The first terminal settlement cause stops this subscription |
 | `SettlementUnavailable` | Settlement was required but the capability does not allow it, or it was abandoned (for example an `Immediate` shutdown) |

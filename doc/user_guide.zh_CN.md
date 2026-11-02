@@ -872,23 +872,30 @@ impl Cursor<'_> {
 
 ```rust
 use std::error::Error;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::pipeline::DeadLetterForwardError;
 
-// `source` 是 DeadLetterForwardFailed 变体中的 boxed source 字段。
-let mut cause: &(dyn Error + 'static) = source.as_ref();
-loop {
-    if let Some(retry) = cause.downcast_ref::<
-        qubit_retry::RetryError<DeadLetterForwardError>
-    >() {
-        let reason = retry.reason();
-        let context = retry.context();
-        let last_error = retry.last_error();
-        // 记录或分类这些值；last_error 可能为 None。
-        let _ = (reason, context, last_error);
-    }
-    match cause.source() {
-        Some(parent) => cause = parent,
-        None => break,
+fn inspect(error: ReceiveError) {
+    match error {
+        ReceiveError::DeadLetterForwardFailed { source, .. } => {
+            let mut cause: &(dyn Error + 'static) = source.as_ref();
+            loop {
+                if let Some(retry) = cause.downcast_ref::<
+                    qubit_retry::RetryError<DeadLetterForwardError>
+                >() {
+                    let reason = retry.reason();
+                    let context = retry.context();
+                    let last_error = retry.last_error();
+                    // 记录或分类这些值；last_error 可能为 None。
+                    let _ = (reason, context, last_error);
+                }
+                match cause.source() {
+                    Some(parent) => cause = parent,
+                    None => break,
+                }
+            }
+        }
+        _ => {}
     }
 }
 ```
