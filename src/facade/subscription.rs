@@ -99,7 +99,6 @@ impl Subscription {
     /// # Returns
     /// This subscription identity, live gauges when active, and retained
     /// counters after close.
-    #[must_use]
     pub fn delivery_metrics(&self) -> SubscriptionDeliveryMetricsSnapshot {
         let gauges = self
             .inner

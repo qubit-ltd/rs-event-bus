@@ -15,7 +15,7 @@ use crate::spi::ShutdownMode;
 
 /// Tracks shutdown attempts, observers, and retained results for concurrent
 /// callers.
-pub(super) struct ShutdownCoordinatorState {
+pub(in crate::facade) struct ShutdownCoordinatorState {
     /// Whether a shutdown worker currently owns an attempt.
     pub(in crate::facade) active: bool,
     /// Monotonic generation distinguishing shutdown attempts.

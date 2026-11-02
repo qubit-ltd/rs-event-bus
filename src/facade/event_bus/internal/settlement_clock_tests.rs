@@ -1102,7 +1102,7 @@ fn test_sync_actual_handler_admission_respects_stop_and_graceful_drain() {
             let (stopped_tx, stopped_rx) = mpsc::channel();
             match mode {
                 "terminal" => {
-                    control.fail_receive(SubscriptionStopReason::Provider {
+                    let _ = control.fail_receive(SubscriptionStopReason::Provider {
                         error: Arc::new(SpiError::Operation {
                             provider_id: "test".into(),
                             operation: "receive",

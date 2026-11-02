@@ -182,8 +182,8 @@ impl EventSubscriptionSpi for ProbeSubscription {
     }
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         assert!(token.belongs_to(self.owner), "settlement remains on its issuing owner");
-        let token = token.downcast_ref::<String>().expect("fake issues String token");
-        let identity = token as *const String as usize;
+        let token_value = token.downcast_ref::<String>().expect("fake issues String token");
+        let identity = token_value as *const String as usize;
         self.probe
             .attempts
             .lock()

@@ -44,7 +44,8 @@ fn test_cancel_waits_for_started_handler_to_finish() {
         )
         .expect("subscription"),
     );
-    bus.publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("publish request"))
         .expect("publish");
     entered_rx
         .recv_timeout(LIMIT)
@@ -70,5 +71,5 @@ fn test_cancel_waits_for_started_handler_to_finish() {
         .expect("cancel completes after handler release")
         .expect("worker closes successfully");
     canceller.join().expect("cancellation thread exits");
-    bus.shutdown(ShutdownMode::Immediate).expect("bus shutdown completes");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shutdown completes");
 }

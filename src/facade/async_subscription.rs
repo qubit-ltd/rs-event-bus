@@ -158,7 +158,6 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Returns
     /// Subscription identity, live gauges, and cumulative lifecycle counters.
-    #[must_use]
     pub fn delivery_metrics(&self) -> SubscriptionDeliveryMetricsSnapshot {
         SubscriptionDeliveryMetricsSnapshot {
             subscription_id: self.id,

@@ -20,7 +20,7 @@ use std::task::Poll;
 /// # Type Parameters
 /// - `F`: Provider future whose polling is isolated.
 #[must_use]
-pub(super) struct CatchUnwindFuture<F: Future> {
+pub(in crate::pipeline::retry) struct CatchUnwindFuture<F: Future> {
     /// Pinned SPI operation future being polled.
     future: Pin<Box<F>>,
 }
@@ -33,7 +33,7 @@ impl<F: Future> CatchUnwindFuture<F> {
     ///
     /// # Returns
     /// A wrapper that captures panics from future polling.
-    pub(super) fn new(future: F) -> Self {
+    pub(in crate::pipeline::retry) fn new(future: F) -> Self {
         Self {
             future: Box::pin(future),
         }

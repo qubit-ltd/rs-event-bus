@@ -118,7 +118,6 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// The identifier of the provider that handled the publication.
-    #[must_use]
     #[inline]
     pub fn provider_id(&self) -> &ProviderId {
         &self.provider_id
