@@ -191,7 +191,11 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
             let _operation = OperationGuard::new(self.active.clone());
             let fail_after = self.probe.fail_receive_after_messages.load(Ordering::SeqCst);
             if fail_after > 0 && self.probe.receives.load(Ordering::SeqCst) >= fail_after {
-                self.probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").push("Error");
+                self.probe
+                    .receive_outcomes
+                    .lock()
+                    .expect("receive log mutex must not be poisoned")
+                    .push("Error");
                 return Err(SpiError::Operation {
                     provider_id: "probe".into(),
                     operation: "receive",
@@ -203,20 +207,28 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
             }
             let close_after = self.probe.close_after_messages.load(Ordering::SeqCst);
             if close_after > 0 && self.probe.receives.load(Ordering::SeqCst) >= close_after {
-                self.probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").push("Closed");
+                self.probe
+                    .receive_outcomes
+                    .lock()
+                    .expect("receive log mutex must not be poisoned")
+                    .push("Closed");
                 return Ok(ReceiveOutcome::Closed);
             }
             let outcome = self.receiver.receive(timeout).await?;
             if matches!(outcome, ReceiveOutcome::Message(_)) {
                 self.probe.receives.fetch_add(1, Ordering::SeqCst);
             }
-            self.probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").push(match outcome {
-                ReceiveOutcome::Message(_) => "Message",
-                ReceiveOutcome::Gap(_) => "Gap",
-                ReceiveOutcome::TimedOut => "TimedOut",
-                ReceiveOutcome::Closed => "Closed",
-                _ => "NonExhaustive",
-            });
+            self.probe
+                .receive_outcomes
+                .lock()
+                .expect("receive log mutex must not be poisoned")
+                .push(match outcome {
+                    ReceiveOutcome::Message(_) => "Message",
+                    ReceiveOutcome::Gap(_) => "Gap",
+                    ReceiveOutcome::TimedOut => "TimedOut",
+                    ReceiveOutcome::Closed => "Closed",
+                    _ => "NonExhaustive",
+                });
             Ok(outcome)
         })
     }
@@ -284,7 +296,8 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
     }
 }
 
-/// Observes a finite provider stream while the first handler is application-gated.
+/// Observes a finite provider stream while the first handler is
+/// application-gated.
 #[test]
 fn test_natural_closed_drains_received_deliveries() {
     let (bus, fake, probe, _) = setup(config(1, 3, 3, 1, 3));
@@ -302,7 +315,10 @@ fn test_natural_closed_drains_received_deliveries() {
         let release = release.clone();
         let events = events.clone();
         async move {
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("start:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("start:{payload}"));
             if payload == 1 {
                 std::future::poll_fn(|cx| {
                     if release.load(Ordering::SeqCst) {
@@ -311,9 +327,13 @@ fn test_natural_closed_drains_received_deliveries() {
                         let _ = cx;
                         Poll::Pending
                     }
-                }).await;
+                })
+                .await;
             }
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("done:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("done:{payload}"));
             Ok(())
         }
     }));
@@ -321,19 +341,37 @@ fn test_natural_closed_drains_received_deliveries() {
     let mut result = Poll::Pending;
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Closed") {
+        if probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Closed")
+        {
             break;
         }
     }
     let at_closed = format!(
         "receives={:?}, handlers={:?}, settlements={:?}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
         handler_events.lock().expect("handler log mutex must not be poisoned"),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
         sub.delivery_metrics().metrics.abandoned_ephemeral,
     );
-    assert!(at_closed.contains("Closed"), "provider must report Closed after A1/A2: {at_closed}");
-    assert_eq!(probe.receives.load(Ordering::SeqCst), 2, "A1 and A2 must be received: {at_closed}");
+    assert!(
+        at_closed.contains("Closed"),
+        "provider must report Closed after A1/A2: {at_closed}"
+    );
+    assert_eq!(
+        probe.receives.load(Ordering::SeqCst),
+        2,
+        "A1 and A2 must be received: {at_closed}"
+    );
 
     drop(run);
     release_first.store(true, Ordering::SeqCst);
@@ -342,32 +380,65 @@ fn test_natural_closed_drains_received_deliveries() {
         let payload = *delivery.payload();
         let events = resume_events.clone();
         async move {
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("resume-start:{payload}"));
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("resume-done:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("resume-start:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("resume-done:{payload}"));
             Ok(())
         }
     }));
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if result.is_ready() { break; }
+        if result.is_ready() {
+            break;
+        }
     }
     let snapshot = format!(
         "receives={:?}, handlers={:?}, settlements={:?}, run={result:?}, closes={}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
         handler_events.lock().expect("handler log mutex must not be poisoned"),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
         probe.closes.load(Ordering::SeqCst),
         sub.delivery_metrics().metrics.abandoned_ephemeral,
     );
-    assert!(matches!(result, Poll::Ready(Ok(()))), "finite stream run succeeds: {snapshot}");
+    assert!(
+        matches!(result, Poll::Ready(Ok(()))),
+        "finite stream run succeeds: {snapshot}"
+    );
     assert_eq!(
         *handler_events.lock().expect("handler log mutex must not be poisoned"),
         ["start:1", "done:1", "resume-start:2", "resume-done:2"],
         "paused owned handler and buffered successor finish after natural EOF: {snapshot}",
     );
-    assert_eq!(probe.attempts.lock().expect("settlement log mutex must not be poisoned").len(), 2, "both tokens settle: {snapshot}");
-    assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "receiver closes once: {snapshot}");
-    assert_eq!(sub.delivery_metrics().metrics.abandoned_ephemeral, 0, "natural EOF does not abandon owned deliveries: {snapshot}");
+    assert_eq!(
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned")
+            .len(),
+        2,
+        "both tokens settle: {snapshot}"
+    );
+    assert_eq!(
+        probe.closes.load(Ordering::SeqCst),
+        1,
+        "receiver closes once: {snapshot}"
+    );
+    assert_eq!(
+        sub.delivery_metrics().metrics.abandoned_ephemeral,
+        0,
+        "natural EOF does not abandon owned deliveries: {snapshot}"
+    );
     eprintln!("natural Closed drain regression: {snapshot}");
 }
 
@@ -380,7 +451,11 @@ fn test_natural_closed_drains_unordered_deliveries() {
         Topic::<u32>::new("test.topic").expect("static test topic must be valid"),
     )
     .expect("test subscription request must be valid")
-    .with_options(SubscribeOptions::builder().ordering_policy(OrderingPolicy::Unordered).build());
+    .with_options(
+        SubscribeOptions::builder()
+            .ordering_policy(OrderingPolicy::Unordered)
+            .build(),
+    );
     let sub = block_on(bus.subscribe(request)).expect("test subscription must be accepted");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "B");
@@ -393,42 +468,104 @@ fn test_natural_closed_drains_unordered_deliveries() {
         let gate = handler_gate.clone();
         let events = handler_events.clone();
         async move {
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("start:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("start:{payload}"));
             if payload == 1 {
-                std::future::poll_fn(|_| if gate.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }).await;
+                std::future::poll_fn(|_| {
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
             }
-            events.lock().expect("handler log mutex must not be poisoned").push(format!("done:{payload}"));
+            events
+                .lock()
+                .expect("handler log mutex must not be poisoned")
+                .push(format!("done:{payload}"));
             Ok(())
         }
     }));
     let mut result = Poll::Pending;
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Closed") { break; }
+        if probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Closed")
+        {
+            break;
+        }
     }
-    assert_eq!(probe.receives.load(Ordering::SeqCst), 2, "unordered A1/A2 reached facade before EOF");
+    assert_eq!(
+        probe.receives.load(Ordering::SeqCst),
+        2,
+        "unordered A1/A2 reached facade before EOF"
+    );
     gate.store(true, Ordering::SeqCst);
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if result.is_ready() { break; }
+        if result.is_ready() {
+            break;
+        }
     }
-    let snapshot = format!("receives={:?}, handlers={:?}, settlements={:?}, run={result:?}, closes={}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
+    let snapshot = format!(
+        "receives={:?}, handlers={:?}, settlements={:?}, run={result:?}, closes={}, abandoned={}",
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
         events.lock().expect("handler log mutex must not be poisoned"),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
-        probe.closes.load(Ordering::SeqCst), sub.delivery_metrics().metrics.abandoned_ephemeral);
-    assert!(matches!(result, Poll::Ready(Ok(()))), "unordered work drains after EOF: {snapshot}");
-    assert_eq!(*events.lock().expect("handler log mutex must not be poisoned"), ["start:1", "done:1", "start:2", "done:2"], "unordered deliveries both complete: {snapshot}");
-    assert_eq!(probe.attempts.lock().expect("settlement log mutex must not be poisoned").len(), 2, "both unordered deliveries settle: {snapshot}");
-    assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "receiver closes once: {snapshot}");
-    assert_eq!(sub.delivery_metrics().metrics.abandoned_ephemeral, 0, "EOF does not abandon unordered work: {snapshot}");
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
+        probe.closes.load(Ordering::SeqCst),
+        sub.delivery_metrics().metrics.abandoned_ephemeral
+    );
+    assert!(
+        matches!(result, Poll::Ready(Ok(()))),
+        "unordered work drains after EOF: {snapshot}"
+    );
+    assert_eq!(
+        *events.lock().expect("handler log mutex must not be poisoned"),
+        ["start:1", "done:1", "start:2", "done:2"],
+        "unordered deliveries both complete: {snapshot}"
+    );
+    assert_eq!(
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned")
+            .len(),
+        2,
+        "both unordered deliveries settle: {snapshot}"
+    );
+    assert_eq!(
+        probe.closes.load(Ordering::SeqCst),
+        1,
+        "receiver closes once: {snapshot}"
+    );
+    assert_eq!(
+        sub.delivery_metrics().metrics.abandoned_ephemeral,
+        0,
+        "EOF does not abandon unordered work: {snapshot}"
+    );
 }
 
 #[test]
 fn test_natural_closed_preserves_terminal_settlement_failure() {
     let (bus, fake, probe, _) = setup(config(1, 3, 3, 1, 3));
     probe.close_after_messages.store(2, Ordering::SeqCst);
-    probe.failures.lock().expect("injected failure queue mutex must not be poisoned").push_back(Some(false));
+    probe
+        .failures
+        .lock()
+        .expect("injected failure queue mutex must not be poisoned")
+        .push_back(Some(false));
     let sub = subscribe(&bus, "natural-closed-terminal-settlement");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "A");
@@ -444,8 +581,13 @@ fn test_natural_closed_preserves_terminal_settlement_failure() {
             counts.0.fetch_add(1, Ordering::SeqCst);
             if value == 1 {
                 std::future::poll_fn(|_| {
-                    if gate.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }
-                }).await;
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
             }
             counts.1.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -454,46 +596,89 @@ fn test_natural_closed_preserves_terminal_settlement_failure() {
     let mut result = Poll::Pending;
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Closed") {
+        if probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Closed")
+        {
             break;
         }
     }
     let before_release = format!(
         "receives={:?}, handlers={:?}, settlements={:?}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
-        (handler_counts.0.load(Ordering::SeqCst), handler_counts.1.load(Ordering::SeqCst)),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
+        (
+            handler_counts.0.load(Ordering::SeqCst),
+            handler_counts.1.load(Ordering::SeqCst)
+        ),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
         sub.delivery_metrics().metrics.abandoned_ephemeral,
     );
-    assert!(before_release.contains("Closed"), "EOF is consumed before failure: {before_release}");
+    assert!(
+        before_release.contains("Closed"),
+        "EOF is consumed before failure: {before_release}"
+    );
     gate.store(true, Ordering::SeqCst);
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if result.is_ready() { break; }
+        if result.is_ready() {
+            break;
+        }
     }
     let snapshot = format!(
         "receives={:?}, handlers={:?}, settlements={:?}, run={result:?}, terminal={:?}, closes={}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
-        (handler_counts.0.load(Ordering::SeqCst), handler_counts.1.load(Ordering::SeqCst)),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
+        (
+            handler_counts.0.load(Ordering::SeqCst),
+            handler_counts.1.load(Ordering::SeqCst)
+        ),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
         sub.terminal_failure(),
         probe.closes.load(Ordering::SeqCst),
         sub.delivery_metrics().metrics.abandoned_ephemeral,
     );
-    assert!(matches!(
-        result,
-        Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
-            if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { .. })
-    ), "terminal settlement cause remains first after EOF: {snapshot}");
-    assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "receiver closes after terminal cleanup: {snapshot}");
-    assert_eq!(sub.delivery_metrics().metrics.abandoned_ephemeral, 2, "terminal failure retains existing abandon semantics: {snapshot}");
+    assert!(
+        matches!(
+            result,
+            Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
+                if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { .. })
+        ),
+        "terminal settlement cause remains first after EOF: {snapshot}"
+    );
+    assert_eq!(
+        probe.closes.load(Ordering::SeqCst),
+        1,
+        "receiver closes after terminal cleanup: {snapshot}"
+    );
+    assert_eq!(
+        sub.delivery_metrics().metrics.abandoned_ephemeral,
+        2,
+        "terminal failure retains existing abandon semantics: {snapshot}"
+    );
 }
 
 #[test]
 fn test_natural_closed_keeps_local_settlement_retry() {
     let (bus, fake, probe, clock) = setup(config(1, 3, 3, 1, 3));
     probe.close_after_messages.store(2, Ordering::SeqCst);
-    probe.failures.lock().expect("injected failure queue mutex must not be poisoned").push_back(Some(true));
+    probe
+        .failures
+        .lock()
+        .expect("injected failure queue mutex must not be poisoned")
+        .push_back(Some(true));
     let sub = subscribe(&bus, "natural-closed-settlement-retry");
     enqueue(&fake, sub.id(), 1, "A");
     enqueue(&fake, sub.id(), 2, "A");
@@ -508,8 +693,13 @@ fn test_natural_closed_keeps_local_settlement_retry() {
         async move {
             if value == 1 {
                 std::future::poll_fn(|_| {
-                    if gate.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }
-                }).await;
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
             }
             counts.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -518,30 +708,97 @@ fn test_natural_closed_keeps_local_settlement_retry() {
     let mut result = Poll::Pending;
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Closed") { break; }
+        if probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Closed")
+        {
+            break;
+        }
     }
-    assert!(probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Closed"), "finite stream reaches EOF");
+    assert!(
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Closed"),
+        "finite stream reaches EOF"
+    );
     gate.store(true, Ordering::SeqCst);
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.attempts.lock().expect("settlement log mutex must not be poisoned").len() >= 1 { break; }
+        if !probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned")
+            .is_empty()
+        {
+            break;
+        }
     }
-    let first_attempts = probe.attempts.lock().expect("settlement log mutex must not be poisoned").clone();
-    assert_eq!(first_attempts.len(), 1, "A1 first settlement attempt is observed before retry");
-    clock.advance(Duration::from_millis(10)).expect("manual clock remains valid");
+    let first_attempts = probe
+        .attempts
+        .lock()
+        .expect("settlement log mutex must not be poisoned")
+        .clone();
+    assert_eq!(
+        first_attempts.len(),
+        1,
+        "A1 first settlement attempt is observed before retry"
+    );
+    clock
+        .advance(Duration::from_millis(10))
+        .expect("manual clock remains valid");
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if result.is_ready() { break; }
+        if result.is_ready() {
+            break;
+        }
     }
-    let attempts = probe.attempts.lock().expect("settlement log mutex must not be poisoned").clone();
-    let snapshot = format!("receives={:?}, attempts={attempts:?}, handlers={}, run={result:?}, closes={}, abandoned={}", probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"), handler_counts.load(Ordering::SeqCst), probe.closes.load(Ordering::SeqCst), sub.delivery_metrics().metrics.abandoned_ephemeral);
-    assert!(matches!(result, Poll::Ready(Ok(()))), "retry and queued successor drain after EOF: {snapshot}");
+    let attempts = probe
+        .attempts
+        .lock()
+        .expect("settlement log mutex must not be poisoned")
+        .clone();
+    let snapshot = format!(
+        "receives={:?}, attempts={attempts:?}, handlers={}, run={result:?}, closes={}, abandoned={}",
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
+        handler_counts.load(Ordering::SeqCst),
+        probe.closes.load(Ordering::SeqCst),
+        sub.delivery_metrics().metrics.abandoned_ephemeral
+    );
+    assert!(
+        matches!(result, Poll::Ready(Ok(()))),
+        "retry and queued successor drain after EOF: {snapshot}"
+    );
     assert_eq!(attempts.len(), 3, "A1 retry succeeds before A2 settlement: {snapshot}");
-    assert_eq!(attempts[0], attempts[1], "retry keeps A1 settlement identity: {snapshot}");
-    assert_ne!(attempts[1].0, attempts[2].0, "A2 successor settles after A1: {snapshot}");
-    assert_eq!(handler_counts.load(Ordering::SeqCst), 2, "both handlers complete once: {snapshot}");
-    assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "receiver closes once: {snapshot}");
-    assert_eq!(sub.delivery_metrics().metrics.abandoned_ephemeral, 0, "retry does not abandon owned work: {snapshot}");
+    assert_eq!(
+        attempts[0], attempts[1],
+        "retry keeps A1 settlement identity: {snapshot}"
+    );
+    assert_ne!(
+        attempts[1].0, attempts[2].0,
+        "A2 successor settles after A1: {snapshot}"
+    );
+    assert_eq!(
+        handler_counts.load(Ordering::SeqCst),
+        2,
+        "both handlers complete once: {snapshot}"
+    );
+    assert_eq!(
+        probe.closes.load(Ordering::SeqCst),
+        1,
+        "receiver closes once: {snapshot}"
+    );
+    assert_eq!(
+        sub.delivery_metrics().metrics.abandoned_ephemeral,
+        0,
+        "retry does not abandon owned work: {snapshot}"
+    );
 }
 
 #[test]
@@ -559,8 +816,13 @@ fn test_terminal_receive_failure_preempts_natural_closed_drain() {
         async move {
             if value == 1 {
                 std::future::poll_fn(|_| {
-                    if gate.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }
-                }).await;
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
             }
             Ok(())
         }
@@ -568,29 +830,68 @@ fn test_terminal_receive_failure_preempts_natural_closed_drain() {
     let mut result = Poll::Pending;
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned").contains(&"Error") { break; }
+        if probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned")
+            .contains(&"Error")
+        {
+            break;
+        }
     }
-    let before_release = format!("receives={:?}, settles={:?}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
-        sub.delivery_metrics().metrics.abandoned_ephemeral);
-    assert!(before_release.contains("Error"), "terminal receive failure follows owned receives: {before_release}");
+    let before_release = format!(
+        "receives={:?}, settles={:?}, abandoned={}",
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
+        sub.delivery_metrics().metrics.abandoned_ephemeral
+    );
+    assert!(
+        before_release.contains("Error"),
+        "terminal receive failure follows owned receives: {before_release}"
+    );
     gate.store(true, Ordering::SeqCst);
     for _ in 0..64 {
         result = poll_once(run.as_mut());
-        if result.is_ready() { break; }
+        if result.is_ready() {
+            break;
+        }
     }
-    let snapshot = format!("receives={:?}, settles={:?}, run={result:?}, terminal={:?}, closes={}, abandoned={}",
-        probe.receive_outcomes.lock().expect("receive log mutex must not be poisoned"),
-        probe.attempts.lock().expect("settlement log mutex must not be poisoned"),
-        sub.terminal_failure(), probe.closes.load(Ordering::SeqCst),
-        sub.delivery_metrics().metrics.abandoned_ephemeral);
-    assert!(matches!(result, Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
+    let snapshot = format!(
+        "receives={:?}, settles={:?}, run={result:?}, terminal={:?}, closes={}, abandoned={}",
+        probe
+            .receive_outcomes
+            .lock()
+            .expect("receive log mutex must not be poisoned"),
+        probe
+            .attempts
+            .lock()
+            .expect("settlement log mutex must not be poisoned"),
+        sub.terminal_failure(),
+        probe.closes.load(Ordering::SeqCst),
+        sub.delivery_metrics().metrics.abandoned_ephemeral
+    );
+    assert!(
+        matches!(result, Poll::Ready(Err(ReceiveError::Stopped(ref reason)))
         if matches!(reason.as_ref(), SubscriptionStopReason::Provider { error }
             if error.kind() == "injected_terminal_receive_failure")),
-        "terminal receive cause must remain the first cause: {snapshot}");
-    assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "terminal receiver cleanup runs once: {snapshot}");
-    assert_eq!(sub.delivery_metrics().metrics.abandoned_ephemeral, 2, "terminal failure retains owned abandonment semantics: {snapshot}");
+        "terminal receive cause must remain the first cause: {snapshot}"
+    );
+    assert_eq!(
+        probe.closes.load(Ordering::SeqCst),
+        1,
+        "terminal receiver cleanup runs once: {snapshot}"
+    );
+    assert_eq!(
+        sub.delivery_metrics().metrics.abandoned_ephemeral,
+        2,
+        "terminal failure retains owned abandonment semantics: {snapshot}"
+    );
 }
 
 /// Builds explicit independent capacity and finite retry limits.

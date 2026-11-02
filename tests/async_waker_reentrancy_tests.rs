@@ -271,6 +271,9 @@ struct RunOnDrop {
     drops: Arc<AtomicUsize>,
 }
 
+// This custom waker is used only to observe destruction; wake notifications
+// intentionally have no behavior.
+#[allow(clippy::manual_noop_waker)]
 impl Wake for RunOnDrop {
     fn wake(self: Arc<Self>) {}
 
@@ -296,8 +299,7 @@ fn session_lease_reentrant_setup() -> Arc<AsyncSubscription<u32>> {
     .expect("bus");
     Arc::new(
         block_on(bus.subscribe(
-            SubscribeRequest::new("lease", Topic::<u32>::new("lease.reentry").expect("topic"))
-                .expect("request"),
+            SubscribeRequest::new("lease", Topic::<u32>::new("lease.reentry").expect("topic")).expect("request"),
         ))
         .expect("subscription"),
     )
@@ -339,7 +341,12 @@ fn session_lease_drop_reentry() {
     assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     drop(waker);
     drop(probe);
-    assert!(waiting.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
     assert_eq!(drops.load(Ordering::SeqCst), 1, "retired waker was dropped once");
     drop(waiting);
     drop(active);
@@ -353,7 +360,12 @@ fn session_lease_waiter_cancellation_and_return() {
     let cancelled_wake = Arc::new(CountWake::default());
     let cancelled_waker = Waker::from(cancelled_wake.clone());
     let mut cancelled = Box::pin(subscription.run(|_| async { Ok(()) }));
-    assert!(cancelled.as_mut().poll(&mut Context::from_waker(&cancelled_waker)).is_pending());
+    assert!(
+        cancelled
+            .as_mut()
+            .poll(&mut Context::from_waker(&cancelled_waker))
+            .is_pending()
+    );
     drop(cancelled);
     cancelled_wake.0.store(0, Ordering::SeqCst);
 
@@ -362,14 +374,21 @@ fn session_lease_waiter_cancellation_and_return() {
     let mut waiting = Box::pin(subscription.run(|_| async { Ok(()) }));
     assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     drop(active);
-    assert!(wake.0.load(Ordering::SeqCst) > 0, "returning the lease wakes its waiter");
+    assert!(
+        wake.0.load(Ordering::SeqCst) > 0,
+        "returning the lease wakes its waiter"
+    );
     assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     assert_eq!(
         subscription.run_state(),
         AsyncSubscriptionRunState::Running,
         "the woken waiter acquires the session before waiting for receive"
     );
-    assert_eq!(cancelled_wake.0.load(Ordering::SeqCst), 0, "cancelled waiter is not woken");
+    assert_eq!(
+        cancelled_wake.0.load(Ordering::SeqCst),
+        0,
+        "cancelled waiter is not woken"
+    );
     drop(waiting);
 }
 
