@@ -7,8 +7,8 @@
 // =============================================================================
 //! Receiving failures.
 
-use std::sync::Arc;
 use std::error::Error;
+use std::sync::Arc;
 
 use qubit_clock::TimeError;
 

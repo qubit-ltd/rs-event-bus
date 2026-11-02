@@ -7,8 +7,8 @@
 // =============================================================================
 //! Stop, terminal-error and start-gate state shared by a subscription session.
 
-use std::sync::Arc;
 use std::error::Error;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
@@ -176,7 +176,11 @@ impl SessionSignals {
     ) {
         let message = source.to_string().into_boxed_str();
         *self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(ReceiveError::DeadLetterForwardFailed { event_id, message, source });
+            Some(ReceiveError::DeadLetterForwardFailed {
+                event_id,
+                message,
+                source,
+            });
         self.stop(ShutdownMode::Immediate);
     }
 

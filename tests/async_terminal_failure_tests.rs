@@ -10,9 +10,9 @@ mod support;
 
 use std::error::Error;
 use std::io::Error as IoError;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
@@ -53,9 +53,7 @@ fn inbound(event_id: &str, token: SettlementToken) -> InboundMessage {
     )
 }
 
-fn collect_failures(
-    bus: &AsyncEventBus,
-) -> (mpsc::Receiver<Diagnostic>, qubit_event_bus::DiagnosticObserverHandle) {
+fn collect_failures(bus: &AsyncEventBus) -> (mpsc::Receiver<Diagnostic>, qubit_event_bus::DiagnosticObserverHandle) {
     let (sender, receiver) = mpsc::channel();
     let observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::DeliveryFailed { .. }) {
@@ -122,9 +120,11 @@ fn test_dead_letter_run_error_retains_publish_effect_and_spi_source() {
             .await
             .expect_err("dead-letter forwarding failure is terminal");
         let source = error.source().expect("forwarding source is retained");
-        assert!(source
-            .downcast_ref::<qubit_event_bus::pipeline::DeadLetterForwardError>()
-            .is_some());
+        assert!(
+            source
+                .downcast_ref::<qubit_event_bus::pipeline::DeadLetterForwardError>()
+                .is_some()
+        );
         let mut current = Some(source);
         let mut effect = None;
         while let Some(source) = current {
@@ -135,8 +135,14 @@ fn test_dead_letter_run_error_retains_publish_effect_and_spi_source() {
         }
         assert_eq!(effect, Some(qubit_event_bus::model::PublishEffect::NotAccepted));
         assert!(error.to_string().contains("event-test"));
-        assert!(spi.settlement_dispositions().is_empty(), "source token remains unsettled");
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        assert!(
+            spi.settlement_dispositions().is_empty(),
+            "source token remains unsettled"
+        );
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
     });
 }
 
@@ -177,9 +183,15 @@ fn test_dead_letter_retry_error_retains_terminal_context() {
             .expect("full retry error remains publicly inspectable");
         assert_eq!(retry.context().attempts(), 1);
         assert!(retry.last_error().is_some());
-        assert!(matches!(retry.reason(), qubit_retry::RetryErrorReason::Exhausted { .. }));
+        assert!(matches!(
+            retry.reason(),
+            qubit_retry::RetryErrorReason::Exhausted { .. }
+        ));
         assert!(spi.settlement_dispositions().is_empty());
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
     });
 }
 
@@ -202,9 +214,16 @@ fn test_handler_failure_without_token_emits_once() {
             }))
         });
         let observed = failures.recv_timeout(Duration::from_secs(2));
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
         runner.join().unwrap().unwrap();
-        assert_failure(observed.expect("terminal handler failure diagnostic arrives"), "event-test", 1);
+        assert_failure(
+            observed.expect("terminal handler failure diagnostic arrives"),
+            "event-test",
+            1,
+        );
         assert_no_more_failures(&failures);
         assert!(spi.settlement_dispositions().is_empty());
     });
@@ -242,9 +261,16 @@ fn test_handler_failure_with_permanent_settlement_error_emits_once() {
             }))
         });
         let observed = failures.recv_timeout(Duration::from_secs(2));
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
         assert!(matches!(runner.join().unwrap(), Err(ReceiveError::Stopped(_))));
-        assert_failure(observed.expect("terminal handler failure diagnostic arrives"), "event-test", 1);
+        assert_failure(
+            observed.expect("terminal handler failure diagnostic arrives"),
+            "event-test",
+            1,
+        );
         assert_no_more_failures(&failures);
         assert!(spi.settlement_dispositions().is_empty());
     });
@@ -280,9 +306,16 @@ fn test_settlement_retry_does_not_duplicate_handler_failure_diagnostic() {
             }))
         });
         let observed = failures.recv_timeout(Duration::from_secs(2));
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
         runner.join().unwrap().unwrap();
-        assert_failure(observed.expect("terminal handler failure diagnostic arrives"), "event-test", 1);
+        assert_failure(
+            observed.expect("terminal handler failure diagnostic arrives"),
+            "event-test",
+            1,
+        );
         assert_no_more_failures(&failures);
         assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
     });
@@ -332,8 +365,14 @@ fn test_paused_runner_keeps_terminal_diagnostic_until_finalization() {
         drop(subscription);
         assert_one_failure(&failures, "event-test", 1);
         assert_no_more_failures(&failures);
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
-        assert!(spi.settlement_dispositions().is_empty(), "cancelled settlement remains unsettled");
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
+        assert!(
+            spi.settlement_dispositions().is_empty(),
+            "cancelled settlement remains unsettled"
+        );
     });
 }
 
@@ -355,7 +394,9 @@ fn test_receive_failure_finalizes_all_completed_handler_failures_once() {
     let spi_in_observer = spi.clone();
     let _settlement_observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementFailed { event_id, .. } = diagnostic {
-            settlement_tx.send(event_id.clone()).expect("settlement observer remains connected");
+            settlement_tx
+                .send(event_id.clone())
+                .expect("settlement observer remains connected");
             spi_in_observer.fail_next_receive();
         }
     });
@@ -389,16 +430,28 @@ fn test_receive_failure_finalizes_all_completed_handler_failures_once() {
         if result.is_err() {
             let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await;
         }
-        assert!(matches!(result.expect("run stops after terminal provider receive failure"), Err(ReceiveError::Stopped(_))));
+        assert!(matches!(
+            result.expect("run stops after terminal provider receive failure"),
+            Err(ReceiveError::Stopped(_))
+        ));
         runner.join().unwrap();
         assert_eq!(
-            settlements.recv_timeout(Duration::from_secs(2)).expect("completed item reports settlement failure").as_str(),
+            settlements
+                .recv_timeout(Duration::from_secs(2))
+                .expect("completed item reports settlement failure")
+                .as_str(),
             "pending-failure-event"
         );
         assert_one_failure(&failures, "pending-failure-event", 1);
         assert_no_more_failures(&failures);
-        assert!(spi.settlement_dispositions().is_empty(), "source token remains unsettled");
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        assert!(
+            spi.settlement_dispositions().is_empty(),
+            "source token remains unsettled"
+        );
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
     });
 }
 
@@ -423,8 +476,7 @@ fn test_dead_letter_failure_emits_once_without_settling_source() {
             .unwrap();
         let other_subscription = bus
             .subscribe(
-                SubscribeRequest::new("unaffected-subscriber", Topic::<u32>::new("unaffected.topic").unwrap())
-                    .unwrap(),
+                SubscribeRequest::new("unaffected-subscriber", Topic::<u32>::new("unaffected.topic").unwrap()).unwrap(),
             )
             .await
             .unwrap();
@@ -461,7 +513,10 @@ fn test_dead_letter_failure_emits_once_without_settling_source() {
         other_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("the unrelated subscription still processes messages");
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
         other_runner.join().unwrap().unwrap();
         assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Accept]);
     });
@@ -506,7 +561,10 @@ fn test_cancelled_successful_delivery_does_not_report_handler_failure() {
         assert!(started.load(std::sync::atomic::Ordering::Acquire));
         drop(run);
         complete.store(true, std::sync::atomic::Ordering::Release);
-        let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).await.unwrap();
+        let _ = bus
+            .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+            .await
+            .unwrap();
         assert!(failures.try_recv().is_err());
     });
 }

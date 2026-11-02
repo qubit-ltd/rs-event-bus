@@ -149,13 +149,25 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.record_abandoned_delivery();
         }
         while let Some(mut delivery) = self.buffered.pop_front() {
-            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+            self.emit_failure_diagnostic(
+                delivery.failure_diagnostic.take(),
+                delivery.event_id,
+                self.topic.name().into(),
+            );
         }
         while let Some(mut delivery) = self.completed.pop_front() {
-            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+            self.emit_failure_diagnostic(
+                delivery.failure_diagnostic.take(),
+                delivery.event_id,
+                self.topic.name().into(),
+            );
         }
         while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
-            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+            self.emit_failure_diagnostic(
+                delivery.failure_diagnostic.take(),
+                delivery.event_id,
+                self.topic.name().into(),
+            );
         }
     }
 

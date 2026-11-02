@@ -113,11 +113,7 @@ fn test_dead_letter_retry_error_retains_terminal_context_and_application_error()
         .build()
         .unwrap();
     let retry_error = Retry::new(&config)
-        .run(|| {
-            Err::<(), _>(DeadLetterForwardError::NotAdmitted(
-                AdmissionOutcome::NoDestinations,
-            ))
-        })
+        .run(|| Err::<(), _>(DeadLetterForwardError::NotAdmitted(AdmissionOutcome::NoDestinations)))
         .expect_err("one failed attempt exhausts the retry policy");
 
     assert!(matches!(retry_error.reason(), RetryErrorReason::Exhausted { .. }));

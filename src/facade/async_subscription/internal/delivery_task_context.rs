@@ -297,10 +297,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     origin: "dead_letter_policy".into(),
                     message: source.to_string().into(),
                 });
-                self.signals.fail_dead_letter_forward(
-                    delivery.event().id().clone(),
-                    Box::new(source),
-                );
+                self.signals
+                    .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
                 return;
             }
         }

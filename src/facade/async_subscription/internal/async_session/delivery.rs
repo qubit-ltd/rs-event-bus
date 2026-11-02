@@ -217,7 +217,6 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             lease,
         });
     }
-
 }
 
 impl<T: 'static> AsyncSession<T> {

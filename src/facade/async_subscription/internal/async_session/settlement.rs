@@ -438,7 +438,11 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         }
         self.metrics.record_completed();
         let mut pending = self.completed.remove(index).expect("selected owned delivery");
-        self.emit_failure_diagnostic(pending.failure_diagnostic.take(), pending.event_id.clone(), self.topic.name().into());
+        self.emit_failure_diagnostic(
+            pending.failure_diagnostic.take(),
+            pending.event_id.clone(),
+            self.topic.name().into(),
+        );
     }
 
     /// Releases facade ownership without acknowledging provider-owned durable
