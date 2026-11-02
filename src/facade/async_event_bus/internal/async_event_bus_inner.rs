@@ -14,7 +14,6 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use qubit_clock::Timer;
 use qubit_id::Id;
@@ -139,14 +138,7 @@ impl AsyncEventBusInner {
     /// Strong references to active callbacks for one emission pass.
     #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
-        observers.retain(|entry| entry.strong_count() > 0);
-        observers
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|entry| entry.active.load(Ordering::Acquire))
-            .map(|entry| entry.callback.clone())
-            .collect()
+        ObserverEntry::snapshot(&self.observers)
     }
 
     /// Sends a diagnostic to currently registered observers.

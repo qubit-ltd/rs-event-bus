@@ -183,14 +183,7 @@ impl EventBusInner {
     /// Strong callback owners retained for one diagnostic emission.
     #[must_use]
     pub(in crate::facade) fn observer_snapshot(&self) -> Vec<Arc<DiagnosticObserver>> {
-        let mut observers = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
-        observers.retain(|entry| entry.strong_count() > 0);
-        observers
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|entry| entry.active.load(Ordering::Acquire))
-            .map(|entry| entry.callback.clone())
-            .collect()
+        ObserverEntry::snapshot(&self.observers)
     }
 
     /// Emits a diagnostic with observer panic isolation and no registry lock
