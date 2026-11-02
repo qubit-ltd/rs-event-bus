@@ -35,6 +35,7 @@ use crate::facade::ShutdownReport;
 use crate::facade::SubscriptionControl;
 use crate::facade::event_bus::failure::panic_message;
 use crate::facade::internal::BusContextGuard;
+use crate::facade::internal::CloseFailureLedger;
 use crate::facade::internal::LifecycleState;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::facade::shutdown_coordinator::ShutdownCoordinator;
@@ -75,10 +76,8 @@ pub(in crate::facade) struct EventBusInner {
     pub(in crate::facade) tracker: LifecycleTracker,
     /// Active subscription controls indexed by bus-local ID.
     pub(in crate::facade) subscriptions: Mutex<HashMap<Id, Arc<SubscriptionControl>>>,
-    /// Receiver close failures recorded by subscription workers.
-    pub(in crate::facade) close_errors: Mutex<Vec<Arc<SubscriptionCloseFailure>>>,
-    /// Cached aggregate of receiver close failures.
-    pub(in crate::facade) close_error_snapshot: Mutex<Option<Arc<SubscriptionCloseErrors>>>,
+    /// Bounded history of receiver close failures.
+    pub(in crate::facade) close_failure_ledger: Mutex<CloseFailureLedger>,
     /// Generates bus-local subscription identities.
     pub(in crate::facade) next_subscription_id: AtomicU64,
     /// Weak references to diagnostic observer registrations.
@@ -241,17 +240,20 @@ impl EventBusInner {
     /// # Returns
     /// Some with all failures, or None if no close failure was recorded.
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(errors) = snapshot.as_ref() {
-            return Some(errors.clone());
-        }
-        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
-        if failures.is_empty() {
-            return None;
-        }
-        let errors = Arc::new(SubscriptionCloseErrors::from_failures(failures.clone()));
-        *snapshot = Some(errors.clone());
-        Some(errors)
+        self.close_failure_ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot()
+    }
+
+    /// Adds a canonical failure to the bounded bus history.
+    pub(in crate::facade) fn record_close_failure(&self, failure: &Arc<SubscriptionCloseFailure>) {
+        let stale_snapshot = self
+            .close_failure_ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(failure);
+        drop(stale_snapshot);
     }
 
     /// Joins one worker after the caller has established it has finished.

@@ -28,6 +28,7 @@ use crate::error::SpiError;
 use crate::error::SubscriptionCloseErrors;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::event_bus_facade_config::EventBusFacadeConfig;
+use crate::facade::internal::CloseFailureLedger;
 use crate::facade::internal::DeliveryMetrics;
 use crate::facade::internal::DeliverySchedulerCore;
 use crate::facade::observer_entry::ObserverEntry;
@@ -72,10 +73,8 @@ pub(in crate::facade) struct AsyncEventBusInner {
     pub(in crate::facade) next_subscription_id: AtomicU64,
     /// Active or unstarted subscription shutdown controls.
     pub(in crate::facade) controls: Mutex<HashMap<Id, Arc<dyn AsyncShutdownDriver>>>,
-    /// Subscription receiver close failures accumulated during cleanup.
-    pub(in crate::facade) close_errors: Mutex<Vec<Arc<SubscriptionCloseFailure>>>,
-    /// Cached aggregate view of receiver close failures.
-    pub(in crate::facade) close_error_snapshot: Mutex<Option<Arc<SubscriptionCloseErrors>>>,
+    /// Bounded history of receiver close failures.
+    pub(in crate::facade) close_failure_ledger: Mutex<CloseFailureLedger>,
     /// Weak references to registered diagnostic observers.
     pub(in crate::facade) observers: Mutex<Vec<Weak<ObserverEntry>>>,
     /// Tracks in-flight publishes, subscriptions, and runners.
@@ -168,13 +167,11 @@ impl AsyncEventBusInner {
             return failure.clone();
         }
         let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), error));
-        let failure = control.store_close_error(failure);
-        self.close_errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(failure.clone());
-        *self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        failure
+        let canonical = control.store_close_error(failure.clone());
+        if Arc::ptr_eq(&failure, &canonical) {
+            self.record_close_failure(&failure);
+        }
+        canonical
     }
 
     /// Returns a cached aggregate of recorded close failures, if any exist.
@@ -183,17 +180,20 @@ impl AsyncEventBusInner {
     /// Some with all close failures recorded so far, or None when there are
     /// none.
     pub(in crate::facade) fn close_errors_snapshot(&self) -> Option<Arc<SubscriptionCloseErrors>> {
-        let failures = self.close_errors.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut snapshot = self.close_error_snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(errors) = snapshot.as_ref() {
-            return Some(errors.clone());
-        }
-        if failures.is_empty() {
-            return None;
-        }
-        let errors = Arc::new(SubscriptionCloseErrors::from_failures(failures.clone()));
-        *snapshot = Some(errors.clone());
-        Some(errors)
+        self.close_failure_ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot()
+    }
+
+    /// Adds a canonical failure to the bounded bus history.
+    fn record_close_failure(&self, failure: &Arc<SubscriptionCloseFailure>) {
+        let stale_snapshot = self
+            .close_failure_ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(failure);
+        drop(stale_snapshot);
     }
 }
 

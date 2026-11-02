@@ -33,6 +33,8 @@ use super::SubscriptionCloseFailure;
 pub struct SubscriptionCloseErrors {
     /// Shared close-failure records captured by the bus lifecycle ledger.
     failures: Vec<Arc<SubscriptionCloseFailure>>,
+    /// Total number of distinct subscription close failures observed.
+    total_count: u64,
 }
 
 impl SubscriptionCloseErrors {
@@ -45,17 +47,47 @@ impl SubscriptionCloseErrors {
     /// An immutable collection over the supplied records.
     #[inline]
     pub(crate) fn from_failures(failures: Vec<Arc<SubscriptionCloseFailure>>) -> Self {
-        Self { failures }
+        let total_count = u64::try_from(failures.len()).unwrap_or(u64::MAX);
+        Self { failures, total_count }
     }
 
-    /// Returns the number of failed subscription closes.
+    /// Builds an immutable snapshot from bounded samples and a cumulative
+    /// count.
+    #[inline]
+    pub(crate) fn from_summary(failures: Vec<Arc<SubscriptionCloseFailure>>, total_count: u64) -> Self {
+        Self { failures, total_count }
+    }
+
+    /// Returns the number of retained close-failure samples.
     ///
     /// # Returns
-    /// The number of records in this immutable snapshot.
+    /// The number of records retained in this immutable snapshot.
     #[must_use]
     #[inline]
     pub fn len(&self) -> usize {
         self.failures.len()
+    }
+
+    /// Returns the total number of failed subscription closes observed.
+    #[must_use]
+    #[inline]
+    pub fn total_count(&self) -> u64 {
+        self.total_count
+    }
+
+    /// Returns the number of failures omitted from this bounded snapshot.
+    #[must_use]
+    #[inline]
+    pub fn omitted_count(&self) -> u64 {
+        self.total_count
+            .saturating_sub(u64::try_from(self.failures.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Returns whether this snapshot omits one or more failure records.
+    #[must_use]
+    #[inline]
+    pub fn is_truncated(&self) -> bool {
+        self.omitted_count() != 0
     }
 
     /// Returns whether no subscription close failed.
@@ -65,7 +97,7 @@ impl SubscriptionCloseErrors {
     #[must_use]
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.failures.is_empty()
+        self.total_count == 0
     }
 
     /// Iterates over every failed subscription and its original provider error.
@@ -91,7 +123,13 @@ impl fmt::Display for SubscriptionCloseErrors {
     /// # Errors
     /// Returns `fmt::Error` if the formatter cannot accept the summary.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} subscription close failure(s)", self.len())?;
+        write!(
+            formatter,
+            "{} subscription close failure(s) ({} retained, {} omitted)",
+            self.total_count,
+            self.len(),
+            self.omitted_count(),
+        )?;
         for failure in &self.failures {
             write!(formatter, "; {failure}")?;
         }

@@ -9,10 +9,12 @@
 
 pub(super) use bus_context_guard::BusContextGuard;
 pub(super) use bus_context_guard::is_current_bus_context;
+pub(super) use close_failure_ledger::CloseFailureLedger;
 pub(super) use erased_middleware_list::ErasedMiddlewareList;
 pub(super) use lifecycle_state::LifecycleState;
 
 mod bus_context_guard;
+mod close_failure_ledger;
 mod erased_middleware_list;
 mod lifecycle_state;
 

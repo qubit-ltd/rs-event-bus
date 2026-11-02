@@ -577,11 +577,7 @@ fn run_subscription_worker_body<T>(
         inner.emit_internal("subscription_close", error.to_string());
         let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), error));
         control.record_close_error(failure.clone());
-        inner
-            .close_errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(failure);
+        inner.record_close_failure(&failure);
     }
     // Provider close is the recovery boundary for every unresolved token.
     for (_, delivery) in owned.drain() {

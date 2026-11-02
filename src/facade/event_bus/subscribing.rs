@@ -416,14 +416,8 @@ pub(in crate::facade) fn cleanup_failed_worker_spawn(
         && let Err(close_error) = close_spi_subscription(inner, subscriber_id, &mut *spi_subscription)
     {
         inner.emit_internal("subscription_spawn_close", close_error.to_string());
-        inner
-            .close_errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Arc::new(SubscriptionCloseFailure::new(
-                subscriber_id.clone(),
-                close_error,
-            )));
+        let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), close_error));
+        inner.record_close_failure(&failure);
     }
     SubscribeError::Spi(SpiError::Operation {
         provider_id: inner.provider_id.as_str().into(),
