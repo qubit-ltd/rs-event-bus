@@ -202,13 +202,16 @@ impl EventBusSpi for LocalEventBusSpi {
             if bucket.is_some_and(|bucket| bucket.payload_type_id.is_some_and(|type_id| type_id != payload_type_id)) {
                 return Err(pre_admission_publish_error(Some(topic.as_str()), "topic_type_conflict"));
             }
-            queues
-        };
-        if self.shared.outstanding.requires_weight() {
-            if message.native_payload_weight_bytes().is_none() {
+            if self.shared.outstanding.requires_weight() && message.native_payload_weight_bytes().is_none() {
                 return Err(missing_native_payload_weight_error(topic.as_str()));
             }
-        } else {
+            let mut queues = queues;
+            if let Some(bucket) = state.topics.get_mut(&topic) {
+                bucket.rotate_publish_queues(&mut queues);
+            }
+            queues
+        };
+        if !self.shared.outstanding.requires_weight() {
             event.weight_bytes = 0;
         }
         let mut admissions = Vec::new();
@@ -240,6 +243,7 @@ impl EventBusSpi for LocalEventBusSpi {
         if admitted_any {
             signal_changed(&self.shared);
         }
+        admissions.sort_unstable_by_key(DestinationAdmission::subscription_id);
         Ok(PublishAcknowledgement::DestinationAdmissions(admissions))
     }
 

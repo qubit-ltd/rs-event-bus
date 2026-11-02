@@ -170,7 +170,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),
             };
             let mailboxes = {
-                let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if bus.closed {
                     return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
                 }
@@ -181,13 +181,12 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 {
                     return Err(pre_admission_publish_error(Some(topic.as_str()), "topic_type_conflict"));
                 }
-                bus.mailboxes_for_topic(&topic)
-            };
-            if self.shared.outstanding.requires_weight() {
-                if message.native_payload_weight_bytes().is_none() {
+                if self.shared.outstanding.requires_weight() && message.native_payload_weight_bytes().is_none() {
                     return Err(missing_native_payload_weight_error(topic.as_str()));
                 }
-            } else {
+                bus.publish_mailboxes_for_topic(&topic)
+            };
+            if !self.shared.outstanding.requires_weight() {
                 event.weight_bytes = 0;
             }
             let mut admissions = Vec::with_capacity(mailboxes.len());
@@ -216,6 +215,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             if !admissions.is_empty() {
                 self.shared.changed.notify_all();
             }
+            admissions.sort_unstable_by_key(DestinationAdmission::subscription_id);
             Ok(PublishAcknowledgement::DestinationAdmissions(admissions))
         })
     }

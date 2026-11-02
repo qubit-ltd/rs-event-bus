@@ -1208,6 +1208,215 @@ fn test_provider_total_capacity_preserves_partial_destination_admissions() {
 }
 
 #[test]
+fn test_local_admission_rotates_after_settlement() {
+    let spi = create(&LocalEventBusConfig::new().max_total_outstanding(1));
+    let mut later = spi.subscribe(request(22, "capacity.rotate")).unwrap();
+    let mut earlier = spi.subscribe(request(11, "capacity.rotate")).unwrap();
+    let expected_accepted_ids = [11_u64, 22, 11, 22, 11, 22];
+
+    for (round, expected_id) in expected_accepted_ids.into_iter().enumerate() {
+        let PublishAcknowledgement::DestinationAdmissions(admissions) =
+            spi.publish(outbound("capacity.rotate", round as u32)).unwrap()
+        else {
+            panic!("local provider reports per-destination admissions");
+        };
+        assert_eq!(
+            [11, 22],
+            admissions
+                .iter()
+                .map(|a| a.subscription_id().value())
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        let accepted = admissions
+            .iter()
+            .filter(|a| matches!(a.status(), AdmissionStatus::Accepted))
+            .collect::<Vec<_>>();
+        assert_eq!(1, accepted.len());
+        assert_eq!(expected_id, accepted[0].subscription_id().value());
+        let (receiver, other) = if expected_id == 11 {
+            (&mut earlier, &mut later)
+        } else {
+            (&mut later, &mut earlier)
+        };
+        let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
+            panic!("accepted target must receive its event");
+        };
+        assert!(matches!(
+            other.receive(Duration::ZERO).unwrap(),
+            ReceiveOutcome::TimedOut
+        ));
+        receiver
+            .settle(
+                &message
+                    .take_settlement()
+                    .expect("accepted delivery has a settlement token"),
+                DeliveryDisposition::Accept,
+            )
+            .unwrap();
+    }
+    earlier.close().unwrap();
+    later.close().unwrap();
+}
+
+#[test]
+fn test_local_admission_rotates_three_targets() {
+    let spi = create(&LocalEventBusConfig::new().max_total_outstanding(1));
+    let mut first = spi.subscribe(request(11, "capacity.rotate-three")).unwrap();
+    let mut second = spi.subscribe(request(22, "capacity.rotate-three")).unwrap();
+    let mut third = spi.subscribe(request(33, "capacity.rotate-three")).unwrap();
+
+    for (round, expected_id) in [11_u64, 22, 33, 11, 22, 33].into_iter().enumerate() {
+        let PublishAcknowledgement::DestinationAdmissions(admissions) =
+            spi.publish(outbound("capacity.rotate-three", round as u32)).unwrap()
+        else {
+            panic!("local provider reports per-destination admissions");
+        };
+        assert_eq!(
+            [11, 22, 33],
+            admissions
+                .iter()
+                .map(|a| a.subscription_id().value())
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        let accepted = admissions
+            .iter()
+            .filter(|a| matches!(a.status(), AdmissionStatus::Accepted))
+            .collect::<Vec<_>>();
+        assert_eq!(1, accepted.len());
+        assert_eq!(expected_id, accepted[0].subscription_id().value());
+        let receiver: &mut dyn EventSubscriptionSpi = match expected_id {
+            11 => first.as_mut(),
+            22 => second.as_mut(),
+            33 => third.as_mut(),
+            _ => unreachable!(),
+        };
+        let ReceiveOutcome::Message(mut message) = receiver.receive(Duration::ZERO).unwrap() else {
+            panic!("accepted target must receive its event");
+        };
+        receiver
+            .settle(
+                &message
+                    .take_settlement()
+                    .expect("accepted delivery has a settlement token"),
+                DeliveryDisposition::Accept,
+            )
+            .unwrap();
+        for (id, rejected) in [(11, &mut first), (22, &mut second), (33, &mut third)] {
+            if id != expected_id {
+                assert!(matches!(
+                    rejected.receive(Duration::ZERO).unwrap(),
+                    ReceiveOutcome::TimedOut
+                ));
+            }
+        }
+    }
+    first.close().unwrap();
+    second.close().unwrap();
+    third.close().unwrap();
+}
+
+#[test]
+fn test_local_admission_rotation_survives_full_capacity_and_membership_changes() {
+    let config = LocalEventBusConfig::new()
+        .max_total_outstanding(8)
+        .max_total_outstanding_weight_bytes(NonZeroUsize::new(1).unwrap());
+    let spi = create(&config);
+    let mut first = spi.subscribe(request(11, "capacity.rotate-changes")).unwrap();
+    let mut second = spi.subscribe(request(22, "capacity.rotate-changes")).unwrap();
+    let weighted_publish =
+        |id| outbound("capacity.rotate-changes", id).with_native_payload_weight_bytes(NonZeroUsize::new(1).unwrap());
+
+    let PublishAcknowledgement::DestinationAdmissions(first_admissions) = spi.publish(weighted_publish(1)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert!(matches!(first_admissions[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = first.receive(Duration::ZERO).unwrap() else {
+        panic!("initial target receives its event");
+    };
+    first
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+
+    assert_eq!(
+        Some(true),
+        spi.wait_for_topic_idle(
+            &TopicAddress::new("capacity.rotate-changes").unwrap(),
+            Some(Duration::ZERO)
+        )
+        .unwrap()
+    );
+    let PublishAcknowledgement::DestinationAdmissions(second_admissions) = spi.publish(weighted_publish(2)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert!(matches!(second_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = second.receive(Duration::ZERO).unwrap() else {
+        panic!("successor target receives its event");
+    };
+
+    let PublishAcknowledgement::DestinationAdmissions(full_admissions) = spi.publish(weighted_publish(3)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert!(
+        full_admissions
+            .iter()
+            .all(|admission| matches!(admission.status(), AdmissionStatus::Rejected(_)))
+    );
+    second
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(after_full_admissions) =
+        spi.publish(weighted_publish(4)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert!(matches!(after_full_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = second.receive(Duration::ZERO).unwrap() else {
+        panic!("rotated target receives after a rejected round");
+    };
+    second
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+
+    second.close().unwrap();
+    let mut inserted = spi.subscribe(request(33, "capacity.rotate-changes")).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(inserted_admissions) = spi.publish(weighted_publish(5)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert!(matches!(inserted_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = inserted.receive(Duration::ZERO).unwrap() else {
+        panic!("new successor target receives its event");
+    };
+    inserted
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+
+    first.close().unwrap();
+    inserted.close().unwrap();
+    let mut recreated_first = spi.subscribe(request(7, "capacity.rotate-changes")).unwrap();
+    let mut recreated_second = spi.subscribe(request(9, "capacity.rotate-changes")).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(recreated_admissions) = spi.publish(weighted_publish(6)).unwrap()
+    else {
+        panic!("local provider reports per-destination admissions");
+    };
+    assert_eq!(7, recreated_admissions[0].subscription_id().value());
+    assert!(matches!(recreated_admissions[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = recreated_first.receive(Duration::ZERO).unwrap() else {
+        panic!("rebuilt topic starts from its minimum ID");
+    };
+    recreated_first
+        .settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+    recreated_first.close().unwrap();
+    recreated_second.close().unwrap();
+}
+
+#[test]
 fn test_settlement_rejects_token_from_another_subscription() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(31, "events")).unwrap();

@@ -233,6 +233,7 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
     let mut publications = 0;
     let mut elapsed = Duration::ZERO;
     let mut shutdown = false;
+    let mut last_admission_start = None;
 
     for chunk in input[..input.len().min(MAX_INPUT)].chunks(64).take(MAX_OPERATIONS) {
         let opcode = chunk[0] % 11;
@@ -288,18 +289,43 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                         .filter(|subscription| !subscription.closed)
                         .count();
                     assert_eq!(destinations.len(), live);
-                    for destination in destinations {
+                    let mut route_ids = subscriptions
+                        .iter()
+                        .flatten()
+                        .filter(|subscription| !subscription.closed)
+                        .map(|subscription| subscription.id)
+                        .collect::<Vec<_>>();
+                    route_ids.sort_unstable();
+                    let route_start = last_admission_start
+                        .and_then(|last| route_ids.iter().position(|id| *id > last))
+                        .unwrap_or(0);
+                    route_ids.rotate_left(route_start);
+                    last_admission_start = route_ids.first().copied();
+                    let destination_statuses = destinations
+                        .into_iter()
+                        .map(|destination| {
+                            (
+                                destination.subscription_id(),
+                                destination.status() == &AdmissionStatus::Accepted,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    for id in route_ids {
                         let subscription = subscriptions
                             .iter_mut()
                             .flatten()
-                            .find(|subscription| subscription.id == destination.subscription_id())
+                            .find(|subscription| subscription.id == id)
                             .expect("admission belongs to a live receiver");
+                        let accepted = destination_statuses
+                            .iter()
+                            .find(|(destination_id, _)| *destination_id == id)
+                            .expect("admission status belongs to a live receiver")
+                            .1;
                         let available = subscription.outstanding() < QUEUE_CAPACITY
                             && outstanding < TOTAL_CAPACITY
                             && weight_limit.is_none_or(|_| outstanding_weight + weight <= WEIGHT_LIMIT);
                         assert_eq!(
-                            destination.status() == &AdmissionStatus::Accepted,
-                            available,
+                            accepted, available,
                             "capacity admission matches externally tracked ownership"
                         );
                         if available {
@@ -417,10 +443,16 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                     // Close discards pending and unsettled deliveries from the
                     // model.
                 }
+                if subscriptions.iter().flatten().all(|subscription| subscription.closed) {
+                    last_admission_start = None;
+                }
             }
             9 => {
                 if let Some(subscription) = subscriptions[index].take() {
                     drop(subscription);
+                }
+                if subscriptions.iter().flatten().all(|subscription| subscription.closed) {
+                    last_admission_start = None;
                 }
             }
             10 => {

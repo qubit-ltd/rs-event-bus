@@ -31,6 +31,8 @@ pub(in crate::local) struct AsyncBusState {
     pub(in crate::local) mailboxes: HashMap<MailboxKey, Arc<AsyncMailbox>>,
     /// Subscription IDs grouped by topic in deterministic order for routing.
     topic_members: HashMap<TopicAddress, BTreeSet<Id>>,
+    /// Previous publish start for each active topic.
+    admission_starts: HashMap<TopicAddress, Id>,
     /// Native payload type bound to each active topic.
     pub(in crate::local) payload_types: HashMap<TopicAddress, TypeId>,
 }
@@ -59,6 +61,23 @@ impl AsyncBusState {
             .filter_map(|id| self.mailboxes.get(&MailboxKey { subscription_id: *id }).cloned())
             .collect::<Vec<_>>();
         debug_assert!(mailboxes.iter().all(|mailbox| mailbox.queue.topic == *topic));
+        mailboxes
+    }
+
+    /// Returns a publish snapshot rotated to the successor of its previous
+    /// start, updating the topic cursor while the caller holds the state lock.
+    #[must_use = "use the mailboxes indexed for this topic"]
+    pub(in crate::local) fn publish_mailboxes_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<AsyncMailbox>> {
+        let mut mailboxes = self.mailboxes_for_topic(topic);
+        if !mailboxes.is_empty() {
+            let start = self
+                .admission_starts
+                .get(topic)
+                .and_then(|last| mailboxes.iter().position(|mailbox| mailbox.queue.id > *last))
+                .unwrap_or(0);
+            mailboxes.rotate_left(start);
+            self.admission_starts.insert(topic.clone(), mailboxes[0].queue.id);
+        }
         mailboxes
     }
 
@@ -129,6 +148,7 @@ impl AsyncBusState {
             debug_assert!(removed, "primary mailbox entry must appear in its topic index");
             if members.is_empty() {
                 self.topic_members.remove(topic);
+                self.admission_starts.remove(topic);
             }
         }
         true
@@ -141,6 +161,7 @@ impl AsyncBusState {
     #[must_use = "Use the returned mailboxes to complete their shutdown."]
     pub(in crate::local) fn drain_mailboxes(&mut self) -> Vec<Arc<AsyncMailbox>> {
         self.topic_members.clear();
+        self.admission_starts.clear();
         take(&mut self.mailboxes).into_values().collect()
     }
 }

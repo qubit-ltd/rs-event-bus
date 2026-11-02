@@ -12,6 +12,7 @@ mod support;
 use std::any::TypeId;
 use std::env;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::mpsc;
@@ -44,8 +45,10 @@ use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EncodedPayload;
+use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
@@ -604,7 +607,7 @@ fn test_async_local_topic_index_preserves_fanout_and_removes_closed_routes() {
 }
 
 #[test]
-fn test_async_local_budget_admission_follows_subscription_id() {
+fn test_async_local_admission_rotates_after_settlement() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
     let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
     let bus = AsyncEventBus::from_spi(
@@ -618,25 +621,50 @@ fn test_async_local_budget_admission_follows_subscription_id() {
         .expect("async subscription must be created");
     let topic = Topic::<String>::new("async.local.ordered-budget").expect("static test topic must be valid");
 
-    for payload in ["first", "second"] {
+    for (round, expected_id) in [11_u64, 22, 11, 22, 11, 22].into_iter().enumerate() {
         let receipt = block_on(bus.publish(
-            PublishRequest::new(topic.clone(), payload.to_owned()).expect("test publish request must be valid"),
+            PublishRequest::new(topic.clone(), format!("round-{round}")).expect("test publish request must be valid"),
         ))
         .expect("publish request must be admitted");
         let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
             panic!("local provider reports per-subscription admissions");
         };
-        assert_eq!(11, admissions[0].subscription_id().value());
-        assert!(matches!(admissions[0].status(), AdmissionStatus::Accepted));
-        assert_eq!(22, admissions[1].subscription_id().value());
-        assert!(matches!(admissions[1].status(), AdmissionStatus::Rejected(_)));
-        let ReceiveOutcome::Message(mut message) =
-            block_on(earlier.receive(Duration::ZERO)).expect("local receiver must return an outcome")
-        else {
-            panic!("lower subscription ID is selected first");
+        assert_eq!(
+            [11, 22],
+            admissions
+                .iter()
+                .map(|a| a.subscription_id().value())
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        let accepted = admissions
+            .iter()
+            .filter(|a| matches!(a.status(), AdmissionStatus::Accepted))
+            .collect::<Vec<_>>();
+        assert_eq!(1, accepted.len());
+        assert_eq!(expected_id, accepted[0].subscription_id().value());
+        assert!(
+            admissions
+                .iter()
+                .any(|a| a.subscription_id().value() != expected_id
+                    && matches!(a.status(), AdmissionStatus::Rejected(_)))
+        );
+        let (receiver, other) = if expected_id == 11 {
+            (&mut earlier, &mut later)
+        } else {
+            (&mut later, &mut earlier)
         };
+        let ReceiveOutcome::Message(mut message) =
+            block_on(receiver.receive(Duration::ZERO)).expect("accepted target receives its event")
+        else {
+            panic!("accepted target must receive its event");
+        };
+        assert!(matches!(
+            block_on(other.receive(Duration::ZERO)).expect("rejected target has no event"),
+            ReceiveOutcome::TimedOut
+        ));
         block_on(
-            earlier.settle(
+            receiver.settle(
                 &message
                     .take_settlement()
                     .expect("message must carry its expected settlement token"),
@@ -648,6 +676,181 @@ fn test_async_local_budget_admission_follows_subscription_id() {
     block_on(earlier.close()).expect("local receiver close must complete");
     block_on(later.close()).expect("local receiver close must complete");
     let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+}
+
+#[test]
+fn test_async_local_admission_rotates_three_targets() {
+    let config = LocalEventBusConfig::new().max_total_outstanding(1);
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("local").expect("static local provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let mut first = block_on(spi.subscribe(spi_request(11, "first", "async.local.rotate-three")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(22, "second", "async.local.rotate-three")))
+        .expect("async subscription must be created");
+    let mut third = block_on(spi.subscribe(spi_request(33, "third", "async.local.rotate-three")))
+        .expect("async subscription must be created");
+    let topic = Topic::<String>::new("async.local.rotate-three").expect("static test topic must be valid");
+
+    for (round, expected_id) in [11_u64, 22, 33, 11, 22, 33].into_iter().enumerate() {
+        let receipt = block_on(bus.publish(
+            PublishRequest::new(topic.clone(), format!("round-{round}")).expect("test publish request must be valid"),
+        ))
+        .expect("publish request must be admitted");
+        let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
+            panic!("local provider reports per-subscription admissions");
+        };
+        assert_eq!(
+            [11, 22, 33],
+            admissions
+                .iter()
+                .map(|a| a.subscription_id().value())
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+        let accepted = admissions
+            .iter()
+            .filter(|a| matches!(a.status(), AdmissionStatus::Accepted))
+            .collect::<Vec<_>>();
+        assert_eq!(1, accepted.len());
+        assert_eq!(expected_id, accepted[0].subscription_id().value());
+        let receiver: &mut dyn AsyncEventSubscriptionSpi = match expected_id {
+            11 => first.as_mut(),
+            22 => second.as_mut(),
+            33 => third.as_mut(),
+            _ => unreachable!(),
+        };
+        let ReceiveOutcome::Message(mut message) = block_on(receiver.receive(Duration::ZERO)).expect("receive") else {
+            panic!("accepted target must receive its event");
+        };
+        block_on(
+            receiver.settle(
+                &message
+                    .take_settlement()
+                    .expect("accepted delivery has a settlement token"),
+                DeliveryDisposition::Accept,
+            ),
+        )
+        .expect("settlement succeeds");
+        for (id, rejected) in [(11, &mut first), (22, &mut second), (33, &mut third)] {
+            if id != expected_id {
+                assert!(matches!(
+                    block_on(rejected.receive(Duration::ZERO)).expect("rejected target has no event"),
+                    ReceiveOutcome::TimedOut
+                ));
+            }
+        }
+    }
+    block_on(first.close()).expect("receiver closes");
+    block_on(second.close()).expect("receiver closes");
+    block_on(third.close()).expect("receiver closes");
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+}
+
+#[test]
+fn test_async_local_admission_rotation_survives_full_capacity_and_membership_changes() {
+    let config = LocalEventBusConfig::new()
+        .max_total_outstanding(8)
+        .max_total_outstanding_weight_bytes(NonZeroUsize::new(1).unwrap());
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&config).expect("local SPI must accept its configuration"));
+    let mut first = block_on(spi.subscribe(spi_request(11, "first", "async.local.rotate-changes")))
+        .expect("async subscription must be created");
+    let mut second = block_on(spi.subscribe(spi_request(22, "second", "async.local.rotate-changes")))
+        .expect("async subscription must be created");
+    let weighted_publish = |id: u32| {
+        OutboundMessage::new(
+            TopicAddress::new("async.local.rotate-changes").unwrap(),
+            EventId::new(format!("event-{id}")).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(id.to_string())),
+        )
+        .with_native_payload_weight_bytes(NonZeroUsize::new(1).unwrap())
+    };
+
+    let PublishAcknowledgement::DestinationAdmissions(first_admissions) =
+        block_on(spi.publish(weighted_publish(1))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert!(matches!(first_admissions[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("initial target receives its event");
+    };
+    block_on(first.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+
+    let PublishAcknowledgement::DestinationAdmissions(second_admissions) =
+        block_on(spi.publish(weighted_publish(2))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert!(matches!(second_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("successor target receives its event");
+    };
+
+    let PublishAcknowledgement::DestinationAdmissions(full_admissions) =
+        block_on(spi.publish(weighted_publish(3))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert!(
+        full_admissions
+            .iter()
+            .all(|admission| matches!(admission.status(), AdmissionStatus::Rejected(_)))
+    );
+    block_on(second.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(after_full_admissions) =
+        block_on(spi.publish(weighted_publish(4))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert!(matches!(after_full_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("rotated target receives after a rejected round");
+    };
+    block_on(second.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+
+    block_on(second.close()).unwrap();
+    let mut inserted = block_on(spi.subscribe(spi_request(33, "inserted", "async.local.rotate-changes")))
+        .expect("async subscription must be created");
+    let PublishAcknowledgement::DestinationAdmissions(inserted_admissions) =
+        block_on(spi.publish(weighted_publish(5))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert!(matches!(inserted_admissions[1].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = block_on(inserted.receive(Duration::ZERO)).unwrap() else {
+        panic!("new successor target receives its event");
+    };
+    block_on(inserted.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+
+    block_on(first.close()).unwrap();
+    block_on(inserted.close()).unwrap();
+    let mut recreated_first = block_on(spi.subscribe(spi_request(7, "recreated-first", "async.local.rotate-changes")))
+        .expect("async subscription must be created");
+    let mut recreated_second =
+        block_on(spi.subscribe(spi_request(9, "recreated-second", "async.local.rotate-changes")))
+            .expect("async subscription must be created");
+    let PublishAcknowledgement::DestinationAdmissions(recreated_admissions) =
+        block_on(spi.publish(weighted_publish(6))).unwrap()
+    else {
+        panic!("local provider reports per-subscription admissions");
+    };
+    assert_eq!(7, recreated_admissions[0].subscription_id().value());
+    assert!(matches!(recreated_admissions[0].status(), AdmissionStatus::Accepted));
+    let ReceiveOutcome::Message(mut message) = block_on(recreated_first.receive(Duration::ZERO)).unwrap() else {
+        panic!("rebuilt topic starts from its minimum ID");
+    };
+    block_on(recreated_first.settle(&message.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+    block_on(recreated_first.close()).unwrap();
+    block_on(recreated_second.close()).unwrap();
+    let _ = block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
 #[test]

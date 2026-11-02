@@ -23,6 +23,8 @@ pub(in crate::local) struct TopicSubscriptions {
     pub(in crate::local) queues: BTreeMap<Id, Weak<LocalQueue>>,
     /// Payload type bound while this bucket has live subscriptions.
     pub(in crate::local) payload_type_id: Option<TypeId>,
+    /// Previous publish's first admission target.
+    pub(in crate::local) last_admission_start: Option<Id>,
 }
 
 impl TopicSubscriptions {
@@ -38,6 +40,20 @@ impl TopicSubscriptions {
             self.payload_type_id = None;
         }
         queues
+    }
+
+    /// Rotates a live, ID-ordered snapshot to the successor of the previous
+    /// publish start and records the new start.
+    pub(in crate::local) fn rotate_publish_queues(&mut self, queues: &mut [Arc<LocalQueue>]) {
+        if queues.is_empty() {
+            return;
+        }
+        let start = self
+            .last_admission_start
+            .and_then(|last| queues.iter().position(|queue| queue.id > last))
+            .unwrap_or(0);
+        queues.rotate_left(start);
+        self.last_admission_start = Some(queues[0].id);
     }
 
     /// Removes an entry only when it still points to the closing queue.
