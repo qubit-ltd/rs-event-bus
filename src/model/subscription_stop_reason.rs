@@ -16,7 +16,9 @@ use crate::model::SettlementTermination;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DeliveryGap;
 
-/// Why new receives stopped; durable source deliveries remain unsettled.
+/// Why new receives stopped. Recovery of durable source deliveries follows the
+/// provider's settlement contract because a settlement failure does not prove
+/// that the provider did not apply the requested disposition.
 ///
 /// The subscription retains the first terminal cause in a shared owner.
 /// Receiving can resume only through a new subscription after compatibility is

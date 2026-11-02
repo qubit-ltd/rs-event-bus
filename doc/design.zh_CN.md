@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.20）
+# Qubit Event Bus 设计文档（0.21）
 
-> 本文档以 `qubit-event-bus` 0.20.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.21.0 的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -85,7 +85,7 @@ provider 通过 `EventBusCapabilities` 如实报告自己能做什么。facade �
 
 **(P6) 发布回执、应用确认、传输 settlement 是三件不同的事。**
 `PublishReceipt` 记录 provider 调用的结果，可报告接纳、部分接纳、无目的地、丢弃或不透明确认；
-它不代表任何订阅者处理完成。`PublishGuarantee` 描述 provider 接纳所承诺的保证。
+它不代表任何订阅者处理完成。`PublishGuarantee` 描述 provider 接纳所承诺的保证：各等级按强度累积，`FireAndForget` 表示发送／提交尝试已完成但无正向接纳确认，`Accepted` 增加 provider 声明的接纳边界，`Confirmed` 增加 provider 已观察到的传输端正向确认，`DurablyStored` 再增加已说明故障模型的持久存储边界。这些等级均不表示 handler 已完成。local 与 Redis 保持 `Accepted`；Redis `XADD` 成功不自动升级保证。
 `Acknowledgement` 是 handler 层面的
 业务决定（`AckMode::Auto/Manual`）；`SettlementToken` + `DeliveryDisposition`
 是 facade 与 provider 之间的传输层确认。三者解耦，避免"发布返回了 = 处理完了"
@@ -110,7 +110,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 本 crate **不重导出**这些类型，调用方按需依赖对应 crate，避免版本耦合。
 
 **(P10) 生命周期显式且幂等。**
-`shutdown(ShutdownMode)` 是唯一停机入口，重复调用安全；停机后 API
+`shutdown(ShutdownMode)` 与 `request_shutdown(ShutdownMode)` 是停机入口：前者等待完成，后者返回可复用 ticket 供后续观察；重复调用安全；停机后 API
 返回 `Closed`；`Immediate` 可以加强正在进行的 `Graceful`；drop 订阅句柄
 不等于取消订阅（同步侧），或者等于立即处置（异步侧），但两者都有明确定义。
 
@@ -195,7 +195,7 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.20.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，版本 `0.21.0`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
@@ -265,7 +265,7 @@ pub struct EventEnvelope<T> {
   在 builder `build()` 里校验完，`publish`/`subscribe` 内部不再有"参数组合非法"的分支。
 - `PublishOptions<T>`/`SubscribeOptions<T>` 的字段是 `pub(crate)`，
   外部只能经 builder 设置，从而保证保留头、非法 delay 等在构造期被拒。
-- request 对象可 `Clone`（拦截器等用 `Arc` 共享），便于在测试和重发场景复用。
+- request 对象不保证实现 `Clone`。当具体 topic、envelope 和 options 支持克隆时，调用方可用这些可复用对象重建 request；若重发同一逻辑事件，须显式保留原 event ID。request builder 会校验重试配置；`new(...).with_options(...)` 等组合仍由 facade 在回调和 provider 调用前再次校验。
 
 `PublishOptions<T>` 内含：`retry_policy`、`retry_rule`（`Arc<dyn RetryRule<PublishAttemptError>>`）、
 `retry_cancellation_token`、`interceptors: Vec<Arc<PublisherInterceptor<T>>>`、
@@ -892,20 +892,20 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
 `publish(request)` 的步骤（`publish_all` 对每个请求顺序执行，逐条收集结果）：
 
 1. **生命周期门禁**：bus 非 `Running` → `PublishError::Closed`。
-2. **请求级 typed 拦截器**：`Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`，
+2. **重试配置校验**：没有 `retry_policy` 却配置 `retry_rule` 或 cancellation token 时，
+   在任何用户回调、codec 或 SPI 操作之前返回配置错误。请求 builder 与 facade 执行路径
+   都会检查这组配对关系，包括 `new(...).with_options(...)` 组合。
+3. **请求级 typed 拦截器**：`Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`，
    按注册顺序链式执行；可以转换 envelope，但不能改变事件 ID；改变 ID 会在 SPI 调用前
    返回配置错误；返回 `None` 表示丢弃 → 回执 `AdmissionOutcome::Dropped`；
    panic 被隔离为 `PublishError::InterceptorPanicked`。
-3. **全局 metadata 拦截器**：只能改 headers；任一返回 `false` → 丢弃。
-4. **死信头保护**：无论拦截器如何改动，如果原始 envelope 带死信头，重新写回，
+4. **全局 metadata 拦截器**：只能改 headers；任一返回 `false` → 丢弃。
+5. **死信头保护**：无论拦截器如何改动，如果原始 envelope 带死信头，重新写回，
    保证死信身份不丢。
-5. **能力校验**：`delay.is_some()` 且 `DelayedDeliveryCapability::None`；
+6. **能力校验**：`delay.is_some()` 且 `DelayedDeliveryCapability::None`；
    `ordering_key.is_some()` 且 `OrderingCapability::None` → `PublishError::Capability`。
-6. **载荷准备**：依据 `PayloadModes` 选 `Native`/`Encoded`；`Encoded` 时用 codec 编码，
+7. **载荷准备**：依据 `PayloadModes` 选 `Native`/`Encoded`；`Encoded` 时用 codec 编码，
    得到 `OutboundMessage`。
-7. **重试配置校验**：没有 `retry_policy` 却配置 `retry_rule` 或 cancellation token 时，
-   返回配置错误；校验发生在拦截器、错误处理器和 SPI 调用之前。请求 builder 与执行路径
-   都会检查这组配对关系。
 8. **重试发布**：若配置 `retry_policy`，用 `qubit_retry::Retry`（同步）/
    `AsyncRetry`（异步，带 `Timer`）包裹 `spi.publish`。重试判定综合
    `SpiError::retryable()` 与用户 `RetryRule<PublishAttemptError>`；
@@ -1592,15 +1592,14 @@ timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有�
 
 ## 16. 公开 API 稳定性
 
-下一个 minor release 将停机关闭错误历史限制为最早的 256 条记录。`len()` 和 `iter()`
+0.21 将停机关闭错误历史限制为最早的 256 条记录。`len()` 和 `iter()`
 描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。
 总数在 `u64::MAX` 饱和。限制的是记录数，不是 provider 错误自身大小或应用保留的快照；
 即使截断，shutdown 仍返回错误。没有 retry policy 的 retry rule/token 将成为配置错误，
 并在回调或 provider 工作前验证。Strict 异步 conformance 还要求新增
 `subscribe_cancellation` hook；完整 hook 字面量须初始化它，或使用 `..Default::default()`。
 `Diagnostic::AdmissionRejected` 新增 `subscription_id` 后，显式构造该变体或完整解构字段的
-调用方须补上此字段或使用 `..`；该源码变更应安排在下一个兼容性发布窗口（0.21.x），不能当作
-0.20.x 补丁无感发布。
+调用方须补上此字段或使用 `..`；这些源码变化属于 0.21；不能作为 0.20.x 补丁无感发布。
 
 以下类型构成需要谨慎演进的稳定边界：
 
@@ -1633,7 +1632,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 ---
 
-*本文档随 `qubit-event-bus` 0.20.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
+*本文档随 `qubit-event-bus` 0.21.x 维护；修改 facade/SPI 行为时应同时更新本文档与 [英文版](design.md) 的对应章节。*
 
 ## Provider specification compile probe
 
@@ -1944,4 +1943,4 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.20；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。核心 0.21 与历史 Redis 0.7／task 0.10 组合尚未验证；需要先迁移对应 checkout 的 core 约束。

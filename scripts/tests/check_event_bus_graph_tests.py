@@ -27,15 +27,15 @@ def metadata(*versions):
 
 class GraphTests(unittest.TestCase):
     def test_accepts_new_minor(self):
-        gate.validate_graph(metadata("0.20.0"), require_bus=True)
+        gate.validate_graph(metadata("0.21.0"), require_bus=True)
 
     def test_rejects_old_minor(self):
-        with self.assertRaisesRegex(ValueError, "0.20"):
-            gate.validate_graph(metadata("0.19.0"), require_bus=True)
+        with self.assertRaisesRegex(ValueError, "0.21"):
+            gate.validate_graph(metadata("0.20.1"), require_bus=True)
 
     def test_rejects_mixed_old_and_new_minor(self):
         with self.assertRaisesRegex(ValueError, "multiple"):
-            gate.validate_graph(metadata("0.19.0", "0.20.0"), require_bus=True)
+            gate.validate_graph(metadata("0.20.1", "0.21.0"), require_bus=True)
 
     def test_controlled_layout_covers_exactly_the_seven_event_bus_consumers(self):
         expected = (
@@ -60,13 +60,13 @@ class GraphTests(unittest.TestCase):
                 self.assertTrue(gate.requires_bus(root / name / "Cargo.toml", root))
 
     def test_rejects_duplicate_registry_and_path_packages(self):
-        graph = metadata("0.20.0", "0.20.0")
+        graph = metadata("0.21.0", "0.21.0")
         graph["packages"][2]["source"] = "registry+https://example.invalid"
         with self.assertRaisesRegex(ValueError, "multiple"):
             gate.validate_graph(graph, require_bus=True)
 
     def test_rejects_registry_in_controlled_layout(self):
-        graph = metadata("0.20.0")
+        graph = metadata("0.21.0")
         graph["packages"][1]["source"] = "registry+https://example.invalid"
         with self.assertRaisesRegex(ValueError, "local"):
             gate.validate_graph(graph, require_bus=True,
@@ -74,7 +74,7 @@ class GraphTests(unittest.TestCase):
 
     def test_rejects_wrong_local_core(self):
         with self.assertRaisesRegex(ValueError, "local"):
-            gate.validate_graph(metadata("0.20.0"), require_bus=True,
+            gate.validate_graph(metadata("0.21.0"), require_bus=True,
                                 expected_core=Path("/other/rs-event-bus"))
 
     def test_non_bus_root_does_not_require_bus(self):
@@ -83,7 +83,7 @@ class GraphTests(unittest.TestCase):
             gate.validate_graph(metadata(), require_bus=True)
 
     def test_only_reachable_packages_form_dependency_graph(self):
-        graph = metadata("0.20.0", "0.19.0")
+        graph = metadata("0.21.0", "0.20.1")
         graph["resolve"]["nodes"][0]["dependencies"].pop()
         gate.validate_graph(graph, require_bus=True)
 

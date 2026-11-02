@@ -2,7 +2,7 @@
 
 [中文 README](../README.zh_CN.md) · [English user guide](user_guide.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-本文适用于 `qubit-event-bus` 0.20.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
+本文适用于 `qubit-event-bus` 0.21.0，要求 Rust 1.94 或更高版本。它面向在 Rust 应用中需要让多个模块响应同一业务事件的开发者；编写底层传递实现的开发者只需查阅[自己开发一种传递实现](#自己开发一种传递实现)。读到[检查发布结果](#检查发布结果)，就能在项目中接入内置的进程内事件总线；后面章节供你按需查阅消息元数据、顺序保证、失败处理、配置、异步用法和第三方实现。
 
 ## 目录
 
@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.20"
+qubit-event-bus = "0.21"
 ```
 
 下面沿用前面的订单场景。订单、审计、客户视图分属应用的不同模块，数据库访问对象由应用注入；`OrderRepository`、`AuditStore` 和 `CustomerViewStore` 代表应用连接实际存储的接口。接入分三步：定义共用的事件，在启动时注册两个订阅模块，在订单事务提交后发布事件。
@@ -1145,7 +1145,7 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 有些第三方 crate 支持自动登记。它在程序链接时把自己的定义放入一个目录，这项机制叫 `discovery`（发现）。这种情况下，应用启用 feature，并确保该 crate 被链接：
 
 ```toml
-qubit-event-bus = { version = "0.20", features = ["discovery"] }
+qubit-event-bus = { version = "0.21", features = ["discovery"] }
 qubit-spi = "0.14"
 # 再加入所选 provider crate 的实际包名和版本。
 ```
@@ -1168,11 +1168,14 @@ let bus = registry.create(&EventBusConfig::default())?;
 
 总线创建后，可用 `RequiredCapabilities::missing_from(bus.capabilities())` 比较已声明的能力。空列表表示声明满足要求。这只是本地值比较：不会调用 provider、改变 metrics 或触发注册表 fallback，也不能证明后端当前健康。非空结果如何报告由应用决定。
 
+
+`PublishGuarantee` 按强度累积。`FireAndForget` 只承诺 provider 完成发送／提交尝试；`Accepted` 增加 provider 声明边界上的接纳（可能只是内存队列）；`Confirmed` 增加接收传输端返回且 provider 已观察到的明确正向确认；`DurablyStored` 增加进入已说明故障模型的持久存储边界。任何等级都不表示 handler 已完成或恰好一次投递。内置 local 与 Redis 当前均声明 `Accepted`；Redis 的 `XADD` 成功本身不足以升级为 `Confirmed` 或 `DurablyStored`。
+
 ### 对照 local 与 Redis 的实际能力
 
 以下是同步和异步 provider 实际返回的 `EventBusCapabilities`：
 
-| 能力 | local（core 0.20） | Redis Streams（provider 0.7） |
+| 能力 | local（core 0.21） | Redis Streams（provider 0.7） |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded`，须注册 codec |
 | `durability` | `Ephemeral` | `Durable` |
@@ -1823,7 +1826,7 @@ if !cleanup_errors.is_empty() {
 | `IdleWaitUnsupported` | 所用实现不能报告整个主题是否空闲；可以由业务代码记录完成状态，不能把总线已取到的工作当作全部工作。 |
 | 平稳关闭超时 | 查是否有处理函数或底层读写一直没返回、是否还有未完成的消息；稍后再获取关闭结果。 |
 
-用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`Diagnostic::AdmissionRejected` 同时携带逻辑身份 `subscriber_id` 和被拒绝实例的 `subscription_id`，可以区分逻辑名称相同的订阅。显式构造该变体或完整解构字段的调用方须补充实例 ID，或用 `..` 忽略新增字段；该源码变更安排在 0.21.x 兼容性发布窗口。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、逻辑处理方 ID 和订阅实例 ID、重试次数及最终错误。
+用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`Diagnostic::AdmissionRejected` 同时携带逻辑身份 `subscriber_id` 和被拒绝实例的 `subscription_id`，可以区分逻辑名称相同的订阅。显式构造该变体或完整解构字段的调用方须补充实例 ID，或用 `..` 忽略新增字段；该源码变更随 core 0.21.0 发布。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、逻辑处理方 ID 和订阅实例 ID、重试次数及最终错误。
 
 停机时的关闭错误历史保留最早 256 条详细记录。`SubscriptionCloseErrors::len()` 和 `iter()` 只描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。即使截断，shutdown 仍返回错误，source 指向首个保留错误。此限制只约束记录数，不约束单条 provider 错误的大小或应用保留的快照；需要完整归档时，应在显式关闭订阅时记录每条错误。
 
@@ -1838,11 +1841,16 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 只有 provider 能提供逐目标回执（如 local）时，才使用 `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)`。Redis 应选择 `ProviderOrDestinationAccepted`；逐目标条件会在发布前返回 `UnsupportedVisibility`。可见 provider 的条件不满足时，`CheckedPublishError::Admission` 保留完整回执；部分目标已接纳时重试可能造成重复。provider 接纳不等于 handler 完成、磁盘 fsync 或业务写入成功。同步订阅每个占用一个协调线程，默认上限为 256，应按订阅规模配置容量。
 
 
-### 下一个次版本的兼容性说明（0.21.x）
+### 从 0.20 迁移到 0.21
 
-- `SubscriptionCloseErrors::len()` 和 `iter()` 最多返回 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
+0.21 版本包含自 0.20 以来累积的源码变化。请同步更新 core 依赖和受影响调用点。
+
+- 构造 `Diagnostic::AdmissionRejected` 时须提供真实 `subscription_id`；完整解构须添加该字段或使用 `..`。
+- 完整 `AsyncConformanceHooks` 字面量须设置 `subscribe_cancellation` 或使用 `..Default::default()`。Strict provider 须提供 fixture：取消一个已部分分配且仍 pending 的订阅，并证明资源可复用。
+- `SubscriptionCloseErrors::len()` 与 `iter()` 最多暴露 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
-- Strict 异步 conformance 要求 `AsyncConformanceHooks::subscribe_cancellation`。fixture 应取消一个已部分分配且仍 pending 的订阅，并证明资源可复用。完整 struct 字面量须初始化新字段，或使用 `..Default::default()`。
+- local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
+- `rs-event-bus-redis`、`rs-task`、`rs-ioc`、`rs-execution-services` 的清单或传递依赖可能仍固定在 0.20。请在相关 checkout 更新 core 约束，并确保公共类型边界使用同一 core minor。core 0.21 与 Redis 0.7 或 task 0.10 的组合尚未验证；应使用依赖图解析到 core 0.21 的 checkout，并运行该项目自身检查。
 
 ## 边界与实践清单
 
@@ -1864,4 +1872,4 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.20；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。

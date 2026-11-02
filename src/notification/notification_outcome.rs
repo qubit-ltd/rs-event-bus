@@ -36,7 +36,9 @@ pub enum NotificationOutcome {
         /// Provider admission result, without a handler completion guarantee.
         PublishReceipt,
     ),
-    /// The facade or provider rejected the publication.
+    /// Publication failed; inspect [`PublishFailure::effect()`] before deciding
+    /// whether to retry. A failed call does not necessarily mean the provider
+    /// rejected or failed to apply the publication.
     PublishFailed(
         /// Facade or provider failure encountered while publishing the request.
         PublishFailure,

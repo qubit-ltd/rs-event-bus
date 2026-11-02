@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.20)
+# Qubit Event Bus Design (0.21)
 
-> This document describes `qubit-event-bus` 0.20.0 as implemented.
+> This document describes `qubit-event-bus` 0.21.0 as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -96,7 +96,7 @@ the model, pipeline, registry, and error types.
 **(P6) A publish receipt, an application acknowledgement, and transport settlement are three different things.**
 `PublishReceipt` records the result of a successful provider call; it may describe
 acceptance, partial admission, no destinations, drop, or opaque acknowledgement.
-`PublishGuarantee` describes what provider acceptance promises. A receipt does not
+`PublishGuarantee` describes what provider acceptance promises. Its levels are cumulative: `FireAndForget` covers completion of the send/commit attempt without positive admission confirmation; `Accepted` adds the provider's declared admission boundary; `Confirmed` adds an observed positive transport confirmation; and `DurablyStored` adds the documented persistent-storage boundary and failure model. These levels do not mean handler completion. local and Redis remain `Accepted`; Redis `XADD` success does not upgrade that declaration. A receipt does not
 mean a subscriber finished handling the message.
 `Acknowledgement` is the handler's business decision (`AckMode::Auto` or `Manual`).
 `SettlementToken` plus `DeliveryDisposition` is the transport-level confirmation
@@ -124,7 +124,7 @@ Time comes from `qubit-clock` (`Timer`). Provider catalogs and discovery come fr
 crate they actually use, which keeps versions from being coupled through this crate.
 
 **(P10) Lifecycle is explicit and idempotent.**
-`shutdown(ShutdownMode)` is the only shutdown entry point, and calling it again is safe.
+`shutdown(ShutdownMode)` waits for completion; `request_shutdown(ShutdownMode)` returns a reusable ticket for later observation. Both are shutdown entry points and repeated requests are safe.
 After shutdown, APIs return `Closed`. `Immediate` can strengthen a `Graceful` shutdown
 that is already in progress. Dropping a subscription handle does not cancel it on the
 synchronous facade, and it does dispose it on the asynchronous facade. Both behaviors
@@ -212,7 +212,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.20.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, version `0.21.0`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).
@@ -282,7 +282,7 @@ A request object, rather than a long argument list, exists so that:
   `build()` validates them. `publish` and `subscribe` do not grow branches for illegal combinations.
 - Fields of `PublishOptions<T>` and `SubscribeOptions<T>` are `pub(crate)`. Callers set
   them only through the builder, so a reserved header or an illegal delay is rejected at construction.
-- A request is `Clone` (interceptors are shared through `Arc`), which makes tests and republish straightforward.
+- Requests are not generally `Clone`. Rebuild a request from its reusable topic, envelope, and options where those concrete values support cloning, and preserve the logical event ID explicitly when republishing the same event. Request builders validate retry configuration; facade execution also validates it for paths such as `new(...).with_options(...)` before callbacks or provider work.
 
 `PublishOptions<T>` holds `retry_policy`, `retry_rule` (`Arc<dyn RetryRule<PublishAttemptError>>`),
 `retry_cancellation_token`, `interceptors: Vec<Arc<PublisherInterceptor<T>>>`, and
@@ -940,18 +940,18 @@ bound codec or Redis-client allocations, nor deep native Rust payload memory.
 Steps of `publish(request)`. `publish_all` runs them for each request in order and collects every result:
 
 1. **Lifecycle gate.** If the bus is not `Running`, return `PublishError::Closed`.
-2. **Request-level typed interceptors.** `Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`,
+2. **Retry configuration validation.** A `retry_rule` or cancellation token without `retry_policy` is rejected as a configuration error before interceptors, error handlers, or SPI calls. The same pairing is checked by request builders and execution paths.
+3. **Request-level typed interceptors.** `Fn(EventEnvelope<T>) -> Result<Option<EventEnvelope<T>>, PublishError>`,
    chained in registration order. An interceptor may transform the envelope but cannot change its event ID;
    an ID change fails with a configuration cause before calling the SPI.
    `None` drops the message and the receipt is `AdmissionOutcome::Dropped`.
    A panic is isolated as `PublishError::InterceptorPanicked`.
-3. **Global metadata interceptors.** They may change headers only. Any `false` drops the message.
-4. **Dead-letter header protection.** If the original envelope carried the dead-letter
+4. **Global metadata interceptors.** They may change headers only. Any `false` drops the message.
+5. **Dead-letter header protection.** If the original envelope carried the dead-letter
    header, it is written back after the interceptors, so the dead-letter identity cannot be lost.
-5. **Capability checks.** `delay.is_some()` with `DelayedDeliveryCapability::None`,
+6. **Capability checks.** `delay.is_some()` with `DelayedDeliveryCapability::None`,
    or `ordering_key.is_some()` with `OrderingCapability::None`, returns `PublishError::Capability`.
-6. **Payload preparation.** Choose `Native` or `Encoded` from `PayloadModes`. `Encoded` encodes with the codec and produces an `OutboundMessage`.
-7. **Retry configuration validation.** A `retry_rule` or cancellation token without `retry_policy` is rejected as a configuration error before interceptors, error handlers, or SPI calls. The same pairing is checked by request builders and execution paths.
+7. **Payload preparation.** Choose `Native` or `Encoded` from `PayloadModes`. `Encoded` encodes with the codec and produces an `OutboundMessage`.
 8. **Publish with retry.** When `retry_policy` is set, `qubit_retry::Retry` (synchronous)
    or `AsyncRetry` (asynchronous, with a `Timer`) wraps `spi.publish`. The retry decision
    combines `SpiError::retryable()` with the caller's `RetryRule<PublishAttemptError>`.
@@ -1709,15 +1709,14 @@ completion as three separate facts (P6).
 
 ## 16. Public API stability
 
-The next minor release bounds shutdown close-error history to the first 256
+Release 0.21 bounds shutdown close-error history to the first 256
 records. `len()` and `iter()` describe retained samples; `total_count()`,
 `omitted_count()`, and `is_truncated()` describe the complete count. The total
 count saturates at `u64::MAX`; this bounds record count, not provider error size
 or application-held snapshots. Shutdown still returns an error when truncated.
 Adding `subscription_id` to `Diagnostic::AdmissionRejected` requires callers
 that construct this variant or destructure every field to add it or use `..`;
-schedule this source change for the next compatible release window (0.21.x),
-not a 0.20.x patch.
+these source changes belong to 0.21 and are not compatible 0.20.x patch changes.
 Retry rule/token options without a retry policy become configuration errors,
 validated before callbacks or provider work. Strict async conformance also
 requires the new `subscribe_cancellation` hook; complete hook literals must add
@@ -1755,7 +1754,7 @@ is not a breaking change. Backend-specific extensions go through namespaced
 
 ---
 
-*This document is maintained with `qubit-event-bus` 0.20.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
+*This document is maintained with `qubit-event-bus` 0.21.x. A change to facade or SPI behavior should update the matching section here and in the [Chinese document](design.zh_CN.md).*
 
 ## Provider specification compile probe
 
@@ -2066,6 +2065,6 @@ For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.20. Missing
+metadata, and rejects a graph mixing old event-bus minors with 0.21. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
 does not prove delivery behavior by itself.

@@ -17,7 +17,7 @@ After an order transaction commits, the order service publishes `OrderCreated { 
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.20"
+qubit-event-bus = "0.21"
 ```
 
 ## Quick start
@@ -174,7 +174,7 @@ Both local providers bound queued and unsettled events per subscription (default
 
 Publication failures carry the original event ID, a structured cause, and `PublishEffect` in `PublishFailure`. The default `DuplicateRiskPolicy::Forbid` stops automatic retries when admission may have happened, even if a custom retry rule asks to continue. Encoded receivers validate size and exact content type/schema before decoding. Incompatible metadata, oversized input, or codec panic stops that subscription; repair the configuration or codec and create a new subscription to recover durable work.
 
-The coordinated versions are core 0.20, Redis 0.7, and task 0.10. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts are kept separate from facade retries and remain unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
+This core release is 0.21.0. The historical Redis 0.7 and task 0.10 dependency combination targets core 0.20 and has not been verified with this release; migrate those checkouts to a core 0.21-compatible dependency set before combining them. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts are kept separate from facade retries and remain unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
 
 ## Learn more
 

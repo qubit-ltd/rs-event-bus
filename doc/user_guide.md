@@ -2,7 +2,7 @@
 
 [Chinese user guide](user_guide.zh_CN.md) · [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
 
-This guide covers `qubit-event-bus` 0.20.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
+This guide covers `qubit-event-bus` 0.21.0 on Rust 1.94 or later. It is for Rust application developers who need several modules to react to one business event. Developers who write a transport implementation only need [Write a transport yourself](#write-a-transport-yourself). Reading through [Check the publication result](#check-the-publication-result) is enough to integrate the built-in in-process bus. Later sections cover message metadata, ordering, failure handling, configuration, async use, and third-party implementations.
 
 ## Contents
 
@@ -107,7 +107,7 @@ Add the dependency:
 
 ```toml
 [dependencies]
-qubit-event-bus = "0.20"
+qubit-event-bus = "0.21"
 ```
 
 The order, audit, and customer-view modules are separate parts of the application. The application injects its database access objects. `OrderRepository`, `AuditStore`, and `CustomerViewStore` stand for the interfaces that talk to real storage. Integration has three steps: define the shared event, register both subscribers at startup, and publish after the order transaction commits.
@@ -1145,7 +1145,7 @@ Suppose a crate connects to a message server. Add that crate as a dependency, th
 Some third-party crates register themselves. At link time the crate places its definition in a catalog. That mechanism is `discovery`. Enable the feature and make sure the crate is linked:
 
 ```toml
-qubit-event-bus = { version = "0.20", features = ["discovery"] }
+qubit-event-bus = { version = "0.21", features = ["discovery"] }
 qubit-spi = "0.14"
 # Also add the chosen provider crate's real package name and version.
 ```
@@ -1168,11 +1168,14 @@ Replace `provider_crate` and `your-provider-id` with the real crate name and the
 
 After creating a bus, compare its declared capabilities with `RequiredCapabilities::missing_from(bus.capabilities())`. An empty list means the declarations meet the requirements. This is a local value comparison: it does not call the provider, change metrics, trigger registry fallback, or prove that the backend is healthy. The application decides how to report a non-empty list.
 
+
+`PublishGuarantee` levels are cumulative. `FireAndForget` promises only that the provider completed its send/commit attempt. `Accepted` adds admission at the provider's declared boundary (possibly an in-memory queue); `Confirmed` adds an explicit positive confirmation observed from the receiving transport; `DurablyStored` adds storage at the documented durable boundary and failure model. None implies handler completion or exactly-once delivery. Both built-in local and Redis providers currently declare `Accepted`; Redis `XADD` success does not by itself justify `Confirmed` or `DurablyStored`.
+
 ### Compare local and Redis capabilities
 
 These are the actual `EventBusCapabilities` values for both sync and async providers:
 
-| Capability | local (core 0.20) | Redis Streams (provider 0.7) |
+| Capability | local (core 0.21) | Redis Streams (provider 0.7) |
 | --- | --- | --- |
 | `payload_modes` | `Native` | `Encoded` (register a codec) |
 | `durability` | `Ephemeral` | `Durable` |
@@ -1827,7 +1830,7 @@ The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only
 | `IdleWaitUnsupported` | The transport cannot report whether the whole topic is idle. Record completion in business code. Work the bus has already taken is not all of the work. |
 | Graceful shutdown times out | Check for a handler or a transport read or write that never returns, and for unfinished messages. Ask for the shutdown result again later. |
 
-`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `Diagnostic::AdmissionRejected` includes both `subscriber_id` (logical identity) and `subscription_id` (the rejected instance), so logs can distinguish two subscriptions with the same logical name. Adding this field affects explicit construction and exhaustive field destructuring; use the actual instance ID or `..` as appropriate, and schedule this source change for the 0.21.x compatibility window. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. Its `cancelled` counter counts async publish futures that were first polled and then dropped before returning; it does not mean the provider failed to accept the event, because a dropped call may already have been accepted. It does not count message reception or successful business writes. Logs should record the order id, the event id, both subscriber identities when relevant, the retry count, and the final error together.
+`observe_diagnostics` registers a callback for internal problem notices. Keep the returned `DiagnosticObserverHandle` to keep receiving them. Dropping it stops observation. The callback runs on the thread that hit the problem and should return quickly. `Diagnostic::AdmissionRejected` includes both `subscriber_id` (logical identity) and `subscription_id` (the rejected instance), so logs can distinguish two subscriptions with the same logical name. Adding this field affects explicit construction and exhaustive field destructuring; use the actual instance ID or `..` as appropriate, and this source change ships in core 0.21.0. `publish_metrics()` counts publication attempts and provider-reported admission outcomes. Its `cancelled` counter counts async publish futures that were first polled and then dropped before returning; it does not mean the provider failed to accept the event, because a dropped call may already have been accepted. It does not count message reception or successful business writes. Logs should record the order id, the event id, both subscriber identities when relevant, the retry count, and the final error together.
 
 Shutdown close-error history retains detailed records for the first 256 failed subscriptions. `SubscriptionCloseErrors::len()` and `iter()` describe those retained samples; `total_count()`, `omitted_count()`, and `is_truncated()` describe the full failure count. Shutdown still returns an error when the sample is truncated, and its source points to the first retained failure. This bounds the number of records retained by the bus, not the bytes held by each provider error or snapshots kept by the application. Applications that need a complete archive should record each explicit subscription-close error as it occurs.
 
@@ -1839,11 +1842,16 @@ Subscriptions stop receiving after a provider-reported delivery gap by default. 
 
 Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only when the provider exposes destination admission, as local does. For Redis, choose `ProviderOrDestinationAccepted`; per-destination conditions return `UnsupportedVisibility` before publishing. A visible provider retains the complete receipt in `CheckedPublishError::Admission` when the requirement fails. Partial admission can mean some destinations already accepted the event; retrying may duplicate those deliveries. Provider acceptance does not mean handler completion, disk fsync, or a successful business write. Sync subscriptions use one coordinator thread each; the default limit is 256, so configure capacity for the expected subscription count.
 
-### Compatibility notes for the next minor release (0.21.x)
+### Migrate from 0.20 to 0.21
 
-- `SubscriptionCloseErrors::len()` and `iter()` will expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
+The 0.21 release includes source-level changes accumulated since 0.20. Update the core dependency and the affected call sites together.
+
+- `Diagnostic::AdmissionRejected` construction requires the actual `subscription_id`; exhaustive destructuring must add the field or use `..`.
+- Complete `AsyncConformanceHooks` literals must initialize `subscribe_cancellation` or use `..Default::default()`. Strict providers must supply a fixture that cancels a partially allocated pending subscription and proves its resources are reusable.
+- `SubscriptionCloseErrors::len()` and `iter()` expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
 - A `retry_rule` or `retry_cancellation_token` without `retry_policy` is rejected by request builders and facade execution. Add an explicit policy or remove the unused rule/token.
-- Strict async conformance requires `AsyncConformanceHooks::subscribe_cancellation`. Add a fixture that cancels a partially allocated, pending subscription and proves its resources are reusable. Complete struct literals must initialize the new field or use `..Default::default()`.
+- Local publish pre-admission failures use `SpiError::Publish`; callers matching the previous `SpiError::Operation` must inspect `kind()`, `retryable()`, and `publish_effect()`.
+- `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services` may have manifests or transitive dependencies fixed to 0.20. Update each relevant checkout's core constraint and keep one core minor across public type boundaries. Core 0.21 with Redis 0.7 or task 0.10 is not claimed as a verified combination; use a checkout whose dependency graph resolves to core 0.21 and run that project's own checks.
 
 ## Boundaries and a practice checklist
 
@@ -1865,6 +1873,6 @@ For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root
 with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 `rs-execution-services` below that directory. The gate requires all five roots
 and the seven declared event-bus consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.20. Missing
+metadata, and rejects a graph mixing old event-bus minors with 0.21. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
 does not prove delivery behavior by itself.

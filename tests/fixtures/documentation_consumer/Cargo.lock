@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "qubit-event-bus"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "qubit-clock",
  "qubit-id",
