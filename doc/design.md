@@ -115,6 +115,12 @@ and provider SPI calls go through `catch_unwind`. One panic does not take down a
 thread or the bus. It becomes a `DeliveryError`, `PublishError`, or `Diagnostic`.
 Failures that cannot be returned to the caller (settlement failure, receive gap,
 terminal delivery failure) are emitted through `observe_diagnostics`.
+At codec and provider SPI error-conversion boundaries, the captured panic payload
+is normally dropped after its message and structured error are built. If that
+payload's destructor panics, one additional unwind boundary contains it and the
+secondary payload is forgotten. That exceptional path can leak resources held by
+the secondary payload; it is not byte-bounded. This cannot recover from
+`panic=abort`, an aborting panic hook, or a further panic during unwinding.
 
 **(P9) Reuse the qubit crates. Do not reimplement them, and do not re-export them.**
 Retry comes from `qubit-retry` (`RetryPolicy`, `RetryRule`, `Retry`, `AsyncRetry`).
@@ -1376,6 +1382,19 @@ Each accepted fanout copy reserves that weight; a retry retains it until termina
 settlement or cleanup. Missing declarations reject publication before enqueueing.
 This limit accounts for application-declared bytes; it does not measure shared
 allocation size, handler memory, or total process memory.
+
+For a valid publish, sync and async local providers rotate the first destination
+attempted per topic through the current subscription IDs in ascending order,
+wrapping after the last ID. Rotation advances once a route snapshot is validated,
+even when every destination is rejected; pre-admission errors and read-only
+wait/idle queries do not advance it. Receipts remain sorted by subscription ID.
+For a stable set of N destinations, serialized publishes, and at least one
+destination able to admit each event, every destination becomes the first attempt
+within N publishes. With a weight budget, each declared event weight must also
+fit the total allowance. This is a bounded first-attempt opportunity only: it
+does not guarantee full fanout, fairness across topics, or ordering among
+concurrent publishes. Applications that depended on low IDs receiving scarce
+capacity first must inspect per-destination receipt entries instead.
 
 ### 10.3 `LocalEventBusSpi` (synchronous)
 

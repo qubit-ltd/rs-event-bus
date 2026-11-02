@@ -102,6 +102,10 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 线程或整个 bus，而是转成 `DeliveryError`/`PublishError`/`Diagnostic`。
 所有"无法返回给调用方"的失败（settlement 失败、接收 gap、投递终态失败）
 都通过 `observe_diagnostics` 发出。
+在 codec 和 provider SPI 错误转换边界，先构造包含消息的结构化错误，再正常析构捕获的
+panic payload。若 payload 析构再次 panic，额外的一层 unwind 边界会捕获它并忘记二次
+payload。该异常路径可能泄漏二次 payload 持有的资源，泄漏量不保证有字节上限；它无法恢复
+`panic=abort`、会 abort 的 panic hook，或展开期间发生的进一步 panic。
 
 **(P9) 复用 qubit 生态，不重复造轮子。**
 重试用 `qubit-retry`（`RetryPolicy`/`RetryRule`/`Retry`/`AsyncRetry`），
@@ -1295,6 +1299,13 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
 之后、provider retries 之前运行估算器。每份已接纳的扇出副本独立占用权重；retry 会保留
 额度直到终态结算或清理。缺少声明时，消息在入队前被拒绝。该上限只记账应用声明的字节，
 不测量共享分配、handler 内存或进程实际总内存。
+
+有效发布取得并校验路由快照后，同步和异步 local provider 会按当前订阅 ID 升序，逐 topic
+轮换首个尝试的目的地，并在末尾回绕。即使所有目的地都被拒绝，游标也前进一次；发布前错误
+及只读 wait/idle 查询不会推进游标。回执仍按订阅 ID 升序排列。对于稳定的 N 个目的地、串行
+发布且每个事件至少有一个目的地可接纳的情况，每个目的地会在 N 次发布内成为首个尝试目标；
+启用权重预算时，单条声明权重也必须能放入总额度。这只保证首试机会，不保证完整扇出、跨 topic
+公平或并发发布的顺序。依赖低 ID 优先取得紧张容量的应用应改为检查逐目的地回执。
 
 ### 10.3 `LocalEventBusSpi`（同步）
 
