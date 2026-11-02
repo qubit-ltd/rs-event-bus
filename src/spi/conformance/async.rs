@@ -230,7 +230,6 @@ async fn run_payload_case(
         case_id,
         probe_payload(case_id),
         capabilities,
-        capabilities.settlement(),
         durability,
     )
     .await;
@@ -270,7 +269,6 @@ async fn record_async_publish_receive(
     case_id: &'static str,
     payload: TransportPayload,
     capabilities: EventBusCapabilities,
-    settlement: SettlementCapabilities,
     durability: SubscriptionDurability,
 ) {
     let mode_name = match durability {
@@ -306,8 +304,12 @@ async fn record_async_publish_receive(
                     }
                 });
                 let token = message.take_settlement();
-                report.push(async_settlement_idempotence_case(subscription, settlement, token.as_ref()).await);
-                report.push(async_conflicting_settlement_case(subscription, settlement, token.as_ref()).await);
+                report.push(
+                    async_settlement_idempotence_case(subscription, capabilities.settlement(), token.as_ref()).await,
+                );
+                report.push(
+                    async_conflicting_settlement_case(subscription, capabilities.settlement(), token.as_ref()).await,
+                );
             }
             Ok(_) => report.push(ConformanceCase::Failed {
                 case_id: "receive-payload".into(),
