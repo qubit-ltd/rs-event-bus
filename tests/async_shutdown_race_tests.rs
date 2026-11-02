@@ -7,14 +7,8 @@
 // =============================================================================
 //! Regression tests for asynchronous shutdown leader races.
 
-#[path = "support/fake_spi.rs"]
-#[allow(dead_code)]
-mod fake_spi;
-#[path = "support/manual_async.rs"]
-#[allow(dead_code)]
-mod manual_async;
-
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -28,8 +22,6 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
-use fake_spi::FakeAsyncEventBusSpi;
-use manual_async::block_on;
 use qubit_clock::MonotonicClock;
 use qubit_clock::MonotonicInstant;
 use qubit_clock::StdMonotonicClock;
@@ -38,11 +30,111 @@ use qubit_clock::Timer;
 use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::SpiError;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::EventBusCapabilities;
+use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
 
 const WATCHDOG: Duration = Duration::from_secs(5);
+
+struct FakeAsyncEventBusSpi {
+    calls: Mutex<Vec<&'static str>>,
+    shutdown_paused: AtomicBool,
+    shutdown_wakers: Mutex<Vec<Waker>>,
+}
+
+impl FakeAsyncEventBusSpi {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            shutdown_paused: AtomicBool::new(false),
+            shutdown_wakers: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn operation_log(&self) -> Vec<&'static str> {
+        self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn pause_shutdown(&self) {
+        self.shutdown_paused.store(true, Ordering::Release);
+    }
+
+    fn release_shutdown(&self) {
+        self.shutdown_paused.store(false, Ordering::Release);
+        for waker in self.shutdown_wakers.lock().expect("shutdown wakers lock").drain(..) {
+            waker.wake();
+        }
+    }
+}
+
+impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        EventBusCapabilities::builder()
+            .payload_modes(qubit_event_bus::spi::PayloadModes::Native)
+            .settlement(qubit_event_bus::spi::SettlementCapabilities::None)
+            .ordering(qubit_event_bus::spi::OrderingCapability::None)
+            .delayed_delivery(qubit_event_bus::spi::DelayedDeliveryCapability::None)
+            .durability(qubit_event_bus::spi::DurabilityCapability::Ephemeral)
+            .subscription_modes(qubit_event_bus::spi::SubscriptionModes::EPHEMERAL)
+            .consumer_groups(false)
+            .replay(qubit_event_bus::spi::ReplayCapability::None)
+            .publish_guarantee(qubit_event_bus::spi::PublishGuarantee::Accepted)
+            .publish_visibility(qubit_event_bus::spi::PublishVisibility::Opaque)
+            .build()
+            .expect("complete capabilities")
+    }
+
+    fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async { panic!("publish is unused in shutdown tests") })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        _request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async { panic!("subscribe is unused in shutdown tests") })
+    }
+
+    fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.calls.lock().expect("calls lock").push("shutdown");
+        let paused = &self.shutdown_paused;
+        let wakers = &self.shutdown_wakers;
+        Box::pin(async move {
+            poll_fn(|cx| {
+                if !paused.load(Ordering::Acquire) {
+                    return Poll::Ready(());
+                }
+                let mut waiters = wakers.lock().expect("shutdown wakers lock");
+                if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
+                    waiters.push(cx.waker().clone());
+                }
+                Poll::Pending
+            })
+            .await;
+            Ok(ShutdownOutcome::Complete)
+        })
+    }
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => thread::park(),
+        }
+    }
+}
 
 #[derive(Default)]
 struct GateState {

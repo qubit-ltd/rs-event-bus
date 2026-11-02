@@ -448,11 +448,13 @@ async fn run_payload_case(
         report,
         spi.as_ref(),
         subscription.as_mut(),
-        case_id,
-        probe_payload(case_id),
-        capabilities,
-        durability,
-        &scope,
+        AsyncPublishProbe {
+            case_id,
+            payload: probe_payload(case_id),
+            capabilities,
+            durability,
+            scope: &scope,
+        },
     )
     .await;
 
@@ -509,39 +511,43 @@ async fn run_payload_case(
     .await;
 }
 
+struct AsyncPublishProbe<'a> {
+    case_id: &'static str,
+    payload: TransportPayload,
+    capabilities: EventBusCapabilities,
+    durability: SubscriptionDurability,
+    scope: &'a ProbeScope,
+}
+
 /// Publishes one probe, observes its delivery, and checks settlement behavior.
 ///
 /// # Parameters
 /// - `report`: report receiving the publish, receive, and settlement results.
 /// - `spi`: provider used to publish the probe.
 /// - `subscription`: receiver used to observe and settle the probe.
-/// - `case_id`: identifier of the payload probe being exercised.
-/// - `payload`: transport representation sent through the provider.
-/// - `capabilities`: settlement capability declared by the provider.
+/// - `probe`: payload identity, transport representation, and provider context.
 async fn record_async_publish_receive(
     report: &mut ConformanceReport,
     spi: &dyn AsyncEventBusSpi,
     subscription: &mut dyn AsyncEventSubscriptionSpi,
-    case_id: &'static str,
-    payload: TransportPayload,
-    capabilities: EventBusCapabilities,
-    durability: SubscriptionDurability,
-    scope: &ProbeScope,
+    probe: AsyncPublishProbe<'_>,
 ) {
-    let mode_name = match durability {
+    let mode_name = match probe.durability {
         SubscriptionDurability::Ephemeral => "ephemeral",
         SubscriptionDurability::Durable => "durable",
     };
-    let expected = probe_message(probe_payload(case_id), capabilities, scope);
-    let result = spi.publish(probe_message(payload, capabilities, scope)).await;
+    let expected = probe_message(probe_payload(probe.case_id), probe.capabilities, probe.scope);
+    let result = spi
+        .publish(probe_message(probe.payload, probe.capabilities, probe.scope))
+        .await;
     let published = result.is_ok();
     report.push(publish_case(
-        case_id,
+        probe.case_id,
         result,
         "async",
-        capabilities.publish_visibility(),
+        probe.capabilities.publish_visibility(),
         qubit_id::Id::new(1),
-        durability,
+        probe.durability,
     ));
     if published {
         match subscription.receive(Duration::from_secs(1)).await {
@@ -562,10 +568,12 @@ async fn record_async_publish_receive(
                 });
                 let token = message.take_settlement();
                 report.push(
-                    async_settlement_idempotence_case(subscription, capabilities.settlement(), token.as_ref()).await,
+                    async_settlement_idempotence_case(subscription, probe.capabilities.settlement(), token.as_ref())
+                        .await,
                 );
                 report.push(
-                    async_conflicting_settlement_case(subscription, capabilities.settlement(), token.as_ref()).await,
+                    async_conflicting_settlement_case(subscription, probe.capabilities.settlement(), token.as_ref())
+                        .await,
                 );
             }
             Ok(_) => report.push(ConformanceCase::Failed {

@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 #![cfg(feature = "conformance")]
 
 use std::collections::HashMap;
@@ -369,13 +376,11 @@ fn test_repeated_runs_do_not_reuse_durable_identity() {
 }
 
 fn block_on<F: Future>(future: F) -> F::Output {
-    use std::task::{Context, Poll, Wake, Waker};
-    struct NoopWake;
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
     let mut future = std::pin::pin!(future);
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
