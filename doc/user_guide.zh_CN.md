@@ -1884,7 +1884,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 - `SubscriptionCloseErrors::len()` 与 `iter()` 最多暴露 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
 - local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
-- `rs-event-bus-redis`、`rs-task`、`rs-ioc`、`rs-execution-services` 的清单或传递依赖可能仍固定在 0.20。请在相关 checkout 更新 core 约束，并确保公共类型边界使用同一 core minor。core 0.21 与 Redis 0.7 或 task 0.10 的组合尚未验证；应使用依赖图解析到 core 0.21 的 checkout，并运行该项目自身检查。
+- `rs-event-bus-redis`、`rs-task`、`rs-ioc`、`rs-execution-services` checkout 的清单或传递依赖可能仍固定在 0.20。本地 sibling 联用时，请更新相关 checkout 的 core 约束、确保公共类型边界使用同一 core minor，并运行各项目自身的 locked 检查。已发布的 Redis 0.7 和 task 0.10 面向 core 0.20；core 0.21 本地 path 图通过不表示这些发布版本兼容。发布支持需要消费者发布并测试依赖 registry core 0.21 的版本。
 
 ## 边界与实践清单
 
@@ -1906,4 +1906,4 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。
+0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。它检查 sibling checkout 的路径依赖，不检查已发布 registry 版本。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能作为 core 0.21 兼容证据；发布兼容性需要消费者自身发布依赖 registry core 0.21 的版本并提供集成验证。不要把本地 path 图通过当作发布证据。

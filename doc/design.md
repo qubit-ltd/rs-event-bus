@@ -2081,4 +2081,8 @@ with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 and the seven declared consumer fixtures, resolves locked all-feature Cargo
 metadata, and rejects a graph mixing old event-bus minors with 0.21. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
-does not prove delivery behavior by itself.
+does not prove delivery behavior by itself. It checks sibling checkout paths,
+not published registry releases. The historical Redis 0.7 and task 0.10 releases
+target core 0.20 and are not evidence of compatibility with core 0.21; published
+compatibility requires a consumer release that resolves to registry core 0.21
+and its own integration evidence. A local path graph pass is not release evidence.

@@ -171,7 +171,7 @@ let orders = OrderService::new(bus.clone());
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。
 
-本 core 版本为 0.21.0。历史上的 Redis 0.7 与 task 0.10 依赖组合面向 core 0.20，尚未验证与本版本配套；组合使用前应将这些 checkout 迁移到兼容 core 0.21 的依赖集合。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
+本 core 版本为 0.21.0。历史发布的 Redis 0.7 与 task 0.10 面向 core 0.20；这一已发布组合不能作为 core 0.21 兼容证据。使用 sibling checkout 联用时，应统一 core minor 并运行各消费者自己的 locked 检查。可选的五仓依赖图命令只检查依赖解析，不证明投递行为或已发布版本兼容；发布后的消费者还需自身发布依赖 core 0.21 的版本及集成验证证据。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
@@ -199,6 +199,9 @@ cargo test --all-features
 
 # 运行项目 CI 检查
 ./.infra/bin/ci-check.sh
+
+# 可选的本地联用依赖图检查（仅 metadata）
+./scripts/project-ci-check.sh --ecosystem-root /path/to/rust-common
 
 # 检查代码覆盖率
 ./.infra/bin/coverage.sh

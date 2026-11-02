@@ -1885,7 +1885,7 @@ The 0.21 release includes source-level changes accumulated since 0.20. Update th
 - `SubscriptionCloseErrors::len()` and `iter()` expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
 - A `retry_rule` or `retry_cancellation_token` without `retry_policy` is rejected by request builders and facade execution. Add an explicit policy or remove the unused rule/token.
 - Local publish pre-admission failures use `SpiError::Publish`; callers matching the previous `SpiError::Operation` must inspect `kind()`, `retryable()`, and `publish_effect()`.
-- `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services` may have manifests or transitive dependencies fixed to 0.20. Update each relevant checkout's core constraint and keep one core minor across public type boundaries. Core 0.21 with Redis 0.7 or task 0.10 is not claimed as a verified combination; use a checkout whose dependency graph resolves to core 0.21 and run that project's own checks.
+- `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services` checkouts can have manifests or transitive dependencies fixed to 0.20. For local sibling validation, update each relevant checkout's core constraint, keep one core minor across public type boundaries, and run that project's own locked checks. The published Redis 0.7 and task 0.10 releases target core 0.20; a local core 0.21 path graph does not claim those releases are compatible. Published support requires a consumer release built and tested against registry core 0.21.
 
 ## Boundaries and a practice checklist
 
@@ -1909,4 +1909,9 @@ with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
 and the seven declared event-bus consumer fixtures, resolves locked all-feature Cargo
 metadata, and rejects a graph mixing old event-bus minors with 0.21. Missing
 inputs fail explicitly; this metadata check supplements each project's CI and
-does not prove delivery behavior by itself.
+does not prove delivery behavior by itself. It checks sibling checkout paths,
+not published registry releases. The historical Redis 0.7 and task 0.10 releases
+target core 0.20 and are not evidence of compatibility with core 0.21; published
+compatibility requires a consumer release that resolves to registry core 0.21
+and its own integration evidence. Do not treat a local path graph pass as that
+release evidence.

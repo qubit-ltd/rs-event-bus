@@ -1950,4 +1950,4 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。核心 0.21 与历史 Redis 0.7／task 0.10 组合尚未验证；需要先迁移对应 checkout 的 core 约束。
+0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。它检查 sibling checkout 的路径依赖，不检查已发布 registry 版本。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能作为 core 0.21 兼容证据；发布兼容性需要消费者自身发布依赖 registry core 0.21 的版本并提供集成验证。本地 path 图通过不等于发布证据。

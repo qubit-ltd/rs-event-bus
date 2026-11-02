@@ -174,7 +174,7 @@ Both local providers bound queued and unsettled events per subscription (default
 
 Publication failures carry the original event ID, a structured cause, and `PublishEffect` in `PublishFailure`. The default `DuplicateRiskPolicy::Forbid` stops automatic retries when admission may have happened, even if a custom retry rule asks to continue. Encoded receivers validate size and exact content type/schema before decoding. Incompatible metadata, oversized input, or codec panic stops that subscription; repair the configuration or codec and create a new subscription to recover durable work.
 
-This core release is 0.21.0. The historical Redis 0.7 and task 0.10 dependency combination targets core 0.20 and has not been verified with this release; migrate those checkouts to a core 0.21-compatible dependency set before combining them. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts are kept separate from facade retries and remain unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
+This core release is 0.21.0. The historical Redis 0.7 and task 0.10 releases target core 0.20; that published combination is not evidence of compatibility with core 0.21. For sibling checkouts, align the core minor and run each consumer's locked checks. The optional ecosystem graph command checks dependency resolution only, not delivery behavior or published compatibility; a published consumer needs its own core 0.21 release and integration evidence. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts are kept separate from facade retries and remain unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
 
 ## Learn more
 
@@ -202,6 +202,9 @@ cargo test --all-features
 
 # Project CI checks
 ./.infra/bin/ci-check.sh
+
+# Optional coordinated local dependency-graph check (metadata only)
+./scripts/project-ci-check.sh --ecosystem-root /path/to/rust-common
 
 # Check code coverage
 ./.infra/bin/coverage.sh
