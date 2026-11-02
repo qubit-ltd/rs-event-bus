@@ -44,13 +44,15 @@ pub struct Topic<T: 'static> {
 }
 
 impl<T: 'static> Topic<T> {
-    /// Creates a native topic from a static name without allocating.
+    /// Creates a topic without configuring a topic-level codec, from a static
+    /// name without allocating. A facade can resolve a codec from its registry
+    /// when publishing through an encoded provider.
     ///
     /// # Parameters
     /// - `name`: the static topic name to validate and borrow.
     ///
     /// # Returns
-    /// A topic that borrows `name` and uses native payloads without a codec.
+    /// A topic that borrows `name` and has no topic-level codec configured.
     ///
     /// # Panics
     /// Panics during constant evaluation, or at runtime, when the name is
@@ -70,13 +72,15 @@ impl<T: 'static> Topic<T> {
         }
     }
 
-    /// Creates a native-payload topic after validating its name.
+    /// Creates a topic without configuring a topic-level codec after
+    /// validating its name. A facade can resolve a codec from its registry
+    /// when publishing through an encoded provider.
     ///
     /// # Parameters
     /// - `name`: the topic name to validate and copy.
     ///
     /// # Returns
-    /// A topic that owns `name` and uses native payloads without a codec.
+    /// A topic that owns `name` and has no topic-level codec configured.
     ///
     /// # Errors
     /// Returns [`ConfigurationError::InvalidField`] for `topic` when the name
@@ -126,10 +130,13 @@ impl<T: 'static> Topic<T> {
         type_name::<T>()
     }
 
-    /// Returns the configured codec, or `None` for a native-only topic.
+    /// Returns the topic-level codec, or `None` when none was configured.
+    /// A facade may still resolve a codec from its registry for an encoded
+    /// provider.
     ///
     /// # Returns
-    /// A shared codec reference when one was configured, otherwise `None`.
+    /// A shared codec reference when one was configured, otherwise `None`;
+    /// `None` does not prevent facade registry fallback.
     #[inline]
     pub fn codec(&self) -> Option<&Arc<dyn EventCodec<T>>> {
         self.codec.as_ref()

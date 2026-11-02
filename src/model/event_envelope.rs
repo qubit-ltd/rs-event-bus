@@ -193,10 +193,14 @@ impl<T: 'static> EventEnvelope<T> {
     pub fn header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(String::as_str)
     }
-    /// Returns the ordering key, or `None` when delivery is unordered.
+    /// Returns the explicit ordering key, or `None` when no key was set.
+    /// The active [`crate::model::OrderingPolicy`] determines ordering:
+    /// `PerKey` messages without a key share the subscription or topic's
+    /// `None` lane, while `Unordered` provides no ordering guarantee.
     ///
     /// # Returns
-    /// The requested ordering key, or `None` when no key was set.
+    /// The explicit ordering key, or `None` when no key was set. Ordering
+    /// behavior for that value depends on the active ordering policy.
     #[inline]
     #[must_use = "Use the returned ordering key."]
     pub fn ordering_key(&self) -> Option<&str> {

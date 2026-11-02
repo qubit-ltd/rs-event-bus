@@ -7,11 +7,14 @@
 // =============================================================================
 //! Measures synchronous handler-pool saturation while four handlers back off.
 
+use std::collections::HashSet;
 use std::hint::black_box;
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::Barrier;
+use std::sync::Condvar;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -31,6 +34,7 @@ use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::registry::EventBusConfig;
 use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_retry::BackoffPolicy;
 use qubit_retry::RetryPolicy;
 
@@ -41,12 +45,39 @@ const SAMPLE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const PUBLISH_OFFSET: Duration = Duration::from_millis(10);
 
+type Gate = Arc<(Mutex<bool>, Condvar)>;
+
+/// Releases all callbacks waiting at the sample gate when measurement exits.
+struct ReleaseGateOnDrop(Gate);
+
+impl ReleaseGateOnDrop {
+    fn release(&self) {
+        let (released, condition) = &*self.0;
+        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        condition.notify_all();
+    }
+}
+
+impl Drop for ReleaseGateOnDrop {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn wait_for_gate(gate: &Gate) {
+    let (released, condition) = &**gate;
+    let mut released = released.lock().unwrap_or_else(PoisonError::into_inner);
+    while !*released {
+        released = condition.wait(released).unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
 /// Runs one fresh local bus sample and returns independent-message queue wait.
-fn retry_saturation_sample() -> io::Result<Duration> {
+fn retry_saturation_sample(available_handler_slots: usize) -> io::Result<Duration> {
     let registry = EventBusRegistry::with_local().map_err(io::Error::other)?;
     let positive = |value| NonZeroUsize::new(value).expect("benchmark limits are positive");
     let scheduling = DeliverySchedulingConfig::new(
-        positive(HANDLER_SLOTS),
+        positive(available_handler_slots),
         positive(HANDLER_SLOTS * 2),
         positive(2),
         positive(HANDLER_SLOTS + 1),
@@ -57,18 +88,41 @@ fn retry_saturation_sample() -> io::Result<Duration> {
         .with_provider_options(LocalEventBusConfig::default().provider_options())
         .with_facade_config(facade);
     let bus = registry.create(&config).map_err(io::Error::other)?;
-    let result = measure_independent_delivery_wait(&bus);
-    let shutdown_result = bus.shutdown(ShutdownMode::Immediate).map_err(io::Error::other);
+    let result = measure_independent_delivery_wait(&bus, available_handler_slots);
+    let shutdown_result = bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .map_err(io::Error::other)
+        .and_then(|ticket| ticket.wait(Some(SAMPLE_TIMEOUT)).map_err(io::Error::other))
+        .and_then(|report| {
+            if report.outcome == ShutdownOutcome::Complete {
+                Ok(report)
+            } else {
+                Err(io::Error::other(format!(
+                    "sample cleanup completed with unexpected outcome {:?}",
+                    report.outcome
+                )))
+            }
+        });
     match (result, shutdown_result) {
         (Ok(wait), Ok(_)) => Ok(wait),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Err(measurement), Ok(_)) => Err(measurement),
+        (Ok(_), Err(cleanup)) => Err(io::Error::new(
+            cleanup.kind(),
+            format!("sample cleanup failed: {cleanup}"),
+        )),
+        (Err(measurement), Err(cleanup)) => Err(io::Error::new(
+            measurement.kind(),
+            format!("{measurement}; sample cleanup also failed: {cleanup}"),
+        )),
     }
 }
 
-/// Creates four occupied handlers, then measures one independent delivery.
-fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
-    let barrier = Arc::new(Barrier::new(HANDLER_SLOTS + 1));
+/// Occupies four handler positions, then measures one independent delivery.
+fn measure_independent_delivery_wait(bus: &EventBus, available_handler_slots: usize) -> io::Result<Duration> {
+    let (entry_tx, entry_rx) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    // Install the release guard before any publish can start a callback.
+    let release_gate = ReleaseGateOnDrop(gate.clone());
     let retry_options = SubscribeOptions::<u8>::builder()
         .retry_policy(
             RetryPolicy::builder()
@@ -84,12 +138,18 @@ fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
         let request = SubscribeRequest::new(&format!("retry-saturation-slot-{index}"), topic.clone())
             .map_err(io::Error::other)?
             .with_options(retry_options.clone());
-        let barrier = barrier.clone();
+        let gate = gate.clone();
+        let entry_tx = entry_tx.clone();
         let first_attempt = Arc::new(AtomicBool::new(true));
         let _ = bus
             .subscribe(request, move |_| {
                 if first_attempt.swap(false, Ordering::AcqRel) {
-                    barrier.wait();
+                    if entry_tx.send(index).is_err() {
+                        return Err(DeliveryError::Handler {
+                            source: Box::new(io::Error::other("benchmark entry receiver was dropped")),
+                        });
+                    }
+                    wait_for_gate(&gate);
                     Err(DeliveryError::Handler {
                         source: Box::new(io::Error::other("intentional first-attempt failure")),
                     })
@@ -119,26 +179,63 @@ fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
             .map_err(io::Error::other)?;
     }
 
-    barrier.wait();
+    let deadline = Instant::now() + SAMPLE_TIMEOUT;
+    let mut entered = HashSet::with_capacity(HANDLER_SLOTS);
+    while entered.len() < HANDLER_SLOTS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(entry_timeout(entered.len()));
+        }
+        match entry_rx.recv_timeout(remaining) {
+            Ok(index) => {
+                entered.insert(index);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err(entry_timeout(entered.len())),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other(format!(
+                    "handler entry channel disconnected: expected {HANDLER_SLOTS}, observed {}",
+                    entered.len()
+                )));
+            }
+        }
+    }
+
+    release_gate.release();
     thread::sleep(PUBLISH_OFFSET);
     let publish_started = Instant::now();
-    let _ = bus
-        .publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
+    bus.publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
-    let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(io::Error::other)?;
+    let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("independent handler did not start: {error}"),
+        )
+    })?;
+    drop(release_gate);
     Ok(handler_started.duration_since(publish_started))
+}
+
+fn entry_timeout(observed: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("handler entry timed out: expected {HANDLER_SLOTS}, observed {observed}"),
+    )
 }
 
 /// Runs warmups and prints seven independent-message wait measurements.
 fn main() -> io::Result<()> {
+    if std::env::args().any(|argument| argument == "--probe-entry-timeout") {
+        return retry_saturation_sample(HANDLER_SLOTS - 1).map(|_| ());
+    }
+
     for _ in 0..WARMUPS {
-        black_box(retry_saturation_sample()?);
+        black_box(retry_saturation_sample(HANDLER_SLOTS)?);
     }
 
     let mut waits = Vec::with_capacity(SAMPLES);
     println!("iteration,independent_handler_wait_ms");
     for iteration in 1..=SAMPLES {
-        let wait = black_box(retry_saturation_sample()?);
+        let wait = black_box(retry_saturation_sample(HANDLER_SLOTS)?);
         println!("{iteration},{}", wait.as_secs_f64() * 1_000.0);
         waits.push(wait);
     }

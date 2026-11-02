@@ -63,6 +63,9 @@ pub trait EventSubscriptionSpi: Send + 'static {
     /// Durable subscriptions must preserve accepted unsettled deliveries for
     /// recovery after close. Ephemeral subscriptions may discard buffered
     /// deliveries; facade shutdown reports disclose known loss and uncertainty.
+    /// After a successful close, repeated calls must also succeed and
+    /// `receive` must return [`ReceiveOutcome::Closed`]. If close fails,
+    /// including after partial cleanup, callers may retry it.
     ///
     /// # Returns
     /// Success after receiver resources have been released.
