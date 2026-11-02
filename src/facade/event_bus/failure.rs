@@ -140,9 +140,13 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         settler.abandon(subscription_id);
         // Keep a durable source token unsettled so the provider can recover it.
     } else if token.as_ref().is_some_and(|token| !token.belongs_to(subscription_id)) {
-        inner.emit_internal(
-            "settlement",
-            "provider settlement token belongs to another subscription".into(),
+        settler.settle(
+            token,
+            requested_disposition,
+            event.id().clone(),
+            event.topic().name(),
+            subscription_id,
+            subscriber_id,
         );
     } else {
         inner.emit(Diagnostic::SettlementUnavailable {
@@ -312,12 +316,19 @@ pub(in crate::facade) fn settle_rejected(
     error: DeliveryError,
 ) {
     match token {
-        Some(token)
-            if !token.belongs_to(subscription_id)
-                || inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject =>
-        {
+        Some(token) if !token.belongs_to(subscription_id) => {
             // Invalid ownership is validated by the receiver before SPI entry,
             // even when this provider cannot otherwise perform Reject.
+            settler.settle(
+                Some(token),
+                DeliveryDisposition::Reject,
+                event_id.clone(),
+                topic,
+                subscription_id,
+                subscriber_id,
+            );
+        }
+        Some(token) if inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject => {
             settler.settle(
                 Some(token),
                 DeliveryDisposition::Reject,

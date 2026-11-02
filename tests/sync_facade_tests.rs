@@ -4659,6 +4659,106 @@ fn test_sync_settlement_foreign_token_stops_without_a_provider_attempt() {
     finish_sync_bus_cleanup(cleanup);
 }
 
+/// Handler failures route foreign tokens through the receiver owner's
+/// validator.
+#[test]
+fn test_accept_only_handler_failure_with_foreign_token_stops() {
+    let (bus, backend) =
+        create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    let (stopped_tx, stopped_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::SettlementStopped {
+            termination,
+            attempts,
+            error,
+            ..
+        } = diagnostic
+        {
+            let _ = stopped_tx.send((*termination, *attempts, error.clone()));
+        }
+    });
+    let (started_tx, started_rx) = mpsc::channel();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let starts_by_handler = starts.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("accept-only-foreign-handler", topic()).expect("request"),
+            move |_: Delivery<String>| {
+                starts_by_handler.fetch_add(1, Ordering::SeqCst);
+                let _ = started_tx.send(());
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscribe");
+    let queue = backend
+        .state
+        .lock()
+        .expect("state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("queue")
+        .1
+        .clone();
+    let message = InboundMessage::new(
+        TopicAddress::new("sync.events").expect("topic"),
+        EventId::new("accept-only-foreign-handler").expect("event"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(String::from("payload"))),
+        Some(SettlementToken::new(Id::new(u64::MAX), "foreign")),
+        Default::default(),
+    );
+    let (state, ready) = &*queue;
+    state.lock().expect("queue state").messages.push_back(message);
+    ready.notify_one();
+
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("handler starts once");
+    let (termination, attempts, error) = stopped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("foreign token is reported as a terminal settlement failure");
+    assert_eq!(termination, SettlementTermination::InvalidToken);
+    assert_eq!(attempts, 0);
+    assert!(matches!(
+        error.as_ref(),
+        SpiError::InvalidSettlementToken {
+            reason: "foreign_owner",
+            ..
+        }
+    ));
+    let reason = subscription.terminal_failure().expect("terminal reason");
+    let SubscriptionStopReason::Settlement {
+        attempts,
+        termination,
+        error: terminal_error,
+        ..
+    } = reason.as_ref()
+    else {
+        panic!("settlement terminal reason expected")
+    };
+    assert_eq!(*attempts, 0);
+    assert_eq!(*termination, SettlementTermination::InvalidToken);
+    assert!(Arc::ptr_eq(terminal_error, &error));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert!(started_rx.try_recv().is_err(), "no later handler starts");
+    assert_eq!(backend.settlement_calls(), 0);
+    subscription.cancel().expect("cleanup");
+    let metrics = subscription.delivery_metrics().metrics;
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.abandoned_ephemeral, 1);
+    assert_eq!(metrics.settlement_attempts, 0);
+    assert_eq!(metrics.settlement_duration_count, 0);
+    assert_eq!(metrics.settlement_terminal_failures, 1);
+    assert_eq!(metrics.handler_duration_count, 1);
+    finish_sync_bus_cleanup(cleanup);
+}
+
 /// Decode rejection is owner work even when every real handler thread is
 /// occupied.
 #[test]
