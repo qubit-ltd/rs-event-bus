@@ -4,6 +4,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = "examples/local_delivery.rs"
+LIB = "src/lib.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
 PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
@@ -17,6 +18,7 @@ README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
 DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
 REQUIRED = {
+    LIB: {LOCAL},
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
     "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
@@ -38,10 +40,28 @@ FILE_HEADER = re.compile(
     r"//    Licensed under the Apache License, Version 2\.0\.\n"
     r"// =+\n"
 )
-EXAMPLE_DOCUMENTS = {"README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md"}
+EXAMPLE_DOCUMENTS = {LIB, "README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md"}
+
+
+def read_document_text(path):
+    text = path.read_text(encoding="utf-8")
+    if path.suffix != ".rs":
+        return text
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith("//!")), None)
+    if start is None:
+        return ""
+    result = []
+    for line in lines[start:]:
+        if not line.startswith("//!"):
+            break
+        result.append(line[3:].removeprefix(" "))
+    return "\n".join(result)
+
+
 errors = []
 for document, required in REQUIRED.items():
-    text = (ROOT / document).read_text(encoding="utf-8")
+    text = read_document_text(ROOT / document)
     found = set()
     for match in PATTERN.finditer(text):
         name = match.group("path")

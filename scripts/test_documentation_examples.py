@@ -7,6 +7,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts/check_documentation_examples.py"
 LOCAL = "examples/local_delivery.rs"
+LIB = "src/lib.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
 PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
@@ -20,6 +21,7 @@ README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
 DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
 REQUIRED = {
+    LIB: {LOCAL},
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
     "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
@@ -55,6 +57,8 @@ def run_case(mutator):
             header = FILE_HEADER if source in {LOCAL, README_ORDERS} else ""
             path.write_text(f"{header}fn example() {{ /* {source} */ }}\n", encoding="utf-8")
         for document, required in REQUIRED.items():
+            if document == LIB:
+                continue
             path = root / document
             path.parent.mkdir(parents=True, exist_ok=True)
             blocks = []
@@ -62,6 +66,18 @@ def run_case(mutator):
                 code = (root / source).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
                 blocks.append(f"<!-- event-bus-source: {source} -->\n```rust\n{code}\n```")
             path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+        lib_path = root / LIB
+        lib_path.parent.mkdir(parents=True, exist_ok=True)
+        source_code = (root / LOCAL).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
+        lib_document = (
+            "//! Example crate.\n//!\n"
+            f"//! <!-- event-bus-source: {LOCAL} -->\n"
+            "//! ```rust\n"
+            + "".join(f"//! {line}\n" for line in source_code.splitlines())
+            + "//! ```\n"
+            "pub mod example;\n"
+        )
+        lib_path.write_text(lib_document, encoding="utf-8")
         mutator(root)
         return subprocess.run(
             ["python3", "scripts/check_documentation_examples.py"],
@@ -85,6 +101,22 @@ def missing_marker(root):
 def drift(root):
     path = root / "README.md"
     path.write_text(path.read_text(encoding="utf-8").replace("/* examples", "/* changed"), encoding="utf-8")
+
+
+def remove_lib_marker(root):
+    path = root / LIB
+    path.write_text(path.read_text(encoding="utf-8").replace(f"//! <!-- event-bus-source: {LOCAL} -->", "//! <!-- omitted -->"), encoding="utf-8")
+
+
+def drift_lib(root):
+    path = root / LIB
+    path.write_text(path.read_text(encoding="utf-8").replace("//! fn example()", "//! fn changed_example()", 1), encoding="utf-8")
+
+
+def normalize_lib_blank_lines(root):
+    path = root / LIB
+    text = path.read_text(encoding="utf-8").replace("//! \n", "//!\n", 1)
+    path.write_text(text, encoding="utf-8")
 
 
 def remove_monitor_marker(root, document):
@@ -177,6 +209,10 @@ expect_failure(missing_marker, f"missing checked example {LOCAL}")
 expect_failure(drift, f"example drift from {LOCAL}")
 expect_failure(add_file_header, f"example drift from {LOCAL}")
 expect_failure(traversal, "invalid source path ../../outside.rs")
+expect_failure(remove_lib_marker, f"src/lib.rs: missing checked example {LOCAL}")
+expect_failure(drift_lib, f"src/lib.rs: example drift from {LOCAL}")
+result = run_case(normalize_lib_blank_lines)
+assert result.returncode == 0, result.stdout + result.stderr
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
 print(f"documentation example checker: {case_count} cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")

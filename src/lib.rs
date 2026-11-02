@@ -5,7 +5,90 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Type-safe event bus facade and provider SPI.
+//! # Qubit Event Bus
+//!
+//! `qubit-event-bus` provides typed topics and synchronous and asynchronous
+//! facades over a provider SPI. The built-in local provider is useful for
+//! in-process work; provider registries and conformance helpers let an
+//! application add other transports.
+//!
+//! ## Quick start
+//!
+//! This example subscribes before publishing, checks provider admission, and
+//! explicitly shuts down the bus:
+//!
+//! <!-- event-bus-source: examples/local_delivery.rs -->
+//! ```rust
+//! //! Minimal local-provider example showing subscription, publication, and
+//! //! graceful shutdown.
+//!
+//! use std::sync::mpsc;
+//! use std::time::Duration;
+//!
+//! use qubit_event_bus::EventBus;
+//! use qubit_event_bus::local::LocalEventBusConfig;
+//! use qubit_event_bus::model::AdmissionRequirement;
+//! use qubit_event_bus::model::PublishRequest;
+//! use qubit_event_bus::model::SubscribeRequest;
+//! use qubit_event_bus::model::Topic;
+//! use qubit_event_bus::spi::ShutdownMode;
+//! use qubit_event_bus::spi::ShutdownOutcome;
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let bus = EventBus::local(LocalEventBusConfig::new())?;
+//!     let topic = Topic::<String>::new("orders.created")?;
+//!     let (sender, receiver) = mpsc::channel();
+//!     let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+//!         sender.send(delivery.payload().clone()).unwrap();
+//!     })?;
+//!     let _ = bus.publish_checked(
+//!         PublishRequest::new(topic, "order-42".to_owned())?,
+//!         AdmissionRequirement::ProviderOrDestinationAccepted,
+//!     )?;
+//!     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
+//!     let shutdown_report = bus.shutdown(ShutdownMode::Graceful {
+//!         timeout: Duration::from_secs(3),
+//!     })?;
+//!     assert_eq!(shutdown_report.outcome, ShutdownOutcome::Complete);
+//!     assert_eq!(shutdown_report.known_abandoned_deliveries, 0);
+//!     assert!(shutdown_report.provider_may_have_abandoned_deliveries);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Choosing a facade
+//!
+//! Use [`EventBus`] with [`Subscription`] for callback based synchronous
+//! delivery. Use [`AsyncEventBus`] with [`AsyncSubscription`] when the
+//! application already drives asynchronous tasks. An async subscription must
+//! keep [`AsyncSubscription::run`] polled; pausing it retains the session and
+//! its facade owned work, while dropping the handle closes the ephemeral
+//! provider subscription.
+//!
+//! ## Admission and lifecycle
+//!
+//! A [`model::PublishReceipt`] reports provider admission, not handler execution or
+//! business completion. With partial admission, retrying the whole publish may
+//! duplicate deliveries already accepted by some destinations. A synchronous
+//! [`Subscription`] handle drop does not cancel its receiver; call its explicit
+//! cancellation operation. Shut down the bus explicitly with a bounded graceful
+//! shutdown when the application needs a completion report. The built-in local
+//! provider is in-memory and non-persistent: process exit, close, or drop can
+//! discard pending work.
+//!
+//! [`model::AdmissionRequirement`] selects the admission condition a checked publish
+//! must meet. [`EventBusRegistry`] and [`AsyncEventBusRegistry`] create facades
+//! from registered providers. Providers implement the low-level contracts
+//! [`spi::AsyncEventBusSpi`] and [`spi::EventBusSpi`], with the built-in
+//! [`local::AsyncLocalEventBusSpi`] and [`local::LocalEventBusSpi`] as examples.
+//!
+//! ## Further reading
+//!
+//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/user_guide.md)
+//! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/user_guide.zh_CN.md)
+//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.md)
+//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.zh_CN.md)
+//!
 
 #![deny(missing_docs)]
 pub use error::CapabilityError;
