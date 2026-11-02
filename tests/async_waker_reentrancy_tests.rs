@@ -273,7 +273,7 @@ struct RunOnDrop {
 
 // This custom waker is used only to observe destruction; wake notifications
 // intentionally have no behavior.
-#[allow(clippy::manual_noop_waker)]
+#[allow(unknown_lints, clippy::manual_noop_waker)]
 impl Wake for RunOnDrop {
     fn wake(self: Arc<Self>) {}
 
