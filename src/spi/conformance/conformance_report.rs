@@ -18,22 +18,20 @@ use super::super::OutboundMessage;
 use super::super::PayloadModes;
 use super::super::SettlementCapabilities;
 use super::super::SettlementToken;
-use super::super::TopicAddress;
 use super::super::TransportPayload;
 pub(super) use super::conformance_case::ConformanceCase;
 use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_skip_reason::ConformanceSkipReason;
+use super::internal::ProbeScope;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
 use crate::model::ContentType;
-use crate::model::EventId;
 use crate::model::Headers;
 use crate::model::ProviderOptions;
 use crate::model::PublishAcknowledgement;
 use crate::model::SchemaId;
 use crate::model::StartPosition;
-use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
 use crate::spi::EventBusCapabilities;
 use crate::spi::InboundMessage;
@@ -212,18 +210,24 @@ pub(super) fn encoded_probe() -> TransportPayload {
 ///
 /// # Parameters
 /// - `payload`: representation under test.
+/// - `capabilities`: provider features controlling optional probe fields.
+/// - `scope`: unique identities shared by this probe's request and publish.
 ///
 /// # Returns
 /// A message addressed to the conformance probe topic.
 ///
 /// # Panics
 /// Panics only if a fixed conformance probe field is rejected as invalid.
-pub(super) fn probe_message(payload: TransportPayload, capabilities: EventBusCapabilities) -> OutboundMessage {
+pub(super) fn probe_message(
+    payload: TransportPayload,
+    capabilities: EventBusCapabilities,
+    scope: &ProbeScope,
+) -> OutboundMessage {
     let mut headers = Headers::new();
     headers.insert("x-conformance-probe".into(), "fixed-value".into());
     OutboundMessage::new(
-        TopicAddress::new("spi.conformance.probe").expect("static topic is valid"),
-        EventId::new("spi-conformance-probe").expect("static event ID is valid"),
+        scope.topic().clone(),
+        scope.event_id().clone(),
         SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567),
         headers,
         capabilities
@@ -240,20 +244,22 @@ pub(super) fn probe_message(payload: TransportPayload, capabilities: EventBusCap
 /// # Parameters
 /// - `subscription_id`: unique bus-local ID for this case.
 /// - `durability`: subscription mode declared by the provider.
+/// - `scope`: unique topic and logical subscriber identity for this probe.
 ///
 /// # Returns
 /// A request subscribed to the conformance probe topic.
 ///
 /// # Panics
-/// Panics if the generated subscriber ID or the fully configured request is
-/// rejected by its constructor or builder.
-pub(super) fn probe_request(subscription_id: u64, durability: SubscriptionDurability) -> SpiSubscriptionRequest {
+/// Panics if the fully configured request is rejected by its builder.
+pub(super) fn probe_request(
+    subscription_id: u64,
+    durability: SubscriptionDurability,
+    scope: &ProbeScope,
+) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::builder()
         .subscription_id(Id::new(subscription_id))
-        .topic(TopicAddress::new("spi.conformance.probe").expect("static topic is valid"))
-        .subscriber_id(
-            SubscriberId::new(format!("spi-conformance-{subscription_id}")).expect("probe subscriber ID is valid"),
-        )
+        .topic(scope.topic().clone())
+        .subscriber_id(scope.subscriber_id().clone())
         .group(None)
         .durability(durability)
         .start_position(StartPosition::New)

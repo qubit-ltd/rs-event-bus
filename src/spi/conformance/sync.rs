@@ -28,6 +28,7 @@ use super::conformance_report::push_hook;
 use super::conformance_report::settlement_case;
 use super::conformance_report::validate_probe_acknowledgement;
 use super::conformance_skip_reason::ConformanceSkipReason;
+use super::internal::ProbeScope;
 use crate::model::SubscriptionDurability;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventBusSpi;
@@ -107,11 +108,34 @@ where
                 factory()
             };
             let capabilities = spi.capabilities();
+            let scope = match ProbeScope::new() {
+                Ok(scope) => scope,
+                Err(error) => {
+                    report.push(ConformanceCase::Failed {
+                        case_id: "probe-scope".into(),
+                        detail: format!("sync probe identity generation failed: {error}"),
+                    });
+                    report.push(match spi.shutdown(ShutdownMode::Immediate) {
+                        Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
+                            case_id: "shutdown".into(),
+                        },
+                        Ok(outcome) => ConformanceCase::Failed {
+                            case_id: "shutdown".into(),
+                            detail: format!("immediate shutdown returned {outcome:?}"),
+                        },
+                        Err(error) => ConformanceCase::Failed {
+                            case_id: "shutdown".into(),
+                            detail: format!("sync shutdown failed after probe identity generation: {error}"),
+                        },
+                    });
+                    continue;
+                }
+            };
             let mode_name = match durability {
                 SubscriptionDurability::Ephemeral => "ephemeral",
                 SubscriptionDurability::Durable => "durable",
             };
-            let mut subscription = match spi.subscribe(probe_request(1, durability)) {
+            let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)) {
                 Ok(subscription) => {
                     report.push(ConformanceCase::Passed {
                         case_id: "subscribe".into(),
@@ -145,7 +169,7 @@ where
                     continue;
                 }
             };
-            let expected = probe_message(probe_payload(case_id), capabilities);
+            let expected = probe_message(probe_payload(case_id), capabilities, &scope);
             report.push(match subscription.receive(Duration::ZERO) {
                 Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
                     case_id: "receive-empty-zero-timeout".into(),
@@ -167,7 +191,7 @@ where
                     detail: format!("sync {mode_name} mode: empty receive failed: {error}"),
                 },
             });
-            let result = spi.publish(probe_message(probe_payload(case_id), capabilities));
+            let result = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope));
             let published = result.is_ok();
             report.push(publish_case(
                 case_id,
@@ -388,7 +412,38 @@ fn record_pending_close<F>(
 {
     let spi = factory();
     let capabilities = spi.capabilities();
-    let mut subscription = match spi.subscribe(probe_request(1, durability)) {
+    let scope = match ProbeScope::new() {
+        Ok(scope) => scope,
+        Err(error) => {
+            report.push(ConformanceCase::Failed {
+                case_id: "close-with-pending-setup".into(),
+                detail: format!("sync pending-close probe identity generation failed: {error}"),
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "receive-after-close-with-pending".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "probe identity could not be generated".into(),
+                },
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "close-with-pending-idempotent".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "probe identity could not be generated".into(),
+                },
+            });
+            report.push(match spi.shutdown(ShutdownMode::Immediate) {
+                Ok(_) => ConformanceCase::Passed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                    detail: format!("sync pending-close cleanup after identity failure failed: {error}"),
+                },
+            });
+            return;
+        }
+    };
+    let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)) {
         Ok(subscription) => subscription,
         Err(error) => {
             report.push(ConformanceCase::Failed {
@@ -420,7 +475,7 @@ fn record_pending_close<F>(
             return;
         }
     };
-    let publish = spi.publish(probe_message(probe_payload(case_id), capabilities));
+    let publish = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope));
     let setup = match publish {
         Ok(acknowledgement) => {
             validate_probe_acknowledgement(&acknowledgement, capabilities.publish_visibility(), Id::new(1))

@@ -28,6 +28,7 @@ use super::conformance_report::probe_subscription_modes;
 use super::conformance_report::publish_case;
 use super::conformance_report::validate_probe_acknowledgement;
 use super::conformance_skip_reason::ConformanceSkipReason;
+use super::internal::ProbeScope;
 use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::AsyncEventSubscriptionSpi;
@@ -210,7 +211,38 @@ async fn record_pending_close<F, Fut>(
 {
     let spi = factory().await;
     let capabilities = spi.capabilities();
-    let mut subscription = match spi.subscribe(probe_request(1, durability)).await {
+    let scope = match ProbeScope::new() {
+        Ok(scope) => scope,
+        Err(error) => {
+            report.push(ConformanceCase::Failed {
+                case_id: "close-with-pending-setup".into(),
+                detail: format!("async pending-close probe identity generation failed: {error}"),
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "receive-after-close-with-pending".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "probe identity could not be generated".into(),
+                },
+            });
+            report.push(ConformanceCase::Skipped {
+                case_id: "close-with-pending-idempotent".into(),
+                reason: ConformanceSkipReason::MissingFixture {
+                    detail: "probe identity could not be generated".into(),
+                },
+            });
+            report.push(match spi.shutdown(ShutdownMode::Immediate).await {
+                Ok(_) => ConformanceCase::Passed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "close-with-pending-setup-cleanup".into(),
+                    detail: format!("async pending-close cleanup after identity failure failed: {error}"),
+                },
+            });
+            return;
+        }
+    };
+    let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)).await {
         Ok(subscription) => subscription,
         Err(error) => {
             report.push(ConformanceCase::Failed {
@@ -241,7 +273,9 @@ async fn record_pending_close<F, Fut>(
             return;
         }
     };
-    let publish = spi.publish(probe_message(probe_payload(case_id), capabilities)).await;
+    let publish = spi
+        .publish(probe_message(probe_payload(case_id), capabilities, &scope))
+        .await;
     let setup = match publish {
         Ok(acknowledgement) => {
             validate_probe_acknowledgement(&acknowledgement, capabilities.publish_visibility(), Id::new(1))
@@ -343,11 +377,29 @@ async fn run_payload_case(
     report: &mut ConformanceReport,
 ) {
     let capabilities = spi.capabilities();
+    let scope = match ProbeScope::new() {
+        Ok(scope) => scope,
+        Err(error) => {
+            report.push(ConformanceCase::Failed {
+                case_id: "probe-scope".into(),
+                detail: format!("async probe identity generation failed: {error}"),
+            });
+            record_async_shutdown(
+                report,
+                spi.as_ref(),
+                "shutdown",
+                "immediate shutdown after probe identity failure",
+                "async shutdown",
+            )
+            .await;
+            return;
+        }
+    };
     let mode_name = match durability {
         SubscriptionDurability::Ephemeral => "ephemeral",
         SubscriptionDurability::Durable => "durable",
     };
-    let mut subscription = match spi.subscribe(probe_request(1, durability)).await {
+    let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)).await {
         Ok(subscription) => {
             report.push(ConformanceCase::Passed {
                 case_id: "subscribe".into(),
@@ -400,6 +452,7 @@ async fn run_payload_case(
         probe_payload(case_id),
         capabilities,
         durability,
+        &scope,
     )
     .await;
 
@@ -473,13 +526,14 @@ async fn record_async_publish_receive(
     payload: TransportPayload,
     capabilities: EventBusCapabilities,
     durability: SubscriptionDurability,
+    scope: &ProbeScope,
 ) {
     let mode_name = match durability {
         SubscriptionDurability::Ephemeral => "ephemeral",
         SubscriptionDurability::Durable => "durable",
     };
-    let expected = probe_message(probe_payload(case_id), capabilities);
-    let result = spi.publish(probe_message(payload, capabilities)).await;
+    let expected = probe_message(probe_payload(case_id), capabilities, scope);
+    let result = spi.publish(probe_message(payload, capabilities, scope)).await;
     let published = result.is_ok();
     report.push(publish_case(
         case_id,
