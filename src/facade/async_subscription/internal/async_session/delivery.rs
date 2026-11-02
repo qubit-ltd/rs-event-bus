@@ -218,7 +218,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         });
     }
 
-    /// Emits a terminal delivery failure after settlement completes.
+}
+
+impl<T: 'static> AsyncSession<T> {
+    /// Emits a terminal delivery failure after its owned state is removed.
     ///
     /// # Parameters
     /// - `failure`: attempt count and message, or `None` when no handler

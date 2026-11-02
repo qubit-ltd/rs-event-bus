@@ -26,7 +26,7 @@ pub(crate) use dead_letter::dead_letter_envelope;
 pub(crate) use dead_letter_admission::was_accepted as dead_letter_was_accepted;
 pub(crate) use dead_letter_build_error::DeadLetterBuildError;
 pub(crate) use dead_letter_forward::retry_config as dead_letter_retry_config;
-pub(crate) use dead_letter_forward_error::DeadLetterForwardError;
+pub use dead_letter_forward_error::DeadLetterForwardError;
 pub use diagnostic::Diagnostic;
 pub use diagnostic::DiagnosticObserver;
 pub(crate) use diagnostic::PipelineFailure;

@@ -92,10 +92,16 @@ impl<T: 'static> Drop for AsyncSession<T> {
                 self.metrics.record_abandoned_ephemeral();
             }
         }
-        self.buffered.clear();
         self.tasks.clear();
-        self.completed.clear();
-        self.completed_during_settlement.clear();
+        while let Some(mut delivery) = self.buffered.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+        }
+        while let Some(mut delivery) = self.completed.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+        }
+        while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+        }
         let _ = self.inner.scheduler.unregister(self.id);
         self.inner.notify_scheduler();
     }

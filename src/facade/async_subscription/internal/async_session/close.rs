@@ -145,11 +145,17 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Counts and releases unresolved buffered and completed deliveries.
     pub(super) fn abandon_queued_and_completed(&mut self) {
         let count = self.buffered.len() + self.completed.len() + self.completed_during_settlement.len();
-        self.buffered.clear();
-        self.completed.clear();
-        self.completed_during_settlement.clear();
         for _ in 0..count {
             self.record_abandoned_delivery();
+        }
+        while let Some(mut delivery) = self.buffered.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+        }
+        while let Some(mut delivery) = self.completed.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
+        }
+        while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
+            self.emit_failure_diagnostic(delivery.failure_diagnostic.take(), delivery.event_id, self.topic.name().into());
         }
     }
 

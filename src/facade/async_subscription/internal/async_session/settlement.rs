@@ -437,12 +437,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             }
         }
         self.metrics.record_completed();
-        let pending = self.completed.remove(index).expect("selected owned delivery");
-        self.emit_failure_diagnostic(
-            pending.failure_diagnostic.clone(),
-            pending.event_id.clone(),
-            self.topic.name().into(),
-        );
+        let mut pending = self.completed.remove(index).expect("selected owned delivery");
+        self.emit_failure_diagnostic(pending.failure_diagnostic.take(), pending.event_id.clone(), self.topic.name().into());
     }
 
     /// Releases facade ownership without acknowledging provider-owned durable
@@ -455,10 +451,15 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// provider settlement remains a known success even if lifecycle
     /// bookkeeping failed.
     fn abandon_completed(&mut self, index: usize) {
-        if let Some(delivery) = self.completed.remove(index)
-            && !delivery.settlement.confirmed
-        {
-            self.record_abandoned_delivery();
+        if let Some(mut delivery) = self.completed.remove(index) {
+            if !delivery.settlement.confirmed {
+                self.record_abandoned_delivery();
+            }
+            self.emit_failure_diagnostic(
+                delivery.failure_diagnostic.take(),
+                delivery.event_id,
+                self.topic.name().into(),
+            );
         }
     }
 }

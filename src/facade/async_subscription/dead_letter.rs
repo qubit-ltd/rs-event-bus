@@ -7,6 +7,7 @@
 // =============================================================================
 //! Asynchronous dead-letter publishing and retry handling.
 
+use std::error::Error;
 use std::sync::Arc;
 
 use qubit_retry::AsyncRetry;
@@ -43,14 +44,16 @@ use crate::pipeline::dead_letter_was_accepted;
 /// The publish receipt when forwarding is accepted.
 ///
 /// # Errors
-/// Returns a string describing pipeline, admission, or retry failure.
+/// Returns the original publish, admission, retry-policy, or retry-terminal
+/// error. A retry terminal error retains its reason, context, completion
+/// diagnostics, and last forwarding failure when one exists.
 pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'static>(
     inner: &Arc<AsyncEventBusInner>,
     envelope: &EventEnvelope<DeadLetterEvent<T>>,
     retry_policy: Option<&RetryPolicy>,
     cancellation: Option<&RetryCancellationToken>,
     admission_policy: DeadLetterAdmissionPolicy,
-) -> Result<PublishReceipt, String> {
+) -> Result<PublishReceipt, Box<dyn Error + Send + Sync + 'static>> {
     /// Publishes one dead-letter envelope and validates destination admission.
     ///
     /// # Type Parameters
@@ -93,9 +96,9 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
     let Some(policy) = retry_policy else {
         return attempt(inner, envelope.clone(), admission_policy)
             .await
-            .map_err(|error| error.to_string());
+            .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>);
     };
-    let config = dead_letter_retry_config(policy).map_err(|error| error.to_string())?;
+    let config = dead_letter_retry_config(policy)?;
     let mut retry = AsyncRetry::new(&config).timer(inner.timer.clone());
     if let Some(cancellation) = cancellation {
         retry = retry.cancellation_token(cancellation.clone());
@@ -104,5 +107,5 @@ pub(in crate::facade) async fn publish_dead_letter_async<T: Send + Sync + 'stati
         .run(|| attempt(inner, envelope.clone(), admission_policy))
         .await
         .map(|success| success.value().clone())
-        .map_err(|error| error.to_string())
+        .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
 }

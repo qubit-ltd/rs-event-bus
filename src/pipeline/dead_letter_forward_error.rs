@@ -10,15 +10,31 @@
 use crate::error::PublishFailure;
 use crate::model::AdmissionOutcome;
 
-/// Failure that may be retried without settling the original delivery.
+/// Failure to publish or admit a dead-letter event.
+///
+/// This error retains the structured publish failure or the provider's
+/// admission evidence. It is exposed as the application error inside a
+/// [`qubit_retry::RetryError`] when dead-letter forwarding exhausts its retry
+/// policy.
+///
+/// # Examples
+///
+/// ```
+/// use qubit_event_bus::model::AdmissionOutcome;
+/// use qubit_event_bus::pipeline::DeadLetterForwardError;
+///
+/// let error = DeadLetterForwardError::NotAdmitted(AdmissionOutcome::NoDestinations);
+/// assert!(error.to_string().contains("not admitted"));
+/// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 #[must_use]
-pub(crate) enum DeadLetterForwardError {
+pub enum DeadLetterForwardError {
     /// The provider or publish pipeline failed before a receipt was returned.
-    #[error(transparent)]
+    #[error("dead-letter publish failed: {0}")]
     Publish(
         /// Provider or facade error retained for retry classification.
-        #[from]
+        #[source]
         PublishFailure,
     ),
     /// A receipt reported no admission allowed by the configured policy.

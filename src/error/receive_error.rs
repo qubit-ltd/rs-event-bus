@@ -8,6 +8,7 @@
 //! Receiving failures.
 
 use std::sync::Arc;
+use std::error::Error;
 
 use qubit_clock::TimeError;
 
@@ -71,5 +72,8 @@ pub enum ReceiveError {
         event_id: EventId,
         /// Last forwarding or admission failure.
         message: Box<str>,
+        /// Original forwarding error, including provider and retry evidence.
+        #[source]
+        source: Box<dyn Error + Send + Sync + 'static>,
     },
 }

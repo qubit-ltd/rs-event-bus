@@ -237,53 +237,70 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         self.record_failure_diagnostic(attempts, error.to_string().into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
-                if let Ok(Some(envelope)) = dead_letter_envelope(&delivery, &error, policy.topic_name()) {
-                    match publish_dead_letter_async(
-                        &self.inner,
-                        &envelope,
-                        self.options.retry_policy(),
-                        self.options.retry_cancellation_token(),
-                        policy.admission_policy(),
-                    )
-                    .await
-                    {
-                        Ok(receipt) => {
-                            if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
+                match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
+                    Ok(Some(envelope)) => {
+                        match publish_dead_letter_async(
+                            &self.inner,
+                            &envelope,
+                            self.options.retry_policy(),
+                            self.options.retry_cancellation_token(),
+                            policy.admission_policy(),
+                        )
+                        .await
+                        {
+                            Ok(receipt) => {
+                                if matches!(receipt.admission_outcome(), AdmissionOutcome::PartiallyAccepted(_)) {
+                                    self.inner.emit(&Diagnostic::InternalFailure {
+                                        origin: "dead_letter_partial".into(),
+                                        message:
+                                            "dead-letter publication was partially accepted; it was not republished"
+                                                .into(),
+                                    });
+                                }
+                            }
+                            Err(source) => {
+                                let message = source.to_string();
                                 self.inner.emit(&Diagnostic::InternalFailure {
-                                    origin: "dead_letter_partial".into(),
-                                    message: "dead-letter publication was partially accepted; it was not republished"
-                                        .into(),
+                                    origin: "dead_letter_publish".into(),
+                                    message: message.into(),
                                 });
+                                self.signals
+                                    .fail_dead_letter_forward(delivery.event().id().clone(), source);
+                                return;
                             }
                         }
-                        Err(message) => {
-                            self.inner.emit(&Diagnostic::InternalFailure {
-                                origin: "dead_letter_publish".into(),
-                                message: message.clone().into(),
-                            });
-                            self.signals
-                                .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
-                            return;
-                        }
                     }
-                } else {
-                    let message = "dead-letter envelope could not be constructed";
-                    self.inner.emit(&Diagnostic::InternalFailure {
-                        origin: "dead_letter_build".into(),
-                        message: message.into(),
-                    });
-                    self.signals
-                        .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
-                    return;
+                    Ok(None) => {
+                        let source = Error::other("dead-letter envelope unexpectedly absent");
+                        self.inner.emit(&Diagnostic::InternalFailure {
+                            origin: "dead_letter_build".into(),
+                            message: source.to_string().into(),
+                        });
+                        self.signals
+                            .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
+                        return;
+                    }
+                    Err(source) => {
+                        let message = source.to_string();
+                        self.inner.emit(&Diagnostic::InternalFailure {
+                            origin: "dead_letter_build".into(),
+                            message: message.into(),
+                        });
+                        self.signals
+                            .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
+                        return;
+                    }
                 }
             } else {
-                let message = "dead-letter directive has no configured policy";
+                let source = Error::other("dead-letter directive has no configured policy");
                 self.inner.emit(&Diagnostic::InternalFailure {
                     origin: "dead_letter_policy".into(),
-                    message: message.into(),
+                    message: source.to_string().into(),
                 });
-                self.signals
-                    .fail_dead_letter_forward(delivery.event().id().clone(), message.into());
+                self.signals.fail_dead_letter_forward(
+                    delivery.event().id().clone(),
+                    Box::new(source),
+                );
                 return;
             }
         }

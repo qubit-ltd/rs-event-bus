@@ -8,6 +8,7 @@
 //! Stop, terminal-error and start-gate state shared by a subscription session.
 
 use std::sync::Arc;
+use std::error::Error;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
@@ -162,15 +163,20 @@ impl SessionSignals {
     /// # Parameters
     ///
     /// - `event_id`: Identity of the event that could not be forwarded.
-    /// - `message`: Description of the forwarding failure.
+    /// - `source`: Original forwarding error retained for callers.
     ///
     /// # Side Effects
     ///
     /// Stores a terminal receive error, requests an immediate stop, and wakes
     /// waiters.
-    pub(in crate::facade) fn fail_dead_letter_forward(&self, event_id: EventId, message: Box<str>) {
+    pub(in crate::facade) fn fail_dead_letter_forward(
+        &self,
+        event_id: EventId,
+        source: Box<dyn Error + Send + Sync + 'static>,
+    ) {
+        let message = source.to_string().into_boxed_str();
         *self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(ReceiveError::DeadLetterForwardFailed { event_id, message });
+            Some(ReceiveError::DeadLetterForwardFailed { event_id, message, source });
         self.stop(ShutdownMode::Immediate);
     }
 
