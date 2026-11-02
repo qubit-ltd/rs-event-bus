@@ -574,6 +574,9 @@ impl Cursor<'_> {
 5. **幂等与取消安全**：`settle` 对同一 `(token, disposition)` 幂等；异步 `receive`
    被 drop 后不得丢消息；`shutdown` 可重复调用。
 
+一个 SPI 实例属于一个独立构造的 facade 生命周期。需要共享时克隆 facade；需要独立生命周期时
+新建 SPI。仅共享 `Arc` 不保证订阅身份或关闭行为彼此隔离。
+
 ### 4.2 同步契约
 
 provider 实际使用的契约定义在 [`EventBusSpi`](../src/spi/event_bus_spi.rs) 和
@@ -917,7 +920,8 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
    任何一个 panic → 最终错误替换为 `PublishError::ErrorHandlerPanicked`，
    其余处理器仍继续执行。
 10. **接纳诊断**：回执携带 `DestinationAdmissions` 时，对每个被拒绝的目的地发
-   `Diagnostic::AdmissionRejected { event_id, topic, subscriber_id, reason }`。
+   `Diagnostic::AdmissionRejected { event_id, topic, subscription_id, subscriber_id, reason }`。
+   `subscription_id` 标识具体订阅实例；`subscriber_id` 仍表示逻辑身份。
 11. **指标**：更新 `PublishMetricsSnapshot`（`attempts`、`errors`、`dropped`、
     `opaque_accepted`、`zero_destinations`、`accepted_destinations`、
     `filtered_destinations`、`rejected_destinations`），通过 `publish_metrics()` 读取。
@@ -1067,6 +1071,9 @@ I/O 与 settlement，handler 统一在有界共享池里跑，`max_running_handl
 ### 8.2 `SyncDeliveryScheduler`
 
 同步和异步执行适配器共用只保存元数据的 `DeliverySchedulerCore`；receiver、payload 和 handler future 由各自 owner 持有。receive 之前原子预留全局与每订阅 owned 额度，超限停止接收。预留、排队、running、settling 在同一份 owned lease 内转移，不重复计数，也没有额度外的一条 pending。
+
+异步 runner 会先构造 owned lease，再采样注入时钟以记录年龄起点。若时钟在 receive reservation
+已领取后 unwind，lease 的 Drop 会归还额度。这不构成对任意 timer panic 的通用隔离或恢复保证。
 
 可运行集合先按订阅、再按键轮转。只有执行者真正取走 ready 候选时才占 handler 额度与 lane；同键排队和结算退避不占 handler 额度。handler 完成后释放执行额度，lane 要等结算成功或订阅终止才释放。`OrderingPolicy::Unordered` 把各条投递视为独立候选；`PerKey` 按 `(topic, key, subscription_id)` 保持 FIFO，无键消息共享该订阅/topic 的 None lane。
 
@@ -1469,7 +1476,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 | `Diagnostic` 变体 | 何时发出 |
 | --- | --- |
-| `AdmissionRejected` | 发布回执中某目的地被拒绝（仅 `DestinationAdmissions` provider） |
+| `AdmissionRejected` | 发布回执中某目的地被拒绝；`subscription_id` 标识具体实例（仅 `DestinationAdmissions` provider） |
 | `ReceiveGap` | provider `receive` 返回 `Gap` |
 | `DeliveryFailed` | 一条投递到达终态失败（含 attempts、`DeliveryFailureAction`、错误） |
 | `SettlementFailed` | 一次结算失败；保留结构化 error 与 attempt，是否重试由策略决定 |
@@ -1564,6 +1571,12 @@ receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral 
 Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持的模式仍是带类型的 skip。
 默认结构检查模式可以跳过缺少的 hook。异步 `subscribe-cancellation` hook 会创建部分分配的订阅、让操作保持 pending、取消并检查 provider 资源可复用；Strict 模式要求提供此 hook。
 
+每个载荷模式与 durability 组合还会检查：publish 返回成功后、调用 receive 前关闭，后续
+receive 返回 `Closed`。runner 不验证不透明 transport 是否真的有 broker 可读取的积压消息；
+它只记录 publish 结果并检查关闭后的 receive 结果。这些检查使用新的 factory 实例。不同组合可能出现相同 case ID；
+调用方可枚举 `report.cases()`，再用 `report.case_context(index)` 取得 API、单一载荷模式和
+durability。全局 hook 结果和越界索引没有组合上下文。
+
 Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、非零 receive
 timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、错误上下文与 source，
 以及敏感数据暴露。hook 被调用本身不证明这些独立属性。
@@ -1585,6 +1598,9 @@ timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有�
 即使截断，shutdown 仍返回错误。没有 retry policy 的 retry rule/token 将成为配置错误，
 并在回调或 provider 工作前验证。Strict 异步 conformance 还要求新增
 `subscribe_cancellation` hook；完整 hook 字面量须初始化它，或使用 `..Default::default()`。
+`Diagnostic::AdmissionRejected` 新增 `subscription_id` 后，显式构造该变体或完整解构字段的
+调用方须补上此字段或使用 `..`；该源码变更应安排在下一个兼容性发布窗口（0.21.x），不能当作
+0.20.x 补丁无感发布。
 
 以下类型构成需要谨慎演进的稳定边界：
 

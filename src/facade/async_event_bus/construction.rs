@@ -69,6 +69,10 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns [`FacadeBuildError::Spi`] if querying provider capabilities
     /// fails or panics.
+    ///
+    /// Clone the facade to share this provider lifecycle. Passing the same SPI
+    /// instance to separately constructed facades does not guarantee
+    /// independent subscription identities or shutdown behavior.
     #[inline]
     pub fn from_spi(provider_id: ProviderId, spi: Arc<dyn AsyncEventBusSpi>) -> Result<Self, FacadeBuildError> {
         Self::with_config(provider_id, spi, EventBusFacadeConfig::default())

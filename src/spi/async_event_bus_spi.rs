@@ -34,6 +34,11 @@ use crate::model::PublishAcknowledgement;
 ///     provider.capabilities().payload_modes()
 /// }
 /// ```
+/// A facade owns one lifecycle for the SPI instance passed to its constructor.
+/// Clone the facade to share that lifecycle. Wrapping the same SPI instance
+/// in multiple independent facades does not guarantee independent subscription
+/// identities or shutdown behavior. Create another SPI instance when an
+/// independent facade lifecycle is required.
 pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// Returns an optional facade provider identity attached by a registry.
     ///

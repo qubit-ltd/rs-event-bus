@@ -598,6 +598,11 @@ impl Cursor<'_> {
 4. **Single-owner subscriptions.** Methods on `EventSubscriptionSpi` and `AsyncEventSubscriptionSpi` take `&mut self`. The provider does not lock for concurrent receive. The facade owns concurrency.
 5. **Idempotence and cancellation safety.** `settle` of the same `(token, disposition)` is idempotent. Dropping an async `receive` future must not lose the message. `shutdown` may be called more than once.
 
+One SPI instance belongs to one independently constructed facade lifecycle.
+Clone the facade to share its lifecycle; create another SPI instance when a
+separate lifecycle is required. Sharing an `Arc` alone does not guarantee
+independent subscription identities or shutdown behavior.
+
 ### 4.2 Synchronous contract
 
 The provider-facing contracts are defined by [`EventBusSpi`](../src/spi/event_bus_spi.rs)
@@ -963,7 +968,8 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
    runs in registration order. If any handler panics, the final error becomes
    `PublishError::ErrorHandlerPanicked` and the remaining handlers still run.
 10. **Admission diagnostics.** When the receipt carries `DestinationAdmissions`, each
-   rejected destination emits `Diagnostic::AdmissionRejected { event_id, topic, subscriber_id, reason }`.
+   rejected destination emits `Diagnostic::AdmissionRejected { event_id, topic, subscription_id, subscriber_id, reason }`.
+   `subscription_id` identifies the concrete instance; `subscriber_id` remains its logical identity.
 11. **Metrics.** Update `PublishMetricsSnapshot` (`attempts`, `errors`, `dropped`,
     `opaque_accepted`, `zero_destinations`, `accepted_destinations`,
     `filtered_destinations`, `rejected_destinations`), readable through `publish_metrics()`.
@@ -1130,6 +1136,11 @@ bounded pool. `max_running_handlers` limits running handlers; owned work has its
 ### 8.2 `SyncDeliveryScheduler`
 
 Sync and async adapters share a metadata-only `DeliverySchedulerCore`; each owner retains its receiver, payloads, and handler futures. Before receive, reserve global and per-subscription owned capacity atomically. Backpressure occurs before pulling a message. A single owned lease transfers through reserved, queued, running, and settling stages, with no extra pending message outside the limits.
+
+The async runner constructs the owned lease before sampling the injected clock
+for its age origin. If that sample unwinds after a receive reservation was
+claimed, dropping the lease returns the credit. This does not promise general
+isolation or recovery from arbitrary timer panics.
 
 Eligible work rotates across subscriptions, then keys. Only an executor actually taking a ready candidate acquires a handler slot and lane. Same-key queues and settlement backoff consume no handler slot. Handler completion releases its execution slot; the lane remains owned until settlement succeeds or the subscription terminates. `OrderingPolicy::Unordered` makes each delivery independently eligible. `PerKey` preserves FIFO within `(topic, key, subscription_id)`; keyless messages share that subscription/topic's None lane.
 
@@ -1571,7 +1582,7 @@ An observer panic is isolated and does not affect other observers or the main pa
 
 | `Diagnostic` variant | When it is emitted |
 | --- | --- |
-| `AdmissionRejected` | A destination in a publish receipt was rejected (only `DestinationAdmissions` providers) |
+| `AdmissionRejected` | A destination in a publish receipt was rejected; `subscription_id` identifies that instance (only `DestinationAdmissions` providers) |
 | `ReceiveGap` | Provider `receive` returned `Gap` |
 | `DeliveryFailed` | A delivery reached a terminal failure (includes attempts, the `DeliveryFailureAction`, and the error) |
 | `SettlementFailed` | An attempt failed; structured error and attempt are preserved, retry depends on policy |
@@ -1671,6 +1682,15 @@ cancellation, durable recovery, and ephemeral cleanup. Under `Strict`, a
 required hook missing for a declared supported mode fails; unsupported modes
 remain typed skips. The default structural profile may skip absent hooks. The async `subscribe-cancellation` hook specifically creates a partially allocated subscription, leaves an operation pending, cancels it, and checks that the provider resource is reusable; Strict mode requires this hook.
 
+Each payload-mode and durability combination also checks that, after publish
+returns successfully and before receive is called, closing makes a later
+receive return `Closed`. The runner does not verify that an opaque transport
+had a broker-readable backlog; it records the publish result and checks the
+post-close receive result. These checks use fresh factory instances. Case
+IDs may repeat across combinations; enumerate `report.cases()` and query
+`report.case_context(index)` for the API, single payload mode, and durability.
+Global hook results and out-of-range indices have no context.
+
 Provider authors still need additional tests for descriptor and provider
 selection/creation, complete capability behavior, non-zero receive timeout,
 Gap delivery, foreign-token ownership, deeper side effects such as absence of
@@ -1694,6 +1714,10 @@ records. `len()` and `iter()` describe retained samples; `total_count()`,
 `omitted_count()`, and `is_truncated()` describe the complete count. The total
 count saturates at `u64::MAX`; this bounds record count, not provider error size
 or application-held snapshots. Shutdown still returns an error when truncated.
+Adding `subscription_id` to `Diagnostic::AdmissionRejected` requires callers
+that construct this variant or destructure every field to add it or use `..`;
+schedule this source change for the next compatible release window (0.21.x),
+not a 0.20.x patch.
 Retry rule/token options without a retry policy become configuration errors,
 validated before callbacks or provider work. Strict async conformance also
 requires the new `subscribe_cancellation` hook; complete hook literals must add

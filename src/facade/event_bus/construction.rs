@@ -69,6 +69,10 @@ impl EventBus {
     /// bounded pool. Use a registry when provider selection or creation
     /// fallback is required.
     ///
+    /// Clone the facade to share this provider lifecycle. Passing the same SPI
+    /// instance to separately constructed facades does not guarantee
+    /// independent subscription identities or shutdown behavior.
+    ///
     /// # Parameters
     /// - `provider_id`: stable identifier assigned to the provider.
     /// - `spi`: provider implementation shared with the facade.

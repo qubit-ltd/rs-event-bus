@@ -1209,7 +1209,9 @@ cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_UR
 
 1. **实现消息传递。** 库把这组接口叫 SPI。同步实现要提供 `EventBusSpi` 的能力说明、发布、订阅和关闭方法；每次订阅还要返回一个 `EventSubscriptionSpi`，负责收消息、确认处理结果和关闭。异步实现对应 `AsyncEventBusSpi` 与 `AsyncEventSubscriptionSpi`。能力说明要如实填写，不能把不支持的持久化或排序能力报成支持。
 2. **让应用能创建它。** 实现 `ProviderMetadata`，给它一个唯一 ID；再实现 `ServiceProvider<EventBusSpec>` 或异步的 `AsyncServiceProvider<EventBusSpec>`。创建方法 `create_configured` 读取配置、连接后端，返回上一步的实现。配置错误要明确报告。
-3. **加入应用并验证。** 应用可显式调用 `registry.register(MyProvider)`；如果需要自动发现，再提交到相应目录。启用 `conformance` feature 可运行库提供的接口契约检查，其中包括空队列零时长 receive 和成功 close 后返回 `Closed`。Strict 异步 profile 还要求 `subscribe_cancellation` hook：测试应部分分配订阅资源、保持操作 pending、取消它，并确认资源可再次使用。新增 `AsyncConformanceHooks` 完整字面量时需初始化该字段，或用 `..Default::default()`。还要测试非零等待超时、队列满、取消、重复确认、重复关闭和错误信息。
+3. **加入应用并验证。** 应用可显式调用 `registry.register(MyProvider)`；如果需要自动发现，再提交到相应目录。启用 `conformance` feature 可运行库提供的接口契约检查，其中包括空队列零时长 receive，以及 publish 返回成功后、调用 receive 前关闭，再检查 receive 返回 `Closed`。该检查只记录 publish 结果，不证明不透明 transport 确有 broker 可读取的积压消息。每个已声明的载荷模式与 durability 组合都会使用新的 provider factory 实例。不同组合可能使用相同 case ID；枚举 `report.cases()` 后调用 `report.case_context(index)` 可查看 API、单一载荷模式和 durability。Strict 异步 profile 还要求 `subscribe_cancellation` hook：测试应部分分配订阅资源、保持操作 pending、取消它，并确认资源可再次使用。新增 `AsyncConformanceHooks` 完整字面量时需初始化该字段，或用 `..Default::default()`。还要测试非零等待超时、队列满、取消、重复确认、重复关闭和错误信息。
+
+一个 SPI 实例对应一个独立 facade 生命周期。需要共享时克隆 `EventBus` 或 `AsyncEventBus`；需要独立生命周期时应新建 SPI。仅共享 `Arc` 不会提供独立订阅身份或相互隔离的关闭行为。
 
 进程内实现可以直接传递 Rust 对象（`TransportPayload::Native`）；跨进程传输通常要先把对象编码成字节（`Encoded`）。`publish(OutboundMessage)` 的返回值要反映实际接收情况：能判断每个处理方是否接收，才返回 `DestinationAdmissions`；只知道消息服务器接收时，返回不列出处理方的 `Accepted`。不要把“只写入本地缓冲”描述成“已经持久保存”。`receive` 要能区分收到消息、等待超时、消息缺口和已关闭。如果支持确认处理结果，重复提交同一结果应安全，提交冲突结果要报错。异步操作被取消时，尚未确认的消息不能被当成成功处理。
 
@@ -1821,7 +1823,7 @@ if !cleanup_errors.is_empty() {
 | `IdleWaitUnsupported` | 所用实现不能报告整个主题是否空闲；可以由业务代码记录完成状态，不能把总线已取到的工作当作全部工作。 |
 | 平稳关闭超时 | 查是否有处理函数或底层读写一直没返回、是否还有未完成的消息；稍后再获取关闭结果。 |
 
-用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、处理方 ID、重试次数和最终错误。
+用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`Diagnostic::AdmissionRejected` 同时携带逻辑身份 `subscriber_id` 和被拒绝实例的 `subscription_id`，可以区分逻辑名称相同的订阅。显式构造该变体或完整解构字段的调用方须补充实例 ID，或用 `..` 忽略新增字段；该源码变更安排在 0.21.x 兼容性发布窗口。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、逻辑处理方 ID 和订阅实例 ID、重试次数及最终错误。
 
 停机时的关闭错误历史保留最早 256 条详细记录。`SubscriptionCloseErrors::len()` 和 `iter()` 只描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。即使截断，shutdown 仍返回错误，source 指向首个保留错误。此限制只约束记录数，不约束单条 provider 错误的大小或应用保留的快照；需要完整归档时，应在显式关闭订阅时记录每条错误。
 
