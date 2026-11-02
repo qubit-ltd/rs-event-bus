@@ -414,7 +414,8 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                         .expect("idempotent close");
                     subscription.closed = true;
                     subscription.pending.clear();
-                    // Close discards pending and unsettled deliveries from the model.
+                    // Close discards pending and unsettled deliveries from the
+                    // model.
                 }
             }
             9 => {
@@ -469,7 +470,11 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        DeliveryDisposition, Id, PendingByLane, PendingEvent, SettlementToken, TokenRecord, consume_lane,
+        record_disposition,
+    };
+    use std::collections::VecDeque;
 
     fn event(id: u64, lane: u8, weight: usize) -> PendingEvent {
         PendingEvent { id, lane, weight }

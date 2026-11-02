@@ -14,12 +14,12 @@
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../tests/local/internal/local_state_machine.rs"]
-mod local_state_machine;
+#[path = "../../tests/local/internal/local_state_machine_tests.rs"]
+mod local_state_machine_tests;
 
 const MAX_INPUT_LEN: usize = 4_096;
 
 fuzz_target!(|input: &[u8]| {
     let bounded_input = &input[..input.len().min(MAX_INPUT_LEN)];
-    local_state_machine::run(bounded_input);
+    local_state_machine_tests::run(bounded_input);
 });
