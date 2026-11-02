@@ -18,6 +18,7 @@ use std::task::Waker;
 use std::thread;
 
 use qubit_event_bus::AsyncEventBusRegistry;
+use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::EventBusProviderError;
 use qubit_event_bus::EventBusRegistry;
@@ -554,6 +555,40 @@ fn test_async_fallback_keeps_candidate_that_satisfies_per_key_requirement() {
             .await
             .expect("selected async bus shuts down");
     });
+}
+
+#[test]
+fn test_public_missing_from_reports_stable_capability_labels() {
+    let bus = EventBus::local(Default::default()).expect("local bus is created");
+    let actual = bus.capabilities();
+
+    assert!(RequiredCapabilities::new().missing_from(actual).is_empty());
+
+    let weaker_capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::AcceptOnly,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::FireAndForget,
+        PublishVisibility::Opaque,
+    );
+    let requirements = RequiredCapabilities::new()
+        .with_payload(PayloadModes::Encoded)
+        .with_settlement(SettlementCapabilities::AcceptRetryReject)
+        .with_ordering(OrderingCapability::PerKey)
+        .with_durability(DurabilityCapability::Durable)
+        .with_publish_guarantee(PublishGuarantee::DurablyStored);
+
+    assert_eq!(
+        requirements.missing_from(weaker_capabilities),
+        vec!["payload", "settlement", "ordering", "durability", "publish_guarantee"],
+    );
+
+    let _report = bus.shutdown(ShutdownMode::Immediate).expect("local bus shuts down");
 }
 
 fn block_on<F: Future>(future: F) -> F::Output {

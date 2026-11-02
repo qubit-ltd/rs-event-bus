@@ -246,15 +246,38 @@ impl RequiredCapabilities {
         self
     }
 
-    /// Requires the requested provider behavior and returns missing labels.
+    /// Compares the declared capabilities with these requirements.
+    ///
+    /// This pure comparison can be used for dependency-injection checks after
+    /// creating a bus. It does not query a provider or cause metrics, fallback,
+    /// or other side effects. An empty result means the declared capabilities
+    /// satisfy these requirements; it does not indicate backend health.
     ///
     /// # Parameters
     /// - `capabilities`: actual capabilities reported by the provider SPI.
     ///
     /// # Returns
-    /// Stable labels for requirements the provider does not satisfy.
+    /// Stable labels for requirements the declared capabilities do not satisfy.
+    /// An empty list means all declared requirements are satisfied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qubit_event_bus::EventBus;
+    /// use qubit_event_bus::RequiredCapabilities;
+    /// use qubit_event_bus::local::LocalEventBusConfig;
+    /// use qubit_event_bus::spi::DurabilityCapability;
+    /// use qubit_event_bus::spi::ShutdownMode;
+    ///
+    /// let bus = EventBus::local(LocalEventBusConfig::new()).expect("local bus");
+    /// let missing = RequiredCapabilities::new()
+    ///     .with_durability(DurabilityCapability::Durable)
+    ///     .missing_from(bus.capabilities());
+    /// assert_eq!(missing, vec!["durability"]);
+    /// bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+    /// ```
     #[must_use]
-    pub(crate) fn missing_from(self, capabilities: EventBusCapabilities) -> Vec<&'static str> {
+    pub fn missing_from(self, capabilities: EventBusCapabilities) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if let Some(required) = self.payload
             && !payload_satisfies(capabilities.payload_modes(), required)
