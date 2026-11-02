@@ -7,6 +7,8 @@
 // =============================================================================
 //! Synchronous facade contracts with controllable provider and handler races.
 
+mod support;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -28,6 +30,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use crate::support::sync_bus_cleanup::SyncBusCleanup;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
@@ -168,6 +171,7 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
         config,
     )
     .expect("valid provider capabilities");
+    let cleanup = SyncBusCleanup::new(bus.clone());
 
     let first = bus
         .subscribe(
@@ -196,9 +200,7 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
         )
         .expect("cancellation releases the subscription budget");
     third.cancel().expect("third subscription is cancelled");
-    let _ = bus
-        .shutdown(ShutdownMode::Immediate)
-        .expect("event bus shutdown succeeds");
+    cleanup.finish().expect("event bus shutdown succeeds");
 }
 
 #[test]

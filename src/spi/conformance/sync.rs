@@ -135,6 +135,27 @@ where
                 }
             };
             let expected = probe_message(probe_payload(case_id), capabilities);
+            report.push(match subscription.receive(Duration::ZERO) {
+                Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
+                    case_id: "receive-empty-zero-timeout".into(),
+                },
+                Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+                    case_id: "receive-empty-zero-timeout".into(),
+                    detail: format!("sync {mode_name} mode: empty receive returned Message"),
+                },
+                Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+                    case_id: "receive-empty-zero-timeout".into(),
+                    detail: format!("sync {mode_name} mode: empty receive returned Gap"),
+                },
+                Ok(ReceiveOutcome::Closed) => ConformanceCase::Failed {
+                    case_id: "receive-empty-zero-timeout".into(),
+                    detail: format!("sync {mode_name} mode: empty receive returned Closed"),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "receive-empty-zero-timeout".into(),
+                    detail: format!("sync {mode_name} mode: empty receive failed: {error}"),
+                },
+            });
             let result = spi.publish(probe_message(probe_payload(case_id), capabilities));
             let published = result.is_ok();
             report.push(publish_case(
@@ -210,13 +231,43 @@ where
                     },
                 });
             }
-            report.push(match subscription.close() {
+            let close_result = subscription.close();
+            report.push(match &close_result {
                 Ok(()) => ConformanceCase::Passed {
                     case_id: "close".into(),
                 },
                 Err(error) => ConformanceCase::Failed {
                     case_id: "close".into(),
                     detail: format!("sync receiver close failed: {error}"),
+                },
+            });
+            report.push(match close_result {
+                Ok(()) => match subscription.receive(Duration::ZERO) {
+                    Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                        case_id: "receive-after-close".into(),
+                    },
+                    Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
+                        case_id: "receive-after-close".into(),
+                        detail: format!("sync {mode_name} mode: receive after close returned TimedOut"),
+                    },
+                    Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+                        case_id: "receive-after-close".into(),
+                        detail: format!("sync {mode_name} mode: receive after close returned Message"),
+                    },
+                    Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+                        case_id: "receive-after-close".into(),
+                        detail: format!("sync {mode_name} mode: receive after close returned Gap"),
+                    },
+                    Err(error) => ConformanceCase::Failed {
+                        case_id: "receive-after-close".into(),
+                        detail: format!("sync {mode_name} mode: receive after close failed: {error}"),
+                    },
+                },
+                Err(_) => ConformanceCase::Skipped {
+                    case_id: "receive-after-close".into(),
+                    reason: ConformanceSkipReason::MissingFixture {
+                        detail: "receiver close failed".into(),
+                    },
                 },
             });
             report.push(match subscription.close() {

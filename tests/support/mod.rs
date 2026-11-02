@@ -22,3 +22,6 @@ pub(crate) mod provider_shapes;
 
 #[allow(dead_code)]
 pub(crate) mod settlement_probe;
+
+#[allow(dead_code)]
+pub(crate) mod sync_bus_cleanup;

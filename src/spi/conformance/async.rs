@@ -223,6 +223,28 @@ async fn run_payload_case(
         }
     };
 
+    report.push(match subscription.receive(Duration::ZERO).await {
+        Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
+            case_id: "receive-empty-zero-timeout".into(),
+        },
+        Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+            case_id: "receive-empty-zero-timeout".into(),
+            detail: format!("async {mode_name} mode: empty receive returned Message"),
+        },
+        Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+            case_id: "receive-empty-zero-timeout".into(),
+            detail: format!("async {mode_name} mode: empty receive returned Gap"),
+        },
+        Ok(ReceiveOutcome::Closed) => ConformanceCase::Failed {
+            case_id: "receive-empty-zero-timeout".into(),
+            detail: format!("async {mode_name} mode: empty receive returned Closed"),
+        },
+        Err(error) => ConformanceCase::Failed {
+            case_id: "receive-empty-zero-timeout".into(),
+            detail: format!("async {mode_name} mode: empty receive failed: {error}"),
+        },
+    });
+
     record_async_publish_receive(
         report,
         spi.as_ref(),
@@ -234,7 +256,44 @@ async fn run_payload_case(
     )
     .await;
 
-    record_async_subscription_close(report, subscription.as_mut(), "close", "async receiver close").await;
+    let close_result = subscription.close().await;
+    push_async_result(
+        report,
+        "close",
+        close_result
+            .as_ref()
+            .map(|()| ())
+            .map_err(|error| format!("async receiver close failed: {error}")),
+    );
+    report.push(match close_result {
+        Ok(()) => match subscription.receive(Duration::ZERO).await {
+            Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                case_id: "receive-after-close".into(),
+            },
+            Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
+                case_id: "receive-after-close".into(),
+                detail: format!("async {mode_name} mode: receive after close returned TimedOut"),
+            },
+            Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+                case_id: "receive-after-close".into(),
+                detail: format!("async {mode_name} mode: receive after close returned Message"),
+            },
+            Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+                case_id: "receive-after-close".into(),
+                detail: format!("async {mode_name} mode: receive after close returned Gap"),
+            },
+            Err(error) => ConformanceCase::Failed {
+                case_id: "receive-after-close".into(),
+                detail: format!("async {mode_name} mode: receive after close failed: {error}"),
+            },
+        },
+        Err(_) => ConformanceCase::Skipped {
+            case_id: "receive-after-close".into(),
+            reason: ConformanceSkipReason::MissingFixture {
+                detail: "receiver close failed".into(),
+            },
+        },
+    });
     record_async_subscription_close(
         report,
         subscription.as_mut(),
