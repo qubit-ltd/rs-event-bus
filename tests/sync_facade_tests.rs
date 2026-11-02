@@ -30,7 +30,6 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use crate::support::sync_bus_cleanup::SyncBusCleanup;
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
@@ -112,6 +111,8 @@ use qubit_retry::RetryContext;
 use qubit_retry::RetryDecision;
 use qubit_retry::RetryErrorReason;
 use qubit_retry::RetryPolicy;
+
+use crate::support::sync_bus_cleanup::SyncBusCleanup;
 
 /// Shares a provider mailbox and its receive notification.
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;

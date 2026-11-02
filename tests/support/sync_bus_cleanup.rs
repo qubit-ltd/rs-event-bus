@@ -1,3 +1,10 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 use std::time::Duration;
 
 use qubit_event_bus::error::ShutdownError;
@@ -43,12 +50,12 @@ impl SyncBusCleanup {
 impl Drop for SyncBusCleanup {
     fn drop(&mut self) {
         self.release_gates();
-        if let Some(bus) = self.bus.take() {
-            if let Err(error) = bus.shutdown(ShutdownMode::Graceful {
+        if let Some(bus) = self.bus.take()
+            && let Err(error) = bus.shutdown(ShutdownMode::Graceful {
                 timeout: Duration::from_secs(2),
-            }) {
-                eprintln!("best-effort sync test bus cleanup failed: {error}");
-            }
+            })
+        {
+            eprintln!("best-effort sync test bus cleanup failed: {error}");
         }
     }
 }

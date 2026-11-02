@@ -257,14 +257,11 @@ async fn run_payload_case(
     .await;
 
     let close_result = subscription.close().await;
-    push_async_result(
-        report,
-        "close",
-        close_result
-            .as_ref()
-            .map(|()| ())
-            .map_err(|error| format!("async receiver close failed: {error}")),
-    );
+    let close_summary = match &close_result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(format!("async receiver close failed: {error}")),
+    };
+    push_async_result(report, "close", close_summary);
     report.push(match close_result {
         Ok(()) => match subscription.receive(Duration::ZERO).await {
             Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {

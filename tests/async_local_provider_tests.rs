@@ -232,12 +232,9 @@ fn test_async_local_drop_racing_publish_releases_capacity_after_close() {
         .expect("async subscription must be created");
     let mut second = block_on(spi.subscribe(spi_request(703, "second", "async.local.drop-publish-second")))
         .expect("async subscription must be created");
-    let _ = block_on(
-        bus.publish(
-            PublishRequest::new(first_topic.clone(), "occupy".to_owned())
-                .expect("test publish request must be valid"),
-        ),
-    )
+    let _ = block_on(bus.publish(
+        PublishRequest::new(first_topic.clone(), "occupy".to_owned()).expect("test publish request must be valid"),
+    ))
     .expect("publish request must be admitted");
 
     let blocked = block_on(

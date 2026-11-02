@@ -88,7 +88,7 @@ fn retry_saturation_sample(available_handler_slots: usize) -> io::Result<Duratio
         .with_provider_options(LocalEventBusConfig::default().provider_options())
         .with_facade_config(facade);
     let bus = registry.create(&config).map_err(io::Error::other)?;
-    let result = measure_independent_delivery_wait(&bus, available_handler_slots);
+    let result = measure_independent_delivery_wait(&bus);
     let shutdown_result = bus
         .request_shutdown(ShutdownMode::Immediate)
         .map_err(io::Error::other)
@@ -118,7 +118,7 @@ fn retry_saturation_sample(available_handler_slots: usize) -> io::Result<Duratio
 }
 
 /// Occupies four handler positions, then measures one independent delivery.
-fn measure_independent_delivery_wait(bus: &EventBus, available_handler_slots: usize) -> io::Result<Duration> {
+fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
     let (entry_tx, entry_rx) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     // Install the release guard before any publish can start a callback.
@@ -203,7 +203,8 @@ fn measure_independent_delivery_wait(bus: &EventBus, available_handler_slots: us
     release_gate.release();
     thread::sleep(PUBLISH_OFFSET);
     let publish_started = Instant::now();
-    bus.publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
+    let _receipt = bus
+        .publish(PublishRequest::new(independent_topic, 0).map_err(io::Error::other)?)
         .map_err(io::Error::other)?;
     let handler_started = started_rx.recv_timeout(SAMPLE_TIMEOUT).map_err(|error| {
         io::Error::new(
