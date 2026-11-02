@@ -187,7 +187,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// - `handler`: Callback retained for work granted during this run.
     ///
     /// # Returns
-    /// Success after natural receiver closure or stop has drained the owned work set.
+    /// Success after natural receiver closure or stop has drained the owned
+    /// work set.
     ///
     /// # Errors
     /// Returns a retained terminal processing cause or `ReceiveError::Closed`

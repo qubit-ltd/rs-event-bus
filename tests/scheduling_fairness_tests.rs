@@ -11,10 +11,10 @@
 mod support;
 
 use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -23,11 +23,11 @@ use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::OrderingPolicy;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
-use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::EventBusSpi;
@@ -38,13 +38,13 @@ use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
+use support::fake_spi::FakeEventBusSpi;
+use support::fake_spi::inbound_message;
 use support::settlement_probe::CancelOnDrop;
 use support::settlement_probe::Gate;
 use support::settlement_probe::ProbeBus;
 use support::settlement_probe::SettlementProbe;
 use support::settlement_probe::Signal;
-use support::fake_spi::FakeEventBusSpi;
-use support::fake_spi::inbound_message;
 
 /// Publishes a keyed payload using the production facade.
 fn publish(bus: &EventBus, topic: &str, payload: &str, key: &str) {
@@ -161,7 +161,9 @@ struct ClosedAfterTwoBus {
     closes: Arc<AtomicUsize>,
 }
 impl EventBusSpi for ClosedAfterTwoBus {
-    fn capabilities(&self) -> EventBusCapabilities { self.fake.capabilities() }
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.fake.capabilities()
+    }
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.fake.publish(message)
     }
@@ -173,7 +175,9 @@ impl EventBusSpi for ClosedAfterTwoBus {
             closes: self.closes.clone(),
         }))
     }
-    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> { self.fake.shutdown(mode) }
+    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        self.fake.shutdown(mode)
+    }
 }
 struct ClosedAfterTwoReceiver {
     inner: Box<dyn EventSubscriptionSpi>,
@@ -211,26 +215,34 @@ fn test_natural_closed_observation() {
     let closes = Arc::new(AtomicUsize::new(0));
     let bus = EventBus::from_spi(
         ProviderId::new("closed-after-two").expect("valid provider"),
-        Arc::new(ClosedAfterTwoBus { fake: fake.clone(), receives: receives.clone(), outcomes: outcomes.clone(), closes: closes.clone() }),
-    ).expect("valid capabilities");
+        Arc::new(ClosedAfterTwoBus {
+            fake: fake.clone(),
+            receives: receives.clone(),
+            outcomes: outcomes.clone(),
+            closes: closes.clone(),
+        }),
+    )
+    .expect("valid capabilities");
     let gate = Arc::new(Gate::default());
     let entered = Arc::new(Signal::default());
     let completed = Arc::new(AtomicUsize::new(0));
     let handler_gate = gate.clone();
     let handler_entered = entered.clone();
     let handler_completed = completed.clone();
-    let sub = bus.subscribe(
-        SubscribeRequest::new("natural-closed", Topic::<u32>::new("test.topic").expect("valid topic"))
-            .expect("valid subscriber"),
-        move |_: Delivery<u32>| {
-            let first = handler_completed.load(AtomicOrdering::SeqCst) == 0;
-            if first {
-                handler_entered.enter();
-                handler_gate.wait();
-            }
-            handler_completed.fetch_add(1, AtomicOrdering::SeqCst);
-        },
-    ).expect("subscription starts");
+    let sub = bus
+        .subscribe(
+            SubscribeRequest::new("natural-closed", Topic::<u32>::new("test.topic").expect("valid topic"))
+                .expect("valid subscriber"),
+            move |_: Delivery<u32>| {
+                let first = handler_completed.load(AtomicOrdering::SeqCst) == 0;
+                if first {
+                    handler_entered.enter();
+                    handler_gate.wait();
+                }
+                handler_completed.fetch_add(1, AtomicOrdering::SeqCst);
+            },
+        )
+        .expect("subscription starts");
     let _cleanup = CancelOnDrop(vec![&sub]);
     let _release_on_unwind = gate.release_on_drop();
     fake.enqueue(inbound_message(None));
@@ -245,22 +257,51 @@ fn test_natural_closed_observation() {
         }
         std::thread::yield_now();
     }
-    let before_release = format!("receives={}, outcomes={:?}, handlers={}, settlements=tokenless", receives.load(AtomicOrdering::SeqCst), outcomes.lock().expect("receive log lock"), completed.load(AtomicOrdering::SeqCst));
+    let before_release = format!(
+        "receives={}, outcomes={:?}, handlers={}, settlements=tokenless",
+        receives.load(AtomicOrdering::SeqCst),
+        outcomes.lock().expect("receive log lock"),
+        completed.load(AtomicOrdering::SeqCst)
+    );
     gate.release();
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if completed.load(AtomicOrdering::SeqCst) >= 2 { break; }
+        if completed.load(AtomicOrdering::SeqCst) >= 2 {
+            break;
+        }
         std::thread::yield_now();
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if closes.load(AtomicOrdering::SeqCst) > 0 { break; }
+        if closes.load(AtomicOrdering::SeqCst) > 0 {
+            break;
+        }
         std::thread::yield_now();
     }
-    let snapshot = format!("before_release=[{before_release}], handlers={}, closes={}, bus_metrics={:?}", completed.load(AtomicOrdering::SeqCst), closes.load(AtomicOrdering::SeqCst), bus.delivery_metrics());
-    assert!(closed_observed, "natural Closed must be consumed while A1 is gated: {snapshot}");
-    assert_eq!(receives.load(AtomicOrdering::SeqCst), 2, "A1 and A2 receive sequence: {snapshot}");
-    assert_eq!(completed.load(AtomicOrdering::SeqCst), 2, "both sync handlers complete: {snapshot}");
-    assert_eq!(closes.load(AtomicOrdering::SeqCst), 1, "sync receiver closes once: {snapshot}");
+    let snapshot = format!(
+        "before_release=[{before_release}], handlers={}, closes={}, bus_metrics={:?}",
+        completed.load(AtomicOrdering::SeqCst),
+        closes.load(AtomicOrdering::SeqCst),
+        bus.delivery_metrics()
+    );
+    assert!(
+        closed_observed,
+        "natural Closed must be consumed while A1 is gated: {snapshot}"
+    );
+    assert_eq!(
+        receives.load(AtomicOrdering::SeqCst),
+        2,
+        "A1 and A2 receive sequence: {snapshot}"
+    );
+    assert_eq!(
+        completed.load(AtomicOrdering::SeqCst),
+        2,
+        "both sync handlers complete: {snapshot}"
+    );
+    assert_eq!(
+        closes.load(AtomicOrdering::SeqCst),
+        1,
+        "sync receiver closes once: {snapshot}"
+    );
     eprintln!("sync natural Closed observation: {snapshot}");
 }
