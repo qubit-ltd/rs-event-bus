@@ -40,6 +40,8 @@ use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 #[cfg(feature = "conformance")]
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+#[cfg(feature = "conformance")]
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 #[cfg(feature = "conformance")]
@@ -109,6 +111,166 @@ use crate::support::manual_async::poll_once;
 use crate::support::provider_shapes::ChannelShapedEventBusSpi;
 use crate::support::provider_shapes::encoded_settlement_capabilities;
 
+#[cfg(feature = "conformance")]
+#[derive(Clone, Copy)]
+enum ReceiveStateFault {
+    EmptyClosed,
+    AfterCloseTimedOut,
+    CloseFails,
+}
+
+#[cfg(feature = "conformance")]
+struct FaultySyncProvider {
+    inner: FakeEventBusSpi,
+    fault: ReceiveStateFault,
+    published: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "conformance")]
+impl EventBusSpi for FaultySyncProvider {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+        self.published.store(true, std::sync::atomic::Ordering::Release);
+        self.inner.publish(message)
+    }
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        Ok(Box::new(FaultySyncReceiver {
+            inner: self.inner.subscribe(request)?,
+            fault: self.fault,
+            published: self.published.clone(),
+            closed: false,
+        }))
+    }
+    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct FaultySyncReceiver {
+    inner: Box<dyn EventSubscriptionSpi>,
+    fault: ReceiveStateFault,
+    published: Arc<std::sync::atomic::AtomicBool>,
+    closed: bool,
+}
+
+#[cfg(feature = "conformance")]
+impl EventSubscriptionSpi for FaultySyncReceiver {
+    fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        if matches!(self.fault, ReceiveStateFault::EmptyClosed)
+            && timeout.is_zero()
+            && !self.published.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(ReceiveOutcome::Closed);
+        }
+        if matches!(self.fault, ReceiveStateFault::AfterCloseTimedOut) && self.closed {
+            return Ok(ReceiveOutcome::TimedOut);
+        }
+        self.inner.receive(timeout)
+    }
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+        self.inner.settle(token, disposition)
+    }
+    fn close(&mut self) -> Result<(), SpiError> {
+        if matches!(self.fault, ReceiveStateFault::CloseFails) {
+            return Err(SpiError::Operation {
+                provider_id: "faulty-conformance".into(),
+                operation: "close",
+                resource: None,
+                kind: "injected_close_failure",
+                retryable: Some(false),
+                source: Box::new(std::io::Error::other("injected close failure")),
+            });
+        }
+        self.closed = true;
+        self.inner.close()
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct FaultyAsyncProvider {
+    inner: FakeAsyncEventBusSpi,
+    fault: ReceiveStateFault,
+    published: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventBusSpi for FaultyAsyncProvider {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.published.store(true, std::sync::atomic::Ordering::Release);
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async move {
+            let inner = self.inner.subscribe(request).await?;
+            Ok(Box::new(FaultyAsyncReceiver {
+                inner,
+                fault: self.fault,
+                published: self.published.clone(),
+                closed: false,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct FaultyAsyncReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    fault: ReceiveStateFault,
+    published: Arc<std::sync::atomic::AtomicBool>,
+    closed: bool,
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventSubscriptionSpi for FaultyAsyncReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        if matches!(self.fault, ReceiveStateFault::EmptyClosed)
+            && timeout.is_zero()
+            && !self.published.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Box::pin(async { Ok(ReceiveOutcome::Closed) });
+        }
+        if matches!(self.fault, ReceiveStateFault::AfterCloseTimedOut) && self.closed {
+            return Box::pin(async { Ok(ReceiveOutcome::TimedOut) });
+        }
+        self.inner.receive(timeout)
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        if matches!(self.fault, ReceiveStateFault::CloseFails) {
+            return Box::pin(async {
+                Err(SpiError::Operation {
+                    provider_id: "faulty-conformance".into(),
+                    operation: "close",
+                    resource: None,
+                    kind: "injected_close_failure",
+                    retryable: Some(false),
+                    source: Box::new(std::io::Error::other("injected close failure")),
+                })
+            });
+        }
+        self.closed = true;
+        self.inner.close()
+    }
+}
+
 /// Accepts an overall publication acceptance or one matching accepted
 /// admission.
 fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id: Id) -> Result<(), String> {
@@ -129,6 +291,89 @@ fn accepted_publication(acknowledgement: PublishAcknowledgement, subscription_id
             Err("conformance publication was dropped by an interceptor".into())
         }
         _ => Err("provider returned an unsupported publication acknowledgement".into()),
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
+    for fault in [ReceiveStateFault::EmptyClosed, ReceiveStateFault::AfterCloseTimedOut] {
+        for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
+            let sync = run_sync_with_profile(
+                || {
+                    Arc::new(FaultySyncProvider {
+                        inner: FakeEventBusSpi::new(),
+                        fault,
+                        published: Arc::default(),
+                    })
+                },
+                &ConformanceHooks::default(),
+                profile,
+            );
+            let asynchronous = block_on(run_async_with_profile(
+                || async {
+                    Arc::new(FaultyAsyncProvider {
+                        inner: FakeAsyncEventBusSpi::new(),
+                        fault,
+                        published: Arc::default(),
+                    }) as Arc<dyn AsyncEventBusSpi>
+                },
+                &AsyncConformanceHooks::default(),
+                profile,
+            ));
+            let case_id = match fault {
+                ReceiveStateFault::EmptyClosed => "receive-empty-zero-timeout",
+                ReceiveStateFault::AfterCloseTimedOut => "receive-after-close",
+                ReceiveStateFault::CloseFails => unreachable!(),
+            };
+            for report in [&sync, &asynchronous] {
+                assert!(
+                    report.cases().iter().any(|case| matches!(
+                        case,
+                        ConformanceCase::Failed { case_id: actual, detail }
+                            if actual == case_id && (detail.contains("sync ") || detail.contains("async "))
+                    )),
+                    "fault {case_id} must be reported with mode context: {report:?}"
+                );
+            }
+        }
+    }
+
+    for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
+        let sync = run_sync_with_profile(
+            || {
+                Arc::new(FaultySyncProvider {
+                    inner: FakeEventBusSpi::new(),
+                    fault: ReceiveStateFault::CloseFails,
+                    published: Arc::default(),
+                })
+            },
+            &ConformanceHooks::default(),
+            profile,
+        );
+        let asynchronous = block_on(run_async_with_profile(
+            || async {
+                Arc::new(FaultyAsyncProvider {
+                    inner: FakeAsyncEventBusSpi::new(),
+                    fault: ReceiveStateFault::CloseFails,
+                    published: Arc::default(),
+                }) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+            profile,
+        ));
+        for report in [&sync, &asynchronous] {
+            assert!(
+                report.cases().iter().any(|case| matches!(
+                    case,
+                    ConformanceCase::Skipped {
+                        case_id,
+                        reason: ConformanceSkipReason::MissingFixture { detail },
+                    } if case_id == "receive-after-close" && detail == "receiver close failed"
+                )),
+                "failed close must skip post-close receive: {report:?}"
+            );
+        }
     }
 }
 

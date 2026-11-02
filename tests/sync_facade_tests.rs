@@ -140,6 +140,7 @@ fn test_sync_facade_capability_panic_is_a_terminal_spi_error() {
 #[test]
 fn test_sync_durable_request_is_rejected_before_ephemeral_spi_subscribe() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let request = SubscribeRequest::new("durable-request", topic())
         .expect("valid request")
         .with_options(
@@ -201,6 +202,27 @@ fn test_sync_subscription_worker_limit_is_released_after_cancel() {
         .expect("cancellation releases the subscription budget");
     third.cancel().expect("third subscription is cancelled");
     cleanup.finish().expect("event bus shutdown succeeds");
+}
+
+#[test]
+fn test_sync_bus_cleanup_releases_gates_and_shuts_down_during_unwind() {
+    let (bus, backend) = create_bus();
+    let released = Arc::new(AtomicBool::new(false));
+    let mut cleanup = SyncBusCleanup::new(bus);
+    let released_gate = released.clone();
+    cleanup.release_before_shutdown(move || released_gate.store(true, Ordering::Release));
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _cleanup = cleanup;
+        panic!("preserve the original assertion panic");
+    }));
+
+    assert!(panic.is_err(), "the original panic must propagate");
+    assert!(released.load(Ordering::Acquire), "cleanup must release gates first");
+    assert!(
+        backend.shutdown.load(Ordering::Acquire),
+        "provider shutdown must run in Drop"
+    );
 }
 
 #[test]
@@ -1118,6 +1140,7 @@ fn test_sync_per_key_capability_is_checked_before_spi_subscribe() {
         (OrderingCapability::PerSubscription, true),
     ] {
         let (bus, backend) = create_bus_configured(|backend| backend.set_ordering_capability(capability));
+        let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
         let options = SubscribeOptions::<String>::builder()
             .ordering_policy(OrderingPolicy::PerKey)
             .build();
@@ -1143,6 +1166,7 @@ fn test_sync_per_key_capability_is_checked_before_spi_subscribe() {
     }
 
     let (bus, backend) = create_bus_configured(|backend| backend.set_ordering_capability(OrderingCapability::None));
+    let _cleanup_guard_1 = SyncBusCleanup::new(bus.clone());
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("unordered", topic()).expect("valid subscriber"),
@@ -1184,6 +1208,7 @@ fn test_sync_subscription_capabilities_are_checked_before_spi_subscribe() {
 
     for (options, capability) in options {
         let (bus, backend) = create_bus();
+        let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
         let result = bus.subscribe(
             SubscribeRequest::new("capability-check", topic())
                 .expect("valid subscriber")
@@ -1211,6 +1236,7 @@ fn test_sync_subscription_capabilities_are_checked_before_spi_subscribe() {
             ReplayCapability::Position,
         );
     });
+    let _cleanup_guard_1 = SyncBusCleanup::new(bus.clone());
     let subscription = bus
         .subscribe(
             SubscribeRequest::new("capability-supported", topic())
@@ -1232,6 +1258,7 @@ fn test_sync_subscription_capabilities_are_checked_before_spi_subscribe() {
 #[test]
 fn test_publish_and_best_effort_batch_use_the_provider_spi_in_input_order() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let one = bus.publish(request("one".into())).expect("first publish");
     assert_eq!(one.provider_id().as_str(), "sync-test");
 
@@ -1550,6 +1577,7 @@ fn test_shutdown_waits_for_an_admitted_subscribe_and_closes_its_late_receiver() 
 #[test]
 fn test_terminal_publish_retry_error_retains_reason_attempt_and_spi_source() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     backend.fail_publish_call(1);
     let options = PublishOptions::<String>::builder()
         .retry_policy(RetryPolicy::builder().max_attempts(1).build().expect(
@@ -1659,6 +1687,7 @@ fn test_panicking_codec_encode_fails_before_the_provider_publish_call() {
         }
     }
     let (bus, backend) = create_bus_configured(|backend| backend.set_payload_mode(PayloadModes::Encoded));
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let topic = Topic::new("sync.panic-encode")
         .expect("valid codec topic")
         .with_codec(PanicEncodeCodec(ContentType::TEXT_PLAIN));
@@ -2039,6 +2068,7 @@ fn test_cancelling_subscriber_retry_terminates_its_flow_without_stopping_other_s
 #[test]
 fn test_synchronous_facade_rejects_async_subscriber_interceptors_before_provider_subscription() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let options = SubscribeOptions::<String>::builder()
         .async_interceptor(|_, _| Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>)
         .build();
@@ -2062,6 +2092,7 @@ fn test_synchronous_facade_rejects_async_subscriber_interceptors_before_provider
 #[test]
 fn test_subscription_worker_processes_and_settles_spi_messages_until_cancelled() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let (handled_tx, handled_rx) = mpsc::channel();
     let subscription = bus
         .subscribe(
@@ -2095,6 +2126,7 @@ fn test_subscription_worker_processes_and_settles_spi_messages_until_cancelled()
 #[test]
 fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let handled = Arc::new(AtomicUsize::new(0));
     let handled_by_callback = handled.clone();
     let subscription = bus
@@ -2143,6 +2175,7 @@ fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
 #[test]
 fn test_sync_permanent_settlement_stops_automatically_and_closes_receiver() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let handled = Arc::new(AtomicUsize::new(0));
     let handled_by_callback = handled.clone();
     let subscription = bus
@@ -3879,6 +3912,7 @@ fn test_diagnostic_observers_receive_terminal_delivery_failures_and_isolate_pani
 #[test]
 fn test_dropping_diagnostic_observer_releases_its_callback_capture() {
     let (bus, _) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let captured = Arc::new(());
     let weak = Arc::downgrade(&captured);
     let handle = bus.observe_diagnostics(move |_| {
@@ -4537,6 +4571,7 @@ fn test_sync_settlement_terminal_classification_preserves_error_arc_and_first_re
 #[test]
 fn test_sync_settlement_foreign_token_stops_without_a_provider_attempt() {
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let (stopped_tx, stopped_rx) = mpsc::channel();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if let Diagnostic::SettlementStopped {
@@ -4604,6 +4639,7 @@ fn test_sync_decode_rejection_does_not_consume_handler_capacity() {
         }
     }
     let (bus, backend) = create_bus_with_scheduler(1, 4);
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let gate = Arc::new(HandlerGate::default());
     let callback_gate = gate.clone();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -4691,6 +4727,7 @@ fn test_sync_handler_return_releases_capacity_while_owner_receive_is_blocked() {
         }
     }
     let (bus, backend) = create_bus_with_scheduler(1, 4);
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let gate = Arc::new(HandlerGate::default());
     let callback_gate = gate.clone();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -4745,6 +4782,7 @@ fn test_sync_decode_rejection_retains_same_key_fifo_without_handler_credit() {
         }
     }
     let (bus, backend) = create_bus_with_scheduler(2, 6);
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let gate = Arc::new(HandlerGate::default());
     let handler_gate = gate.clone();
     let codec_topic = Topic::new("decode.fifo")
@@ -4846,6 +4884,7 @@ fn test_sync_stopped_handler_requeues_even_when_middleware_swallows_error() {
         }
     }
     let (bus, backend) = create_bus();
+    let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
     let gate = Arc::new(HandlerGate::default());
     let callback_gate = gate.clone();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -4906,6 +4945,7 @@ fn test_sync_decode_foreign_token_stops_without_spi_or_success_counters() {
         SettlementCapabilities::AcceptOnly,
     ] {
         let (bus, backend) = create_bus_configured(|backend| backend.set_settlement_capability(capability));
+        let _cleanup_guard_0 = SyncBusCleanup::new(bus.clone());
         let (stopped_tx, stopped_rx) = mpsc::channel();
         let _observer = bus.observe_diagnostics(move |diagnostic| {
             if let Diagnostic::SettlementStopped { error, .. } = diagnostic {
