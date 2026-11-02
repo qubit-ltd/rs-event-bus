@@ -100,6 +100,7 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     pub(in crate::facade::async_subscription) async fn lease(&self) -> Option<SessionLease<'_, T>> {
         let registration = SignalRegistration::new(&self.available);
         let session = poll_fn(|cx| {
+            registration.register(cx.waker());
             let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
             if slot.disposed {
                 return Poll::Ready(None);
@@ -110,7 +111,6 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
                 slot.active = true;
                 return Poll::Ready(Some(session));
             }
-            registration.register(cx.waker());
             Poll::Pending
         })
         .await;

@@ -265,6 +265,108 @@ fn raw_waker_settling_on_clone(callback: impl FnOnce() + Send + 'static) -> (Wak
     (waker, probe)
 }
 
+struct RunOnDrop {
+    callback: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Wake for RunOnDrop {
+    fn wake(self: Arc<Self>) {}
+
+    fn wake_by_ref(self: &Arc<Self>) {}
+}
+
+impl Drop for RunOnDrop {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        if let Some(callback) = self.callback.lock().expect("callback lock").take() {
+            callback();
+        }
+    }
+}
+
+fn session_lease_reentrant_setup() -> Arc<AsyncSubscription<u32>> {
+    let fake = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("session-lease-reentry").expect("provider"),
+        fake,
+        EventBusFacadeConfig::default(),
+    )
+    .expect("bus");
+    Arc::new(
+        block_on(bus.subscribe(
+            SubscribeRequest::new("lease", Topic::<u32>::new("lease.reentry").expect("topic"))
+                .expect("request"),
+        ))
+        .expect("subscription"),
+    )
+}
+
+fn session_lease_clone_reentry() {
+    let subscription = session_lease_reentrant_setup();
+    let mut active = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(poll_once(active.as_mut()).is_pending(), "first run owns the lease");
+    let nested_subscription = subscription.clone();
+    let (waker, _probe) = raw_waker_settling_on_clone(move || {
+        let mut nested = Box::pin(nested_subscription.run(|_| async { Ok(()) }));
+        assert!(poll_once(nested.as_mut()).is_pending(), "nested run waits for lease");
+        drop(nested);
+    });
+    let mut waiting = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    drop(waiting);
+    drop(waker);
+    drop(active);
+}
+
+fn session_lease_drop_reentry() {
+    let subscription = session_lease_reentrant_setup();
+    let mut active = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(poll_once(active.as_mut()).is_pending(), "first run owns the lease");
+    let nested_subscription = subscription.clone();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let probe = Arc::new(RunOnDrop {
+        callback: Mutex::new(Some(Box::new(move || {
+            let mut nested = Box::pin(nested_subscription.run(|_| async { Ok(()) }));
+            assert!(poll_once(nested.as_mut()).is_pending(), "nested run waits for lease");
+            drop(nested);
+        }))),
+        drops: drops.clone(),
+    });
+    let waker = Waker::from(probe.clone());
+    let mut waiting = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    drop(waker);
+    drop(probe);
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "retired waker was dropped once");
+    drop(waiting);
+    drop(active);
+}
+
+fn session_lease_waiter_cancellation_and_return() {
+    let subscription = session_lease_reentrant_setup();
+    let mut active = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(poll_once(active.as_mut()).is_pending(), "first run owns the lease");
+
+    let cancelled_wake = Arc::new(CountWake::default());
+    let cancelled_waker = Waker::from(cancelled_wake.clone());
+    let mut cancelled = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(cancelled.as_mut().poll(&mut Context::from_waker(&cancelled_waker)).is_pending());
+    drop(cancelled);
+    cancelled_wake.0.store(0, Ordering::SeqCst);
+
+    let wake = Arc::new(CountWake::default());
+    let waker = Waker::from(wake.clone());
+    let mut waiting = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    drop(active);
+    assert!(wake.0.load(Ordering::SeqCst) > 0, "returning the lease wakes its waiter");
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert_eq!(cancelled_wake.0.load(Ordering::SeqCst), 0, "cancelled waiter is not woken");
+    drop(waiting);
+}
+
 fn busy_local_mailbox() -> (
     Arc<AsyncLocalEventBusSpi>,
     Box<dyn AsyncEventSubscriptionSpi>,
@@ -484,4 +586,27 @@ fn test_graceful_shutdown_old_waker_drop_reenters_publish() {
         return;
     }
     graceful_shutdown_old_waker_drop_reenters_publish();
+}
+
+#[test]
+fn test_session_lease_clone_reentry() {
+    if var("QUBIT_EVENT_BUS_ISOLATED_CASE").is_err() {
+        support::isolated_process::run_case("test_session_lease_clone_reentry", "session-lease-clone");
+        return;
+    }
+    session_lease_clone_reentry();
+}
+
+#[test]
+fn test_session_lease_drop_reentry() {
+    if var("QUBIT_EVENT_BUS_ISOLATED_CASE").is_err() {
+        support::isolated_process::run_case("test_session_lease_drop_reentry", "session-lease-drop");
+        return;
+    }
+    session_lease_drop_reentry();
+}
+
+#[test]
+fn test_session_lease_waiter_cancellation_and_return() {
+    session_lease_waiter_cancellation_and_return();
 }
