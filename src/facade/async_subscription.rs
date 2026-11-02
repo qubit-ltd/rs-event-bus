@@ -226,7 +226,11 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// - `handler`: callback run for each newly received delivery.
     ///
     /// # Returns
-    /// `Ok(())` when the provider closes or shutdown stops the runner.
+    /// `Ok(())` when the provider closes after all facade-owned deliveries
+    /// have completed, or shutdown stops the runner. Natural provider closure
+    /// stops further receives and drains already received handler and
+    /// settlement work. Explicit immediate shutdown retains its cancellation
+    /// behavior.
     ///
     /// # Errors
     /// Returns `ReceiveError::Closed` when the session is already closed,

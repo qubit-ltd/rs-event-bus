@@ -959,7 +959,7 @@ lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 
 
 `AsyncSession` 独占 receiver，保存 `buffered`、`tasks`、`completed` 与结算期间产生的完成列表。`PendingDelivery` 持有 payload、token、不可变 disposition、结算计时状态和唯一 owned lease。未得到运行许可的 handler factory 不执行，已启动 future 保留在 session。
 
-每轮先轮转 poll 已启动任务，再推进单个 receiver 操作，最后在有额度时 receive/dispatch。结算退避以及在途异步 settle 仍允许 poll 已启动 handler，但同一个 receiver 不并发 receive。丢弃 `run` future 是暂停：owned 工作、lane、token、计时状态仍归 session；恢复 run 或 shutdown 接管继续推进，不隐式 spawn。
+每轮先轮转 poll 已启动任务，再推进单个 receiver 操作，最后在有额度时 receive/dispatch。结算退避以及在途异步 settle 仍允许 poll 已启动 handler，但同一个 receiver 不并发 receive。自然 `ReceiveOutcome::Closed` 会停止后续 receive reservation，并排空 facade 已接收的 buffered delivery、task、handler completion、settlement 和 retry 后再成功返回；provider 队列中尚未被 facade 接收的消息不在排空范围内。显式 `Immediate` 仍沿用原有取消语义。丢弃 `run` future 是暂停：owned 工作、lane、token、计时状态仍归 session；恢复 run 或 shutdown 接管继续推进，不隐式 spawn。
 
 `close().await` 停止并关闭订阅；Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
 

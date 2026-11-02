@@ -35,6 +35,7 @@ pub enum ReceiveOutcome {
     ),
     /// No message arrived before the requested timeout.
     TimedOut,
-    /// The receiver has closed permanently.
+    /// The receiver has closed permanently. A facade run stops receiving and
+    /// drains deliveries it already owns before it returns successfully.
     Closed,
 }

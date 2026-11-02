@@ -35,7 +35,6 @@ use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeli
 use crate::model::Delivery;
 use crate::model::SubscriptionStopReason;
 use crate::spi::ReceiveOutcome;
-use crate::spi::ShutdownMode;
 use crate::spi::panic_boundary::catch_spi_call;
 
 /// Polls each started task once, rotating pending tasks and releasing H on
@@ -188,7 +187,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// - `handler`: Callback retained for work granted during this run.
     ///
     /// # Returns
-    /// Success once stop has drained the owned work set.
+    /// Success after natural receiver closure or stop has drained the owned work set.
     ///
     /// # Errors
     /// Returns a retained terminal processing cause or `ReceiveError::Closed`
@@ -258,7 +257,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 if poll_deadlines(&mut self.completed, &self.inner, cx) {
                     return Poll::Ready(RunnerEvent::Changed);
                 }
-                if self.signals.is_stopped() {
+                if self.signals.is_stopped() || self.receiver_closed {
                     if self.tasks.is_empty() && self.completed.is_empty() && buffered_empty {
                         return Poll::Ready(RunnerEvent::Finished);
                     }
@@ -359,7 +358,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                         }
                         Some(Ok(ReceiveOutcome::Closed)) => {
                             self.receiver_closed = true;
-                            self.signals.stop(ShutdownMode::Immediate);
+                            self.inner.scheduler.cancel_receive(self.id);
+                            self.inner.notify_scheduler();
                         }
                         Some(Err(error)) => {
                             let message = error.to_string();

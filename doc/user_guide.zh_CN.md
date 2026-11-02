@@ -1260,7 +1260,7 @@ subscription.run(move |delivery| {
 }).await?;
 ```
 
-应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在排队和未处理完的消息，再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
+应用启动时应把 `run(...)` 放进后台任务，再开放业务入口；如果在启动函数中直接等待它，后面的启动步骤就不会执行。取消这次 `run` 但保留订阅句柄，之后还能再次运行。provider 的 `receive` 返回 `Closed` 后，`run` 停止继续接收，并在返回 `Ok(())` 前排空 facade 已接收的 delivery，包括 handler、settlement 和 retry；显式 `Immediate` 仍按原有取消语义处理。调用 `close().await` 会结束订阅，并将 provider 的关闭错误返回给应用。丢弃句柄也会请求处置，但不能等待异步关闭或报告错误；需要观察关闭结果时应显式等待 `close()`。本地异步实现关闭时会丢弃仍在 provider 队列中的消息；这类消息尚未被 facade 接收，EOF 排空无法恢复它们。再次用同一 ID 订阅也会从空队列开始。直接使用 local SPI 时，如果等待中的 `receive` future 被取消，它尚未取走消息，之后调用 `receive` 仍可收到该消息；关闭 receiver 会唤醒等待中的 `receive`，返回 `Closed`。`wait_for_received_deliveries` 只等待总线已取到的消息，不检查传递实现里是否还有排队消息；异步总线没有同步版的 `wait_for_idle`。
 
 运行器借用订阅句柄期间，应用监控器应保留该句柄。应用可设置启动宽限期，在宽限期结束前不对 `Unstarted` 告警；对意外的 `Paused` 或 `Stopped` 告警。调用 `monitor_run_state(subscription.run_state(), startup_grace_elapsed, alert)`，传入句柄状态、宽限期是否已结束以及应用的告警回调；遇到未来新增的未知状态时也会进入告警分支：
 
