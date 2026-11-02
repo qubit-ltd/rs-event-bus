@@ -153,7 +153,18 @@ impl AsyncEventBus {
                 .is_ok()
             {
                 let _leader = ShutdownLeaderGuard::new(self.inner.clone());
-                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closing;
+                let already_closed = {
+                    let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    if *state == BusState::Closed {
+                        true
+                    } else {
+                        *state = BusState::Closing;
+                        false
+                    }
+                };
+                if already_closed {
+                    continue;
+                }
                 let requested_mode = self.requested_shutdown_mode(mode);
                 let controls: Vec<_> = self
                     .inner
