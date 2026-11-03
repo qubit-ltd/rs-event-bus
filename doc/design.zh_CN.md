@@ -1293,9 +1293,7 @@ LocalQueueState
 | `max_total_outstanding` | 65 536 | provider 级 `OutstandingBudget`：全部订阅的排队 + in-flight 总数 |
 | `max_total_outstanding_weight_bytes` | 默认关闭 | 所有未完成投递副本的应用声明原生载荷权重总和 |
 
-发布时逐目的地判断：队列满或预算耗尽 → 该目的地拒绝（`AdmissionSummary` 中计为
-rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永不阻塞**，
-背压通过回执反映（P7）。
+发布时逐目的地判断：队列满或预算耗尽 → 该目的地拒绝（`AdmissionSummary` 中计为 rejected，并附 reason）；topic 无订阅 → `NoDestinations`。local 发布不等待队列容量或 outstanding 预算恢复可用；背压通过回执反映（P7）。同步和异步 local provider 都会获取内部同步互斥锁，因此锁竞争可能使调用线程等待。这不构成无锁或无等待保证。
 
 启用可选权重上限后，每种原生载荷类型都要通过
 `PublishOptions<T>::native_payload_weight` 声明正数权重。facade 在 publisher interceptor

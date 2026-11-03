@@ -1370,10 +1370,7 @@ broadcast into every subscription queue. Publish does not clone the payload.
 | `max_total_outstanding` | 65,536 | Provider-wide `OutstandingBudget`: queued plus in-flight across every subscription |
 | `max_total_outstanding_weight_bytes` | disabled | Optional sum of application-declared native payload weights across outstanding delivery copies |
 
-Publish decides per destination. A full queue or an exhausted budget rejects that
-destination (counted as rejected in `AdmissionSummary`, with a reason). A topic with
-no subscriptions is `NoDestinations`. Publish **never blocks**. Backpressure is
-visible on the receipt (P7).
+Publish decides per destination. A full queue or an exhausted budget rejects that destination (counted as rejected in `AdmissionSummary`, with a reason). A topic with no subscriptions is `NoDestinations`. Local publication does not wait for queue capacity or outstanding budget to become available; backpressure is visible on the receipt (P7). Both synchronous and asynchronous local providers acquire internal synchronous mutexes, so lock contention can make the calling thread wait. This is not a lock-free or wait-free guarantee.
 
 When the optional weight limit is enabled, each native payload type must declare a
 positive weight through `PublishOptions<T>::native_payload_weight`. The facade
