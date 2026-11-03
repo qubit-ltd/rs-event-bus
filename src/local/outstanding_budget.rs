@@ -155,6 +155,8 @@ mod tests {
     use std::sync::Barrier;
     use std::thread;
 
+    use crate::model::AdmissionRejectionKind;
+
     use super::OutstandingBudget;
 
     /// Both limits are checked together and released reservations are reusable.
