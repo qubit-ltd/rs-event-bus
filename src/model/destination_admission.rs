@@ -39,7 +39,7 @@ pub struct DestinationAdmission {
     subscriber_id: SubscriberId,
     /// Provider's admission decision for the destination.
     status: AdmissionStatus,
-    /// Structured category for local rejections, absent for legacy construction.
+    /// Structured category supplied by the provider, absent for legacy construction.
     rejection_kind: Option<AdmissionRejectionKind>,
 }
 
@@ -64,6 +64,19 @@ impl DestinationAdmission {
     }
 
     /// Constructs a classified rejection while preserving its provider reason text.
+    ///
+    /// This sets the status to `Rejected` and records `Some(kind)`. The reason
+    /// remains available through [`Self::status`]; callers should branch on the
+    /// category rather than parse that text.
+    ///
+    /// # Parameters
+    /// - `subscription_id`: bus-local subscription identifier.
+    /// - `subscriber_id`: logical subscriber identifier.
+    /// - `kind`: stable rejection category reported by the provider.
+    /// - `reason`: human-readable provider reason retained in the status.
+    ///
+    /// # Returns
+    /// A rejected destination admission with the supplied category.
     #[inline]
     pub fn rejected(
         subscription_id: Id,
@@ -79,7 +92,11 @@ impl DestinationAdmission {
         }
     }
 
-    /// Returns the stable rejection category, or `None` for legacy/unclassified admissions.
+    /// Returns the stable rejection category, or `None` when the provider did
+    /// not classify the admission. `None` does not mean accepted.
+    ///
+    /// # Returns
+    /// The optional structured category reported for this destination.
     #[must_use]
     #[inline]
     pub fn rejection_kind(&self) -> Option<AdmissionRejectionKind> {

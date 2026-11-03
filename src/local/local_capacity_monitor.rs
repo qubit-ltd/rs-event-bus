@@ -12,6 +12,11 @@ use super::outstanding_budget::OutstandingBudget;
 
 /// Cloneable read-only handle to a local provider capacity budget.
 ///
+/// Obtain it with `EventBus::local_with_monitor` or
+/// `AsyncEventBus::local_with_monitor`. Registry-created providers do not
+/// expose this handle. Clones observe the same budget. The handle keeps only
+/// accounting state alive, not the provider, queues, subscriptions, or payloads.
+///
 /// The handle retains only integer accounting state and per-subscription
 /// capacity. It does not keep queues, subscriptions, payloads, or the provider
 /// lifecycle alive. Snapshot reads briefly acquire the budget mutex.
@@ -28,6 +33,9 @@ impl LocalCapacityMonitor {
 
     /// Returns a consistent copy of local capacity usage and target rejection
     /// totals at one budget-lock observation point.
+    ///
+    /// This synchronous read briefly waits for the budget mutex. It does not
+    /// guarantee capacity for a later publish and is not a hard real-time read.
     #[must_use]
     pub fn snapshot(&self) -> LocalCapacitySnapshot {
         self.budget.snapshot(self.queue_capacity)

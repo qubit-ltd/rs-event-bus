@@ -8,6 +8,12 @@
 use std::num::NonZeroUsize;
 
 /// Capacity and target rejection counters copied from a local provider.
+///
+/// Outstanding values count accepted delivery copies that have not reached
+/// terminal release, including pending and in-flight deliveries. Declared
+/// weight is application supplied accounting, not process memory usage. The
+/// rejection counters count destination attempts, so fanout and retries can
+/// each add multiple counts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct LocalCapacitySnapshot {

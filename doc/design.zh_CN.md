@@ -1973,3 +1973,10 @@ pub fn settle_without_borrowing_token<'a>(
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
 0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。它检查 sibling checkout 的路径依赖，不检查已发布 registry 版本。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能作为 core 0.21 兼容证据；发布兼容性需要消费者自身发布依赖 registry core 0.21 的版本并提供集成验证。本地 path 图通过不等于发布证据。
+
+
+## Local 容量诊断
+
+local provider 通过直接调用 `local_with_monitor` 的构造入口提供 `LocalCapacityMonitor`。registry 构造和返回 opaque acknowledgement 的 Redis provider 不提供此能力。快照在预算互斥锁内复制现有 outstanding 预算和饱和拒绝计数。接纳路径的锁顺序仍为 queue 后 budget；快照只获取 budget 锁。句柄仅持有 accounting 状态的 `Arc` 和不可变队列容量，不保留队列或 payload。
+
+快照条数统计接纳后直到终态释放的投递副本，包括 pending 和 in-flight。声明权重是应用记账值，不是 RSS；未设置权重上限表示禁用，报告占用为零。拒绝计数按目标尝试累计，包括扇出的每个目标和每次 retry。快照在锁定时点内部一致，但不与队列读取同步，也不保证后续发布会被接纳。`DestinationAdmission::new` 仍创建未分类拒绝（`None`）；local 拒绝带有类别。新增私有字段会反映在派生的 `Debug` 和 `Eq` 中，因此旧的未分类拒绝可能不等于其余内容相同但带类别的 local 拒绝。

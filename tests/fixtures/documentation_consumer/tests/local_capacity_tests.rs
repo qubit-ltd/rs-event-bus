@@ -14,10 +14,13 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::AdmissionRejectionKind;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
@@ -125,6 +128,11 @@ fn test_fanout_charges_declared_weight_for_each_accepted_target() {
         AdmissionOutcome::PartiallyAccepted(summary)
             if summary.accepted == 1 && summary.rejected == 1
     ));
+    if let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() {
+        assert!(admissions.iter().any(|admission| {
+            admission.rejection_kind() == Some(AdmissionRejectionKind::ProviderWeightCapacity)
+        }));
+    }
     entered_receiver
         .recv_timeout(Duration::from_secs(3))
         .expect("admitted handler entered");
@@ -167,4 +175,64 @@ fn test_weight_budget_rejects_native_publish_without_declaration() {
         Err(mpsc::TryRecvError::Empty)
     ));
     close_bus(&bus);
+}
+
+
+/// Exercises monitor construction through both public local facades.
+#[tokio::test]
+async fn test_sync_and_async_local_monitors_report_configuration() {
+    let config = LocalEventBusConfig::new()
+        .queue_capacity(3)
+        .max_total_outstanding(7);
+    let (bus, monitor) = EventBus::local_with_monitor(config.clone()).expect("sync local monitor");
+    let snapshot = monitor.snapshot();
+    assert_eq!(snapshot.queue_capacity, 3);
+    assert_eq!(snapshot.max_total_outstanding, 7);
+    assert_eq!(snapshot.max_total_outstanding_weight_bytes, None);
+    assert_eq!(snapshot.outstanding_weight_bytes, 0);
+    close_bus(&bus);
+
+    let weighted_config = LocalEventBusConfig::new()
+        .queue_capacity(3)
+        .max_total_outstanding(7)
+        .max_total_outstanding_weight_bytes(NonZeroUsize::new(1).expect("positive limit"));
+    let (async_bus, async_monitor) = AsyncEventBus::local_with_monitor(weighted_config)
+        .await
+        .expect("async local monitor");
+    let async_snapshot = async_monitor.snapshot();
+    assert_eq!(async_snapshot.queue_capacity, 3);
+    assert_eq!(async_snapshot.max_total_outstanding, 7);
+    assert_eq!(async_snapshot.max_total_outstanding_weight_bytes, NonZeroUsize::new(1));
+    let topic = Topic::<String>::new("capacity.async-category").expect("topic");
+    let _subscription = async_bus
+        .subscribe(SubscribeRequest::new("consumer", topic.clone()).expect("subscription"))
+        .await
+        .expect("subscribe");
+    let weighted = PublishOptions::<String>::builder()
+        .native_payload_weight(|value| NonZeroUsize::new(value.len().max(1)).expect("positive weight"))
+        .build();
+    let error = async_bus
+        .publish_checked(
+            PublishRequest::new(topic, "too-heavy".to_owned()).expect("request").with_options(weighted),
+            AdmissionRequirement::AtLeastOneAccepted,
+        )
+        .await
+        .expect_err("weight budget should reject the destination");
+    if let CheckedPublishError::Admission { receipt, .. } = error {
+        if let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() {
+            assert!(admissions.iter().any(|admission| {
+                admission.rejection_kind() == Some(AdmissionRejectionKind::ProviderWeightCapacity)
+            }));
+        } else {
+            panic!("local provider reports destination admissions");
+        }
+    } else {
+        panic!("expected classified admission rejection");
+    }
+    assert_eq!(async_monitor.snapshot().rejected_provider_weight_capacity, 1);
+    let report = async_bus
+        .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(3) })
+        .await
+        .expect("async graceful shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }

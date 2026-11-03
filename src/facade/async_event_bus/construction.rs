@@ -62,7 +62,9 @@ impl AsyncEventBus {
     ///
     /// The monitor shares accounting state only and does not retain queues or
     /// payloads. This concrete local path still validates capabilities through
-    /// [`Self::from_spi`].
+    /// [`Self::from_spi`]. Registry based construction does not provide a
+    /// monitor. Snapshot values do not reserve capacity for a later publish,
+    /// and declared weight is application supplied rather than process memory.
     pub async fn local_with_monitor(
         config: LocalEventBusConfig,
     ) -> Result<(Self, LocalCapacityMonitor), ProviderError> {

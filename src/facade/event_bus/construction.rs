@@ -67,7 +67,20 @@ impl EventBus {
     ///
     /// The monitor shares accounting state only and does not retain queues or
     /// payloads. Use this concrete local path when capacity diagnostics are
-    /// needed; it still validates the provider through [`Self::from_spi`].
+    /// needed; it still validates capabilities through [`Self::from_spi`].
+    /// Registry based construction does not provide a monitor. Snapshot values
+    /// are observations, not reservations for later publications, and declared
+    /// weight is application accounting rather than process memory usage.
+    ///
+    /// # Parameters
+    /// - `config`: configuration for the built-in local transport.
+    ///
+    /// # Returns
+    /// The running local facade and a cloneable read-only monitor for its budget.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Creation`] if local configuration validation or
+    /// facade construction fails; the original error is retained as its source.
     pub fn local_with_monitor(config: LocalEventBusConfig) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
         let spi = LocalEventBusSpi::new(&config).map_err(|source| ProviderError::Creation {
             source: Box::new(source),

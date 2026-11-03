@@ -224,3 +224,5 @@ Pull Request 前运行 `./.infra/bin/align-ci.sh` 格式化代码，运行 `./.i
 **Haixing Hu** - *Qubit Co. Ltd.*
 
 仓库地址：[https://github.com/qubit-ltd/rs-event-bus](https://github.com/qubit-ltd/rs-event-bus)
+
+直接构造 local provider 时，可通过 `EventBus::local_with_monitor` 查看容量诊断，详见[用户指南](doc/user_guide.zh_CN.md)。

@@ -14,6 +14,7 @@ use std::time::Duration;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRejectionKind;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
@@ -33,7 +34,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let bus = EventBus::local(local)?;
+    let (bus, monitor) = EventBus::local_with_monitor(local)?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(
@@ -66,6 +67,23 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(Box::new(error)),
     };
     eprintln!("local admission: {:?}", receipt.admission_outcome());
+    if let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
+        for destination in destinations {
+            if let Some(kind) = destination.rejection_kind() {
+                match kind {
+                    AdmissionRejectionKind::SubscriptionClosed
+                    | AdmissionRejectionKind::SubscriptionCapacity
+                    | AdmissionRejectionKind::ProviderCountCapacity
+                    | AdmissionRejectionKind::ProviderWeightCapacity => eprintln!("classified rejection: {kind:?}"),
+                    _ => eprintln!("other future rejection category"),
+                }
+            } else {
+                eprintln!("unclassified rejection (reason retained in status)");
+            }
+        }
+    }
+    let snapshot = monitor.snapshot();
+    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),

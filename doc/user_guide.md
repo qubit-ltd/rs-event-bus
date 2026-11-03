@@ -1058,6 +1058,7 @@ use std::time::Duration;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRejectionKind;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
@@ -1077,7 +1078,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let bus = EventBus::local(local)?;
+    let (bus, monitor) = EventBus::local_with_monitor(local)?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(
@@ -1110,6 +1111,23 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(Box::new(error)),
     };
     eprintln!("local admission: {:?}", receipt.admission_outcome());
+    if let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
+        for destination in destinations {
+            if let Some(kind) = destination.rejection_kind() {
+                match kind {
+                    AdmissionRejectionKind::SubscriptionClosed
+                    | AdmissionRejectionKind::SubscriptionCapacity
+                    | AdmissionRejectionKind::ProviderCountCapacity
+                    | AdmissionRejectionKind::ProviderWeightCapacity => eprintln!("classified rejection: {kind:?}"),
+                    _ => eprintln!("other future rejection category"),
+                }
+            } else {
+                eprintln!("unclassified rejection (reason retained in status)");
+            }
+        }
+    }
+    let snapshot = monitor.snapshot();
+    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -1917,3 +1935,101 @@ target core 0.20 and are not evidence of compatibility with core 0.21; published
 compatibility requires a consumer release that resolves to registry core 0.21
 and its own integration evidence. Do not treat a local path graph pass as that
 release evidence.
+
+### Inspect local capacity and rejection categories
+
+For direct local construction, use `EventBus::local_with_monitor` (or the async equivalent) to receive a cloneable `LocalCapacityMonitor`. Registry based construction does not expose this local-specific handle. Its snapshot reports outstanding accepted delivery copies, configured limits, and four saturated rejection totals. Outstanding includes both pending and in-flight deliveries; retry keeps a slot until terminal settlement. Fanout is charged per accepted destination, and a retry is another destination attempt. Declared weight is application supplied accounting, not resident memory. `max_total_outstanding_weight_bytes: None` means weight accounting is disabled; in that mode outstanding weight is zero.
+
+A snapshot is a consistent observation under the budget lock, not a reservation or guarantee that a subsequent publication will fit. Reads briefly wait for that lock. The handle retains accounting integers only, so it does not keep queues or payloads alive. The example below is compiled in the documentation consumer fixture:
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
+```rust
+//! Compiled local-provider capacity example used by both user guides.
+
+use std::num::NonZeroUsize;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use qubit_event_bus::CheckedPublishError;
+use qubit_event_bus::EventBus;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRejectionKind;
+use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishOptions;
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::ShutdownMode;
+use qubit_event_bus::spi::ShutdownOutcome;
+
+/// Publishes one weighed `String`, waits for its handler, and closes the bus.
+///
+/// # Errors
+/// Returns an error if bus construction, subscription, admission, delivery wait,
+/// or graceful shutdown fails.
+pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
+    let local = LocalEventBusConfig::new()
+        .queue_capacity(2_048)
+        .max_total_outstanding(20_000)
+        .max_total_outstanding_weight_bytes(budget);
+    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let topic = Topic::<String>::new("orders.created")?;
+    let (sender, receiver) = mpsc::channel();
+    let _subscription = bus.subscribe(
+        SubscribeRequest::new("audit", topic.clone())?,
+        move |delivery| {
+            sender.send(delivery.payload().clone()).expect("receiver remains open");
+        },
+    )?;
+    let options = PublishOptions::<String>::builder()
+        .native_payload_weight(|payload| {
+            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
+        })
+        .build();
+    let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
+    let published = bus.publish_checked(
+        request,
+        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
+    );
+    let metrics = bus.publish_metrics();
+    eprintln!(
+        "local admission totals: rejected={}, zero_destinations={}",
+        metrics.rejected_destinations, metrics.zero_destinations
+    );
+    let receipt = match published {
+        Ok(receipt) => receipt,
+        Err(CheckedPublishError::Admission { receipt, reason }) => {
+            eprintln!("local admission: {:?}", receipt.admission_outcome());
+            return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    eprintln!("local admission: {:?}", receipt.admission_outcome());
+    if let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
+        for destination in destinations {
+            if let Some(kind) = destination.rejection_kind() {
+                match kind {
+                    AdmissionRejectionKind::SubscriptionClosed
+                    | AdmissionRejectionKind::SubscriptionCapacity
+                    | AdmissionRejectionKind::ProviderCountCapacity
+                    | AdmissionRejectionKind::ProviderWeightCapacity => eprintln!("classified rejection: {kind:?}"),
+                    _ => eprintln!("other future rejection category"),
+                }
+            } else {
+                eprintln!("unclassified rejection (reason retained in status)");
+            }
+        }
+    }
+    let snapshot = monitor.snapshot();
+    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
+    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
+    let shutdown = bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3),
+    })?;
+    assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
+    Ok(())
+}
+```
+
+For destination admissions, inspect `DestinationAdmission::rejection_kind()`. A `None` value means the provider did not classify that rejection; retain the original status reason for diagnostics instead of parsing it. The built-in Redis provider returns opaque acknowledgements and does not expose local categories or snapshots.

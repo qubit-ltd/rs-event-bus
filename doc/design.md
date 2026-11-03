@@ -2116,3 +2116,10 @@ not published registry releases. The historical Redis 0.7 and task 0.10 releases
 target core 0.20 and are not evidence of compatibility with core 0.21; published
 compatibility requires a consumer release that resolves to registry core 0.21
 and its own integration evidence. A local path graph pass is not release evidence.
+
+
+## Local capacity diagnostics
+
+The local provider exposes `LocalCapacityMonitor` through direct `local_with_monitor` constructors. Registry construction and the opaque Redis provider do not expose this capability. Snapshots copy the existing outstanding budget and saturated rejection counters under the budget mutex. Lock order remains queue then budget on admission; snapshot acquires only the budget lock. The handle owns only an `Arc` to accounting state and immutable queue capacity, so it does not retain queues or payloads.
+
+Snapshot count measures accepted delivery copies until terminal release, including pending and in-flight. Declared weight is application accounting, not RSS; a missing weight limit means disabled and reports zero usage. Rejection counters count destination attempts, including each fanout target and each retry attempt. The observation is internally consistent at its lock point but does not synchronize with queue reads or guarantee a later publish will be admitted. `DestinationAdmission::new` continues to create unclassified rejections (`None`); local rejections carry a category. The added private field is visible through derived `Debug` and `Eq`, so an old unclassified rejection may differ from an otherwise identical categorized local rejection.
