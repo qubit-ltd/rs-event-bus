@@ -1178,6 +1178,13 @@ that call skips the join; it does not prove the current callback or receiver cle
 has finished. The coordinator also skips joining itself when cancellation is
 initiated on that thread.
 
+An external synchronous `cancel()` has no caller deadline and can wait for an
+active handler to return. Closing the built-in local receiver discards messages
+still queued in that provider. For application shutdown with a deadline, retain
+subscription handles and drive `Graceful` bus shutdown with a bounded observation;
+it waits for facade-owned work but does not guarantee that every provider backlog
+drains before the deadline.
+
 ### 8.5 Wait primitives
 
 Both have the signature `(&Topic<T>, Option<Duration>) -> Result<WaitOutcome, LifecycleError>`.

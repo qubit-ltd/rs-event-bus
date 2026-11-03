@@ -1679,29 +1679,11 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 
 ## 生命周期、等待与停机
 
-启动顺序是：创建总线 → 登记所有处理函数 → 开始接收业务请求。停机时先停止新业务请求，再关闭通知发布器等消息来源，最后处理订阅和总线。同步订阅用 `cancel()`，异步订阅用 `close().await`。如果需要尽量完成已经接收的消息，要根据所用传递实现决定取消订阅和关闭总线的先后顺序，并在该实现上验证；取消订阅本身不表示业务已经写入成功。
-
-前面建立的同步订单订阅应由应用保存句柄，停机时先取消，再关闭总线：
-
-```rust
-use std::time::Duration;
-use qubit_event_bus::spi::ShutdownMode;
-
-let audit_cancel_result = audit_subscription.cancel();
-let view_cancel_result = view_subscription.cancel();
-let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
-    timeout: Duration::from_secs(3),
-});
-audit_cancel_result?;
-view_cancel_result?;
-shutdown_result?;
-```
-
-片段会尝试两次取消和总线关闭，即使先前步骤失败；随后按上述顺序返回第一个错误。仅丢弃同步 `Subscription` 句柄不会调用 `cancel()`；接收仍会持续，直到显式取消或关闭总线。显式调用 `cancel()` 还能让应用看到 receiver 的关闭错误。如果在 handler 或 middleware 回调中调用 `cancel()`，它会请求取消，但跳过 join 协调线程，以免等待当前回调自己结束。调用返回不代表 receiver 清理已完成；应让回调返回，并通过总线停机结果观察清理。异步 close 行为可运行 `cargo test --locked --test async_lifecycle_regression_tests` 验证。下文的有界停机 helper 处理总线关闭超时。
+启动顺序是：创建总线 → 登记所有处理函数 → 开始接收业务请求。停机时先停止新业务请求，在应用期限内关闭通知发布器等消息来源，保留订阅句柄，再驱动有界总线停机。若需要受 deadline 约束，不要先调用同步 `cancel()`：外部调用会等待正在运行的 handler，且没有超时参数。使用 local provider 时，取消订阅会关闭 receiver，并丢弃仍在 provider 队列中的消息。Graceful 总线停机会等待 facade 已接管的工作，但 handler 或 provider 工作未完成时也可能到期；它不承诺排空 provider 的全部积压。单独停止某个消费者时仍可使用 `cancel()`。丢弃同步 `Subscription` 句柄不会取消订阅。如果在 handler 或 middleware 回调中调用 `cancel()`，它会请求取消但跳过 join，以免等待当前回调自己结束；回调内返回也不代表 receiver 清理完成。取消订阅本身不表示业务写入成功。异步 close 行为可运行 `cargo test --locked --test async_lifecycle_regression_tests` 验证。
 
 ### 同步总线的停机流程
 
-先停止业务入口，再有界排空通知来源。不要为了取消订阅先无期限等待 handler；从最外层应用关闭流程调用以下 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。两个等待分别为 2 秒和 1 秒，只使用 `Graceful`。
+先停止业务入口，在期限内关闭通知来源，并保留订阅句柄；然后从最外层应用关闭流程调用 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。两个等待分别为 2 秒和 1 秒，只使用 `Graceful`。返回 `false` 表示清理仍未完成，应交由 supervisor 接管并记录结果。helper 不保证 provider 队列中的消息都已排空。
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust

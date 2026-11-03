@@ -1681,29 +1681,11 @@ Worker completion includes resource cleanup, including user-owned observer captu
 
 ## Lifecycle, waiting, and shutdown
 
-Startup order is: create the bus, register every handler, then start accepting business requests. During shutdown, stop new business requests first, then close message sources such as the notification publisher, and then deal with subscriptions and the bus. Cancel a sync subscription with `cancel()`, and an async subscription with `close().await`. If already-received messages should be finished when possible, the order of cancelling subscriptions and shutting down the bus depends on the transport and has to be verified on that transport. Cancelling a subscription does not mean the business write succeeded.
-
-For the synchronous order subscribers created earlier, keep their handles in application state and close them before the bus:
-
-```rust
-use std::time::Duration;
-use qubit_event_bus::spi::ShutdownMode;
-
-let audit_cancel_result = audit_subscription.cancel();
-let view_cancel_result = view_subscription.cancel();
-let shutdown_result = bus.shutdown(ShutdownMode::Graceful {
-    timeout: Duration::from_secs(3),
-});
-audit_cancel_result?;
-view_cancel_result?;
-shutdown_result?;
-```
-
-The snippet attempts both cancellations and bus shutdown even if an earlier step fails, then returns the first error in that order. Dropping a synchronous `Subscription` handle does not call `cancel()`; the receiver remains active until cancellation or bus shutdown. Call `cancel()` explicitly so the application can observe a receiver close error. If `cancel()` is called from a handler or middleware callback, it requests cancellation but skips joining the coordinator to avoid waiting for that callback itself. Its return does not mean receiver cleanup has completed; let the callback return and observe cleanup through the bus shutdown result. Check async close behavior with `cargo test --locked --test async_lifecycle_regression_tests`. The bounded shutdown helper below handles bus shutdown timeouts.
+Startup order is: create the bus, register every handler, then start accepting business requests. During shutdown, stop new business requests first, close message sources such as the notification publisher within the application deadline, retain subscription handles, then drive bounded bus shutdown. Do not call sync `cancel()` before the bounded shutdown when the application needs a deadline: external `cancel()` waits for an active handler and has no timeout parameter. With the local provider, cancellation closes the receiver and discards messages still queued there. Graceful bus shutdown waits for work already owned by the facade, but the deadline can expire while handlers or provider work remain; it does not promise to drain every provider backlog. Cancellation is useful when stopping one consumer independently of shutting down its bus. Dropping a synchronous `Subscription` handle does not cancel it. If `cancel()` is called from a handler or middleware callback, it requests cancellation but skips joining the coordinator to avoid waiting for that callback itself. A return from such a callback does not mean receiver cleanup has completed. Cancelling a subscription does not mean the business write succeeded. Check async close behavior with `cargo test --locked --test async_lifecycle_regression_tests`.
 
 ### Shut down a sync bus
 
-Stop business ingress first, then drain notification sources with a deadline. Avoid an unbounded subscription-cancel wait before the bounded shutdown. Call `try_shutdown` from the outer application shutdown path; the async equivalent is `try_shutdown_async` in the same compiled file. Both waits use `Graceful`, for 2 seconds then 1 second.
+Stop business ingress first, close notification sources with a deadline, and keep subscription handles alive while calling `try_shutdown` from the outer application shutdown path. The async equivalent is `try_shutdown_async` in the same compiled file. Both waits use `Graceful`, for 2 seconds then 1 second. A `false` result means cleanup is still incomplete; hand control to the supervisor and record that outcome. These waits do not guarantee that provider-side queued messages were drained.
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust

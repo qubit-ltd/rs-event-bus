@@ -1112,6 +1112,11 @@ bus 生命周期存活直到 `cancel()` 或 `shutdown()`。`cancel()` 先让调�
 `cancel()` 请求取消，但此时会跳过 join；返回不代表当前回调或 receiver 清理已完成。
 若在协调线程内发起取消，也会跳过对自身的 join。
 
+外部同步调用 `cancel()` 没有调用方 deadline，可能一直等待运行中的 handler 返回。关闭内置
+local receiver 会丢弃仍留在 provider 队列中的消息。应用需要在期限内停机时，应保留订阅句柄，
+并以有界等待驱动 `Graceful` 总线停机；它会等待 facade 已接管的工作，但不保证期限前排空
+provider 的全部积压。
+
 ### 8.5 等待原语
 
 两者签名相同：`(&Topic<T>, Option<Duration>) -> Result<WaitOutcome, LifecycleError>`，

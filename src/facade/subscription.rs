@@ -155,9 +155,12 @@ impl Subscription {
     }
 
     /// Stops receiving and waits for the worker to finish when called
-    /// externally. Any worker owned by the same bus only requests
-    /// cancellation and does not join, preventing cross-subscription join
-    /// cycles.
+    /// externally. This can wait without a deadline for a running handler to
+    /// return. For the local provider, closing the receiver discards queued
+    /// messages that have not been received. Use the bus shutdown API when
+    /// cleanup must be observed within a bounded deadline. Any worker owned by
+    /// the same bus only requests cancellation and does not join, preventing
+    /// cross-subscription join cycles.
     ///
     /// # Returns
     /// Success after worker cleanup, or immediately after cancellation from a
