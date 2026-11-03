@@ -39,7 +39,8 @@ pub struct DestinationAdmission {
     subscriber_id: SubscriberId,
     /// Provider's admission decision for the destination.
     status: AdmissionStatus,
-    /// Structured category supplied by the provider, absent for legacy construction.
+    /// Structured category supplied by the provider, absent for legacy
+    /// construction.
     rejection_kind: Option<AdmissionRejectionKind>,
 }
 
@@ -63,7 +64,8 @@ impl DestinationAdmission {
         }
     }
 
-    /// Constructs a classified rejection while preserving its provider reason text.
+    /// Constructs a classified rejection while preserving its provider reason
+    /// text.
     ///
     /// This sets the status to `Rejected` and records `Some(kind)`. The reason
     /// remains available through [`Self::status`]; callers should branch on the

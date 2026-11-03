@@ -2,6 +2,8 @@
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Read-only monitoring for a local provider's shared outstanding budget.
 
@@ -15,7 +17,8 @@ use super::outstanding_budget::OutstandingBudget;
 /// Obtain it with `EventBus::local_with_monitor` or
 /// `AsyncEventBus::local_with_monitor`. Registry-created providers do not
 /// expose this handle. Clones observe the same budget. The handle keeps only
-/// accounting state alive, not the provider, queues, subscriptions, or payloads.
+/// accounting state alive, not the provider, queues, subscriptions, or
+/// payloads.
 ///
 /// The handle retains only integer accounting state and per-subscription
 /// capacity. It does not keep queues, subscriptions, payloads, or the provider

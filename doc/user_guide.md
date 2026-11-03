@@ -1058,8 +1058,9 @@ use std::time::Duration;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::AdmissionRejectionKind;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
@@ -1106,26 +1107,13 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         Ok(receipt) => receipt,
         Err(CheckedPublishError::Admission { receipt, reason }) => {
             eprintln!("local admission: {:?}", receipt.admission_outcome());
+            report_rejections(receipt.acknowledgement());
             return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
         }
         Err(error) => return Err(Box::new(error)),
     };
     eprintln!("local admission: {:?}", receipt.admission_outcome());
-    if let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
-        for destination in destinations {
-            if let Some(kind) = destination.rejection_kind() {
-                match kind {
-                    AdmissionRejectionKind::SubscriptionClosed
-                    | AdmissionRejectionKind::SubscriptionCapacity
-                    | AdmissionRejectionKind::ProviderCountCapacity
-                    | AdmissionRejectionKind::ProviderWeightCapacity => eprintln!("classified rejection: {kind:?}"),
-                    _ => eprintln!("other future rejection category"),
-                }
-            } else {
-                eprintln!("unclassified rejection (reason retained in status)");
-            }
-        }
-    }
+    report_rejections(receipt.acknowledgement());
     let snapshot = monitor.snapshot();
     eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
@@ -1134,6 +1122,20 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
     Ok(())
+}
+
+fn report_rejections(acknowledgement: &PublishAcknowledgement) {
+    if let PublishAcknowledgement::DestinationAdmissions(destinations) = acknowledgement {
+        for destination in destinations {
+            let AdmissionStatus::Rejected(reason) = destination.status() else {
+                continue;
+            };
+            match destination.rejection_kind() {
+                Some(kind) => eprintln!("classified rejection: {kind:?} ({reason})"),
+                None => eprintln!("unclassified rejection: {reason}"),
+            }
+        }
+    }
 }
 ```
 
@@ -1953,8 +1955,9 @@ use std::time::Duration;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::AdmissionRejectionKind;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
@@ -2001,26 +2004,13 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         Ok(receipt) => receipt,
         Err(CheckedPublishError::Admission { receipt, reason }) => {
             eprintln!("local admission: {:?}", receipt.admission_outcome());
+            report_rejections(receipt.acknowledgement());
             return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
         }
         Err(error) => return Err(Box::new(error)),
     };
     eprintln!("local admission: {:?}", receipt.admission_outcome());
-    if let qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
-        for destination in destinations {
-            if let Some(kind) = destination.rejection_kind() {
-                match kind {
-                    AdmissionRejectionKind::SubscriptionClosed
-                    | AdmissionRejectionKind::SubscriptionCapacity
-                    | AdmissionRejectionKind::ProviderCountCapacity
-                    | AdmissionRejectionKind::ProviderWeightCapacity => eprintln!("classified rejection: {kind:?}"),
-                    _ => eprintln!("other future rejection category"),
-                }
-            } else {
-                eprintln!("unclassified rejection (reason retained in status)");
-            }
-        }
-    }
+    report_rejections(receipt.acknowledgement());
     let snapshot = monitor.snapshot();
     eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
@@ -2029,6 +2019,20 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
     Ok(())
+}
+
+fn report_rejections(acknowledgement: &PublishAcknowledgement) {
+    if let PublishAcknowledgement::DestinationAdmissions(destinations) = acknowledgement {
+        for destination in destinations {
+            let AdmissionStatus::Rejected(reason) = destination.status() else {
+                continue;
+            };
+            match destination.rejection_kind() {
+                Some(kind) => eprintln!("classified rejection: {kind:?} ({reason})"),
+                None => eprintln!("unclassified rejection: {reason}"),
+            }
+        }
+    }
 }
 ```
 

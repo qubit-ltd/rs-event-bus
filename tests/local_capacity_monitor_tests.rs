@@ -1,16 +1,29 @@
+// =============================================================================
+//    Copyright (c) 2026 Haixing Hu.
+//
+//    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
+// =============================================================================
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::mpsc;
-use std::task::{Context, Poll, Waker};
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::model::AdmissionRejectionKind;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
-use qubit_event_bus::model::{AdmissionRejectionKind, PublishAcknowledgement, PublishRequest, SubscribeRequest, Topic};
+use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 
 fn ready<F: Future>(future: F) -> F::Output {
@@ -125,8 +138,9 @@ fn subscription_capacity_rejection_is_counted_once() {
 
 #[test]
 fn async_monitor_tracks_weight_rejection_and_terminal_settlement() {
-    use qubit_event_bus::AsyncEventBus;
     use std::num::NonZeroUsize;
+
+    use qubit_event_bus::AsyncEventBus;
 
     let config = LocalEventBusConfig::new()
         .max_total_outstanding(5)
@@ -394,6 +408,39 @@ fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
     drop(subscription);
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
 }
-#[path = "support/manual_async.rs"]
-#[allow(dead_code)]
-mod manual_async;
+mod manual_async {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Wake;
+    use std::task::Waker;
+    use std::thread::Thread;
+    use std::thread::current;
+    use std::thread::park;
+
+    struct ThreadWake(Thread);
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(ThreadWake(current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => park(),
+            }
+        }
+    }
+}

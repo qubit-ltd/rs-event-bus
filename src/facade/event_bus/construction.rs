@@ -76,7 +76,8 @@ impl EventBus {
     /// - `config`: configuration for the built-in local transport.
     ///
     /// # Returns
-    /// The running local facade and a cloneable read-only monitor for its budget.
+    /// The running local facade and a cloneable read-only monitor for its
+    /// budget.
     ///
     /// # Errors
     /// Returns [`ProviderError::Creation`] if local configuration validation or

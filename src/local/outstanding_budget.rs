@@ -71,7 +71,8 @@ impl OutstandingBudget {
         self.max_weight.is_some()
     }
 
-    /// Reserves one delivery copy and its weight atomically. Count has stable precedence.
+    /// Reserves one delivery copy and its weight atomically. Count has stable
+    /// precedence.
     pub(super) fn try_reserve(&self, weight: usize) -> Result<(), AdmissionRejectionKind> {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -155,9 +156,8 @@ mod tests {
     use std::sync::Barrier;
     use std::thread;
 
-    use crate::model::AdmissionRejectionKind;
-
     use super::OutstandingBudget;
+    use crate::model::AdmissionRejectionKind;
 
     /// Both limits are checked together and released reservations are reusable.
     #[test]

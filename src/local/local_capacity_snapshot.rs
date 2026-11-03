@@ -2,6 +2,8 @@
 //    Copyright (c) 2026 Haixing Hu.
 //
 //    SPDX-License-Identifier: Apache-2.0
+//
+//    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 //! Point-in-time local provider capacity and rejection totals.
 
@@ -21,7 +23,8 @@ pub struct LocalCapacitySnapshot {
     pub outstanding_count: usize,
     /// Configured provider-wide outstanding delivery count limit.
     pub max_total_outstanding: usize,
-    /// Reserved declared weight in bytes; zero when weight accounting is disabled.
+    /// Reserved declared weight in bytes; zero when weight accounting is
+    /// disabled.
     pub outstanding_weight_bytes: usize,
     /// Declared-weight limit, or `None` when weight accounting is disabled.
     pub max_total_outstanding_weight_bytes: Option<NonZeroUsize>,
