@@ -1013,6 +1013,19 @@ fn test_local_subscription_timeout_close_and_bus_shutdown_are_stable() {
 }
 
 #[test]
+fn test_local_receiver_close_discards_provider_queued_messages() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut subscription = spi.subscribe(request(23, "events")).unwrap();
+    let _ = spi.publish(outbound("events", 3)).unwrap();
+
+    subscription.close().unwrap();
+    assert!(matches!(
+        subscription.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::Closed
+    ));
+}
+
+#[test]
 fn test_immediate_shutdown_discards_pending_messages_and_closes_receivers() {
     let spi = create(&LocalEventBusConfig::default());
     let mut subscription = spi.subscribe(request(24, "events")).unwrap();

@@ -197,7 +197,7 @@ let view_subscription = customer_view::subscribe(&bus, view_store)?;
 let order_bus = bus.clone(); // 注入订单服务；应用保留 bus 与订阅句柄
 ```
 
-`audit_store` 和 `view_store` 是应用构造好的存储访问对象。`subscribe` 返回的 `Subscription` 是订阅句柄，应用应持有它并在关闭时调用 `cancel()`；仅丢弃同步订阅句柄不会取消订阅。传给 `bus.subscribe` 的闭包是处理函数，收到事件后调用相应的存储；存储失败时返回错误，由订阅策略决定重试还是记录失败，见[处理失败和重试](#处理失败和重试)。
+`audit_store` 和 `view_store` 是应用构造好的存储访问对象。`subscribe` 返回的 `Subscription` 是订阅句柄，订阅活动期间应持有它。单独停止某个消费者时可以调用 `cancel()`；需要按 deadline 停止整个应用时，应保留句柄并直接驱动有界总线停机，因为 `cancel()` 可能无期限等待正在运行的 handler。仅丢弃同步订阅句柄不会取消订阅。传给 `bus.subscribe` 的闭包是处理函数，收到事件后调用相应的存储；存储失败时返回错误，由订阅策略决定重试还是记录失败，见[处理失败和重试](#处理失败和重试)。
 
 同步 local 订阅每个占用一个 OS 接收线程，默认最多允许 256 个活跃订阅；处理函数由另一个共享线程池执行。异步 local provider 不会为每个订阅创建接收线程，但应用必须驱动 `AsyncSubscription::run`。
 
@@ -1670,7 +1670,7 @@ match notifier.close_with_timeout(Duration::from_secs(30)) {
     }
     Err(error) => eprintln!("通知发布器关闭失败：{error}"),
 }
-// 之后再取消订阅、关闭总线，见下一节。
+// 保留订阅句柄并驱动有界总线停机，见下一节。
 ```
 
 后台线程持有 `bus` 的一个副本，因此要先关闭通知发布器，再关闭总线；顺序反过来，排队中的通知会在发布时得到总线已关闭的错误，只能在观察回调里看到 `PublishFailed`。

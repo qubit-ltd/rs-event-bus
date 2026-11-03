@@ -197,7 +197,7 @@ let view_subscription = customer_view::subscribe(&bus, view_store)?;
 let order_bus = bus.clone(); // inject into the order service; keep bus and both handles
 ```
 
-`audit_store` and `view_store` are storage objects the application has already built. The `Subscription` returned by `subscribe` is the subscription handle. Hold it, and call `cancel()` during shutdown. Dropping a synchronous subscription handle does not cancel the subscription. The closure passed to `bus.subscribe` is the handler. It calls the store when an event arrives. A store error is returned to the bus, and the subscription policy decides whether to retry or record the failure. See [Handle failures and retries](#handle-failures-and-retries).
+`audit_store` and `view_store` are storage objects the application has already built. The `Subscription` returned by `subscribe` is the subscription handle. Hold it while the subscription is active. Call `cancel()` when stopping one consumer independently; for application shutdown that needs a deadline, retain the handle and drive bounded bus shutdown directly because `cancel()` can wait without a deadline for a running handler. Dropping a synchronous subscription handle does not cancel the subscription. The closure passed to `bus.subscribe` is the handler. It calls the store when an event arrives. A store error is returned to the bus, and the subscription policy decides whether to retry or record the failure. See [Handle failures and retries](#handle-failures-and-retries).
 
 A synchronous local subscription uses one OS receiver thread. The default limit is 256 live subscriptions, and handlers run on a separate shared pool. The async local provider does not create one receiver thread per subscription; the application must drive `AsyncSubscription::run`.
 
@@ -1672,7 +1672,7 @@ match notifier.close_with_timeout(Duration::from_secs(30)) {
     }
     Err(error) => eprintln!("closing the notification publisher failed: {error}"),
 }
-// Then cancel the subscriptions and shut down the bus; see the next section.
+// Keep the subscription handles and drive bounded bus shutdown; see the next section.
 ```
 
 The background thread holds a clone of `bus`, so close the notification publisher before the bus. In the opposite order, queued notifications fail at publish time with a closed-bus error that is visible only as `PublishFailed` in the observer.
