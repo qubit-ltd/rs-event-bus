@@ -285,7 +285,11 @@ fn monitor_does_not_keep_payload_alive_after_provider_shutdown() {
 #[test]
 fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
     let limit = 8;
-    let (bus, monitor) = EventBus::local_with_monitor(LocalEventBusConfig::new().max_total_outstanding(limit)).unwrap();
+    let weight_limit = NonZeroUsize::new(limit * 5).unwrap();
+    let config = LocalEventBusConfig::new()
+        .max_total_outstanding(limit)
+        .max_total_outstanding_weight_bytes(weight_limit);
+    let (bus, monitor) = EventBus::local_with_monitor(config).unwrap();
     let topic = Topic::<u32>::new("local.capacity.monitor.concurrent").unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -303,24 +307,59 @@ fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
             },
         )
         .unwrap();
-    let _ = bus.publish(PublishRequest::new(topic.clone(), 0).unwrap()).unwrap();
+    let weighted_publish = |payload| {
+        PublishRequest::builder()
+            .topic(topic.clone())
+            .payload(payload)
+            .options(
+                PublishOptions::builder()
+                    .native_payload_weight(|_| NonZeroUsize::new(5).unwrap())
+                    .build(),
+            )
+            .build()
+            .unwrap()
+    };
+    let _ = bus.publish(weighted_publish(0)).unwrap();
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
+    let start = std::sync::Arc::new(std::sync::Barrier::new(5));
+    let finish = std::sync::Arc::new(std::sync::Barrier::new(5));
     let mut writers = Vec::new();
     for writer in 0..4 {
         let bus = bus.clone();
         let topic = topic.clone();
+        let start = start.clone();
+        let finish = finish.clone();
         writers.push(thread::spawn(move || {
             for item in 0..32 {
+                start.wait();
                 let _ = bus
-                    .publish(PublishRequest::new(topic.clone(), writer * 32 + item + 1).unwrap())
+                    .publish(
+                        PublishRequest::builder()
+                            .topic(topic.clone())
+                            .payload(writer * 32 + item + 1)
+                            .options(
+                                PublishOptions::builder()
+                                    .native_payload_weight(|_| NonZeroUsize::new(5).unwrap())
+                                    .build(),
+                            )
+                            .build()
+                            .unwrap(),
+                    )
                     .unwrap();
+                finish.wait();
             }
         }));
     }
-    for _ in 0..1_000 {
+    for _ in 0..32 {
+        start.wait();
         let snapshot = monitor.snapshot();
         assert!(snapshot.outstanding_count <= snapshot.max_total_outstanding);
+        assert!(snapshot.outstanding_weight_bytes <= weight_limit.get());
+        finish.wait();
+        let snapshot = monitor.snapshot();
+        assert!(snapshot.outstanding_count <= snapshot.max_total_outstanding);
+        assert!(snapshot.outstanding_weight_bytes <= weight_limit.get());
     }
     for writer in writers {
         writer.join().unwrap();
