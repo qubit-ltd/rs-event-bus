@@ -190,7 +190,7 @@ payload。该异常路径可能泄漏二次 payload 持有的资源，泄漏量�
 | `pipeline` | 两条 facade 共享的处理逻辑 | `PublisherPipeline`、`SubscriberPipeline`、`DeliveryFailureAction`、`OrderingLaneKey`、`DeadLetter*`、`retry` 适配、`Diagnostic` |
 | `facade` | 用户可见的 bus 实现 | `EventBus`、`EventBusShutdown`、`Subscription`、`AsyncEventBus`、`AsyncSubscription`、`EventBusFacadeConfig`、`DeliverySchedulingConfig`、`SettlementRetryConfig`、`PublishMetricsSnapshot`、`WaitOutcome`、内部 `SyncDeliveryScheduler`/`ShutdownCoordinator`/`LifecycleTracker` |
 | `local` | 内置进程内 provider | `LocalEventBusConfig`、`LocalEventBusProvider`、`AsyncLocalEventBusProvider`、`LocalEventBusSpi`、`AsyncLocalEventBusSpi`、`LocalQueue`、`OutstandingBudget` |
-| `notification` | 在 `EventBus` 前面加一层永不阻塞的有界发布队列 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
+| `notification` | 在 `EventBus` 前面加一层有界发布队列；入队不等待容量或 provider 工作，但互斥锁竞争时可能等待 | `NotificationPublisher<T>`、`NotificationOutcome`、`TryPublishError<T>`、`NotificationStatsSnapshot` |
 | `error` | 分层错误类型 | `EventBusError`、`PublishError`、`SubscribeError`、`DeliveryError`、`LifecycleError`、`ShutdownError`、`ProviderError`、`FacadeBuildError`、`SpiError`、`CapabilityError`、`CodecError`、`ConfigurationError` |
 
 依赖方向严格为 `facade → pipeline → {model, codec, spi, error}`、
@@ -672,7 +672,10 @@ pub struct SettlementToken {
   返回 `ShutdownError::TimedOut`；`ShutdownOutcome::TimedOut` 专指 provider 在自身宽限期
   结束后完成清理；
 - `ShutdownMode::Immediate`：请求立即停止接纳，按 provider 语义丢弃或保留未处理消息；仍可能等待在运行的 handler 或 SPI，不保证有界等待；
-- 幂等；停机后 `publish`/`subscribe` 返回 `kind` 为 closed 的 `SpiError::Operation`。
+- 幂等；停机后的错误变体和 kind 由 provider 决定。local provider 的 publish 返回
+  kind 为 `provider_closed`、effect 为 `NotAccepted` 的 `SpiError::Publish`；
+  subscribe 返回 kind 为 `provider_closed` 的 `SpiError::Operation`。不要将这些
+  local 分类推广到所有 SPI provider。
 
 facade 同一时刻最多只有一个 provider `shutdown` 调用在途；失败或取消后后续调用可重试。
 facade API 返回 `ShutdownReport`，SPI 方法仍返回 `ShutdownOutcome`。
@@ -1314,8 +1317,10 @@ rejected，并附 reason）；topic 无订阅 → `NoDestinations`。发布**永
   订阅句柄被 drop 后自动从路由中消失，publish 时顺带清理失效项。
 - **类型绑定**：成功 subscribe 时记录 payload `TypeId`，只在 topic 有活跃订阅期间
   保留；publish 会将原生 payload 与该绑定比较。最后一个活跃订阅关闭时移除绑定。
-  冲突的 subscribe 或 publish 返回 kind 为 `"topic_type_conflict"` 的
-  `SpiError::Operation`。这弥补了类型擦除后 `Topic<T>` 相等性中 `TypeId` 那一半的检查。
+  冲突的 subscribe 返回不可重试、kind 为 `"topic_type_conflict"` 的
+  `SpiError::Operation`。冲突 publish 会在任何目的地接纳前被拒绝，返回不可重试、
+  kind 为 `topic_type_conflict`、effect 为 `NotAccepted` 的 `SpiError::Publish`。
+  这弥补了类型擦除后 `Topic<T>` 相等性中 `TypeId` 那一半的检查。
 - `receive(timeout)`：条件变量等待到有可投递消息、到期延迟消息、超时或关闭。
 - `settle`：读取 provider 私有 token ID 找到 in-flight 项，并用
   `Arc::ptr_eq` 校验 provider 私有 settlement handle 后按 disposition 处理；未知或
@@ -1378,9 +1383,10 @@ provider 自身不创建线程。
 
 ## 11. `NotificationPublisher`：单类型通知的轻量出口
 
-`notification` 模块解决一个具体场景：**热路径代码想把 `T` 类型的通知发到某个固定
-topic，但绝不能被 `EventBus::publish` 的重试、拦截器或 provider 阻塞。**
-它是在同步 `EventBus` 前面加的一层有界、永不阻塞的队列，而不是另一种总线。
+`notification` 模块解决一个具体场景：**热路径代码想把 `T` 类型的通知放入某个固定
+topic 的队列，而无需等待 `EventBus::publish` 的重试、拦截器或 provider 工作。**
+接纳时仍需获取内部互斥锁，发生竞争时可能等待。这个有界队列位于同步 `EventBus`
+之前，并不是另一种总线。
 
 ```rust
 pub struct NotificationPublisher<T: Send + Sync + 'static> { ... }
@@ -1413,7 +1419,8 @@ pub enum NotificationOutcome {
   `with_publish_options` 在后台发布路径应用传入的选项。native 权重回调是应用声明的
   正数估值，供已配置的 local outstanding 权重预算使用；它不是堆内存统计，通知队列
   自身仍按条数限额。
-- **`try_publish` 永不阻塞**：队列满返回 `TryPublishError::Full(payload)`，
+- **`try_publish` 不等待队列容量或 provider 工作**：它会获取发布器内部的接纳互斥锁，
+  因此锁竞争时调用可能等待。队列满返回 `TryPublishError::Full(payload)`，
   已关闭返回 `Closed(payload)`，都把 payload 还给调用方决定如何处置（P7）。
 - **结果通过 observer 回推**：每次发布的 `NotificationOutcome` 交给 observer；
   它在 worker 线程上运行，应尽快返回。observer panic 被隔离并计入
@@ -1422,7 +1429,8 @@ pub enum NotificationOutcome {
   `published`、`publish_errors`、`request_errors`、`observer_panicked`、`worker_panicked`。
 - **`close()`**：关闭发送端、等待 worker 排空并 join；从 worker 线程（即 observer 内）
   调用会返回错误而不是自我 join 死锁（与 §8.6 同一思想）；worker 曾 panic 时返回错误。
-  `close_with_timeout(timeout)` 在期限内等待相同的排空和退出流程；超时返回
+  `close_with_timeout(timeout)` 从调用时开始将 timeout 用于排空与 worker join 等待；内部互斥锁获取
+  是同步且不可中断的，因此它不是整个方法严格的墙钟耗时上界。超时返回
   `io::ErrorKind::TimedOut`，已接纳消息仍由 worker 继续处理，新入队已关闭。之后可再次
   调用任一 close 方法等待结果。它不能强制中断正在执行的同步 provider 调用。
 - **`Drop`** 只关闭发送端，不等待 worker；worker 会在排空剩余队列后自然退出。
@@ -1468,10 +1476,15 @@ completion guard 在处理循环及用户资源清理完成后，发布唯一的
 wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 - `SpiError::retryable()` 是 provider 向 facade 传达"值得重试"的唯一通道，
-  发布/投递重试都参考它。
+  发布/投递重试都参考它。`SpiError::kind()` 对两种 SPI 变体分类；
+  `publish_effect()` 为 publish 错误提供发布接纳证据。local provider 的 publish
+  类型冲突和停机后拒绝是 `SpiError::Publish`，带有 `NotAccepted` 与
+  `Some(false)`；local subscribe 类型冲突和停机后拒绝是带有 `Some(false)` 的
+  `SpiError::Operation`。
 - `SpiError::Operation::kind` 是 `&'static str` 分类（如 `closed`、`invalid_argument`、
-  `provider_panicked`、`worker_panicked`、`duplicate_subscription`、`topic_type_conflict`），
-  用于日志与测试断言。facade 各层的 `Closed` 变体来自 facade 自身的生命周期门禁；
+  `provider_panicked`、`worker_panicked`、`duplicate_subscription`），用于日志与测试断言。
+  `topic_type_conflict`、`provider_closed` 等 local kind 仅描述 local provider。
+  facade 各层的 `Closed` 变体来自 facade 自身的生命周期门禁；
   provider 在停机后返回的关闭类 `SpiError` 按 `Spi` 变体原样传出，不做二次映射。
 - 所有枚举标注 `#[non_exhaustive]`，为未来新增变体保留空间。
 - 所有错误 `Send + Sync + 'static`，可跨线程/任务传递。

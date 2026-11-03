@@ -5,7 +5,10 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Bounded, nonblocking publication for best-effort notifications.
+//! Bounded notification publication without waiting for queue capacity or
+//! provider work on the calling thread.
+//!
+//! Admission uses an internal mutex, so calls can wait under mutex contention.
 
 pub use notification_outcome::NotificationOutcome;
 pub use notification_publisher::NotificationPublisher;

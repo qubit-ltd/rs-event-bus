@@ -37,8 +37,10 @@ use crate::model::Topic;
 
 /// A bounded queue that calls a synchronous event bus from one worker thread.
 ///
-/// Queue admission never waits for the worker or provider. `close` stops new
-/// admission, drains accepted notifications, and blocks until the worker exits.
+/// Queue admission never waits for queue capacity, the worker, or provider
+/// work. It does acquire an internal mutex and can wait under mutex contention.
+/// `close` stops new admission, drains accepted notifications, and blocks until
+/// the worker exits.
 /// The worker invokes the observer synchronously; observer panics are contained
 /// and counted. Dropping this handle closes its sender without waiting. It does
 /// not shut down the injected event bus.
@@ -95,7 +97,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// - `observer`: callback invoked on the worker after each publish result.
     ///
     /// # Returns
-    /// A publisher handle that performs nonblocking queue admission.
+    /// A publisher handle that admits queue entries without waiting for queue
+    /// capacity or provider work. Admission can wait for an internal mutex.
     ///
     /// # Errors
     /// Returns an I/O error if the worker thread cannot be started.
@@ -125,7 +128,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// - `observer`: callback invoked on the worker after each publish result.
     ///
     /// # Returns
-    /// A publisher handle that performs nonblocking queue admission.
+    /// A publisher handle that admits queue entries without waiting for queue
+    /// capacity or provider work. Admission can wait for an internal mutex.
     ///
     /// # Errors
     /// Returns an I/O error if the worker thread cannot be started.
@@ -252,13 +256,16 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         self.stats.snapshot()
     }
 
-    /// Attempts to queue one payload without waiting for provider work.
+    /// Attempts to queue one payload without waiting for queue capacity or
+    /// provider work. The call acquires an internal mutex and can wait when
+    /// another thread holds that mutex.
     ///
     /// Returns `Full(payload)` when all configured queue slots are occupied or
     /// `Closed(payload)` after close has stopped admission.
     ///
     /// # Parameters
-    /// - `payload`: event payload to enqueue without blocking.
+    /// - `payload`: event payload to enqueue without waiting for queue capacity
+    ///   or provider work; mutex contention can make the call wait.
     ///
     /// # Returns
     /// `Ok(())` when queued, or an error containing the original payload when
@@ -309,13 +316,17 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Stops admission and waits up to `timeout` for accepted notifications to
     /// drain and the worker thread to exit.
     ///
-    /// On timeout, the worker continues processing the accepted queue and a
-    /// later close call can wait for completion. New calls to `try_publish`
-    /// return `Closed` after this method begins. A synchronous provider call
-    /// cannot be forcibly interrupted.
+    /// The timeout budget starts when this method is called and covers the
+    /// drain and worker-join waits, but acquiring internal mutexes is
+    /// synchronous and cannot be interrupted. Therefore it is not a strict
+    /// wall-clock upper bound for the whole method. On timeout,
+    /// the worker continues processing the accepted queue and a later close
+    /// call can wait for completion. New calls to `try_publish` return `Closed`
+    /// after this method begins. A synchronous provider call cannot be forcibly
+    /// interrupted.
     ///
     /// # Parameters
-    /// - `timeout`: maximum time allowed for draining and worker shutdown.
+    /// - `timeout`: budget for draining and worker shutdown waits.
     ///
     /// # Returns
     /// `Ok(())` after the worker exits and is joined.

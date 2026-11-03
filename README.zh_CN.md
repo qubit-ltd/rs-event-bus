@@ -163,7 +163,7 @@ let orders = OrderService::new(bus.clone());
 - 同步 facade 和不绑定运行时的异步 facade 使用对象安全的 provider SPI；`qubit-spi` registry 可在创建时选择 provider、检查能力并尝试 fallback。
 - 内置 local provider 为每个订阅者设置有界队列；facade 在 provider 能力允许时支持拦截器、重试、ACK/NACK、死信、顺序、诊断和关闭控制。
 - Codec 回调受 panic 边界保护并返回结构化错误；编码后的字节在 provider 重试间共享。
-- 可选的有界 `NotificationPublisher<T>` 为应用提供非阻塞通知入队；provider 接纳回执不表示 handler 已处理完成。
+- 可选的有界 `NotificationPublisher<T>` 使应用入队时无需等待队列容量或 provider 工作；内部互斥锁竞争仍可能让入队等待。provider 接纳回执不表示 handler 已处理完成。
 - `EventBus::request_shutdown` 返回可复用 ticket，用于非阻塞观察停机；观察者超时不会取消清理（见[停机指南](doc/user_guide.zh_CN.md#非阻塞地请求停机)）。
 - 可选启用 `conformance` feature，为 provider SPI 契约检查提供结构化报告。
 

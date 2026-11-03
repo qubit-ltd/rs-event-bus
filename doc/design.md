@@ -193,8 +193,8 @@ are defined.
       │ RequiredCapabilities│            └────────────────────────┘
       └────────────────────┘
       ┌────────────────────┐
-      │ notification       │  bounded non-blocking outlet in front
-      │ NotificationPub.   │  of a synchronous EventBus
+      │ notification       │  bounded admission queue in front of
+      │ NotificationPub.   │  EventBus; mutex contention may wait
       └────────────────────┘
 ```
 
@@ -209,7 +209,7 @@ are defined.
 | `pipeline` | Processing shared by both facades | `PublisherPipeline`, `SubscriberPipeline`, `DeliveryFailureAction`, `OrderingLaneKey`, `DeadLetter*`, retry adapters, `Diagnostic` |
 | `facade` | User-facing bus | `EventBus`, `EventBusShutdown`, `Subscription`, `AsyncEventBus`, `AsyncSubscription`, `EventBusFacadeConfig`, `DeliverySchedulingConfig`, `SettlementRetryConfig`, `PublishMetricsSnapshot`, `WaitOutcome`, internal `SyncDeliveryScheduler` / `ShutdownCoordinator` / `LifecycleTracker` |
 | `local` | Built-in in-process provider | `LocalEventBusConfig`, `LocalEventBusProvider`, `AsyncLocalEventBusProvider`, `LocalEventBusSpi`, `AsyncLocalEventBusSpi`, `LocalQueue`, `OutstandingBudget` |
-| `notification` | A bounded, never-blocking publish queue in front of `EventBus` | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
+| `notification` | A bounded publish queue in front of `EventBus`; admission does not wait for capacity/provider work but may wait on mutex contention | `NotificationPublisher<T>`, `NotificationOutcome`, `TryPublishError<T>`, `NotificationStatsSnapshot` |
 | `error` | Layered error types | `EventBusError`, `PublishError`, `SubscribeError`, `DeliveryError`, `LifecycleError`, `ShutdownError`, `ProviderError`, `FacadeBuildError`, `SpiError`, `CapabilityError`, `CodecError`, `ConfigurationError` |
 
 Dependencies point `facade → pipeline → {model, codec, spi, error}`,
@@ -705,7 +705,7 @@ pub struct SettlementToken {
 
 - `ShutdownMode::Graceful { timeout }` sets a caller deadline for the facade shutdown. A caller timeout returns `ShutdownError::TimedOut`; `ShutdownOutcome::TimedOut` is reserved for a provider that completed cleanup after its own graceful deadline.
 - `ShutdownMode::Immediate` requests immediate stop admission and provider-specific discard/retention; it can still wait for running handlers or SPI calls and has no bounded-wait guarantee.
-- The call is idempotent. After shutdown, `publish` and `subscribe` return `SpiError::Operation` whose `kind` is closed.
+- The call is idempotent. Error variants and kinds after shutdown are provider-specific; the local providers return `SpiError::Publish` with kind `provider_closed` and effect `NotAccepted` for publish, and `SpiError::Operation` with kind `provider_closed` for subscribe. Do not infer these local classifications for every SPI provider.
 
 The facade permits at most one provider shutdown call in flight. A failed or
 cancelled attempt can be retried by a later caller. The facade-level API returns
@@ -1404,8 +1404,10 @@ capacity first must inspect per-destination receipt entries instead.
 - **Type binding.** A successful subscribe records its payload `TypeId` while the
   topic has a live subscription. Publish checks its native payload against that
   active binding. When the last live subscription closes, the binding is removed.
-  A conflicting subscribe or publish returns `SpiError::Operation` with kind
-  `"topic_type_conflict"`. This restores the `TypeId` half of `Topic<T>` equality
+  A conflicting subscribe returns non-retryable `SpiError::Operation` with kind
+  `"topic_type_conflict"`. A conflicting publish is rejected before any destination
+  admission as non-retryable `SpiError::Publish`, kind `topic_type_conflict`,
+  effect `NotAccepted`. This restores the `TypeId` half of `Topic<T>` equality
   after type erasure.
 - `receive(timeout)` waits on a condition variable until a message can be delivered,
   a delayed message is due, the wait times out, or the queue closes.
@@ -1482,10 +1484,11 @@ coordinator thread. The async facade creates no thread per subscription. The
 
 ## 11. `NotificationPublisher`
 
-The `notification` module covers one case: **hot-path code wants to publish a `T`
-to a fixed topic and must not block on `EventBus::publish` retry, interceptors, or
-the provider.** It is a bounded, never-blocking queue in front of a synchronous
-`EventBus`. It is not a second bus.
+The `notification` module covers one case: **hot-path code wants to enqueue a `T`
+for a fixed topic without waiting for `EventBus::publish` retry, interceptors, or
+provider work.** Admission does acquire an internal mutex and can wait under
+contention. The bounded queue sits in front of a synchronous `EventBus`; it is
+not a second bus.
 
 ```rust
 pub struct NotificationPublisher<T: Send + Sync + 'static> { ... }
@@ -1517,7 +1520,9 @@ pub enum NotificationOutcome {
   A native weight callback is an application-declared positive estimate used by a
   configured local outstanding-weight budget. It is not heap accounting, and the
   notification queue itself remains bounded by item count.
-- **`try_publish` never blocks.** A full queue returns `TryPublishError::Full(payload)`.
+- **`try_publish` does not wait for queue capacity or provider work.** It acquires
+  the publisher's internal admission mutex, so contention on that mutex can make
+  the call wait. A full queue returns `TryPublishError::Full(payload)`.
   A closed publisher returns `Closed(payload)`. In both cases the payload is given
   back so the caller can decide what to do with it (P7).
 - **Results are pushed to an observer.** Each `NotificationOutcome` is handed to the
@@ -1528,10 +1533,12 @@ pub enum NotificationOutcome {
 - **`close()`** closes the sender, waits for the worker to drain, and joins it.
   Calling it from the worker thread (that is, from the observer) returns an error
   instead of joining itself, the same idea as §8.6. If the worker has panicked, `close()` returns an error.
-- **`close_with_timeout(timeout)`** closes enqueue admission and waits at most the
-  caller's deadline for the same drain and resource cleanup. A deadline returns
-  `io::ErrorKind::TimedOut`; the worker continues and later close calls can wait
-  again. The timeout cannot interrupt provider calls or running user code.
+- **`close_with_timeout(timeout)`** closes enqueue admission and starts its wait
+  budget when called, covering the drain and worker-join waits. Internal mutex acquisition is synchronous
+  and cannot be interrupted, so the timeout is not a strict wall-clock upper bound
+  for the whole method. A deadline returns `io::ErrorKind::TimedOut`; the worker
+  continues and later close calls can wait again. The timeout cannot interrupt
+  provider calls or running user code.
 - **`Drop`** closes the sender and does not wait. The worker exits after it drains what is left.
 - The publisher does not own the `EventBus` lifetime. After the bus shuts down the
   worker receives `PublishError::Closed` and reports it through the observer. The caller still calls `close()`.
@@ -1582,9 +1589,16 @@ preserves the underlying source chain.
 
 - `SpiError::retryable()` is the only channel a provider uses to tell the facade
   "this is worth retrying". Publish and delivery retry both consult it.
+  `SpiError::kind()` classifies either SPI variant; `publish_effect()` is
+  publication-admission evidence for publish errors. In the local providers,
+  publish type conflicts and post-close rejection are `SpiError::Publish` with
+  `NotAccepted` and `Some(false)`; local subscribe type conflicts and post-close
+  rejection are `SpiError::Operation` with `Some(false)`.
 - `SpiError::Operation::kind` is a `&'static str` classification (for example
   `closed`, `invalid_argument`, `provider_panicked`, `worker_panicked`,
-  `topic_type_conflict`) used in logs and test assertions. Each facade layer's `Closed`
+  `duplicate_subscription`) used in logs and test assertions. Local kinds such
+  as `topic_type_conflict` and `provider_closed` describe the local provider only.
+  Each facade layer's `Closed`
   variant comes from that layer's own lifecycle gate. A closed-style `SpiError`
   returned by a provider after shutdown is passed through as the `Spi` variant and is not remapped.
 - Enums are `#[non_exhaustive]` so a new variant can be added later.
