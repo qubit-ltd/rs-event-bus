@@ -1041,6 +1041,72 @@ fn test_pending_close_acknowledgement_matrix_for_sync_and_async_runners() {
 
 #[cfg(feature = "conformance")]
 #[test]
+fn test_pending_close_shutdown_fault_matrix_for_sync_and_async_runners() {
+    use crate::support::pending_close_shutdown_fixture::AsyncFixture;
+    use crate::support::pending_close_shutdown_fixture::InjectedShutdown;
+    use crate::support::pending_close_shutdown_fixture::SyncFixture;
+
+    for (label, mode, expected_pass, detail) in [
+        ("complete", InjectedShutdown::Complete, true, None),
+        ("timed out", InjectedShutdown::TimedOut, false, Some("TimedOut")),
+        (
+            "error",
+            InjectedShutdown::Error,
+            false,
+            Some("pending-close-shutdown-injected"),
+        ),
+    ] {
+        let sync = run_sync(|| Arc::new(SyncFixture::new(mode)), &ConformanceHooks::default());
+        let asynchronous = block_on(run_async(
+            || async { Arc::new(AsyncFixture::new(mode)) as Arc<dyn AsyncEventBusSpi> },
+            &AsyncConformanceHooks::default(),
+        ));
+
+        for (api, report) in [("sync", &sync), ("async", &asynchronous)] {
+            let result = report
+                .cases()
+                .iter()
+                .enumerate()
+                .find(|(index, case)| {
+                    matches!(case, ConformanceCase::Passed { case_id } | ConformanceCase::Failed { case_id, .. }
+                    if case_id == "close-with-pending-shutdown")
+                        && report.case_context(*index).is_some_and(|context| context.api() == api)
+                })
+                .unwrap_or_else(|| panic!("{api} {label}: pending-close shutdown missing: {report:?}"));
+            assert_eq!(
+                matches!(result.1, ConformanceCase::Passed { .. }),
+                expected_pass,
+                "{api} {label}: {report:?}"
+            );
+            let context = report.case_context(result.0).unwrap();
+            assert_eq!(context.api(), api);
+            assert_eq!(context.payload_mode(), PayloadModes::Native);
+            assert_eq!(context.durability(), SubscriptionDurability::Ephemeral);
+            if let Some(detail) = detail {
+                let ConformanceCase::Failed { detail: actual, .. } = result.1 else {
+                    unreachable!()
+                };
+                assert!(actual.contains(detail), "{api} {label}: {actual}");
+                assert!(
+                    !report.all_passed(),
+                    "{api} {label}: failed cleanup must fail aggregate report"
+                );
+            } else {
+                assert!(report.all_passed(), "{api} {label}: {report:?}");
+            }
+            assert!(
+                report.cases().iter().enumerate().any(|(index, case)| {
+                    matches!(case, ConformanceCase::Passed { case_id } if case_id == "shutdown")
+                        && report.case_context(index).is_some_and(|context| context.api() == api)
+                }),
+                "{api} {label}: ordinary shutdown case should stay passed"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
 fn test_durable_only_conformance_does_not_invoke_ephemeral_cleanup_hooks() {
     let capabilities = EventBusCapabilities::new(
         PayloadModes::Native,

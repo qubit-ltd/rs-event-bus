@@ -359,7 +359,19 @@ async fn record_pending_close<F, Fut>(
             },
         });
     }
-    let _ = spi.shutdown(ShutdownMode::Immediate).await;
+    report.push(match spi.shutdown(ShutdownMode::Immediate).await {
+        Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
+            case_id: "close-with-pending-shutdown".into(),
+        },
+        Ok(outcome) => ConformanceCase::Failed {
+            case_id: "close-with-pending-shutdown".into(),
+            detail: format!("async pending-close shutdown returned {outcome:?}"),
+        },
+        Err(error) => ConformanceCase::Failed {
+            case_id: "close-with-pending-shutdown".into(),
+            detail: format!("async pending-close shutdown failed: {error}"),
+        },
+    });
 }
 
 /// Runs publish, receive, settlement, close, and shutdown checks for one

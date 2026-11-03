@@ -555,5 +555,17 @@ fn record_pending_close<F>(
             },
         });
     }
-    let _ = spi.shutdown(ShutdownMode::Immediate);
+    report.push(match spi.shutdown(ShutdownMode::Immediate) {
+        Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
+            case_id: "close-with-pending-shutdown".into(),
+        },
+        Ok(outcome) => ConformanceCase::Failed {
+            case_id: "close-with-pending-shutdown".into(),
+            detail: format!("sync pending-close shutdown returned {outcome:?}"),
+        },
+        Err(error) => ConformanceCase::Failed {
+            case_id: "close-with-pending-shutdown".into(),
+            detail: format!("sync pending-close shutdown failed: {error}"),
+        },
+    });
 }

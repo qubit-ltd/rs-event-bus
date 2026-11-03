@@ -17,6 +17,9 @@ pub(crate) mod isolated_process;
 pub(crate) mod manual_async;
 #[allow(dead_code)]
 mod panic_hook;
+#[cfg(feature = "conformance")]
+#[allow(dead_code)]
+pub(crate) mod pending_close_shutdown_fixture;
 #[allow(dead_code)]
 pub(crate) mod provider_shapes;
 
