@@ -265,6 +265,17 @@ mod tests {
         budget.release(1, 0);
     }
 
+    #[test]
+    fn test_closed_subscription_rejection_is_recorded_in_snapshot() {
+        let budget = OutstandingBudget::new(2, None);
+        budget.record_rejection(AdmissionRejectionKind::SubscriptionClosed);
+        let snapshot = budget.snapshot(5);
+        assert_eq!(snapshot.rejected_subscription_closed, 1);
+        assert_eq!(snapshot.rejected_subscription_capacity, 0);
+        assert_eq!(snapshot.rejected_provider_count_capacity, 0);
+        assert_eq!(snapshot.rejected_provider_weight_capacity, 0);
+    }
+
     /// Racing destinations share both the count and weight admission gate.
     #[test]
     fn test_outstanding_budget_allows_one_racing_acquisition() {
