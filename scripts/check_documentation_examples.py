@@ -60,6 +60,36 @@ def read_document_text(path):
 
 
 errors = []
+DOCUMENT_LINKS = {
+    "User guide": "doc/user_guide.md",
+    "用户指南": "doc/user_guide.zh_CN.md",
+    "Design": "doc/design.md",
+    "设计文档": "doc/design.zh_CN.md",
+}
+document_text = read_document_text(ROOT / LIB)
+document_shas = {}
+for label, path in DOCUMENT_LINKS.items():
+    label_pattern = re.escape(label)
+    matches = re.findall(rf"\[{label_pattern}\]\(([^)]*)\)", document_text)
+    if len(matches) != 1:
+        errors.append(f"{LIB}: [{label}] must appear exactly once (found {len(matches)})")
+        continue
+    url = matches[0]
+    expected = re.fullmatch(
+        rf"https://github\.com/qubit-ltd/rs-event-bus/blob/([0-9a-f]{{40}})/{re.escape(path)}",
+        url,
+    )
+    if expected is None:
+        errors.append(
+            f"{LIB}: [{label}] has invalid snapshot link {url!r}; expected "
+            f"https://github.com/qubit-ltd/rs-event-bus/blob/<40-lowercase-hex-sha>/{path}"
+        )
+    else:
+        document_shas[label] = expected.group(1)
+if len(set(document_shas.values())) > 1:
+    for label, sha in document_shas.items():
+        errors.append(f"{LIB}: [{label}] uses snapshot SHA {sha}, but all four links must use the same SHA")
+
 for document, required in REQUIRED.items():
     text = read_document_text(ROOT / document)
     found = set()
@@ -79,4 +109,4 @@ for document, required in REQUIRED.items():
         errors.append(f"{document}: missing checked example {missing}")
 if errors:
     raise SystemExit("\n".join(errors))
-print("documentation examples match their compiled sources")
+print("documentation examples match their compiled sources and snapshot links")

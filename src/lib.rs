@@ -85,10 +85,14 @@
 //!
 //! ## Further reading
 //!
-//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/user_guide.md)
-//! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/user_guide.zh_CN.md)
-//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.md)
-//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/dev-starfish/doc/design.zh_CN.md)
+//! These links point to versioned documentation snapshots. When updating user
+//! guides or design documents to match an API change, commit the documents
+//! first, then update all four links to the full SHA of that commit.
+//!
+//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/user_guide.md)
+//! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/user_guide.zh_CN.md)
+//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/design.md)
+//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/design.zh_CN.md)
 
 #![deny(missing_docs)]
 pub use error::CapabilityError;

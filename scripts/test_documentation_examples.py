@@ -38,6 +38,13 @@ FILE_HEADER = (
     "//    Licensed under the Apache License, Version 2.0.\n"
     "// =============================================================================\n"
 )
+DOC_SHA = "a64ed6b1ff12915529a6dc926ff69401fa3dd17b"
+DOC_LINKS = (
+    ("User guide", "doc/user_guide.md"),
+    ("用户指南", "doc/user_guide.zh_CN.md"),
+    ("Design", "doc/design.md"),
+    ("设计文档", "doc/design.zh_CN.md"),
+)
 
 
 case_count = 0
@@ -75,7 +82,12 @@ def run_case(mutator):
             "//! ```rust\n"
             + "".join(f"//! {line}\n" for line in source_code.splitlines())
             + "//! ```\n"
-            "pub mod example;\n"
+            + "//!\n//! ## Further reading\n//!\n"
+            + "".join(
+                f"//! - [{label}](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/{path})\n"
+                for label, path in DOC_LINKS
+            )
+            + "pub mod example;\n"
         )
         lib_path.write_text(lib_document, encoding="utf-8")
         mutator(root)
@@ -180,6 +192,47 @@ def symlink_escape(root):
     add_source(root, "examples/escape.rs")
 
 
+def mutate_doc_link(root, label, replacement):
+    path = root / LIB
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    index = next(i for i, line in enumerate(lines) if f"[{label}]" in line)
+    lines[index] = replacement
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def branch_ref(root):
+    mutate_doc_link(root, "User guide", "//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/main/doc/user_guide.md)")
+
+
+def missing_doc_link(root):
+    path = root / LIB
+    path.write_text("\n".join(line for line in path.read_text(encoding="utf-8").splitlines() if "[User guide]" not in line) + "\n", encoding="utf-8")
+
+
+def duplicate_doc_label(root):
+    path = root / LIB
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        "pub mod example;\n",
+        f"//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.md)\n"
+        "pub mod example;\n",
+    )
+    path.write_text(text, encoding="utf-8")
+
+
+def wrong_doc_repository(root):
+    mutate_doc_link(root, "用户指南", f"//! - [用户指南](https://github.com/other/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.zh_CN.md)")
+
+
+def wrong_doc_path(root):
+    mutate_doc_link(root, "Design", f"//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/other.md)")
+
+
+def mixed_doc_snapshot(root):
+    mutate_doc_link(root, "设计文档", "//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/1111111111111111111111111111111111111111/doc/design.zh_CN.md)")
+
+
 for source, documents in (
     *((source, ("doc/user_guide.md", "doc/user_guide.zh_CN.md")) for source in (RECEIPT, SHUTDOWN, REPUBLISH)),
     (PROVIDER_CONTRACT, ("doc/design.md", "doc/design.zh_CN.md")),
@@ -202,6 +255,18 @@ for document in ("doc/user_guide.md", "doc/user_guide.zh_CN.md", "doc/design.md"
 
 expect_failure(existing_escape, "invalid source path ../outside.rs")
 expect_failure(symlink_escape, "invalid source path examples/escape.rs")
+for mutator, label in (
+    (branch_ref, "User guide"),
+    (missing_doc_link, "User guide"),
+    (duplicate_doc_label, "User guide"),
+    (wrong_doc_repository, "用户指南"),
+    (wrong_doc_path, "Design"),
+    (mixed_doc_snapshot, "设计文档"),
+):
+    try:
+        expect_failure(mutator, label)
+    except AssertionError as error:
+        raise AssertionError(f"snapshot-link regression case failed for {mutator.__name__}: {error}") from error
 result = run_case(legal_nested_path)
 assert result.returncode == 0, result.stdout + result.stderr
 
@@ -215,4 +280,4 @@ result = run_case(normalize_lib_blank_lines)
 assert result.returncode == 0, result.stdout + result.stderr
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print(f"documentation example checker: {case_count} cases passed (header stripping, both guides, safety drift, nested paths, traversal and symlink escape)")
+print(f"documentation example checker: {case_count} cases passed (examples, snapshot links, safety drift, nested paths, traversal and symlink escape)")
