@@ -34,6 +34,7 @@ use super::state::LocalQueueState;
 use crate::error::ConfigurationError;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
+use crate::model::AdmissionRejectionKind;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
 use crate::model::StartPosition;
@@ -192,12 +193,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             let mut admissions = Vec::with_capacity(mailboxes.len());
             for mailbox in mailboxes {
                 let mut queue = mailbox.queue.lock();
-                let status = if queue.closed {
-                    AdmissionStatus::Rejected("subscription is closed".into())
+                let rejection = if queue.closed {
+                    Some((AdmissionRejectionKind::SubscriptionClosed, "subscription is closed"))
                 } else if queue.pending_count() + queue.in_flight.len() >= mailbox.queue.capacity {
-                    AdmissionStatus::Rejected("subscription queue is full".into())
-                } else if !self.shared.outstanding.try_acquire(event.weight_bytes) {
-                    AdmissionStatus::Rejected("provider outstanding capacity is full".into())
+                    Some((AdmissionRejectionKind::SubscriptionCapacity, "subscription queue is full"))
+                } else {
+                    self.shared.outstanding.try_reserve(event.weight_bytes).err().map(|kind| {
+                        (kind, "provider outstanding capacity is full")
+                    })
+                };
+                let status = if let Some((_, reason)) = rejection {
+                    AdmissionStatus::Rejected(reason.into())
                 } else {
                     queue.enqueue_back(event.clone());
                     AdmissionStatus::Accepted
@@ -206,11 +212,11 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 if status == AdmissionStatus::Accepted {
                     mailbox.queue.async_ready.notify_all();
                 }
-                admissions.push(DestinationAdmission::new(
-                    mailbox.queue.id,
-                    mailbox.queue.subscriber_id.clone(),
-                    status,
-                ));
+                admissions.push(if let Some((kind, reason)) = rejection {
+                    DestinationAdmission::rejected(mailbox.queue.id, mailbox.queue.subscriber_id.clone(), kind, reason)
+                } else {
+                    DestinationAdmission::new(mailbox.queue.id, mailbox.queue.subscriber_id.clone(), status)
+                });
             }
             if !admissions.is_empty() {
                 self.shared.changed.notify_all();

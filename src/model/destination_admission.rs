@@ -9,6 +9,7 @@
 
 use qubit_id::Id;
 
+use super::AdmissionRejectionKind;
 use super::AdmissionStatus;
 use super::SubscriberId;
 
@@ -38,6 +39,8 @@ pub struct DestinationAdmission {
     subscriber_id: SubscriberId,
     /// Provider's admission decision for the destination.
     status: AdmissionStatus,
+    /// Structured category for local rejections, absent for legacy construction.
+    rejection_kind: Option<AdmissionRejectionKind>,
 }
 
 impl DestinationAdmission {
@@ -56,7 +59,31 @@ impl DestinationAdmission {
             subscription_id,
             subscriber_id,
             status,
+            rejection_kind: None,
         }
+    }
+
+    /// Constructs a classified rejection while preserving its provider reason text.
+    #[inline]
+    pub fn rejected(
+        subscription_id: Id,
+        subscriber_id: SubscriberId,
+        kind: AdmissionRejectionKind,
+        reason: impl Into<Box<str>>,
+    ) -> Self {
+        Self {
+            subscription_id,
+            subscriber_id,
+            status: AdmissionStatus::Rejected(reason.into()),
+            rejection_kind: Some(kind),
+        }
+    }
+
+    /// Returns the stable rejection category, or `None` for legacy/unclassified admissions.
+    #[must_use]
+    #[inline]
+    pub fn rejection_kind(&self) -> Option<AdmissionRejectionKind> {
+        self.rejection_kind
     }
 
     /// Returns the bus-local subscription object ID.

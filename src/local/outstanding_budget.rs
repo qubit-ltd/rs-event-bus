@@ -11,6 +11,7 @@ use std::num::NonZeroUsize;
 use std::sync::PoisonError;
 
 use crate::internal::sync::Mutex;
+use crate::model::AdmissionRejectionKind;
 
 /// Integer reservations updated together under the provider admission lock.
 #[derive(Default)]
@@ -65,30 +66,27 @@ impl OutstandingBudget {
         self.max_weight.is_some()
     }
 
-    /// Reserves one delivery copy and its weight atomically.
-    ///
-    /// # Parameters
-    /// - `weight`: declared copy weight in bytes; ignored when disabled.
-    ///
-    /// # Returns
-    /// `true` when both counters fit. Capacity or integer overflow returns
-    /// `false` without modifying either counter.
-    #[must_use]
-    pub(super) fn try_acquire(&self, weight: usize) -> bool {
+    /// Reserves one delivery copy and its weight atomically. Count has stable precedence.
+    pub(super) fn try_reserve(&self, weight: usize) -> Result<(), AdmissionRejectionKind> {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let next_count = state.count_used.checked_add(1).filter(|count| *count <= self.max_count);
-        let next_weight = state
-            .weight_used
-            .checked_add(weight)
-            .filter(|weight| self.max_weight.is_none_or(|limit| *weight <= limit.get()));
-        if let (Some(count), Some(weight)) = (next_count, next_weight) {
-            state.count_used = count;
-            state.weight_used = weight;
-            true
-        } else {
-            false
-        }
+        let Some(next_count) = state.count_used.checked_add(1).filter(|count| *count <= self.max_count) else {
+            return Err(AdmissionRejectionKind::ProviderCountCapacity);
+        };
+        let Some(next_weight) = state.weight_used.checked_add(weight)
+            .filter(|weight| self.max_weight.is_none_or(|limit| *weight <= limit.get())) else {
+            return Err(AdmissionRejectionKind::ProviderWeightCapacity);
+        };
+        state.count_used = next_count;
+        state.weight_used = next_weight;
+        Ok(())
+    }
+
+    /// Compatibility helper for existing internal boolean assertions.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn try_acquire(&self, weight: usize) -> bool {
+        self.try_reserve(weight).is_ok()
     }
 
     /// Releases only reservations for deliveries already removed from queues.
@@ -135,6 +133,15 @@ mod tests {
         budget.release(1, 6);
     }
 
+    /// Count rejection wins when both provider-wide limits are exhausted.
+    #[test]
+    fn test_outstanding_budget_count_rejection_has_priority() {
+        let budget = OutstandingBudget::new(1, NonZeroUsize::new(1));
+        assert_eq!(budget.try_reserve(1), Ok(()));
+        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity));
+        budget.release(1, 1);
+    }
+
     /// Disabled weight budgets cannot reject arbitrary declared weights.
     #[test]
     fn test_outstanding_budget_disabled_weight_is_ignored() {
@@ -150,7 +157,7 @@ mod tests {
     fn test_outstanding_budget_rejects_weight_overflow() {
         let budget = OutstandingBudget::new(2, NonZeroUsize::new(usize::MAX));
         assert!(budget.try_acquire(usize::MAX));
-        assert!(!budget.try_acquire(1));
+        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderWeightCapacity));
         budget.release(1, usize::MAX);
         assert!(budget.try_acquire(1));
         budget.release(1, 1);
@@ -161,7 +168,7 @@ mod tests {
     fn test_outstanding_budget_rejects_count_overflow() {
         let budget = OutstandingBudget::new(usize::MAX, None);
         budget.state.lock().expect("budget lock").count_used = usize::MAX;
-        assert!(!budget.try_acquire(1));
+        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity));
         budget.release(usize::MAX, 0);
         assert!(budget.try_acquire(1));
     }

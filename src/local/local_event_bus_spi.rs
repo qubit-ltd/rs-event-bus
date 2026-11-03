@@ -26,6 +26,7 @@ use super::state::LocalSharedState;
 use crate::error::ConfigurationError;
 use crate::error::SpiError;
 use crate::model::AdmissionStatus;
+use crate::model::AdmissionRejectionKind;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
 use crate::model::PublishEffect;
@@ -221,12 +222,17 @@ impl EventBusSpi for LocalEventBusSpi {
                 continue;
             }
             let mut state = queue.lock();
-            let status = if state.closed {
-                AdmissionStatus::Rejected("subscription is closed".into())
+            let rejection = if state.closed {
+                Some((AdmissionRejectionKind::SubscriptionClosed, "subscription is closed"))
             } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
-                AdmissionStatus::Rejected("subscription queue is full".into())
-            } else if !self.shared.outstanding.try_acquire(event.weight_bytes) {
-                AdmissionStatus::Rejected("provider outstanding capacity is full".into())
+                Some((AdmissionRejectionKind::SubscriptionCapacity, "subscription queue is full"))
+            } else {
+                self.shared.outstanding.try_reserve(event.weight_bytes).err().map(|kind| {
+                    (kind, "provider outstanding capacity is full")
+                })
+            };
+            let status = if let Some((_, reason)) = rejection {
+                AdmissionStatus::Rejected(reason.into())
             } else {
                 state.enqueue_back(event.clone());
                 queue.ready.notify_one();
@@ -238,7 +244,11 @@ impl EventBusSpi for LocalEventBusSpi {
             if wake_async {
                 queue.async_ready.notify_all();
             }
-            admissions.push(DestinationAdmission::new(queue.id, queue.subscriber_id.clone(), status));
+            admissions.push(if let Some((kind, reason)) = rejection {
+                DestinationAdmission::rejected(queue.id, queue.subscriber_id.clone(), kind, reason)
+            } else {
+                DestinationAdmission::new(queue.id, queue.subscriber_id.clone(), status)
+            });
         }
         if admitted_any {
             signal_changed(&self.shared);
