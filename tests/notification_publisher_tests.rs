@@ -9,6 +9,7 @@
 
 mod notification;
 
+use std::collections::VecDeque;
 use std::env;
 use std::hint::black_box;
 use std::io::Error;
@@ -35,11 +36,14 @@ use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::AdmissionStatus;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
@@ -126,8 +130,84 @@ fn test_notification_publisher_publish_options_enforce_and_release_weight_budget
     );
 
     publisher.close().unwrap();
+    let stats = publisher.stats();
+    assert_eq!(3, stats.published());
+    assert_eq!(2, stats.admission_accepted());
+    assert_eq!(0, stats.admission_partially_accepted());
+    assert_eq!(1, stats.admission_none_accepted());
+    assert_eq!(0, stats.admission_no_destinations());
+    assert_eq!(0, stats.admission_opaque_accepted());
+    assert_eq!(0, stats.admission_dropped());
     subscription.cancel().unwrap();
     let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
+}
+
+#[test]
+fn test_notification_publisher_counts_each_admission_receipt_class() {
+    let spi = Arc::new(GatedSpi::new());
+    *spi.acknowledgements.lock().unwrap() = VecDeque::from([
+        PublishAcknowledgement::DestinationAdmissions(vec![DestinationAdmission::new(
+            qubit_id::Id::new(1),
+            SubscriberId::new("accepted").unwrap(),
+            AdmissionStatus::Accepted,
+        )]),
+        PublishAcknowledgement::DestinationAdmissions(vec![
+            DestinationAdmission::new(
+                qubit_id::Id::new(2),
+                SubscriberId::new("partial-accepted").unwrap(),
+                AdmissionStatus::Accepted,
+            ),
+            DestinationAdmission::new(
+                qubit_id::Id::new(3),
+                SubscriberId::new("partial-rejected").unwrap(),
+                AdmissionStatus::Rejected("full".into()),
+            ),
+        ]),
+        PublishAcknowledgement::DestinationAdmissions(vec![DestinationAdmission::new(
+            qubit_id::Id::new(4),
+            SubscriberId::new("rejected").unwrap(),
+            AdmissionStatus::Rejected("full".into()),
+        )]),
+        PublishAcknowledgement::DestinationAdmissions(Vec::new()),
+        PublishAcknowledgement::Accepted {
+            provider_message_id: None,
+            metadata: Default::default(),
+        },
+    ]);
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
+    let options = PublishOptions::<String>::builder()
+        .interceptor(|envelope| {
+            if envelope.payload() == "dropped" {
+                Ok(None)
+            } else {
+                Ok(Some(envelope))
+            }
+        })
+        .build();
+    let publisher = NotificationPublisher::with_publish_options(
+        bus,
+        Topic::<String>::new_static("notification.classes"),
+        NonZeroUsize::new(6).unwrap(),
+        options,
+        |_| {},
+    )
+    .unwrap();
+
+    for payload in ["accepted", "partial", "none", "empty", "opaque", "dropped"] {
+        publisher.try_publish(payload.to_owned()).unwrap();
+    }
+    spi.release();
+    publisher.close().unwrap();
+
+    let stats = publisher.stats();
+    assert_eq!(6, stats.published());
+    assert_eq!(1, stats.admission_accepted());
+    assert_eq!(1, stats.admission_partially_accepted());
+    assert_eq!(1, stats.admission_none_accepted());
+    assert_eq!(1, stats.admission_no_destinations());
+    assert_eq!(1, stats.admission_opaque_accepted());
+    assert_eq!(1, stats.admission_dropped());
 }
 
 #[test]
@@ -151,6 +231,11 @@ fn test_notification_publisher_default_options_preserve_missing_weight_failure()
     };
     assert_eq!(PublishEffect::NotAccepted, failure.effect());
     assert!(matches!(failure.cause(), PublishError::Spi(_)));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.publish_errors());
+    assert_eq!(0, stats.admission_accepted());
+    assert_eq!(0, stats.admission_opaque_accepted());
+    assert_eq!(0, stats.admission_dropped());
 
     publisher.close().unwrap();
     let _ = bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate).unwrap();
@@ -395,6 +480,12 @@ fn test_notification_stats_snapshot_exposes_all_counters() {
     assert_eq!(1, snapshot.published());
     assert_eq!(0, snapshot.observer_panicked());
     assert_eq!(0, snapshot.worker_panicked());
+    assert_eq!(0, snapshot.admission_accepted());
+    assert_eq!(0, snapshot.admission_partially_accepted());
+    assert_eq!(0, snapshot.admission_none_accepted());
+    assert_eq!(0, snapshot.admission_no_destinations());
+    assert_eq!(1, snapshot.admission_opaque_accepted());
+    assert_eq!(0, snapshot.admission_dropped());
 }
 
 #[test]
@@ -443,6 +534,7 @@ fn test_notification_publisher_contains_observer_panics_and_continues() {
 
     assert_eq!(vec!["first", "second"], *spi.published.lock().unwrap());
     assert_eq!(2, publisher.stats().observer_panicked());
+    assert_eq!(2, publisher.stats().admission_opaque_accepted());
 }
 
 struct PanicPayload;
@@ -714,6 +806,7 @@ struct GatedSpi {
     published: Mutex<Vec<String>>,
     publish_count: AtomicUsize,
     shutdown_calls: AtomicUsize,
+    acknowledgements: Mutex<VecDeque<PublishAcknowledgement>>,
 }
 
 impl GatedSpi {
@@ -726,6 +819,7 @@ impl GatedSpi {
             published: Mutex::new(Vec::new()),
             publish_count: AtomicUsize::new(0),
             shutdown_calls: AtomicUsize::new(0),
+            acknowledgements: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -771,10 +865,15 @@ impl EventBusSpi for GatedSpi {
             }
         }
         self.published.lock().unwrap().push(event);
-        Ok(PublishAcknowledgement::Accepted {
-            provider_message_id: None,
-            metadata: Default::default(),
-        })
+        Ok(self
+            .acknowledgements
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| PublishAcknowledgement::Accepted {
+                provider_message_id: None,
+                metadata: Default::default(),
+            }))
     }
 
     fn subscribe(&self, _: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {

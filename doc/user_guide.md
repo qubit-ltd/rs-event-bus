@@ -1652,7 +1652,7 @@ println!(
 );
 ```
 
-`enqueued` counts items that entered the queue. `published` counts receipts. `queue_full` and `queue_closed` count attempts rejected because the queue was full or already closed. `publish_errors` and `request_errors` correspond to the two failure outcomes. Each counter is loaded independently, so the snapshot is not consistent at one instant, and `published` counts receipts rather than completed handlers.
+`enqueued` counts items that entered the queue. `published` counts successful receipts, including interceptor drops, rather than completed handlers. The `admission_accepted()`, `admission_partially_accepted()`, `admission_none_accepted()`, `admission_no_destinations()`, `admission_opaque_accepted()`, and `admission_dropped()` counters classify those receipts. Opaque acceptance does not reveal a destination count. Each counter is loaded independently, so a live snapshot is not a consistent instant. Counters saturate at `u64::MAX`; sums lose exactness after saturation.
 
 ### Drain the queue during shutdown
 

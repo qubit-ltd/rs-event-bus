@@ -1650,7 +1650,7 @@ println!(
 );
 ```
 
-`enqueued` 是进入队列的条数，`published` 是拿到回执的条数，`queue_full` 与 `queue_closed` 分别是因队列满和已关闭而被拒绝的次数，`publish_errors` 和 `request_errors` 对应两种失败结果。各计数独立读取，不是同一瞬间的一致快照；`published` 计的是回执，不是处理函数完成的次数。
+`enqueued` 是进入队列的条数；`published` 是成功取得回执的次数，其中也包括拦截器丢弃，不代表处理函数完成。新增的 `admission_accepted()`、`admission_partially_accepted()`、`admission_none_accepted()`、`admission_no_destinations()`、`admission_opaque_accepted()` 和 `admission_dropped()` 分别分类这些回执。opaque 接纳不表示已知目标数。各计数独立读取，运行中的快照不是同一时刻的一致视图。计数在 `u64::MAX` 饱和；达到饱和后求和将不再精确。
 
 ### 停机时排空队列
 

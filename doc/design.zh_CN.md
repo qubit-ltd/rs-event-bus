@@ -1429,7 +1429,10 @@ pub enum NotificationOutcome {
   它在 worker 线程上运行，应尽快返回。observer panic 被隔离并计入
   `observer_panicked`，不影响后续发布（P8）。
 - **统计**：`NotificationStatsSnapshot` 提供 `enqueued`、`queue_full`、`queue_closed`、
-  `published`、`publish_errors`、`request_errors`、`observer_panicked`、`worker_panicked`。
+  `published`、`publish_errors`、`request_errors`、`observer_panicked`、`worker_panicked`，
+  以及六种回执接纳分类：完全接纳、部分接纳、没有接纳目标、无目标、opaque 接纳和丢弃。
+  `published` 仍表示成功取得回执的次数（包含丢弃）；opaque 接纳不推断目标数。
+  计数独立 relaxed 读取，并在 `u64::MAX` 饱和。
 - **`close()`**：关闭发送端、等待 worker 排空并 join；从 worker 线程（即 observer 内）
   调用会返回错误而不是自我 join 死锁（与 §8.6 同一思想）；worker 曾 panic 时返回错误。
   `close_with_timeout(timeout)` 从调用时开始将 timeout 用于排空与 worker join 等待；内部互斥锁获取

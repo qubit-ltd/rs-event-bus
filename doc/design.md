@@ -1533,7 +1533,11 @@ pub enum NotificationOutcome {
   observer on the worker thread, so the observer should return quickly. An observer
   panic is isolated, counted in `observer_panicked`, and does not stop later publishes (P8).
 - **Stats.** `NotificationStatsSnapshot` reports `enqueued`, `queue_full`, `queue_closed`,
-  `published`, `publish_errors`, `request_errors`, `observer_panicked`, and `worker_panicked`.
+  `published`, `publish_errors`, `request_errors`, `observer_panicked`, `worker_panicked`,
+  and six receipt admission classes: accepted, partially accepted, none accepted, no
+  destinations, opaque accepted, and dropped. `published` remains the successful
+  receipt count (including drops); opaque acceptance does not imply a destination
+  count. Counters use independent relaxed loads and saturate at `u64::MAX`.
 - **`close()`** closes the sender, waits for the worker to drain, and joins it.
   Calling it from the worker thread (that is, from the observer) returns an error
   instead of joining itself, the same idea as §8.6. If the worker has panicked, `close()` returns an error.

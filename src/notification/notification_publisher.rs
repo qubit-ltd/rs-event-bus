@@ -196,6 +196,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                             Ok(request) => match bus.publish(request.with_options(options.clone())) {
                                 Ok(receipt) => {
                                     NotificationStats::increment(&worker_stats.published);
+                                    worker_stats.record_admission(receipt.admission_outcome());
                                     NotificationOutcome::Published(receipt)
                                 }
                                 Err(error) => {
