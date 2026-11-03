@@ -8,6 +8,8 @@
 //! Cancellation-safe waker registration used by local asynchronous waits.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -16,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::task::Waker;
 
 use super::internal::AsyncWaiter;
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Waker registry used to notify asynchronous local-provider waiters.
 #[derive(Default)]
@@ -46,6 +49,9 @@ impl AsyncSignal {
     }
 
     /// Removes all registered waiters and wakes them outside the registry lock.
+    ///
+    /// Each waker's unwind panic is isolated so it cannot interrupt
+    /// notification of the remaining waiters.
     pub(super) fn notify_all(&self) {
         let waiters = self
             .waiters
@@ -55,7 +61,9 @@ impl AsyncSignal {
             .map(|(_, waker)| waker)
             .collect::<Vec<_>>();
         for waker in waiters {
-            waker.wake();
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| waker.wake())) {
+                dispose_panic_payload(payload);
+            }
         }
     }
 
@@ -136,6 +144,59 @@ mod tests {
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    struct PanicWake;
+
+    impl Wake for PanicWake {
+        fn wake(self: Arc<Self>) {
+            panic!("intentional waker panic");
+        }
+    }
+
+    struct DropPanicPayload;
+
+    impl Drop for DropPanicPayload {
+        fn drop(&mut self) {
+            panic!("payload drop panic");
+        }
+    }
+
+    struct PayloadPanicWake;
+
+    impl Wake for PayloadPanicWake {
+        fn wake(self: Arc<Self>) {
+            std::panic::panic_any(DropPanicPayload);
+        }
+    }
+
+    fn assert_panicking_waker_is_isolated(panicking_waker: Waker) {
+        let signal = AsyncSignal::default();
+        let counter = Arc::new(CountWake::default());
+        let mut guards = Vec::new();
+        for _ in 0..32 {
+            guards.push(signal.register(&Waker::from(counter.clone())));
+        }
+        guards.push(signal.register(&panicking_waker));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            signal.notify_all();
+        }));
+        assert!(result.is_ok());
+        assert_eq!(32, counter.0.load(Ordering::Relaxed));
+        assert_eq!(0, signal.waiter_count());
+        signal.notify_all();
+        assert_eq!(32, counter.0.load(Ordering::Relaxed));
+        drop(guards);
+    }
+
+    #[test]
+    fn test_panicking_waker_does_not_strand_other_waiters() {
+        assert_panicking_waker_is_isolated(Waker::from(Arc::new(PanicWake)));
+    }
+
+    #[test]
+    fn test_panicking_payload_drop_does_not_strand_other_waiters() {
+        assert_panicking_waker_is_isolated(Waker::from(Arc::new(PayloadPanicWake)));
     }
 
     #[test]
