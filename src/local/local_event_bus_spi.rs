@@ -564,3 +564,69 @@ pub(super) fn signal_changed(shared: &LocalSharedState) {
     shared.changed.notify_all();
     shared.async_changed.notify_all();
 }
+
+#[cfg(test)]
+mod capacity_rejection_tests {
+    use std::any::TypeId;
+    use std::sync::Arc;
+
+    use super::LocalEventBusConfig;
+    use super::LocalEventBusSpi;
+    use crate::model::AdmissionRejectionKind;
+    use crate::model::EventId;
+    use crate::model::ProviderOptions;
+    use crate::model::PublishAcknowledgement;
+    use crate::model::StartPosition;
+    use crate::model::SubscriberId;
+    use crate::model::SubscriptionDurability;
+    use crate::spi::EventBusSpi;
+    use crate::spi::OutboundMessage;
+    use crate::spi::SpiSubscriptionRequest;
+    use crate::spi::TopicAddress;
+    use crate::spi::TransportPayload;
+
+    #[test]
+    fn test_closed_subscription_publish_increments_monitor_counter() {
+        let config = LocalEventBusConfig::new();
+        let bus = LocalEventBusSpi::new(&config).expect("valid local config");
+        let monitor = bus.capacity_monitor();
+        let topic = TopicAddress::new("local.closed-counter").expect("valid topic");
+        let request = SpiSubscriptionRequest::new(
+            qubit_id::Id::new(1),
+            topic.clone(),
+            SubscriberId::new("closed-counter").expect("valid subscriber"),
+            None,
+            SubscriptionDurability::Ephemeral,
+            StartPosition::New,
+            ProviderOptions::new(),
+            TypeId::of::<u32>(),
+        );
+        let _subscription = bus.subscribe(request).expect("subscription");
+        let queue = {
+            let mut state = bus.shared.state.lock().expect("bus state");
+            let bucket = state.topics.get_mut(&topic).expect("topic registered");
+            bucket.live_queues().into_iter().next().expect("live queue")
+        };
+        queue.lock().closed = true;
+
+        let message = OutboundMessage::new(
+            topic,
+            EventId::new("closed-counter-event").expect("valid event ID"),
+            std::time::SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(7_u32)),
+        );
+        let acknowledgement = bus.publish(message).expect("publish acknowledgement");
+        let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
+            panic!("local publish returns destination admissions");
+        };
+        assert_eq!(admissions.len(), 1);
+        assert_eq!(
+            admissions[0].rejection_kind(),
+            Some(AdmissionRejectionKind::SubscriptionClosed)
+        );
+        assert_eq!(monitor.snapshot().rejected_subscription_closed, 1);
+    }
+}
