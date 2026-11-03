@@ -1655,7 +1655,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
-- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。本文参考的 `rs-event-bus-redis` 0.7 checkout（HEAD `159b2b863c0afe17ae5db2286ecb01c3357b2df7`）对新读到的 stream entry 报告 `Some(1)`。pending 与 claim 恢复会额外查询详细 `XPENDING`；仅当结果恰有一行、entry ID 与当前 consumer owner 均匹配，且 count 非零并可表示为 `u32` 时才采用该次数，否则为 `None`。这只是源码核对，不是该 provider 与 core 0.21 的集成验证；provider 依赖基线也未与 core 0.21 对齐。facade 本地重试仍单独记录在 `retry_attempt`。该次数不能证明恰好一次、业务完成或完整恢复历史。
+- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。本次核对的本地 `rs-event-bus-redis` 0.7 checkout（HEAD `1f62ce24142de09f77e2f83bbd9ecf4092f9bdb1`）中，同步和异步 fresh delivery 报告 `Some(1)`。恢复 delivery 会按 entry ID 查询详细 `XPENDING`；仅当结果恰有一行、entry ID 与当前 consumer owner 均匹配，且 count 非零并可表示为 `u32` 时，`stream_protocol::trusted_attempt` 才接受该次数。查询或校验失败时次数保持未知（`None`）。本地清单已声明 core 0.21 路径依赖，因此该 checkout 的清单与 core 0.21 对齐。这是静态源码与清单核对，不是 Redis 集成执行或 registry 发布兼容证据。facade 本地重试仍单独记录在 `retry_attempt`。该次数不能证明恰好一次、业务完成或完整恢复历史。
 - Async local 在注册 mailbox 前拒绝订阅 ID 耗尽。同步和异步 local 在 settlement token
   耗尽时保留可接收消息并返回结构化 receive 错误；不会回绕 token 计数或静默丢弃事件。
 
