@@ -22,7 +22,7 @@ pub(in crate::local) struct AsyncLocalShared {
     /// Queue capacity copied into each mailbox.
     capacity: usize,
     /// Provider-wide bound on queued and unsettled deliveries.
-    pub(in crate::local) outstanding: OutstandingBudget,
+    pub(in crate::local) outstanding: Arc<OutstandingBudget>,
     /// Mailbox registry and provider lifecycle state.
     pub(in crate::local) state: Mutex<AsyncBusState>,
     /// Wakes graceful shutdown when queue state changes.
@@ -54,7 +54,7 @@ impl AsyncLocalShared {
     ) -> Self {
         Self {
             capacity,
-            outstanding: OutstandingBudget::new(max_total_outstanding, max_weight),
+            outstanding: Arc::new(OutstandingBudget::new(max_total_outstanding, max_weight)),
             state: Mutex::new(AsyncBusState::default()),
             changed: AsyncSignal::default(),
             timer,

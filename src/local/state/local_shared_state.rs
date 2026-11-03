@@ -29,7 +29,7 @@ pub(in crate::local) struct LocalSharedState {
     /// Pending message bound copied into each new queue.
     pub(in crate::local) capacity: usize,
     /// Provider-wide bound shared by all destination queues.
-    pub(in crate::local) outstanding: OutstandingBudget,
+    pub(in crate::local) outstanding: Arc<OutstandingBudget>,
 }
 
 impl LocalSharedState {
@@ -57,7 +57,7 @@ impl LocalSharedState {
             async_changed: AsyncSignal::default(),
             shutdown_gate: Mutex::new(()),
             capacity,
-            outstanding: OutstandingBudget::new(max_total_outstanding, max_weight),
+            outstanding: Arc::new(OutstandingBudget::new(max_total_outstanding, max_weight)),
         })
     }
 }

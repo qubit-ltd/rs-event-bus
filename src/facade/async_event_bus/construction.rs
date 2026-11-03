@@ -29,6 +29,8 @@ use crate::facade::async_event_bus::AsyncSignal;
 use crate::facade::async_event_bus::AsyncTracker;
 use crate::facade::async_event_bus::BusState;
 use crate::facade::internal::DeliverySchedulerCore;
+use crate::local::AsyncLocalEventBusSpi;
+use crate::local::LocalCapacityMonitor;
 use crate::local::LocalEventBusConfig;
 use crate::model::ProviderId;
 use crate::pipeline::PublisherPipeline;
@@ -54,6 +56,28 @@ impl AsyncEventBus {
         registry
             .create(&EventBusConfig::default().with_provider_options(config.provider_options()))
             .await
+    }
+
+    /// Creates an async local facade and read-only capacity monitor.
+    ///
+    /// The monitor shares accounting state only and does not retain queues or
+    /// payloads. This concrete local path still validates capabilities through
+    /// [`Self::from_spi`].
+    pub async fn local_with_monitor(
+        config: LocalEventBusConfig,
+    ) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
+        let spi = AsyncLocalEventBusSpi::new(&config).map_err(|source| ProviderError::Creation {
+            source: Box::new(source),
+        })?;
+        let monitor = spi.capacity_monitor();
+        let bus = Self::from_spi(
+            ProviderId::new("local").expect("static provider ID is valid"),
+            Arc::new(spi),
+        )
+        .map_err(|source| ProviderError::Creation {
+            source: Box::new(source),
+        })?;
+        Ok((bus, monitor))
     }
 
     /// Creates a usable facade around an already-created asynchronous provider

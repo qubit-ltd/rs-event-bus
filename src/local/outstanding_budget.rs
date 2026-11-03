@@ -10,6 +10,7 @@
 use std::num::NonZeroUsize;
 use std::sync::PoisonError;
 
+use super::LocalCapacitySnapshot;
 use crate::internal::sync::Mutex;
 use crate::model::AdmissionRejectionKind;
 
@@ -21,6 +22,10 @@ struct OutstandingState {
     /// Sum of their declared weights, or zero when weight accounting is
     /// disabled.
     weight_used: usize,
+    rejected_subscription_closed: u64,
+    rejected_subscription_capacity: u64,
+    rejected_provider_count_capacity: u64,
+    rejected_provider_weight_capacity: u64,
 }
 
 /// Atomically reserves count and declared-weight capacity for delivery copies.
@@ -71,15 +76,49 @@ impl OutstandingBudget {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(next_count) = state.count_used.checked_add(1).filter(|count| *count <= self.max_count) else {
+            state.rejected_provider_count_capacity = state.rejected_provider_count_capacity.saturating_add(1);
             return Err(AdmissionRejectionKind::ProviderCountCapacity);
         };
-        let Some(next_weight) = state.weight_used.checked_add(weight)
-            .filter(|weight| self.max_weight.is_none_or(|limit| *weight <= limit.get())) else {
+        let Some(next_weight) = state
+            .weight_used
+            .checked_add(weight)
+            .filter(|weight| self.max_weight.is_none_or(|limit| *weight <= limit.get()))
+        else {
+            state.rejected_provider_weight_capacity = state.rejected_provider_weight_capacity.saturating_add(1);
             return Err(AdmissionRejectionKind::ProviderWeightCapacity);
         };
         state.count_used = next_count;
         state.weight_used = next_weight;
         Ok(())
+    }
+
+    /// Records a rejection made by a subscription queue while holding the same
+    /// lock used for provider-wide reservations.
+    pub(super) fn record_rejection(&self, kind: AdmissionRejectionKind) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = match kind {
+            AdmissionRejectionKind::SubscriptionClosed => &mut state.rejected_subscription_closed,
+            AdmissionRejectionKind::SubscriptionCapacity => &mut state.rejected_subscription_capacity,
+            _ => return,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Copies configuration, usage, and rejection totals at one budget-lock
+    /// observation point.
+    pub(super) fn snapshot(&self, queue_capacity: usize) -> LocalCapacitySnapshot {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        LocalCapacitySnapshot {
+            outstanding_count: state.count_used,
+            max_total_outstanding: self.max_count,
+            outstanding_weight_bytes: state.weight_used,
+            max_total_outstanding_weight_bytes: self.max_weight,
+            queue_capacity,
+            rejected_subscription_closed: state.rejected_subscription_closed,
+            rejected_subscription_capacity: state.rejected_subscription_capacity,
+            rejected_provider_count_capacity: state.rejected_provider_count_capacity,
+            rejected_provider_weight_capacity: state.rejected_provider_weight_capacity,
+        }
     }
 
     /// Compatibility helper for existing internal boolean assertions.
@@ -138,7 +177,10 @@ mod tests {
     fn test_outstanding_budget_count_rejection_has_priority() {
         let budget = OutstandingBudget::new(1, NonZeroUsize::new(1));
         assert_eq!(budget.try_reserve(1), Ok(()));
-        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity));
+        assert_eq!(
+            budget.try_reserve(1),
+            Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity)
+        );
         budget.release(1, 1);
     }
 
@@ -157,7 +199,10 @@ mod tests {
     fn test_outstanding_budget_rejects_weight_overflow() {
         let budget = OutstandingBudget::new(2, NonZeroUsize::new(usize::MAX));
         assert!(budget.try_acquire(usize::MAX));
-        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderWeightCapacity));
+        assert_eq!(
+            budget.try_reserve(1),
+            Err(crate::model::AdmissionRejectionKind::ProviderWeightCapacity)
+        );
         budget.release(1, usize::MAX);
         assert!(budget.try_acquire(1));
         budget.release(1, 1);
@@ -168,7 +213,10 @@ mod tests {
     fn test_outstanding_budget_rejects_count_overflow() {
         let budget = OutstandingBudget::new(usize::MAX, None);
         budget.state.lock().expect("budget lock").count_used = usize::MAX;
-        assert_eq!(budget.try_reserve(1), Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity));
+        assert_eq!(
+            budget.try_reserve(1),
+            Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity)
+        );
         budget.release(usize::MAX, 0);
         assert!(budget.try_acquire(1));
     }
@@ -190,6 +238,29 @@ mod tests {
         let budget = OutstandingBudget::new(2, NonZeroUsize::new(4));
         assert!(budget.try_acquire(2));
         budget.release(1, 3);
+    }
+
+    #[test]
+    fn test_rejection_counters_saturate_and_snapshot_copies_both_usage_and_limits() {
+        let budget = OutstandingBudget::new(2, None);
+        {
+            let mut state = budget.state.lock().expect("budget lock");
+            state.rejected_subscription_closed = u64::MAX;
+        }
+        budget.record_rejection(AdmissionRejectionKind::SubscriptionClosed);
+        budget.record_rejection(AdmissionRejectionKind::SubscriptionCapacity);
+        assert!(budget.try_reserve(usize::MAX).is_ok());
+        let snapshot = budget.snapshot(5);
+        assert_eq!(snapshot.outstanding_count, 1);
+        assert_eq!(snapshot.max_total_outstanding, 2);
+        assert_eq!(snapshot.outstanding_weight_bytes, 0);
+        assert_eq!(snapshot.max_total_outstanding_weight_bytes, None);
+        assert_eq!(snapshot.queue_capacity, 5);
+        assert_eq!(snapshot.rejected_subscription_closed, u64::MAX);
+        assert_eq!(snapshot.rejected_subscription_capacity, 1);
+        assert_eq!(snapshot.rejected_provider_count_capacity, 0);
+        assert_eq!(snapshot.rejected_provider_weight_capacity, 0);
+        budget.release(1, 0);
     }
 
     /// Racing destinations share both the count and weight admission gate.
@@ -297,6 +368,34 @@ mod tests {
             assert!(budget.try_acquire(5));
             assert!(!budget.try_acquire(1));
             budget.release(1, 5);
+        });
+    }
+
+    /// Failed reservations leave usage unchanged, while concurrent snapshots
+    /// never observe values above the configured limits.
+    #[test]
+    fn test_loom_failed_reservation_and_capacity_snapshot_bounds() {
+        check_model(|| {
+            let budget = Arc::new(OutstandingBudget::new(1, NonZeroUsize::new(2)));
+            assert!(budget.try_acquire(2));
+            let reader_budget = Arc::clone(&budget);
+            let reader = thread::spawn(move || {
+                let snapshot = reader_budget.snapshot(3);
+                assert!(snapshot.outstanding_count <= snapshot.max_total_outstanding);
+                assert!(
+                    snapshot.outstanding_weight_bytes <= snapshot.max_total_outstanding_weight_bytes.unwrap().get()
+                );
+            });
+            let before = budget.snapshot(3);
+            assert_eq!(
+                budget.try_reserve(1),
+                Err(crate::model::AdmissionRejectionKind::ProviderCountCapacity)
+            );
+            let after = budget.snapshot(3);
+            assert_eq!(after.outstanding_count, before.outstanding_count);
+            assert_eq!(after.outstanding_weight_bytes, before.outstanding_weight_bytes);
+            reader.join().expect("snapshot reader completes");
+            budget.release(1, 2);
         });
     }
 }

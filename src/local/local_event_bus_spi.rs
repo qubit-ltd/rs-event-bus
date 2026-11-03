@@ -17,6 +17,7 @@ use std::sync::Weak;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::LocalCapacityMonitor;
 use super::LocalEventBusConfig;
 use super::local_event_subscription::LocalEventSubscription;
 use super::state::LocalEvent;
@@ -25,8 +26,8 @@ use super::state::LocalQueueState;
 use super::state::LocalSharedState;
 use crate::error::ConfigurationError;
 use crate::error::SpiError;
-use crate::model::AdmissionStatus;
 use crate::model::AdmissionRejectionKind;
+use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
 use crate::model::PublishAcknowledgement;
 use crate::model::PublishEffect;
@@ -75,6 +76,10 @@ pub struct LocalEventBusSpi {
 }
 
 impl LocalEventBusSpi {
+    pub(crate) fn capacity_monitor(&self) -> LocalCapacityMonitor {
+        LocalCapacityMonitor::new(Arc::clone(&self.shared.outstanding), self.shared.capacity)
+    }
+
     /// Creates an SPI instance from local transport configuration.
     ///
     /// # Parameters
@@ -225,12 +230,24 @@ impl EventBusSpi for LocalEventBusSpi {
             let rejection = if state.closed {
                 Some((AdmissionRejectionKind::SubscriptionClosed, "subscription is closed"))
             } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
-                Some((AdmissionRejectionKind::SubscriptionCapacity, "subscription queue is full"))
+                Some((
+                    AdmissionRejectionKind::SubscriptionCapacity,
+                    "subscription queue is full",
+                ))
             } else {
-                self.shared.outstanding.try_reserve(event.weight_bytes).err().map(|kind| {
-                    (kind, "provider outstanding capacity is full")
-                })
+                self.shared
+                    .outstanding
+                    .try_reserve(event.weight_bytes)
+                    .err()
+                    .map(|kind| (kind, "provider outstanding capacity is full"))
             };
+            if let Some((
+                kind @ (AdmissionRejectionKind::SubscriptionClosed | AdmissionRejectionKind::SubscriptionCapacity),
+                _,
+            )) = rejection
+            {
+                self.shared.outstanding.record_rejection(kind);
+            }
             let status = if let Some((_, reason)) = rejection {
                 AdmissionStatus::Rejected(reason.into())
             } else {

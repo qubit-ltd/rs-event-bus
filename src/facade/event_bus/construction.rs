@@ -31,7 +31,9 @@ use crate::facade::event_bus::internal::SubscriptionWorkerBudget;
 use crate::facade::internal::LifecycleState;
 use crate::facade::shutdown_coordinator::ShutdownCoordinator;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
+use crate::local::LocalCapacityMonitor;
 use crate::local::LocalEventBusConfig;
+use crate::local::LocalEventBusSpi;
 use crate::model::ProviderId;
 use crate::pipeline::PublisherPipeline;
 use crate::spi::EventBusCapabilities;
@@ -59,6 +61,26 @@ impl EventBus {
         })?;
         let config = EventBusConfig::default().with_provider_options(config.provider_options());
         registry.create(&config)
+    }
+
+    /// Creates a local facade and a read-only monitor for its capacity budget.
+    ///
+    /// The monitor shares accounting state only and does not retain queues or
+    /// payloads. Use this concrete local path when capacity diagnostics are
+    /// needed; it still validates the provider through [`Self::from_spi`].
+    pub fn local_with_monitor(config: LocalEventBusConfig) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
+        let spi = LocalEventBusSpi::new(&config).map_err(|source| ProviderError::Creation {
+            source: Box::new(source),
+        })?;
+        let monitor = spi.capacity_monitor();
+        let bus = Self::from_spi(
+            ProviderId::new("local").expect("static provider ID is valid"),
+            Arc::new(spi),
+        )
+        .map_err(|source| ProviderError::Creation {
+            source: Box::new(source),
+        })?;
+        Ok((bus, monitor))
     }
 
     /// Creates a running facade around an already-created provider SPI.
