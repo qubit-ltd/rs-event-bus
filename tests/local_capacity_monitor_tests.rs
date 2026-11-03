@@ -282,6 +282,14 @@ fn monitor_does_not_keep_payload_alive_after_provider_shutdown() {
 // close unregisters its queue before the next publish. Only the race between
 // close and an already enumerated destination reaches that rejection branch.
 
+struct StopWritersOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StopWritersOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[test]
 fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
     let limit = 8;
@@ -322,22 +330,24 @@ fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
     let _ = bus.publish(weighted_publish(0)).unwrap();
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
-    let start = std::sync::Arc::new(std::sync::Barrier::new(5));
-    let finish = std::sync::Arc::new(std::sync::Barrier::new(5));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _stop_on_panic = StopWritersOnDrop(stop.clone());
+    let (active_tx, active_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let mut writers = Vec::new();
     for writer in 0..4 {
         let bus = bus.clone();
         let topic = topic.clone();
-        let start = start.clone();
-        let finish = finish.clone();
+        let stop = stop.clone();
+        let active_tx = active_tx.clone();
+        let done_tx = done_tx.clone();
         writers.push(thread::spawn(move || {
-            for item in 0..32 {
-                start.wait();
+            let publish = |payload| {
                 let _ = bus
                     .publish(
                         PublishRequest::builder()
                             .topic(topic.clone())
-                            .payload(writer * 32 + item + 1)
+                            .payload(payload)
                             .options(
                                 PublishOptions::builder()
                                     .native_payload_weight(|_| NonZeroUsize::new(5).unwrap())
@@ -347,19 +357,34 @@ fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
                             .unwrap(),
                     )
                     .unwrap();
-                finish.wait();
+            };
+            publish(writer * 10_000);
+            active_tx.send(()).unwrap();
+            let mut item = 0;
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                publish(writer * 10_000 + item + 1);
+                item += 1;
             }
+            done_tx.send(()).unwrap();
         }));
     }
+    drop(active_tx);
+    drop(done_tx);
+    for _ in 0..4 {
+        active_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("each writer enters its publish loop");
+    }
     for _ in 0..32 {
-        start.wait();
         let snapshot = monitor.snapshot();
         assert!(snapshot.outstanding_count <= snapshot.max_total_outstanding);
         assert!(snapshot.outstanding_weight_bytes <= weight_limit.get());
-        finish.wait();
-        let snapshot = monitor.snapshot();
-        assert!(snapshot.outstanding_count <= snapshot.max_total_outstanding);
-        assert!(snapshot.outstanding_weight_bytes <= weight_limit.get());
+    }
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    for _ in 0..4 {
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("each writer observes stop and exits");
     }
     for writer in writers {
         writer.join().unwrap();
