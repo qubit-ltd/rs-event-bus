@@ -73,7 +73,8 @@ impl NotificationStats {
         }
     }
 
-    /// Records the provider admission classification from one successful receipt.
+    /// Records the provider admission classification from one successful
+    /// receipt.
     pub(super) fn record_admission(&self, outcome: AdmissionOutcome) {
         let counter = match outcome {
             AdmissionOutcome::Accepted(_) => &self.admission_accepted,
