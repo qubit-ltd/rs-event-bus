@@ -13,6 +13,14 @@ use crate::error::PublishError;
 use crate::model::PublishMetadata;
 use crate::pipeline::GlobalPublisherInterceptor;
 
+struct PanicPayload;
+
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
+
 #[test]
 fn test_interceptor_converts_string_panic_to_structured_error() {
     let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
@@ -41,5 +49,22 @@ fn test_interceptor_handles_non_string_panic_payload() {
         error,
         PublishError::InterceptorPanicked { message, .. }
             if message.as_ref() == "non-string panic payload"
+    ));
+}
+
+#[test]
+fn test_interceptor_contains_panicking_payload_destructor() {
+    let interceptor = GlobalPublisherInterceptor::new(|_: &mut PublishMetadata| -> Result<bool, PublishError> {
+        panic_any(PanicPayload)
+    });
+    let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        interceptor.apply(&mut PublishMetadata::default())
+    }));
+    let error = outer
+        .expect("payload destructor panic must be contained")
+        .expect_err("interceptor panicked");
+    assert!(matches!(
+        error,
+        PublishError::InterceptorPanicked { scope: "global", .. }
     ));
 }

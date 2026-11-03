@@ -50,6 +50,7 @@ use crate::facade::internal::BusContextGuard;
 use crate::facade::internal::SettlementRetryDecision;
 use crate::facade::internal::SettlementRetryState;
 use crate::facade::lifecycle::receive_poll_interval;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::Delivery;
 use crate::model::FailureDirective;
 use crate::model::SettlementTermination;
@@ -332,11 +333,15 @@ fn run_subscription_worker_body<T>(
                                 )
                             })) {
                                 Ok(outcome) => outcome,
-                                Err(payload) => DeliveryOutcome::Failure(DeliveryError::Handler {
-                                    source: Box::new(std::io::Error::other(
-                                        panic_message(payload.as_ref()).to_string(),
-                                    )),
-                                }),
+                                Err(payload) => {
+                                    let error = DeliveryError::Handler {
+                                        source: Box::new(std::io::Error::other(
+                                            panic_message(payload.as_ref()).to_string(),
+                                        )),
+                                    };
+                                    dispose_panic_payload(payload);
+                                    DeliveryOutcome::Failure(error)
+                                }
                             }
                         };
                         let directive = match &outcome {
@@ -546,6 +551,7 @@ fn run_subscription_worker_body<T>(
     if let Err(payload) = worker_result {
         fail_internal(&inner, &control, "owner_panicked");
         inner.emit_internal("subscription_worker", panic_message(payload.as_ref()).into());
+        dispose_panic_payload(payload);
         // Preserve payload/tracker lifetime even when an injected clock or an
         // internal operation unwinds while pool callbacks are still running.
         while owned.values().any(|delivery| delivery.running) {

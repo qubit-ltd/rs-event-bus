@@ -239,6 +239,44 @@ fn test_subscriber_middleware_panic_is_contained_as_delivery_failure() {
     assert!(!*called.lock().unwrap());
 }
 
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
+
+#[test]
+fn test_panic_payload_sync_handler_and_middleware_are_delivery_errors() {
+    let handler = SubscriberPipeline::run_sync(delivery(), &[], &[], |_| -> Result<(), DeliveryError> {
+        std::panic::panic_any(PanicPayload)
+    });
+    assert!(matches!(handler, Err(DeliveryError::Handler { .. })));
+    let middleware: Arc<SubscriberInterceptor<String>> = Arc::new(|_, _| std::panic::panic_any(PanicPayload));
+    let result = SubscriberPipeline::run_sync(delivery(), &[], &[middleware], |_| Ok(()));
+    assert!(matches!(result, Err(DeliveryError::Handler { .. })));
+}
+
+#[test]
+fn test_panic_payload_async_creation_and_poll_are_delivery_errors() {
+    let created = SubscriberPipeline::run_async(
+        delivery(),
+        &[],
+        &[],
+        |_| -> SpiFuture<'static, Result<(), DeliveryError>> { std::panic::panic_any(PanicPayload) },
+    );
+    assert!(matches!(block_on(created), Err(DeliveryError::Handler { .. })));
+    let polled = SubscriberPipeline::run_async(
+        delivery(),
+        &[],
+        &[],
+        |_| -> SpiFuture<'static, Result<(), DeliveryError>> {
+            Box::pin(async { std::panic::panic_any(PanicPayload) })
+        },
+    );
+    assert!(matches!(block_on(polled), Err(DeliveryError::Handler { .. })));
+}
+
 #[test]
 fn test_delivery_attempt_error_preserves_delivery_error_as_source() {
     let original = DeliveryError::Handler {

@@ -39,6 +39,7 @@ use crate::facade::event_bus::failure::panic_message;
 use crate::facade::event_bus::failure::settle_rejected;
 use crate::facade::event_bus::failure::settle_token;
 use crate::facade::event_bus::internal::HandlerStartRejected;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::DEAD_LETTER_HEADER;
 use crate::model::DEAD_LETTER_HEADER_VALUE;
 use crate::model::Delivery;
@@ -147,10 +148,11 @@ where
                 return None;
             }
             Ok(true) => {}
-            Err(_) => {
+            Err(payload) => {
                 let error = DeliveryError::Handler {
                     source: Box::new(Error::other("subscriber filter panicked")),
                 };
+                dispose_panic_payload(payload);
                 let directive = notify_error_handlers(inner, options, &event, &error, options.retry_policy().is_some());
                 finish_failed_delivery(
                     inner,
@@ -306,6 +308,7 @@ pub(in crate::facade) fn notify_error_handlers<T>(
             Err(payload) => {
                 inner.emit_internal("subscriber_error_handler", panic_message(payload.as_ref()).into());
                 directives.push(Err(()));
+                dispose_panic_payload(payload);
             }
         }
     }

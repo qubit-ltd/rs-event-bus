@@ -675,16 +675,20 @@ struct PanicOnceClock {
     manual: ManualMonotonicClock,
     calls: AtomicUsize,
 }
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
 impl MonotonicClock for PanicOnceClock {
     fn domain(&self) -> ClockDomain {
         self.manual.domain()
     }
     fn now(&self) -> MonotonicInstant {
-        assert_ne!(
-            self.calls.fetch_add(1, Ordering::SeqCst),
-            0,
-            "injected first owner clock panic"
-        );
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::panic::panic_any(PanicPayload);
+        }
         self.manual.now()
     }
     fn new_timer(&self) -> Arc<dyn Timer> {

@@ -31,6 +31,7 @@ use super::notification_stats::NotificationStats;
 use super::notification_stats_snapshot::NotificationStatsSnapshot;
 use super::try_publish_error::TryPublishError;
 use crate::EventBus;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::PublishOptions;
 use crate::model::PublishRequest;
 use crate::model::Topic;
@@ -207,8 +208,9 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                                 NotificationOutcome::RequestFailed(error)
                             }
                         };
-                        if catch_unwind(AssertUnwindSafe(|| observer(outcome))).is_err() {
+                        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| observer(outcome))) {
                             NotificationStats::increment(&worker_stats.observer_panicked);
+                            dispose_panic_payload(payload);
                         }
                     }
                     drop(receiver);
@@ -217,8 +219,9 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                     drop(bus);
                     drop(observer);
                 }));
-                if result.is_ok() {
-                    completion.mark_drained();
+                match result {
+                    Ok(()) => completion.mark_drained(),
+                    Err(payload) => dispose_panic_payload(payload),
                 }
             })?;
         Ok(Self {

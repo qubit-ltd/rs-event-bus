@@ -315,6 +315,83 @@ fn test_interceptor_panic_is_converted_with_pipeline_origin() {
     ));
 }
 
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
+
+#[test]
+fn test_panic_payload_typed_interceptor_remains_not_accepted() {
+    let (spi, state) = bus(PayloadModes::Native, 0);
+    let pipeline = make_pipeline(&spi);
+    let options = PublishOptions::builder()
+        .interceptor(|_| -> Result<Option<EventEnvelope<String>>, PublishError> { std::panic::panic_any(PanicPayload) })
+        .build();
+    let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pipeline.publish(spi.as_ref(), request(options), &[], &[])
+    }));
+    let failure = outer.expect("payload drop panic is contained").unwrap_err();
+    assert_eq!(PublishEffect::NotAccepted, failure.publish_effect());
+    assert_eq!(0, state.lock().unwrap().calls);
+    assert!(matches!(
+        failure.error(),
+        EventBusError::Publish(PublishError::InterceptorPanicked { scope: "typed", .. })
+    ));
+}
+
+#[test]
+fn test_panic_payload_weight_callback_remains_not_accepted() {
+    let (spi, state) = bus(PayloadModes::Native, 0);
+    let pipeline = make_pipeline(&spi);
+    let options = PublishOptions::builder()
+        .native_payload_weight(|_| -> NonZeroUsize { std::panic::panic_any(PanicPayload) })
+        .build();
+    let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pipeline.publish(spi.as_ref(), request(options), &[], &[])
+    }));
+    let failure = outer.expect("payload drop panic is contained").unwrap_err();
+    assert_eq!(PublishEffect::NotAccepted, failure.publish_effect());
+    assert_eq!(0, state.lock().unwrap().calls);
+    assert!(matches!(
+        failure.error(),
+        EventBusError::Publish(PublishError::InterceptorPanicked {
+            scope: "payload_weight",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_panic_payload_error_handlers_all_release_and_continue() {
+    let (spi, _) = bus(PayloadModes::Native, usize::MAX);
+    let pipeline = make_pipeline(&spi);
+    let calls = Arc::new(Mutex::new(0));
+    let first = calls.clone();
+    let second = calls.clone();
+    let options = PublishOptions::builder()
+        .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
+        .error_handler(move |_, _| {
+            *first.lock().unwrap() += 1;
+            std::panic::panic_any(PanicPayload);
+        })
+        .error_handler(move |_, _| {
+            *second.lock().unwrap() += 1;
+            std::panic::panic_any(PanicPayload);
+        })
+        .build();
+    let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pipeline.publish(spi.as_ref(), request(options), &[], &[])
+    }));
+    let failure = outer.expect("handler payload drop panic is contained").unwrap_err();
+    assert_eq!(2, *calls.lock().unwrap());
+    assert!(matches!(
+        failure.error(),
+        EventBusError::Publish(PublishError::ErrorHandlerPanicked { .. })
+    ));
+}
+
 #[test]
 fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let (spi, state) = bus(PayloadModes::Encoded, 0);

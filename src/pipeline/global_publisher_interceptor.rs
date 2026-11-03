@@ -13,6 +13,7 @@ use std::panic::catch_unwind;
 use std::sync::Arc;
 
 use crate::error::PublishError;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::PublishMetadata;
 
 /// Return `true` to continue or `false` to drop publication before SPI.
@@ -61,10 +62,14 @@ impl GlobalPublisherInterceptor {
     pub(crate) fn apply(&self, metadata: &mut PublishMetadata) -> Result<bool, PublishError> {
         match catch_unwind(AssertUnwindSafe(|| (self.0)(metadata))) {
             Ok(result) => result,
-            Err(payload) => Err(PublishError::InterceptorPanicked {
-                scope: "global",
-                message: panic_message(payload.as_ref()).into(),
-            }),
+            Err(payload) => {
+                let error = PublishError::InterceptorPanicked {
+                    scope: "global",
+                    message: panic_message(payload.as_ref()).into(),
+                };
+                dispose_panic_payload(payload);
+                Err(error)
+            }
         }
     }
 }

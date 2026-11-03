@@ -1834,6 +1834,13 @@ struct NonCloneDeadLetterPayload;
 
 #[test]
 fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() {
+    struct PanicPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor");
+        }
+    }
+
     /// Runs one filter scenario and returns handler, settlement, and diagnostic
     /// observations.
     fn run_case(panic_filter: bool) -> (usize, Vec<DeliveryDisposition>, bool) {
@@ -1854,7 +1861,7 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
         let options = SubscribeOptions::<u32>::builder()
             .filter(move |_| {
                 if panic_filter {
-                    panic!("filter panic");
+                    std::panic::panic_any(PanicPayload);
                 }
                 false
             })
@@ -1922,6 +1929,12 @@ fn test_async_filter_false_bypasses_handler_and_filter_panic_rejects_delivery() 
 
 #[test]
 fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
+    struct PanicPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor");
+        }
+    }
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(
         ProviderId::new("fake").expect("static test provider ID must be valid"),
@@ -1936,7 +1949,7 @@ fn test_async_error_handler_panic_is_diagnosed_and_delivery_is_rejected() {
         }
     });
     let options = SubscribeOptions::<u32>::builder()
-        .error_handler(|_, _| -> FailureDirective { panic!("error handler panic") })
+        .error_handler(|_, _| -> FailureDirective { std::panic::panic_any(PanicPayload) })
         .build();
 
     let subscription = block_on(

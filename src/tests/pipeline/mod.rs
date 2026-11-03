@@ -10,6 +10,7 @@
 mod dead_letter_admission_tests;
 mod dead_letter_forward_tests;
 mod diagnostic;
+mod diagnostic_tests;
 mod failure_decision_tests;
 mod global_publisher_interceptor_tests;
 mod publisher_pipeline_tests;

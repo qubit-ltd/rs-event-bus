@@ -25,6 +25,7 @@ pub(crate) use self::internal::DeliveryOutcome;
 use crate::error::CapabilityError;
 use crate::error::DeliveryAttemptError;
 use crate::error::DeliveryError;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AckMode;
 use crate::model::AcknowledgementState;
 use crate::model::AsyncSubscriberInterceptor;
@@ -446,9 +447,11 @@ where
 /// # Returns
 /// A handler error containing a stable message derived from the payload type.
 fn panic_to_delivery_error(panic: Box<dyn Any + Send>) -> DeliveryError {
-    DeliveryError::Handler {
+    let error = DeliveryError::Handler {
         source: Box::new(Error::other(panic_message(panic.as_ref()))),
-    }
+    };
+    dispose_panic_payload(panic);
+    error
 }
 
 /// Selects a diagnostic message that does not expose arbitrary panic payload

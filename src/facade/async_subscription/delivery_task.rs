@@ -29,6 +29,7 @@ use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::RetryFailure;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::choose_terminal_directive;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AsyncSubscriberInterceptor;
 use crate::model::Delivery;
 use crate::model::EventEnvelope;
@@ -220,12 +221,13 @@ pub(in crate::facade) fn notify_failure<T: Send + Sync + 'static>(
     for callback in options.error_handlers() {
         match catch_unwind(AssertUnwindSafe(|| callback(event, error))) {
             Ok(directive) => directives.push(Ok(directive)),
-            Err(_) => {
+            Err(payload) => {
                 inner.emit(&Diagnostic::InternalFailure {
                     origin: "subscriber_error_handler".into(),
                     message: "subscriber error handler panicked".into(),
                 });
                 directives.push(Err(()));
+                dispose_panic_payload(payload);
             }
         }
     }

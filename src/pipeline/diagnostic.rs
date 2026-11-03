@@ -17,6 +17,7 @@ use qubit_id::Id;
 pub(crate) use self::internal::PipelineFailure;
 pub(crate) use self::internal::PipelineFailureOrigin;
 use crate::error::SpiError;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::EventId;
 use crate::model::SettlementTermination;
 use crate::model::SubscriberId;
@@ -165,6 +166,8 @@ pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 /// - `diagnostic`: runtime fact passed to each observer.
 pub(crate) fn emit_diagnostic(observers: &[Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
     for observer in observers {
-        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| observer(diagnostic)));
+        if let Err(payload) = panic::catch_unwind(panic::AssertUnwindSafe(|| observer(diagnostic))) {
+            dispose_panic_payload(payload);
+        }
     }
 }

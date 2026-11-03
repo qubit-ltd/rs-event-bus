@@ -445,6 +445,48 @@ fn test_notification_publisher_contains_observer_panics_and_continues() {
     assert_eq!(2, publisher.stats().observer_panicked());
 }
 
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
+
+#[test]
+fn test_panic_payload_notification_observers_are_counted_and_worker_drains() {
+    let spi = Arc::new(GatedSpi::new());
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone()).expect("valid provider");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let started_tx = Mutex::new(Some(started_tx));
+    let release_rx = Mutex::new(release_rx);
+    let publisher = NotificationPublisher::new(
+        bus,
+        Topic::<String>::new_static("notification.events"),
+        NonZeroUsize::new(2).unwrap(),
+        move |_| {
+            if let Some(tx) = started_tx.lock().unwrap().take() {
+                tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+            }
+            std::panic::panic_any(PanicPayload)
+        },
+    )
+    .unwrap();
+    publisher.try_publish("first".into()).unwrap();
+    spi.release();
+    started_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("first observer starts");
+    publisher.try_publish("second".into()).unwrap();
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+    let stats = publisher.stats();
+    assert_eq!(2, stats.published());
+    assert_eq!(2, stats.observer_panicked());
+    assert_eq!(0, stats.worker_panicked());
+}
+
 #[test]
 fn test_notification_observer_cannot_close_its_own_worker() {
     let spi = Arc::new(GatedSpi::new());

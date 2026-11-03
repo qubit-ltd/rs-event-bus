@@ -24,6 +24,7 @@ use super::internal::ShutdownCoordinatorState;
 use super::shutdown_result::ShutdownResult;
 use crate::error::SpiError;
 use crate::facade::internal::FiniteWait;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 
@@ -275,7 +276,9 @@ impl ShutdownCoordinator {
         };
         for waker in wakers.into_values() {
             // One executor's broken observer must not strand the remaining tickets.
-            let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| waker.wake())) {
+                dispose_panic_payload(payload);
+            }
         }
     }
 }
@@ -297,6 +300,13 @@ mod tests {
     use std::task::Wake;
     use std::task::Waker;
     use std::time::Duration;
+
+    struct PanicPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor");
+        }
+    }
 
     use super::ShutdownCoordinator;
     use crate::facade::shutdown_result::ShutdownResult;
@@ -454,7 +464,9 @@ mod tests {
         impl Wake for ConditionalWake {
             fn wake(self: Arc<Self>) {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                assert!(!self.panic_on_wake.load(Ordering::SeqCst), "broken observer waker");
+                if self.panic_on_wake.load(Ordering::SeqCst) {
+                    std::panic::panic_any(PanicPayload);
+                }
             }
         }
         let coordinator = ShutdownCoordinator::new();

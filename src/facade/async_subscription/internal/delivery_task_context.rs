@@ -29,6 +29,7 @@ use crate::error::DeliveryError;
 use crate::facade::async_subscription::dead_letter::publish_dead_letter_async;
 use crate::facade::async_subscription::delivery_task::notify_failure;
 use crate::facade::async_subscription::delivery_task::run_with_retry;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AdmissionOutcome;
 use crate::model::DEAD_LETTER_HEADER;
 use crate::model::DEAD_LETTER_HEADER_VALUE;
@@ -116,13 +117,14 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     return;
                 }
                 Ok(true) => {}
-                Err(_) => {
+                Err(payload) => {
                     let can_settle = self.pending.as_ref().is_some_and(|pending| pending.token.is_some());
                     let metadata = self.pending.as_ref().expect("pending delivery exists").metadata.clone();
                     let delivery = Delivery::new(event.clone(), self.context(can_settle, metadata, &event));
                     let error = DeliveryError::Handler {
                         source: Box::new(Error::other("subscriber filter panicked")),
                     };
+                    dispose_panic_payload(payload);
                     let directive = notify_failure(
                         &self.options,
                         &event,

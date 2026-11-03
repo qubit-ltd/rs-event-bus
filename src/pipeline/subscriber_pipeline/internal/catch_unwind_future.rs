@@ -17,6 +17,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::error::DeliveryError;
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Future wrapper that isolates subscriber middleware and handler panics.
 ///
@@ -46,9 +47,13 @@ impl<F: Future<Output = Result<(), DeliveryError>>> Future for CatchUnwindFuture
             Ok(Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
             Ok(Poll::Ready(Err(error))) => Poll::Ready(Err(error)),
             Ok(Poll::Pending) => Poll::Pending,
-            Err(panic) => Poll::Ready(Err(DeliveryError::Handler {
-                source: Box::new(Error::other(panic_message(panic.as_ref()))),
-            })),
+            Err(panic) => {
+                let error = DeliveryError::Handler {
+                    source: Box::new(Error::other(panic_message(panic.as_ref()))),
+                };
+                dispose_panic_payload(panic);
+                Poll::Ready(Err(error))
+            }
         }
     }
 }

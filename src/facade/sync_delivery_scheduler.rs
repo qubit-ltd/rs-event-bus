@@ -32,6 +32,7 @@ use self::internal::SchedulerState;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::DeliverySchedulingConfig;
 use crate::facade::internal::DeliverySchedulerCore;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::pipeline::OrderingLaneKey;
 
 /// Shares metadata admission across receiver owners and executes granted jobs.
@@ -585,7 +586,9 @@ impl SyncDeliveryScheduler {
             let Some(job) = job else {
                 return;
             };
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+                dispose_panic_payload(payload);
+            }
         }
     }
 }
@@ -600,6 +603,28 @@ mod scheduler_race_tests {
 
     use crate::facade::DeliverySchedulingConfig;
     use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
+
+    struct PanicPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor");
+        }
+    }
+
+    #[test]
+    fn test_scheduler_contains_panicking_job_payload_and_runs_next_job() {
+        let one = NonZeroUsize::new(1).expect("positive limit");
+        let scheduler = SyncDeliveryScheduler::new(DeliverySchedulingConfig::new(one, one, one, one).expect("config"));
+        scheduler.start().expect("worker starts");
+        scheduler.submit(|| std::panic::panic_any(PanicPayload));
+        let (done_tx, done_rx) = mpsc::channel();
+        scheduler.submit(move || done_tx.send(()).expect("receiver remains open"));
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker remains alive after the panicking job");
+        scheduler.stop_admission(true);
+        scheduler.join();
+    }
 
     #[test]
     fn test_reservation_cancel_race_does_not_run_owner_settlement_inline() {

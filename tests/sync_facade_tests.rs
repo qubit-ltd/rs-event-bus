@@ -16,6 +16,7 @@ use std::io::Error as IoError;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
+use std::panic::panic_any;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -29,6 +30,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
+
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
 
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
@@ -954,7 +962,7 @@ impl EventSubscriptionSpi for TestSubscription {
         ready.notify_all();
         TestBackend::wait_at_gate(&self.close_gate, "close");
         if self.close_panics.load(Ordering::Acquire) {
-            panic!("synthetic provider close panic");
+            panic_any(PanicPayload);
         }
         if self.close_fails.load(Ordering::Acquire) {
             return Err(test_spi_error("close"));
@@ -1117,6 +1125,114 @@ fn test_sync_provider_attempt_is_stable_across_handler_retry() {
     }
     subscription.cancel().expect("subscription cancels");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+}
+
+#[test]
+fn test_sync_error_handler_drop_panic_still_settles_delivery() {
+    let (bus, backend) = create_bus();
+    let worker_failed = Arc::new(AtomicBool::new(false));
+    let observed = worker_failed.clone();
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_observed = callback_count.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "owner_panicked") {
+            observed.store(true, Ordering::Release);
+        }
+    });
+    let options = SubscribeOptions::builder()
+        .error_handler(move |_, _| -> FailureDirective {
+            callback_observed.fetch_add(1, Ordering::AcqRel);
+            panic_any(PanicPayload)
+        })
+        .build();
+    let (handled_tx, handled_rx) = mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("panic-error-handler", topic())
+                .expect("valid subscriber")
+                .with_options(options),
+            move |delivery: Delivery<String>| {
+                handled_tx
+                    .send(delivery.payload().clone())
+                    .expect("test receiver remains open");
+                if delivery.payload() != "continue" {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(IoError::other("handler failure")),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .expect("subscription starts");
+    backend.enqueue_marked(subscription.id());
+    let _ = bus.publish(request("fail".into())).expect("first publish succeeds");
+    let _ = bus
+        .publish(request("continue".into()))
+        .expect("second publish succeeds");
+    let mut received = vec![
+        handled_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first handler runs"),
+        handled_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second handler runs"),
+        handled_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker continues after error callback"),
+    ];
+    received.sort();
+    assert_eq!(received, ["continue", "fail", "marked"]);
+    assert_eq!(
+        callback_count.load(Ordering::Acquire),
+        2,
+        "each failed delivery reaches the error callback"
+    );
+    let settlement_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() < 3 && Instant::now() < settlement_deadline {
+        thread::yield_now();
+    }
+    assert_eq!(
+        backend.settlement_calls(),
+        3,
+        "all deliveries settle after the error callback"
+    );
+    assert!(
+        !worker_failed.load(Ordering::Acquire),
+        "error handler failure must not escape into owner boundary"
+    );
+    subscription.cancel().expect("cancel subscription");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn test_sync_filter_drop_panic_still_settles_delivery() {
+    let (bus, backend) = create_bus();
+    let options = SubscribeOptions::builder()
+        .filter(|_| panic_any(PanicPayload))
+        .error_handler(|_, _| FailureDirective::Discard)
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("panic-filter", topic())
+                .expect("valid subscriber")
+                .with_options(options),
+            |_: Delivery<String>| Ok::<(), DeliveryError>(()),
+        )
+        .expect("subscription starts");
+    backend.enqueue_marked(subscription.id());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(
+        backend.settlement_calls(),
+        1,
+        "filter drop panic must not skip settlement"
+    );
+    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
+    subscription.cancel().expect("cancel subscription");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 fn request_with_key(payload: &str, ordering_key: &str) -> PublishRequest<String> {
@@ -3190,6 +3306,13 @@ fn test_close_panic_still_notifies_concurrent_cancel_waiters() {
         caller.join().expect("cancel caller thread exits");
     }
     assert!(first.is_err() || second.is_err());
+    let errors = [first.as_ref().err(), second.as_ref().err()];
+    assert!(
+        errors
+            .into_iter()
+            .flatten()
+            .any(|error| error.to_string().contains("provider_panicked"))
+    );
     assert_eq!(backend.close_calls(), 1);
     let _ = bus.shutdown(ShutdownMode::Immediate);
 }

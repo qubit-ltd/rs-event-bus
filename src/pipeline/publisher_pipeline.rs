@@ -33,6 +33,7 @@ use crate::error::ConfigurationError;
 use crate::error::EventBusError;
 use crate::error::PublishError;
 use crate::error::PublishFailure;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AdmissionStatus;
 use crate::model::DEAD_LETTER_HEADER;
 use crate::model::DEAD_LETTER_HEADER_VALUE;
@@ -292,13 +293,15 @@ impl PublisherPipeline {
                 }
                 Ok(Err(error)) => return Err(failure(PipelineFailureOrigin::Interceptor, error)),
                 Err(payload) => {
-                    return Err(failure(
+                    let error = failure(
                         PipelineFailureOrigin::Interceptor,
                         PublishError::InterceptorPanicked {
                             scope: "typed",
                             message: panic_text(payload.as_ref()).into(),
                         },
-                    ));
+                    );
+                    dispose_panic_payload(payload);
+                    return Err(error);
                 }
             }
         }
@@ -328,19 +331,23 @@ impl PublisherPipeline {
         let native_weight = if capabilities.payload_modes() == PayloadModes::Encoded {
             None
         } else {
-            options
-                .native_payload_weight()
-                .map(|weigh| std::panic::catch_unwind(AssertUnwindSafe(|| weigh(envelope.payload()))))
-                .transpose()
-                .map_err(|panic| {
-                    failure(
-                        PipelineFailureOrigin::Interceptor,
-                        PublishError::InterceptorPanicked {
-                            scope: "payload_weight",
-                            message: panic_text(panic.as_ref()).into(),
-                        },
-                    )
-                })?
+            match options.native_payload_weight() {
+                Some(weigh) => match std::panic::catch_unwind(AssertUnwindSafe(|| weigh(envelope.payload()))) {
+                    Ok(weight) => Some(weight),
+                    Err(payload) => {
+                        let error = failure(
+                            PipelineFailureOrigin::Interceptor,
+                            PublishError::InterceptorPanicked {
+                                scope: "payload_weight",
+                                message: panic_text(payload.as_ref()).into(),
+                            },
+                        );
+                        dispose_panic_payload(payload);
+                        return Err(error);
+                    }
+                },
+                None => None,
+            }
         };
         let outbound = self.prepare_outbound_for(envelope, capabilities.payload_modes(), native_weight)?;
         Ok(PublishPreparation::Ready(Box::new(PreparedPublish {
@@ -586,11 +593,11 @@ fn notify_publish_error_handlers<T: 'static>(
     let terminal_error = PublishFailure::new(context.event_id().clone(), effect, terminal_error);
     let mut panic_message = None;
     for handler in handlers {
-        match std::panic::catch_unwind(AssertUnwindSafe(|| handler(context, &terminal_error))) {
-            Err(payload) if panic_message.is_none() => {
+        if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| handler(context, &terminal_error))) {
+            if panic_message.is_none() {
                 panic_message = Some(panic_text(payload.as_ref()).to_owned().into_boxed_str());
             }
-            _ => {}
+            dispose_panic_payload(payload);
         }
     }
     match panic_message {

@@ -14,6 +14,7 @@ use std::panic::catch_unwind;
 use crate::error::SpiError;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::event_bus::failure::panic_message;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::SubscriberId;
 use crate::spi::EventSubscriptionSpi;
 
@@ -34,14 +35,19 @@ pub(in crate::facade) fn close_spi_subscription(
     subscriber_id: &SubscriberId,
     receiver: &mut dyn EventSubscriptionSpi,
 ) -> Result<(), SpiError> {
-    catch_unwind(AssertUnwindSafe(|| receiver.close())).unwrap_or_else(|payload| {
-        Err(SpiError::Operation {
-            provider_id: inner.provider_id.as_str().into(),
-            operation: "close_subscription",
-            resource: Some(subscriber_id.as_str().into()),
-            kind: "provider_panicked",
-            retryable: Some(false),
-            source: Box::new(Error::other(panic_message(payload.as_ref()))),
-        })
-    })
+    match catch_unwind(AssertUnwindSafe(|| receiver.close())) {
+        Ok(result) => result,
+        Err(payload) => {
+            let error = SpiError::Operation {
+                provider_id: inner.provider_id.as_str().into(),
+                operation: "close_subscription",
+                resource: Some(subscriber_id.as_str().into()),
+                kind: "provider_panicked",
+                retryable: Some(false),
+                source: Box::new(Error::other(panic_message(payload.as_ref()))),
+            };
+            dispose_panic_payload(payload);
+            Err(error)
+        }
+    }
 }
