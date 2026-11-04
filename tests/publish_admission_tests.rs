@@ -12,8 +12,12 @@ use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+mod support;
+
+use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::CodecError;
 use qubit_event_bus::EventBus;
@@ -33,6 +37,8 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
+use qubit_event_bus::error::PublishAttemptError;
+use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
@@ -53,13 +59,20 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
+use qubit_event_bus::spi::SpiFuture;
 use qubit_id::Id;
+use qubit_retry::AttemptFailure;
+use qubit_retry::RetryContext;
+use qubit_retry::RetryDecision;
+use qubit_retry::RetryPolicy;
 
 struct AdmissionProvider {
     acknowledgements: Mutex<VecDeque<PublishAcknowledgement>>,
     visibility: PublishVisibility,
     payload_modes: PayloadModes,
     publish_calls: AtomicUsize,
+    event_ids: Mutex<Vec<String>>,
+    retry_first_not_accepted: AtomicBool,
 }
 
 impl EventBusSpi for AdmissionProvider {
@@ -78,8 +91,12 @@ impl EventBusSpi for AdmissionProvider {
         )
     }
 
-    fn publish(&self, _: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.publish_calls.fetch_add(1, Ordering::AcqRel);
+        self.event_ids.lock().expect("event ID lock").push(message.id().as_str().to_owned());
+        if self.retry_first_not_accepted.swap(false, Ordering::AcqRel) {
+            return Err(retryable_not_accepted());
+        }
         Ok(self
             .acknowledgements
             .lock()
@@ -95,6 +112,72 @@ impl EventBusSpi for AdmissionProvider {
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
         Ok(ShutdownOutcome::Complete)
     }
+}
+
+impl AsyncEventBusSpi for AdmissionProvider {
+    fn capabilities(&self) -> EventBusCapabilities {
+        EventBusSpi::capabilities(self)
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async move {
+            self.publish_calls.fetch_add(1, Ordering::AcqRel);
+            self.event_ids.lock().expect("event ID lock").push(message.id().as_str().to_owned());
+            if self.retry_first_not_accepted.swap(false, Ordering::AcqRel) {
+                return Err(retryable_not_accepted());
+            }
+            Ok(self.acknowledgements.lock().expect("acknowledgement queue lock").pop_front().expect("test acknowledgement was configured"))
+        })
+    }
+
+    fn subscribe<'a>(&'a self, _: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn qubit_event_bus::spi::AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async { Err(provider_error("subscribe")) })
+    }
+
+    fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        Box::pin(async { Ok(ShutdownOutcome::Complete) })
+    }
+}
+
+fn retryable_not_accepted() -> SpiError {
+    SpiError::Publish {
+        provider_id: "admission-test".into(),
+        resource: None,
+        kind: "injected_not_accepted",
+        retryable: Some(true),
+        effect: qubit_event_bus::model::PublishEffect::NotAccepted,
+        source: Box::new(IoError::other("injected retryable rejection")),
+    }
+}
+
+fn checked_request(id: &str) -> PublishRequest<String> {
+    PublishRequest::builder()
+        .topic(Topic::new("orders.checked").expect("valid topic"))
+        .payload("order".to_owned())
+        .event_id(EventId::new(id).expect("valid event ID"))
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("valid retry policy"))
+        .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
+        .build()
+        .expect("valid request")
+}
+
+fn checked_provider(acknowledgements: Vec<PublishAcknowledgement>, retry_first: bool) -> Arc<AdmissionProvider> {
+    Arc::new(AdmissionProvider {
+        acknowledgements: Mutex::new(VecDeque::from(acknowledgements)),
+        visibility: PublishVisibility::DestinationAdmissions,
+        payload_modes: PayloadModes::Native,
+        publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(retry_first),
+    })
+}
+
+fn accepted_ack() -> PublishAcknowledgement {
+    PublishAcknowledgement::DestinationAdmissions(vec![destination(1, AdmissionStatus::Accepted)])
+}
+
+fn no_destinations_ack() -> PublishAcknowledgement {
+    PublishAcknowledgement::DestinationAdmissions(Vec::new())
 }
 
 fn provider_error(operation: &'static str) -> SpiError {
@@ -115,6 +198,8 @@ fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
         visibility: PublishVisibility::DestinationAdmissions,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(false),
     });
     let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider)
         .expect("valid provider capabilities");
@@ -264,6 +349,8 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
         visibility: PublishVisibility::DestinationAdmissions,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(false),
     });
     let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider)
         .expect("valid provider capabilities");
@@ -282,6 +369,66 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
         }
         other => panic!("expected admission error with receipt, got {other:?}"),
     }
+}
+
+#[test]
+fn test_sync_checked_publish_honors_request_retry_policy() {
+    let provider = checked_provider(vec![accepted_ack()], true);
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
+        .expect("valid provider capabilities");
+    let request = checked_request("checked-sync-retry");
+    let expected_id = request.envelope().id().as_str().to_owned();
+    let receipt = bus
+        .publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)
+        .expect("second provider attempt is admitted");
+
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::Accepted(AdmissionSummary { accepted: 1, filtered: 0, rejected: 0 }));
+    assert_eq!(provider.publish_calls.load(Ordering::Acquire), 2);
+    assert_eq!(*provider.event_ids.lock().expect("event IDs lock"), [expected_id.clone(), expected_id]);
+}
+
+#[test]
+fn test_async_checked_publish_honors_request_retry_policy() {
+    let provider = checked_provider(vec![accepted_ack()], true);
+    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
+        .expect("valid provider capabilities");
+    let request = checked_request("checked-async-retry");
+    let expected_id = request.envelope().id().as_str().to_owned();
+    let receipt = support::manual_async::block_on(
+        bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted),
+    )
+    .expect("second provider attempt is admitted");
+
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::Accepted(AdmissionSummary { accepted: 1, filtered: 0, rejected: 0 }));
+    assert_eq!(provider.publish_calls.load(Ordering::Acquire), 2);
+    assert_eq!(*provider.event_ids.lock().expect("event IDs lock"), [expected_id.clone(), expected_id]);
+}
+
+#[test]
+fn test_sync_checked_admission_failure_does_not_republish() {
+    let provider = checked_provider(vec![no_destinations_ack()], false);
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
+        .expect("valid provider capabilities");
+    let error = bus
+        .publish_checked(checked_request("checked-sync-admission"), AdmissionRequirement::AtLeastOneAccepted)
+        .expect_err("empty admission report fails the requirement");
+
+    assert!(matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn test_async_checked_admission_failure_does_not_republish() {
+    let provider = checked_provider(vec![no_destinations_ack()], false);
+    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
+        .expect("valid provider capabilities");
+    let error = support::manual_async::block_on(
+        bus.publish_checked(checked_request("checked-async-admission"), AdmissionRequirement::AtLeastOneAccepted),
+    )
+    .expect_err("empty admission report fails the requirement");
+
+    assert!(matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
 }
 
 /// Counts codec work so an unsupported checked publish cannot encode a payload.
@@ -322,6 +469,8 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
         visibility: PublishVisibility::Opaque,
         payload_modes: PayloadModes::Encoded,
         publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(false),
     });
     let interceptor_calls = Arc::new(AtomicUsize::new(0));
     let global_calls = interceptor_calls.clone();
@@ -384,6 +533,8 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
         visibility: PublishVisibility::DestinationAdmissions,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(false),
     });
     let visible_bus = EventBus::from_spi(provider_id, visible_provider.clone()).expect("valid visible provider");
     let error = visible_bus

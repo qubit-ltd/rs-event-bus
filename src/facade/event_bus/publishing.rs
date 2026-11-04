@@ -69,10 +69,12 @@ impl EventBus {
         )
     }
 
-    /// Publishes once and requires the resulting receipt to satisfy
-    /// `requirement`. Per-destination conditions fail without publishing when
-    /// the provider hides destination admissions. Other admission failures
-    /// retain the receipt; retrying may duplicate accepted deliveries.
+    /// Publishes one request and checks the resulting receipt against
+    /// `requirement`. It uses the same retry and duplicate-risk policies as
+    /// [`publish`](Self::publish); checking admission does not itself trigger
+    /// another publish. Per-destination conditions fail without publishing
+    /// when the provider hides destination admissions. Other admission
+    /// failures retain the receipt; retrying may duplicate accepted deliveries.
     ///
     /// # Type Parameters
     /// - `T`: payload type carried by the request.
