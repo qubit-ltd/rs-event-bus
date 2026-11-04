@@ -243,4 +243,112 @@ mod tests {
         signal.unregister(2);
         drop(waker);
     }
+
+    #[test]
+    fn test_repeated_same_waker_registration_notifies_once_and_recovers() {
+        let signal = Arc::new(AsyncSignal::default());
+        let probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
+        });
+        let pointer = Arc::into_raw(Arc::clone(&probe)).cast();
+        // SAFETY: The test vtable balances all Arc ownership operations.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
+
+        signal.register_waiter(1, &waker);
+        signal.register_waiter(1, &waker);
+        signal.notify();
+        assert_eq!(1, probe.wake_count.load(Ordering::Relaxed));
+        signal.register_waiter(1, &waker);
+        signal.notify();
+        assert_eq!(2, probe.wake_count.load(Ordering::Relaxed));
+        drop(waker);
+    }
+
+    #[test]
+    fn test_alternating_waker_replaces_registration() {
+        let signal = Arc::new(AsyncSignal::default());
+        let first_probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
+        });
+        let second_probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
+        });
+        let first_pointer = Arc::into_raw(Arc::clone(&first_probe)).cast();
+        let second_pointer = Arc::into_raw(Arc::clone(&second_probe)).cast();
+        // SAFETY: The test vtable balances all Arc ownership operations.
+        let first = unsafe { Waker::from_raw(RawWaker::new(first_pointer, &PROBE_VTABLE)) };
+        // SAFETY: The test vtable balances all Arc ownership operations.
+        let second = unsafe { Waker::from_raw(RawWaker::new(second_pointer, &PROBE_VTABLE)) };
+
+        signal.register_waiter(1, &first);
+        signal.register_waiter(1, &second);
+        signal.notify();
+
+        assert_eq!(0, first_probe.wake_count.load(Ordering::Relaxed));
+        assert_eq!(1, second_probe.wake_count.load(Ordering::Relaxed));
+        drop(first);
+        drop(second);
+    }
+
+    struct NotifyDuringClone {
+        signal: Weak<AsyncSignal>,
+        wake_count: AtomicUsize,
+    }
+
+    unsafe fn clone_and_notify(pointer: *const ()) -> RawWaker {
+        // SAFETY: The vtable pointer always originates from an Arc<NotifyDuringClone>.
+        let probe = unsafe { &*pointer.cast::<NotifyDuringClone>() };
+        if let Some(signal) = probe.signal.upgrade() {
+            signal.notify();
+        }
+        // SAFETY: This creates exactly one owned Arc reference for the clone.
+        unsafe { Arc::<NotifyDuringClone>::increment_strong_count(pointer.cast()) };
+        RawWaker::new(pointer, &NOTIFY_DURING_CLONE_VTABLE)
+    }
+
+    unsafe fn wake_after_clone(pointer: *const ()) {
+        // SAFETY: wake consumes this waker's owned Arc reference.
+        let probe = unsafe { Arc::<NotifyDuringClone>::from_raw(pointer.cast()) };
+        probe.wake_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe fn wake_by_ref_after_clone(pointer: *const ()) {
+        // SAFETY: wake_by_ref borrows the live Arc allocation.
+        let probe = unsafe { &*pointer.cast::<NotifyDuringClone>() };
+        probe.wake_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe fn drop_after_clone(pointer: *const ()) {
+        // SAFETY: drop consumes this waker's owned Arc reference.
+        drop(unsafe { Arc::<NotifyDuringClone>::from_raw(pointer.cast()) });
+    }
+
+    static NOTIFY_DURING_CLONE_VTABLE: RawWakerVTable = RawWakerVTable::new(
+        clone_and_notify,
+        wake_after_clone,
+        wake_by_ref_after_clone,
+        drop_after_clone,
+    );
+
+    #[test]
+    fn test_notify_during_clone_still_inserts_registration() {
+        let signal = Arc::new(AsyncSignal::default());
+        let probe = Arc::new(NotifyDuringClone {
+            signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
+        });
+        let pointer = Arc::into_raw(Arc::clone(&probe)).cast();
+        // SAFETY: The vtable owns and balances each Arc reference.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &NOTIFY_DURING_CLONE_VTABLE)) };
+
+        signal.register_waiter(1, &waker);
+
+        assert_eq!(1, signal.wakers.lock().unwrap().len());
+        signal.notify();
+        assert_eq!(1, probe.wake_count.load(Ordering::Relaxed));
+        drop(waker);
+    }
 }

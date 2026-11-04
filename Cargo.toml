@@ -71,6 +71,10 @@ name = "facade_delivery"
 harness = false
 
 [[bench]]
+name = "facade_signal_registration"
+harness = false
+
+[[bench]]
 name = "subscriber_middleware"
 harness = false
 
