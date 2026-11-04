@@ -89,10 +89,10 @@
 //! guides or design documents to match an API change, commit the documents
 //! first, then update all four links to the full SHA of that commit.
 //!
-//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/user_guide.md)
-//! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/user_guide.zh_CN.md)
-//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/design.md)
-//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/a64ed6b1ff12915529a6dc926ff69401fa3dd17b/doc/design.zh_CN.md)
+//! - [User guide](https://github.com/qubit-ltd/rs-event-bus/blob/377edc22a6438544bf638522c45f2a198f4c1c57/doc/user_guide.md)
+//! - [用户指南](https://github.com/qubit-ltd/rs-event-bus/blob/377edc22a6438544bf638522c45f2a198f4c1c57/doc/user_guide.zh_CN.md)
+//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/377edc22a6438544bf638522c45f2a198f4c1c57/doc/design.md)
+//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/377edc22a6438544bf638522c45f2a198f4c1c57/doc/design.zh_CN.md)
 
 #![deny(missing_docs)]
 pub use error::CapabilityError;
