@@ -226,20 +226,20 @@ impl AsyncEventBusSpi for Scripted {
                 }
                 std::future::pending().await
             } else {
-            let prior_attempt = !self
-                .calls
-                .lock()
-                .expect("capabilities: calls mutex must not be poisoned")
-                .is_empty();
-            if self.pending || (self.reject_then_pending && prior_attempt) {
-                self.calls
+                let prior_attempt = !self
+                    .calls
                     .lock()
                     .expect("capabilities: calls mutex must not be poisoned")
-                    .push(message);
-                std::future::pending().await
-            } else {
-                self.attempt(message)
-            }
+                    .is_empty();
+                if self.pending || (self.reject_then_pending && prior_attempt) {
+                    self.calls
+                        .lock()
+                        .expect("capabilities: calls mutex must not be poisoned")
+                        .push(message);
+                    std::future::pending().await
+                } else {
+                    self.attempt(message)
+                }
             }
         })
     }
@@ -682,8 +682,11 @@ fn test_unpolled_async_batch_has_no_publish_attempts() {
     let mut scripted = Scripted::new(true);
     scripted.batch_pending_after_first = true;
     let spi = Arc::new(scripted);
-    let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").expect("valid provider identity"), spi.clone())
-        .expect("facade accepts scripted provider");
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("scripted").expect("valid provider identity"),
+        spi.clone(),
+    )
+    .expect("facade accepts scripted provider");
     let requests = ["batch-a", "batch-b", "batch-c"].map(|id| {
         PublishRequest::builder()
             .topic(Topic::new("uncertain.batch").expect("valid topic"))
@@ -707,8 +710,11 @@ fn test_cancelled_async_batch_keeps_prefix_effect_and_skips_suffix() {
     let mut scripted = Scripted::new(true);
     scripted.batch_pending_after_first = true;
     let spi = Arc::new(scripted);
-    let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").expect("valid provider identity"), spi.clone())
-        .expect("facade accepts scripted provider");
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("scripted").expect("valid provider identity"),
+        spi.clone(),
+    )
+    .expect("facade accepts scripted provider");
     let ids = ["batch-a", "batch-b", "batch-c"];
     let requests = ids.map(|id| {
         PublishRequest::builder()
@@ -720,14 +726,26 @@ fn test_cancelled_async_batch_keeps_prefix_effect_and_skips_suffix() {
     });
     let mut future = Box::pin(bus.publish_all(requests));
     assert!(support::manual_async::poll_once(future.as_mut()).is_pending());
-    let called_ids: Vec<_> = spi.calls.lock().expect("calls mutex").iter().map(|message| message.id().as_str().to_owned()).collect();
+    let called_ids: Vec<_> = spi
+        .calls
+        .lock()
+        .expect("calls mutex")
+        .iter()
+        .map(|message| message.id().as_str().to_owned())
+        .collect();
     assert_eq!(called_ids, ["batch-a", "batch-b"]);
     let metrics = bus.publish_metrics();
     assert_eq!(metrics.attempts, 2);
     assert_eq!(metrics.opaque_accepted, 1);
     drop(future);
 
-    let called_ids: Vec<_> = spi.calls.lock().expect("calls mutex").iter().map(|message| message.id().as_str().to_owned()).collect();
+    let called_ids: Vec<_> = spi
+        .calls
+        .lock()
+        .expect("calls mutex")
+        .iter()
+        .map(|message| message.id().as_str().to_owned())
+        .collect();
     assert_eq!(called_ids, ["batch-a", "batch-b"]);
     let metrics = bus.publish_metrics();
     assert_eq!(metrics.cancelled, 1);

@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 mod support;
@@ -23,6 +23,7 @@ use qubit_event_bus::CodecError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::codec::EventCodec;
+use qubit_event_bus::error::PublishAttemptError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::AdmissionCheckError;
 use qubit_event_bus::model::AdmissionOutcome;
@@ -37,11 +38,10 @@ use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishReceipt;
 use qubit_event_bus::model::PublishRequest;
-use qubit_event_bus::error::PublishAttemptError;
-use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SubscriberId;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DurabilityCapability;
 use qubit_event_bus::spi::EncodedPayload;
@@ -57,9 +57,9 @@ use qubit_event_bus::spi::ReplayCapability;
 use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
-use qubit_event_bus::spi::SpiFuture;
 use qubit_id::Id;
 use qubit_retry::AttemptFailure;
 use qubit_retry::RetryContext;
@@ -93,7 +93,10 @@ impl EventBusSpi for AdmissionProvider {
 
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         self.publish_calls.fetch_add(1, Ordering::AcqRel);
-        self.event_ids.lock().expect("event ID lock").push(message.id().as_str().to_owned());
+        self.event_ids
+            .lock()
+            .expect("event ID lock")
+            .push(message.id().as_str().to_owned());
         if self.retry_first_not_accepted.swap(false, Ordering::AcqRel) {
             return Err(retryable_not_accepted());
         }
@@ -122,15 +125,26 @@ impl AsyncEventBusSpi for AdmissionProvider {
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             self.publish_calls.fetch_add(1, Ordering::AcqRel);
-            self.event_ids.lock().expect("event ID lock").push(message.id().as_str().to_owned());
+            self.event_ids
+                .lock()
+                .expect("event ID lock")
+                .push(message.id().as_str().to_owned());
             if self.retry_first_not_accepted.swap(false, Ordering::AcqRel) {
                 return Err(retryable_not_accepted());
             }
-            Ok(self.acknowledgements.lock().expect("acknowledgement queue lock").pop_front().expect("test acknowledgement was configured"))
+            Ok(self
+                .acknowledgements
+                .lock()
+                .expect("acknowledgement queue lock")
+                .pop_front()
+                .expect("test acknowledgement was configured"))
         })
     }
 
-    fn subscribe<'a>(&'a self, _: SpiSubscriptionRequest) -> SpiFuture<'a, Result<Box<dyn qubit_event_bus::spi::AsyncEventSubscriptionSpi>, SpiError>> {
+    fn subscribe<'a>(
+        &'a self,
+        _: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn qubit_event_bus::spi::AsyncEventSubscriptionSpi>, SpiError>> {
         Box::pin(async { Err(provider_error("subscribe")) })
     }
 
@@ -155,7 +169,12 @@ fn checked_request(id: &str) -> PublishRequest<String> {
         .topic(Topic::new("orders.checked").expect("valid topic"))
         .payload("order".to_owned())
         .event_id(EventId::new(id).expect("valid event ID"))
-        .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("valid retry policy"))
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(2)
+                .build()
+                .expect("valid retry policy"),
+        )
         .retry_rule(|_: &AttemptFailure<PublishAttemptError>, _: &RetryContext| RetryDecision::Retry)
         .build()
         .expect("valid request")
@@ -374,60 +393,99 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
 #[test]
 fn test_sync_checked_publish_honors_request_retry_policy() {
     let provider = checked_provider(vec![accepted_ack()], true);
-    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(
+        ProviderId::new("admission-test").expect("valid provider ID"),
+        provider.clone(),
+    )
+    .expect("valid provider capabilities");
     let request = checked_request("checked-sync-retry");
     let expected_id = request.envelope().id().as_str().to_owned();
     let receipt = bus
         .publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)
         .expect("second provider attempt is admitted");
 
-    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::Accepted(AdmissionSummary { accepted: 1, filtered: 0, rejected: 0 }));
+    assert_eq!(
+        receipt.admission_outcome(),
+        AdmissionOutcome::Accepted(AdmissionSummary {
+            accepted: 1,
+            filtered: 0,
+            rejected: 0
+        })
+    );
     assert_eq!(provider.publish_calls.load(Ordering::Acquire), 2);
-    assert_eq!(*provider.event_ids.lock().expect("event IDs lock"), [expected_id.clone(), expected_id]);
+    assert_eq!(
+        *provider.event_ids.lock().expect("event IDs lock"),
+        [expected_id.clone(), expected_id]
+    );
 }
 
 #[test]
 fn test_async_checked_publish_honors_request_retry_policy() {
     let provider = checked_provider(vec![accepted_ack()], true);
-    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
-        .expect("valid provider capabilities");
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("admission-test").expect("valid provider ID"),
+        provider.clone(),
+    )
+    .expect("valid provider capabilities");
     let request = checked_request("checked-async-retry");
     let expected_id = request.envelope().id().as_str().to_owned();
-    let receipt = support::manual_async::block_on(
-        bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted),
-    )
-    .expect("second provider attempt is admitted");
+    let receipt =
+        support::manual_async::block_on(bus.publish_checked(request, AdmissionRequirement::AtLeastOneAccepted))
+            .expect("second provider attempt is admitted");
 
-    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::Accepted(AdmissionSummary { accepted: 1, filtered: 0, rejected: 0 }));
+    assert_eq!(
+        receipt.admission_outcome(),
+        AdmissionOutcome::Accepted(AdmissionSummary {
+            accepted: 1,
+            filtered: 0,
+            rejected: 0
+        })
+    );
     assert_eq!(provider.publish_calls.load(Ordering::Acquire), 2);
-    assert_eq!(*provider.event_ids.lock().expect("event IDs lock"), [expected_id.clone(), expected_id]);
+    assert_eq!(
+        *provider.event_ids.lock().expect("event IDs lock"),
+        [expected_id.clone(), expected_id]
+    );
 }
 
 #[test]
 fn test_sync_checked_admission_failure_does_not_republish() {
     let provider = checked_provider(vec![no_destinations_ack()], false);
-    let bus = EventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
-        .expect("valid provider capabilities");
+    let bus = EventBus::from_spi(
+        ProviderId::new("admission-test").expect("valid provider ID"),
+        provider.clone(),
+    )
+    .expect("valid provider capabilities");
     let error = bus
-        .publish_checked(checked_request("checked-sync-admission"), AdmissionRequirement::AtLeastOneAccepted)
+        .publish_checked(
+            checked_request("checked-sync-admission"),
+            AdmissionRequirement::AtLeastOneAccepted,
+        )
         .expect_err("empty admission report fails the requirement");
 
-    assert!(matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert!(
+        matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations)
+    );
     assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
 }
 
 #[test]
 fn test_async_checked_admission_failure_does_not_republish() {
     let provider = checked_provider(vec![no_destinations_ack()], false);
-    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").expect("valid provider ID"), provider.clone())
-        .expect("valid provider capabilities");
-    let error = support::manual_async::block_on(
-        bus.publish_checked(checked_request("checked-async-admission"), AdmissionRequirement::AtLeastOneAccepted),
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("admission-test").expect("valid provider ID"),
+        provider.clone(),
     )
+    .expect("valid provider capabilities");
+    let error = support::manual_async::block_on(bus.publish_checked(
+        checked_request("checked-async-admission"),
+        AdmissionRequirement::AtLeastOneAccepted,
+    ))
     .expect_err("empty admission report fails the requirement");
 
-    assert!(matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations));
+    assert!(
+        matches!(error, CheckedPublishError::Admission { receipt, .. } if receipt.admission_outcome() == AdmissionOutcome::NoDestinations)
+    );
     assert_eq!(provider.publish_calls.load(Ordering::Acquire), 1);
 }
 
