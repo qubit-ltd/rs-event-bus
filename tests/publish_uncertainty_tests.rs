@@ -90,6 +90,7 @@ use qubit_retry::RetryPolicy;
 /// attempt for identity and retry-count assertions.
 struct Scripted {
     calls: Mutex<Vec<OutboundMessage>>,
+    accepted_ids: Mutex<Vec<String>>,
     succeeds: bool,
     generic: bool,
     panics: bool,
@@ -104,6 +105,7 @@ impl Scripted {
     fn new(succeeds: bool) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            accepted_ids: Mutex::new(Vec::new()),
             succeeds,
             generic: false,
             panics: false,
@@ -215,10 +217,15 @@ impl AsyncEventBusSpi for Scripted {
                 let first = {
                     let mut calls = self.calls.lock().expect("publish: calls mutex must not be poisoned");
                     let first = calls.is_empty();
+                    let event_id = message.id().as_str().to_owned();
                     calls.push(message);
-                    first
+                    (first, event_id)
                 };
-                if first {
+                if first.0 {
+                    self.accepted_ids
+                        .lock()
+                        .expect("publish: accepted IDs mutex must not be poisoned")
+                        .push(first.1);
                     return Ok(PublishAcknowledgement::Accepted {
                         provider_message_id: None,
                         metadata: Default::default(),
@@ -734,6 +741,8 @@ fn test_cancelled_async_batch_keeps_prefix_effect_and_skips_suffix() {
         .map(|message| message.id().as_str().to_owned())
         .collect();
     assert_eq!(called_ids, ["batch-a", "batch-b"]);
+    let accepted_ids = spi.accepted_ids.lock().expect("accepted IDs mutex").clone();
+    assert_eq!(accepted_ids, ["batch-a"]);
     let metrics = bus.publish_metrics();
     assert_eq!(metrics.attempts, 2);
     assert_eq!(metrics.opaque_accepted, 1);
@@ -747,6 +756,7 @@ fn test_cancelled_async_batch_keeps_prefix_effect_and_skips_suffix() {
         .map(|message| message.id().as_str().to_owned())
         .collect();
     assert_eq!(called_ids, ["batch-a", "batch-b"]);
+    assert_eq!(*spi.accepted_ids.lock().expect("accepted IDs mutex"), accepted_ids);
     let metrics = bus.publish_metrics();
     assert_eq!(metrics.cancelled, 1);
     assert_eq!(metrics.errors, 0);
