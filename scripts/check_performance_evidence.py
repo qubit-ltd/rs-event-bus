@@ -25,6 +25,7 @@ ARCHIVES = (
     ),
 )
 PACKAGED_CAPACITY_DOC = "doc/sync_capacity.md"
+PACKAGED_CAPACITY_ENTRY = "doc/capacity_performance_artifacts/README.md"
 EXPECTED_SNAPSHOT = "e8a1ed724954756d48c3d5216cbd13ac39a0cb81"
 
 
@@ -56,6 +57,27 @@ def check(package_list: Path) -> bool:
             links = SNAPSHOT_URL.findall(content)
             if not any(sha == EXPECTED_SNAPSHOT and target == ARCHIVES[1][1] for sha, target in links):
                 fail(PACKAGED_CAPACITY_DOC, "must link directly to the fixed complete capacity evidence snapshot")
+                ok = False
+
+    if PACKAGED_CAPACITY_ENTRY not in packaged:
+        fail(PACKAGED_CAPACITY_ENTRY, "capacity performance entry must be included in the Cargo package list")
+        ok = False
+    else:
+        try:
+            content = (root / PACKAGED_CAPACITY_ENTRY).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            fail(PACKAGED_CAPACITY_ENTRY, f"cannot read packaged performance entry: {error}")
+            ok = False
+        else:
+            links = SNAPSHOT_URL.findall(content)
+            if not any(sha == EXPECTED_SNAPSHOT and target == ARCHIVES[1][1] for sha, target in links):
+                fail(PACKAGED_CAPACITY_ENTRY, "must link directly to the fixed complete capacity evidence snapshot")
+                ok = False
+            if (
+                "this markdown guide is included in the crate package" not in content.lower()
+                or "this markdown guide is not included in the crate package" in content.lower()
+            ):
+                fail(PACKAGED_CAPACITY_ENTRY, "must state that this Markdown guide is included in the crate package")
                 ok = False
 
     for readme, archive, representative, must_be_packaged in ARCHIVES:

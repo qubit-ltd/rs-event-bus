@@ -2,9 +2,7 @@
 
 ## Distribution and complete evidence
 
-This repository guide is not included in the published crate package. Raw
-output, source, dependency snapshots, and patches remain in the repository. To
-consult the complete evidence, use the [fixed evidence
+This archive guide is not included in the parent crate package because its directory contains a nested Cargo package with the archived benchmark manifest. The packaged capacity entry is `doc/capacity_performance_artifacts/README.md`. Complete raw evidence remains available through the fixed repository snapshot. Raw output, source, dependency snapshots, and patches remain in the repository. To consult the complete evidence, use the [fixed evidence
 snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/capacity_performance_artifacts/20261104-review).
 Online access is required. The snapshot preserves the historical evidence and
 does not guarantee that its original binaries remain available or that another

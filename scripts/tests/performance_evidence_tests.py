@@ -12,7 +12,8 @@ REPO = Path(__file__).resolve().parents[2]
 CHECKER = REPO / "scripts" / "check_performance_evidence.py"
 SNAPSHOT = "e8a1ed724954756d48c3d5216cbd13ac39a0cb81"
 ORDERING = "doc/ordering_performance_artifacts/README.md"
-CAPACITY = "doc/capacity_performance_artifacts/20261104-review/README.md"
+CAPACITY = "doc/capacity_performance_artifacts/README.md"
+CAPACITY_ARCHIVE = "doc/capacity_performance_artifacts/20261104-review/README.md"
 SYNC_CAPACITY = "doc/sync_capacity.md"
 ORDERING_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/doc/ordering_performance_artifacts"
 CAPACITY_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/doc/capacity_performance_artifacts/20261104-review"
@@ -26,6 +27,7 @@ class PerformanceEvidenceTests(unittest.TestCase):
         shutil.copy2(CHECKER, self.root / "scripts/check_performance_evidence.py")
         (self.root / Path(ORDERING).parent).mkdir(parents=True)
         (self.root / Path(CAPACITY).parent).mkdir(parents=True)
+        (self.root / Path(CAPACITY_ARCHIVE).parent).mkdir(parents=True, exist_ok=True)
         (self.root / "doc").mkdir(exist_ok=True)
         (self.root / ORDERING).write_text(
             f"# Ordering\n\n## Distribution and complete evidence\n\n"
@@ -34,7 +36,12 @@ class PerformanceEvidenceTests(unittest.TestCase):
         )
         (self.root / CAPACITY).write_text(
             f"# Capacity\n\n## Distribution and complete evidence\n\n"
-            f"This repository guide is not included in the crate package. Consult the complete evidence online: {CAPACITY_LINK}\n",
+            f"This Markdown guide is included in the crate package. Complete raw evidence remains available through the fixed repository snapshot. Consult the complete evidence online: {CAPACITY_LINK}\n",
+            encoding="utf-8",
+        )
+        (self.root / CAPACITY_ARCHIVE).write_text(
+            f"# Archived capacity evidence\n\n## Distribution and complete evidence\n\n"
+            f"This archive guide is not included in the crate package because its directory contains a nested Cargo package. See {CAPACITY} for the packaged entry. Complete evidence: {CAPACITY_LINK}\n",
             encoding="utf-8",
         )
         (self.root / SYNC_CAPACITY).write_text(
@@ -42,7 +49,7 @@ class PerformanceEvidenceTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.listing = self.root / "package-list.txt"
-        self.files = [ORDERING, SYNC_CAPACITY]
+        self.files = [ORDERING, CAPACITY, SYNC_CAPACITY]
         self.write_listing()
 
     def tearDown(self):
@@ -72,16 +79,19 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.write_listing()
         self.assert_rejected(ORDERING)
 
-    def test_capacity_entry_is_not_required_in_package(self):
+    def test_capacity_entry_must_be_packaged(self):
+        self.files.remove(CAPACITY)
         self.write_listing()
-        result = self.run_checker()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_rejected(CAPACITY)
 
-    def test_capacity_entry_may_be_packaged(self):
-        self.files.append(CAPACITY)
+    def test_packaged_capacity_entry_rejects_old_negative_declaration(self):
+        (self.root / CAPACITY).write_text(
+            f"# Capacity\n\n## Distribution and complete evidence\n\n"
+            f"This Markdown guide is not included in the crate package. Consult the complete evidence online: {CAPACITY_LINK}\n",
+            encoding="utf-8",
+        )
         self.write_listing()
-        result = self.run_checker()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_rejected(CAPACITY)
 
     def test_missing_fixed_link(self):
         (self.root / ORDERING).write_text("# Ordering\n", encoding="utf-8")
