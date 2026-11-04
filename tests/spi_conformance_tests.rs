@@ -14,6 +14,10 @@ use std::panic::catch_unwind;
 use std::sync::Arc;
 #[cfg(feature = "conformance")]
 use std::sync::Mutex;
+#[cfg(feature = "conformance")]
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "conformance")]
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 #[cfg(feature = "conformance")]
 use std::task::Context;
@@ -2919,5 +2923,244 @@ fn test_local_settlement_behavior_fixture_detects_retry_loss_and_reject_redelive
             .is_err(),
             "async local behavior fixture must detect {fault:?}"
         );
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[derive(Clone, Copy, Debug)]
+enum SettlementProbeFault {
+    Subscribe,
+    Publish,
+    BadAcknowledgement,
+    ReceiveError,
+    ReceiveEmpty,
+    MissingToken,
+    Close,
+    Shutdown,
+}
+
+#[cfg(feature = "conformance")]
+fn settlement_probe_error(operation: &'static str) -> SpiError {
+    SpiError::Operation {
+        provider_id: "settlement-probe-fault".into(),
+        operation,
+        resource: None,
+        kind: "injected_settlement_probe_failure",
+        retryable: Some(false),
+        source: Box::new(std::io::Error::other("injected settlement probe failure")),
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SettlementProbeFaultSync {
+    inner: FakeEventBusSpi,
+    fault: SettlementProbeFault,
+    probe_subscribed: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "conformance")]
+impl EventBusSpi for SettlementProbeFaultSync {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
+        match self.fault {
+            SettlementProbeFault::Publish => Err(settlement_probe_error("publish")),
+            SettlementProbeFault::BadAcknowledgement if self.probe_subscribed.swap(false, Ordering::AcqRel) => {
+                Ok(PublishAcknowledgement::DroppedByInterceptor)
+            }
+            _ => self.inner.publish(message),
+        }
+    }
+    fn subscribe(&self, request: SpiSubscriptionRequest) -> Result<Box<dyn EventSubscriptionSpi>, SpiError> {
+        if request.subscription_id() == Id::new(7) {
+            if matches!(self.fault, SettlementProbeFault::Subscribe) {
+                return Err(settlement_probe_error("subscribe"));
+            }
+            self.probe_subscribed.store(true, Ordering::Release);
+        }
+        Ok(Box::new(SettlementProbeFaultSyncReceiver {
+            inner: self.inner.subscribe(request)?,
+            fault: self.fault,
+        }))
+    }
+    fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        if matches!(self.fault, SettlementProbeFault::Shutdown) {
+            return Err(settlement_probe_error("shutdown"));
+        }
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SettlementProbeFaultSyncReceiver {
+    inner: Box<dyn EventSubscriptionSpi>,
+    fault: SettlementProbeFault,
+}
+
+#[cfg(feature = "conformance")]
+impl EventSubscriptionSpi for SettlementProbeFaultSyncReceiver {
+    fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        match self.fault {
+            SettlementProbeFault::ReceiveError => Err(settlement_probe_error("receive")),
+            SettlementProbeFault::ReceiveEmpty => Ok(ReceiveOutcome::TimedOut),
+            SettlementProbeFault::MissingToken => match self.inner.receive(timeout)? {
+                ReceiveOutcome::Message(mut message) => {
+                    let _ = message.take_settlement();
+                    Ok(ReceiveOutcome::Message(message))
+                }
+                other => Ok(other),
+            },
+            _ => self.inner.receive(timeout),
+        }
+    }
+    fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
+        self.inner.settle(token, disposition)
+    }
+    fn close(&mut self) -> Result<(), SpiError> {
+        if matches!(self.fault, SettlementProbeFault::Close) {
+            return Err(settlement_probe_error("close"));
+        }
+        self.inner.close()
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SettlementProbeFaultAsync {
+    inner: FakeAsyncEventBusSpi,
+    fault: SettlementProbeFault,
+    probe_subscribed: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventBusSpi for SettlementProbeFaultAsync {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        match self.fault {
+            SettlementProbeFault::Publish => Box::pin(async { Err(settlement_probe_error("publish")) }),
+            SettlementProbeFault::BadAcknowledgement if self.probe_subscribed.swap(false, Ordering::AcqRel) => {
+                Box::pin(async { Ok(PublishAcknowledgement::DroppedByInterceptor) })
+            }
+            _ => self.inner.publish(message),
+        }
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        if request.subscription_id() == Id::new(7) {
+            if matches!(self.fault, SettlementProbeFault::Subscribe) {
+                return Box::pin(async { Err(settlement_probe_error("subscribe")) });
+            }
+            self.probe_subscribed.store(true, Ordering::Release);
+        }
+        let future = self.inner.subscribe(request);
+        let fault = self.fault;
+        Box::pin(async move {
+            Ok(Box::new(SettlementProbeFaultAsyncReceiver {
+                inner: future.await?,
+                fault,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        if matches!(self.fault, SettlementProbeFault::Shutdown) {
+            return Box::pin(async { Err(settlement_probe_error("shutdown")) });
+        }
+        self.inner.shutdown(mode)
+    }
+}
+
+#[cfg(feature = "conformance")]
+struct SettlementProbeFaultAsyncReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    fault: SettlementProbeFault,
+}
+
+#[cfg(feature = "conformance")]
+impl AsyncEventSubscriptionSpi for SettlementProbeFaultAsyncReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        match self.fault {
+            SettlementProbeFault::ReceiveError => Box::pin(async { Err(settlement_probe_error("receive")) }),
+            SettlementProbeFault::ReceiveEmpty => Box::pin(async { Ok(ReceiveOutcome::TimedOut) }),
+            SettlementProbeFault::MissingToken => {
+                let future = self.inner.receive(timeout);
+                Box::pin(async move {
+                    match future.await? {
+                        ReceiveOutcome::Message(mut message) => {
+                            let _ = message.take_settlement();
+                            Ok(ReceiveOutcome::Message(message))
+                        }
+                        other => Ok(other),
+                    }
+                })
+            }
+            _ => self.inner.receive(timeout),
+        }
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        if matches!(self.fault, SettlementProbeFault::Close) {
+            return Box::pin(async { Err(settlement_probe_error("close")) });
+        }
+        self.inner.close()
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_retry_reject_structural_probe_setup_and_cleanup_failures_are_reported() {
+    let faults = [
+        (SettlementProbeFault::Subscribe, "settlement-retry-first"),
+        (SettlementProbeFault::Publish, "settlement-retry-first"),
+        (SettlementProbeFault::BadAcknowledgement, "settlement-retry-first"),
+        (SettlementProbeFault::ReceiveError, "settlement-retry-first"),
+        (SettlementProbeFault::ReceiveEmpty, "settlement-retry-first"),
+        (SettlementProbeFault::MissingToken, "settlement-retry-first"),
+        (SettlementProbeFault::Close, "settlement-probe-close"),
+        (SettlementProbeFault::Shutdown, "settlement-probe-shutdown"),
+    ];
+    for (fault, expected_id) in faults {
+        let sync = run_sync(
+            || {
+                Arc::new(SettlementProbeFaultSync {
+                    inner: FakeEventBusSpi::new(),
+                    fault,
+                    probe_subscribed: Arc::new(AtomicBool::new(false)),
+                })
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                Arc::new(SettlementProbeFaultAsync {
+                    inner: FakeAsyncEventBusSpi::new(),
+                    fault,
+                    probe_subscribed: Arc::new(AtomicBool::new(false)),
+                }) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id, .. } if case_id == expected_id
+                )),
+                "{fault:?} must fail {expected_id}: {report:?}"
+            );
+            if expected_id == "settlement-retry-first" {
+                assert!(report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::MissingFixture { .. } } if case_id == "settlement-retry-idempotence"
+                )), "dependent settlement must be skipped after {fault:?}: {report:?}");
+            }
+        }
     }
 }
