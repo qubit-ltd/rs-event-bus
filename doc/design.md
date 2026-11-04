@@ -1722,6 +1722,14 @@ after a successful close (`receive-empty-zero-timeout` and
 for example, repeated Accept returning `Ok` does not prove that a remote side
 effect occurred exactly once.
 
+For each supported settlement combination, the runner also gives one token to
+two receivers: the foreign receiver must return `invalid_settlement_token`,
+then the issuing receiver must still accept it. The cases
+`settlement-foreign-token` and `settlement-owner-after-foreign-token` are
+reported with the payload and durability context. This checks the public
+contract; provider tests remain responsible for remote side effects and
+additional delivery behavior.
+
 Provider hooks supply fixtures for behavior only the provider can observe:
 repeat/conflicting settlement effects, receive/settlement/close/shutdown
 cancellation, durable recovery, and ephemeral cleanup. Under `Strict`, a

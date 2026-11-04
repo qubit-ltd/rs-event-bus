@@ -169,6 +169,7 @@ where
                     continue;
                 }
             };
+            record_foreign_settlement(&factory, case_id, durability, &mut report);
             let expected = probe_message(probe_payload(case_id), capabilities, &scope);
             report.push(match subscription.receive(Duration::ZERO) {
                 Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
@@ -400,6 +401,60 @@ where
     }
     report.apply_profile(profile);
     report
+}
+
+fn record_foreign_settlement<F>(
+    factory: &F,
+    case_id: &'static str,
+    durability: SubscriptionDurability,
+    report: &mut ConformanceReport,
+) where
+    F: Fn() -> Arc<dyn EventBusSpi>,
+{
+    let spi = factory();
+    let capabilities = spi.capabilities();
+    if capabilities.settlement() == SettlementCapabilities::None {
+        for id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+            report.push(ConformanceCase::Skipped {
+                case_id: id.into(),
+                reason: ConformanceSkipReason::UnsupportedCapability { capability: "settlement" },
+            });
+        }
+        let _ = spi.shutdown(ShutdownMode::Immediate);
+        return;
+    }
+    let mut owner = None;
+    let mut foreign = None;
+    let result = (|| -> Result<(), String> {
+        let scope = ProbeScope::new().map_err(|e| format!("identity generation: {e}"))?;
+        owner = Some(spi.subscribe(probe_request(1, durability, &scope)).map_err(|e| format!("subscribe A: {e}"))?);
+        foreign = Some(spi.subscribe(probe_request(2, durability, &scope)).map_err(|e| format!("subscribe B: {e}"))?);
+        let ack = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope)).map_err(|e| format!("publish: {e}"))?;
+        validate_probe_acknowledgement(&ack, capabilities.publish_visibility(), Id::new(1))?;
+        let mut message = match owner.as_mut().expect("owner set").receive(Duration::from_secs(1)).map_err(|e| format!("receive A: {e}"))? {
+            ReceiveOutcome::Message(message) => message,
+            _ => return Err("receive A returned no message".into()),
+        };
+        let Some(token) = message.take_settlement() else { return Err("receive A omitted settlement token".into()); };
+        match foreign.as_mut().expect("foreign set").settle(&token, DeliveryDisposition::Accept) {
+            Err(error) if error.kind() == "invalid_settlement_token" => report.push(ConformanceCase::Passed { case_id: "settlement-foreign-token".into() }),
+            Err(error) => report.push(ConformanceCase::Failed { case_id: "settlement-foreign-token".into(), detail: format!("foreign settlement returned wrong error: {error}") }),
+            Ok(()) => report.push(ConformanceCase::Failed { case_id: "settlement-foreign-token".into(), detail: "foreign receiver accepted settlement token".into() }),
+        }
+        match owner.as_mut().expect("owner set").settle(&token, DeliveryDisposition::Accept) {
+            Ok(()) => report.push(ConformanceCase::Passed { case_id: "settlement-owner-after-foreign-token".into() }),
+            Err(error) => report.push(ConformanceCase::Failed { case_id: "settlement-owner-after-foreign-token".into(), detail: format!("owner settlement failed after foreign attempt: {error}") }),
+        }
+        Ok(())
+    })();
+    if let Err(detail) = result {
+        for id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+            report.push(ConformanceCase::Failed { case_id: id.into(), detail: detail.clone() });
+        }
+    }
+    if let Some(subscription) = foreign.as_mut() { if let Err(e) = subscription.close() { report.push(ConformanceCase::Failed { case_id: "settlement-probe-close".into(), detail: format!("close B: {e}") }); } }
+    if let Some(subscription) = owner.as_mut() { if let Err(e) = subscription.close() { report.push(ConformanceCase::Failed { case_id: "settlement-probe-close".into(), detail: format!("close A: {e}") }); } }
+    if let Err(e) = spi.shutdown(ShutdownMode::Immediate) { report.push(ConformanceCase::Failed { case_id: "settlement-probe-shutdown".into(), detail: format!("shutdown: {e}") }); }
 }
 
 fn record_pending_close<F>(

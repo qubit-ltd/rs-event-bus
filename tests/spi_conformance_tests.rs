@@ -29,6 +29,8 @@ use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::local::LocalEventBusProvider;
+#[cfg(feature = "conformance")]
+use qubit_event_bus::local::AsyncLocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 #[cfg(feature = "conformance")]
@@ -103,6 +105,8 @@ use qubit_event_bus::spi::conformance::run_sync;
 use qubit_event_bus::spi::conformance::run_sync_with_profile;
 use qubit_id::Id;
 use qubit_spi::ServiceProvider;
+#[cfg(feature = "conformance")]
+use qubit_spi::AsyncServiceProvider;
 
 #[cfg(feature = "conformance")]
 use crate::support::fake_spi::ConformanceTamper;
@@ -423,6 +427,32 @@ fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
                     )),
                     "strict profile must promote the missing close fixture: {report:?}"
                 );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_sync_and_async_runners_check_foreign_settlement_tokens() {
+    for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
+        let sync = run_sync_with_profile(
+            || LocalEventBusProvider.create_configured(&EventBusConfig::default()).expect("local provider"),
+            &ConformanceHooks::default(),
+            profile,
+        );
+        let asynchronous = block_on(run_async_with_profile(
+            || async { AsyncLocalEventBusProvider.create_configured(&EventBusConfig::default()).await.expect("async local provider") },
+            &AsyncConformanceHooks::default(),
+            profile,
+        ));
+        for report in [&sync, &asynchronous] {
+            for expected in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+                let index = report.cases().iter().position(|case| matches!(case,
+                    ConformanceCase::Passed { case_id } if case_id == expected
+                )).unwrap_or_else(|| panic!("missing successful {expected}: {report:?}"));
+                let context = report.case_context(index).expect("probe case retains payload/mode context");
+                assert!(matches!(context.durability(), SubscriptionDurability::Ephemeral | SubscriptionDurability::Durable));
             }
         }
     }

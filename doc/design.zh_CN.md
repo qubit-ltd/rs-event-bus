@@ -1598,6 +1598,11 @@ settlement token 是否存在、重复 Accept、冲突 disposition 报错，以�
 验证 receive 返回 `Closed`（`receive-empty-zero-timeout` 和 `receive-after-close`）。
 这些检查只证明操作报告的结果；例如重复 Accept 返回 `Ok`，不能证明远端副作用恰好执行一次。
 
+对每个支持 settlement 的组合，runner 还会将一个 token 交给两个 receiver：外来 receiver
+必须返回 `invalid_settlement_token`，随后签发 token 的 owner receiver 仍须成功 Accept。
+`settlement-foreign-token` 和 `settlement-owner-after-foreign-token` 会保留载荷与 durability
+上下文。这只检查公共合约；远端副作用及额外交付行为仍由 provider 测试负责。
+
 Provider hook 提供只有 provider 自身才能观察的 fixture：重复/冲突 settlement 的效果、
 receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral cleanup。
 Strict 模式下，声明支持的模式缺少必需 hook 会失败；不支持的模式仍是带类型的 skip。

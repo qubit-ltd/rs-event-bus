@@ -167,6 +167,17 @@ fn conflicting_settlement_error() -> SpiError {
     }
 }
 
+fn foreign_settlement_error() -> SpiError {
+    SpiError::InvalidSettlementToken {
+        provider_id: "fake".into(),
+        operation: "settle",
+        resource: None,
+        reason: "foreign_subscription",
+        retryable: Some(false),
+        source: Box::new(IoError::other("settlement token belongs to another receiver")),
+    }
+}
+
 fn settlement_token_key(token: &SettlementToken) -> String {
     token
         .downcast_ref::<String>()
@@ -510,7 +521,7 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("settle");
         if !token.belongs_to(self.id) {
-            return Err(spi_error("settle"));
+            return Err(foreign_settlement_error());
         }
         if matches!(self.settlement, SettlementCapabilities::None) {
             return Err(spi_error("settle"));
@@ -956,7 +967,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 Ok(())
             });
         }
-        let result = if !token.belongs_to(self.id) || matches!(self.settlement, SettlementCapabilities::None) {
+        let result = if !token.belongs_to(self.id) {
+            Err(foreign_settlement_error())
+        } else if matches!(self.settlement, SettlementCapabilities::None) {
             Err(spi_error("settle"))
         } else {
             let mut state = self.queue.lock().unwrap();
