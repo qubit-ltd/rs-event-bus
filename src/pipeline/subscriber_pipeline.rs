@@ -11,7 +11,6 @@
 mod internal;
 
 use std::any::Any;
-use std::future::Future;
 use std::io::Error;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
@@ -430,13 +429,10 @@ fn async_next<T: 'static>(
 /// # Errors
 /// The returned future preserves callback errors and converts polling panics
 /// into a delivery handler error.
-fn catch_async_panic<F>(future: F) -> SpiFuture<'static, Result<(), DeliveryError>>
-where
-    F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
-{
-    Box::pin(CatchUnwindFuture {
-        future: Box::pin(future),
-    })
+fn catch_async_panic(
+    future: SpiFuture<'static, Result<(), DeliveryError>>,
+) -> SpiFuture<'static, Result<(), DeliveryError>> {
+    Box::pin(CatchUnwindFuture { future })
 }
 
 /// Converts a caught middleware or handler panic to a delivery handler error.
@@ -482,5 +478,175 @@ fn panic_message(panic: &(dyn Any + Send)) -> &'static str {
 fn ack_state_error(message: &'static str) -> DeliveryError {
     DeliveryError::Handler {
         source: Box::new(Error::other(message)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::alloc::GlobalAlloc;
+    use std::alloc::Layout;
+    use std::alloc::System;
+    use std::cell::Cell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Wake;
+    use std::task::Waker;
+
+    use super::catch_async_panic;
+    use crate::error::DeliveryError;
+    use crate::spi::SpiFuture;
+
+    struct CountingAllocator;
+
+    static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    std::thread_local! {
+        static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn record_allocation() {
+        let _ = COUNT_ALLOCATIONS.try_with(|enabled| {
+            if enabled.get() {
+                ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let pointer = unsafe { System.alloc(layout) };
+            record_allocation();
+            pointer
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let pointer = unsafe { System.alloc_zeroed(layout) };
+            record_allocation();
+            pointer
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) };
+        }
+
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let pointer = unsafe { System.realloc(pointer, layout, new_size) };
+            record_allocation();
+            pointer
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    struct PendingThenReadyFuture {
+        ready: bool,
+        drop_count: Arc<AtomicUsize>,
+    }
+
+    impl Future for PendingThenReadyFuture {
+        type Output = Result<(), DeliveryError>;
+
+        fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.ready {
+                Poll::Ready(Ok(()))
+            } else {
+                self.ready = true;
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    impl Drop for PendingThenReadyFuture {
+        fn drop(&mut self) {
+            self.drop_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct PendingFuture {
+        drop_count: Arc<AtomicUsize>,
+    }
+
+    impl Future for PendingFuture {
+        type Output = Result<(), DeliveryError>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingFuture {
+        fn drop(&mut self) {
+            self.drop_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {}
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_catch_async_panic_preserves_pending_wake_then_ready() {
+        let drop_count = Arc::new(AtomicUsize::new(0));
+        let future: SpiFuture<'static, Result<(), DeliveryError>> = Box::pin(PendingThenReadyFuture {
+            ready: false,
+            drop_count: drop_count.clone(),
+        });
+        let mut caught = catch_async_panic(future);
+        let wake_counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(wake_counter.clone());
+        let mut context = Context::from_waker(&waker);
+
+        assert!(matches!(caught.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(wake_counter.0.load(Ordering::Relaxed), 1);
+        assert!(matches!(caught.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        drop(caught);
+
+        assert_eq!(drop_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_cancelling_pending_catch_async_panic_drops_inner_future() {
+        let drop_count = Arc::new(AtomicUsize::new(0));
+        let future: SpiFuture<'static, Result<(), DeliveryError>> = Box::pin(PendingFuture {
+            drop_count: drop_count.clone(),
+        });
+        let mut caught = catch_async_panic(future);
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(matches!(caught.as_mut().poll(&mut context), Poll::Pending));
+        drop(caught);
+
+        assert_eq!(drop_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_catch_async_panic_adds_one_allocation_after_future_is_created() {
+        let future: SpiFuture<'static, Result<(), DeliveryError>> = Box::pin(async { Ok(()) });
+
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        ALLOCATION_COUNT.store(0, Ordering::Relaxed);
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+        let caught = catch_async_panic(future);
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        let allocations = ALLOCATION_COUNT.load(Ordering::Relaxed);
+        drop(caught);
+
+        assert_eq!(
+            allocations, 1,
+            "panic wrapper should allocate once after input future creation"
+        );
     }
 }

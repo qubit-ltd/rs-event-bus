@@ -24,12 +24,12 @@ use crate::internal::panic_payload::dispose_panic_payload;
 /// # Type Parameters
 /// - `F`: delivery future whose polling is isolated.
 #[must_use]
-pub(in crate::pipeline::subscriber_pipeline) struct CatchUnwindFuture<F: Future> {
+pub(in crate::pipeline::subscriber_pipeline) struct CatchUnwindFuture<F: Future + ?Sized> {
     /// Pinned middleware or handler future being polled.
     pub(in crate::pipeline::subscriber_pipeline) future: Pin<Box<F>>,
 }
 
-impl<F: Future<Output = Result<(), DeliveryError>>> Future for CatchUnwindFuture<F> {
+impl<F: Future<Output = Result<(), DeliveryError>> + ?Sized> Future for CatchUnwindFuture<F> {
     /// Result returned by the delivery pipeline.
     type Output = Result<(), DeliveryError>;
 
