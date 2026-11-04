@@ -685,6 +685,38 @@ fn test_foreign_settlement_probe_fails_when_supported_delivery_has_no_token_and_
 
 #[cfg(feature = "conformance")]
 #[test]
+fn test_foreign_settlement_probe_rejects_unrelated_owner_message() {
+    let sync = run_sync(
+        || {
+            let provider = FakeEventBusSpi::new();
+            provider.tamper_conformance_message(ConformanceTamper::EventId);
+            Arc::new(provider)
+        },
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async {
+            let provider = FakeAsyncEventBusSpi::new();
+            provider.tamper_conformance_message(ConformanceTamper::EventId);
+            Arc::new(provider) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync, &asynchronous] {
+        for case_id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id: actual, detail }
+                        if actual == case_id && detail.contains("message differs at event ID")
+                )),
+                "{case_id} must fail when A receives an unrelated event: {report:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
 fn test_subscription_mode_runner_exercises_both_declared_modes_for_sync_and_async() {
     let capabilities = EventBusCapabilities::new(
         PayloadModes::Native,

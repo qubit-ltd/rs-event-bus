@@ -443,6 +443,7 @@ fn record_foreign_settlement<F>(
             spi.subscribe(probe_request(2, durability, &foreign_scope))
                 .map_err(|e| format!("subscribe B: {e}"))?,
         );
+        let expected = probe_message(probe_payload(case_id), capabilities, &owner_scope);
         let ack = spi
             .publish(probe_message(probe_payload(case_id), capabilities, &owner_scope))
             .map_err(|e| format!("publish: {e}"))?;
@@ -456,6 +457,9 @@ fn record_foreign_settlement<F>(
             ReceiveOutcome::Message(message) => message,
             _ => return Err("receive A returned no message".into()),
         };
+        if let Some(difference) = message_difference(&message, &expected) {
+            return Err(format!("receive A message differs at {difference}"));
+        }
         let Some(token) = message.take_settlement() else {
             return Err("receive A omitted settlement token".into());
         };
