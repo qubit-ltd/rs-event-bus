@@ -216,44 +216,117 @@ async fn record_foreign_settlement<F, Fut>(
         for id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
             report.push(ConformanceCase::Skipped {
                 case_id: id.into(),
-                reason: ConformanceSkipReason::UnsupportedCapability { capability: "settlement" },
+                reason: ConformanceSkipReason::UnsupportedCapability {
+                    capability: "settlement",
+                },
             });
         }
-        let _ = spi.shutdown(ShutdownMode::Immediate).await;
+        if let Err(error) = spi.shutdown(ShutdownMode::Immediate).await {
+            report.push(ConformanceCase::Failed {
+                case_id: "settlement-probe-shutdown".into(),
+                detail: format!("shutdown after unsupported settlement: {error}"),
+            });
+        }
         return;
     }
     let mut owner = None;
     let mut foreign = None;
     let result = async {
-        let scope = ProbeScope::new().map_err(|e| format!("identity generation: {e}"))?;
-        owner = Some(spi.subscribe(probe_request(1, durability, &scope)).await.map_err(|e| format!("subscribe A: {e}"))?);
-        foreign = Some(spi.subscribe(probe_request(2, durability, &scope)).await.map_err(|e| format!("subscribe B: {e}"))?);
-        let ack = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope)).await.map_err(|e| format!("publish: {e}"))?;
+        let owner_scope = ProbeScope::new().map_err(|e| format!("identity generation A: {e}"))?;
+        let foreign_scope = ProbeScope::new().map_err(|e| format!("identity generation B: {e}"))?;
+        owner = Some(
+            spi.subscribe(probe_request(1, durability, &owner_scope))
+                .await
+                .map_err(|e| format!("subscribe A: {e}"))?,
+        );
+        foreign = Some(
+            spi.subscribe(probe_request(2, durability, &foreign_scope))
+                .await
+                .map_err(|e| format!("subscribe B: {e}"))?,
+        );
+        let ack = spi
+            .publish(probe_message(probe_payload(case_id), capabilities, &owner_scope))
+            .await
+            .map_err(|e| format!("publish: {e}"))?;
         validate_probe_acknowledgement(&ack, capabilities.publish_visibility(), Id::new(1))?;
-        let mut message = match owner.as_mut().expect("owner set").receive(Duration::from_secs(1)).await.map_err(|e| format!("receive A: {e}"))? {
+        let mut message = match owner
+            .as_mut()
+            .expect("owner set")
+            .receive(Duration::from_secs(1))
+            .await
+            .map_err(|e| format!("receive A: {e}"))?
+        {
             ReceiveOutcome::Message(message) => message,
             _ => return Err("receive A returned no message".into()),
         };
-        let Some(token) = message.take_settlement() else { return Err("receive A omitted settlement token".into()); };
-        match foreign.as_mut().expect("foreign set").settle(&token, DeliveryDisposition::Accept).await {
-            Err(error) if error.kind() == "invalid_settlement_token" => report.push(ConformanceCase::Passed { case_id: "settlement-foreign-token".into() }),
-            Err(error) => report.push(ConformanceCase::Failed { case_id: "settlement-foreign-token".into(), detail: format!("foreign settlement returned wrong error: {error}") }),
-            Ok(()) => report.push(ConformanceCase::Failed { case_id: "settlement-foreign-token".into(), detail: "foreign receiver accepted settlement token".into() }),
+        let Some(token) = message.take_settlement() else {
+            return Err("receive A omitted settlement token".into());
+        };
+        match foreign
+            .as_mut()
+            .expect("foreign set")
+            .settle(&token, DeliveryDisposition::Accept)
+            .await
+        {
+            Err(error) if error.kind() == "invalid_settlement_token" => report.push(ConformanceCase::Passed {
+                case_id: "settlement-foreign-token".into(),
+            }),
+            Err(error) => report.push(ConformanceCase::Failed {
+                case_id: "settlement-foreign-token".into(),
+                detail: format!("foreign settlement returned wrong error: {error}"),
+            }),
+            Ok(()) => report.push(ConformanceCase::Failed {
+                case_id: "settlement-foreign-token".into(),
+                detail: "foreign receiver accepted settlement token".into(),
+            }),
         }
-        match owner.as_mut().expect("owner set").settle(&token, DeliveryDisposition::Accept).await {
-            Ok(()) => report.push(ConformanceCase::Passed { case_id: "settlement-owner-after-foreign-token".into() }),
-            Err(error) => report.push(ConformanceCase::Failed { case_id: "settlement-owner-after-foreign-token".into(), detail: format!("owner settlement failed after foreign attempt: {error}") }),
+        match owner
+            .as_mut()
+            .expect("owner set")
+            .settle(&token, DeliveryDisposition::Accept)
+            .await
+        {
+            Ok(()) => report.push(ConformanceCase::Passed {
+                case_id: "settlement-owner-after-foreign-token".into(),
+            }),
+            Err(error) => report.push(ConformanceCase::Failed {
+                case_id: "settlement-owner-after-foreign-token".into(),
+                detail: format!("owner settlement failed after foreign attempt: {error}"),
+            }),
         }
         Ok::<(), String>(())
-    }.await;
+    }
+    .await;
     if let Err(detail) = result {
         for id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
-            report.push(ConformanceCase::Failed { case_id: id.into(), detail: detail.clone() });
+            report.push(ConformanceCase::Failed {
+                case_id: id.into(),
+                detail: detail.clone(),
+            });
         }
     }
-    if let Some(subscription) = foreign.as_mut() { if let Err(e) = subscription.close().await { report.push(ConformanceCase::Failed { case_id: "settlement-probe-close".into(), detail: format!("close B: {e}") }); } }
-    if let Some(subscription) = owner.as_mut() { if let Err(e) = subscription.close().await { report.push(ConformanceCase::Failed { case_id: "settlement-probe-close".into(), detail: format!("close A: {e}") }); } }
-    if let Err(e) = spi.shutdown(ShutdownMode::Immediate).await { report.push(ConformanceCase::Failed { case_id: "settlement-probe-shutdown".into(), detail: format!("shutdown: {e}") }); }
+    if let Some(subscription) = foreign.as_mut()
+        && let Err(e) = subscription.close().await
+    {
+        report.push(ConformanceCase::Failed {
+            case_id: "settlement-probe-close".into(),
+            detail: format!("close B: {e}"),
+        });
+    }
+    if let Some(subscription) = owner.as_mut()
+        && let Err(e) = subscription.close().await
+    {
+        report.push(ConformanceCase::Failed {
+            case_id: "settlement-probe-close".into(),
+            detail: format!("close A: {e}"),
+        });
+    }
+    if let Err(e) = spi.shutdown(ShutdownMode::Immediate).await {
+        report.push(ConformanceCase::Failed {
+            case_id: "settlement-probe-shutdown".into(),
+            detail: format!("shutdown: {e}"),
+        });
+    }
 }
 
 async fn record_pending_close<F, Fut>(

@@ -27,10 +27,10 @@ use std::time::SystemTime;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusConfig;
 use qubit_event_bus::SpiError;
-use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::local::LocalEventBusProvider;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::local::AsyncLocalEventBusProvider;
+use qubit_event_bus::local::LocalEventBusConfig;
+use qubit_event_bus::local::LocalEventBusProvider;
 use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::ContentType;
 #[cfg(feature = "conformance")]
@@ -104,14 +104,16 @@ use qubit_event_bus::spi::conformance::run_sync;
 #[cfg(feature = "conformance")]
 use qubit_event_bus::spi::conformance::run_sync_with_profile;
 use qubit_id::Id;
-use qubit_spi::ServiceProvider;
 #[cfg(feature = "conformance")]
 use qubit_spi::AsyncServiceProvider;
+use qubit_spi::ServiceProvider;
 
 #[cfg(feature = "conformance")]
 use crate::support::fake_spi::ConformanceTamper;
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
+#[cfg(feature = "conformance")]
+use crate::support::fake_spi::ForeignSettlementBehavior;
 use crate::support::fake_spi::full_capabilities;
 use crate::support::fake_spi::inbound_message;
 use crate::support::fake_spi::native_no_settlement_capabilities;
@@ -437,24 +439,247 @@ fn test_conformance_checks_receive_state_for_sync_and_async_providers() {
 fn test_sync_and_async_runners_check_foreign_settlement_tokens() {
     for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
         let sync = run_sync_with_profile(
-            || LocalEventBusProvider.create_configured(&EventBusConfig::default()).expect("local provider"),
+            || {
+                LocalEventBusProvider
+                    .create_configured(&EventBusConfig::default())
+                    .expect("local provider")
+            },
             &ConformanceHooks::default(),
             profile,
         );
         let asynchronous = block_on(run_async_with_profile(
-            || async { AsyncLocalEventBusProvider.create_configured(&EventBusConfig::default()).await.expect("async local provider") },
+            || async {
+                AsyncLocalEventBusProvider
+                    .create_configured(&EventBusConfig::default())
+                    .await
+                    .expect("async local provider")
+            },
             &AsyncConformanceHooks::default(),
             profile,
         ));
         for report in [&sync, &asynchronous] {
             for expected in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
-                let index = report.cases().iter().position(|case| matches!(case,
-                    ConformanceCase::Passed { case_id } if case_id == expected
-                )).unwrap_or_else(|| panic!("missing successful {expected}: {report:?}"));
-                let context = report.case_context(index).expect("probe case retains payload/mode context");
-                assert!(matches!(context.durability(), SubscriptionDurability::Ephemeral | SubscriptionDurability::Durable));
+                let index = report
+                    .cases()
+                    .iter()
+                    .position(|case| {
+                        matches!(case,
+                            ConformanceCase::Passed { case_id } if case_id == expected
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("missing successful {expected}: {report:?}"));
+                let context = report
+                    .case_context(index)
+                    .expect("probe case retains payload/mode context");
+                assert!(matches!(
+                    context.durability(),
+                    SubscriptionDurability::Ephemeral | SubscriptionDurability::Durable
+                ));
             }
         }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_foreign_settlement_cases_cover_supported_payload_and_durability_combinations() {
+    let combinations = [
+        (
+            PayloadModes::Native,
+            SettlementCapabilities::AcceptOnly,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            vec![(PayloadModes::Native, SubscriptionDurability::Ephemeral)],
+        ),
+        (
+            PayloadModes::NativeAndEncoded,
+            SettlementCapabilities::AcceptRetryReject,
+            DurabilityCapability::Durable,
+            SubscriptionModes::BOTH,
+            vec![
+                (PayloadModes::Native, SubscriptionDurability::Ephemeral),
+                (PayloadModes::Native, SubscriptionDurability::Durable),
+                (PayloadModes::Encoded, SubscriptionDurability::Ephemeral),
+                (PayloadModes::Encoded, SubscriptionDurability::Durable),
+            ],
+        ),
+        (
+            PayloadModes::Encoded,
+            SettlementCapabilities::AcceptRetryReject,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            vec![(PayloadModes::Encoded, SubscriptionDurability::Ephemeral)],
+        ),
+    ];
+    for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
+        for (payload_modes, settlement, durability, subscription_modes, expected_contexts) in &combinations {
+            let capabilities = EventBusCapabilities::new(
+                *payload_modes,
+                *settlement,
+                OrderingCapability::None,
+                DelayedDeliveryCapability::None,
+                *durability,
+                *subscription_modes,
+                false,
+                ReplayCapability::None,
+                PublishGuarantee::Accepted,
+                PublishVisibility::Opaque,
+            );
+            let sync = run_sync_with_profile(
+                || Arc::new(FakeEventBusSpi::with_capabilities(capabilities)),
+                &ConformanceHooks::default(),
+                profile,
+            );
+            let asynchronous = block_on(run_async_with_profile(
+                || async {
+                    Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities)) as Arc<dyn AsyncEventBusSpi>
+                },
+                &AsyncConformanceHooks::default(),
+                profile,
+            ));
+            for report in [&sync, &asynchronous] {
+                for case_id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+                    let results = report
+                        .cases()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, case)| match case {
+                            ConformanceCase::Passed { case_id: actual }
+                            | ConformanceCase::Failed { case_id: actual, .. }
+                            | ConformanceCase::Skipped { case_id: actual, .. } => actual == case_id,
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(results.len(), expected_contexts.len(), "{case_id}: {report:?}");
+                    for ((index, result), (payload_mode, durability)) in results.iter().zip(expected_contexts) {
+                        assert!(
+                            matches!(result, ConformanceCase::Passed { .. }),
+                            "{case_id}: {report:?}"
+                        );
+                        let context = report.case_context(*index).expect("settlement result has context");
+                        assert_eq!(context.payload_mode(), *payload_mode);
+                        assert_eq!(context.durability(), *durability);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_foreign_settlement_probe_reports_provider_violations() {
+    let cases = [
+        (ForeignSettlementBehavior::Accept, false, true),
+        (ForeignSettlementBehavior::WrongError, false, true),
+        (ForeignSettlementBehavior::CorruptOwner, true, false),
+    ];
+    for profile in [ConformanceProfile::Structural, ConformanceProfile::Strict] {
+        for (behavior, foreign_passes, owner_passes) in cases {
+            let sync = run_sync_with_profile(
+                || {
+                    let mut provider = FakeEventBusSpi::new();
+                    provider.set_foreign_settlement_behavior(behavior);
+                    Arc::new(provider)
+                },
+                &ConformanceHooks::default(),
+                profile,
+            );
+            let asynchronous = block_on(run_async_with_profile(
+                || async {
+                    let mut provider = FakeAsyncEventBusSpi::new();
+                    provider.set_foreign_settlement_behavior(behavior);
+                    Arc::new(provider) as Arc<dyn AsyncEventBusSpi>
+                },
+                &AsyncConformanceHooks::default(),
+                profile,
+            ));
+            for report in [&sync, &asynchronous] {
+                for (case_id, passed) in [
+                    ("settlement-foreign-token", foreign_passes),
+                    ("settlement-owner-after-foreign-token", owner_passes),
+                ] {
+                    let index = report
+                        .cases()
+                        .iter()
+                        .position(|case| match case {
+                            ConformanceCase::Passed { case_id: actual }
+                            | ConformanceCase::Failed { case_id: actual, .. } => actual == case_id,
+                            ConformanceCase::Skipped { .. } => false,
+                        })
+                        .unwrap_or_else(|| panic!("missing {case_id}: {report:?}"));
+                    assert_eq!(
+                        matches!(report.cases()[index], ConformanceCase::Passed { .. }),
+                        passed,
+                        "{report:?}"
+                    );
+                    assert!(
+                        report.case_context(index).is_some(),
+                        "{case_id} must retain its probe context"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_foreign_settlement_probe_fails_when_supported_delivery_has_no_token_and_cleans_up() {
+    let sync_providers = Arc::new(Mutex::new(Vec::new()));
+    let sync_seen = sync_providers.clone();
+    let sync_report = run_sync(
+        || {
+            let provider = FakeEventBusSpi::new();
+            provider.tamper_conformance_message(ConformanceTamper::NoSettlement);
+            sync_seen.lock().unwrap().push(provider.clone());
+            Arc::new(provider)
+        },
+        &ConformanceHooks::default(),
+    );
+    let async_providers = Arc::new(Mutex::new(Vec::new()));
+    let async_seen = async_providers.clone();
+    let async_report = block_on(run_async(
+        || async {
+            let provider = FakeAsyncEventBusSpi::new();
+            provider.tamper_conformance_message(ConformanceTamper::NoSettlement);
+            async_seen.lock().unwrap().push(provider.clone());
+            Arc::new(provider) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync_report, &async_report] {
+        for case_id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id: actual, detail }
+                        if actual == case_id && detail.contains("omitted settlement token")
+                )),
+                "{case_id} must fail for a missing token: {report:?}"
+            );
+        }
+    }
+    for operation_logs in [
+        sync_providers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(FakeEventBusSpi::operation_log)
+            .collect::<Vec<_>>(),
+        async_providers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(FakeAsyncEventBusSpi::operation_log)
+            .collect::<Vec<_>>(),
+    ] {
+        assert!(
+            operation_logs.iter().any(|calls| {
+                calls.iter().filter(|&&call| call == "subscribe").count() == 2
+                    && calls.iter().filter(|&&call| call == "close").count() == 2
+                    && calls.contains(&"shutdown")
+            }),
+            "both receivers must close and shutdown must run after token extraction fails: {operation_logs:?}"
+        );
     }
 }
 
@@ -1266,20 +1491,39 @@ fn test_conformance_without_settlement_skips_hooks_even_when_supplied() {
         })),
         ..AsyncConformanceHooks::default()
     };
+    let sync_providers = Arc::new(Mutex::new(Vec::new()));
+    let sync_seen = sync_providers.clone();
     let sync_report = run_sync(
-        || Arc::new(FakeEventBusSpi::with_capabilities(native_no_settlement_capabilities())),
+        || {
+            let provider = FakeEventBusSpi::with_capabilities(native_no_settlement_capabilities());
+            sync_seen.lock().unwrap().push(provider.clone());
+            Arc::new(provider)
+        },
         &sync_hooks,
     );
+    let async_providers = Arc::new(Mutex::new(Vec::new()));
+    let async_seen = async_providers.clone();
     let async_report = block_on(run_async(
         || async {
-            Arc::new(FakeAsyncEventBusSpi::with_capabilities(
-                native_no_settlement_capabilities(),
-            )) as Arc<dyn AsyncEventBusSpi>
+            let provider = FakeAsyncEventBusSpi::with_capabilities(native_no_settlement_capabilities());
+            async_seen.lock().unwrap().push(provider.clone());
+            Arc::new(provider) as Arc<dyn AsyncEventBusSpi>
         },
         &async_hooks,
     ));
     for report in [sync_report, async_report] {
         assert!(report.all_passed(), "{report:?}");
+        for case_id in ["settlement-foreign-token", "settlement-owner-after-foreign-token"] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Skipped {
+                        case_id: actual,
+                        reason: ConformanceSkipReason::UnsupportedCapability { capability: "settlement" },
+                    } if actual == case_id
+                )),
+                "{case_id} must skip when settlement is unsupported: {report:?}"
+            );
+        }
         assert!(report.cases().iter().any(|case| matches!(case,
             ConformanceCase::Skipped {
                 case_id,
@@ -1290,6 +1534,20 @@ fn test_conformance_without_settlement_skips_hooks_even_when_supplied() {
                 if case_id == "provider-settlement-idempotence"
         )));
     }
+    assert!(
+        sync_providers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|provider| !provider.operation_log().contains(&"settle"))
+    );
+    assert!(
+        async_providers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|provider| !provider.operation_log().contains(&"settle"))
+    );
 }
 
 #[cfg(feature = "conformance")]

@@ -77,11 +77,21 @@ pub(crate) enum ConformanceTamper {
     EncodedBytes,
     ContentType,
     Schema,
+    NoSettlement,
     Topic,
     EventId,
     Timestamp,
     Headers,
     OrderingKey,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum ForeignSettlementBehavior {
+    #[default]
+    Reject,
+    Accept,
+    WrongError,
+    CorruptOwner,
 }
 
 #[derive(Default)]
@@ -237,6 +247,8 @@ pub(crate) struct FakeEventBusSpi {
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
+    foreign_settlement_behavior: ForeignSettlementBehavior,
+    foreign_settlement_attempted: Arc<AtomicBool>,
 }
 
 impl FakeEventBusSpi {
@@ -255,6 +267,8 @@ impl FakeEventBusSpi {
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
             conformance_tamper: Arc::default(),
+            foreign_settlement_behavior: ForeignSettlementBehavior::default(),
+            foreign_settlement_attempted: Arc::default(),
         }
     }
 
@@ -284,6 +298,10 @@ impl FakeEventBusSpi {
     }
     pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
         *self.conformance_tamper.lock().unwrap() = Some(tamper);
+    }
+    pub(crate) fn set_foreign_settlement_behavior(&mut self, behavior: ForeignSettlementBehavior) {
+        self.foreign_settlement_behavior = behavior;
+        self.foreign_settlement_attempted.store(false, Ordering::Release);
     }
     pub(crate) fn inject_gap(&self) {
         for (_, queue) in self.queues.lock().unwrap().iter() {
@@ -363,8 +381,9 @@ fn inbound_from_outbound(
         )),
         _ => panic!("fake provider received an unknown transport payload variant"),
     };
-    let token = (!matches!(settlement, SettlementCapabilities::None))
-        .then(|| SettlementToken::new(subscription_id, message.id().as_str().to_owned()));
+    let token = (!matches!(settlement, SettlementCapabilities::None)
+        && !matches!(tamper, Some(ConformanceTamper::NoSettlement)))
+    .then(|| SettlementToken::new(subscription_id, message.id().as_str().to_owned()));
     InboundMessage::new(
         if matches!(tamper, Some(ConformanceTamper::Topic)) {
             TopicAddress::new("wrong.topic").unwrap()
@@ -445,6 +464,8 @@ impl EventBusSpi for FakeEventBusSpi {
         Ok(Box::new(FakeEventSubscriptionSpi {
             id: request.subscription_id(),
             settlement: self.capabilities.settlement(),
+            foreign_settlement_behavior: self.foreign_settlement_behavior,
+            foreign_settlement_attempted: self.foreign_settlement_attempted.clone(),
             queue,
             calls: self.calls.clone(),
         }))
@@ -463,6 +484,8 @@ impl EventBusSpi for FakeEventBusSpi {
 pub(crate) struct FakeEventSubscriptionSpi {
     id: Id,
     settlement: SettlementCapabilities,
+    foreign_settlement_behavior: ForeignSettlementBehavior,
+    foreign_settlement_attempted: Arc<AtomicBool>,
     queue: Arc<(Mutex<QueueState>, Condvar)>,
     calls: Arc<Mutex<Vec<&'static str>>>,
 }
@@ -521,7 +544,21 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
     fn settle(&mut self, token: &SettlementToken, disposition: DeliveryDisposition) -> Result<(), SpiError> {
         self.calls.lock().unwrap().push("settle");
         if !token.belongs_to(self.id) {
-            return Err(foreign_settlement_error());
+            self.foreign_settlement_attempted.store(true, Ordering::Release);
+            return match self.foreign_settlement_behavior {
+                ForeignSettlementBehavior::Accept => Ok(()),
+                ForeignSettlementBehavior::WrongError => Err(spi_error("settle")),
+                ForeignSettlementBehavior::Reject | ForeignSettlementBehavior::CorruptOwner => {
+                    Err(foreign_settlement_error())
+                }
+            };
+        }
+        if matches!(
+            self.foreign_settlement_behavior,
+            ForeignSettlementBehavior::CorruptOwner
+        ) && self.foreign_settlement_attempted.load(Ordering::Acquire)
+        {
+            return Err(spi_error("settle"));
         }
         if matches!(self.settlement, SettlementCapabilities::None) {
             return Err(spi_error("settle"));
@@ -563,6 +600,8 @@ pub(crate) struct FakeAsyncEventBusSpi {
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
+    foreign_settlement_behavior: ForeignSettlementBehavior,
+    foreign_settlement_attempted: Arc<AtomicBool>,
     subscribe_paused: Arc<AtomicBool>,
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
@@ -596,6 +635,8 @@ impl FakeAsyncEventBusSpi {
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
             conformance_tamper: Arc::default(),
+            foreign_settlement_behavior: ForeignSettlementBehavior::default(),
+            foreign_settlement_attempted: Arc::default(),
             subscribe_paused: Arc::default(),
             subscribe_wakers: Arc::default(),
             close_paused: Arc::default(),
@@ -689,6 +730,10 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
         *self.conformance_tamper.lock().unwrap() = Some(tamper);
+    }
+    pub(crate) fn set_foreign_settlement_behavior(&mut self, behavior: ForeignSettlementBehavior) {
+        self.foreign_settlement_behavior = behavior;
+        self.foreign_settlement_attempted.store(false, Ordering::Release);
     }
     /// Fails an already polled receive future through its shared queue state.
     pub(crate) fn fail_next_receive(&self) {
@@ -850,6 +895,8 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
             Ok(Box::new(FakeAsyncEventSubscriptionSpi {
                 id: request.subscription_id(),
                 settlement: self.capabilities.settlement(),
+                foreign_settlement_behavior: self.foreign_settlement_behavior,
+                foreign_settlement_attempted: self.foreign_settlement_attempted.clone(),
                 queue,
                 calls: self.calls.clone(),
                 close_paused: self.close_paused.clone(),
@@ -895,6 +942,8 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
 struct FakeAsyncEventSubscriptionSpi {
     id: Id,
     settlement: SettlementCapabilities,
+    foreign_settlement_behavior: ForeignSettlementBehavior,
+    foreign_settlement_attempted: Arc<AtomicBool>,
     queue: Arc<Mutex<QueueState>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     close_paused: Arc<AtomicBool>,
@@ -968,8 +1017,20 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             });
         }
         let result = if !token.belongs_to(self.id) {
-            Err(foreign_settlement_error())
-        } else if matches!(self.settlement, SettlementCapabilities::None) {
+            self.foreign_settlement_attempted.store(true, Ordering::Release);
+            match self.foreign_settlement_behavior {
+                ForeignSettlementBehavior::Accept => Ok(()),
+                ForeignSettlementBehavior::WrongError => Err(spi_error("settle")),
+                ForeignSettlementBehavior::Reject | ForeignSettlementBehavior::CorruptOwner => {
+                    Err(foreign_settlement_error())
+                }
+            }
+        } else if (matches!(
+            self.foreign_settlement_behavior,
+            ForeignSettlementBehavior::CorruptOwner
+        ) && self.foreign_settlement_attempted.load(Ordering::Acquire))
+            || matches!(self.settlement, SettlementCapabilities::None)
+        {
             Err(spi_error("settle"))
         } else {
             let mut state = self.queue.lock().unwrap();
