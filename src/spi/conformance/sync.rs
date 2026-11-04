@@ -556,13 +556,13 @@ fn record_retry_reject_settlement<F>(
                 });
             }
         }
-        if let Some(subscription) = subscription.as_mut() {
-            if let Err(error) = subscription.close() {
-                report.push(ConformanceCase::Failed {
-                    case_id: "settlement-probe-close".into(),
-                    detail: format!("sync {name} close failed: {error}"),
-                });
-            }
+        if let Some(subscription) = subscription.as_mut()
+            && let Err(error) = subscription.close()
+        {
+            report.push(ConformanceCase::Failed {
+                case_id: "settlement-probe-close".into(),
+                detail: format!("sync {name} close failed: {error}"),
+            });
         }
         if let Err(error) = spi.shutdown(ShutdownMode::Immediate) {
             report.push(ConformanceCase::Failed {

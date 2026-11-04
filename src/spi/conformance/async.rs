@@ -363,13 +363,13 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 });
             }
         }
-        if let Some(subscription) = subscription.as_mut() {
-            if let Err(error) = subscription.close().await {
-                report.push(ConformanceCase::Failed {
-                    case_id: "settlement-probe-close".into(),
-                    detail: format!("async {name} close failed: {error}"),
-                });
-            }
+        if let Some(subscription) = subscription.as_mut()
+            && let Err(error) = subscription.close().await
+        {
+            report.push(ConformanceCase::Failed {
+                case_id: "settlement-probe-close".into(),
+                detail: format!("async {name} close failed: {error}"),
+            });
         }
         record_async_shutdown(
             report,

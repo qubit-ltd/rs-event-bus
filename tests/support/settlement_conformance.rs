@@ -5,7 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Real local-provider Retry and Reject behavior fixtures for conformance hooks.
+//! Real local-provider Retry and Reject behavior fixtures for conformance
+//! hooks.
 
 use std::any::TypeId;
 use std::sync::Arc;
@@ -141,7 +142,7 @@ fn verify_sync_body(
 
     let reject_id = EventId::generate().map_err(|e| e.to_string())?;
     let ack = spi
-        .publish(message(topic.clone(), reject_id, 2))
+        .publish(message(topic.clone(), reject_id.clone(), 2))
         .map_err(|e| format!("publish Reject B: {e}"))?;
     if !matches!(ack, PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.len() == 1 && matches!(admissions[0].status(), AdmissionStatus::Accepted))
     {
@@ -154,6 +155,9 @@ fn verify_sync_body(
         ReceiveOutcome::Message(message) => message,
         _ => return Err("receive returned a non-message outcome".into()),
     };
+    if rejected.id() != &reject_id {
+        return Err("received event before Reject does not match B".into());
+    }
     let reject_token = rejected.take_settlement().ok_or("Reject B omitted token")?;
     receiver
         .settle(&reject_token, DeliveryDisposition::Reject)
@@ -183,6 +187,14 @@ fn verify_sync_body(
     receiver
         .settle(&control_token, DeliveryDisposition::Accept)
         .map_err(|e| format!("Accept control C: {e}"))?;
+    if !matches!(
+        receiver
+            .receive(Duration::from_millis(10))
+            .map_err(|e| format!("check post-C Reject B redelivery: {e}"))?,
+        ReceiveOutcome::TimedOut
+    ) {
+        return Err("Reject B reappeared after control C".into());
+    }
     Ok(())
 }
 
@@ -287,7 +299,7 @@ pub(crate) async fn async_local_fixture_with_fault(fault: Option<BehaviorFault>)
     }
     let reject_id = EventId::generate().map_err(|e| e.to_string())?;
     let ack = spi
-        .publish(message(topic.clone(), reject_id, 2))
+        .publish(message(topic.clone(), reject_id.clone(), 2))
         .await
         .map_err(|e| format!("async publish Reject B: {e}"))?;
     if !matches!(ack, PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.len() == 1 && matches!(admissions[0].status(), AdmissionStatus::Accepted))
@@ -302,6 +314,9 @@ pub(crate) async fn async_local_fixture_with_fault(fault: Option<BehaviorFault>)
         ReceiveOutcome::Message(message) => message,
         _ => return Err("receive returned a non-message outcome".into()),
     };
+    if rejected.id() != &reject_id {
+        return Err("async received event before Reject does not match B".into());
+    }
     let reject_token = rejected.take_settlement().ok_or("async Reject B omitted token")?;
     receiver
         .settle(&reject_token, DeliveryDisposition::Reject)
@@ -336,6 +351,15 @@ pub(crate) async fn async_local_fixture_with_fault(fault: Option<BehaviorFault>)
         .settle(&control_token, DeliveryDisposition::Accept)
         .await
         .map_err(|e| format!("async Accept control C: {e}"))?;
+    if !matches!(
+        receiver
+            .receive(Duration::from_millis(10))
+            .await
+            .map_err(|e| format!("async check post-C Reject B redelivery: {e}"))?,
+        ReceiveOutcome::TimedOut
+    ) {
+        return Err("async Reject B reappeared after control C".into());
+    }
     Ok(())
     }.await;
     let close_result = receiver
