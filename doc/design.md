@@ -1822,6 +1822,8 @@ structure should depend on `qubit-retry` directly; core does not re-export it.
 
 The complete sync and async provider receiver example below is compiled as a consumer fixture.
 
+This example keeps every settlement result to demonstrate idempotence and conflicting dispositions. It is not a bounded storage strategy for a long-running provider. A production implementation must design result retention together with token lifetime, uncertain-result retries, and recovery. The local provider associates settlement state with its token; this is a reference approach, not a universal strategy for remote transports.
+
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_contract.rs -->
 ```rust
 // =============================================================================

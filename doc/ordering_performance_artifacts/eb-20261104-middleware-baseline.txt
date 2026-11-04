@@ -1,0 +1,67 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.191
+   Compiling cfg-if v1.0.5
+   Compiling syn v3.0.9
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+   Compiling smallvec v1.16.4
+   Compiling hashbrown v0.17.1
+   Compiling qubit-collections v0.2.2
+   Compiling rustversion v1.0.23
+   Compiling parking_lot_core v0.9.12
+   Compiling shlex v2.0.1
+   Compiling scopeguard v1.2.0
+   Compiling find-msvc-tools v0.1.15
+   Compiling once_cell v1.21.4
+   Compiling tracing-core v0.1.36
+   Compiling cc v1.10.0
+   Compiling lock_api v0.4.14
+   Compiling qubit-clock v0.13.3
+   Compiling log v0.4.34
+   Compiling getrandom v0.4.3
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling parking_lot v0.12.5
+   Compiling generator v0.8.11
+   Compiling lazy_static v1.5.1
+   Compiling pin-project-lite v0.2.17
+   Compiling tracing v0.1.44
+   Compiling sharded-slab v0.1.7
+   Compiling matchers v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling qubit-budget v0.7.3
+   Compiling thread_local v1.1.10
+   Compiling uuid v1.29.0
+   Compiling fastrand v2.5.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling qubit-retry v0.26.0
+   Compiling qubit-id v0.7.2
+   Compiling qubit-spi v0.14.1
+   Compiling scoped-tls v1.0.1
+   Compiling loom v0.7.2
+   Compiling qubit-event-bus v0.21.0 (/data/working/qubit/rust-common/.worktrees/rs-event-bus/eb-baseline-20261104)
+    Finished `bench` profile [optimized] target(s) in 2m 15s
+     Running benches/subscriber_middleware.rs (target/release/deps/subscriber_middleware-052eaca034555b11)
+sync layers=0 raw_sample_mean_ns=[27809, 27415, 27484, 27698, 28304, 27579, 27594] iterations=500 boundary=publish_and_one_subscriber_delivery
+sync layers=0: median=27594 ns/op p95=28304 ns/op
+sync layers=1 raw_sample_mean_ns=[28184, 28494, 28034, 29048, 28363, 29091, 29147] iterations=500 boundary=publish_and_one_subscriber_delivery
+sync layers=1: median=28494 ns/op p95=29147 ns/op
+sync layers=8 raw_sample_mean_ns=[30523, 30389, 31396, 111083, 30288, 30250, 30295] iterations=500 boundary=publish_and_one_subscriber_delivery
+sync layers=8: median=30389 ns/op p95=111083 ns/op
+sync layers=32 raw_sample_mean_ns=[37517, 37673, 37367, 38403, 37916, 37710, 38032] iterations=500 boundary=publish_and_one_subscriber_delivery
+sync layers=32: median=37710 ns/op p95=38403 ns/op
+async layers=0 raw_sample_mean_ns=[26411, 26552, 26509, 26480, 26415, 26973, 26224] iterations=500 boundary=publish_and_one_subscriber_delivery
+async layers=0: median=26480 ns/op p95=26973 ns/op
+async layers=1 raw_sample_mean_ns=[27069, 27247, 27147, 26998, 27067, 27254, 27301] iterations=500 boundary=publish_and_one_subscriber_delivery
+async layers=1: median=27147 ns/op p95=27301 ns/op
+async layers=8 raw_sample_mean_ns=[44460, 29903, 29960, 29863, 29945, 30052, 30079] iterations=500 boundary=publish_and_one_subscriber_delivery
+async layers=8: median=29960 ns/op p95=44460 ns/op
+async layers=32 raw_sample_mean_ns=[40367, 40495, 40422, 40605, 40835, 40642, 40024] iterations=500 boundary=publish_and_one_subscriber_delivery
+async layers=32: median=40495 ns/op p95=40835 ns/op

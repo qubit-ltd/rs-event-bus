@@ -1679,6 +1679,8 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 下面的同步与异步 provider receiver 完整示例由 consumer fixture 编译验证。
 
+此示例为说明幂等处理和冲突 disposition，会保留每一条 settlement 结果；它不是长期运行 provider 的有界存储方案。生产实现必须结合 token 生命周期、不确定结果后的重试及恢复流程设计结果保留方式。本地 provider 将 settlement 状态关联到 token；这是一种参考做法，不是适用于远程传输的通用策略。
+
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_contract.rs -->
 ```rust
 // =============================================================================
