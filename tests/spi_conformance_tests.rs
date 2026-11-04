@@ -114,6 +114,8 @@ use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::fake_spi::FakeEventBusSpi;
 #[cfg(feature = "conformance")]
 use crate::support::fake_spi::ForeignSettlementBehavior;
+#[cfg(feature = "conformance")]
+use crate::support::fake_spi::SettlementFault;
 use crate::support::fake_spi::full_capabilities;
 use crate::support::fake_spi::inbound_message;
 use crate::support::fake_spi::native_no_settlement_capabilities;
@@ -2703,4 +2705,219 @@ fn test_async_fake_supports_injected_structured_provider_failures() {
         assert_eq!(error.provider_id(), "fake");
         assert_eq!(error.operation(), "publish");
     });
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_sync_and_async_runners_check_retry_and_reject_settlement() {
+    let sync_hooks = ConformanceHooks {
+        settlement: Some(Arc::new(|| {
+            crate::support::settlement_conformance::sync_local_fixture()
+        })),
+        ..ConformanceHooks::default()
+    };
+    let async_hooks = AsyncConformanceHooks {
+        settlement: Some(Arc::new(|| {
+            Box::pin(crate::support::settlement_conformance::async_local_fixture())
+        })),
+        ..AsyncConformanceHooks::default()
+    };
+    let sync = run_sync(
+        || {
+            LocalEventBusProvider
+                .create_configured(&EventBusConfig::default())
+                .expect("local provider")
+        },
+        &sync_hooks,
+    );
+    let asynchronous = block_on(run_async(
+        || async {
+            AsyncLocalEventBusProvider
+                .create_configured(&EventBusConfig::default())
+                .await
+                .expect("async local provider")
+        },
+        &async_hooks,
+    ));
+    let expected = [
+        "settlement-retry-first",
+        "settlement-retry-idempotence",
+        "settlement-retry-conflict",
+        "settlement-reject-first",
+        "settlement-reject-idempotence",
+        "settlement-reject-conflict",
+    ];
+    for report in [&sync, &asynchronous] {
+        for id in expected {
+            let index = report
+                .cases()
+                .iter()
+                .position(|case| {
+                    matches!(case,
+                        ConformanceCase::Passed { case_id } | ConformanceCase::Failed { case_id, .. } if case_id == id
+                    )
+                })
+                .unwrap_or_else(|| panic!("missing {id}: {report:?}"));
+            assert!(
+                matches!(report.cases()[index], ConformanceCase::Passed { .. }),
+                "{id} must pass for the local provider: {report:?}"
+            );
+            assert!(
+                report.case_context(index).is_some(),
+                "{id} must retain its combination context"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_retry_reject_cases_skip_none_capability_without_settle_calls() {
+    let sync_fake = FakeEventBusSpi::with_capabilities(native_no_settlement_capabilities());
+    let async_fake = FakeAsyncEventBusSpi::with_capabilities(native_no_settlement_capabilities());
+    let sync_report = run_sync(|| Arc::new(sync_fake.clone()), &ConformanceHooks::default());
+    let async_report = block_on(run_async(
+        || async { Arc::new(async_fake.clone()) as Arc<dyn AsyncEventBusSpi> },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync_report, &async_report] {
+        for id in [
+            "settlement-retry-first",
+            "settlement-retry-idempotence",
+            "settlement-retry-conflict",
+            "settlement-reject-first",
+            "settlement-reject-idempotence",
+            "settlement-reject-conflict",
+        ] {
+            assert!(report.cases().iter().any(|case| matches!(case,
+                ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::UnsupportedCapability { capability: "retry-reject-settlement" } } if case_id == id
+            )), "{id} must be skipped for None: {report:?}");
+        }
+    }
+    assert!(!sync_fake.operation_log().contains(&"settle"));
+    assert!(!async_fake.operation_log().contains(&"settle"));
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_sync_and_async_retry_reject_structural_faults_are_reported() {
+    let faults = [
+        (
+            SettlementFault::FirstFails(DeliveryDisposition::Retry),
+            "settlement-retry-first",
+        ),
+        (
+            SettlementFault::RepeatFails(DeliveryDisposition::Retry),
+            "settlement-retry-idempotence",
+        ),
+        (
+            SettlementFault::AcceptsConflict(DeliveryDisposition::Retry),
+            "settlement-retry-conflict",
+        ),
+        (
+            SettlementFault::FirstFails(DeliveryDisposition::Reject),
+            "settlement-reject-first",
+        ),
+        (
+            SettlementFault::RepeatFails(DeliveryDisposition::Reject),
+            "settlement-reject-idempotence",
+        ),
+        (
+            SettlementFault::AcceptsConflict(DeliveryDisposition::Reject),
+            "settlement-reject-conflict",
+        ),
+    ];
+    for (fault, expected_id) in faults {
+        let sync = run_sync(
+            || {
+                let fake = FakeEventBusSpi::new();
+                fake.inject_settlement_fault(fault);
+                Arc::new(fake)
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                let fake = FakeAsyncEventBusSpi::new();
+                fake.inject_settlement_fault(fault);
+                Arc::new(fake) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert!(
+                report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id, .. } if case_id == expected_id
+                )),
+                "fault for {expected_id} must be reported: {report:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_retry_reject_cases_skip_accept_only_capability_without_invoking_unsupported_dispositions() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::AcceptOnly,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let sync = run_sync(
+        || {
+            let fake = FakeEventBusSpi::with_capabilities(capabilities);
+            fake.inject_settlement_fault(SettlementFault::FirstFails(DeliveryDisposition::Retry));
+            Arc::new(fake)
+        },
+        &ConformanceHooks::default(),
+    );
+    let asynchronous = block_on(run_async(
+        || async {
+            let fake = FakeAsyncEventBusSpi::with_capabilities(capabilities);
+            fake.inject_settlement_fault(SettlementFault::FirstFails(DeliveryDisposition::Retry));
+            Arc::new(fake) as Arc<dyn AsyncEventBusSpi>
+        },
+        &AsyncConformanceHooks::default(),
+    ));
+    for report in [&sync, &asynchronous] {
+        for id in [
+            "settlement-retry-first",
+            "settlement-retry-idempotence",
+            "settlement-retry-conflict",
+            "settlement-reject-first",
+            "settlement-reject-idempotence",
+            "settlement-reject-conflict",
+        ] {
+            assert!(report.cases().iter().any(|case| matches!(case,
+                ConformanceCase::Skipped { case_id, reason: ConformanceSkipReason::UnsupportedCapability { capability: "retry-reject-settlement" } } if case_id == id
+            )), "{id} must be skipped for AcceptOnly: {report:?}");
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn test_local_settlement_behavior_fixture_detects_retry_loss_and_reject_redelivery() {
+    use crate::support::settlement_conformance::BehaviorFault;
+
+    for fault in [BehaviorFault::DropRetry, BehaviorFault::RequeueReject] {
+        assert!(
+            crate::support::settlement_conformance::sync_local_fixture_with_fault(Some(fault)).is_err(),
+            "sync local behavior fixture must detect {fault:?}"
+        );
+        assert!(
+            block_on(crate::support::settlement_conformance::async_local_fixture_with_fault(
+                Some(fault)
+            ))
+            .is_err(),
+            "async local behavior fixture must detect {fault:?}"
+        );
+    }
 }

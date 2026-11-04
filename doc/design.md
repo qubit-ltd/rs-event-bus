@@ -1706,16 +1706,26 @@ a strict documentation build with
 
 ### 15.3 The `conformance` feature
 
-`run_sync` and `run_async` take a factory returning a fresh provider for each
-case and their respective hooks: `ConformanceHooks` uses synchronous callbacks;
+`run_sync` and `run_async` take a factory that creates provider instances and
+their respective hooks: `ConformanceHooks` uses synchronous callbacks;
 `AsyncConformanceHooks` uses sendable futures awaited by the runner without
 blocking its executor. Both return `ConformanceReport`
 (`Vec<ConformanceCase::{Passed, Failed, Skipped}>`).
 
+Isolation has three levels: each payload-mode/durability combination uses a
+factory-created provider; independent probes such as pending-close,
+foreign-token, and Retry/Reject use their own provider and `ProbeScope`; report
+cases that are part of one combination intentionally share the same provider
+and receiver. The factory must return independent provider state on each call;
+the runner cannot prevent a factory from sharing underlying state.
+
 The public runner automatically checks payload/subscription-mode combinations,
 subscribe, publish followed by receive, received fields and payload, settlement
-token presence, repeated Accept, conflicting disposition errors, and close and
-shutdown idempotence. It also verifies that an empty queue returns `TimedOut`
+token presence, repeated Accept, conflicting disposition errors, first Retry
+and Reject results, their idempotence and conflicting-token errors, and close
+and shutdown idempotence. The six Retry/Reject cases increase report size; consumers
+should query by case ID and `case_context(index)` rather than assume a fixed
+case count or index. It also verifies that an empty queue returns `TimedOut`
 for a zero-duration receive before publish, and that receive returns `Closed`
 after a successful close (`receive-empty-zero-timeout` and
 `receive-after-close`). These checks establish the operation's reported result;
@@ -1730,15 +1740,27 @@ reported with the payload and durability context. This checks the public
 contract; provider tests remain responsible for remote side effects and
 additional delivery behavior.
 
+Retry/Reject structural cases run only when `AcceptRetryReject` is declared;
+`None` and `AcceptOnly` receive typed unsupported-capability skips without
+calling those dispositions. The structural cases check SPI return values and
+invalid-token errors. The existing settlement hook remains responsible for
+provider-specific behavior evidence: verify that Retry restores the original
+delivery and that Reject does not re-deliver it, including repeated calls.
+A successful settlement return or a short period of `TimedOut` cannot prove
+recovery or permanent termination. Remote providers need a fixture aligned to
+their recovery protocol; the runner makes no cross-provider promise of
+immediate redelivery.
+
 Provider hooks supply fixtures for behavior only the provider can observe:
 repeat/conflicting settlement effects, receive/settlement/close/shutdown
 cancellation, durable recovery, and ephemeral cleanup. Under `Strict`, a
 required hook missing for a declared supported mode fails; unsupported modes
 remain typed skips. The default structural profile may skip absent hooks. The async `subscribe-cancellation` hook specifically creates a partially allocated subscription, leaves an operation pending, cancels it, and checks that the provider resource is reusable; Strict mode requires this hook.
 
-Each payload-mode and durability combination also checks that, after publish
-returns successfully and before receive is called, closing makes a later
-receive return `Closed`. The runner does not verify that an opaque transport
+Each payload-mode and durability combination shares one provider and receiver
+across its report cases. It also checks that, after publish returns
+successfully and before receive is called, closing makes a later receive
+return `Closed`. The runner does not verify that an opaque transport
 had a broker-readable backlog; it records the publish result and checks the
 post-close receive result. These checks use fresh factory instances and an
 independent identity for each durable probe. A provider author running against

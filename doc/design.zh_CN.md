@@ -1587,14 +1587,20 @@ crate 内的 `loom` 测试对预算准入、操作许可和调度器容量进行
 
 ### 15.3 `conformance` feature
 
-`run_sync` 和 `run_async` 都接收每个用例都会新建 provider 的工厂，以及对应 hook：
+`run_sync` 和 `run_async` 接收创建 provider 实例的工厂，以及对应 hook：
 同步 `ConformanceHooks` 使用同步回调；`AsyncConformanceHooks` 使用可发送的 future，
 runner 会等待它们且不阻塞 executor。二者均返回 `ConformanceReport`
 （`Vec<ConformanceCase::{Passed, Failed, Skipped}>`）。
 
+隔离分为三层：每个载荷模式/durability 组合使用工厂创建的 provider；pending-close、
+foreign-token、Retry/Reject 等独立探针使用自己的 provider 和 `ProbeScope`；同一组合内
+相关报告 case 有意共用 provider 和 receiver。工厂每次调用必须返回独立 provider 状态；
+runner 无法阻止工厂共享底层状态。
+
 公共 runner 自动检查载荷/订阅模式组合、subscribe、publish 后 receive、接收字段和载荷、
-settlement token 是否存在、重复 Accept、冲突 disposition 报错，以及 close 和 shutdown
-幂等。它还会在 publish 前验证空队列的零时长 receive 返回 `TimedOut`，并在成功 close 后
+settlement token 是否存在、重复 Accept、冲突 disposition 报错、首次 Retry/Reject 返回结果、
+重复及冲突 token 检查，以及 close 和 shutdown 幂等。Retry/Reject 新增的六个 case 会增加报告数量；消费方应按
+case ID 与 `case_context(index)` 查询，不应依赖固定数量或索引。它还会在 publish 前验证空队列的零时长 receive 返回 `TimedOut`，并在成功 close 后
 验证 receive 返回 `Closed`（`receive-empty-zero-timeout` 和 `receive-after-close`）。
 这些检查只证明操作报告的结果；例如重复 Accept 返回 `Ok`，不能证明远端副作用恰好执行一次。
 
@@ -1602,6 +1608,12 @@ settlement token 是否存在、重复 Accept、冲突 disposition 报错，以�
 必须返回 `invalid_settlement_token`，随后签发 token 的 owner receiver 仍须成功 Accept。
 `settlement-foreign-token` 和 `settlement-owner-after-foreign-token` 会保留载荷与 durability
 上下文。这只检查公共合约；远端副作用及额外交付行为仍由 provider 测试负责。
+
+仅声明 `AcceptRetryReject` 时才执行 Retry/Reject 结构检查；`None` 和 `AcceptOnly` 会得到
+带类型的能力 skip，且不会调用不支持的 disposition。结构检查只验证 SPI 返回值和 invalid-token
+错误。现有 settlement hook 仍负责 provider 特有的行为证据：验证 Retry 后原消息可恢复、Reject
+后不再重投递，并检查重复调用没有额外副作用。结算返回成功或短时 `TimedOut` 都不能证明恢复
+成功或永久终止。远端 provider 应按自身恢复协议设计 fixture；runner 不承诺跨 provider 即时重投递。
 
 Provider hook 提供只有 provider 自身才能观察的 fixture：重复/冲突 settlement 的效果、
 receive/settlement/close/shutdown cancellation、durable recovery 与 ephemeral cleanup。

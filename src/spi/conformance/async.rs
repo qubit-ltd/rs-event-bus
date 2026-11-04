@@ -41,10 +41,13 @@ use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::TransportPayload;
 
-/// Runs common structural checks against a fresh asynchronous provider.
-/// The factory is called again for each payload and subscription-mode
-/// combination so one case cannot contaminate later cases through shared
-/// provider state.
+/// Runs common structural checks against asynchronous provider instances.
+/// The factory is called for each payload-mode and subscription-mode
+/// combination. Multiple report cases within a combination intentionally
+/// share that provider and receiver; pending-close, foreign-token, and
+/// Retry/Reject settlement probes use independent instances. Each factory
+/// result must have independent provider state; the runner cannot prevent
+/// factories from sharing an underlying transport.
 ///
 /// # Type Parameters
 /// - `F`: asynchronous provider factory type.
@@ -117,6 +120,7 @@ where
                 factory().await
             };
             run_payload_case(spi, case_id, durability, &mut report).await;
+            record_async_retry_reject_settlement(&factory, case_id, durability, &mut report).await;
             record_foreign_settlement(&factory, case_id, durability, &mut report).await;
         }
     }
@@ -199,6 +203,183 @@ where
     }
     report.apply_profile(profile);
     report
+}
+
+async fn record_async_retry_reject_settlement<F, Fut>(
+    factory: &F,
+    payload_case_id: &'static str,
+    durability: SubscriptionDurability,
+    report: &mut ConformanceReport,
+) where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
+{
+    let cases = [
+        (
+            DeliveryDisposition::Retry,
+            "retry",
+            "settlement-retry-first",
+            "settlement-retry-idempotence",
+            "settlement-retry-conflict",
+        ),
+        (
+            DeliveryDisposition::Reject,
+            "reject",
+            "settlement-reject-first",
+            "settlement-reject-idempotence",
+            "settlement-reject-conflict",
+        ),
+    ];
+    for (disposition, name, first_id, repeat_id, conflict_id) in cases {
+        let spi = factory().await;
+        if spi.capabilities().settlement() != SettlementCapabilities::AcceptRetryReject {
+            for id in [first_id, repeat_id, conflict_id] {
+                report.push(ConformanceCase::Skipped {
+                    case_id: id.into(),
+                    reason: ConformanceSkipReason::UnsupportedCapability {
+                        capability: "retry-reject-settlement",
+                    },
+                });
+            }
+            record_async_shutdown(
+                report,
+                spi.as_ref(),
+                "settlement-probe-shutdown",
+                "shutdown after unsupported Retry/Reject",
+                "async shutdown",
+            )
+            .await;
+            continue;
+        }
+        let mut subscription = None;
+        let outcome = async {
+            let scope = ProbeScope::new().map_err(|e| format!("{name} identity: {e}"))?;
+            subscription = Some(
+                spi.subscribe(probe_request(7, durability, &scope))
+                    .await
+                    .map_err(|e| format!("{name} subscribe: {e}"))?,
+            );
+            let expected = probe_message(probe_payload(payload_case_id), spi.capabilities(), &scope);
+            let ack = spi
+                .publish(probe_message(
+                    probe_payload(payload_case_id),
+                    spi.capabilities(),
+                    &scope,
+                ))
+                .await
+                .map_err(|e| format!("{name} publish: {e}"))?;
+            validate_probe_acknowledgement(&ack, spi.capabilities().publish_visibility(), Id::new(7))?;
+            let mut message = match subscription
+                .as_mut()
+                .expect("subscription created")
+                .receive(Duration::from_secs(1))
+                .await
+                .map_err(|e| format!("{name} receive: {e}"))?
+            {
+                ReceiveOutcome::Message(message) => message,
+                _ => return Err(format!("{name} receive returned no message")),
+            };
+            if let Some(difference) = message_difference(&message, &expected) {
+                return Err(format!("{name} received message differs at {difference}"));
+            }
+            message
+                .take_settlement()
+                .ok_or_else(|| format!("{name} receive omitted settlement token"))
+        }
+        .await;
+        match outcome {
+            Err(detail) => {
+                report.push(ConformanceCase::Failed {
+                    case_id: first_id.into(),
+                    detail,
+                });
+                report.push(ConformanceCase::Skipped {
+                    case_id: repeat_id.into(),
+                    reason: ConformanceSkipReason::MissingFixture {
+                        detail: format!("{name} setup failed"),
+                    },
+                });
+                report.push(ConformanceCase::Skipped {
+                    case_id: conflict_id.into(),
+                    reason: ConformanceSkipReason::MissingFixture {
+                        detail: format!("{name} setup failed"),
+                    },
+                });
+            }
+            Ok(token) => {
+                match subscription
+                    .as_mut()
+                    .expect("subscription created")
+                    .settle(&token, disposition)
+                    .await
+                {
+                    Ok(()) => report.push(ConformanceCase::Passed {
+                        case_id: first_id.into(),
+                    }),
+                    Err(e) => report.push(ConformanceCase::Failed {
+                        case_id: first_id.into(),
+                        detail: format!("first {name} failed: {e}"),
+                    }),
+                }
+                match subscription
+                    .as_mut()
+                    .expect("subscription created")
+                    .settle(&token, disposition)
+                    .await
+                {
+                    Ok(()) => report.push(ConformanceCase::Passed {
+                        case_id: repeat_id.into(),
+                    }),
+                    Err(e) => report.push(ConformanceCase::Failed {
+                        case_id: repeat_id.into(),
+                        detail: format!("repeated {name} failed: {e}"),
+                    }),
+                }
+                let conflicts = match disposition {
+                    DeliveryDisposition::Retry => [DeliveryDisposition::Accept, DeliveryDisposition::Reject],
+                    _ => [DeliveryDisposition::Accept, DeliveryDisposition::Retry],
+                };
+                let mut failure = None;
+                for other in conflicts {
+                    match subscription
+                        .as_mut()
+                        .expect("subscription created")
+                        .settle(&token, other)
+                        .await
+                    {
+                        Err(error) if error.kind() == "invalid_settlement_token" => (),
+                        Err(error) => failure = Some(format!("conflicting {other:?} returned wrong error: {error}")),
+                        Ok(()) => failure = Some(format!("conflicting {other:?} was accepted")),
+                    }
+                }
+                report.push(match failure {
+                    Some(detail) => ConformanceCase::Failed {
+                        case_id: conflict_id.into(),
+                        detail,
+                    },
+                    None => ConformanceCase::Passed {
+                        case_id: conflict_id.into(),
+                    },
+                });
+            }
+        }
+        if let Some(subscription) = subscription.as_mut() {
+            if let Err(error) = subscription.close().await {
+                report.push(ConformanceCase::Failed {
+                    case_id: "settlement-probe-close".into(),
+                    detail: format!("async {name} close failed: {error}"),
+                });
+            }
+        }
+        record_async_shutdown(
+            report,
+            spi.as_ref(),
+            "settlement-probe-shutdown",
+            "immediate settlement probe shutdown",
+            "async shutdown",
+        )
+        .await;
+    }
 }
 
 async fn record_foreign_settlement<F, Fut>(

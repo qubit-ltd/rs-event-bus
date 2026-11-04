@@ -37,7 +37,16 @@ pub type AsyncConformanceCheck =
 /// ```
 #[derive(Default)]
 pub struct AsyncConformanceHooks {
-    /// Checks repeat-settlement idempotence and conflicting dispositions.
+    /// Checks settlement behavior using provider-specific fixtures.
+    ///
+    /// For providers declaring `AcceptRetryReject`, this fixture should verify
+    /// that Retry makes the original delivery available again and Reject
+    /// terminates it, including that repeating either disposition adds no
+    /// duplicate effect. The runner's structural probes only check returned
+    /// results and token errors; a successful return alone does not prove
+    /// delivery recovery or permanent termination. Remote providers need a
+    /// bounded fixture matching their recovery protocol; a short timeout is
+    /// not proof that a rejected message cannot reappear.
     pub settlement: Option<AsyncConformanceCheck>,
     /// Checks cancellation safety using a provider-owned receive fixture.
     pub receive_cancellation: Option<AsyncConformanceCheck>,

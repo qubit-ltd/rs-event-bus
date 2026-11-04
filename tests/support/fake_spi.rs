@@ -94,6 +94,13 @@ pub(crate) enum ForeignSettlementBehavior {
     CorruptOwner,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SettlementFault {
+    FirstFails(DeliveryDisposition),
+    RepeatFails(DeliveryDisposition),
+    AcceptsConflict(DeliveryDisposition),
+}
+
 #[derive(Default)]
 struct QueueState {
     topic: Option<TopicAddress>,
@@ -104,6 +111,8 @@ struct QueueState {
     closed: bool,
     settled: HashMap<String, DeliveryDisposition>,
     settlement_dispositions: Vec<DeliveryDisposition>,
+    settlement_fault: Option<SettlementFault>,
+    disposition_calls: [usize; 3],
     wakers: Vec<Waker>,
     fail_next_receive: bool,
     fail_next_settle: bool,
@@ -188,6 +197,15 @@ fn foreign_settlement_error() -> SpiError {
     }
 }
 
+fn disposition_index(disposition: DeliveryDisposition) -> usize {
+    match disposition {
+        DeliveryDisposition::Accept => 0,
+        DeliveryDisposition::Retry => 1,
+        DeliveryDisposition::Reject => 2,
+        _ => 0,
+    }
+}
+
 fn settlement_token_key(token: &SettlementToken) -> String {
     token
         .downcast_ref::<String>()
@@ -249,6 +267,7 @@ pub(crate) struct FakeEventBusSpi {
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
     foreign_settlement_behavior: ForeignSettlementBehavior,
     foreign_settlement_attempted: Arc<AtomicBool>,
+    settlement_fault: Arc<Mutex<Option<SettlementFault>>>,
 }
 
 impl FakeEventBusSpi {
@@ -269,6 +288,7 @@ impl FakeEventBusSpi {
             conformance_tamper: Arc::default(),
             foreign_settlement_behavior: ForeignSettlementBehavior::default(),
             foreign_settlement_attempted: Arc::default(),
+            settlement_fault: Arc::default(),
         }
     }
 
@@ -298,6 +318,17 @@ impl FakeEventBusSpi {
     }
     pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
         *self.conformance_tamper.lock().unwrap() = Some(tamper);
+    }
+    pub(crate) fn inject_settlement_fault(&self, fault: SettlementFault) {
+        *self.settlement_fault.lock().unwrap() = Some(fault);
+    }
+    pub(crate) fn settlement_dispositions(&self) -> Vec<DeliveryDisposition> {
+        self.queues
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(_, queue)| queue.0.lock().unwrap().settlement_dispositions.clone())
+            .collect()
     }
     pub(crate) fn set_foreign_settlement_behavior(&mut self, behavior: ForeignSettlementBehavior) {
         self.foreign_settlement_behavior = behavior;
@@ -453,6 +484,7 @@ impl EventBusSpi for FakeEventBusSpi {
         let queue = Arc::new((
             Mutex::new(QueueState {
                 topic: Some(request.topic().clone()),
+                settlement_fault: *self.settlement_fault.lock().unwrap(),
                 ..QueueState::default()
             }),
             Condvar::new(),
@@ -565,11 +597,32 @@ impl EventSubscriptionSpi for FakeEventSubscriptionSpi {
         }
         let key = settlement_token_key(token);
         let mut state = self.queue.0.lock().unwrap();
+        let index = disposition_index(disposition);
+        state.disposition_calls[index] += 1;
+        match state.settlement_fault {
+            Some(SettlementFault::FirstFails(target))
+                if target == disposition && state.disposition_calls[index] == 1 =>
+            {
+                return Err(spi_error("settle"));
+            }
+            Some(SettlementFault::RepeatFails(target))
+                if target == disposition && state.disposition_calls[index] == 2 =>
+            {
+                return Err(spi_error("settle"));
+            }
+            Some(SettlementFault::AcceptsConflict(target))
+                if target != disposition && state.settled.get(&key) == Some(&target) =>
+            {
+                return Ok(());
+            }
+            _ => (),
+        }
         match state.settled.get(&key) {
             Some(previous) if *previous == disposition => Ok(()),
             Some(_) => Err(conflicting_settlement_error()),
             None => {
                 state.settled.insert(key, disposition);
+                state.settlement_dispositions.push(disposition);
                 Ok(())
             }
         }
@@ -602,6 +655,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
     foreign_settlement_behavior: ForeignSettlementBehavior,
     foreign_settlement_attempted: Arc<AtomicBool>,
+    settlement_fault: Arc<Mutex<Option<SettlementFault>>>,
     subscribe_paused: Arc<AtomicBool>,
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
@@ -637,6 +691,7 @@ impl FakeAsyncEventBusSpi {
             conformance_tamper: Arc::default(),
             foreign_settlement_behavior: ForeignSettlementBehavior::default(),
             foreign_settlement_attempted: Arc::default(),
+            settlement_fault: Arc::default(),
             subscribe_paused: Arc::default(),
             subscribe_wakers: Arc::default(),
             close_paused: Arc::default(),
@@ -730,6 +785,9 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
         *self.conformance_tamper.lock().unwrap() = Some(tamper);
+    }
+    pub(crate) fn inject_settlement_fault(&self, fault: SettlementFault) {
+        *self.settlement_fault.lock().unwrap() = Some(fault);
     }
     pub(crate) fn set_foreign_settlement_behavior(&mut self, behavior: ForeignSettlementBehavior) {
         self.foreign_settlement_behavior = behavior;
@@ -872,6 +930,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         }
         let paused = self.subscribe_paused.clone();
         let wakers = self.subscribe_wakers.clone();
+        let settlement_fault = *self.settlement_fault.lock().unwrap();
         Box::pin(async move {
             poll_fn(|cx| {
                 if !paused.load(Ordering::Acquire) {
@@ -886,6 +945,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
             .await;
             let queue = Arc::new(Mutex::new(QueueState {
                 topic: Some(request.topic().clone()),
+                settlement_fault,
                 ..QueueState::default()
             }));
             self.queues
@@ -1048,15 +1108,34 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             }
             let key = settlement_token_key(token);
             let mut state = self.queue.lock().unwrap();
-            match state.settled.get(&key) {
-                Some(previous) if *previous == disposition => Ok(()),
-                Some(_) => Err(conflicting_settlement_error()),
-                None => {
-                    state.settled.insert(key, disposition);
-                    state.settlement_dispositions.push(disposition);
-                    state.unsettled = state.unsettled.saturating_sub(1);
+            let index = disposition_index(disposition);
+            state.disposition_calls[index] += 1;
+            match state.settlement_fault {
+                Some(SettlementFault::FirstFails(target))
+                    if target == disposition && state.disposition_calls[index] == 1 =>
+                {
+                    Err(spi_error("settle"))
+                }
+                Some(SettlementFault::RepeatFails(target))
+                    if target == disposition && state.disposition_calls[index] == 2 =>
+                {
+                    Err(spi_error("settle"))
+                }
+                Some(SettlementFault::AcceptsConflict(target))
+                    if target != disposition && state.settled.get(&key) == Some(&target) =>
+                {
                     Ok(())
                 }
+                _ => match state.settled.get(&key) {
+                    Some(previous) if *previous == disposition => Ok(()),
+                    Some(_) => Err(conflicting_settlement_error()),
+                    None => {
+                        state.settled.insert(key, disposition);
+                        state.settlement_dispositions.push(disposition);
+                        state.unsettled = state.unsettled.saturating_sub(1);
+                        Ok(())
+                    }
+                },
             }
         };
         Box::pin(async move { result })

@@ -28,3 +28,7 @@ pub(crate) mod settlement_probe;
 
 #[allow(dead_code)]
 pub(crate) mod sync_bus_cleanup;
+
+#[cfg(feature = "conformance")]
+#[allow(dead_code)]
+pub(crate) mod settlement_conformance;
