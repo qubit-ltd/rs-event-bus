@@ -9,11 +9,15 @@
 
 use std::collections::HashMap;
 use std::mem::take;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
+
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Wakes tasks waiting for asynchronous facade state changes.
 #[derive(Default)]
@@ -26,10 +30,15 @@ pub(in crate::facade) struct AsyncSignal {
 
 impl AsyncSignal {
     /// Wakes all registered waiters after releasing the registry lock.
+    ///
+    /// A panic from one waiter's wake is isolated so the remaining waiters
+    /// still receive notification.
     pub(in crate::facade) fn notify(&self) {
         let wakers = take(&mut *self.wakers.lock().unwrap_or_else(PoisonError::into_inner));
         for (_, waker) in wakers {
-            waker.wake();
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| waker.wake())) {
+                dispose_panic_payload(payload);
+            }
         }
     }
 
@@ -73,6 +82,8 @@ impl AsyncSignal {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
     use std::sync::Arc;
     use std::sync::TryLockError;
     use std::sync::Weak;
@@ -80,9 +91,94 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::task::RawWaker;
     use std::task::RawWakerVTable;
+    use std::task::Wake;
     use std::task::Waker;
 
     use super::AsyncSignal;
+
+    struct PanicControl {
+        panic_id: AtomicUsize,
+        counts: Vec<AtomicUsize>,
+        panic_payload_drop: bool,
+    }
+
+    struct ConfigurableWake {
+        id: usize,
+        control: Arc<PanicControl>,
+    }
+
+    struct DropPanicPayload;
+
+    impl Drop for DropPanicPayload {
+        fn drop(&mut self) {
+            panic!("intentional panic payload drop panic");
+        }
+    }
+
+    impl Wake for ConfigurableWake {
+        fn wake(self: Arc<Self>) {
+            self.control.counts[self.id].fetch_add(1, Ordering::Relaxed);
+            if self.control.panic_id.load(Ordering::Relaxed) == self.id {
+                if self.control.panic_payload_drop {
+                    std::panic::panic_any(DropPanicPayload);
+                }
+                panic!("intentional waker panic");
+            }
+        }
+    }
+
+    fn assert_waker_panic_is_isolated(panic_payload_drop: bool) {
+        const WAITER_COUNT: usize = 33;
+
+        let signal = AsyncSignal::default();
+        let control = Arc::new(PanicControl {
+            panic_id: AtomicUsize::new(usize::MAX),
+            counts: (0..WAITER_COUNT).map(|_| AtomicUsize::new(0)).collect(),
+            panic_payload_drop,
+        });
+        for id in 0..WAITER_COUNT {
+            let waker = Waker::from(Arc::new(ConfigurableWake {
+                id,
+                control: Arc::clone(&control),
+            }));
+            signal.register_waiter(id as u64, &waker);
+        }
+
+        let panic_id = *signal.wakers.lock().unwrap().keys().next().unwrap() as usize;
+        control.panic_id.store(panic_id, Ordering::Relaxed);
+
+        let result = catch_unwind(AssertUnwindSafe(|| signal.notify()));
+        if let Err(payload) = result {
+            // Avoid a second panic while demonstrating that notify unwound.
+            std::mem::forget(payload);
+            panic!("notify propagated a waker panic");
+        }
+        assert!(control.counts.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+        assert!(signal.wakers.lock().unwrap().is_empty());
+
+        signal.notify();
+        assert!(control.counts.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+
+        let waker = Waker::from(Arc::new(ConfigurableWake {
+            id: panic_id,
+            control: Arc::clone(&control),
+        }));
+        control.panic_id.store(usize::MAX, Ordering::Relaxed);
+        signal.register_waiter(WAITER_COUNT as u64, &waker);
+        signal.notify();
+        assert_eq!(2, control.counts[panic_id].load(Ordering::Relaxed));
+        assert!(signal.wakers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_panicking_waker_does_not_strand_other_waiters() {
+        assert_waker_panic_is_isolated(false);
+    }
+
+    #[test]
+    fn test_panicking_payload_drop_does_not_strand_other_waiters() {
+        assert_waker_panic_is_isolated(true);
+    }
 
     struct CloneDropProbe {
         signal: Weak<AsyncSignal>,
