@@ -1985,6 +1985,6 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## Local 容量诊断
 
-local provider 通过直接调用 `local_with_monitor` 的构造入口提供 `LocalCapacityMonitor`。registry 构造和返回 opaque acknowledgement 的 Redis provider 不提供此能力。快照在预算互斥锁内复制现有 outstanding 预算和饱和拒绝计数。接纳路径的锁顺序仍为 queue 后 budget；快照只获取 budget 锁。句柄仅持有 accounting 状态的 `Arc` 和不可变队列容量，不保留队列或 payload。
+同步与异步 local facade 通过 `local_with_config_and_monitor(local_config, facade_config)` 提供 `LocalCapacityMonitor`。现有 `local_with_monitor` 入口使用 `EventBusFacadeConfig::default()` 委托给新入口。新入口组合 local 队列及 outstanding 上限与 facade middleware、codec、delivery 配置，并继续执行常规 facade 校验；构造错误统一为 `ProviderError::Creation`，并保留 provider 或 facade 错误源。registry 构造和返回 opaque acknowledgement 的 Redis provider 不提供此能力。快照在预算互斥锁内复制现有 outstanding 预算和饱和拒绝计数。接纳路径的锁顺序仍为 queue 后 budget；快照只获取 budget 锁。句柄仅持有 accounting 状态的 `Arc` 和不可变队列容量，不保留队列或 payload。
 
 快照条数统计接纳后直到终态释放的投递副本，包括 pending 和 in-flight。声明权重是应用记账值，不是 RSS；未设置权重上限表示禁用，报告占用为零。拒绝计数按目标尝试累计，包括扇出的每个目标和每次 retry。快照在锁定时点内部一致，但不与队列读取同步，也不保证后续发布会被接纳。`DestinationAdmission::new` 仍创建未分类拒绝（`None`）；local 拒绝带有类别。新增私有字段会反映在派生的 `Debug` 和 `Eq` 中，因此旧的未分类拒绝可能不等于其余内容相同但带类别的 local 拒绝。

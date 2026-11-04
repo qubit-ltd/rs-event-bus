@@ -1057,6 +1057,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -1079,7 +1080,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(
@@ -1915,7 +1916,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ### 查看 local 容量与拒绝类别
 
-直接构造 local provider 时，可使用 `EventBus::local_with_monitor` 或异步等价入口取得可克隆的 `LocalCapacityMonitor`。通过 registry 构造不会暴露此 local 专用句柄。快照报告尚未终态释放的已接纳投递副本、配置上限以及四类饱和拒绝计数。占用包含 pending 和 in-flight；retry 在终态结算前仍占一个槽位。扇出按每个接纳目标计费，retry 会再次计作目标尝试。声明权重是应用提供的计量，不是进程常驻内存。`max_total_outstanding_weight_bytes: None` 表示禁用权重预算，此时占用权重为零。
+直接构造 local provider 时，可使用 `EventBus::local_with_monitor` 或异步等价入口，在默认 facade 配置下取得可克隆的 `LocalCapacityMonitor`。这两个入口委托给 `local_with_config_and_monitor` 并传入 `EventBusFacadeConfig::default()`。若需同时配置自定义 middleware、codec 或 delivery scheduling，请使用 `EventBus::local_with_config_and_monitor(local_config, facade_config)` 或异步等价入口；两份配置仍经过 facade 校验。通过 registry 构造不会暴露此 local 专用句柄。快照报告尚未终态释放的已接纳投递副本、配置上限以及四类饱和拒绝计数。占用包含 pending 和 in-flight；retry 在终态结算前仍占一个槽位。扇出按每个接纳目标计费，retry 会再次计作目标尝试。声明权重是应用提供的计量，不是进程常驻内存。`max_total_outstanding_weight_bytes: None` 表示禁用权重预算，此时占用权重为零。
 
 快照是在预算锁下取得的一致观察，不会为后续发布预留容量或保证后续发布成功。读取会短暂等待该锁。监控句柄只保留整数记账状态，不会延长队列或 payload 生命周期。下例由文档消费 fixture 编译：
 
@@ -1929,6 +1930,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -1951,7 +1953,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(

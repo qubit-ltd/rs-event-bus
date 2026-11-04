@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -35,7 +36,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(

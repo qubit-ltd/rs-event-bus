@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-from pathlib import Path
+import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts/check_documentation_examples.py"
@@ -45,11 +48,12 @@ DOC_LINKS = (
     ("Design", "doc/design.md"),
     ("设计文档", "doc/design.zh_CN.md"),
 )
+DOCUMENT_PATHS = tuple(path for _, path in DOC_LINKS)
 
 
 case_count = 0
 
-def run_case(mutator):
+def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=None):
     global case_count
     case_count += 1
     with tempfile.TemporaryDirectory() as directory:
@@ -90,13 +94,25 @@ def run_case(mutator):
             + "pub mod example;\n"
         )
         lib_path.write_text(lib_document, encoding="utf-8")
+        if snapshot:
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Documentation Test"], cwd=root, check=True)
+            tracked_documents = [path for path in DOCUMENT_PATHS if path != snapshot_missing]
+            subprocess.run(["git", "add", *tracked_documents], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "snapshot documents"], cwd=root, check=True)
+            snapshot_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            lib_path.write_text(lib_path.read_text(encoding="utf-8").replace(DOC_SHA, snapshot_sha), encoding="utf-8")
         mutator(root)
         return subprocess.run(
-            ["python3", "scripts/check_documentation_examples.py"],
+            [sys.executable, "scripts/check_documentation_examples.py", *args],
             cwd=root,
             capture_output=True,
             text=True,
             check=False,
+            env=git_env,
         )
 
 
@@ -280,4 +296,75 @@ result = run_case(normalize_lib_blank_lines)
 assert result.returncode == 0, result.stdout + result.stderr
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
-print(f"documentation example checker: {case_count} cases passed (examples, snapshot links, safety drift, nested paths, traversal and symlink escape)")
+
+SNAPSHOT_ARGS = ("--check-snapshot-content",)
+result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True)
+assert result.returncode == 0, result.stdout + result.stderr
+
+def change_user_guide(root):
+    path = root / "doc/user_guide.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\nchanged after snapshot\n", encoding="utf-8")
+
+
+result = run_case(change_user_guide, args=SNAPSHOT_ARGS, snapshot=True)
+assert result.returncode != 0 and "doc/user_guide.md: snapshot " in result.stdout + result.stderr
+assert "content drift" in result.stdout + result.stderr
+
+result = run_case(lambda root: None, args=SNAPSHOT_ARGS, snapshot=True,
+                  snapshot_missing="doc/design.zh_CN.md")
+assert result.returncode != 0 and "doc/design.zh_CN.md: snapshot " in result.stdout + result.stderr
+assert "unavailable" in result.stdout + result.stderr
+
+def unknown_snapshot(root):
+    path = root / LIB
+    text = path.read_text(encoding="utf-8")
+    path.write_text(re.sub(r"blob/[0-9a-f]{40}/", "blob/0000000000000000000000000000000000000000/", text), encoding="utf-8")
+
+
+result = run_case(unknown_snapshot, args=SNAPSHOT_ARGS, snapshot=True)
+assert result.returncode != 0 and "snapshot 0000000000000000000000000000000000000000 unavailable" in result.stdout + result.stderr
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory) / "repository"
+    root.mkdir()
+    git_bin = root.parent / "bin"
+    git_bin.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = str(git_bin)
+    result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True, git_env=env)
+    assert result.returncode != 0 and "unable to run git" in result.stdout + result.stderr
+
+# The fetch flag is explicit: a wrapper simulates a missing object, records the
+# exact fetch arguments, and delegates content reads to the real Git binary.
+with tempfile.TemporaryDirectory() as directory:
+    wrapper_dir = Path(directory) / "bin"
+    wrapper_dir.mkdir()
+    git_real = shutil.which("git")
+    log_path = Path(directory) / "git-args.log"
+    wrapper = wrapper_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> '{log_path}'\n"
+        "if [ \"$1\" = cat-file ]; then exit 1; fi\n"
+        "if [ \"$1\" = fetch ]; then\n"
+        "  if [ \"$MOCK_FETCH_FAIL\" = 1 ]; then echo 'mock fetch failed' >&2; exit 9; fi\n"
+        "  exit 0\n"
+        "fi\n"
+        f"exec '{git_real}' \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(wrapper_dir) + os.pathsep + env.get("PATH", "")
+    fetch_args = ("--check-snapshot-content", "--fetch-snapshot")
+    result = run_case(lambda _root: None, args=fetch_args, snapshot=True, git_env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = log_path.read_text(encoding="utf-8").splitlines()
+    fetch = next((line for line in commands if line.startswith("fetch ")), "")
+    assert fetch.startswith("fetch --no-tags --depth=1 origin "), commands
+    env["MOCK_FETCH_FAIL"] = "1"
+    result = run_case(lambda _root: None, args=fetch_args, snapshot=True, git_env=env)
+    assert result.returncode != 0 and "snapshot " in result.stdout + result.stderr
+    assert "fetch failed: mock fetch failed" in result.stdout + result.stderr
+
+print(f"documentation example checker: {case_count} cases passed (examples, snapshot links/content, safety drift, nested paths, traversal, symlink escape and explicit fetch)")

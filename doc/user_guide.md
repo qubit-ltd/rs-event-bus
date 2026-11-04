@@ -1057,6 +1057,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -1079,7 +1080,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(
@@ -1922,7 +1923,7 @@ release evidence.
 
 ### Inspect local capacity and rejection categories
 
-For direct local construction, use `EventBus::local_with_monitor` (or the async equivalent) to receive a cloneable `LocalCapacityMonitor`. Registry based construction does not expose this local-specific handle. Its snapshot reports outstanding accepted delivery copies, configured limits, and four saturated rejection totals. Outstanding includes both pending and in-flight deliveries; retry keeps a slot until terminal settlement. Fanout is charged per accepted destination, and a retry is another destination attempt. Declared weight is application supplied accounting, not resident memory. `max_total_outstanding_weight_bytes: None` means weight accounting is disabled; in that mode outstanding weight is zero.
+For direct local construction, use `EventBus::local_with_monitor` (or the async equivalent) to receive a cloneable `LocalCapacityMonitor` with default facade settings. These methods delegate to `local_with_config_and_monitor` with `EventBusFacadeConfig::default()`. Use `EventBus::local_with_config_and_monitor(local_config, facade_config)` or its async equivalent when the application needs custom facade middleware, codecs, or delivery scheduling together with the local capacity handle; both configurations still go through facade validation. Registry based construction does not expose this local-specific handle. Its snapshot reports outstanding accepted delivery copies, configured limits, and four saturated rejection totals. Outstanding includes both pending and in-flight deliveries; retry keeps a slot until terminal settlement. Fanout is charged per accepted destination, and a retry is another destination attempt. Declared weight is application supplied accounting, not resident memory. `max_total_outstanding_weight_bytes: None` means weight accounting is disabled; in that mode outstanding weight is zero.
 
 A snapshot is a consistent observation under the budget lock, not a reservation or guarantee that a subsequent publication will fit. Reads briefly wait for that lock. The handle retains accounting integers only, so it does not keep queues or payloads alive. The example below is compiled in the documentation consumer fixture:
 
@@ -1936,6 +1937,7 @@ use std::time::Duration;
 
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -1958,7 +1960,7 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
         .queue_capacity(2_048)
         .max_total_outstanding(20_000)
         .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_monitor(local)?;
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
     let _subscription = bus.subscribe(
