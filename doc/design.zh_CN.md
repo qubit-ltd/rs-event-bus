@@ -1329,7 +1329,8 @@ LocalQueueState
   `Arc::ptr_eq` 校验 provider 私有 settlement handle 后按 disposition 处理；未知或
   handle 不匹配的 token → `InvalidSettlementToken`；同 token 重复 `Accept` 幂等返回 `Ok`。
 - `close`：标记关闭、清空 pending 与 in-flight（Ephemeral 语义：未 settle 的消息丢弃），
-  从路由移除。
+  从路由移除。close 和 shutdown 会先释放容量、更新生命周期状态并唤醒等待者，之后才在内部
+  锁外析构被丢弃的 payload。若 payload 析构 panic，panic 仍会传播，但清理和通知已经完成。
 - `wait_for_topic_idle`：遍历该 topic 全部活跃队列，等待 `pending == 0 && in_flight == 0`。
 - `shutdown`：`Graceful` 等待所有队列空或超时；随后关闭全部队列。幂等；之后
   publish/subscribe → `Closed`。
@@ -1348,7 +1349,8 @@ LocalQueueState
   mailbox，也会各自收到广播消息，与同步 local 语义一致。
 - 容量与预算共享同一套 `LocalQueue`/`OutstandingBudget` 实现，`AsyncLocalShared`
   额外持有 `AsyncSignal changed` 与 `Arc<dyn Timer>`。
-- `close_mailbox` 同为 Ephemeral 语义。
+- `close_mailbox` 同为 Ephemeral 语义。close 和 shutdown 会先释放容量、更新生命周期状态并唤醒
+  等待者，之后才在内部锁外析构被丢弃的 payload；析构 panic 仍会在清理和通知完成后传播。
 - `AsyncLocalEventBusSpi::with_timer(config, timer)` 允许测试注入手动 timer；构造时会同时
   校验 queue 与 provider 总容量，零值返回配置错误；
   `AsyncLocalEventBusProvider` 通过 registry 创建时使用 `qubit_clock::StdTimer`。

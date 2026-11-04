@@ -1422,6 +1422,9 @@ capacity first must inspect per-destination receipt entries instead.
   (idempotent).
 - `close` marks the queue closed and clears pending and in-flight. That is Ephemeral
   semantics: unsettled messages are discarded. The queue is removed from routing.
+  Close and shutdown release capacity, update lifecycle state, and wake waiters before
+  dropping discarded payloads outside internal locks. A payload destructor panic still
+  propagates, after the cleanup and notifications have completed.
 - `wait_for_topic_idle` walks every live queue of the topic and waits until `pending == 0 && in_flight == 0`.
 - `shutdown` with `Graceful` waits until every queue is empty or the timeout fires,
   then closes every queue. The call is idempotent. Later publish and subscribe return `Closed`.
@@ -1443,7 +1446,9 @@ The structure matches the synchronous provider. The waiting primitive and the in
   receives its own broadcast copy, matching synchronous local behavior.
 - Capacity and budget share `LocalQueue` and `OutstandingBudget`. `AsyncLocalShared`
   also holds `AsyncSignal changed` and `Arc<dyn Timer>`.
-- `close_mailbox` is Ephemeral as well.
+- `close_mailbox` is Ephemeral as well. Close and shutdown release capacity, update
+  lifecycle state, and wake waiters before dropping discarded payloads outside internal
+  locks. A payload destructor panic still propagates after cleanup and notifications.
 - `AsyncLocalEventBusSpi::with_timer(config, timer)` lets tests inject a manual timer;
   it validates both queue and provider-wide capacities and returns a configuration
   error for invalid zero limits.

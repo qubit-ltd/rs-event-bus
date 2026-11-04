@@ -203,16 +203,16 @@ impl EventSubscriptionSpi for LocalEventSubscription {
     /// # Returns
     /// `Ok(())`; this local close operation reports no SPI errors.
     fn close(&mut self) -> Result<(), SpiError> {
+        let mut discarded = Vec::new();
         {
             let mut state = self.queue.lock();
             if !state.closed {
                 state.closed = true;
-                let discarded = state.clear_pending();
+                discarded = state.clear_pending();
                 let weight = discarded.iter().map(|event| event.weight_bytes).sum();
                 self.shared.outstanding.release(discarded.len(), weight);
                 self.queue.ready.notify_all();
                 drop(state);
-                drop(discarded);
             }
         }
         self.queue.async_ready.notify_all();
@@ -230,6 +230,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         }
         drop(state);
         signal_changed(&self.shared);
+        drop(discarded);
         Ok(())
     }
 }

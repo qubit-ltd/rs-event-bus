@@ -427,16 +427,17 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.live_queues()
         };
+        let mut discarded = Vec::new();
         for queue in queues {
             let mut state = queue.lock();
             state.closed = true;
-            let discarded = state.clear_pending();
-            let weight = discarded.iter().map(|event| event.weight_bytes).sum();
-            self.shared.outstanding.release(discarded.len(), weight);
+            let pending = state.clear_pending();
+            let weight = pending.iter().map(|event| event.weight_bytes).sum();
+            self.shared.outstanding.release(pending.len(), weight);
             drop(state);
-            drop(discarded);
             queue.ready.notify_all();
             queue.async_ready.notify_all();
+            discarded.extend(pending);
         }
         self.shared
             .state
@@ -444,6 +445,7 @@ impl EventBusSpi for LocalEventBusSpi {
             .unwrap_or_else(PoisonError::into_inner)
             .shutdown_outcome = Some(outcome);
         signal_changed(&self.shared);
+        drop(discarded);
         Ok(outcome)
     }
 }

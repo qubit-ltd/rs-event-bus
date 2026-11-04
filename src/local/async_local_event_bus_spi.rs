@@ -416,11 +416,11 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 bus.outcome = Some(result);
                 (mailboxes, discarded)
             };
-            drop(discarded);
             for mailbox in mailboxes {
                 mailbox.queue.async_ready.notify_all();
             }
             self.shared.changed.notify_all();
+            drop(discarded);
             Ok(result)
         })
     }
@@ -453,7 +453,7 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
         }
         discarded
     };
-    drop(discarded);
     mailbox.queue.async_ready.notify_all();
     shared.changed.notify_all();
+    drop(discarded);
 }
