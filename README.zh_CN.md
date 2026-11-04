@@ -151,9 +151,9 @@ let bus = registry.create(&EventBusConfig::default())?;
 let orders = OrderService::new(bus.clone());
 ```
 
-`OrderService` 是应用中的示意类型，上面仅展示启动装配片段。若 provider 位于独立 crate，应用需依赖该 crate，并在装配模块写入 `use provider_crate as _;`，让它链接进可执行程序。应用应持有总线和订阅句柄；关闭时先取消订阅，再关闭总线。发现机制和配置边界见[用户手册](doc/user_guide.zh_CN.md)。
+`OrderService` 是应用中的示意类型，上面仅展示启动装配片段。若 provider 位于独立 crate，应用需依赖该 crate，并在装配模块写入 `use provider_crate as _;`，让它链接进可执行程序。应用应持有总线和订阅句柄。整体停机时，先停止业务入口和事件来源，再保留这些句柄并直接驱动有界总线停机。单独停止某个消费者时使用 `cancel()`；同步取消可能无期限等待 handler，local receiver 关闭还会丢弃排队消息。详见[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)；发现机制和配置边界见[用户手册](doc/user_guide.zh_CN.md)。
 
-应用可以用 `EventBus::local(LocalEventBusConfig::default())` 创建总线，在启动时调用前述两个订阅函数并持有返回的句柄；订单事务提交后调用 `publish_order_created`，并在关闭时显式取消订阅、关闭总线。回执只报告 provider 接纳情况，不代表审计和客户视图已写入；事务提交后、发布前进程退出也不会自动补发。接纳结果和投递策略见[用户手册](doc/user_guide.zh_CN.md)。
+应用可以用 `EventBus::local(LocalEventBusConfig::default())` 创建总线，在启动时调用前述两个订阅函数并持有返回的句柄；订单事务提交后调用 `publish_order_created`。回执只报告 provider 接纳情况，不代表审计和客户视图已写入；事务提交后、发布前进程退出也不会自动补发。整体停机时的有界处理顺序见[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)；接纳结果和投递策略见[用户手册](doc/user_guide.zh_CN.md)。
 
 停机时先关闭业务入口和事件来源，再保留订阅句柄并直接驱动有界总线停机。不要在 deadline 之前调用同步 `Subscription::cancel()`：它可能一直等到正在运行的 handler 返回；local receiver 关闭时还会丢弃队列中尚未接收的消息。Graceful 会处理 facade 已接管的工作，但不保证 provider 队列一定在期限内排空。丢弃同步句柄不会取消订阅。异步总线应在后台任务中驱动 `AsyncSubscription::run()`，然后直接驱动有界总线停机；停机会接管保留的 session。如果总线仍在运行，且应用需要单独观察 provider receiver 的关闭错误，可在应用 deadline 内等待 `close()`。若总线停机已经开始，`close()` 会返回 `LifecycleError::Closed`；应继续驱动 shutdown 并获取其结果。异步句柄被丢弃时会请求处置，但无法返回异步 provider 的关闭错误。需要单独观察该错误时，按[生命周期指南](doc/user_guide.zh_CN.md#生命周期等待与停机)在期限内等待 `close()`。
 

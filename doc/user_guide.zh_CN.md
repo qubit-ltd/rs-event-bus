@@ -1796,7 +1796,7 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 
 同步 `wait_for_idle(&topic, timeout)` 等待所用传递实现报告这个主题已没有排队或未处理完的消息；不支持这项查询时返回 `IdleWaitUnsupported`。`wait_for_received_deliveries` 只等待总线已经取到的消息。两者返回空闲，都不能代替检查数据库和失败记录。
 
-如果停机前想把 local 队列里排队的订单事件也尽量处理完，而不只是总线已取到的那几条，可以在取消订阅之前先等待主题空闲。内置 local 支持这项查询；换成其他传递实现时，用 `IdleWaitUnsupported` 分支退回到只等待已取到的消息：
+如果停机前想让 local 队列里排队的订单事件也有机会处理完，而不只是总线已取到的那几条，可以先等待主题空闲，再驱动有界总线停机，并保留订阅句柄交由停机流程清理。内置 local 支持这项查询；换成其他传递实现时，用 `IdleWaitUnsupported` 分支退回到只等待已取到的消息：
 
 ```rust
 use std::time::Duration;

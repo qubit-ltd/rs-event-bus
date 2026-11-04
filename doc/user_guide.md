@@ -1798,7 +1798,7 @@ When an IoC container separates stopping from waiting, have its stop callback ca
 
 Sync `wait_for_idle(&topic, timeout)` waits until the transport reports that the topic has nothing queued or unfinished. A transport that cannot answer returns `IdleWaitUnsupported`. `wait_for_received_deliveries` waits only for messages the bus has already taken. Idle from either call does not replace a check of the database and of failure records.
 
-To finish the order events still queued inside local before shutdown, not only the ones the bus has already taken, wait for the topic to become idle before cancelling the subscriptions. The built-in local provider supports this query. For a transport that does not, the `IdleWaitUnsupported` arm falls back to waiting for received deliveries only:
+To give order events still queued inside local a chance to finish before shutdown, not only the ones the bus has already taken, wait for the topic to become idle before driving bounded bus shutdown. Keep the subscription handles for shutdown. The built-in local provider supports this query. For a transport that does not, the `IdleWaitUnsupported` arm falls back to waiting for received deliveries only:
 
 ```rust
 use std::time::Duration;
