@@ -1183,6 +1183,10 @@ fn test_sync_error_handler_drop_panic_still_settles_delivery() {
     ];
     received.sort();
     assert_eq!(received, ["continue", "fail", "marked"]);
+    let callback_deadline = Instant::now() + Duration::from_secs(2);
+    while callback_count.load(Ordering::Acquire) < 2 && Instant::now() < callback_deadline {
+        thread::yield_now();
+    }
     assert_eq!(
         callback_count.load(Ordering::Acquire),
         2,
