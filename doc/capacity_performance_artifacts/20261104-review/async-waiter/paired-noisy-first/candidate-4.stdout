@@ -1,0 +1,3 @@
+scenario=same_waker operations_per_sample=20000 samples_ns=[4122640, 6124672, 3887615, 3711734, 3665465, 3788569, 2347562] waker_callbacks=0
+scenario=alternating_wakers operations_per_sample=20000 samples_ns=[4932378, 5019774, 5318293, 5015857, 4981143, 5124297, 5185297] waker_callbacks=0
+scenario=publish_receive_settle operations_per_sample=20000 samples_ns=[79229501, 77330208, 84873018, 89679491, 120548690, 78322680, 84695958] waker_callbacks=180000

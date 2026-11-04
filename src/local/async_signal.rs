@@ -48,6 +48,15 @@ impl AsyncSignal {
         AsyncWaiter::new(id, Arc::clone(&self.waiters))
     }
 
+    /// Registers the current task or updates its existing waiter in place.
+    pub(super) fn register_or_update(&self, waiter: &mut Option<AsyncWaiter>, waker: &Waker) {
+        if let Some(waiter) = waiter {
+            waiter.update(waker);
+        } else {
+            *waiter = Some(self.register(waker));
+        }
+    }
+
     /// Removes all registered waiters and wakes them outside the registry lock.
     ///
     /// Each waker's unwind panic is isolated so it cannot interrupt
@@ -81,16 +90,124 @@ impl AsyncSignal {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::sync::TryLockError;
     use std::sync::Weak;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::task::RawWaker;
     use std::task::RawWakerVTable;
     use std::task::Wake;
     use std::task::Waker;
+    use std::thread;
 
     use super::AsyncSignal;
+
+    struct CountedRawWaker {
+        clones: AtomicUsize,
+        wakes: AtomicUsize,
+    }
+
+    unsafe fn clone_counted(pointer: *const ()) -> RawWaker {
+        // SAFETY: Every pointer is owned by an Arc and retained by the vtable.
+        let state = unsafe { &*pointer.cast::<CountedRawWaker>() };
+        state.clones.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: The returned RawWaker receives exactly one strong reference.
+        unsafe { Arc::<CountedRawWaker>::increment_strong_count(pointer.cast()) };
+        RawWaker::new(pointer, &COUNTED_VTABLE)
+    }
+
+    unsafe fn wake_counted(pointer: *const ()) {
+        // SAFETY: wake consumes the owned reference represented by this waker.
+        let state = unsafe { Arc::<CountedRawWaker>::from_raw(pointer.cast()) };
+        state.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe fn wake_counted_by_ref(pointer: *const ()) {
+        // SAFETY: wake_by_ref borrows an Arc reference retained by the waker.
+        let state = unsafe { &*pointer.cast::<CountedRawWaker>() };
+        state.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe fn drop_counted(pointer: *const ()) {
+        // SAFETY: drop consumes the owned reference represented by this waker.
+        drop(unsafe { Arc::<CountedRawWaker>::from_raw(pointer.cast()) });
+    }
+
+    static COUNTED_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_counted, wake_counted, wake_counted_by_ref, drop_counted);
+
+    fn counted_waker() -> (Waker, Arc<CountedRawWaker>) {
+        let state = Arc::new(CountedRawWaker {
+            clones: AtomicUsize::new(0),
+            wakes: AtomicUsize::new(0),
+        });
+        let pointer = Arc::into_raw(state.clone()).cast();
+        // SAFETY: The vtable owns and releases the Arc reference above.
+        (
+            unsafe { Waker::from_raw(RawWaker::new(pointer, &COUNTED_VTABLE)) },
+            state,
+        )
+    }
+
+    struct CloneBarrierWaker {
+        enabled: AtomicBool,
+        entered: Barrier,
+        continue_clone: Barrier,
+        wakes: AtomicUsize,
+    }
+
+    unsafe fn clone_with_barrier(pointer: *const ()) -> RawWaker {
+        // SAFETY: The raw waker owns an Arc reference managed by this vtable.
+        let state = unsafe { &*pointer.cast::<CloneBarrierWaker>() };
+        if state.enabled.load(Ordering::SeqCst) {
+            state.entered.wait();
+            state.continue_clone.wait();
+        }
+        // SAFETY: The cloned RawWaker owns one new strong reference.
+        unsafe { Arc::<CloneBarrierWaker>::increment_strong_count(pointer.cast()) };
+        RawWaker::new(pointer, &CLONE_BARRIER_VTABLE)
+    }
+
+    unsafe fn wake_with_barrier(pointer: *const ()) {
+        // SAFETY: wake consumes the Arc reference owned by the RawWaker.
+        let state = unsafe { Arc::<CloneBarrierWaker>::from_raw(pointer.cast()) };
+        state.wakes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn drop_with_barrier(pointer: *const ()) {
+        // SAFETY: drop consumes the Arc reference owned by the RawWaker.
+        drop(unsafe { Arc::<CloneBarrierWaker>::from_raw(pointer.cast()) });
+    }
+
+    unsafe fn wake_by_ref_with_barrier(pointer: *const ()) {
+        // SAFETY: wake_by_ref only borrows the live Arc reference.
+        let state = unsafe { &*pointer.cast::<CloneBarrierWaker>() };
+        state.wakes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    static CLONE_BARRIER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+        clone_with_barrier,
+        wake_with_barrier,
+        wake_by_ref_with_barrier,
+        drop_with_barrier,
+    );
+
+    fn clone_barrier_waker() -> (Waker, Arc<CloneBarrierWaker>) {
+        let state = Arc::new(CloneBarrierWaker {
+            enabled: AtomicBool::new(false),
+            entered: Barrier::new(2),
+            continue_clone: Barrier::new(2),
+            wakes: AtomicUsize::new(0),
+        });
+        let pointer = Arc::into_raw(state.clone()).cast();
+        // SAFETY: The vtable owns and releases the Arc reference above.
+        (
+            unsafe { Waker::from_raw(RawWaker::new(pointer, &CLONE_BARRIER_VTABLE)) },
+            state,
+        )
+    }
 
     struct CloneDropProbe {
         signal: Weak<AsyncSignal>,
@@ -209,6 +326,104 @@ mod tests {
         signal.notify_all();
         assert_eq!(1, counter.0.load(Ordering::Relaxed));
         drop(registration);
+        assert_eq!(0, signal.waiter_count());
+    }
+
+    #[test]
+    fn test_register_or_update_reuses_same_waker_registration_without_clone() {
+        let signal = AsyncSignal::default();
+        let (waker, counts) = counted_waker();
+        let mut waiter = None;
+        signal.register_or_update(&mut waiter, &waker);
+        assert_eq!(1, counts.clones.load(Ordering::Relaxed));
+        signal.register_or_update(&mut waiter, &waker);
+        assert_eq!(1, counts.clones.load(Ordering::Relaxed));
+        assert_eq!(1, signal.waiter_count());
+        drop(waiter);
+        assert_eq!(0, signal.waiter_count());
+    }
+
+    #[test]
+    fn test_register_or_update_replaces_waker_and_restores_drained_registration() {
+        let signal = AsyncSignal::default();
+        let (first, first_counts) = counted_waker();
+        let (second, second_counts) = counted_waker();
+        let mut waiter = None;
+        signal.register_or_update(&mut waiter, &first);
+        signal.register_or_update(&mut waiter, &second);
+        assert_eq!(1, signal.waiter_count());
+        signal.notify_all();
+        assert_eq!(0, first_counts.wakes.load(Ordering::Relaxed));
+        assert_eq!(1, second_counts.wakes.load(Ordering::Relaxed));
+        assert_eq!(0, signal.waiter_count());
+
+        signal.register_or_update(&mut waiter, &second);
+        assert_eq!(1, signal.waiter_count());
+        signal.notify_all();
+        assert_eq!(2, second_counts.wakes.load(Ordering::Relaxed));
+        drop(waiter);
+        assert_eq!(0, signal.waiter_count());
+    }
+
+    #[test]
+    fn test_register_or_update_keeps_multiple_waiters_isolated() {
+        let signal = AsyncSignal::default();
+        let (first, first_counts) = counted_waker();
+        let (second, second_counts) = counted_waker();
+        let mut first_waiter = None;
+        let mut second_waiter = None;
+        signal.register_or_update(&mut first_waiter, &first);
+        signal.register_or_update(&mut second_waiter, &second);
+        signal.register_or_update(&mut first_waiter, &second);
+        assert_eq!(2, signal.waiter_count());
+        signal.notify_all();
+        assert_eq!(0, first_counts.wakes.load(Ordering::Relaxed));
+        assert_eq!(2, second_counts.wakes.load(Ordering::Relaxed));
+        drop((first_waiter, second_waiter));
+        assert_eq!(0, signal.waiter_count());
+    }
+
+    #[test]
+    fn test_register_or_update_clones_and_drops_wakers_outside_registry_lock() {
+        let signal = Arc::new(AsyncSignal::default());
+        let probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+        });
+        let pointer = Arc::into_raw(probe).cast();
+        // SAFETY: The probe vtable maintains one Arc reference per raw waker.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
+        let original = Waker::from(Arc::new(CountWake::default()));
+        let mut waiter = None;
+        signal.register_or_update(&mut waiter, &original);
+        signal.register_or_update(&mut waiter, &waker);
+        drop(waiter);
+        drop(waker);
+    }
+
+    #[test]
+    fn test_notify_between_waker_clone_and_insert_does_not_lose_registration() {
+        let signal = Arc::new(AsyncSignal::default());
+        let original = Waker::from(Arc::new(CountWake::default()));
+        let (replacement, replacement_state) = clone_barrier_waker();
+        let mut waiter = None;
+        signal.register_or_update(&mut waiter, &original);
+        replacement_state.enabled.store(true, Ordering::SeqCst);
+        let signal_for_update = Arc::clone(&signal);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let updater = thread::spawn(move || {
+            signal_for_update.register_or_update(&mut waiter, &replacement);
+            sender.send(waiter).expect("return updated registration");
+        });
+
+        replacement_state.entered.wait();
+        signal.notify_all();
+        replacement_state.continue_clone.wait();
+        let waiter = receiver.recv().expect("updated waiter");
+        updater.join().expect("update thread");
+        assert_eq!(1, signal.waiter_count());
+        signal.notify_all();
+        assert_eq!(1, replacement_state.wakes.load(Ordering::SeqCst));
+        drop(waiter);
         assert_eq!(0, signal.waiter_count());
     }
 

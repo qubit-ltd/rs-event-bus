@@ -55,6 +55,10 @@ name = "local_threads"
 harness = false
 
 [[bench]]
+name = "async_receive_waiter"
+harness = false
+
+[[bench]]
 name = "retry_saturation"
 harness = false
 

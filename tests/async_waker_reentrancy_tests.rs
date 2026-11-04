@@ -190,12 +190,10 @@ fn old_waker_drop_reenters_same_spi_publish() {
     assert!(receive.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     drop(waker);
     drop(probe);
-    assert!(
-        receive
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_pending()
-    );
+    assert!(matches!(
+        receive.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Ok(ReceiveOutcome::Message(_)))
+    ));
     assert_eq!(
         drops.load(Ordering::SeqCst),
         1,
@@ -541,6 +539,35 @@ fn test_local_waiter_interleavings() {
     );
     assert!(matches!(
         receive.as_mut().poll(&mut Context::from_waker(&waker)),
+        Poll::Ready(Ok(ReceiveOutcome::Message(_)))
+    ));
+    drop(receive);
+    drop(receiver);
+
+    let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).expect("local SPI"));
+    let mut receiver = block_on(spi.subscribe(support::fake_spi::subscription_request())).expect("receiver");
+    let first_wake = Arc::new(CountWake::default());
+    let second_wake = Arc::new(CountWake::default());
+    let first_waker = Waker::from(first_wake.clone());
+    let second_waker = Waker::from(second_wake.clone());
+    let mut receive = receiver.receive(Duration::MAX);
+    assert!(
+        receive
+            .as_mut()
+            .poll(&mut Context::from_waker(&first_waker))
+            .is_pending()
+    );
+    assert!(
+        receive
+            .as_mut()
+            .poll(&mut Context::from_waker(&second_waker))
+            .is_pending()
+    );
+    let _ = block_on(spi.publish(message())).expect("publish after waker replacement");
+    assert_eq!(first_wake.0.load(Ordering::SeqCst), 0, "replaced waiter is not woken");
+    assert!(second_wake.0.load(Ordering::SeqCst) > 0, "current waiter is woken");
+    assert!(matches!(
+        receive.as_mut().poll(&mut Context::from_waker(&second_waker)),
         Poll::Ready(Ok(ReceiveOutcome::Message(_)))
     ));
     drop(receive);

@@ -35,6 +35,26 @@ impl AsyncWaiter {
     pub(in crate::local) fn new(id: u64, waiters: Arc<Mutex<HashMap<u64, Waker>>>) -> Self {
         Self { id, waiters }
     }
+
+    /// Updates this waiter's waker without holding the registry lock while
+    /// cloning or dropping user-owned wakers.
+    pub(in crate::local) fn update(&mut self, waker: &Waker) {
+        let needs_update = {
+            let waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+            !waiters
+                .get(&self.id)
+                .is_some_and(|registered| registered.will_wake(waker))
+        };
+        if !needs_update {
+            return;
+        }
+        let candidate = waker.clone();
+        let replaced = {
+            let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+            waiters.insert(self.id, candidate)
+        };
+        drop(replaced);
+    }
 }
 
 impl Drop for AsyncWaiter {

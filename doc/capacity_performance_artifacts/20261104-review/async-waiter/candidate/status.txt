@@ -1,0 +1,8 @@
+ M Cargo.toml
+ M doc/sync_capacity.md
+ M src/local/async_local_event_subscription.rs
+ M src/local/async_signal.rs
+ M src/local/internal/async_waiter.rs
+ M tests/async_waker_reentrancy_tests.rs
+?? benches/async_receive_waiter.rs
+?? doc/capacity_performance_artifacts/

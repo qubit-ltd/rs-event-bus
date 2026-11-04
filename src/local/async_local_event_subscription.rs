@@ -101,22 +101,22 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
             let mut timer_future: Option<ReceiveTimer> = None;
             let mut timer_wait = None;
             poll_fn(|cx| {
-                let new_waiter = queue.async_ready.register(cx.waker());
+                queue.async_ready.register_or_update(&mut waiter, cx.waker());
                 let mut state = queue.lock();
                 if state.closed {
                     drop(state);
-                    drop(new_waiter);
+                    drop(waiter.take());
                     return Poll::Ready(Ok(ReceiveOutcome::Closed));
                 }
                 match pop_message(&mut state, subscription_id) {
                     Ok(Some(message)) => {
                         drop(state);
-                        drop(new_waiter);
+                        drop(waiter.take());
                         return Poll::Ready(Ok(message));
                     }
                     Err(error) => {
                         drop(state);
-                        drop(new_waiter);
+                        drop(waiter.take());
                         return Poll::Ready(Err(error));
                     }
                     Ok(None) => {}
@@ -126,12 +126,12 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 } else {
                     let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
                         drop(state);
-                        drop(new_waiter);
+                        drop(waiter.take());
                         return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
                     };
                     if remaining.is_zero() {
                         drop(state);
-                        drop(new_waiter);
+                        drop(waiter.take());
                         return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
                     }
                     Some(remaining)
@@ -160,9 +160,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                     timer_wait = None;
                     retired_timer_future = timer_future.take();
                 }
-                let replaced_waiter = waiter.replace(new_waiter);
                 drop(state);
-                drop(replaced_waiter);
                 drop(retired_timer_future);
                 if let Some(timer) = timer_future.as_mut()
                     && let Poll::Ready(result) = Future::poll(timer.as_mut(), cx)
