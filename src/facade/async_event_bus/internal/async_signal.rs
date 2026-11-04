@@ -237,6 +237,7 @@ mod tests {
         // SAFETY: The custom vtable maintains Arc ownership for each raw waker.
         let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
         signal.register_waiter(1, &waker);
+        waker.wake_by_ref();
         signal.notify();
         assert_eq!(probe.wake_count.load(Ordering::Relaxed), 1);
         signal.register_waiter(2, &waker);
@@ -345,10 +346,12 @@ mod tests {
         let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &NOTIFY_DURING_CLONE_VTABLE)) };
 
         signal.register_waiter(1, &waker);
+        waker.wake_by_ref();
+        assert_eq!(1, probe.wake_count.load(Ordering::Relaxed));
 
         assert_eq!(1, signal.wakers.lock().unwrap().len());
         signal.notify();
-        assert_eq!(1, probe.wake_count.load(Ordering::Relaxed));
+        assert_eq!(2, probe.wake_count.load(Ordering::Relaxed));
         drop(waker);
     }
 }
