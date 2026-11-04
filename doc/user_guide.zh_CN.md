@@ -1222,7 +1222,7 @@ let config = EventBusConfig::default()
 let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
-注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个必需容量键和可选权重键都必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 只设置 provider 容量；facade 配置通过 registry 装配。
+注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个必需容量键和可选权重键都必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 使用默认 facade 配置。固定使用 local 且需要自定义 facade 配置时，可直接调用 `EventBus::local_with_config_and_monitor(local_config, facade_config)`，异步总线使用对应入口，详见[查看 local 容量与拒绝类别](#查看-local-容量与拒绝类别)。需要 provider 选择、发现或创建回退时，使用 registry 装配。
 
 编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，因此不提供自动测量的字节上限；上面的可选 local 权重预算依赖应用声明。本地队列的条数限制仍按投递次数计费。
 
