@@ -193,6 +193,26 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// One result per input request, in input order.
+    ///
+    /// # Cancellation
+    /// This future starts publishing only when it is polled. If it is never
+    /// polled, no provider publish is attempted (although constructing the
+    /// input may have application-defined side effects). On normal completion,
+    /// every request has an independent result, and one failure does not stop
+    /// later requests. Dropping the future before completion returns no partial
+    /// [`BatchPublishResult`]: results for completed requests are dropped, but
+    /// their publications are not rolled back. The request being awaited may
+    /// already have been accepted; cancellation does not establish whether it
+    /// was published and does not produce a terminal [`PublishFailure`].
+    /// Requests not yet started are not published by this batch after it is
+    /// dropped; side effects from a custom iterator's destructor are outside
+    /// this guarantee.
+    ///
+    /// If each result must be recoverable, publish requests individually and
+    /// retain each event ID before awaiting. Save each receipt or failure as it
+    /// returns. Reconcile the event ID for a request cancelled while pending,
+    /// or rely on application idempotency; republishing the entire batch can
+    /// duplicate completed and in-flight requests.
     pub async fn publish_all<T, I>(&self, requests: I) -> BatchPublishResult
     where
         T: Send + Sync + 'static,

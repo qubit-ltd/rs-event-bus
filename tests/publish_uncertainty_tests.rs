@@ -94,6 +94,7 @@ struct Scripted {
     generic: bool,
     panics: bool,
     pending: bool,
+    batch_pending_after_first: bool,
     encoded: bool,
     reject_then_pending: bool,
     immediate_ack: bool,
@@ -107,6 +108,7 @@ impl Scripted {
             generic: false,
             panics: false,
             pending: false,
+            batch_pending_after_first: false,
             encoded: false,
             reject_then_pending: false,
             immediate_ack: false,
@@ -209,6 +211,21 @@ impl AsyncEventBusSpi for Scripted {
     }
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
+            if self.batch_pending_after_first {
+                let first = {
+                    let mut calls = self.calls.lock().expect("publish: calls mutex must not be poisoned");
+                    let first = calls.is_empty();
+                    calls.push(message);
+                    first
+                };
+                if first {
+                    return Ok(PublishAcknowledgement::Accepted {
+                        provider_message_id: None,
+                        metadata: Default::default(),
+                    });
+                }
+                std::future::pending().await
+            } else {
             let prior_attempt = !self
                 .calls
                 .lock()
@@ -222,6 +239,7 @@ impl AsyncEventBusSpi for Scripted {
                 std::future::pending().await
             } else {
                 self.attempt(message)
+            }
             }
         })
     }
@@ -657,6 +675,64 @@ fn test_cancelled_pending_async_publish_does_not_invent_a_terminal_result() {
     assert_eq!(bus.publish_metrics().attempts, 1);
     assert_eq!(bus.publish_metrics().errors, 0);
     assert_eq!(bus.publish_metrics().opaque_accepted, 0);
+}
+
+#[test]
+fn test_unpolled_async_batch_has_no_publish_attempts() {
+    let mut scripted = Scripted::new(true);
+    scripted.batch_pending_after_first = true;
+    let spi = Arc::new(scripted);
+    let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").expect("valid provider identity"), spi.clone())
+        .expect("facade accepts scripted provider");
+    let requests = ["batch-a", "batch-b", "batch-c"].map(|id| {
+        PublishRequest::builder()
+            .topic(Topic::new("uncertain.batch").expect("valid topic"))
+            .payload(id.to_owned())
+            .event_id(qubit_event_bus::model::EventId::new(id).expect("valid event ID"))
+            .build()
+            .expect("valid request")
+    });
+    let future = bus.publish_all(requests);
+    drop(future);
+
+    assert!(spi.calls.lock().expect("calls mutex").is_empty());
+    let metrics = bus.publish_metrics();
+    assert_eq!(metrics.attempts, 0);
+    assert_eq!(metrics.cancelled, 0);
+    assert_eq!(metrics.errors, 0);
+}
+
+#[test]
+fn test_cancelled_async_batch_keeps_prefix_effect_and_skips_suffix() {
+    let mut scripted = Scripted::new(true);
+    scripted.batch_pending_after_first = true;
+    let spi = Arc::new(scripted);
+    let bus = AsyncEventBus::from_spi(ProviderId::new("scripted").expect("valid provider identity"), spi.clone())
+        .expect("facade accepts scripted provider");
+    let ids = ["batch-a", "batch-b", "batch-c"];
+    let requests = ids.map(|id| {
+        PublishRequest::builder()
+            .topic(Topic::new("uncertain.batch").expect("valid topic"))
+            .payload(id.to_owned())
+            .event_id(qubit_event_bus::model::EventId::new(id).expect("valid event ID"))
+            .build()
+            .expect("valid request")
+    });
+    let mut future = Box::pin(bus.publish_all(requests));
+    assert!(support::manual_async::poll_once(future.as_mut()).is_pending());
+    let called_ids: Vec<_> = spi.calls.lock().expect("calls mutex").iter().map(|message| message.id().as_str().to_owned()).collect();
+    assert_eq!(called_ids, ["batch-a", "batch-b"]);
+    let metrics = bus.publish_metrics();
+    assert_eq!(metrics.attempts, 2);
+    assert_eq!(metrics.opaque_accepted, 1);
+    drop(future);
+
+    let called_ids: Vec<_> = spi.calls.lock().expect("calls mutex").iter().map(|message| message.id().as_str().to_owned()).collect();
+    assert_eq!(called_ids, ["batch-a", "batch-b"]);
+    let metrics = bus.publish_metrics();
+    assert_eq!(metrics.cancelled, 1);
+    assert_eq!(metrics.errors, 0);
+    assert_eq!(metrics.opaque_accepted, 1);
 }
 /// Minimal deterministic string codec for comparing encoded retry payloads.
 struct TextCodec(ContentType);

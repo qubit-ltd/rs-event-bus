@@ -381,6 +381,18 @@ with `PublishVisibility::DestinationAdmissions` can report destination-level det
 `publish_all` returns `BatchPublishResult`, preserving each request's
 `Result<PublishReceipt, PublishFailure>` in input order. One failure does not stop the later requests.
 
+For the asynchronous facade, the batch begins only when polled. Dropping it
+before completion returns no partial result: completed prefix receipts are
+dropped, but their publications are not rolled back. The currently awaited
+request may have been accepted, and cancellation neither resolves that outcome
+nor creates a terminal `PublishFailure`. Requests not yet started are skipped
+by the batch. Applications that need per-request recovery should publish
+individually, retain each event ID before awaiting, and save each returned
+receipt or failure. They must reconcile an ID for a request cancelled while
+pending or rely on idempotency; replaying the whole batch can duplicate its
+prefix and current request. Input construction and custom iterator destruction
+may have application-defined side effects.
+
 Every whole-event republish decision checks `duplicate_possible()` first. Unknown history is not erased by final `NoDestinations`/`NoneAccepted`. Reconcile uncertain history by event ID; consider whole-event retry only without that history and with no acceptance. Partial admission repairs rejected destinations only, and Dropped does not automatically republish. `check_admission` still checks only the final ACK. See the [compiled decision](user_guide.md#check-the-publication-result).
 
 ### 3.6 `DeadLetterEvent<T>`

@@ -350,6 +350,14 @@ pub enum PublishAcknowledgement {
 `publish_all` 返回 `BatchPublishResult`，按输入顺序保留每个请求的
 `Result<PublishReceipt, PublishFailure>`，某一条失败不影响后续请求继续发布。
 
+对于异步 facade，批次只有在被 poll 后才开始。未完成时丢弃它不会返回
+部分结果：已完成前缀的回执会被丢弃，但已发生的发布不会回滚。当前等待的
+请求可能已被接纳，取消既不能确定该结果，也不会产生终态 `PublishFailure`。
+批次会跳过尚未开始的请求。需要逐条恢复的应用应逐条发布，在 await 前保存
+每个事件 ID，并保存每次返回的回执或失败。等待中取消的请求仍需按 ID 对账
+或依靠幂等性收敛；重放整批可能重复前缀和当前请求。输入构造及自定义迭代器
+析构可能带有应用定义的副作用。
+
 任何整条重发决策都先看 `duplicate_possible()`；Unknown 历史不能被最后一次 `NoDestinations`/`NoneAccepted` 抹掉。历史不确定时按 event ID 核对；只有无历史风险且无人接纳才能考虑整条重发。部分接纳只修复拒绝目标，Dropped 不自动重发。`check_admission` 仍只判断最后 ACK。完整可执行决策见[用户手册](user_guide.zh_CN.md#检查发布结果)。
 
 ### 3.6 `DeadLetterEvent<T>`
