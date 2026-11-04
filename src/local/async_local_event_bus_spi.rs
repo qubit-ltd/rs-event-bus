@@ -82,6 +82,17 @@ pub struct AsyncLocalEventBusSpi {
 }
 
 impl AsyncLocalEventBusSpi {
+    /// Creates a monitor sharing this provider's outstanding-capacity
+    /// accounting.
+    ///
+    /// The handle observes shared state rather than capturing a snapshot.
+    /// Retaining it does not keep the provider open or reserve capacity for
+    /// later publication. It can still read retained counters after
+    /// provider shutdown.
+    ///
+    /// # Returns
+    /// A monitor for the provider-wide budget and configured per-subscription
+    /// limit.
     pub(crate) fn capacity_monitor(&self) -> LocalCapacityMonitor {
         LocalCapacityMonitor::new(Arc::clone(&self.shared.outstanding), self.shared.capacity())
     }

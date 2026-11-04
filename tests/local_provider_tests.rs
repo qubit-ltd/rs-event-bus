@@ -18,6 +18,7 @@ use std::any::TypeId;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -121,6 +122,149 @@ fn request_with_payload_type(id: u64, topic: &str, payload_type_id: TypeId) -> S
 fn create(config: &LocalEventBusConfig) -> Arc<dyn EventBusSpi> {
     let config = EventBusConfig::default().with_provider_options(config.provider_options());
     provider().create_configured(&config).unwrap()
+}
+
+struct ReentrantShutdownPayload {
+    spi: Weak<dyn EventBusSpi>,
+    outcomes: Arc<Mutex<Vec<ShutdownOutcome>>>,
+}
+
+impl Drop for ReentrantShutdownPayload {
+    fn drop(&mut self) {
+        let spi = self.spi.upgrade().expect("SPI retained by the test");
+        let outcome = spi.shutdown(ShutdownMode::Immediate).expect("reentrant shutdown");
+        self.outcomes.lock().unwrap().push(outcome);
+    }
+}
+
+struct BlockedDropPayload {
+    entered: Mutex<mpsc::Sender<()>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Drop for BlockedDropPayload {
+    fn drop(&mut self) {
+        self.entered.lock().unwrap().send(()).expect("test is waiting for drop");
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .expect("test releases payload drop");
+    }
+}
+
+fn reentrant_shutdown_message(payload: Arc<ReentrantShutdownPayload>) -> OutboundMessage {
+    OutboundMessage::new(
+        TopicAddress::new("shutdown.reentrant").unwrap(),
+        EventId::new("shutdown-reentrant").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(payload),
+    )
+}
+
+#[test]
+fn test_reentrant_shutdown_from_payload_drop() {
+    let case = std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").ok();
+    if case.as_deref() != Some("payload-drop-shutdown") {
+        support::isolated_process::run_case("test_reentrant_shutdown_from_payload_drop", "payload-drop-shutdown");
+        return;
+    }
+
+    for (mode, expected) in [
+        (ShutdownMode::Immediate, ShutdownOutcome::Complete),
+        (
+            ShutdownMode::Graceful {
+                timeout: Duration::ZERO,
+            },
+            ShutdownOutcome::TimedOut,
+        ),
+    ] {
+        let spi = create(&LocalEventBusConfig::default());
+        let mut receiver = spi
+            .subscribe(request_with_payload_type(
+                1,
+                "shutdown.reentrant",
+                TypeId::of::<ReentrantShutdownPayload>(),
+            ))
+            .unwrap();
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let acknowledgement = spi
+            .publish(reentrant_shutdown_message(Arc::new(ReentrantShutdownPayload {
+                spi: Arc::downgrade(&spi),
+                outcomes: outcomes.clone(),
+            })))
+            .unwrap();
+        let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
+            panic!("local publish reports destination admissions");
+        };
+        assert_eq!(1, admissions.len());
+        assert_eq!(&AdmissionStatus::Accepted, admissions[0].status());
+
+        assert_eq!(expected, spi.shutdown(mode).unwrap());
+        assert_eq!(vec![expected], *outcomes.lock().unwrap());
+        assert_eq!(expected, spi.shutdown(ShutdownMode::Immediate).unwrap());
+        assert!(matches!(
+            receiver.receive(Duration::ZERO).unwrap(),
+            ReceiveOutcome::Closed
+        ));
+    }
+}
+
+#[test]
+fn test_reentrant_shutdown_cached_result_during_payload_drop() {
+    let case = std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").ok();
+    if case.as_deref() != Some("blocked-payload-drop-shutdown") {
+        support::isolated_process::run_case(
+            "test_reentrant_shutdown_cached_result_during_payload_drop",
+            "blocked-payload-drop-shutdown",
+        );
+        return;
+    }
+
+    let spi = create(&LocalEventBusConfig::default());
+    let _receiver = spi
+        .subscribe(request_with_payload_type(
+            2,
+            "shutdown.reentrant",
+            TypeId::of::<BlockedDropPayload>(),
+        ))
+        .unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let acknowledgement = spi
+        .publish(OutboundMessage::new(
+            TopicAddress::new("shutdown.reentrant").unwrap(),
+            EventId::new("shutdown-blocked-drop").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(BlockedDropPayload {
+                entered: Mutex::new(entered_tx),
+                release: Mutex::new(release_rx),
+            })),
+        ))
+        .unwrap();
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
+        panic!("local publish reports destination admissions");
+    };
+    assert_eq!(1, admissions.len());
+    assert_eq!(&AdmissionStatus::Accepted, admissions[0].status());
+
+    let shutdown_spi = spi.clone();
+    let first_shutdown = spawn(move || shutdown_spi.shutdown(ShutdownMode::Immediate));
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first shutdown enters payload drop");
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        spi.shutdown(ShutdownMode::Immediate).unwrap()
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(ShutdownOutcome::Complete, first_shutdown.join().unwrap().unwrap());
 }
 
 #[test]

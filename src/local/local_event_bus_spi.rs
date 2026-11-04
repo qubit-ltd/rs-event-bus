@@ -76,6 +76,17 @@ pub struct LocalEventBusSpi {
 }
 
 impl LocalEventBusSpi {
+    /// Creates a monitor sharing this provider's outstanding-capacity
+    /// accounting.
+    ///
+    /// The handle observes shared state rather than capturing a snapshot.
+    /// Retaining it does not keep the provider open or reserve capacity for
+    /// later publication. It can still read retained counters after
+    /// provider shutdown.
+    ///
+    /// # Returns
+    /// A monitor for the provider-wide budget and configured per-subscription
+    /// limit.
     pub(crate) fn capacity_monitor(&self) -> LocalCapacityMonitor {
         LocalCapacityMonitor::new(Arc::clone(&self.shared.outstanding), self.shared.capacity)
     }
@@ -360,6 +371,10 @@ impl EventBusSpi for LocalEventBusSpi {
     /// Calls serialize on the shutdown gate and reuse the first completed
     /// outcome. Waiting for an earlier caller's gate is outside this caller's
     /// graceful timeout budget. Closing wakes synchronous and async receivers.
+    /// The cached outcome is published after queue cleanup and before discarded
+    /// payloads are destroyed. Repeated or reentrant calls may return that
+    /// outcome while another caller is still running payload destructors;
+    /// shutdown is not a cross-caller barrier for user destructors.
     ///
     /// # Parameters
     /// - `mode`: immediate close, or a bounded wait for queued and unsettled
@@ -373,7 +388,7 @@ impl EventBusSpi for LocalEventBusSpi {
     /// # Errors
     /// This implementation does not return an SPI error.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        let _gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let shutdown_gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(outcome) = self
             .shared
             .state
@@ -445,6 +460,7 @@ impl EventBusSpi for LocalEventBusSpi {
             .unwrap_or_else(PoisonError::into_inner)
             .shutdown_outcome = Some(outcome);
         signal_changed(&self.shared);
+        drop(shutdown_gate);
         drop(discarded);
         Ok(outcome)
     }
