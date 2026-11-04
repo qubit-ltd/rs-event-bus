@@ -1517,7 +1517,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use tokio::main;
 use tokio::spawn;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 use tokio::time::timeout;
 
 #[main(flavor = "current_thread")]
@@ -1527,13 +1527,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = unbounded_channel();
+    let (sender, mut receiver) = channel(1);
     let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
                 async move {
-                    sender.send(delivery.payload().clone()).unwrap();
+                    sender.send(delivery.payload().clone()).await.unwrap();
                     Ok(())
                 }
             })
@@ -1553,6 +1553,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 ```
+
+The handler awaits capacity in this bounded application queue when it is full. This adds backpressure alongside the bus and provider capacity limits. A successful send only means the payload entered the application queue; it does not mean downstream business work was persisted. The example uses `unwrap` because its test receiver must remain open. In an application, map a closed receiver to the handler error type or cancel explicitly.
 
 
 An application written in async Rust can use `AsyncEventBus`. The bus is not tied to one runtime, but the application still needs an executor such as Tokio to run the async code. `publish`, `subscribe`, `publish_all`, and `shutdown` all need `.await`. Unlike the sync bus, async `subscribe` only creates the subscription. The application must also start a long-running task that executes `subscription.run(...)`, or messages never reach the handler:

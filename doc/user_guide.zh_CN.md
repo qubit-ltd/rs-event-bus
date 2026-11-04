@@ -1517,7 +1517,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use tokio::main;
 use tokio::spawn;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 use tokio::time::timeout;
 
 #[main(flavor = "current_thread")]
@@ -1527,13 +1527,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = unbounded_channel();
+    let (sender, mut receiver) = channel(1);
     let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
                 async move {
-                    sender.send(delivery.payload().clone()).unwrap();
+                    sender.send(delivery.payload().clone()).await.unwrap();
                     Ok(())
                 }
             })
@@ -1553,6 +1553,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 ```
+
+应用队列达到容量上限时，handler 会等待队列腾出空间。这会在总线和 provider 现有容量约束之外形成反压。send 成功只表示 payload 已交给应用队列，不代表下游业务处理已经持久化。示例使用 `unwrap` 是因为测试接收端必须保持打开；实际应用应将接收端关闭映射为自己的 handler 错误，或明确取消。
 
 
 如果应用本身用异步 Rust，可选择 `AsyncEventBus`。它不依赖某个固定运行时，但应用仍需有 Tokio 等任务执行环境来运行异步代码。`publish`、`subscribe`、`publish_all`、`shutdown` 都需要 `.await`。与同步版不同，异步 `subscribe` 只创建订阅；应用还必须启动一个长期运行的任务去执行 `subscription.run(...)`，消息才会交给处理函数：

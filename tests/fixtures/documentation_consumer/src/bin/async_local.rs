@@ -19,7 +19,7 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use tokio::main;
 use tokio::spawn;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 use tokio::time::timeout;
 
 #[main(flavor = "current_thread")]
@@ -29,13 +29,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let subscription = bus
         .subscribe(SubscribeRequest::new("audit", topic.clone())?)
         .await?;
-    let (sender, mut receiver) = unbounded_channel();
+    let (sender, mut receiver) = channel(1);
     let runner = spawn(async move {
         subscription
             .run(move |delivery| {
                 let sender = sender.clone();
                 async move {
-                    sender.send(delivery.payload().clone()).unwrap();
+                    sender.send(delivery.payload().clone()).await.unwrap();
                     Ok(())
                 }
             })
