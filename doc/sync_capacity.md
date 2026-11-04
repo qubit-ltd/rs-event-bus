@@ -10,8 +10,9 @@ The exact temporary paths cited below were checked and are unavailable:
 complete raw logs and the exact source baseline are missing, so the historical
 excerpts cannot be fully reverified. The dates, commands, environment details,
 and measurements below are retained as recorded; the tables are not a
-replacement for the original output or a reproducible source snapshot. No
-current benchmark was run to recreate this historical evidence.
+replacement for the original output or a reproducible source snapshot. The
+current-version measurements below are separate observations and do not
+recreate or revise the historical evidence.
 
 For future measurements, archive the following together:
 
@@ -154,3 +155,47 @@ subscriptions, the same as the baseline. Synchronous SPI receiver threads
 therefore still grow linearly with subscription count; the retry change did not
 remove them. The async local samples stayed at one thread in this benchmark.
 Applications should measure their own workload and deployment environment.
+
+## Current-version measurements: 2026-11-04 review
+
+These measurements were collected from the current implementation for this
+review. They are kept separate from the historical tables above and do not
+support a historical before/after performance claim. The exact source state,
+environment, commands, complete stdout/stderr, and checksums are archived in
+[`doc/capacity_performance_artifacts/20261104-review/`](capacity_performance_artifacts/20261104-review/README.md).
+
+- UTC run interval: see the start and finish timestamp files in the archive.
+- Source HEAD: see the archive manifest; the task-local source patch and
+  benchmark source are included to reconstruct the measured working tree.
+- Rust: `rustc 1.94.0 (4a4ef493e 2026-03-02)`; Cargo: `cargo 1.94.0`.
+- Host: Linux x86_64, Intel Xeon E5-2680 v4, 56 logical CPUs visible. The
+  captured load average was high (about 21) during later artifact collection;
+  use the raw samples when interpreting timing spread.
+- Commands, run serially:
+
+  ```sh
+  cargo bench --locked --bench local_threads
+  cargo bench --locked --bench retry_saturation
+  ```
+
+`local_threads` completed all 42 measured lifecycle samples. Each of the six
+mode/count groups had seven successful samples after two warmups. Medians below
+are recomputed from the archived raw nanoseconds; peak threads were constant
+within each group. Linux `/proc/self/task` supplied thread counts.
+
+| Mode | Subscriptions | Create median (ms) | Cancel and shutdown median (ms) | Peak threads |
+| --- | ---: | ---: | ---: | ---: |
+| Sync | 16 | 2.016 | 461.154 | 21 |
+| Sync | 64 | 6.849 | 1,958.770 | 69 |
+| Sync | 256 | 39.840 | 6,008.587 | 261 |
+| Async | 16 | 0.287 | 0.090 | 1 |
+| Async | 64 | 0.920 | 0.347 | 1 |
+| Async | 256 | 2.636 | 1.270 | 1 |
+
+`retry_saturation` completed all seven measured samples after two warmups. The
+median independent-handler wait was **0.138479 ms**. The individual values and
+complete process output are in the archive; no sample was removed.
+
+These measurements describe this host and these benchmark workloads only. The
+raw output retains all samples so the summaries can be independently
+recomputed; no values are written for unsupported metrics.

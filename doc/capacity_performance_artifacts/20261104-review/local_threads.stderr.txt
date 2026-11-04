@@ -1,0 +1,3 @@
+   Compiling qubit-event-bus v0.21.0 (/data/working/qubit/rust-common/.worktrees/rs-event-bus/eb-20261104)
+    Finished `bench` profile [optimized] target(s) in 4.40s
+     Running benches/local_threads.rs (target/release/deps/local_threads-ac96a941cc4cb471)
