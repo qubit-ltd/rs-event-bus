@@ -1849,6 +1849,8 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 
 如果 IoC 容器把“停止”和“等待”分成两个回调，可在 stop 回调中调用 `request_shutdown`，并把返回的 ticket 保存在共享状态里；wait 回调再执行 `ticket.wait_async().await`。容器取消 wait future 时，保留同一个 `EventBusShutdown` 并再次轮询 `wait_async` 即可：取消只移除 waker 注册，不会取消停机。execution-services 的 [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 展示了这一适配方式。等待期间应让共享状态继续持有 ticket；它可重复观察，但没有实现 `Clone`。
 
+`Ok(ShutdownReport)` 表示 provider 返回了一份报告；在把清理视为成功前，应先检查报告。本示例仅接受 `ShutdownOutcome::Complete` 且 `known_abandoned_deliveries == 0`。provider 返回 `ShutdownOutcome::TimedOut` 或存在已知放弃的投递时，会生成包含完整报告的 IoC 清理诊断。这与 `ShutdownError::TimedOut` 不同，后者表示调用方观察期限已到。`provider_may_have_abandoned_deliveries` 表示存在不确定性，单独出现时既不能证明消息已丢弃，也不会让本策略失败。本示例将报告写入 stderr；应用可以改用结构化日志，并自行决定对已知丢弃的容忍策略。
+
 ### 等待某个主题空闲
 
 同步 `wait_for_idle(&topic, timeout)` 等待所用传递实现报告这个主题已没有排队或未处理完的消息；不支持这项查询时返回 `IdleWaitUnsupported`。`wait_for_received_deliveries` 只等待总线已经取到的消息。两者返回空闲，都不能代替检查数据库和失败记录。
