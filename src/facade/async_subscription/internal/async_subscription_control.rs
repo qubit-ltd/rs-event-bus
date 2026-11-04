@@ -202,11 +202,12 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
         self.metrics.snapshot(gauges)
     }
 
-    /// Stops the subscription and relinquishes its receiver on handle drop.
+    /// Stops the subscription and disposes of its local session ownership.
     ///
-    /// This synchronous disposal cannot await provider close; bus shutdown or
-    /// explicit [`AsyncSubscription::close`] performs
-    /// asynchronous cleanup.
+    /// This synchronous disposal cannot await provider close. For deterministic
+    /// asynchronous cleanup and close errors, call `AsyncSubscription::close`
+    /// before dropping the handle. Disposal removes this control from the bus;
+    /// later bus shutdown does not provide receiver-close cleanup for it.
     pub(in crate::facade::async_subscription) fn dispose(&self) {
         self.signals.stop(ShutdownMode::Immediate);
         self.mark_stopped();
