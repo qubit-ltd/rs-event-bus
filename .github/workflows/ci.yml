@@ -40,7 +40,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/rs-event-bus-downstream-target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/downstream-ecosystem/cargo-target
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
