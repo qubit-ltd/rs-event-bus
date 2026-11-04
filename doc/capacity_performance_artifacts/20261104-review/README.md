@@ -1,5 +1,15 @@
 # 2026-11-04 review measurements
 
+## Distribution and complete evidence
+
+This repository guide is not included in the published crate package. Raw
+output, source, dependency snapshots, and patches remain in the repository. To
+consult the complete evidence, use the [fixed evidence
+snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/capacity_performance_artifacts/20261104-review).
+Online access is required. The snapshot preserves the historical evidence and
+does not guarantee that its original binaries remain available or that another
+host will reproduce the reported performance.
+
 This archive records the current-version capacity benchmarks and the async waiter A/B evaluation. It keeps source identity, raw process output, environment details, and checksums together. The dates in the directory name identify the review; use the UTC timestamp files and manifest for actual run times.
 
 ## Commands and outcomes

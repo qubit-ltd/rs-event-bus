@@ -162,7 +162,7 @@ These measurements were collected from the current implementation for this
 review. They are kept separate from the historical tables above and do not
 support a historical before/after performance claim. The exact source state,
 environment, commands, complete stdout/stderr, and checksums are archived in
-[`doc/capacity_performance_artifacts/20261104-review/`](capacity_performance_artifacts/20261104-review/README.md).
+the [fixed evidence snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/capacity_performance_artifacts/20261104-review).
 
 - UTC run interval: see the start and finish timestamp files in the archive.
 - Source HEAD: see the archive manifest; the task-local source patch and

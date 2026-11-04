@@ -1,5 +1,15 @@
 # Ordering measurement evidence
 
+## Distribution and complete evidence
+
+The published crate package contains this Markdown guide only; the raw logs,
+JSON, profiles, source snapshots, and patches remain in the repository. To
+consult the complete evidence from a published package, use the [fixed evidence
+snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/ordering_performance_artifacts).
+Online access is required. The snapshot preserves the historical evidence and
+does not guarantee that its original binaries remain available or that another
+host will reproduce the reported performance.
+
 See [the performance decision](../ordering_performance.md). These artifacts
 preserve the measurements independently of the temporary execution directory.
 
