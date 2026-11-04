@@ -14,18 +14,32 @@ use super::outstanding_budget::OutstandingBudget;
 
 /// Cloneable read-only handle to a local provider capacity budget.
 ///
-/// Obtain it with `EventBus::local_with_monitor` or
-/// `AsyncEventBus::local_with_monitor`. Registry-created providers do not
-/// expose this handle. Clones observe the same budget. The handle keeps only
-/// accounting state alive, not the provider, queues, subscriptions, or
+/// Obtain it with `EventBus::local_with_monitor`,
+/// `EventBus::local_with_config_and_monitor`,
+/// `AsyncEventBus::local_with_monitor`, or
+/// `AsyncEventBus::local_with_config_and_monitor`. Registry-created providers
+/// do not expose this handle. Clones observe the same budget. The handle keeps
+/// only accounting state alive, not the provider, queues, subscriptions, or
 /// payloads.
 ///
-/// The handle retains only integer accounting state and per-subscription
-/// capacity. It does not keep queues, subscriptions, payloads, or the provider
-/// lifecycle alive. Snapshot reads briefly acquire the budget mutex.
+/// Snapshot reads briefly acquire the budget mutex.
+///
+/// ```
+/// use qubit_event_bus::EventBus;
+/// use qubit_event_bus::local::LocalEventBusConfig;
+/// use qubit_event_bus::spi::ShutdownMode;
+///
+/// let (bus, monitor) = EventBus::local_with_monitor(LocalEventBusConfig::new())?;
+/// let snapshot = monitor.snapshot();
+/// assert_eq!(snapshot.outstanding_count, 0);
+/// bus.shutdown(ShutdownMode::Immediate)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone)]
 pub struct LocalCapacityMonitor {
+    /// Shared provider-wide integer accounting state.
     budget: Arc<OutstandingBudget>,
+    /// Configured pending plus in-flight capacity for each subscription.
     queue_capacity: usize,
 }
 

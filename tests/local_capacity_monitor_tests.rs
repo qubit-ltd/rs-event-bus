@@ -17,8 +17,16 @@ use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::error::ConfigurationError;
+use qubit_event_bus::error::FacadeBuildError;
+use qubit_event_bus::error::ProviderError;
+use qubit_event_bus::error::SubscribeError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionRejectionKind;
+use qubit_event_bus::model::AsyncSubscriberNext;
+use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
@@ -31,6 +39,107 @@ fn ready<F: Future>(future: F) -> F::Output {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("construction must complete immediately"),
     }
+}
+
+fn nonzero(value: usize) -> NonZeroUsize {
+    NonZeroUsize::new(value).expect("test capacities are positive")
+}
+
+fn scheduling_with_one_subscription() -> DeliverySchedulingConfig {
+    DeliverySchedulingConfig::new(nonzero(1), nonzero(2), nonzero(1), nonzero(1))
+        .expect("test scheduling limits are valid")
+}
+
+#[test]
+fn configured_public_constructors_apply_facade_limits_and_share_local_monitor() {
+    let local = LocalEventBusConfig::new().max_total_outstanding(1);
+    let facade = EventBusFacadeConfig::default().with_delivery_scheduling(scheduling_with_one_subscription());
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(local.clone(), facade.clone()).unwrap();
+    assert_eq!(monitor.snapshot().max_total_outstanding, 1);
+    let topic = Topic::<u32>::new("local.capacity.configured.sync").unwrap();
+    let first = bus
+        .subscribe(SubscribeRequest::new("first", topic.clone()).unwrap(), |_| {})
+        .unwrap();
+    assert!(matches!(
+        bus.subscribe(SubscribeRequest::new("second", topic).unwrap(), |_| {}),
+        Err(SubscribeError::ResourceLimit {
+            resource: "subscriptions",
+            limit: 1
+        })
+    ));
+    first.cancel().unwrap();
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+
+    let (bus, monitor) = ready(AsyncEventBus::local_with_config_and_monitor(local, facade)).unwrap();
+    assert_eq!(monitor.snapshot().max_total_outstanding, 1);
+    let topic = Topic::<u32>::new("local.capacity.configured.async").unwrap();
+    let mut first = ready(bus.subscribe(SubscribeRequest::new("first", topic.clone()).unwrap())).unwrap();
+    assert!(matches!(
+        ready(bus.subscribe(SubscribeRequest::new("second", topic).unwrap())),
+        Err(SubscribeError::ResourceLimit {
+            resource: "subscriptions",
+            limit: 1
+        })
+    ));
+    ready(first.close()).unwrap();
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
+fn configured_public_constructors_preserve_facade_configuration_source_chain() {
+    let sync_config = EventBusFacadeConfig::new()
+        .async_subscriber_interceptor(|delivery: Delivery<u32>, next: AsyncSubscriberNext<u32>| next(delivery));
+    let error = match EventBus::local_with_config_and_monitor(LocalEventBusConfig::new(), sync_config) {
+        Ok(_) => panic!("sync facade must reject async subscriber middleware"),
+        Err(error) => error,
+    };
+    let ProviderError::Creation { source } = error else {
+        panic!("invalid facade configuration is a creation error");
+    };
+    let build_error = source
+        .downcast_ref::<FacadeBuildError>()
+        .expect("facade build source retained");
+    assert!(matches!(
+        build_error,
+        FacadeBuildError::Configuration(ConfigurationError::InvalidField {
+            field: "async_subscriber_interceptor",
+            ..
+        })
+    ));
+    assert!(
+        std::error::Error::source(build_error)
+            .expect("configuration error remains in source chain")
+            .is::<ConfigurationError>()
+    );
+
+    let async_config = EventBusFacadeConfig::new().subscriber_interceptor(
+        |delivery: Delivery<u32>, next: qubit_event_bus::model::SubscriberNext<u32>| next(delivery),
+    );
+    let error = match ready(AsyncEventBus::local_with_config_and_monitor(
+        LocalEventBusConfig::new(),
+        async_config,
+    )) {
+        Ok(_) => panic!("async facade must reject sync subscriber middleware"),
+        Err(error) => error,
+    };
+    let ProviderError::Creation { source } = error else {
+        panic!("invalid facade configuration is a creation error");
+    };
+    let build_error = source
+        .downcast_ref::<FacadeBuildError>()
+        .expect("facade build source retained");
+    assert!(matches!(
+        build_error,
+        FacadeBuildError::Configuration(ConfigurationError::InvalidField {
+            field: "sync_subscriber_interceptor",
+            ..
+        })
+    ));
+    assert!(
+        std::error::Error::source(build_error)
+            .expect("configuration error remains in source chain")
+            .is::<ConfigurationError>()
+    );
 }
 
 #[test]
@@ -63,7 +172,7 @@ fn disabled_weight_budget_is_reported_as_none_and_zero() {
 #[test]
 fn provider_rejection_counts_once_and_settlement_releases_the_snapshot() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
-    let (bus, monitor) = EventBus::local_with_monitor(config).unwrap();
+    let (bus, monitor) = EventBus::local_with_config_and_monitor(config, EventBusFacadeConfig::default()).unwrap();
     let topic = Topic::<u32>::new("local.capacity.monitor").unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();

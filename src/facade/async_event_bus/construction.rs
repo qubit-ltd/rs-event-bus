@@ -58,23 +58,68 @@ impl AsyncEventBus {
             .await
     }
 
-    /// Creates an async local facade and read-only capacity monitor.
+    /// Creates an async local facade and read-only capacity monitor using
+    /// default facade settings.
     ///
     /// The monitor shares accounting state only and does not retain queues or
     /// payloads. This concrete local path still validates capabilities through
-    /// [`Self::from_spi`]. Registry based construction does not provide a
-    /// monitor. Snapshot values do not reserve capacity for a later publish,
-    /// and declared weight is application supplied rather than process memory.
+    /// the normal facade configuration path. Registry based construction does
+    /// not provide a monitor. Snapshot values do not reserve capacity for a
+    /// later publish, and declared weight is application supplied rather than
+    /// process memory.
+    /// This is shorthand for [`Self::local_with_config_and_monitor`] with the
+    /// default facade configuration.
+    ///
+    /// # Parameters
+    /// - `config`: configuration for the built-in local provider.
+    ///
+    /// # Returns
+    /// The running local facade and a cloneable read-only monitor for its
+    /// capacity budget.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Creation`] if local configuration validation or
+    /// facade construction fails; the original provider or facade error is
+    /// retained as the source.
     pub async fn local_with_monitor(
         config: LocalEventBusConfig,
     ) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
-        let spi = AsyncLocalEventBusSpi::new(&config).map_err(|source| ProviderError::Creation {
+        Self::local_with_config_and_monitor(config, EventBusFacadeConfig::default()).await
+    }
+
+    /// Creates an asynchronous local facade with custom facade settings and a
+    /// read-only monitor for the provider's capacity budget.
+    ///
+    /// Local settings control provider queues and outstanding capacity;
+    /// `facade_config` controls facade middleware, codecs, and delivery
+    /// scheduling. The monitor observes the same local SPI used by the facade.
+    /// Snapshot values do not reserve capacity for a later publish.
+    ///
+    /// # Parameters
+    /// - `local_config`: configuration for the built-in local provider.
+    /// - `facade_config`: middleware, codec, and delivery settings for the
+    ///   facade.
+    ///
+    /// # Returns
+    /// The running local facade and a cloneable read-only monitor for its
+    /// capacity budget.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Creation`] if local configuration validation or
+    /// facade construction fails; the original provider or facade error is
+    /// retained as the source.
+    pub async fn local_with_config_and_monitor(
+        local_config: LocalEventBusConfig,
+        facade_config: EventBusFacadeConfig,
+    ) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
+        let spi = AsyncLocalEventBusSpi::new(&local_config).map_err(|source| ProviderError::Creation {
             source: Box::new(source),
         })?;
         let monitor = spi.capacity_monitor();
-        let bus = Self::from_spi(
+        let bus = Self::with_config(
             ProviderId::new("local").expect("static provider ID is valid"),
             Arc::new(spi),
+            facade_config,
         )
         .map_err(|source| ProviderError::Creation {
             source: Box::new(source),

@@ -22,9 +22,21 @@ struct OutstandingState {
     /// Sum of their declared weights, or zero when weight accounting is
     /// disabled.
     weight_used: usize,
+    /// Cumulative target attempts rejected because their subscription closed.
+    /// Fanout and retries can count the same logical publication more than
+    /// once; increments saturate at `u64::MAX`.
     rejected_subscription_closed: u64,
+    /// Cumulative target attempts rejected by a full subscription queue.
+    /// Fanout and retries can count the same logical publication more than
+    /// once; increments saturate at `u64::MAX`.
     rejected_subscription_capacity: u64,
+    /// Cumulative target attempts rejected by the provider-wide count limit.
+    /// Fanout and retries can count the same logical publication more than
+    /// once; increments saturate at `u64::MAX`.
     rejected_provider_count_capacity: u64,
+    /// Cumulative target attempts rejected by the provider-wide weight limit.
+    /// Fanout and retries can count the same logical publication more than
+    /// once; increments saturate at `u64::MAX`.
     rejected_provider_weight_capacity: u64,
 }
 

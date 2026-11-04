@@ -16,7 +16,9 @@ use std::time::Duration;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::AdmissionRejectionKind;
@@ -65,6 +67,15 @@ fn close_bus(bus: &EventBus) {
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }
 
+/// Creates a non-default facade configuration with a one-subscription limit.
+fn one_subscription_facade() -> EventBusFacadeConfig {
+    let one = || NonZeroUsize::new(1).expect("positive scheduling capacity");
+    let two = || NonZeroUsize::new(2).expect("positive scheduling capacity");
+    EventBusFacadeConfig::default().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(one(), two(), one(), one()).expect("valid scheduling configuration"),
+    )
+}
+
 /// Rejects an application-declared payload weight above the provider budget.
 #[test]
 fn test_declared_weight_over_budget_is_not_admitted() {
@@ -87,6 +98,50 @@ fn test_declared_weight_over_budget_is_not_admitted() {
         other => panic!("expected admission error, got {other:?}"),
     }
     close_bus(&bus);
+}
+
+/// The configured public constructors apply the facade subscription limit.
+#[tokio::test]
+async fn test_configured_public_constructors_apply_facade_limits() {
+    let facade = one_subscription_facade();
+    let local = LocalEventBusConfig::new().max_total_outstanding(1);
+    let (bus, monitor) =
+        EventBus::local_with_config_and_monitor(local.clone(), facade.clone()).expect("configured sync local facade");
+    assert_eq!(monitor.snapshot().max_total_outstanding, 1);
+    let topic = Topic::<u32>::new("capacity.configured.sync").expect("topic");
+    let subscription = bus
+        .subscribe(SubscribeRequest::new("first", topic.clone()).expect("request"), |_| {})
+        .expect("first subscription fits");
+    assert!(matches!(
+        bus.subscribe(SubscribeRequest::new("second", topic).expect("request"), |_| {}),
+        Err(qubit_event_bus::error::SubscribeError::ResourceLimit {
+            resource: "subscriptions",
+            limit: 1,
+        })
+    ));
+    subscription.cancel().expect("cancel first subscription");
+    close_bus(&bus);
+
+    let (bus, monitor) = AsyncEventBus::local_with_config_and_monitor(local, facade)
+        .await
+        .expect("configured async local facade");
+    assert_eq!(monitor.snapshot().max_total_outstanding, 1);
+    let topic = Topic::<u32>::new("capacity.configured.async").expect("topic");
+    let mut subscription = bus
+        .subscribe(SubscribeRequest::new("first", topic.clone()).expect("request"))
+        .await
+        .expect("first subscription fits");
+    assert!(matches!(
+        bus.subscribe(SubscribeRequest::new("second", topic).expect("request"))
+            .await,
+        Err(qubit_event_bus::error::SubscribeError::ResourceLimit {
+            resource: "subscriptions",
+            limit: 1,
+        })
+    ));
+    subscription.close().await.expect("close first subscription");
+    let report = bus.shutdown(ShutdownMode::Immediate).await.expect("shutdown async bus");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
 }
 
 /// Shows that one event's fanout consumes weight separately per destination.
@@ -141,6 +196,45 @@ fn test_fanout_charges_declared_weight_for_each_accepted_target() {
     drop(subscriptions);
 }
 
+/// Async capacity accounting remains observable through the configured facade
+/// and is released by shutdown without starting the subscription runner.
+#[tokio::test]
+async fn test_configured_async_facade_reports_count_rejection_and_shutdown_release() {
+    let local = LocalEventBusConfig::new().max_total_outstanding(1);
+    let (bus, monitor) = AsyncEventBus::local_with_config_and_monitor(local, one_subscription_facade())
+        .await
+        .expect("configured async local facade");
+    let topic = Topic::<u32>::new("capacity.configured.async.count").expect("topic");
+    let _subscription = bus
+        .subscribe(SubscribeRequest::new("consumer", topic.clone()).expect("request"))
+        .await
+        .expect("subscribe");
+    let _ = bus
+        .publish(PublishRequest::new(topic.clone(), 1).expect("request"))
+        .await
+        .expect("first delivery is admitted");
+    let receipt = bus
+        .publish(PublishRequest::new(topic, 2).expect("request"))
+        .await
+        .expect("provider capacity rejection is an acknowledgement");
+    let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() else {
+        panic!("local provider reports destination admissions");
+    };
+    assert!(
+        admissions
+            .iter()
+            .any(|admission| { admission.rejection_kind() == Some(AdmissionRejectionKind::ProviderCountCapacity) })
+    );
+    assert_eq!(monitor.snapshot().outstanding_count, 1);
+    assert_eq!(monitor.snapshot().rejected_provider_count_capacity, 1);
+    let report = bus
+        .shutdown(ShutdownMode::Immediate)
+        .await
+        .expect("shutdown releases pending delivery");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_eq!(monitor.snapshot().outstanding_count, 0);
+}
+
 /// Rejects a native publication when weighted admission has no weight callback.
 #[test]
 fn test_weight_budget_rejects_native_publish_without_declaration() {
@@ -176,8 +270,6 @@ fn test_weight_budget_rejects_native_publish_without_declaration() {
     ));
     close_bus(&bus);
 }
-
-
 /// Exercises monitor construction through both public local facades.
 #[tokio::test]
 async fn test_sync_and_async_local_monitors_report_configuration() {
@@ -196,9 +288,10 @@ async fn test_sync_and_async_local_monitors_report_configuration() {
         .queue_capacity(3)
         .max_total_outstanding(7)
         .max_total_outstanding_weight_bytes(NonZeroUsize::new(1).expect("positive limit"));
-    let (async_bus, async_monitor) = AsyncEventBus::local_with_monitor(weighted_config)
-        .await
-        .expect("async local monitor");
+    let (async_bus, async_monitor) =
+        AsyncEventBus::local_with_config_and_monitor(weighted_config, one_subscription_facade())
+            .await
+            .expect("async local monitor");
     let async_snapshot = async_monitor.snapshot();
     assert_eq!(async_snapshot.queue_capacity, 3);
     assert_eq!(async_snapshot.max_total_outstanding, 7);

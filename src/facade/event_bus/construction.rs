@@ -67,7 +67,10 @@ impl EventBus {
     ///
     /// The monitor shares accounting state only and does not retain queues or
     /// payloads. Use this concrete local path when capacity diagnostics are
-    /// needed; it still validates capabilities through [`Self::from_spi`].
+    /// needed; it still validates capabilities through the normal facade
+    /// configuration path. This is shorthand for
+    /// [`Self::local_with_config_and_monitor`] with the default facade
+    /// configuration.
     /// Registry based construction does not provide a monitor. Snapshot values
     /// are observations, not reservations for later publications, and declared
     /// weight is application accounting rather than process memory usage.
@@ -83,13 +86,42 @@ impl EventBus {
     /// Returns [`ProviderError::Creation`] if local configuration validation or
     /// facade construction fails; the original error is retained as its source.
     pub fn local_with_monitor(config: LocalEventBusConfig) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
-        let spi = LocalEventBusSpi::new(&config).map_err(|source| ProviderError::Creation {
+        Self::local_with_config_and_monitor(config, EventBusFacadeConfig::default())
+    }
+
+    /// Creates a synchronous local facade with custom facade settings and a
+    /// read-only monitor for the provider's capacity budget.
+    ///
+    /// Local settings control provider queues and outstanding capacity;
+    /// `facade_config` controls facade middleware, codecs, and delivery
+    /// scheduling. The monitor observes the same local SPI used by the facade.
+    /// Snapshot values do not reserve capacity for a later publish.
+    ///
+    /// # Parameters
+    /// - `local_config`: configuration for the built-in local provider.
+    /// - `facade_config`: middleware, codec, and delivery settings for the
+    ///   facade.
+    ///
+    /// # Returns
+    /// The running local facade and a cloneable read-only monitor for its
+    /// capacity budget.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Creation`] if local configuration validation or
+    /// facade construction fails; the original provider or facade error is
+    /// retained as the source.
+    pub fn local_with_config_and_monitor(
+        local_config: LocalEventBusConfig,
+        facade_config: EventBusFacadeConfig,
+    ) -> Result<(Self, LocalCapacityMonitor), ProviderError> {
+        let spi = LocalEventBusSpi::new(&local_config).map_err(|source| ProviderError::Creation {
             source: Box::new(source),
         })?;
         let monitor = spi.capacity_monitor();
-        let bus = Self::from_spi(
+        let bus = Self::with_config(
             ProviderId::new("local").expect("static provider ID is valid"),
             Arc::new(spi),
+            facade_config,
         )
         .map_err(|source| ProviderError::Creation {
             source: Box::new(source),
