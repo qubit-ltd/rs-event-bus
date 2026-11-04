@@ -171,7 +171,7 @@ let orders = OrderService::new(bus.clone());
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再精确验证 content type/schema，最后解码；元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。
 
-本 core 版本为 0.21.0。历史发布的 Redis 0.7 与 task 0.10 面向 core 0.20；这一已发布组合不能作为 core 0.21 兼容证据。使用 sibling checkout 联用时，应统一 core minor 并运行各消费者自己的 locked 检查。可选的五仓依赖图命令只检查依赖解析，不证明投递行为或已发布版本兼容；发布后的消费者还需自身发布依赖 core 0.21 的版本及集成验证证据。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
+本 core 版本为 0.21.0。历史发布的 Redis 0.7 与 task 0.10 面向 core 0.20；这一已发布组合不能作为 core 0.21 兼容证据。CI 的 `downstream-compatibility` job 会将三个真实消费者的固定提交（见 [`scripts/downstream-compatibility.json`](scripts/downstream-compatibility.json)）与本次待测 core 一起编译。要在本地运行，先按固定提交准备同级目录布局，将当前 core checkout 放在 `rs-event-bus`，然后执行 `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root /path/to/layout`。脚本检查锁定的依赖图并运行 `cargo check --locked --all-targets`；它不会抓取仓库或更新锁文件。失败会指出 checkout 缺失或版本不符、依赖图或锁文件问题，或下游编译不兼容。编译检查不会启动 Redis，也不验证运行时投递行为；已发布消费者仍需自身发布版本和集成验证证据。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
