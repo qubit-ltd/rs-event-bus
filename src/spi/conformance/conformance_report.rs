@@ -55,8 +55,10 @@ use crate::spi::SpiSubscriptionRequest;
 pub struct ConformanceReport {
     /// Pass, failure, and skip outcomes in their execution order.
     cases: Vec<ConformanceCase>,
-    /// Context aligned with each case; global checks have no combination.
+    /// Contexts aligned with `cases` by index; global checks have no context.
     contexts: Vec<Option<ConformanceCaseContext>>,
+    /// Context copied into each case appended by the next `push` calls until
+    /// replaced. `None` marks subsequently appended cases as global checks.
     active_context: Option<ConformanceCaseContext>,
 }
 
@@ -73,7 +75,7 @@ impl ConformanceReport {
 
     /// Returns the payload and subscription combination associated with a case.
     ///
-    /// Enumerate [`Self::cases`] to obtain a valid index. Global checks and
+    /// Contexts are aligned with [`Self::cases`] by index. Global checks and
     /// out-of-range indices have no context.
     #[must_use]
     pub fn case_context(&self, index: usize) -> Option<&ConformanceCaseContext> {
@@ -116,11 +118,23 @@ impl ConformanceReport {
     ///
     /// # Parameters
     /// - `case`: conformance outcome to append.
+    ///
+    /// The current active context is copied into the context entry at the same
+    /// index as the appended case.
     pub(super) fn push(&mut self, case: ConformanceCase) {
         self.contexts.push(self.active_context.clone());
         self.cases.push(case);
     }
 
+    /// Sets the context copied into subsequently appended case results.
+    ///
+    /// This does not change contexts already recorded. Passing `None` marks
+    /// subsequent cases as global checks; their `case_context` lookup returns
+    /// `None`.
+    ///
+    /// # Parameters
+    /// - `context`: context for subsequently appended cases, or `None` for
+    ///   global checks.
     pub(super) fn set_case_context(&mut self, context: Option<ConformanceCaseContext>) {
         self.active_context = context;
     }
