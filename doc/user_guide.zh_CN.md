@@ -247,16 +247,29 @@ pub fn create_order(
 
 `create_and_commit` 成功返回后才发布 `OrderCreated`。调用方还应检查回执，并记录事件 ID、订单 ID 与失败原因：
 
-`publish` 返回 `Ok(receipt)` 只表示调用拿到了回执；要了解 provider 的接纳结果，还需检查回执。调用方需要确认接纳结果时，优先使用 `publish_checked(request, AdmissionRequirement::ProviderOrDestinationAccepted)`。接纳条件不满足时，`CheckedPublishError::Admission` 仍保留回执，应用可据此检查部分接纳或拒绝情况。对于 Redis，这项要求只表示 broker 接纳了事件，不表示消费者已经运行或业务写入已经完成。
+服务会把 `PublishReceipt` 返回给调用方。`inspect_order_receipt` 遇到不确定历史时会返回回执和 `ReconcileByEventId`，且不带接纳错误，也不会运行严格检查。调用方必须先按事件 ID 完成协调再继续；helper 不执行协调，也不允许直接重试。只有历史确定时才会执行严格的目标接纳检查。如果检查失败，应记录事件 ID 和各目标结果，保留返回的回执、错误和动作，再由调用方做最终决定。这些 helper 只读取回执：不会重发、补偿，也不会重试指定目标。对于不公开目标接纳情况的 provider，如果只要求 provider 接纳，可使用 `ProviderOrDestinationAccepted`；对 Redis，这只表示 broker 接纳了事件，不表示消费者已经运行或业务写入已经完成。
 
 ```rust
-use qubit_event_bus::model::AdmissionRequirement;
+use event_bus_documentation_consumer::receipt_safety::inspect_order_receipt;
+use event_bus_documentation_consumer::republish_action::RepublishAction;
+use qubit_event_bus::model::{AdmissionCheckError, PublishAcknowledgement, PublishReceipt};
 
-let receipt = orders::service::create_order(repository, &order_bus, command)?;
-if receipt.duplicate_possible() {
-    eprintln!("reconcile uncertain publication by event ID: {}", receipt.input_event_id().as_str());
-} else {
-    receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)?;
+fn inspect_and_record(
+    receipt: PublishReceipt,
+) -> Result<PublishReceipt, (PublishReceipt, Option<AdmissionCheckError>, RepublishAction)> {
+    match inspect_order_receipt(receipt) {
+        Ok(receipt) => Ok(receipt),
+        Err((receipt, error, action)) => {
+            eprintln!("publication review requires action {action:?} for event {} ({error:?})", receipt.input_event_id().as_str());
+            if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.acknowledgement() {
+                for destination in destinations {
+                    eprintln!("{} -> {:?}", destination.subscriber_id().as_str(), destination.status());
+                }
+            }
+            // 将完整回执、可选接纳错误和动作一起返回。
+            Err((receipt, error, action))
+        }
+    }
 }
 ```
 
@@ -394,10 +407,53 @@ pub enum RepublishAction {
 ```rust
 //! Check retained history before the final attempt's admission summary.
 
+use qubit_event_bus::model::AdmissionCheckError;
 use qubit_event_bus::model::AdmissionOutcome;
+use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::PublishReceipt;
 
 use crate::republish_action::RepublishAction;
+
+/// Checks whether at least one destination accepted the event and none rejected it.
+///
+/// This only reads the receipt. It does not republish, compensate, or retry
+/// selected destinations, and it leaves the receipt available to the caller.
+///
+/// # Examples
+///
+/// ```
+/// use event_bus_documentation_consumer::receipt_safety::check_order_admission;
+/// use qubit_event_bus::model::PublishReceipt;
+///
+/// fn inspect(receipt: &PublishReceipt) -> Result<(), Box<dyn std::error::Error>> {
+///     check_order_admission(receipt)?;
+///     let _event_id = receipt.input_event_id();
+///     Ok(())
+/// }
+/// ```
+pub fn check_order_admission(receipt: &PublishReceipt) -> Result<(), AdmissionCheckError> {
+    receipt.check_admission(AdmissionRequirement::AtLeastOneAcceptedAndNoRejected)
+}
+
+/// Reviews retained history before applying the strict admission check.
+///
+/// Uncertain history returns the complete receipt with a reconciliation action
+/// and does not run the strict check. For certain history, a failed check
+/// returns the complete receipt, the error, and the application action.
+pub fn inspect_order_receipt(
+    receipt: PublishReceipt,
+) -> Result<PublishReceipt, (PublishReceipt, Option<AdmissionCheckError>, RepublishAction)> {
+    if receipt.duplicate_possible() {
+        return Err((receipt, None, RepublishAction::ReconcileByEventId));
+    }
+    match check_order_admission(&receipt) {
+        Ok(()) => Ok(receipt),
+        Err(error) => {
+            let action = republish_action(&receipt);
+            Err((receipt, Some(error), action))
+        }
+    }
+}
 
 /// Chooses a retry or reconciliation action from the final receipt.
 ///
@@ -423,9 +479,7 @@ pub fn republish_action(receipt: &PublishReceipt) -> RepublishAction {
         return RepublishAction::ReconcileByEventId;
     }
     match receipt.admission_outcome() {
-        AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
-            RepublishAction::RepublishWhole
-        }
+        AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => RepublishAction::RepublishWhole,
         AdmissionOutcome::PartiallyAccepted(_) => RepublishAction::RetryRejectedDestinations,
         _ => RepublishAction::NoRepublish,
     }
