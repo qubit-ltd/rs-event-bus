@@ -209,6 +209,72 @@ fn test_request_from_handler_is_allowed_but_sync_wait_would_deadlock() {
 }
 
 #[test]
+fn test_async_wait_from_handler_is_rejected_but_ticket_remains_observable() {
+    let bus = EventBus::local(LocalEventBusConfig::default()).expect("bus");
+    let topic = Topic::<String>::new("shutdown.async-reentrant").expect("topic");
+    let callback_bus = bus.clone();
+    let (tx, rx) = mpsc::channel();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("async-reentrant", topic.clone()).expect("request"),
+            move |_| {
+                let ticket = callback_bus
+                    .request_shutdown(ShutdownMode::Immediate)
+                    .expect("nonblocking request");
+                let mut future = Box::pin(ticket.wait_async());
+                let rejected = matches!(
+                    poll(future.as_mut(), Waker::noop()),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(
+                        qubit_event_bus::LifecycleError::WouldDeadlock { operation: "shutdown" }
+                    )))
+                );
+                drop(future);
+                tx.send((ticket, rejected)).expect("send ticket and observation");
+            },
+        )
+        .expect("subscribe");
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+        .expect("publish");
+    let (ticket, rejected) = rx.recv_timeout(LIMIT).expect("callback returns");
+    assert!(rejected, "same-bus async observation must be rejected");
+    let report = ticket.wait(Some(LIMIT)).expect("external wait");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+}
+
+#[test]
+fn test_async_wait_from_other_bus_handler_can_observe_completed_ticket() {
+    let first_bus = EventBus::local(LocalEventBusConfig::default()).expect("first bus");
+    let completed_ticket = first_bus
+        .request_shutdown(ShutdownMode::Immediate)
+        .expect("first ticket");
+    let report = completed_ticket.wait(Some(LIMIT)).expect("first bus closes");
+
+    let second_bus = EventBus::local(LocalEventBusConfig::default()).expect("second bus");
+    let topic = Topic::<String>::new("shutdown.other-bus").expect("topic");
+    let ticket = completed_ticket;
+    let (tx, rx) = mpsc::channel();
+    let _subscription = second_bus
+        .subscribe(
+            SubscribeRequest::new("other-bus", topic.clone()).expect("request"),
+            move |_| {
+                let mut future = Box::pin(ticket.wait_async());
+                let observed = matches!(
+                    poll(future.as_mut(), Waker::noop()),
+                    Poll::Ready(Ok(ref actual)) if *actual == report
+                );
+                tx.send(observed).expect("send observation");
+            },
+        )
+        .expect("subscribe");
+    let _ = second_bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+        .expect("publish");
+    assert!(rx.recv_timeout(LIMIT).expect("callback returns"));
+    let _ = second_bus.shutdown(ShutdownMode::Immediate).expect("second bus closes");
+}
+
+#[test]
 fn test_dropping_observer_does_not_stop_its_shutdown_generation() {
     let (bus, gate, _subscription) = blocked_bus();
     let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("ticket");

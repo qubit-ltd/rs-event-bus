@@ -1828,7 +1828,7 @@ pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownErr
 
 ### 非阻塞地请求停机
 
-`EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
+`EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。在同一 bus 拥有的 callback 或 worker 中首次轮询 `wait_async` 会返回 `WouldDeadlock`（operation 为 `shutdown`），缓存 ticket 也一样；在其中创建 future 是允许的。这只拒绝此次观察，不会取消停机；回调返回后可由外部生命周期任务等待。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
 
 ```rust
 use std::time::Duration;

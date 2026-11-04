@@ -1158,9 +1158,9 @@ shutdown(mode)                         → request_shutdown(mode) + ticket.wait(
 
 `request_shutdown` 关闭接纳并向固定池 scheduler 发信号；不会在请求线程执行排队的 handler 或结算回调。scheduler 标记 graceful drain 或 immediate cancel，然后唤醒 receiver owner。owner 自行释放 delivery lease 和保留的 payload；已经获得许可的 handler 回调仍由固定线程池执行。独立协调线程等待并 join owners 和 pool worker，之后才进行唯一一次 provider shutdown。Immediate 可以加强当前 Graceful 代次，但不能中断已经开始的回调或 provider 调用。
 
-每个 ticket 保留一个确切代次的结果，直到 ticket 被丢弃。并发请求可加入当前代次；bus 已关闭时返回携带缓存报告的就绪 ticket。`wait` 超时只限制这次观察，后台清理继续。`wait_async` 为观察者注册独立、可取消的 waker，不阻塞线程也不要求特定运行时。取消观察 future 只移除自己的 waker 登记；保留 ticket 后可以再次观察。协调线程启动失败归属于该代次的 ticket，即使后续请求启动了新代也不改变旧结果。
+每个 ticket 保留一个确切代次的结果，直到 ticket 被丢弃。并发请求可加入当前代次；bus 已关闭时返回携带缓存报告的就绪 ticket。`wait` 超时只限制这次观察，后台清理继续。`wait_async` 为观察者注册独立、可取消的 waker，不阻塞线程也不要求特定运行时。它首次轮询时会先检查当前上下文是否属于 ticket 所属的同步 bus，再检查代次；同一 bus 上下文会返回 `LifecycleError::WouldDeadlock { operation: "shutdown" }`，缓存 ticket 也一样。在该上下文中创建 future 是允许的，从另一 bus 轮询则不会被此检查拒绝。取消观察 future 只移除自己的 waker 登记；保留 ticket 后可以再次观察。协调线程启动失败归属于该代次的 ticket，即使后续请求启动了新代也不改变旧结果。
 
-`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用。若同步 `shutdown` 或 `EventBusShutdown::wait` 必须等当前回调结束才会完成，则返回 `WouldDeadlock`。报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃未能精确计数工作的标志。`EventBus` 没有 `Drop` 停机逻辑；丢弃 bus 句柄或 ticket 都不会取消后台清理。
+`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用。若同步 `shutdown` 或 `EventBusShutdown::wait` 必须等当前回调结束才会完成，则返回 `WouldDeadlock`；同一同步 bus 的 ticket 在 `wait_async` 首次轮询时也应用此保护。它只拒绝此次观察，不会取消清理，回调返回后仍可等待同一个 ticket。报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃未能精确计数工作的标志。`EventBus` 没有 `Drop` 停机逻辑；丢弃 bus 句柄或 ticket 都不会取消后台清理。
 
 ---
 
