@@ -12,6 +12,7 @@ documentation = "https://docs.rs/qubit-event-bus"
 readme = "README.md"
 keywords = ["event-bus", "pubsub", "events", "thread-safe", "qubit"]
 categories = ["concurrency", "asynchronous"]
+
 include = [
     "/Cargo.toml",
     "/LICENSE",
@@ -22,7 +23,14 @@ include = [
     "/src/**",
     "/tests/**",
     "/benches/**",
+    "!/doc/ordering_performance_artifacts/**",
+    "/doc/ordering_performance_artifacts/README.md",
+    "/doc/ordering_performance_artifacts/eb-20261104-review-measurements.md",
 ]
+
+[package.metadata.rs-infra-dependency]
+# The archived benchmark manifests are reconstruction inputs, not active nested packages.
+exclude-projects = ["doc/capacity_performance_artifacts/20261104-review"]
 
 [lib]
 name = "qubit_event_bus"
@@ -92,6 +100,6 @@ path = "tests/error/mod.rs"
 
 [[test]]
 name = "local_threads_batch_tests"
-path = "benches/local_threads_support/sample_batch.rs"
+path = "benches/local_threads_support/sample_batch_tests.rs"
 
 [workspace]
