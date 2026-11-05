@@ -46,7 +46,11 @@ pub enum CheckedPublishError {
     },
     /// Publication itself failed before a receipt was produced.
     #[error(transparent)]
-    Publish(#[from] PublishFailure),
+    Publish(
+        /// The underlying publication failure.
+        #[from]
+        PublishFailure,
+    ),
     /// Publication completed, but its receipt did not meet the requirement.
     #[error("publication did not meet admission requirement: {reason}")]
     Admission {

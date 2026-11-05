@@ -65,6 +65,9 @@ pub struct EventBusCapabilitiesBuilder {
 
 impl EventBusCapabilitiesBuilder {
     /// Sets the payload representations accepted by the provider.
+    ///
+    /// # Parameters
+    /// - `payload_modes`: payload modes accepted by the provider.
     #[inline]
     pub fn payload_modes(mut self, payload_modes: PayloadModes) -> Self {
         self.payload_modes = Some(payload_modes);
@@ -72,6 +75,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets the delivery settlement actions supported by the provider.
+    ///
+    /// # Parameters
+    /// - `settlement`: settlement actions supported by the provider.
     #[inline]
     pub fn settlement(mut self, settlement: SettlementCapabilities) -> Self {
         self.settlement = Some(settlement);
@@ -79,6 +85,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets the strongest ordering guarantee provided by the transport.
+    ///
+    /// # Parameters
+    /// - `ordering`: strongest ordering guarantee provided by the transport.
     #[inline]
     pub fn ordering(mut self, ordering: OrderingCapability) -> Self {
         self.ordering = Some(ordering);
@@ -86,6 +95,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets whether the provider natively schedules delayed delivery.
+    ///
+    /// # Parameters
+    /// - `delayed_delivery`: native delayed-delivery capability.
     #[inline]
     pub fn delayed_delivery(mut self, delayed_delivery: DelayedDeliveryCapability) -> Self {
         self.delayed_delivery = Some(delayed_delivery);
@@ -93,6 +105,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets whether messages remain available while subscribers are absent.
+    ///
+    /// # Parameters
+    /// - `durability`: message retention capability.
     #[inline]
     pub fn durability(mut self, durability: DurabilityCapability) -> Self {
         self.durability = Some(durability);
@@ -100,6 +115,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets the subscription modes accepted by the provider.
+    ///
+    /// # Parameters
+    /// - `subscription_modes`: subscription modes accepted by the provider.
     #[inline]
     pub fn subscription_modes(mut self, subscription_modes: SubscriptionModes) -> Self {
         self.subscription_modes = Some(subscription_modes);
@@ -107,6 +125,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets whether the provider manages consumer groups.
+    ///
+    /// # Parameters
+    /// - `consumer_groups`: whether the provider manages consumer groups.
     #[inline]
     pub fn consumer_groups(mut self, consumer_groups: bool) -> Self {
         self.consumer_groups = Some(consumer_groups);
@@ -114,6 +135,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets the historical starting positions supported by new subscriptions.
+    ///
+    /// # Parameters
+    /// - `replay`: historical starting-position capability.
     #[inline]
     pub fn replay(mut self, replay: ReplayCapability) -> Self {
         self.replay = Some(replay);
@@ -121,6 +145,10 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets the strongest guarantee represented by a successful publish.
+    ///
+    /// # Parameters
+    /// - `publish_guarantee`: strongest guarantee represented by successful
+    ///   publish.
     #[inline]
     pub fn publish_guarantee(mut self, publish_guarantee: PublishGuarantee) -> Self {
         self.publish_guarantee = Some(publish_guarantee);
@@ -128,6 +156,9 @@ impl EventBusCapabilitiesBuilder {
     }
 
     /// Sets whether individual destination admissions are reported.
+    ///
+    /// # Parameters
+    /// - `publish_visibility`: whether destination admissions are reported.
     #[inline]
     pub fn publish_visibility(mut self, publish_visibility: PublishVisibility) -> Self {
         self.publish_visibility = Some(publish_visibility);

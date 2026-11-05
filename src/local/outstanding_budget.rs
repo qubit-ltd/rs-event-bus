@@ -10,35 +10,13 @@
 use std::num::NonZeroUsize;
 use std::sync::PoisonError;
 
+use self::outstanding_state::OutstandingState;
 use super::LocalCapacitySnapshot;
 use crate::internal::sync::Mutex;
 use crate::model::AdmissionRejectionKind;
 
-/// Integer reservations updated together under the provider admission lock.
-#[derive(Default)]
-struct OutstandingState {
-    /// Number of queued or unsettled delivery copies.
-    count_used: usize,
-    /// Sum of their declared weights, or zero when weight accounting is
-    /// disabled.
-    weight_used: usize,
-    /// Cumulative target attempts rejected because their subscription closed.
-    /// Fanout and retries can count the same logical publication more than
-    /// once; increments saturate at `u64::MAX`.
-    rejected_subscription_closed: u64,
-    /// Cumulative target attempts rejected by a full subscription queue.
-    /// Fanout and retries can count the same logical publication more than
-    /// once; increments saturate at `u64::MAX`.
-    rejected_subscription_capacity: u64,
-    /// Cumulative target attempts rejected by the provider-wide count limit.
-    /// Fanout and retries can count the same logical publication more than
-    /// once; increments saturate at `u64::MAX`.
-    rejected_provider_count_capacity: u64,
-    /// Cumulative target attempts rejected by the provider-wide weight limit.
-    /// Fanout and retries can count the same logical publication more than
-    /// once; increments saturate at `u64::MAX`.
-    rejected_provider_weight_capacity: u64,
-}
+// Stores the integer counters protected by the provider admission lock.
+mod outstanding_state;
 
 /// Atomically reserves count and declared-weight capacity for delivery copies.
 ///
@@ -85,6 +63,14 @@ impl OutstandingBudget {
 
     /// Reserves one delivery copy and its weight atomically. Count has stable
     /// precedence.
+    ///
+    /// # Parameters
+    /// - `weight`: declared payload weight in bytes; ignored when weight
+    ///   accounting is disabled.
+    ///
+    /// # Returns
+    /// `Ok(())` when both limits admit the reservation, or the first
+    /// count-before-weight rejection reason.
     pub(super) fn try_reserve(&self, weight: usize) -> Result<(), AdmissionRejectionKind> {
         let weight = if self.requires_weight() { weight } else { 0 };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -107,6 +93,10 @@ impl OutstandingBudget {
 
     /// Records a rejection made by a subscription queue while holding the same
     /// lock used for provider-wide reservations.
+    ///
+    /// # Parameters
+    /// - `kind`: subscription-level rejection to count; provider-level kinds
+    ///   are ignored because reservation checks count them directly.
     pub(super) fn record_rejection(&self, kind: AdmissionRejectionKind) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let count = match kind {
@@ -119,6 +109,13 @@ impl OutstandingBudget {
 
     /// Copies configuration, usage, and rejection totals at one budget-lock
     /// observation point.
+    ///
+    /// # Parameters
+    /// - `queue_capacity`: per-subscription pending and in-flight capacity
+    ///   reported alongside provider-wide accounting.
+    ///
+    /// # Returns
+    /// A consistent capacity snapshot captured while holding the budget lock.
     pub(super) fn snapshot(&self, queue_capacity: usize) -> LocalCapacitySnapshot {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         LocalCapacitySnapshot {
@@ -135,6 +132,13 @@ impl OutstandingBudget {
     }
 
     /// Compatibility helper for existing internal boolean assertions.
+    /// Attempts to acquire a unit-count reservation for internal assertions.
+    ///
+    /// # Parameters
+    /// - `weight`: declared payload weight in bytes.
+    ///
+    /// # Returns
+    /// `true` when the reservation succeeds.
     #[cfg(test)]
     #[must_use]
     pub(super) fn try_acquire(&self, weight: usize) -> bool {

@@ -31,8 +31,16 @@ pub enum FacadeBuildError {
     /// The facade configuration contains middleware for another execution
     /// model.
     #[error("invalid facade configuration: {0}")]
-    Configuration(#[from] ConfigurationError),
+    Configuration(
+        /// The invalid facade configuration.
+        #[from]
+        ConfigurationError,
+    ),
     /// Querying provider capabilities failed or panicked.
     #[error("provider capability query failed: {0}")]
-    Spi(#[from] SpiError),
+    Spi(
+        /// The provider capability query failure.
+        #[from]
+        SpiError,
+    ),
 }

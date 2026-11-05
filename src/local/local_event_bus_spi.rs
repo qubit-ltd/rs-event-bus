@@ -548,6 +548,12 @@ pub(super) fn pre_admission_publish_error(resource: Option<&str>, kind: &'static
 }
 
 /// Builds the stable local error for a missing required native payload weight.
+///
+/// # Parameters
+/// - `topic`: destination topic that omitted its required weight.
+///
+/// # Returns
+/// A non-retryable pre-admission publish error for that topic.
 pub(super) fn missing_native_payload_weight_error(topic: &str) -> SpiError {
     pre_admission_publish_error(Some(topic), "missing_native_payload_weight")
 }

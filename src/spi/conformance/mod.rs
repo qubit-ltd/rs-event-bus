@@ -37,7 +37,7 @@ pub use sync::run_sync;
 pub use sync::run_sync_with_profile;
 
 mod async_conformance_hooks;
-#[path = "async.rs"]
+mod async_publish_probe;
 mod async_runner;
 mod conformance_case;
 mod conformance_case_context;

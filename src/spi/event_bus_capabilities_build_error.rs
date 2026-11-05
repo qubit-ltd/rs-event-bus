@@ -33,12 +33,19 @@ pub struct EventBusCapabilitiesBuildError {
 
 impl EventBusCapabilitiesBuildError {
     /// Creates an error for the first required field absent from the builder.
+    ///
+    /// # Parameters
+    /// - `missing_field`: name of the required capability field that was
+    ///   omitted.
     #[inline]
     pub(crate) const fn new(missing_field: &'static str) -> Self {
         Self { missing_field }
     }
 
     /// Returns the name of the first required field absent from the builder.
+    ///
+    /// # Parameters
+    /// - `self`: error containing the missing field name.
     ///
     /// # Returns
     ///
@@ -51,6 +58,14 @@ impl EventBusCapabilitiesBuildError {
 }
 
 impl Display for EventBusCapabilitiesBuildError {
+    /// Formats the missing capability field for diagnostics.
+    ///
+    /// # Parameters
+    /// - `self`: error containing the missing field name.
+    /// - `formatter`: destination for the formatted error message.
+    ///
+    /// # Returns
+    /// Formatting result from the formatter.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
         write!(formatter, "missing capability field `{}`", self.missing_field)
     }

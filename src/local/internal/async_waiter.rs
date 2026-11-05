@@ -38,6 +38,9 @@ impl AsyncWaiter {
 
     /// Updates this waiter's waker without holding the registry lock while
     /// cloning or dropping user-owned wakers.
+    ///
+    /// # Parameters
+    /// - `waker`: replacement task notification handle.
     pub(in crate::local) fn update(&mut self, waker: &Waker) {
         let needs_update = {
             let waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);

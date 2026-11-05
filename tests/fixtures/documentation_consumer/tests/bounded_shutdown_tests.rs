@@ -8,9 +8,9 @@
 //! Real handlers remain blocked until the application releases their gates.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -18,18 +18,19 @@ use std::time::Duration;
 use event_bus_documentation_consumer::bounded_shutdown::try_shutdown;
 use event_bus_documentation_consumer::bounded_shutdown::try_shutdown_async;
 use qubit_event_bus::AsyncEventBus;
-use qubit_event_bus::error::SpiError;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::error::SpiError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::PublishRequest;
-use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::ProviderId;
+use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventBusCapabilities;
 use qubit_event_bus::spi::OutboundMessage;
 use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::SettlementToken;
@@ -37,7 +38,6 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
-use qubit_event_bus::spi::EventBusCapabilities;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::timeout;
@@ -78,14 +78,10 @@ fn test_sync_uncooperative_handler_returns_control_before_gate_release() {
     // This watchdog prevents a broken example from hanging the suite. It is
     // deliberately not a scheduler-sensitive assertion about exact elapsed time.
     let result = result_receiver.recv_timeout(Duration::from_secs(30));
-    release_sender
-        .send(())
-        .expect("always release handler gate");
+    release_sender.send(()).expect("always release handler gate");
     waiter.join().expect("shutdown thread");
     assert!(
-        !result
-            .expect("bounded caller returned")
-            .expect("only deadline elapsed"),
+        !result.expect("bounded caller returned").expect("only deadline elapsed"),
         "shutdown should return control while the handler remains blocked"
     );
     let report = bus
@@ -143,9 +139,7 @@ async fn test_async_uncooperative_handler_returns_control_before_gate_release() 
     let result = timeout(Duration::from_secs(30), try_shutdown_async(&bus)).await;
     gate.notify_one();
     assert!(
-        !result
-            .expect("bounded caller returned")
-            .expect("only deadline elapsed"),
+        !result.expect("bounded caller returned").expect("only deadline elapsed"),
         "async shutdown should return control while the handler remains blocked"
     );
     let report = bus
@@ -258,18 +252,18 @@ async fn test_async_pending_provider_close_is_bounded_and_resumable() {
         notify: Notify::new(),
     });
     let inner = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::new()).expect("local SPI"));
-    let provider = Arc::new(CloseGatedProvider { inner, gate: gate.clone() });
-    let bus = AsyncEventBus::from_spi(
-        ProviderId::new("close-gated").expect("provider id"),
-        provider,
-    )
-    .expect("bus");
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("close-gated", Topic::<String>::new("shutdown.close").expect("topic"))
-            .expect("request"),
-    )
-    .await
-    .expect("subscription");
+    let provider = Arc::new(CloseGatedProvider {
+        inner,
+        gate: gate.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("close-gated").expect("provider id"), provider).expect("bus");
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("close-gated", Topic::<String>::new("shutdown.close").expect("topic"))
+                .expect("request"),
+        )
+        .await
+        .expect("subscription");
 
     assert!(!try_shutdown_async(&bus).await.expect("bounded shutdown"));
     gate.release();

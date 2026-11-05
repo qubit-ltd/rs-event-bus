@@ -193,6 +193,9 @@ where
 /// terminal delivery error if configuration is invalid. The session samples
 /// the bus clock but never registers a timer or sleeps.
 ///
+/// # Type Parameters
+/// - `T`: Payload type handled by the subscription.
+///
 /// # Parameters
 /// - `inner`: bus state supplying the clock used to create the retry timer.
 /// - `options`: subscription policy and optional cancellation token.

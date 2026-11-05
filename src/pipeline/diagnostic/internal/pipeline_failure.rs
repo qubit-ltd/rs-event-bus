@@ -49,6 +49,13 @@ impl PipelineFailure {
     }
 
     /// Attaches admission evidence without inspecting or replacing the source.
+    ///
+    /// # Parameters
+    /// - `effect`: aggregate evidence describing whether publication may have
+    ///   been accepted.
+    ///
+    /// # Returns
+    /// This failure with the supplied publication effect recorded.
     #[inline]
     pub(crate) fn with_publish_effect(mut self, effect: PublishEffect) -> Self {
         self.effect = effect;

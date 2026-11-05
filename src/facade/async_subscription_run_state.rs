@@ -41,6 +41,9 @@ impl AsyncSubscriptionRunState {
     /// Values outside the `0..=3` representation are invalid and indicate a
     /// broken internal invariant.
     ///
+    /// # Parameters
+    /// - `value`: Encoded lifecycle state loaded from the control object.
+    ///
     /// # Panics
     ///
     /// Panics if `value` does not encode one of the four lifecycle states.

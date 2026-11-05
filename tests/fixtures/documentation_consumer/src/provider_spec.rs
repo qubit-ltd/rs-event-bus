@@ -5,7 +5,8 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Provider service aliases and subscription calls compiled by documentation checks.
+//! Provider service aliases and subscription calls compiled by documentation
+//! checks.
 
 use std::time::Duration;
 
@@ -36,7 +37,8 @@ pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
 ///
 /// # Returns
 ///
-/// The outcome of the receive attempt, including whether a message is available.
+/// The outcome of the receive attempt, including whether a message is
+/// available.
 ///
 /// # Errors
 ///
@@ -45,7 +47,8 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
     receiver.receive(Duration::ZERO)
 }
 
-/// Starts accepting a token without tying the returned future to the token borrow.
+/// Starts accepting a token without tying the returned future to the token
+/// borrow.
 ///
 /// The future borrows the receiver for `'a`; the caller may release the token
 /// borrow independently after this method returns.
@@ -57,11 +60,13 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
 ///
 /// # Returns
 ///
-/// A future borrowing the receiver for `'a` and resolving when settlement completes.
+/// A future borrowing the receiver for `'a` and resolving when settlement
+/// completes.
 ///
 /// # Errors
 ///
-/// The future resolves to an SPI error if the subscription cannot accept the token.
+/// The future resolves to an SPI error if the subscription cannot accept the
+/// token.
 pub fn settle_without_borrowing_token<'a>(
     receiver: &'a mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,

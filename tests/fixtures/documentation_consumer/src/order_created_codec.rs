@@ -35,10 +35,7 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
     }
 
     fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
-        let text = format!(
-            "{}\n{}\n{}",
-            value.order_id, value.customer_id, value.total_cents
-        );
+        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
         Ok(Arc::from(text.into_bytes()))
     }
 
@@ -58,9 +55,7 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
             })?;
         if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
             return Err(CodecError::Decode {
-                source: Box::new(Error::other(
-                    "expected order_id, customer_id, and total_cents",
-                )),
+                source: Box::new(Error::other("expected order_id, customer_id, and total_cents")),
             });
         }
         Ok(OrderCreated {

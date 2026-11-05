@@ -60,7 +60,7 @@ fn msg(name: &str, weight: usize) -> OutboundMessage {
 }
 
 #[test]
-fn old_and_new_admission_constructors_preserve_reason_and_status() {
+fn test_legacy_and_typed_rejection_constructors_preserve_reason_and_status() {
     let id = Id::new(1);
     let subscriber = SubscriberId::new("compat").unwrap();
     let old = DestinationAdmission::new(
@@ -81,7 +81,7 @@ fn old_and_new_admission_constructors_preserve_reason_and_status() {
 }
 
 #[test]
-fn local_sync_and_async_rejections_have_stable_categories() {
+fn test_local_sync_and_async_rejections_report_stable_categories() {
     for asynchronous in [false, true] {
         for (label, queue_capacity, global_count, weight_limit, declared, expected) in [
             ("queue", 1, 10, None, 1, AdmissionRejectionKind::SubscriptionCapacity),

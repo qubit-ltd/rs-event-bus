@@ -108,6 +108,9 @@ impl EventBusShutdown {
 
     /// Converts a generation completion after releasing the coordinator lock.
     ///
+    /// # Parameters
+    /// - `result`: Completion result retained for the observed generation.
+    ///
     /// # Returns
     /// The completed generation's shutdown report.
     ///

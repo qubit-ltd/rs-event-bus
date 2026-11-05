@@ -15,6 +15,7 @@ use qubit_id::Id;
 
 use super::async_conformance_hooks::AsyncConformanceCheck;
 use super::async_conformance_hooks::AsyncConformanceHooks;
+use super::async_publish_probe::AsyncPublishProbe;
 use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_profile::ConformanceProfile;
 use super::conformance_report::ConformanceCase;
@@ -33,13 +34,11 @@ use crate::model::SubscriptionDurability;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::DeliveryDisposition;
-use crate::spi::EventBusCapabilities;
 use crate::spi::ReceiveOutcome;
 use crate::spi::SettlementCapabilities;
 use crate::spi::SettlementToken;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
-use crate::spi::TransportPayload;
 
 /// Runs common structural checks against asynchronous provider instances.
 /// The factory is called for each payload-mode and subscription-mode
@@ -205,6 +204,17 @@ where
     report
 }
 
+/// Records Retry and Reject settlement probes for supported providers.
+///
+/// # Type Parameters
+/// - F: asynchronous provider factory type.
+/// - `Fut`: future returned by the provider factory.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `payload_case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 async fn record_async_retry_reject_settlement<F, Fut>(
     factory: &F,
     payload_case_id: &'static str,
@@ -382,6 +392,18 @@ async fn record_async_retry_reject_settlement<F, Fut>(
     }
 }
 
+/// Checks that a provider rejects settlement tokens owned by another
+/// subscription.
+///
+/// # Type Parameters
+/// - F: asynchronous provider factory type.
+/// - `Fut`: future returned by the provider factory.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 async fn record_foreign_settlement<F, Fut>(
     factory: &F,
     case_id: &'static str,
@@ -514,6 +536,17 @@ async fn record_foreign_settlement<F, Fut>(
     }
 }
 
+/// Checks receiver behavior when close races with a pending receive.
+///
+/// # Type Parameters
+/// - F: asynchronous provider factory type.
+/// - `Fut`: future returned by the provider factory.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 async fn record_pending_close<F, Fut>(
     factory: &F,
     case_id: &'static str,
@@ -835,14 +868,6 @@ async fn run_payload_case(
         "repeated async shutdown",
     )
     .await;
-}
-
-struct AsyncPublishProbe<'a> {
-    case_id: &'static str,
-    payload: TransportPayload,
-    capabilities: EventBusCapabilities,
-    durability: SubscriptionDurability,
-    scope: &'a ProbeScope,
 }
 
 /// Publishes one probe, observes its delivery, and checks settlement behavior.

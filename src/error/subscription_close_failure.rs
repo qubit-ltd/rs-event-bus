@@ -77,6 +77,9 @@ impl SubscriptionCloseFailure {
 impl fmt::Display for SubscriptionCloseFailure {
     /// Formats the failed subscriber and its provider error.
     ///
+    /// # Parameters
+    /// - `formatter`: Destination that receives the formatted failure.
+    ///
     /// # Returns
     /// The formatted subscriber identity and provider error.
     ///

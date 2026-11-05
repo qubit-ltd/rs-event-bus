@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::error::PublishError;
@@ -22,8 +22,8 @@ use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::AdmissionOutcome;
 use qubit_event_bus::model::AdmissionRejectionKind;
-use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::AdmissionRequirement;
+use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishEffect;
 use qubit_event_bus::model::PublishOptions;
 use qubit_event_bus::model::PublishRequest;
@@ -38,9 +38,7 @@ fn configured_bus(weight_budget: usize) -> EventBus {
         LocalEventBusConfig::new()
             .queue_capacity(8)
             .max_total_outstanding(8)
-            .max_total_outstanding_weight_bytes(
-                NonZeroUsize::new(weight_budget).expect("positive weight budget"),
-            ),
+            .max_total_outstanding_weight_bytes(NonZeroUsize::new(weight_budget).expect("positive weight budget")),
     )
     .expect("local event bus")
 }
@@ -48,9 +46,7 @@ fn configured_bus(weight_budget: usize) -> EventBus {
 /// Creates a request whose `String` payload declares UTF-8 byte weight.
 fn weighted_request(topic: &Topic<String>, payload: &str) -> PublishRequest<String> {
     let options = PublishOptions::<String>::builder()
-        .native_payload_weight(|value| {
-            NonZeroUsize::new(value.len().max(1)).expect("positive payload weight")
-        })
+        .native_payload_weight(|value| NonZeroUsize::new(value.len().max(1)).expect("positive payload weight"))
         .build();
     PublishRequest::new(topic.clone(), payload.to_owned())
         .expect("publish request")
@@ -82,7 +78,10 @@ fn test_declared_weight_over_budget_is_not_admitted() {
     let bus = configured_bus(4);
     let topic = Topic::<String>::new("capacity.over-budget").expect("topic");
     let _subscription = bus
-        .subscribe(SubscribeRequest::new("consumer", topic.clone()).expect("subscription"), |_| {})
+        .subscribe(
+            SubscribeRequest::new("consumer", topic.clone()).expect("subscription"),
+            |_| {},
+        )
         .expect("subscribe");
 
     let error = bus
@@ -184,9 +183,11 @@ fn test_fanout_charges_declared_weight_for_each_accepted_target() {
             if summary.accepted == 1 && summary.rejected == 1
     ));
     if let PublishAcknowledgement::DestinationAdmissions(admissions) = receipt.acknowledgement() {
-        assert!(admissions.iter().any(|admission| {
-            admission.rejection_kind() == Some(AdmissionRejectionKind::ProviderWeightCapacity)
-        }));
+        assert!(
+            admissions.iter().any(|admission| {
+                admission.rejection_kind() == Some(AdmissionRejectionKind::ProviderWeightCapacity)
+            })
+        );
     }
     entered_receiver
         .recv_timeout(Duration::from_secs(3))
@@ -264,18 +265,13 @@ fn test_weight_budget_rejects_native_publish_without_declaration() {
         }
         other => panic!("expected known publish rejection, got {other:?}"),
     }
-    assert!(matches!(
-        handler_receiver.try_recv(),
-        Err(mpsc::TryRecvError::Empty)
-    ));
+    assert!(matches!(handler_receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
     close_bus(&bus);
 }
 /// Exercises monitor construction through both public local facades.
 #[tokio::test]
 async fn test_sync_and_async_local_monitors_report_configuration() {
-    let config = LocalEventBusConfig::new()
-        .queue_capacity(3)
-        .max_total_outstanding(7);
+    let config = LocalEventBusConfig::new().queue_capacity(3).max_total_outstanding(7);
     let (bus, monitor) = EventBus::local_with_monitor(config.clone()).expect("sync local monitor");
     let snapshot = monitor.snapshot();
     assert_eq!(snapshot.queue_capacity, 3);
@@ -306,7 +302,9 @@ async fn test_sync_and_async_local_monitors_report_configuration() {
         .build();
     let error = async_bus
         .publish_checked(
-            PublishRequest::new(topic, "too-heavy".to_owned()).expect("request").with_options(weighted),
+            PublishRequest::new(topic, "too-heavy".to_owned())
+                .expect("request")
+                .with_options(weighted),
             AdmissionRequirement::AtLeastOneAccepted,
         )
         .await
@@ -324,7 +322,9 @@ async fn test_sync_and_async_local_monitors_report_configuration() {
     }
     assert_eq!(async_monitor.snapshot().rejected_provider_weight_capacity, 1);
     let report = async_bus
-        .shutdown(ShutdownMode::Graceful { timeout: Duration::from_secs(3) })
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(3),
+        })
         .await
         .expect("async graceful shutdown");
     assert_eq!(report.outcome, ShutdownOutcome::Complete);

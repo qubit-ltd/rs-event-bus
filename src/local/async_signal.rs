@@ -49,6 +49,10 @@ impl AsyncSignal {
     }
 
     /// Registers the current task or updates its existing waiter in place.
+    ///
+    /// # Parameters
+    /// - `waiter`: optional registration to update, populated when absent.
+    /// - `waker`: task notification handle to register or replace.
     pub(super) fn register_or_update(&self, waiter: &mut Option<AsyncWaiter>, waker: &Waker) {
         if let Some(waiter) = waiter {
             waiter.update(waker);

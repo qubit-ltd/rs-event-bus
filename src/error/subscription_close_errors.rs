@@ -55,6 +55,13 @@ impl SubscriptionCloseErrors {
 
     /// Builds an immutable snapshot from bounded samples and a cumulative
     /// count.
+    ///
+    /// # Parameters
+    /// - `failures`: retained close-failure samples.
+    /// - `total_count`: total number of close failures observed.
+    ///
+    /// # Returns
+    /// An immutable collection over the supplied samples and total count.
     #[inline]
     pub(crate) fn from_summary(failures: Vec<Arc<SubscriptionCloseFailure>>, total_count: u64) -> Self {
         Self { failures, total_count }

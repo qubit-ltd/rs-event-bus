@@ -45,12 +45,14 @@ const SAMPLE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const PUBLISH_OFFSET: Duration = Duration::from_millis(10);
 
+/// Shared release state and wakeup signal for callbacks parked during a sample.
 type Gate = Arc<(Mutex<bool>, Condvar)>;
 
 /// Releases all callbacks waiting at the sample gate when measurement exits.
 struct ReleaseGateOnDrop(Gate);
 
 impl ReleaseGateOnDrop {
+    /// Opens the sample gate and wakes every callback waiting on it.
     fn release(&self) {
         let (released, condition) = &*self.0;
         *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
@@ -64,6 +66,7 @@ impl Drop for ReleaseGateOnDrop {
     }
 }
 
+/// Blocks a callback until measurement releases the shared sample gate.
 fn wait_for_gate(gate: &Gate) {
     let (released, condition) = &**gate;
     let mut released = released.lock().unwrap_or_else(PoisonError::into_inner);
@@ -216,6 +219,7 @@ fn measure_independent_delivery_wait(bus: &EventBus) -> io::Result<Duration> {
     Ok(handler_started.duration_since(publish_started))
 }
 
+/// Builds a timeout error that reports how many handlers entered the sample.
 fn entry_timeout(observed: usize) -> io::Error {
     io::Error::new(
         io::ErrorKind::TimedOut,

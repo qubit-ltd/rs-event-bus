@@ -30,16 +30,36 @@ impl ObserverEntry {
     ///
     /// The registry lock is released before liveness checks, callback cloning,
     /// and any resulting observer destruction.
+    ///
+    /// # Parameters
+    /// - `registry`: weak entries owned by the bus observer registry.
+    ///
+    /// # Returns
+    /// Active callbacks retained by strong references for this dispatch.
     pub(super) fn snapshot(registry: &Mutex<Vec<Weak<Self>>>) -> Vec<Arc<DiagnosticObserver>> {
         Self::active_callbacks(Self::snapshot_entries(registry))
     }
 
+    /// Upgrades live observer entries while holding the registry lock.
+    ///
+    /// # Parameters
+    /// - `registry`: weak observer entries whose live values are selected.
+    ///
+    /// # Returns
+    /// Strong references to entries that were alive at the upgrade point.
     fn snapshot_entries(registry: &Mutex<Vec<Weak<Self>>>) -> Vec<Arc<Self>> {
         let mut entries = registry.lock().unwrap_or_else(PoisonError::into_inner);
         entries.retain(|entry| entry.strong_count() > 0);
         entries.iter().filter_map(Weak::upgrade).collect()
     }
 
+    /// Clones callbacks whose shared liveness flag remains active.
+    ///
+    /// # Parameters
+    /// - `entries`: observer entries retained by a strong snapshot.
+    ///
+    /// # Returns
+    /// Callback handles for entries still marked active.
     fn active_callbacks(entries: Vec<Arc<Self>>) -> Vec<Arc<DiagnosticObserver>> {
         entries
             .into_iter()
@@ -114,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_snapshot_drops_inactive_capture_outside_registry_lock() {
+    fn test_sync_snapshot_releases_inactive_capture_outside_registry_lock() {
         let bus = EventBus::local(LocalEventBusConfig::default()).expect("sync local bus");
         let bus_for_drop = bus.clone();
         assert_snapshot_drop_reenters(
@@ -133,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn async_snapshot_drops_inactive_capture_outside_registry_lock() {
+    fn test_async_snapshot_releases_inactive_capture_outside_registry_lock() {
         let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("async local bus");
         let bus_for_drop = bus.clone();
         assert_snapshot_drop_reenters(

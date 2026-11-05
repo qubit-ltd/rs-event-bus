@@ -754,6 +754,9 @@ fn progress_owned_settlements<'tracking, T: Send + Sync + 'static>(
 /// settlement. Missing leases are ignored because ownership may have completed
 /// between scheduler admission and this owner-thread phase.
 ///
+/// # Type Parameters
+/// - `T`: Decoded payload type for owned deliveries.
+///
 /// # Parameters
 /// - `inner`: scheduler that owns settlement admission.
 /// - `control`: subscription whose ready settlements are consumed.
@@ -772,6 +775,9 @@ fn grant_ready_settlements<T: 'static>(
 
 /// Removes completed leases and records completion for deliveries that were
 /// neither abandoned nor failed during lifecycle handling.
+///
+/// # Type Parameters
+/// - `T`: Decoded payload type for owned deliveries.
 ///
 /// # Parameters
 /// - `owned`: receiver-thread delivery state from which leases are removed.

@@ -18,7 +18,8 @@ use qubit_retry::RetryPolicyError;
 
 use crate::orders::events::OrderCreated;
 
-/// Builds the customer-view request with three total attempts and a fixed delay.
+/// Builds the customer-view request with three total attempts and a fixed
+/// delay.
 pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, RetryPolicyError> {
     let options = SubscribeOptions::<OrderCreated>::builder()
         .retry_policy(
@@ -28,11 +29,8 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
                 .build()?,
         )
         .build();
-    let request = SubscribeRequest::new(
-        "customer-view",
-        Topic::<OrderCreated>::new_static("orders.created"),
-    )
-    .expect("static topic and subscriber ID are valid")
-    .with_options(options);
+    let request = SubscribeRequest::new("customer-view", Topic::<OrderCreated>::new_static("orders.created"))
+        .expect("static topic and subscriber ID are valid")
+        .with_options(options);
     Ok(request)
 }

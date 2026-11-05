@@ -33,8 +33,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use local_threads_support::sample_batch::run_measured_batch;
-use local_threads_support::sample_batch::sample_succeeded;
+use local_threads_support::sample_batch_tests::run_measured_batch;
+use local_threads_support::sample_batch_tests::sample_succeeded;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
 use qubit_event_bus::error::ConfigurationError;

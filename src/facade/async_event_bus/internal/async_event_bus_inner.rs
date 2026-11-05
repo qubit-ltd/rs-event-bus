@@ -187,6 +187,9 @@ impl AsyncEventBusInner {
     }
 
     /// Adds a canonical failure to the bounded bus history.
+    ///
+    /// # Parameters
+    /// - `failure`: Canonical close failure to retain in the bounded history.
     fn record_close_failure(&self, failure: &Arc<SubscriptionCloseFailure>) {
         let stale_snapshot = self
             .close_failure_ledger

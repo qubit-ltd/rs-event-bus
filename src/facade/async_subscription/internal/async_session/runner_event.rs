@@ -10,11 +10,20 @@
 /// One fair scheduler transition, selected without retaining a receiver borrow.
 pub(super) enum RunnerEvent {
     /// New handler grant already charged by the scheduler.
-    Ready(u64),
+    Ready(
+        /// Scheduler lease for the granted handler.
+        u64,
+    ),
     /// An ordered terminal disposition is ready to settle on its ordering lane.
-    Settle(u64),
+    Settle(
+        /// Scheduler lease whose terminal disposition is ready.
+        u64,
+    ),
     /// A finite receive credit already claimed by this owner.
-    Reserve(u64),
+    Reserve(
+        /// Credit identifier claimed by this receiver owner.
+        u64,
+    ),
     /// A handler or deadline changed the runnable work set.
     Changed,
     /// No work remains after stop.

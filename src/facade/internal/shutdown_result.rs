@@ -18,7 +18,7 @@ use crate::spi::ShutdownOutcome;
 #[derive(Clone)]
 pub(in crate::facade) enum ShutdownResult {
     /// Provider completion or a shared provider failure.
-    Provider(Result<ShutdownOutcome, Arc<SpiError>>),
+    Provider(#[doc = "Provider completion or shared provider failure."] Result<ShutdownOutcome, Arc<SpiError>>),
     /// Operating system failure while creating the shutdown worker.
-    StartFailed(Arc<Error>),
+    StartFailed(#[doc = "Operating system error returned when starting the worker failed."] Arc<Error>),
 }

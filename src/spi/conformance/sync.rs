@@ -409,6 +409,16 @@ where
     report
 }
 
+/// Records Retry and Reject settlement probes for supported providers.
+///
+/// # Type Parameters
+/// - F: synchronous provider factory type.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `payload_case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 fn record_retry_reject_settlement<F>(
     factory: &F,
     payload_case_id: &'static str,
@@ -573,6 +583,17 @@ fn record_retry_reject_settlement<F>(
     }
 }
 
+/// Checks that a provider rejects settlement tokens owned by another
+/// subscription.
+///
+/// # Type Parameters
+/// - F: synchronous provider factory type.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 fn record_foreign_settlement<F>(
     factory: &F,
     case_id: &'static str,
@@ -697,6 +718,16 @@ fn record_foreign_settlement<F>(
     }
 }
 
+/// Checks receiver behavior when close races with a pending receive.
+///
+/// # Type Parameters
+/// - F: synchronous provider factory type.
+///
+/// # Parameters
+/// - factory: factory creating independent provider instances.
+/// - `case_id`: stable ID of the payload probe.
+/// - `durability`: subscription mode under test.
+/// - `report`: report receiving probe outcomes.
 fn record_pending_close<F>(
     factory: &F,
     case_id: &'static str,

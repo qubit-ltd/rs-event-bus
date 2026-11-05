@@ -66,6 +66,12 @@ impl AsyncBusState {
 
     /// Returns a publish snapshot rotated to the successor of its previous
     /// start, updating the topic cursor while the caller holds the state lock.
+    ///
+    /// # Parameters
+    /// - `topic`: topic whose live mailboxes should be ordered for admission.
+    ///
+    /// # Returns
+    /// Matching mailboxes rotated to provide fair successive publish starts.
     #[must_use = "use the mailboxes indexed for this topic"]
     pub(in crate::local) fn publish_mailboxes_for_topic(&mut self, topic: &TopicAddress) -> Vec<Arc<AsyncMailbox>> {
         let mut mailboxes = self.mailboxes_for_topic(topic);

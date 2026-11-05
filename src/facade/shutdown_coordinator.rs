@@ -56,6 +56,9 @@ impl ShutdownCoordinator {
     }
 
     /// Installs a one-shot test synchronization point before a timed wait.
+    ///
+    /// # Parameters
+    /// - `barrier`: synchronization point consumed by the next timed wait.
     #[cfg(test)]
     fn set_wait_timeout_barrier(&self, barrier: Arc<Barrier>) {
         *self.wait_timeout_barrier.lock().unwrap_or_else(PoisonError::into_inner) = Some(barrier);

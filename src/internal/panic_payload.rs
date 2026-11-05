@@ -18,6 +18,9 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 
 /// Drops a captured payload while containing one destructor panic.
+///
+/// # Parameters
+/// - `payload`: panic value whose destructor should be contained.
 pub(crate) fn dispose_panic_payload(payload: Box<dyn Any + Send>) {
     if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
         std::mem::forget(secondary);

@@ -51,7 +51,7 @@ fn scheduling_with_one_subscription() -> DeliverySchedulingConfig {
 }
 
 #[test]
-fn configured_public_constructors_apply_facade_limits_and_share_local_monitor() {
+fn test_configured_constructors_apply_facade_limits_and_share_local_monitor() {
     let local = LocalEventBusConfig::new().max_total_outstanding(1);
     let facade = EventBusFacadeConfig::default().with_delivery_scheduling(scheduling_with_one_subscription());
     let (bus, monitor) = EventBus::local_with_config_and_monitor(local.clone(), facade.clone()).unwrap();
@@ -86,7 +86,7 @@ fn configured_public_constructors_apply_facade_limits_and_share_local_monitor() 
 }
 
 #[test]
-fn configured_public_constructors_preserve_facade_configuration_source_chain() {
+fn test_configured_constructors_preserve_facade_error_source_chain() {
     let sync_config = EventBusFacadeConfig::new()
         .async_subscriber_interceptor(|delivery: Delivery<u32>, next: AsyncSubscriberNext<u32>| next(delivery));
     let error = match EventBus::local_with_config_and_monitor(LocalEventBusConfig::new(), sync_config) {
@@ -143,7 +143,7 @@ fn configured_public_constructors_preserve_facade_configuration_source_chain() {
 }
 
 #[test]
-fn sync_and_async_monitors_report_config_and_share_across_clones() {
+fn test_sync_and_async_monitors_report_config_across_clones() {
     let config = LocalEventBusConfig::new()
         .queue_capacity(3)
         .max_total_outstanding(7)
@@ -162,7 +162,7 @@ fn sync_and_async_monitors_report_config_and_share_across_clones() {
 }
 
 #[test]
-fn disabled_weight_budget_is_reported_as_none_and_zero() {
+fn test_disabled_weight_budget_reports_none_and_zero() {
     let (_bus, monitor) = EventBus::local_with_monitor(LocalEventBusConfig::new()).unwrap();
     let snapshot = monitor.snapshot();
     assert_eq!(snapshot.outstanding_weight_bytes, 0);
@@ -170,7 +170,7 @@ fn disabled_weight_budget_is_reported_as_none_and_zero() {
 }
 
 #[test]
-fn provider_rejection_counts_once_and_settlement_releases_the_snapshot() {
+fn test_provider_rejection_counts_once_and_settlement_releases_capacity() {
     let config = LocalEventBusConfig::new().max_total_outstanding(1);
     let (bus, monitor) = EventBus::local_with_config_and_monitor(config, EventBusFacadeConfig::default()).unwrap();
     let topic = Topic::<u32>::new("local.capacity.monitor").unwrap();
@@ -209,7 +209,7 @@ fn provider_rejection_counts_once_and_settlement_releases_the_snapshot() {
 }
 
 #[test]
-fn subscription_capacity_rejection_is_counted_once() {
+fn test_subscription_capacity_rejection_counts_once() {
     let config = LocalEventBusConfig::new().queue_capacity(1).max_total_outstanding(5);
     let (bus, monitor) = EventBus::local_with_monitor(config).unwrap();
     let topic = Topic::<u32>::new("local.capacity.monitor.queue").unwrap();
@@ -246,7 +246,7 @@ fn subscription_capacity_rejection_is_counted_once() {
 }
 
 #[test]
-fn async_monitor_tracks_weight_rejection_and_terminal_settlement() {
+fn test_async_monitor_tracks_weight_rejection_and_settlement() {
     use std::num::NonZeroUsize;
 
     use qubit_event_bus::AsyncEventBus;
@@ -300,7 +300,7 @@ fn async_monitor_tracks_weight_rejection_and_terminal_settlement() {
 }
 
 #[test]
-fn fanout_and_repeated_attempts_count_each_rejected_target() {
+fn test_fanout_retries_count_each_rejected_target() {
     let (bus, monitor) = EventBus::local_with_monitor(LocalEventBusConfig::new().max_total_outstanding(1)).unwrap();
     let topic = Topic::<u32>::new("local.capacity.monitor.fanout").unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -371,7 +371,7 @@ impl Drop for DropProbe {
 }
 
 #[test]
-fn monitor_does_not_keep_payload_alive_after_provider_shutdown() {
+fn test_monitor_releases_payload_after_provider_shutdown() {
     let (bus, monitor) = EventBus::local_with_monitor(LocalEventBusConfig::new()).unwrap();
     let topic = Topic::<DropProbe>::new("local.capacity.monitor.drop").unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -414,7 +414,7 @@ impl Drop for StopWritersOnDrop {
 }
 
 #[test]
-fn concurrent_publication_snapshots_never_exceed_provider_count_limit() {
+fn test_concurrent_publications_respect_provider_count_limit() {
     let limit = 8;
     let weight_limit = NonZeroUsize::new(limit * 5).unwrap();
     let config = LocalEventBusConfig::new()

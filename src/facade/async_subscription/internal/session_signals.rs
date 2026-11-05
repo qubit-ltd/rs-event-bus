@@ -137,6 +137,9 @@ impl SessionSignals {
 
     /// Caches the first receive failure and stops unstarted user work.
     ///
+    /// # Parameters
+    /// - `reason`: Receive failure retained as the terminal stop reason.
+    ///
     /// # Returns
     ///
     /// `true` if this call records the first cause; otherwise, `false`.

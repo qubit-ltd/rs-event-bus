@@ -35,7 +35,7 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_seven_successful_samples_return_ok_in_order() {
+    fn test_successful_samples_run_in_order() {
         let mut iterations = Vec::new();
 
         let result = super::run_measured_batch(7, |iteration| {
@@ -48,7 +48,7 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_sample_does_not_stop_seven_sample_batch() {
+    fn test_failed_sample_does_not_stop_batch() {
         for failed_iteration in [1, 4, 7] {
             let mut iterations = Vec::new();
             let result = super::run_measured_batch(7, |iteration| {
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_succeeded_uses_timeout_and_status() {
+    fn test_sample_success_requires_non_timeout_success_status() {
         let cases = [
             (false, "success", true),
             (true, "timeout", false),
@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_io_error_is_preserved_and_stops_batch() {
+    fn test_sample_io_error_propagates_and_stops_batch() {
         let mut iterations = Vec::new();
         let result = super::run_measured_batch(7, |iteration| {
             iterations.push(iteration);

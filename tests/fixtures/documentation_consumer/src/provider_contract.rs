@@ -11,10 +11,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use qubit_event_bus::error::SpiError;
-use qubit_event_bus::spi::{
-    AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken, SpiFuture,
-    SpiSubscriptionRequest,
-};
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_id::Id;
 
 /// A synchronous receiver that records settlement by provider token value.
@@ -172,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_provider_contract_is_idempotent_and_rejects_conflict() {
+    fn test_sync_settlement_repeats_same_disposition_and_rejects_conflict() {
         let request = request(Id::new(1));
         let mut receiver = SyncSubscription::from_request(&request);
         assert!(matches!(receiver.receive(Duration::ZERO), Ok(ReceiveOutcome::TimedOut)));
@@ -191,7 +194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_provider_contract_is_idempotent_and_rejects_conflict() {
+    async fn test_async_settlement_repeats_same_disposition_and_rejects_conflict() {
         let request = request(Id::new(2));
         let mut receiver = AsyncSubscription::from_request(&request);
         assert!(matches!(

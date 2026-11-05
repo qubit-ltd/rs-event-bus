@@ -28,8 +28,8 @@ use qubit_event_bus::spi::ShutdownOutcome;
 /// Publishes one weighed `String`, waits for its handler, and closes the bus.
 ///
 /// # Errors
-/// Returns an error if bus construction, subscription, admission, delivery wait,
-/// or graceful shutdown fails.
+/// Returns an error if bus construction, subscription, admission, delivery
+/// wait, or graceful shutdown fails.
 pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
     let local = LocalEventBusConfig::new()
@@ -39,22 +39,14 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).expect("receiver remains open");
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).expect("receiver remains open");
+    })?;
     let options = PublishOptions::<String>::builder()
-        .native_payload_weight(|payload| {
-            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
-        })
+        .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight"))
         .build();
     let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let published = bus.publish_checked(
-        request,
-        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
-    );
+    let published = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAcceptedAndNoRejected);
     let metrics = bus.publish_metrics();
     eprintln!(
         "local admission totals: rejected={}, zero_destinations={}",
@@ -72,7 +64,13 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("local admission: {:?}", receipt.admission_outcome());
     report_rejections(receipt.acknowledgement());
     let snapshot = monitor.snapshot();
-    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
+    eprintln!(
+        "local outstanding={}/{} weight={}/ {:?}",
+        snapshot.outstanding_count,
+        snapshot.max_total_outstanding,
+        snapshot.outstanding_weight_bytes,
+        snapshot.max_total_outstanding_weight_bytes
+    );
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),

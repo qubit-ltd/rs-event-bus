@@ -20,9 +20,9 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::local::AsyncLocalEventBusSpi;
 use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::error::ConfigurationError;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::Headers;
 use qubit_event_bus::model::ProviderOptions;

@@ -34,12 +34,18 @@ pub struct SpiSubscriptionRequestBuildError {
 
 impl SpiSubscriptionRequestBuildError {
     /// Creates an error for the first required field absent from the builder.
+    ///
+    /// # Parameters
+    /// - `missing_field`: name of the required request field that was omitted.
     #[inline]
     pub(crate) const fn new(missing_field: &'static str) -> Self {
         Self { missing_field }
     }
 
     /// Returns the name of the first required field absent from the builder.
+    ///
+    /// # Parameters
+    /// - `self`: error containing the missing field name.
     #[must_use]
     #[inline]
     pub const fn missing_field(self) -> &'static str {
@@ -49,6 +55,13 @@ impl SpiSubscriptionRequestBuildError {
 
 impl Display for SpiSubscriptionRequestBuildError {
     /// Formats the missing subscription request field for diagnostics.
+    ///
+    /// # Parameters
+    /// - `self`: error containing the missing field name.
+    /// - `formatter`: destination for the formatted error message.
+    ///
+    /// # Returns
+    /// Formatting result from the formatter.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
         write!(formatter, "missing subscription request field `{}`", self.missing_field)
     }

@@ -26,6 +26,7 @@ pub enum RepublishAction {
     RepublishWhole,
     /// Repair only rejected destinations; others have already accepted.
     RetryRejectedDestinations,
-    /// Do not automatically repeat accepted, opaque, or intentionally dropped work.
+    /// Do not automatically repeat accepted, opaque, or intentionally dropped
+    /// work.
     NoRepublish,
 }

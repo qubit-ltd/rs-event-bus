@@ -196,6 +196,12 @@ impl<T: 'static> Clone for Topic<T> {
 
 impl<T: 'static> PartialEq for Topic<T> {
     /// Compares the routing name and payload type, ignoring codec identity.
+    ///
+    /// # Parameters
+    /// - `other`: topic being compared with this routing address.
+    ///
+    /// # Returns
+    /// `true` when both topics have the same name and payload type.
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.payload_type_id() == other.payload_type_id()
     }
@@ -203,6 +209,12 @@ impl<T: 'static> PartialEq for Topic<T> {
 impl<T: 'static> Eq for Topic<T> {}
 impl<T: 'static> Hash for Topic<T> {
     /// Hashes the same name and payload type identity used by equality.
+    ///
+    /// # Type Parameters
+    /// - `H`: hasher that receives the topic identity components.
+    ///
+    /// # Parameters
+    /// - `state`: hasher to receive the name and payload type identity.
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.payload_type_id().hash(state);
@@ -211,6 +223,12 @@ impl<T: 'static> Hash for Topic<T> {
 impl<T: 'static> fmt::Debug for Topic<T> {
     /// Formats the routing name and payload type name without exposing codec
     /// internals.
+    ///
+    /// # Parameters
+    /// - `formatter`: output formatter receiving the debug representation.
+    ///
+    /// # Returns
+    /// The formatter's result.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Topic")

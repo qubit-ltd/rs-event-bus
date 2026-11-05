@@ -39,6 +39,9 @@ impl EventBus {
     /// synchronous callbacks or workers returns `WouldDeadlock` rather than
     /// waiting for work that depends on the current call to finish.
     ///
+    /// # Type Parameters
+    /// - `T`: Event payload type associated with the topic.
+    ///
     /// # Parameters
     /// - `topic`: typed destination whose provider queue is checked.
     /// - `timeout`: optional maximum wait duration.
@@ -81,6 +84,9 @@ impl EventBus {
     ///
     /// This is local to this facade and does not establish that a remote broker
     /// or other consumers are globally idle.
+    ///
+    /// # Type Parameters
+    /// - `T`: Event payload type associated with the topic.
     ///
     /// # Parameters
     /// - `topic`: typed destination whose facade-received work is checked.

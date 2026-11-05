@@ -224,6 +224,12 @@ impl EventBusInner {
     /// controls. The callback must only update control atomics, never call
     /// provider/user code or acquire another facade lock. Used by
     /// nonblocking request setup.
+    ///
+    /// # Type Parameters
+    /// - `F`: Callback applied to each registered subscription control.
+    ///
+    /// # Parameters
+    /// - `signal`: Callback that applies the facade cancellation signal.
     pub(in crate::facade) fn signal_subscriptions<F>(&self, mut signal: F)
     where
         F: FnMut(&SubscriptionControl),
@@ -247,6 +253,9 @@ impl EventBusInner {
     }
 
     /// Adds a canonical failure to the bounded bus history.
+    ///
+    /// # Parameters
+    /// - `failure`: Canonical close failure to retain in the bounded history.
     pub(in crate::facade) fn record_close_failure(&self, failure: &Arc<SubscriptionCloseFailure>) {
         let stale_snapshot = self
             .close_failure_ledger

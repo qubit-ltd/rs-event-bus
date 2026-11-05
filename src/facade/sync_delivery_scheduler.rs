@@ -283,18 +283,27 @@ impl SyncDeliveryScheduler {
 
     /// Returns a granted lease that never started to retry backoff, freeing
     /// its handler capacity while preserving ownership and ordering lane.
+    ///
+    /// # Parameters
+    /// - `lease`: granted lease whose retry attempt has not started.
     pub(super) fn defer_unstarted_retry(&self, lease: u64) {
         self.core.defer_unstarted_retry(lease);
         self.route_notifications();
     }
 
     /// Preserves `lease` and its lane while the owner waits between attempts.
+    ///
+    /// # Parameters
+    /// - `lease`: settlement lease whose attempt has finished.
     pub(super) fn finish_attempt_waiting(&self, lease: u64) {
         self.core.finish_attempt_waiting(lease);
         self.route_notifications();
     }
 
     /// Requeues the existing due `lease` and wakes the next eligible owner.
+    ///
+    /// # Parameters
+    /// - `lease`: waiting retry lease whose due time has arrived.
     pub(super) fn wake_retry(&self, lease: u64) {
         self.core.wake_retry(lease);
         self.route_notifications();
@@ -302,6 +311,9 @@ impl SyncDeliveryScheduler {
 
     /// Returns `lease` ownership and lane credits after its resources are
     /// released. Repeated calls are harmless and wake eligible owners.
+    ///
+    /// # Parameters
+    /// - `lease`: completed lease whose ownership and lane can be released.
     pub(super) fn complete(&self, lease: u64) {
         self.core.complete(lease);
         self.route_notifications();

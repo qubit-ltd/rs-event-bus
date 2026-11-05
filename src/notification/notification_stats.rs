@@ -75,6 +75,9 @@ impl NotificationStats {
 
     /// Records the provider admission classification from one successful
     /// receipt.
+    ///
+    /// # Parameters
+    /// - `outcome`: admission category to increment with saturation.
     pub(super) fn record_admission(&self, outcome: AdmissionOutcome) {
         let counter = match outcome {
             AdmissionOutcome::Accepted(_) => &self.admission_accepted,
@@ -105,7 +108,7 @@ mod tests {
     use crate::model::AdmissionSummary;
 
     #[test]
-    fn admission_classifications_are_recorded_independently_and_saturate() {
+    fn test_admission_categories_are_counted_independently_with_saturation() {
         let stats = NotificationStats::default();
         assert_eq!(0, stats.snapshot().admission_accepted());
         assert_eq!(0, stats.snapshot().admission_partially_accepted());

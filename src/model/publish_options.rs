@@ -38,6 +38,9 @@ pub type PublisherInterceptor<T> =
 /// Typed declaration callback retained by publication options.
 ///
 /// `T` is the payload borrowed after publisher interceptors have run.
+///
+/// # Type Parameters
+/// - `T`: payload type whose weight is declared.
 type NativePayloadWeight<T> = dyn Fn(&T) -> NonZeroUsize + Send + Sync;
 
 /// Immutable options applied to one publication request.

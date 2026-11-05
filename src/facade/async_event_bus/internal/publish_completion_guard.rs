@@ -19,6 +19,13 @@ pub(in crate::facade) struct PublishCompletionGuard<'a> {
 
 impl<'a> PublishCompletionGuard<'a> {
     /// Starts tracking an in-flight asynchronous publish.
+    ///
+    /// # Parameters
+    /// - `metrics`: Shared publication counters updated if the publish is
+    ///   cancelled.
+    ///
+    /// # Returns
+    /// A guard that records cancellation unless marked complete.
     #[inline]
     pub(in crate::facade) fn new(metrics: &'a PublishMetrics) -> Self {
         Self {
@@ -35,6 +42,7 @@ impl<'a> PublishCompletionGuard<'a> {
 }
 
 impl Drop for PublishCompletionGuard<'_> {
+    /// Records cancellation when the publish was dropped before completion.
     fn drop(&mut self) {
         if !self.completed {
             self.metrics.record_cancelled();

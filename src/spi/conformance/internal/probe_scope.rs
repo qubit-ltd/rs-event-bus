@@ -12,9 +12,13 @@ use crate::model::EventId;
 use crate::model::SubscriberId;
 use crate::spi::TopicAddress;
 
+/// Unique topic, subscriber, and event identities for one conformance probe.
 pub(in crate::spi::conformance) struct ProbeScope {
+    /// Topic used by this probe.
     topic: TopicAddress,
+    /// Logical subscriber identity used by this probe.
     subscriber_id: SubscriberId,
+    /// Event identity used by this probe.
     event_id: EventId,
 }
 
@@ -38,14 +42,17 @@ impl ProbeScope {
         })
     }
 
+    /// Returns this probe's topic.
     pub(in crate::spi::conformance) fn topic(&self) -> &TopicAddress {
         &self.topic
     }
 
+    /// Returns this probe's logical subscriber identity.
     pub(in crate::spi::conformance) fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
 
+    /// Returns this probe's event identity.
     pub(in crate::spi::conformance) fn event_id(&self) -> &EventId {
         &self.event_id
     }

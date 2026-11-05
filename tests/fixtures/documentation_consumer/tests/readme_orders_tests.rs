@@ -24,7 +24,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::ShutdownMode;
 
 #[test]
-fn readme_publish_returns_the_complete_partial_admission_receipt() {
+fn test_readme_publish_returns_complete_partial_admission_receipt() {
     let bus = EventBus::local(LocalEventBusConfig::new().queue_capacity(1)).expect("local bus");
     let topic = Topic::<OrderCreated>::new_static("orders.created");
     let (entered_tx, entered_rx) = mpsc::channel();

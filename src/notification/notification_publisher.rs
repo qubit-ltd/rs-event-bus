@@ -66,6 +66,9 @@ use crate::model::Topic;
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Type Parameters
+/// - `T`: notification payload type sent to the event bus.
 #[must_use]
 pub struct NotificationPublisher<T: Send + Sync + 'static> {
     /// Admission sender; `None` means close has stopped new queue entries.

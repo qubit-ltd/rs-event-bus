@@ -278,6 +278,9 @@ impl DeliverySchedulerCore {
     ///
     /// Only a `Running` lease is changed. Repeated calls and other phases are
     /// unchanged, so handler capacity is released at most once.
+    ///
+    /// # Parameters
+    /// - `lease_id`: running lease whose handler has not begun its retry.
     pub(in crate::facade) fn defer_unstarted_retry(&self, lease_id: u64) {
         let mut state = self.lock();
         let Some(record) = state.owned.get_mut(&lease_id) else {
@@ -293,6 +296,9 @@ impl DeliverySchedulerCore {
 
     /// Marks `lease_id` as waiting after actual job exit released H. Duplicate
     /// notifications are ignored; ownership and the ordering lane stay held.
+    ///
+    /// # Parameters
+    /// - `lease_id`: settling lease whose attempt has exited.
     pub(in crate::facade) fn finish_attempt_waiting(&self, lease_id: u64) {
         let mut state = self.lock();
         if let Some(record) = state.owned.get_mut(&lease_id)
@@ -305,6 +311,9 @@ impl DeliverySchedulerCore {
     /// Requeues a due retry at its lane's head under the same transition lock.
     /// `lease_id` must be waiting; duplicates and stopped subscriptions do
     /// nothing. No new owned credit is acquired and successors cannot overtake.
+    ///
+    /// # Parameters
+    /// - `lease_id`: waiting lease whose retry is due for requeueing.
     pub(in crate::facade) fn wake_retry(&self, lease_id: u64) {
         let mut state = self.lock();
         let Some(record) = state.owned.get(&lease_id) else {
@@ -1567,5 +1576,4 @@ mod tests {
 // Exercises the real scheduler state transitions with instrumented
 // synchronization.
 #[cfg(all(test, loom))]
-#[path = "delivery_scheduler_core_loom_tests.rs"]
 mod loom_tests;

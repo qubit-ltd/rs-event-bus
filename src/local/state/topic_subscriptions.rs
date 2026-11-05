@@ -44,6 +44,9 @@ impl TopicSubscriptions {
 
     /// Rotates a live, ID-ordered snapshot to the successor of the previous
     /// publish start and records the new start.
+    ///
+    /// # Parameters
+    /// - `queues`: live queues to rotate in place for fair admission order.
     pub(in crate::local) fn rotate_publish_queues(&mut self, queues: &mut [Arc<LocalQueue>]) {
         if queues.is_empty() {
             return;

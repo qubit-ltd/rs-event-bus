@@ -41,10 +41,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original
-            .timestamp()
-            .duration_since(UNIX_EPOCH)
-            .map_err(encode_error)?;
+        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;

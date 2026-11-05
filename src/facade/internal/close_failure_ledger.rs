@@ -16,8 +16,11 @@ const MAX_RETAINED_CLOSE_FAILURES: usize = 256;
 
 /// Bus-owned close failure history with a bounded set of detailed samples.
 pub(in crate::facade) struct CloseFailureLedger {
+    /// Detailed failures retained up to the configured sample limit.
     failures: Vec<Arc<SubscriptionCloseFailure>>,
+    /// Saturating count of every failure recorded, including omitted samples.
     total_count: u64,
+    /// Cached summary invalidated whenever another failure is recorded.
     snapshot: Option<Arc<SubscriptionCloseErrors>>,
 }
 
@@ -35,6 +38,13 @@ impl CloseFailureLedger {
     ///
     /// The caller must drop the returned snapshot after releasing its ledger
     /// mutex so retained error sources are never destroyed under that lock.
+    ///
+    /// # Parameters
+    /// - `failure`: canonical close failure to count and retain when capacity
+    ///   remains.
+    ///
+    /// # Returns
+    /// The previous cached snapshot, which is stale after this update.
     pub(in crate::facade) fn record(
         &mut self,
         failure: &Arc<SubscriptionCloseFailure>,
@@ -64,6 +74,7 @@ impl CloseFailureLedger {
 }
 
 impl Default for CloseFailureLedger {
+    /// Creates an empty failure ledger.
     fn default() -> Self {
         Self::new()
     }

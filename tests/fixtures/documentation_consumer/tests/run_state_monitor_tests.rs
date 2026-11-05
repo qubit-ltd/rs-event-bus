@@ -17,9 +17,12 @@ fn test_run_state_monitor_alerts_only_when_required() {
     monitor_run_state(AsyncSubscriptionRunState::Unstarted, true, |m| alerts.push(m));
     monitor_run_state(AsyncSubscriptionRunState::Paused, true, |m| alerts.push(m));
     monitor_run_state(AsyncSubscriptionRunState::Stopped, true, |m| alerts.push(m));
-    assert_eq!(alerts, vec![
-        "subscription runner did not start",
-        "subscription runner is paused",
-        "subscription runner stopped",
-    ]);
+    assert_eq!(
+        alerts,
+        vec![
+            "subscription runner did not start",
+            "subscription runner is paused",
+            "subscription runner stopped",
+        ]
+    );
 }

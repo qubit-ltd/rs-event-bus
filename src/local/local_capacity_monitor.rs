@@ -44,6 +44,14 @@ pub struct LocalCapacityMonitor {
 }
 
 impl LocalCapacityMonitor {
+    /// Creates a monitor over provider accounting and subscription capacity.
+    ///
+    /// # Parameters
+    /// - `budget`: shared provider-wide reservation and rejection counters.
+    /// - `queue_capacity`: per-subscription pending and in-flight limit.
+    ///
+    /// # Returns
+    /// A monitor that reads both values from the shared budget.
     pub(super) fn new(budget: Arc<OutstandingBudget>, queue_capacity: usize) -> Self {
         Self { budget, queue_capacity }
     }

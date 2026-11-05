@@ -14,7 +14,8 @@ use qubit_event_bus::model::PublishReceipt;
 
 use crate::republish_action::RepublishAction;
 
-/// Checks whether at least one destination accepted the event and none rejected it.
+/// Checks whether at least one destination accepted the event and none rejected
+/// it.
 ///
 /// This only reads the receipt. It does not republish, compensate, or retry
 /// selected destinations, and it leaves the receipt available to the caller.

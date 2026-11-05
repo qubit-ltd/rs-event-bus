@@ -122,7 +122,7 @@ fn assert_payload_was_released(dropped: &AtomicBool) {
 }
 
 #[test]
-fn sync_close_finishes_unregister_and_notifications_before_payload_panic() {
+fn test_sync_close_unregisters_and_notifies_before_payload_drop_panics() {
     let spi = sync_spi();
     let mut receiver = spi.subscribe(request(77, "local.close.panic")).expect("subscription");
     let (message, dropped) = message();
@@ -168,7 +168,7 @@ fn sync_close_finishes_unregister_and_notifications_before_payload_panic() {
 }
 
 #[test]
-fn async_close_wakes_graceful_shutdown_and_unregisters_before_payload_panic() {
+fn test_async_close_wakes_shutdown_and_unregisters_before_payload_drop_panics() {
     let config = LocalEventBusConfig::new()
         .max_total_outstanding(4)
         .max_total_outstanding_weight_bytes(NonZeroUsize::new(7).expect("positive weight"));
@@ -206,7 +206,7 @@ fn async_close_wakes_graceful_shutdown_and_unregisters_before_payload_panic() {
 }
 
 #[test]
-fn sync_shutdown_finishes_queue_and_outcome_before_payload_panic() {
+fn test_sync_shutdown_finishes_queue_before_payload_drop_panics() {
     let spi = sync_spi();
     let mut receiver = spi.subscribe(request(81, "local.close.panic")).expect("subscription");
     let (message, dropped) = message();
@@ -229,7 +229,7 @@ fn sync_shutdown_finishes_queue_and_outcome_before_payload_panic() {
 }
 
 #[test]
-fn sync_close_discards_in_flight_payload_after_delivery_owner_is_dropped() {
+fn test_sync_close_discards_in_flight_payload_after_owner_drop() {
     let spi = sync_spi();
     let mut receiver = spi.subscribe(request(82, "local.close.panic")).expect("subscription");
     let (message, dropped) = message();
@@ -255,7 +255,7 @@ fn sync_close_discards_in_flight_payload_after_delivery_owner_is_dropped() {
 }
 
 #[test]
-fn async_close_discards_in_flight_payload_after_delivery_owner_is_dropped() {
+fn test_async_close_discards_in_flight_payload_after_owner_drop() {
     let config = LocalEventBusConfig::new()
         .max_total_outstanding(1)
         .max_total_outstanding_weight_bytes(NonZeroUsize::new(7).expect("positive weight"));
@@ -292,7 +292,7 @@ fn async_close_discards_in_flight_payload_after_delivery_owner_is_dropped() {
 }
 
 #[test]
-fn sync_drop_fallback_finishes_close_before_payload_panic() {
+fn test_sync_drop_fallback_finishes_close_before_payload_drop_panics() {
     let spi = sync_spi();
     let receiver = spi.subscribe(request(86, "local.close.panic")).expect("subscription");
     let (message, dropped) = message();
@@ -307,7 +307,7 @@ fn sync_drop_fallback_finishes_close_before_payload_panic() {
 }
 
 #[test]
-fn async_drop_fallback_wakes_graceful_shutdown_before_payload_panic() {
+fn test_async_drop_fallback_wakes_shutdown_before_payload_drop_panics() {
     let config = LocalEventBusConfig::new()
         .max_total_outstanding(1)
         .max_total_outstanding_weight_bytes(NonZeroUsize::new(7).expect("positive weight"));
@@ -333,7 +333,7 @@ fn async_drop_fallback_wakes_graceful_shutdown_before_payload_panic() {
 }
 
 #[test]
-fn async_shutdown_finishes_state_and_wakes_before_payload_panic() {
+fn test_async_shutdown_finishes_state_before_payload_drop_panics() {
     let config = LocalEventBusConfig::new()
         .max_total_outstanding(4)
         .max_total_outstanding_weight_bytes(NonZeroUsize::new(7).expect("positive weight"));

@@ -16,7 +16,7 @@ use crate::model::SettlementTermination;
 #[must_use]
 pub(in crate::facade) enum SettlementRetryDecision {
     /// Retry after this delay, subject to admission at the next attempt.
-    RetryAfter(Duration),
+    RetryAfter(#[doc = "Delay before another settlement attempt is admitted."] Duration),
     /// Stop settlement for this terminal reason.
-    Stop(SettlementTermination),
+    Stop(#[doc = "Terminal reason that prevents another settlement attempt."] SettlementTermination),
 }

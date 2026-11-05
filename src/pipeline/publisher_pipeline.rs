@@ -437,6 +437,9 @@ impl PublisherPipeline {
 
     /// Encodes or erases an event payload according to provider capabilities.
     ///
+    /// # Type Parameters
+    /// - `T`: thread-safe event payload carried by the outbound message.
+    ///
     /// # Parameters
     ///
     /// - `envelope`: Event and metadata to preserve in the outbound message.

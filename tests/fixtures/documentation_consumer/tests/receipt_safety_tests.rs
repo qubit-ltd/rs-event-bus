@@ -5,13 +5,14 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Exercises decisions using real receipts, including retained uncertain history.
+//! Exercises decisions using real receipts, including retained uncertain
+//! history.
 
 use std::time::Duration;
 
-use event_bus_documentation_consumer::receipt_safety::{
-    check_order_admission, inspect_order_receipt, republish_action,
-};
+use event_bus_documentation_consumer::receipt_safety::check_order_admission;
+use event_bus_documentation_consumer::receipt_safety::inspect_order_receipt;
+use event_bus_documentation_consumer::receipt_safety::republish_action;
 use event_bus_documentation_consumer::republish_action::RepublishAction;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::local::LocalEventBusConfig;

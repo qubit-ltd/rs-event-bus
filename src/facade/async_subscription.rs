@@ -65,11 +65,13 @@ type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 
 /// A typed subscription whose receive loop is driven by the caller's executor.
 ///
-/// Dropping this handle cannot await provider cleanup. An unstarted receiver
-/// is released locally; call [`Self::close`] for deterministic asynchronous
-/// cleanup and close errors. An ephemeral provider may discard unsettled work
-/// on receiver drop. A durable provider must follow its durable recovery
-/// contract and must not silently acknowledge unsettled deliveries.
+/// Dropping this handle synchronously disposes its control and cannot await
+/// provider receiver close. An unstarted receiver is released locally.
+/// Disposal removes the control from the bus, so deterministic receiver close
+/// and error reporting require calling [`Self::close`] before dropping the
+/// handle. An ephemeral provider may discard unsettled work on receiver drop.
+/// A durable provider must follow its durable recovery contract and must not
+/// silently acknowledge unsettled deliveries.
 ///
 /// # Examples
 ///
@@ -170,7 +172,6 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Returns
     /// The ID used in diagnostics and provider settlement context.
-    #[must_use = "the subscription ID is useful for diagnostics and settlement context"]
     #[inline]
     pub fn id(&self) -> Id {
         self.id
@@ -300,7 +301,11 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
 }
 
 impl<T: 'static> Drop for AsyncSubscription<T> {
-    /// Signals stop and relinquishes an unstarted session synchronously.
+    /// Disposes the control synchronously and removes it from bus shutdown
+    /// tracking.
+    ///
+    /// This releases unstarted session ownership locally. Provider receiver
+    /// close remains asynchronous and is not awaited here.
     fn drop(&mut self) {
         self.control.dispose();
     }

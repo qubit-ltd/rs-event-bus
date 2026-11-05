@@ -77,6 +77,12 @@ impl ConformanceReport {
     ///
     /// Contexts are aligned with [`Self::cases`] by index. Global checks and
     /// out-of-range indices have no context.
+    ///
+    /// # Parameters
+    /// - `index`: zero-based index of the case in [`Self::cases`].
+    ///
+    /// # Returns
+    /// The case context, or `None` for global checks and out-of-range indices.
     #[must_use]
     pub fn case_context(&self, index: usize) -> Option<&ConformanceCaseContext> {
         self.contexts.get(index).and_then(Option::as_ref)
@@ -192,6 +198,12 @@ pub(super) fn payload_probes(mode: PayloadModes) -> Vec<(&'static str, Transport
 }
 
 /// Returns supported subscription modes in stable probe order.
+///
+/// # Parameters
+/// - `capabilities`: capabilities declared by the provider.
+///
+/// # Returns
+/// Supported ephemeral and durable modes, in that order.
 #[must_use]
 pub(super) fn probe_subscription_modes(capabilities: EventBusCapabilities) -> Vec<SubscriptionDurability> {
     [SubscriptionDurability::Ephemeral, SubscriptionDurability::Durable]
