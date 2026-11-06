@@ -231,6 +231,17 @@ impl AsyncEventBus {
         }
 
         let outcome = self.shutdown_provider(mode, timeout, deadline).await?;
+        let remaining_controls: Vec<_> = self
+            .inner
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for control in remaining_controls {
+            control.dispose();
+        }
         let report = ShutdownReport::new(
             outcome,
             self.inner.abandoned_deliveries.load(Ordering::Acquire),

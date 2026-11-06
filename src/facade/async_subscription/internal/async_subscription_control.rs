@@ -256,6 +256,11 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
         self.mark_stopped();
     }
 
+    /// Releases the session through the existing lease/disposal protocol.
+    fn dispose(&self) {
+        AsyncSubscriptionControl::dispose(self);
+    }
+
     /// Returns the canonical receiver close failure, when one exists.
     ///
     /// # Returns

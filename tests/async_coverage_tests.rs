@@ -14,6 +14,7 @@ use std::future::Future;
 use std::future::pending as pending_future;
 use std::future::poll_fn;
 use std::io::Error;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -50,6 +51,7 @@ use qubit_event_bus::SubscribeError;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::PublishMetricsSnapshot;
 use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AdmissionStatus;
@@ -70,6 +72,7 @@ use qubit_event_bus::model::SchemaId;
 use qubit_event_bus::model::SettlementTermination;
 use qubit_event_bus::model::SubscribeOptions;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionDurability;
 use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
@@ -818,16 +821,33 @@ fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_meta
 struct CloseFailingSpi {
     receives: Arc<AtomicUsize>,
     close_attempts: Arc<AtomicUsize>,
+    settlement_calls: Arc<AtomicUsize>,
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    fail_provider_shutdown_once: bool,
     pending_provider_shutdown_once: bool,
+    deliver_count: usize,
+    durability: Option<DurabilityCapability>,
     provider_shutdown_attempts: AtomicUsize,
 }
 
 impl AsyncEventBusSpi for CloseFailingSpi {
     fn capabilities(&self) -> EventBusCapabilities {
-        full_capabilities()
+        self.durability.map_or_else(full_capabilities, |durability| {
+            EventBusCapabilities::new(
+                PayloadModes::Native,
+                SettlementCapabilities::AcceptRetryReject,
+                OrderingCapability::PerSubscription,
+                DelayedDeliveryCapability::None,
+                durability,
+                SubscriptionModes::BOTH,
+                false,
+                ReplayCapability::None,
+                PublishGuarantee::Accepted,
+                PublishVisibility::Opaque,
+            )
+        })
     }
 
     fn publish<'a>(&'a self, _message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
@@ -841,21 +861,27 @@ impl AsyncEventBusSpi for CloseFailingSpi {
 
     fn subscribe<'a>(
         &'a self,
-        _request: SpiSubscriptionRequest,
+        request: SpiSubscriptionRequest,
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
         let receives = self.receives.clone();
         let close_attempts = self.close_attempts.clone();
+        let settlement_calls = self.settlement_calls.clone();
         let receiver_drops = self.receiver_drops.clone();
         let receive_future_drops = self.receive_future_drops.clone();
         let fail_every_close = self.fail_every_close;
+        let deliver_count = self.deliver_count;
+        let subscription_id = request.subscription_id();
         Box::pin(async move {
             Ok(Box::new(CloseFailingReceiver {
                 receives,
                 close_attempts: AtomicUsize::new(0),
                 total_close_attempts: close_attempts,
+                settlement_calls,
                 receiver_drops,
                 receive_future_drops,
                 fail_every_close,
+                deliver_count,
+                subscription_id,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
@@ -864,6 +890,17 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let attempt = self.provider_shutdown_attempts.fetch_add(1, Ordering::AcqRel);
         if self.pending_provider_shutdown_once && attempt == 0 {
             Box::pin(async { pending_future::<Result<ShutdownOutcome, SpiError>>().await })
+        } else if self.fail_provider_shutdown_once && attempt == 0 {
+            Box::pin(async {
+                Err(SpiError::Operation {
+                    provider_id: "close-failing".into(),
+                    operation: "shutdown",
+                    resource: None,
+                    kind: "shutdown_failed",
+                    retryable: Some(true),
+                    source: Box::new(Error::other("test shutdown failure")),
+                })
+            })
         } else {
             Box::pin(async { Ok(ShutdownOutcome::Complete) })
         }
@@ -875,14 +912,22 @@ struct CloseFailingReceiver {
     receives: Arc<AtomicUsize>,
     close_attempts: AtomicUsize,
     total_close_attempts: Arc<AtomicUsize>,
+    settlement_calls: Arc<AtomicUsize>,
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    deliver_count: usize,
+    subscription_id: Id,
 }
 
 impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
     fn receive<'a>(&'a mut self, _timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
         self.receives.fetch_add(1, Ordering::AcqRel);
+        if self.deliver_count > 0 {
+            self.deliver_count -= 1;
+            let token = SettlementToken::new(self.subscription_id, "unsettled-close-failure");
+            return Box::pin(async move { Ok(ReceiveOutcome::Message(inbound_message(Some(token)))) });
+        }
         Box::pin(CancellableReceive {
             dropped: self.receive_future_drops.clone(),
         })
@@ -893,6 +938,7 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
         _token: &SettlementToken,
         _disposition: DeliveryDisposition,
     ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.settlement_calls.fetch_add(1, Ordering::AcqRel);
         Box::pin(async { Ok(()) })
     }
 
@@ -1020,6 +1066,11 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
     drop(shutdown);
     assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
     assert_eq!(spi.close_attempts.load(Ordering::Acquire), 2);
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        0,
+        "cancelled provider shutdown must retain the receiver"
+    );
 
     let Err(ShutdownError::SubscriptionClose(retried_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
         panic!("retry must finish shutdown and report the retained close failure");
@@ -1041,6 +1092,11 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
     ));
     assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 2);
     assert_eq!(spi.close_attempts.load(Ordering::Acquire), 3);
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        1,
+        "successful provider retry disposes the receiver"
+    );
     drop(subscription);
 }
 
@@ -1134,6 +1190,281 @@ fn test_shutdown_after_paused_subscription_records_one_close_failure() {
             .as_str(),
         "paused-close"
     );
+}
+
+#[test]
+fn test_shutdown_disposes_failed_close_session_after_provider_termination() {
+    let spi = Arc::new(CloseFailingSpi::default());
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("terminal-disposal", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+    let handler_drops = Arc::new(AtomicUsize::new(0));
+    let handler_capture = DropCounter(handler_drops.clone());
+    let mut run = Box::pin(subscription.run(move |_| {
+        let _capture = &handler_capture;
+        async { Ok(()) }
+    }));
+    assert!(poll_once(run.as_mut()).is_pending(), "runner waits for a receive");
+    drop(run);
+    assert_eq!(
+        handler_drops.load(Ordering::Acquire),
+        0,
+        "paused session retains its handler"
+    );
+
+    let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("receiver close failure remains observable after provider shutdown");
+    };
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors.iter().next().expect("one close failure").error().kind(),
+        "close_failed"
+    );
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        1,
+        "terminal shutdown releases receiver"
+    );
+    assert_eq!(
+        handler_drops.load(Ordering::Acquire),
+        1,
+        "terminal shutdown releases handler capture"
+    );
+    assert!(
+        subscription.terminal_failure().is_none(),
+        "disposal retains the observable terminal state"
+    );
+    let _metrics = subscription.delivery_metrics();
+    assert_eq!(
+        subscription.run_state(),
+        qubit_event_bus::facade::AsyncSubscriptionRunState::Stopped
+    );
+
+    let Err(ShutdownError::SubscriptionClose(repeated_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("closed shutdown retains the original close error");
+    };
+    assert_eq!(repeated_errors.len(), 1);
+    assert_eq!(
+        spi.provider_shutdown_attempts.load(Ordering::Acquire),
+        1,
+        "closed provider is not called again"
+    );
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        1,
+        "receiver is disposed once"
+    );
+    assert_eq!(handler_drops.load(Ordering::Acquire), 1, "handler is disposed once");
+}
+
+#[test]
+fn test_shutdown_disposes_unstarted_failed_close_session_after_provider_termination() {
+    let spi = Arc::new(CloseFailingSpi::default());
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("unstarted-terminal-disposal", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+
+    let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("receiver close failure remains observable after provider shutdown");
+    };
+    assert_eq!(errors.len(), 1);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
+    assert_eq!(
+        subscription.run_state(),
+        qubit_event_bus::facade::AsyncSubscriptionRunState::Stopped
+    );
+    let _metrics = subscription.delivery_metrics();
+    let Err(ShutdownError::SubscriptionClose(repeated_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("closed shutdown retains the original close error");
+    };
+    assert_eq!(repeated_errors.len(), 1);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn test_terminal_session_disposal_preserves_unsettled_delivery_semantics() {
+    for (durability, capability) in [
+        (SubscriptionDurability::Ephemeral, DurabilityCapability::Ephemeral),
+        (SubscriptionDurability::Durable, DurabilityCapability::Durable),
+    ] {
+        let spi = Arc::new(CloseFailingSpi {
+            fail_every_close: true,
+            deliver_count: 2,
+            durability: Some(capability),
+            ..CloseFailingSpi::default()
+        });
+        let scheduling = DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).expect("positive handler capacity"),
+            NonZeroUsize::new(2).expect("positive owned-delivery capacity"),
+            NonZeroUsize::new(2).expect("positive per-subscription capacity"),
+            NonZeroUsize::new(2).expect("positive subscription capacity"),
+        )
+        .expect("valid delivery scheduling limits");
+        let bus = AsyncEventBus::with_config(
+            ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+            spi.clone(),
+            EventBusFacadeConfig::new().with_delivery_scheduling(scheduling),
+        )
+        .expect("valid provider capabilities");
+        let subscription = Arc::new(block_on(async {
+            let request = SubscribeRequest::new("unsettled", topic())
+                .expect("valid subscriber ID")
+                .with_options(SubscribeOptions::builder().durability(durability).build());
+            bus.subscribe(request).await.expect("subscription")
+        }));
+        let handler_gate = ReleaseGate::default();
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let observed_handler_calls = handler_calls.clone();
+        let handler = handler_gate.clone();
+        let runner = spawn(move || {
+            block_on(subscription.run(move |_| {
+                observed_handler_calls.fetch_add(1, Ordering::AcqRel);
+                handler.clone()
+            }))
+        });
+        for _ in 0..100_000 {
+            if handler_calls.load(Ordering::Acquire) == 1 && spi.receives.load(Ordering::Acquire) == 2 {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        if handler_calls.load(Ordering::Acquire) != 1 || spi.receives.load(Ordering::Acquire) != 2 {
+            handler_gate.release();
+            let _ = runner.join();
+            panic!("expected one active handler and a second buffered delivery");
+        }
+
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(
+            poll_once(shutdown.as_mut()).is_pending(),
+            "shutdown waits for the active handler"
+        );
+        handler_gate.release();
+        let shutdown = block_on(shutdown);
+        assert!(matches!(shutdown, Err(ShutdownError::SubscriptionClose(_))));
+        assert!(runner.join().expect("runner must not panic").is_err());
+        let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+            panic!("repeated shutdown retains close errors");
+        };
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            handler_calls.load(Ordering::Acquire),
+            1,
+            "the buffered delivery never starts its handler"
+        );
+        assert_eq!(
+            spi.settlement_calls.load(Ordering::Acquire),
+            1,
+            "only the completed first delivery settles; disposal does not settle the buffered token"
+        );
+        assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    }
+}
+
+#[test]
+fn test_provider_shutdown_failure_preserves_failed_close_session_until_retry() {
+    let spi = Arc::new(CloseFailingSpi {
+        fail_every_close: true,
+        fail_provider_shutdown_once: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("provider-shutdown-retry", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+
+    let error = block_on(bus.shutdown(ShutdownMode::Immediate)).expect_err("first provider shutdown fails");
+    assert!(matches!(error, ShutdownError::Spi(_)));
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        0,
+        "failed provider shutdown retains receiver"
+    );
+    assert_eq!(
+        subscription.run_state(),
+        qubit_event_bus::facade::AsyncSubscriptionRunState::Stopped
+    );
+    let _metrics = subscription.delivery_metrics();
+
+    let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("retry terminates provider and returns the retained receiver close error");
+    };
+    assert_eq!(errors.len(), 1);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 2);
+    assert_eq!(
+        spi.receiver_drops.load(Ordering::Acquire),
+        1,
+        "successful retry disposes receiver"
+    );
+    let Err(ShutdownError::SubscriptionClose(repeated_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("closed shutdown retains close error");
+    };
+    assert_eq!(repeated_errors.len(), 1);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 2);
+    assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
+}
+
+struct DropCounter(Arc<AtomicUsize>);
+
+impl Drop for DropCounter {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Clone, Default)]
+struct ReleaseGate {
+    released: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl ReleaseGate {
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().expect("release gate lock").take() {
+            waker.wake();
+        }
+    }
+}
+
+impl Future for ReleaseGate {
+    type Output = Result<(), DeliveryError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.released.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
+        }
+        *self.waker.lock().expect("release gate lock") = Some(cx.waker().clone());
+        if self.released.load(Ordering::Acquire) {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 #[test]

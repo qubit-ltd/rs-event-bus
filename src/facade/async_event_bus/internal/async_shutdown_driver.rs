@@ -36,6 +36,12 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// - `mode`: shutdown policy to apply to the runner.
     fn stop(&self, mode: ShutdownMode);
 
+    /// Drops any locally retained session after the provider has terminated.
+    ///
+    /// This is a synchronous fallback for receiver close failures. It must be
+    /// called only after runner shutdown and successful provider termination.
+    fn dispose(&self);
+
     /// Returns the canonical receiver close failure, if one has been recorded.
     ///
     /// # Returns
