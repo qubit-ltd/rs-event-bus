@@ -2019,7 +2019,7 @@ pub fn settle_without_borrowing_token<'a>(
 
 仓库脚本须在完整 Git checkout 根目录运行；crate 解包目录不包含 `scripts/` 或 `.infra/`。`./scripts/project-ci-check.sh` 是项目辅助门禁：先运行 Python 回归、Cargo 包清单和性能证据检查，再运行 `check_event_bus_graph.py`。图检查器的权威 `REPOSITORIES` 与 `FIXTURES` 输入定义见[REPOSITORIES 和 FIXTURES](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/check_event_bus_graph.py)。默认 standalone 模式只检查当前 core 的 metadata，不需要下载下游仓库；显式传入 `--ecosystem-root <repos-dir>` 时，才验证五仓布局及声明的 fixtures。metadata 检查补充各项目 CI，不能替代编译、运行时测试或项目 CI。
 
-整合目录包含 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和 `rs-execution-services`。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能证明其兼容 core 0.21；发布兼容性需要消费者发布依赖 registry core 0.21 的版本并提供自身集成验证。本地 path 图检查通过不等于发布证据。
+下游整合合同在 `scripts/downstream-compatibility.json` 中固定 core、Redis provider、task、IOC 及传递依赖仓库版本。编译门禁含五个目标：Redis、task notifications、当前 IOC consumer，以及独立 Tokio 和 Smol 兼容异步 consumer。异步 consumer 使用独立 Cargo workspace，关闭默认 features，只启用 provider 的 `async` feature。locked 兼容性门禁先核验 metadata 和依赖来源，再检查所有目标。行为门禁保留两项 Redis conformance 与 task notifications，并让两个异步 consumer 各自在独立临时 Redis 容器中运行；每个容器使用动态 localhost 端口，执行就绪检查并在结束时清理。这些检查只覆盖清单锁定的源码版本；历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，本地 path 验证不能证明已发布版本兼容。
 
 ## Local 容量诊断
 
