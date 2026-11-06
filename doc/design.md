@@ -979,8 +979,15 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
    Uncertainty is retained across attempts and sets `duplicate_possible()` on a
    later successful receipt. In-flight cancellation that returns an error is
    uncertain; RetryPolicy budgets are soft, not universal hard I/O timeouts.
-9. **Error handlers.** On failure, `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`
-   runs in registration order. If any handler panics, the final error becomes
+9. **Error handlers.** When a provider publish attempt, or its retry flow,
+   returns a terminal failure, `PublishErrorHandler<T>(&PublishFailureContext<T>,
+   &PublishFailure)` runs in registration order. Failures before a provider
+   attempt—including request construction or validation, lifecycle rejection,
+   capability checks, codec work, and interceptor preflight—do not invoke these
+   handlers; the caller must observe the returned error. An interceptor drop
+   returns a `Dropped` receipt. Cancelling an asynchronous future does not
+   produce a terminal callback or prove that the provider did not accept the
+   publication. If any handler panics, the final error becomes
    `PublishError::ErrorHandlerPanicked` and the remaining handlers still run.
 10. **Admission diagnostics.** When the receipt carries `DestinationAdmissions`, each
    rejected destination emits `Diagnostic::AdmissionRejected { event_id, topic, subscription_id, subscriber_id, reason }`.

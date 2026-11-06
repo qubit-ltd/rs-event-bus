@@ -928,8 +928,12 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
    `AllowDuplicates` 仅允许原策略继续判断。未知效果跨尝试保留，后续成功回执
    的 `duplicate_possible()` 为 true。进行中的尝试被取消并返回错误时效果未知；
    RetryPolicy 预算是软预算，不是通用的 I/O 硬超时。
-9. **错误处理器**：发布失败时按注册顺序调用 `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`；
-   任何一个 panic → 最终错误替换为 `PublishError::ErrorHandlerPanicked`，
+9. **错误处理器**：provider 发布尝试或其重试流程最终返回失败后，按注册顺序调用
+   `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`。provider
+   尝试之前的失败（包括请求构造或校验、生命周期拒绝、能力检查、codec 处理和拦截器
+   预处理）不会调用这些处理器；调用方必须观察返回的错误。拦截器丢弃会返回
+   `Dropped` 回执。异步 future 取消不会产生终结回调，也不能证明 provider 未接纳发布。
+   任何一个处理器 panic，最终错误替换为 `PublishError::ErrorHandlerPanicked`，
    其余处理器仍继续执行。
 10. **接纳诊断**：回执携带 `DestinationAdmissions` 时，对每个被拒绝的目的地发
    `Diagnostic::AdmissionRejected { event_id, topic, subscription_id, subscriber_id, reason }`。
