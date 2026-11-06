@@ -204,7 +204,7 @@ cargo test --all-features
 # 运行项目 CI 检查
 ./.infra/bin/ci-check.sh
 
-# 可选的项目辅助检查（包含 standalone metadata 图检查）
+# 可选的五仓整合依赖图验证
 ./scripts/project-ci-check.sh --ecosystem-root /path/to/rust-common
 
 # 检查代码覆盖率

@@ -209,7 +209,7 @@ cargo test --all-features
 # Project CI checks
 ./.infra/bin/ci-check.sh
 
-# Optional project checks, including the standalone metadata graph check
+# Optional coordinated five-repository graph validation
 ./scripts/project-ci-check.sh --ecosystem-root /path/to/rust-common
 
 # Check code coverage
