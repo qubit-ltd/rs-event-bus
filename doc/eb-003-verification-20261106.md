@@ -53,7 +53,7 @@ is acknowledged by this disposal.
 | `python3 -B -m unittest discover -s scripts/tests -p '*tests.py'` | Passed (54 tests). |
 | `python3 -B scripts/check_documentation_examples.py` | Passed. |
 | `python3 -B scripts/test_documentation_examples.py` | Passed (48 cases). |
-| `python3 -B scripts/check_documentation_examples.py --check-snapshot-content` | Initially failed because the updated bilingual docs did not yet exist in a committed snapshot. The docs will be committed first, the snapshot links updated to that commit, and this check rerun. |
+| `python3 -B scripts/check_documentation_examples.py --check-snapshot-content` | Passed after committing the bilingual docs and updating all four links to snapshot commit `cd1ad429d2d96d7905215d4c37577431688a786d`. An initial abbreviated SHA was rejected by the checker and corrected to the full SHA. |
 | `docker info --format '{{.ServerVersion}}'` | Blocked: Docker API access denied for `/var/run/docker.sock`; Redis container behavior checks cannot run in this environment. |
 
 The compatibility mock tests pass; the fixed-SHA downstream worktree check and
