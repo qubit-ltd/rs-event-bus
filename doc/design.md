@@ -453,10 +453,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original
-            .timestamp()
-            .duration_since(UNIX_EPOCH)
-            .map_err(encode_error)?;
+        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -1881,10 +1878,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use qubit_event_bus::error::SpiError;
-use qubit_event_bus::spi::{
-    AsyncEventSubscriptionSpi, DeliveryDisposition, EventSubscriptionSpi, ReceiveOutcome, SettlementToken, SpiFuture,
-    SpiSubscriptionRequest,
-};
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
+use qubit_event_bus::spi::DeliveryDisposition;
+use qubit_event_bus::spi::EventSubscriptionSpi;
+use qubit_event_bus::spi::ReceiveOutcome;
+use qubit_event_bus::spi::SettlementToken;
+use qubit_event_bus::spi::SpiFuture;
+use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_id::Id;
 
 /// A synchronous receiver that records settlement by provider token value.
@@ -2042,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_provider_contract_is_idempotent_and_rejects_conflict() {
+    fn test_sync_settlement_repeats_same_disposition_and_rejects_conflict() {
         let request = request(Id::new(1));
         let mut receiver = SyncSubscription::from_request(&request);
         assert!(matches!(receiver.receive(Duration::ZERO), Ok(ReceiveOutcome::TimedOut)));
@@ -2061,7 +2061,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_provider_contract_is_idempotent_and_rejects_conflict() {
+    async fn test_async_settlement_repeats_same_disposition_and_rejects_conflict() {
         let request = request(Id::new(2));
         let mut receiver = AsyncSubscription::from_request(&request);
         assert!(matches!(
@@ -2096,7 +2096,8 @@ mod tests {
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Provider service aliases and subscription calls compiled by documentation checks.
+//! Provider service aliases and subscription calls compiled by documentation
+//! checks.
 
 use std::time::Duration;
 
@@ -2127,7 +2128,8 @@ pub type AsyncOutput = <EventBusSpec as AsyncServiceSpec>::Output;
 ///
 /// # Returns
 ///
-/// The outcome of the receive attempt, including whether a message is available.
+/// The outcome of the receive attempt, including whether a message is
+/// available.
 ///
 /// # Errors
 ///
@@ -2136,7 +2138,8 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
     receiver.receive(Duration::ZERO)
 }
 
-/// Starts accepting a token without tying the returned future to the token borrow.
+/// Starts accepting a token without tying the returned future to the token
+/// borrow.
 ///
 /// The future borrows the receiver for `'a`; the caller may release the token
 /// borrow independently after this method returns.
@@ -2148,11 +2151,13 @@ pub fn receive_once(receiver: &mut dyn EventSubscriptionSpi) -> Result<ReceiveOu
 ///
 /// # Returns
 ///
-/// A future borrowing the receiver for `'a` and resolving when settlement completes.
+/// A future borrowing the receiver for `'a` and resolving when settlement
+/// completes.
 ///
 /// # Errors
 ///
-/// The future resolves to an SPI error if the subscription cannot accept the token.
+/// The future resolves to an SPI error if the subscription cannot accept the
+/// token.
 pub fn settle_without_borrowing_token<'a>(
     receiver: &'a mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,

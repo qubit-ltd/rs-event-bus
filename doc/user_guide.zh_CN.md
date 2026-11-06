@@ -28,6 +28,7 @@
   - [改变或停止每次发布](#改变或停止每次发布)
 - [配置内置 local 事件总线](#配置内置-local-事件总线)
   - [直接创建](#直接创建)
+  - [查看 local 容量与拒绝类别](#查看-local-容量与拒绝类别)
 - [选择和接入第三方实现](#选择和接入第三方实现)
   - [使用别人已经写好的实现](#使用别人已经写好的实现)
   - [自己开发一种传递实现](#自己开发一种传递实现)
@@ -398,7 +399,8 @@ pub enum RepublishAction {
     RepublishWhole,
     /// Repair only rejected destinations; others have already accepted.
     RetryRejectedDestinations,
-    /// Do not automatically repeat accepted, opaque, or intentionally dropped work.
+    /// Do not automatically repeat accepted, opaque, or intentionally dropped
+    /// work.
     NoRepublish,
 }
 ```
@@ -414,7 +416,8 @@ use qubit_event_bus::model::PublishReceipt;
 
 use crate::republish_action::RepublishAction;
 
-/// Checks whether at least one destination accepted the event and none rejected it.
+/// Checks whether at least one destination accepted the event and none rejected
+/// it.
 ///
 /// This only reads the receipt. It does not republish, compensate, or retry
 /// selected destinations, and it leaves the receipt available to the caller.
@@ -640,7 +643,8 @@ use qubit_retry::RetryPolicyError;
 
 use crate::orders::events::OrderCreated;
 
-/// Builds the customer-view request with three total attempts and a fixed delay.
+/// Builds the customer-view request with three total attempts and a fixed
+/// delay.
 pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, RetryPolicyError> {
     let options = SubscribeOptions::<OrderCreated>::builder()
         .retry_policy(
@@ -650,12 +654,9 @@ pub fn customer_view_retry_request() -> Result<SubscribeRequest<OrderCreated>, R
                 .build()?,
         )
         .build();
-    let request = SubscribeRequest::new(
-        "customer-view",
-        Topic::<OrderCreated>::new_static("orders.created"),
-    )
-    .expect("static topic and subscriber ID are valid")
-    .with_options(options);
+    let request = SubscribeRequest::new("customer-view", Topic::<OrderCreated>::new_static("orders.created"))
+        .expect("static topic and subscriber ID are valid")
+        .with_options(options);
     Ok(request)
 }
 ```
@@ -767,10 +768,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
-        let timestamp = original
-            .timestamp()
-            .duration_since(UNIX_EPOCH)
-            .map_err(encode_error)?;
+        let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
         put_text(&mut bytes, original.topic().name())?;
@@ -1126,8 +1124,8 @@ use qubit_event_bus::spi::ShutdownOutcome;
 /// Publishes one weighed `String`, waits for its handler, and closes the bus.
 ///
 /// # Errors
-/// Returns an error if bus construction, subscription, admission, delivery wait,
-/// or graceful shutdown fails.
+/// Returns an error if bus construction, subscription, admission, delivery
+/// wait, or graceful shutdown fails.
 pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
     let local = LocalEventBusConfig::new()
@@ -1137,22 +1135,14 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
     let topic = Topic::<String>::new("orders.created")?;
     let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).expect("receiver remains open");
-        },
-    )?;
+    let _subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?, move |delivery| {
+        sender.send(delivery.payload().clone()).expect("receiver remains open");
+    })?;
     let options = PublishOptions::<String>::builder()
-        .native_payload_weight(|payload| {
-            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
-        })
+        .native_payload_weight(|payload| NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight"))
         .build();
     let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let published = bus.publish_checked(
-        request,
-        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
-    );
+    let published = bus.publish_checked(request, AdmissionRequirement::AtLeastOneAcceptedAndNoRejected);
     let metrics = bus.publish_metrics();
     eprintln!(
         "local admission totals: rejected={}, zero_destinations={}",
@@ -1170,7 +1160,13 @@ pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("local admission: {:?}", receipt.admission_outcome());
     report_rejections(receipt.acknowledgement());
     let snapshot = monitor.snapshot();
-    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
+    eprintln!(
+        "local outstanding={}/{} weight={}/ {:?}",
+        snapshot.outstanding_count,
+        snapshot.max_total_outstanding,
+        snapshot.outstanding_weight_bytes,
+        snapshot.max_total_outstanding_weight_bytes
+    );
     assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
     let shutdown = bus.shutdown(ShutdownMode::Graceful {
         timeout: Duration::from_secs(3),
@@ -1235,6 +1231,14 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 ```
 
 同步 local 为每个订阅者建立一个接收线程，处理函数由总线共享的工作线程执行；异步 local 不为每个订阅者建立接收线程，但应用必须持续运行 `AsyncSubscription::run`。订阅很多时，在实际部署机器上运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale` 测量，不能把别人的测试结果当作固定容量。
+
+### 查看 local 容量与拒绝类别
+
+直接构造 local provider 时，可使用 `EventBus::local_with_monitor` 或异步等价入口，在默认 facade 配置下取得可克隆的 `LocalCapacityMonitor`。这两个入口委托给 `local_with_config_and_monitor` 并传入 `EventBusFacadeConfig::default()`。若需同时配置自定义 middleware、codec 或 delivery scheduling，请使用 `EventBus::local_with_config_and_monitor(local_config, facade_config)` 或异步等价入口；两份配置仍经过 facade 校验。通过 registry 构造不会暴露此 local 专用句柄。快照报告尚未终态释放的已接纳投递副本、配置上限以及四类饱和拒绝计数。占用包含 pending 和 in-flight；retry 在终态结算前仍占一个槽位。扇出按每个接纳目标计费，retry 会再次计作目标尝试。声明权重是应用提供的计量，不是进程常驻内存。`max_total_outstanding_weight_bytes: None` 表示禁用权重预算，此时占用权重为零。
+
+快照是在预算锁下取得的一致观察，不会为后续发布预留容量或保证后续发布成功。读取会短暂等待该锁。监控句柄只保留整数记账状态，不会延长队列或 payload 生命周期。前文 `local_capacity.rs` 示例展示了如何在构造 local 总线时取得监控句柄，并读取快照。
+
+检查目标回执时读取 `DestinationAdmission::rejection_kind()`。`None` 表示 provider 未分类该拒绝；保留原 status reason 用于诊断，不要解析文本推断类别。内置 Redis provider 返回 opaque acknowledgement，不提供 local 类别或快照。
 
 ## 选择和接入第三方实现
 
@@ -1425,10 +1429,7 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
     }
 
     fn encode(&self, value: &OrderCreated) -> Result<Arc<[u8]>, CodecError> {
-        let text = format!(
-            "{}\n{}\n{}",
-            value.order_id, value.customer_id, value.total_cents
-        );
+        let text = format!("{}\n{}\n{}", value.order_id, value.customer_id, value.total_cents);
         Ok(Arc::from(text.into_bytes()))
     }
 
@@ -1448,9 +1449,7 @@ impl EventCodec<OrderCreated> for OrderCreatedCodec {
             })?;
         if lines.next().is_some() || order_id.is_empty() || customer_id.is_empty() {
             return Err(CodecError::Decode {
-                source: Box::new(Error::other(
-                    "expected order_id, customer_id, and total_cents",
-                )),
+                source: Box::new(Error::other("expected order_id, customer_id, and total_cents")),
             });
         }
         Ok(OrderCreated {
@@ -1524,9 +1523,7 @@ use tokio::time::timeout;
 async fn main() -> Result<(), Box<dyn Error>> {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new()).await?;
     let topic = Topic::<String>::new("orders.created")?;
-    let subscription = bus
-        .subscribe(SubscribeRequest::new("audit", topic.clone())?)
-        .await?;
+    let subscription = bus.subscribe(SubscribeRequest::new("audit", topic.clone())?).await?;
     let (sender, mut receiver) = channel(1);
     let runner = spawn(async move {
         subscription
@@ -1539,15 +1536,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })
             .await
     });
-    let _receipt = bus
-        .publish(PublishRequest::new(topic, "order-42".to_owned())?)
-        .await?;
+    let _receipt = bus.publish(PublishRequest::new(topic, "order-42".to_owned())?).await?;
     let delivered = timeout(Duration::from_secs(3), receiver.recv()).await?;
     assert_eq!(delivered.as_deref(), Some("order-42"));
-    let report = bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(3),
-    })
-    .await?;
+    let report = bus
+        .shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(3),
+        })
+        .await?;
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
     runner.await??;
     Ok(())
@@ -1744,7 +1740,8 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
-//! Two bounded waits hand unresolved cleanup back to the application supervisor.
+//! Two bounded waits hand unresolved cleanup back to the application
+//! supervisor.
 
 use std::time::Duration;
 
@@ -1754,7 +1751,8 @@ use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 
-/// Waits twice for graceful completion, without forcing running handlers to stop.
+/// Waits twice for graceful completion, without forcing running handlers to
+/// stop.
 ///
 /// Returns `false` after both waits expire or the provider reports incomplete
 /// shutdown. The application should record metrics and hand control to its
@@ -1787,8 +1785,9 @@ pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
 
 /// Applies the same bounded policy while the caller drives async shutdown.
 ///
-/// Returns `false` if cleanup remains incomplete; other shutdown errors propagate.
-/// Cancelling this future leaves shutdown state for the coordinator to resume.
+/// Returns `false` if cleanup remains incomplete; other shutdown errors
+/// propagate. Cancelling this future leaves shutdown state for the coordinator
+/// to resume.
 ///
 /// # Returns
 ///
@@ -1970,105 +1969,3 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 `rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
 使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
 0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。它检查 sibling checkout 的路径依赖，不检查已发布 registry 版本。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能作为 core 0.21 兼容证据；发布兼容性需要消费者自身发布依赖 registry core 0.21 的版本并提供集成验证。不要把本地 path 图通过当作发布证据。
-
-
-### 查看 local 容量与拒绝类别
-
-直接构造 local provider 时，可使用 `EventBus::local_with_monitor` 或异步等价入口，在默认 facade 配置下取得可克隆的 `LocalCapacityMonitor`。这两个入口委托给 `local_with_config_and_monitor` 并传入 `EventBusFacadeConfig::default()`。若需同时配置自定义 middleware、codec 或 delivery scheduling，请使用 `EventBus::local_with_config_and_monitor(local_config, facade_config)` 或异步等价入口；两份配置仍经过 facade 校验。通过 registry 构造不会暴露此 local 专用句柄。快照报告尚未终态释放的已接纳投递副本、配置上限以及四类饱和拒绝计数。占用包含 pending 和 in-flight；retry 在终态结算前仍占一个槽位。扇出按每个接纳目标计费，retry 会再次计作目标尝试。声明权重是应用提供的计量，不是进程常驻内存。`max_total_outstanding_weight_bytes: None` 表示禁用权重预算，此时占用权重为零。
-
-快照是在预算锁下取得的一致观察，不会为后续发布预留容量或保证后续发布成功。读取会短暂等待该锁。监控句柄只保留整数记账状态，不会延长队列或 payload 生命周期。下例由文档消费 fixture 编译：
-
-<!-- event-bus-source: tests/fixtures/documentation_consumer/src/local_capacity.rs -->
-```rust
-//! Compiled local-provider capacity example used by both user guides.
-
-use std::num::NonZeroUsize;
-use std::sync::mpsc;
-use std::time::Duration;
-
-use qubit_event_bus::CheckedPublishError;
-use qubit_event_bus::EventBus;
-use qubit_event_bus::EventBusFacadeConfig;
-use qubit_event_bus::local::LocalEventBusConfig;
-use qubit_event_bus::model::AdmissionRequirement;
-use qubit_event_bus::model::AdmissionStatus;
-use qubit_event_bus::model::PublishAcknowledgement;
-use qubit_event_bus::model::PublishOptions;
-use qubit_event_bus::model::PublishRequest;
-use qubit_event_bus::model::SubscribeRequest;
-use qubit_event_bus::model::Topic;
-use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::spi::ShutdownOutcome;
-
-/// Publishes one weighed `String`, waits for its handler, and closes the bus.
-///
-/// # Errors
-/// Returns an error if bus construction, subscription, admission, delivery wait,
-/// or graceful shutdown fails.
-pub fn publish_with_local_capacity() -> Result<(), Box<dyn std::error::Error>> {
-    let budget = NonZeroUsize::new(8 * 1024 * 1024).expect("positive weight budget");
-    let local = LocalEventBusConfig::new()
-        .queue_capacity(2_048)
-        .max_total_outstanding(20_000)
-        .max_total_outstanding_weight_bytes(budget);
-    let (bus, monitor) = EventBus::local_with_config_and_monitor(local, EventBusFacadeConfig::new())?;
-    let topic = Topic::<String>::new("orders.created")?;
-    let (sender, receiver) = mpsc::channel();
-    let _subscription = bus.subscribe(
-        SubscribeRequest::new("audit", topic.clone())?,
-        move |delivery| {
-            sender.send(delivery.payload().clone()).expect("receiver remains open");
-        },
-    )?;
-    let options = PublishOptions::<String>::builder()
-        .native_payload_weight(|payload| {
-            NonZeroUsize::new(payload.len().max(1)).expect("positive payload weight")
-        })
-        .build();
-    let request = PublishRequest::new(topic, "order-42".to_owned())?.with_options(options);
-    let published = bus.publish_checked(
-        request,
-        AdmissionRequirement::AtLeastOneAcceptedAndNoRejected,
-    );
-    let metrics = bus.publish_metrics();
-    eprintln!(
-        "local admission totals: rejected={}, zero_destinations={}",
-        metrics.rejected_destinations, metrics.zero_destinations
-    );
-    let receipt = match published {
-        Ok(receipt) => receipt,
-        Err(CheckedPublishError::Admission { receipt, reason }) => {
-            eprintln!("local admission: {:?}", receipt.admission_outcome());
-            report_rejections(receipt.acknowledgement());
-            return Err(Box::new(CheckedPublishError::Admission { receipt, reason }));
-        }
-        Err(error) => return Err(Box::new(error)),
-    };
-    eprintln!("local admission: {:?}", receipt.admission_outcome());
-    report_rejections(receipt.acknowledgement());
-    let snapshot = monitor.snapshot();
-    eprintln!("local outstanding={}/{} weight={}/ {:?}", snapshot.outstanding_count, snapshot.max_total_outstanding, snapshot.outstanding_weight_bytes, snapshot.max_total_outstanding_weight_bytes);
-    assert_eq!(receiver.recv_timeout(Duration::from_secs(3))?, "order-42");
-    let shutdown = bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(3),
-    })?;
-    assert_eq!(shutdown.outcome, ShutdownOutcome::Complete);
-    Ok(())
-}
-
-fn report_rejections(acknowledgement: &PublishAcknowledgement) {
-    if let PublishAcknowledgement::DestinationAdmissions(destinations) = acknowledgement {
-        for destination in destinations {
-            let AdmissionStatus::Rejected(reason) = destination.status() else {
-                continue;
-            };
-            match destination.rejection_kind() {
-                Some(kind) => eprintln!("classified rejection: {kind:?} ({reason})"),
-                None => eprintln!("unclassified rejection: {reason}"),
-            }
-        }
-    }
-}
-```
-
-检查目标回执时读取 `DestinationAdmission::rejection_kind()`。`None` 表示 provider 未分类该拒绝；保留原 status reason 用于诊断，不要解析文本推断类别。内置 Redis provider 返回 opaque acknowledgement，不提供 local 类别或快照。
