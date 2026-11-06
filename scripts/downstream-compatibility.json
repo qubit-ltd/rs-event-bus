@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repositories": [
-    {"name": "rs-event-bus-redis", "url": "https://github.com/qubit-ltd/rs-event-bus-redis.git", "revision": "8e8b5c92935ddf83f1b4e9043d63921529182d31"},
+    {"name": "rs-event-bus-redis", "url": "https://github.com/qubit-ltd/rs-event-bus-redis.git", "revision": "c06577b37beb33e5390eadad74e0322302861e09"},
     {"name": "rs-task", "url": "https://github.com/qubit-ltd/rs-task.git", "revision": "978795facc597744343c35f6bbc2e328b1479423"},
     {"name": "rs-ioc", "url": "https://github.com/qubit-ltd/rs-ioc.git", "revision": "c4e2557fb8db37635b56f8cf94c482cac4aa8ba6"},
     {"name": "rs-execution-services", "url": "https://github.com/qubit-ltd/rs-execution-services.git", "revision": "f9b7f68dff80b441af82c76f7757b75157ecb066"},
