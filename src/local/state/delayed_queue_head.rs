@@ -21,13 +21,15 @@ pub(in crate::local) type QueueKey = Option<OrderingKey>;
 
 /// Heap metadata for a lane head that cannot yet be received.
 ///
-/// Ordering uses `deadline` and then `sequence`, so equal deadlines are
-/// received in insertion order. `key` and `version` identify the lane entry but
-/// do not participate in heap ordering or equality.
+/// Ordering uses `deadline` and then `sequence`. The sequence breaks ties
+/// within the current heap; compaction may reassign it, so equal deadlines
+/// across different lanes do not imply insertion-order delivery. `key` and
+/// `version` identify a lane entry but do not participate in heap ordering or
+/// equality.
 pub(in crate::local) struct DelayedQueueHead {
     /// Earliest instant at which the lane head is eligible to be received.
     pub(in crate::local) deadline: Instant,
-    /// Monotonically assigned insertion sequence used to break equal deadlines.
+    /// Insertion sequence used to break ties within the current heap.
     pub(in crate::local) sequence: u64,
     /// Optional ordering key identifying the lane whose head is delayed.
     pub(in crate::local) key: QueueKey,

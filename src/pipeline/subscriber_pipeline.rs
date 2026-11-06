@@ -432,7 +432,7 @@ fn async_next<T: 'static>(
 fn catch_async_panic(
     future: SpiFuture<'static, Result<(), DeliveryError>>,
 ) -> SpiFuture<'static, Result<(), DeliveryError>> {
-    Box::pin(CatchUnwindFuture { future })
+    Box::pin(CatchUnwindFuture { future: Some(future) })
 }
 
 /// Converts a caught middleware or handler panic to a delivery handler error.

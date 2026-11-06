@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use super::handler_duration_future::HandlerDurationFuture;
 use crate::Diagnostic;
 use crate::SubscriberId;
 use crate::codec::EventCodec;
@@ -103,12 +104,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 metrics.clone(),
                 signals.clone(),
             );
-            let future = original_handler(delivery);
-            Box::pin(async move {
-                let result = future.await;
-                drop(duration);
-                result
-            })
+            Box::pin(HandlerDurationFuture::new(original_handler(delivery), duration))
         });
         let started = Arc::new(AtomicBool::new(false));
         let mut task = DeliveryTaskContext {

@@ -16,7 +16,7 @@ pub(crate) mod isolated_process;
 #[allow(dead_code)]
 pub(crate) mod manual_async;
 #[allow(dead_code)]
-mod panic_hook;
+pub(crate) mod panic_hook;
 #[cfg(feature = "conformance")]
 #[allow(dead_code)]
 pub(crate) mod pending_close_shutdown_fixture;

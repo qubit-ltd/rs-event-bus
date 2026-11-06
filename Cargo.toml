@@ -99,6 +99,10 @@ name = "error_tests"
 path = "tests/error/mod.rs"
 
 [[test]]
+name = "async_future_drop_panic_tests"
+path = "tests/async_future_drop_panic_tests.rs"
+
+[[test]]
 name = "local_threads_batch_tests"
 path = "benches/local_threads_support/sample_batch_tests.rs"
 

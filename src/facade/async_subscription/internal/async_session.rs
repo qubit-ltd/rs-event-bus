@@ -69,6 +69,8 @@ pub(in crate::facade) struct AsyncSession<T: 'static> {
 mod close;
 // Creates and completes owned delivery tasks.
 mod delivery;
+// Polls handler futures while retaining their duration guard.
+mod handler_duration_future;
 // Drives the caller-owned subscription run loop.
 mod runner;
 
