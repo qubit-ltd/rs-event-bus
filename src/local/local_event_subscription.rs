@@ -188,9 +188,6 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         token_state.disposition = Some(disposition);
         drop(token_state);
         drop(state);
-        if disposition == DeliveryDisposition::Retry {
-            self.queue.async_ready.notify_all();
-        }
         signal_changed(&self.shared);
         Ok(())
     }
@@ -215,7 +212,6 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 drop(state);
             }
         }
-        self.queue.async_ready.notify_all();
         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let topic = self.queue.topic.clone();
         let removed = state

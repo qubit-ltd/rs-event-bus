@@ -13,7 +13,6 @@ use std::sync::Condvar;
 use std::sync::Mutex;
 
 use super::bus_state::BusState;
-use crate::local::async_signal::AsyncSignal;
 use crate::local::outstanding_budget::OutstandingBudget;
 
 /// Shared router retained by the SPI and all active subscription receivers.
@@ -22,8 +21,6 @@ pub(in crate::local) struct LocalSharedState {
     pub(in crate::local) state: Mutex<BusState>,
     /// Signals provider-level queue or settlement progress.
     pub(in crate::local) changed: Condvar,
-    /// Wakes asynchronous provider progress waiters.
-    pub(in crate::local) async_changed: AsyncSignal,
     /// Serializes concurrent shutdown callers through the final outcome.
     pub(in crate::local) shutdown_gate: Mutex<()>,
     /// Pending message bound copied into each new queue.
@@ -54,7 +51,6 @@ impl LocalSharedState {
         Arc::new(Self {
             state: Mutex::new(BusState::default()),
             changed: Condvar::new(),
-            async_changed: AsyncSignal::default(),
             shutdown_gate: Mutex::new(()),
             capacity,
             outstanding: Arc::new(OutstandingBudget::new(max_total_outstanding, max_weight)),

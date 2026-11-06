@@ -267,11 +267,7 @@ impl EventBusSpi for LocalEventBusSpi {
                 admitted_any = true;
                 AdmissionStatus::Accepted
             };
-            let wake_async = status == AdmissionStatus::Accepted;
             drop(state);
-            if wake_async {
-                queue.async_ready.notify_all();
-            }
             admissions.push(if let Some((kind, reason)) = rejection {
                 DestinationAdmission::rejected(queue.id, queue.subscriber_id.clone(), kind, reason)
             } else {
@@ -451,7 +447,6 @@ impl EventBusSpi for LocalEventBusSpi {
             self.shared.outstanding.release(pending.len(), weight);
             drop(state);
             queue.ready.notify_all();
-            queue.async_ready.notify_all();
             discarded.extend(pending);
         }
         self.shared
@@ -586,7 +581,6 @@ pub(super) fn signal_changed(shared: &LocalSharedState) {
     state.change_version = state.change_version.wrapping_add(1);
     drop(state);
     shared.changed.notify_all();
-    shared.async_changed.notify_all();
 }
 
 #[cfg(test)]
