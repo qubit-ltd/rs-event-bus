@@ -2,6 +2,7 @@
 """Run the fixed behavioral checks for the pinned Redis event bus consumer."""
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -16,7 +17,9 @@ import check_downstream_compatibility as compatibility
 
 COMMAND_TIMEOUT_SECONDS = 600
 TERMINATE_GRACE_SECONDS = 5
-REDIS_IMAGE = "redis:7-alpine"
+REDIS_ALIAS = "redis:7-alpine"
+REDIS_IMAGE_LOCK = Path(__file__).resolve().with_name("downstream-redis-image.txt")
+REDIS_IMAGE_PATTERN = re.compile(r"redis@sha256:[0-9a-f]{64}\Z")
 TEST_RESULT = re.compile(r"test result: .*?(\d+) passed")
 
 
@@ -81,9 +84,94 @@ def docker_command(command):
     return checked_command(command, "Docker command").stdout
 
 
-def prepare_docker():
+def load_redis_image(path=REDIS_IMAGE_LOCK):
+    """Load the single immutable Redis image reference from the lock file."""
+    try:
+        contents = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        raise BehaviorError(f"cannot read Redis image lock file {path}: {error}") from error
+    lines = contents.splitlines()
+    if len(lines) != 1 or not REDIS_IMAGE_PATTERN.fullmatch(lines[0]):
+        raise BehaviorError(
+            f"invalid Redis image lock file {path}: expected one redis@sha256:<64 lowercase hex> line"
+        )
+    return lines[0]
+
+
+def inspect_image(reference, allow_missing=False):
+    command = ["docker", "image", "inspect", "--format",
+               "{{.Id}}|{{.Os}}/{{.Architecture}}|{{range .Config.Env}}{{println .}}{{end}}",
+               reference]
+    result = run_process(command)
+    if result.returncode:
+        diagnostic = f"{result.stderr}\n{result.stdout}".lower()
+        if allow_missing and "no such image" in diagnostic:
+            return None
+        raise BehaviorError(
+            f"inspect Docker image {reference} failed (exit {result.returncode}): "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    fields = result.stdout.strip().split("|", 2)
+    if len(fields) != 3 or not fields[0] or not fields[1]:
+        raise BehaviorError(f"Docker returned incomplete identity for image {reference}: {result.stdout!r}")
+    return fields[0], fields[1], result.stdout
+
+
+@contextmanager
+def pinned_redis_image():
+    """Prepare and restore the Redis alias used by the pinned downstream fixture."""
+    image = load_redis_image()
     docker_command(["docker", "info"])
-    docker_command(["docker", "pull", REDIS_IMAGE])
+    docker_command(["docker", "pull", image])
+    fixed_id, platform, details = inspect_image(image)
+    version = next((line.partition("=")[2] for line in details.splitlines()
+                    if line.startswith("REDIS_VERSION=")), "unknown")
+    previous = inspect_image(REDIS_ALIAS, allow_missing=True)
+    previous_id = previous[0] if previous else None
+    tag_attempted = False
+    primary_error = None
+    try:
+        tag_attempted = True
+        checked_command(["docker", "tag", image, REDIS_ALIAS], "tag pinned Redis compatibility alias")
+        aliased = inspect_image(REDIS_ALIAS)
+        if aliased[0] != fixed_id:
+            raise BehaviorError(
+                f"Redis compatibility alias identity mismatch: expected {fixed_id}, got {aliased[0]}"
+            )
+        version_result = checked_command(
+            ["docker", "run", "--rm", image, "redis-server", "--version"],
+            "read pinned Redis version",
+        )
+        version_output = (version_result.stdout or version_result.stderr).strip()
+        print(f"Redis image: {image}; platform: {platform}; image ID: {fixed_id}; "
+              f"Redis version: {version_output or version}", flush=True)
+        yield image
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            if tag_attempted:
+                current = inspect_image(REDIS_ALIAS, allow_missing=True)
+                current_id = current[0] if current else None
+                if current_id == fixed_id:
+                    if previous_id is None:
+                        checked_command(["docker", "image", "rm", REDIS_ALIAS], "remove temporary Redis alias")
+                    else:
+                        checked_command(["docker", "tag", previous_id, REDIS_ALIAS],
+                                        "restore previous Redis compatibility alias")
+                elif current_id != previous_id:
+                    observed = "missing" if current is None else current_id
+                    raise BehaviorError(
+                        f"Redis compatibility alias changed during run (expected {fixed_id}, got {observed}); "
+                        "leaving it untouched"
+                    )
+        except BaseException as cleanup_error:
+            if primary_error is not None:
+                raise BehaviorError(f"{primary_error}; Redis alias restoration failed: {cleanup_error}") from primary_error
+            if isinstance(cleanup_error, BehaviorError):
+                raise
+            raise BehaviorError(f"Redis alias restoration failed: {cleanup_error}") from cleanup_error
 
 
 def require_test_executed(result, label):
@@ -94,12 +182,12 @@ def require_test_executed(result, label):
     print(f"{label}: {match.group(1)} test(s) executed", flush=True)
 
 
-def start_redis_container():
+def start_redis_container(image):
     label = f"qubit-event-bus-behavior={uuid.uuid4().hex}"
     try:
         result = checked_command(
             ["docker", "run", "-d", "--label", label, "-p", "127.0.0.1::6379",
-             REDIS_IMAGE, "redis-server", "--appendonly", "yes"],
+             image, "redis-server", "--appendonly", "yes"],
             "start task fixture Redis container",
         )
         container_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
@@ -150,8 +238,6 @@ def execute(ecosystem_root, manifest_path):
     config = compatibility.load_manifest(manifest_path)
     core, manifests = compatibility.validate_layout(ecosystem_root, config)
     del core  # Layout validation retains the compatibility gate's core-source check.
-    prepare_docker()
-
     redis_manifest = manifests["redis"]
     commands = (
         ("sync conformance", ["cargo", "test", "--locked", "--all-features",
@@ -161,21 +247,22 @@ def execute(ecosystem_root, manifest_path):
          "--manifest-path", str(redis_manifest), "--test", "async_standalone_tests",
          "test_async_spi_conformance", "--", "--exact"], True),
     )
-    for label, command, count_tests in commands:
-        print(f"downstream behavior: {label}", flush=True)
-        result = checked_command(command, label)
-        if count_tests:
-            require_test_executed(result, label)
+    with pinned_redis_image() as image:
+        for label, command, count_tests in commands:
+            print(f"downstream behavior: {label}", flush=True)
+            result = checked_command(command, label)
+            if count_tests:
+                require_test_executed(result, label)
 
-    container_id = start_redis_container()
-    try:
-        redis_url = wait_for_redis(container_id)
-        command = ["cargo", "run", "--locked", "--manifest-path",
-                   str(manifests["task_notifications"]), "--", redis_url]
-        print("downstream behavior: task notifications", flush=True)
-        checked_command(command, "task notifications")
-    finally:
-        remove_container(container_id)
+        container_id = start_redis_container(image)
+        try:
+            redis_url = wait_for_redis(container_id)
+            command = ["cargo", "run", "--locked", "--manifest-path",
+                       str(manifests["task_notifications"]), "--", redis_url]
+            print("downstream behavior: task notifications", flush=True)
+            checked_command(command, "task notifications")
+        finally:
+            remove_container(container_id)
 
 
 def main(argv=None):

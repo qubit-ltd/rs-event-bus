@@ -1,8 +1,10 @@
 """Mock-only tests for the fixed downstream behavior gate."""
 
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
 import signal
+import tempfile
 import subprocess
 import sys
 import uuid
@@ -44,6 +46,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
     def test_runs_three_fixed_locked_commands_and_reports_test_count(self):
         load, layout = self.setup_gate()
         with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("redis@sha256:" + "a" * 64)), \
              mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
              mock.patch.object(behavior, "docker_command", return_value="container-id"), \
              mock.patch.object(behavior, "start_redis_container", return_value="container-id"), \
@@ -79,6 +82,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
         load, layout = self.setup_gate()
         failed = subprocess.CompletedProcess([], 7, "partial", "cargo failed")
         with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("redis@sha256:" + "a" * 64)), \
              mock.patch.object(behavior, "run_process", return_value=failed) as run, \
              mock.patch.object(behavior, "docker_command", return_value="id"), \
              mock.patch.object(behavior, "wait_for_redis", return_value="redis://127.0.0.1:1"), \
@@ -114,6 +118,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
     def test_readiness_failure_still_removes_owned_container(self):
         load, layout = self.setup_gate()
         with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("redis@sha256:" + "a" * 64)), \
              mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
              mock.patch.object(behavior, "docker_command", return_value="container-id"), \
              mock.patch.object(behavior, "start_redis_container", return_value="container-id"), \
@@ -129,7 +134,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
              mock.patch.object(behavior, "docker_command", return_value="orphan-id\n") as list_containers, \
              mock.patch.object(behavior, "remove_container") as remove:
             with self.assertRaisesRegex(behavior.BehaviorError, "docker run timed out"):
-                behavior.start_redis_container()
+                behavior.start_redis_container("redis@sha256:" + "a" * 64)
 
         command = run.call_args.args[0]
         self.assertIn("--label", command)
@@ -142,6 +147,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
     def test_container_cleanup_failure_is_reported(self):
         load, layout = self.setup_gate()
         with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("redis@sha256:" + "a" * 64)), \
              mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
              mock.patch.object(behavior, "docker_command", return_value="container-id"), \
              mock.patch.object(behavior, "start_redis_container", return_value="container-id"), \
@@ -149,6 +155,129 @@ class DownstreamBehaviorTests(unittest.TestCase):
              mock.patch.object(behavior, "remove_container", side_effect=behavior.BehaviorError("docker rm failed")):
             with self.assertRaisesRegex(behavior.BehaviorError, "docker rm failed"):
                 behavior.execute(self.root, Path("manifest.json"))
+
+    def test_load_redis_image_accepts_single_digest_and_rejects_invalid_files(self):
+        valid = "redis@sha256:" + "a" * 64 + "\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.txt"
+            path.write_text(valid)
+            self.assertEqual(behavior.load_redis_image(path), valid.strip())
+            for contents in ("", valid + valid, "redis:7-alpine\n",
+                             "redis@sha256:" + "g" * 64 + "\n",
+                             "redis@sha256:" + "a" * 63 + "\n",
+                             "other@sha256:" + "a" * 64 + "\n"):
+                path.write_text(contents)
+                with self.subTest(contents=contents), self.assertRaises(behavior.BehaviorError):
+                    behavior.load_redis_image(path)
+            path.unlink()
+            with self.assertRaises(behavior.BehaviorError):
+                behavior.load_redis_image(path)
+
+    def test_pinned_image_pulls_verifies_and_uses_digest_then_restores_old_alias(self):
+        image = "redis@sha256:" + "a" * 64
+        calls = []
+        inspect_results = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 0, "sha256:old|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+        ])
+        def checked(cmd, label, timeout=behavior.COMMAND_TIMEOUT_SECONDS):
+            calls.append(cmd)
+            output = "container-id\n" if cmd[:2] == ["docker", "run"] else ""
+            return subprocess.CompletedProcess(cmd, 0, output, "")
+        def inspected(cmd, **kwargs):
+            calls.append(cmd)
+            return next(inspect_results)
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command", side_effect=checked), \
+             mock.patch.object(behavior, "run_process", side_effect=inspected), \
+             mock.patch.object(behavior, "docker_command", side_effect=lambda c: calls.append(c) or ""):
+            with behavior.pinned_redis_image() as pinned:
+                behavior.start_redis_container(pinned)
+        self.assertIn(["docker", "pull", image], calls)
+        self.assertIn(["docker", "tag", image, behavior.REDIS_ALIAS], calls)
+        self.assertIn(["docker", "tag", "sha256:old", behavior.REDIS_ALIAS], calls)
+        run = next(c for c in calls if c[:2] == ["docker", "run"])
+        self.assertEqual(run[-3], image)
+        self.assertTrue(any(c[:3] == ["docker", "run", "--rm"] and image in c for c in calls))
+
+    def test_pinned_image_removes_new_alias_and_preserves_primary_error_on_restore_failure(self):
+        image = "redis@sha256:" + "b" * 64
+        calls = []
+        inspections = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+        ])
+        def checked(cmd, label, timeout=behavior.COMMAND_TIMEOUT_SECONDS):
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "image", "rm"]:
+                raise behavior.BehaviorError("remove alias failed")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        def inspected(cmd, **kwargs):
+            calls.append(cmd)
+            return next(inspections)
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command", side_effect=checked), \
+             mock.patch.object(behavior, "run_process", side_effect=inspected), \
+             mock.patch.object(behavior, "docker_command", return_value=""):
+            with self.assertRaisesRegex(behavior.BehaviorError, "primary cargo failure.*remove alias failed"):
+                with behavior.pinned_redis_image():
+                    raise behavior.BehaviorError("primary cargo failure")
+        self.assertIn(["docker", "image", "rm", behavior.REDIS_ALIAS], calls)
+
+    def test_pinned_image_does_not_overwrite_alias_changed_by_another_process(self):
+        image = "redis@sha256:" + "c" * 64
+        inspections = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 0, "sha256:external|linux/amd64|", ""),
+        ])
+        commands = []
+        def checked(cmd, label, timeout=behavior.COMMAND_TIMEOUT_SECONDS):
+            commands.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "Redis server v=7.4.12\n", "")
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command", side_effect=checked), \
+             mock.patch.object(behavior, "run_process", side_effect=lambda cmd, **kw: next(inspections)), \
+             mock.patch.object(behavior, "docker_command", return_value=""):
+            with self.assertRaisesRegex(behavior.BehaviorError, "changed during run"):
+                with behavior.pinned_redis_image():
+                    pass
+        self.assertEqual(commands.count(["docker", "tag", image, behavior.REDIS_ALIAS]), 1)
+        self.assertFalse(any(cmd[:3] == ["docker", "image", "rm"] for cmd in commands))
+        self.assertFalse(any(cmd[:2] == ["docker", "tag"] and cmd[-1] == behavior.REDIS_ALIAS
+                             and cmd[2] != image for cmd in commands))
+
+    def test_pinned_image_identity_mismatch_stops_before_workload(self):
+        image = "redis@sha256:" + "d" * 64
+        inspections = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+            subprocess.CompletedProcess([], 0, "sha256:wrong|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 0, "sha256:wrong|linux/amd64|", ""),
+        ])
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command") as checked, \
+             mock.patch.object(behavior, "run_process", side_effect=lambda cmd, **kw: next(inspections)), \
+             mock.patch.object(behavior, "docker_command", return_value=""):
+            with self.assertRaisesRegex(behavior.BehaviorError, "identity mismatch.*restoration failed"):
+                with behavior.pinned_redis_image():
+                    self.fail("workload must not run with an unexpected alias identity")
+        self.assertFalse(any(call.args[0][:2] == ["cargo", "test"] for call in checked.call_args_list))
+
+    def test_image_preparation_failure_stops_before_cargo(self):
+        load, layout = self.setup_gate()
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image") as pinned, \
+             mock.patch.object(behavior, "run_process") as run:
+            pinned.return_value.__enter__.side_effect = behavior.BehaviorError("pull failed")
+            with self.assertRaisesRegex(behavior.BehaviorError, "pull failed"):
+                behavior.execute(self.root, Path("manifest.json"))
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
