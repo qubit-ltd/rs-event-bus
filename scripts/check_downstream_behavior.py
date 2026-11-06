@@ -129,10 +129,12 @@ def pinned_redis_image():
     previous = inspect_image(REDIS_ALIAS, allow_missing=True)
     previous_id = previous[0] if previous else None
     tag_attempted = False
+    tag_succeeded = False
     primary_error = None
     try:
         tag_attempted = True
         checked_command(["docker", "tag", image, REDIS_ALIAS], "tag pinned Redis compatibility alias")
+        tag_succeeded = True
         aliased = inspect_image(REDIS_ALIAS)
         if aliased[0] != fixed_id:
             raise BehaviorError(
@@ -154,6 +156,12 @@ def pinned_redis_image():
             if tag_attempted:
                 current = inspect_image(REDIS_ALIAS, allow_missing=True)
                 current_id = current[0] if current else None
+                if tag_succeeded and current_id != fixed_id:
+                    observed = "missing" if current is None else current_id
+                    raise BehaviorError(
+                        f"Redis compatibility alias changed during run (expected {fixed_id}, got {observed}); "
+                        "leaving it untouched"
+                    )
                 if current_id == fixed_id:
                     if previous_id is None:
                         checked_command(["docker", "image", "rm", REDIS_ALIAS], "remove temporary Redis alias")

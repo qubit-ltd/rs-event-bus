@@ -252,6 +252,43 @@ class DownstreamBehaviorTests(unittest.TestCase):
         self.assertFalse(any(cmd[:2] == ["docker", "tag"] and cmd[-1] == behavior.REDIS_ALIAS
                              and cmd[2] != image for cmd in commands))
 
+    def test_pinned_image_reports_removed_alias_and_preserves_primary_error(self):
+        image = "redis@sha256:" + "e" * 64
+        inspections = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+        ])
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command", return_value=subprocess.CompletedProcess([], 0, "Redis 7.4.12", "")), \
+             mock.patch.object(behavior, "run_process", side_effect=lambda cmd, **kw: next(inspections)), \
+             mock.patch.object(behavior, "docker_command", return_value=""):
+            with self.assertRaisesRegex(behavior.BehaviorError,
+                                        "primary task failure.*alias changed during run.*got missing"):
+                with behavior.pinned_redis_image():
+                    raise behavior.BehaviorError("primary task failure")
+
+    def test_failed_tag_with_no_prior_alias_does_not_report_false_interference(self):
+        image = "redis@sha256:" + "f" * 64
+        inspections = iter([
+            subprocess.CompletedProcess([], 0, "sha256:fixed|linux/amd64|REDIS_VERSION=7.4.12\n", ""),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+            subprocess.CompletedProcess([], 1, "", "Error: No such image: redis:7-alpine"),
+        ])
+        def checked(cmd, label, timeout=behavior.COMMAND_TIMEOUT_SECONDS):
+            if cmd[:2] == ["docker", "tag"]:
+                raise behavior.BehaviorError("tag operation failed")
+            return subprocess.CompletedProcess(cmd, 0, "Redis 7.4.12", "")
+        with mock.patch.object(behavior, "load_redis_image", return_value=image), \
+             mock.patch.object(behavior, "checked_command", side_effect=checked), \
+             mock.patch.object(behavior, "run_process", side_effect=lambda cmd, **kw: next(inspections)), \
+             mock.patch.object(behavior, "docker_command", return_value=""):
+            with self.assertRaisesRegex(behavior.BehaviorError, "tag operation failed") as error:
+                with behavior.pinned_redis_image():
+                    self.fail("workload must not start after a failed tag")
+        self.assertNotIn("alias changed", str(error.exception))
+
     def test_pinned_image_identity_mismatch_stops_before_workload(self):
         image = "redis@sha256:" + "d" * 64
         inspections = iter([
