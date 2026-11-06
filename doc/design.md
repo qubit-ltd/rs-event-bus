@@ -2175,22 +2175,11 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## Validate a single crate or the coordinated ecosystem
 
-`./scripts/project-ci-check.sh` checks this crate's resolved dependency metadata on its own.
-An independent single-crate checkout does not need every downstream repository.
-For a coordinated migration, run `./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`
-with `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and
-`rs-execution-services` below that directory. The gate requires all five roots
-and the seven declared consumer fixtures, resolves locked all-feature Cargo
-metadata, and rejects a graph mixing old event-bus minors with 0.21. Missing
-inputs fail explicitly; this metadata check supplements each project's CI and
-does not prove delivery behavior by itself. It checks sibling checkout paths,
-not published registry releases. The historical Redis 0.7 and task 0.10 releases
-target core 0.20 and are not evidence of compatibility with core 0.21; published
-compatibility requires a consumer release that resolves to registry core 0.21
-and its own integration evidence. A local path graph pass is not release evidence.
+Run repository scripts from the root of a full Git checkout; crate archives do not include `scripts/` or `.infra/`. `./scripts/project-ci-check.sh` is a project helper gate: it runs the Python regressions, Cargo package-list and performance-evidence checks, then runs `check_event_bus_graph.py`. The graph checker, linked here with its authoritative `REPOSITORIES` and `FIXTURES` inputs, [REPOSITORIES and FIXTURES](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/check_event_bus_graph.py), defaults to metadata for the current core crate. That standalone graph mode does not need downstream checkouts. With `--ecosystem-root <repos-dir>`, it validates the five-repository layout and the declared fixtures. Metadata supplements each project's CI; it does not replace compilation, runtime tests, or project CI.
 
+The coordinated layout contains `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services`. The historical Redis 0.7 and task 0.10 releases target core 0.20 and are not evidence of compatibility with core 0.21; published compatibility requires a consumer release resolving to registry core 0.21 and its own integration evidence. A local path graph pass is not release evidence.
 
-## Local capacity diagnostics
+# Local capacity diagnostics
 
 The synchronous and asynchronous local facades expose `LocalCapacityMonitor` through `local_with_config_and_monitor(local_config, facade_config)`. Their existing `local_with_monitor` entry points delegate with `EventBusFacadeConfig::default()`. The new entry points combine local queue and outstanding limits with facade middleware, codec, and delivery settings while retaining normal facade validation; construction errors use `ProviderError::Creation` with the provider or facade error as their source. Registry construction and the opaque Redis provider do not expose this capability. Snapshots copy the existing outstanding budget and saturated rejection counters under the budget mutex. Lock order remains queue then budget on admission; snapshot acquires only the budget lock. The handle owns only an `Arc` to accounting state and immutable queue capacity, so it does not retain queues or payloads.
 

@@ -1962,10 +1962,6 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ## 单仓验证与五仓整体验证
 
-`./scripts/project-ci-check.sh` 默认只检查当前 crate 的依赖解析 metadata；独立单仓用户
-无须下载全部下游。协调迁移时，运行
-`./scripts/project-ci-check.sh --ecosystem-root <repos-dir>`，目录下须包含
-`rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和
-`rs-execution-services`。门禁强制要求五个根目录及声明的七个 consumer fixture，
-使用 locked/all-features Cargo metadata 验证，并拒绝同一依赖图混用旧 minor 与
-0.21；缺失输入会明确失败。这项 metadata 检查补充各项目 CI，不能单独证明投递行为。它检查 sibling checkout 的路径依赖，不检查已发布 registry 版本。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能作为 core 0.21 兼容证据；发布兼容性需要消费者自身发布依赖 registry core 0.21 的版本并提供集成验证。不要把本地 path 图通过当作发布证据。
+仓库脚本须在完整 Git checkout 根目录运行；crate 解包目录不包含 `scripts/` 或 `.infra/`。`./scripts/project-ci-check.sh` 是项目辅助门禁：先运行 Python 回归、Cargo 包清单和性能证据检查，再运行 `check_event_bus_graph.py`。图检查器的权威 `REPOSITORIES` 与 `FIXTURES` 输入定义见[REPOSITORIES 和 FIXTURES](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/check_event_bus_graph.py)。默认 standalone 模式只检查当前 core 的 metadata，不需要下载下游仓库；显式传入 `--ecosystem-root <repos-dir>` 时，才验证五仓布局及声明的 fixtures。metadata 检查补充各项目 CI，不能替代编译、运行时测试或项目 CI。
+
+整合目录包含 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和 `rs-execution-services`。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能证明其兼容 core 0.21；发布兼容性需要消费者发布依赖 registry core 0.21 的版本并提供自身集成验证。不要把本地 path 图检查通过当作发布证据。
