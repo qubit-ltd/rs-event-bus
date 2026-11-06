@@ -50,12 +50,14 @@ is acknowledged by this disposal.
 | `./.infra/bin/ci-check.sh` | Passed (exit 0), including workspace tests, feature matrix, docs, package, coverage, and audit. One earlier run exposed a test timing/observation issue; the deterministic single-subscription test was corrected and the complete check rerun successfully. |
 | `timeout 30s cargo test --locked --test async_coverage_tests terminal_session_disposal_preserves_unsettled_delivery_semantics` | Passed (1 test). |
 | `cargo test --locked --test async_coverage_tests` | Passed (29 tests) before the final equivalent deterministic test arrangement; the complete CI run above includes the final arrangement. |
-| `python3 -B -m unittest discover -s scripts/tests -p '*tests.py'` | Passed (54 tests). |
+| `python3 -B -m unittest discover -s scripts/tests -p '*tests.py'` | Passed (54 tests), including dirty-layout gates and no-Cargo/no-Docker behavior. |
 | `python3 -B scripts/check_documentation_examples.py` | Passed. |
 | `python3 -B scripts/test_documentation_examples.py` | Passed (48 cases). |
 | `python3 -B scripts/check_documentation_examples.py --check-snapshot-content` | Passed after committing the bilingual docs and updating all four links to snapshot commit `cd1ad429d2d96d7905215d4c37577431688a786d`. An initial abbreviated SHA was rejected by the checker and corrected to the full SHA. |
-| `docker info --format '{{.ServerVersion}}'` | Blocked: Docker API access denied for `/var/run/docker.sock`; Redis container behavior checks cannot run in this environment. |
+| `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root /data/working/qubit/rust-common/.worktrees/rs-event-bus-downstream-20261106` | Passed for Redis adapter, task notifications, and IoC application consumer at their fixed revisions. |
+| Same compatibility command with a generated untracked probe in `rs-task` | Rejected before Cargo with `repository rs-task has local changes`; the probe was removed and the checkout returned clean. |
+| `python3 -B scripts/check_downstream_behavior.py --ecosystem-root /data/working/qubit/rust-common/.worktrees/rs-event-bus-downstream-20261106` | Blocked: Docker CLI reached the default context, but server access was denied at `/var/run/docker.sock` (`Docker command failed (exit 1): docker info`). Redis runtime behavior remains unverified in this environment. |
 
-The compatibility mock tests pass; the fixed-SHA downstream worktree check and
-the dirty-worktree rejection case are recorded separately in the final
-implementation summary.
+`coverage-cfg-clippy` was skipped by the repository CI configuration because
+`coverage_cfg_clippy` is disabled there. No Redis runtime behavior pass is
+claimed because this environment cannot access a Docker daemon.
