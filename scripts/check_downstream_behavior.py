@@ -253,7 +253,10 @@ def run_redis_fixture(image, manifest, label):
     primary_error = None
     try:
         container_id = start_redis_container(image, label)
-        redis_url = wait_for_redis(container_id)
+        try:
+            redis_url = wait_for_redis(container_id)
+        except BehaviorError as error:
+            raise BehaviorError(f"{label} Redis readiness failed: {error}") from error
         command = ["cargo", "run", "--locked", "--manifest-path", str(manifest), "--", redis_url]
         print(f"downstream behavior: {label}", flush=True)
         checked_command(command, label)

@@ -244,6 +244,24 @@ class DownstreamBehaviorTests(unittest.TestCase):
                                                 mock.call("tokio-id", "async_tokio_consumer"),
                                                 mock.call("smol-id", "async_smol_consumer")])
 
+    def test_async_readiness_failure_names_target_preserves_detail_and_removes_container(self):
+        load, layout = self.setup_gate()
+        started = iter(("task-id", "tokio-id", "smol-id"))
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("image")), \
+             mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
+             mock.patch.object(behavior, "start_redis_container", side_effect=lambda image, label: next(started)), \
+             mock.patch.object(behavior, "wait_for_redis", side_effect=["redis://task", "redis://tokio",
+                                                                          behavior.BehaviorError("Redis did not answer PING: connection refused")]), \
+             mock.patch.object(behavior, "remove_container") as remove, \
+             mock.patch("builtins.print"):
+            with self.assertRaisesRegex(
+                behavior.BehaviorError,
+                r"async_smol_consumer.*Redis did not answer PING: connection refused",
+            ):
+                behavior.execute(self.root, Path("manifest.json"))
+        self.assertEqual(remove.call_args_list[-1], mock.call("smol-id", "async_smol_consumer"))
+
     def test_async_smol_command_timeout_is_reported_and_container_is_removed(self):
         load, layout = self.setup_gate()
         started = iter(("task-id", "tokio-id", "smol-id"))
