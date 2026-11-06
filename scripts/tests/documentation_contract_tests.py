@@ -102,7 +102,11 @@ class DocumentationContractTests(unittest.TestCase):
 
     def test_markdown_links_inside_fenced_code_are_ignored(self):
         readme = self.root / "README.md"
-        readme.write_text(readme.read_text(encoding="utf-8") + "\n```md\n[missing](scripts/not-packaged.py)\n```\n", encoding="utf-8")
+        readme.write_text(
+            readme.read_text(encoding="utf-8")
+            + "\n```md\n```python\n[missing](scripts/not-packaged.py)\n```\n",
+            encoding="utf-8",
+        )
         result = self.run_checker()
         self.assertEqual(result.returncode, 0, result.stderr)
 

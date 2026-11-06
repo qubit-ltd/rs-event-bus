@@ -38,18 +38,21 @@ def markdown_links(text: str):
     fence_char = None
     fence_size = 0
     for line in text.splitlines():
-        fence = FENCE.match(line)
-        if fence:
-            marker = fence.group(1)
-            char = marker[0]
-            if fence_char is None:
-                fence_char, fence_size = char, len(marker)
+        if fence_char is None:
+            fence = FENCE.match(line)
+            if fence:
+                marker = fence.group(1)
+                fence_char, fence_size = marker[0], len(marker)
                 continue
-            if char == fence_char and len(marker) >= fence_size:
+            yield from (match.group(1).strip().split(maxsplit=1)[0].strip("<>") for match in LINK.finditer(line))
+            continue
+
+        closing = re.fullmatch(r"\s*(`{3,}|~{3,})[ \t]*", line)
+        if closing:
+            marker = closing.group(1)
+            if marker[0] == fence_char and len(marker) >= fence_size:
                 fence_char, fence_size = None, 0
                 continue
-        if fence_char is None:
-            yield from (match.group(1).strip().split(maxsplit=1)[0].strip("<>") for match in LINK.finditer(line))
 
 
 def normalized_local_path(document: str, destination: str):
