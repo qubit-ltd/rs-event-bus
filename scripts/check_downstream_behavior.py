@@ -213,10 +213,10 @@ def start_redis_container(image, label="task fixture"):
             ).splitlines()
             for orphaned_id in orphaned_ids:
                 if orphaned_id.strip():
-                    remove_container(orphaned_id.strip())
+                    remove_container(orphaned_id.strip(), scenario)
         except BehaviorError as cleanup_error:
             raise BehaviorError(
-                f"{start_error}; startup cleanup failed: {cleanup_error}"
+                f"{start_error}; {scenario} startup cleanup failed: {cleanup_error}"
             ) from cleanup_error
         raise
     return container_id

@@ -177,9 +177,12 @@ class DownstreamBehaviorTests(unittest.TestCase):
         with mock.patch.object(uuid, "uuid4", return_value=mock.Mock(hex="run-id")), \
              mock.patch.object(behavior, "checked_command", side_effect=behavior.BehaviorError("docker run timed out")) as run, \
              mock.patch.object(behavior, "docker_command", return_value="orphan-id\n") as list_containers, \
-             mock.patch.object(behavior, "remove_container") as remove:
-            with self.assertRaisesRegex(behavior.BehaviorError, "docker run timed out"):
-                behavior.start_redis_container("redis@sha256:" + "a" * 64)
+             mock.patch.object(behavior, "remove_container", side_effect=behavior.BehaviorError("docker rm failed")) as remove:
+            with self.assertRaisesRegex(
+                behavior.BehaviorError,
+                r"docker run timed out.*async_smol_consumer startup cleanup failed: docker rm failed",
+            ):
+                behavior.start_redis_container("redis@sha256:" + "a" * 64, "async_smol_consumer")
 
         command = run.call_args.args[0]
         self.assertIn("--label", command)
@@ -187,7 +190,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
         list_containers.assert_called_once_with([
             "docker", "ps", "-aq", "--filter", "label=qubit-event-bus-behavior=run-id",
         ])
-        remove.assert_called_once_with("orphan-id")
+        remove.assert_called_once_with("orphan-id", "async_smol_consumer")
 
     def test_container_cleanup_failure_is_reported(self):
         load, layout = self.setup_gate()
