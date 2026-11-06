@@ -93,6 +93,18 @@ impl AsyncEventBus {
     /// when the provider published but the requirement was not met; some
     /// destinations may already have accepted the event.
     ///
+    /// # Cancellation
+    /// Cancellation follows [`publish`](Self::publish). An unpolled future
+    /// does not start publication. Dropping a polled future
+    /// does not roll back publication: the provider may already have accepted
+    /// the event. Cancellation returns neither a receipt nor a terminal
+    /// [`PublishFailure`] and does not establish
+    /// [`PublishEffect::NotAccepted`]. Retain the event ID before awaiting
+    /// and reconcile uncertain publication or use application idempotency
+    /// before republishing. `DuplicateRiskPolicy` does not make
+    /// cancellation a rollback. The admission check runs only
+    /// after publication completes and cannot retract provider acceptance.
+    ///
     /// ```
     /// # use qubit_event_bus::AsyncEventBus;
     /// # use qubit_event_bus::CheckedPublishError;
@@ -143,6 +155,16 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns an error if shutdown has started, a required capability is
     /// unavailable, or middleware, codec, or provider operations fail.
+    ///
+    /// # Cancellation
+    /// An unpolled future does not start publication. Dropping a polled future
+    /// does not roll back publication: the provider may already have accepted
+    /// the event. Cancellation returns neither a receipt nor a terminal
+    /// [`PublishFailure`] and does not establish
+    /// [`PublishEffect::NotAccepted`]. Retain the event ID before awaiting
+    /// and reconcile uncertain publication or use application idempotency
+    /// before republishing. `DuplicateRiskPolicy` does not make
+    /// cancellation a rollback.
     pub async fn publish<T: Send + Sync + 'static>(
         &self,
         request: PublishRequest<T>,

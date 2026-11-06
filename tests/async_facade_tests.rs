@@ -110,6 +110,74 @@ fn topic() -> Topic<u32> {
     Topic::new("test.topic").unwrap()
 }
 
+/// Records provider acceptance when a publish future is first polled, then
+/// remains pending so the facade call can be cancelled deterministically.
+struct PendingPublishSpi {
+    inner: FakeAsyncEventBusSpi,
+    accepted: Arc<AtomicUsize>,
+    observed_event_id: Arc<std::sync::Mutex<Option<EventId>>>,
+}
+
+impl AsyncEventBusSpi for PendingPublishSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        let observed_event_id = self.observed_event_id.clone();
+        Box::pin(async move {
+            *observed_event_id.lock().unwrap() = Some(message.id().clone());
+            self.accepted.fetch_add(1, Ordering::AcqRel);
+            std::future::pending().await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        self.inner.subscribe(request)
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[test]
+fn test_cancelling_polled_publish_future_does_not_retract_provider_acceptance() {
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let observed_event_id = Arc::new(std::sync::Mutex::new(None));
+    let spi = Arc::new(PendingPublishSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        accepted: accepted.clone(),
+        observed_event_id: observed_event_id.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("pending-publish").unwrap(), spi).unwrap();
+    let unpolled = bus.publish(PublishRequest::new(topic(), 7).unwrap());
+    assert_eq!(0, accepted.load(Ordering::Acquire));
+    assert_eq!(None, *observed_event_id.lock().unwrap());
+    drop(unpolled);
+    assert_eq!(0, bus.publish_metrics().attempts);
+
+    let request = PublishRequest::new(topic(), 7).unwrap();
+    let event_id = request.envelope().id().clone();
+
+    let mut publishing = Box::pin(bus.publish(request));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(publishing.as_mut().poll(&mut context).is_pending());
+    assert_eq!(1, accepted.load(Ordering::Acquire));
+    assert_eq!(Some(event_id.clone()), *observed_event_id.lock().unwrap());
+    drop(publishing);
+
+    let metrics = bus.publish_metrics();
+    assert_eq!(1, metrics.cancelled);
+    assert_eq!(0, metrics.errors);
+    assert_eq!(1, accepted.load(Ordering::Acquire));
+    assert_eq!(Some(event_id), *observed_event_id.lock().unwrap());
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
 /// Signals a channel whenever an idle-wait future is woken.
 struct WakeOnSignal(std::sync::mpsc::Sender<()>);
 
