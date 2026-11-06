@@ -2179,7 +2179,7 @@ Run repository scripts from the root of a full Git checkout; crate archives do n
 
 The coordinated layout contains `rs-event-bus`, `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services`. The historical Redis 0.7 and task 0.10 releases target core 0.20 and are not evidence of compatibility with core 0.21; published compatibility requires a consumer release resolving to registry core 0.21 and its own integration evidence. A local path graph pass is not release evidence.
 
-# Local capacity diagnostics
+## Local capacity diagnostics
 
 The synchronous and asynchronous local facades expose `LocalCapacityMonitor` through `local_with_config_and_monitor(local_config, facade_config)`. Their existing `local_with_monitor` entry points delegate with `EventBusFacadeConfig::default()`. The new entry points combine local queue and outstanding limits with facade middleware, codec, and delivery settings while retaining normal facade validation; construction errors use `ProviderError::Creation` with the provider or facade error as their source. Registry construction and the opaque Redis provider do not expose this capability. Snapshots copy the existing outstanding budget and saturated rejection counters under the budget mutex. Lock order remains queue then budget on admission; snapshot acquires only the budget lock. The handle owns only an `Arc` to accounting state and immutable queue capacity, so it does not retain queues or payloads.
 

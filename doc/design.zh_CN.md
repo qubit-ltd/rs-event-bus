@@ -2016,7 +2016,7 @@ pub fn settle_without_borrowing_token<'a>(
 
 整合目录包含 `rs-event-bus`、`rs-event-bus-redis`、`rs-task`、`rs-ioc` 和 `rs-execution-services`。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20，不能证明其兼容 core 0.21；发布兼容性需要消费者发布依赖 registry core 0.21 的版本并提供自身集成验证。本地 path 图检查通过不等于发布证据。
 
-# Local 容量诊断
+## Local 容量诊断
 
 同步与异步 local facade 通过 `local_with_config_and_monitor(local_config, facade_config)` 提供 `LocalCapacityMonitor`。现有 `local_with_monitor` 入口使用 `EventBusFacadeConfig::default()` 委托给新入口。新入口组合 local 队列及 outstanding 上限与 facade middleware、codec、delivery 配置，并继续执行常规 facade 校验；构造错误统一为 `ProviderError::Creation`，并保留 provider 或 facade 错误源。registry 构造和返回 opaque acknowledgement 的 Redis provider 不提供此能力。快照在预算互斥锁内复制现有 outstanding 预算和饱和拒绝计数。接纳路径的锁顺序仍为 queue 后 budget；快照只获取 budget 锁。句柄仅持有 accounting 状态的 `Arc` 和不可变队列容量，不保留队列或 payload。
 
