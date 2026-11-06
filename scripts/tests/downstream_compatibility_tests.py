@@ -88,10 +88,12 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         def invoke(command):
             calls.append(command)
             if command[0] == "git":
-                repository = Path(command[2]).name
-                revision = next(item["revision"] for item in self.config["repositories"]
-                                if item["name"] == repository)
-                return subprocess.CompletedProcess(command, 0, revision + "\n", "")
+                if command[3] == "rev-parse":
+                    repository = Path(command[2]).name
+                    revision = next(item["revision"] for item in self.config["repositories"]
+                                    if item["name"] == repository)
+                    return subprocess.CompletedProcess(command, 0, revision + "\n", "")
+                return subprocess.CompletedProcess(command, 0, "", "")
             if command[1] == "metadata":
                 return subprocess.CompletedProcess(command, 0,
                                                    metadata or self.metadata_json(), "")
@@ -211,6 +213,94 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 gate.main(["--ecosystem-root", str(self.root), "--manifest", str(self.manifest_path)])
         self.assertNotEqual(exit_result.exception.code, 0)
         self.assertIn("missing", errors.getvalue())
+
+    def test_dirty_fixed_revision_checkout_is_rejected_before_cargo(self):
+        for status, label in (("M  staged", "staged"), (" M unstaged", "unstaged"),
+                              ("?? untracked file", "untracked")):
+            with self.subTest(label=label):
+                calls = []
+                def invoke(command):
+                    calls.append(command)
+                    if command[0] == "git" and command[3] == "rev-parse":
+                        repository = Path(command[2]).name
+                        revision = next(item["revision"] for item in self.config["repositories"]
+                                        if item["name"] == repository)
+                        return subprocess.CompletedProcess(command, 0, revision + "\n", "")
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, 0, status + "\n", "")
+                    self.fail("Cargo must not run for a dirty downstream checkout")
+                with mock.patch.object(gate, "run_command", side_effect=invoke):
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                        with self.assertRaises(SystemExit) as exit_result:
+                            gate.main(["--ecosystem-root", str(self.root), "--manifest", str(self.manifest_path)])
+                self.assertEqual(exit_result.exception.code, 1)
+                self.assertIn("rs-event-bus-redis", errors.getvalue())
+                self.assertIn(status.strip(), errors.getvalue())
+                self.assertFalse(any(call[0] == "cargo" for call in calls))
+
+    def test_status_command_failure_is_rejected_with_repository_name(self):
+        calls = []
+        def invoke(command):
+            calls.append(command)
+            if command[0] == "git" and command[3] == "rev-parse":
+                repository = Path(command[2]).name
+                revision = next(item["revision"] for item in self.config["repositories"]
+                                if item["name"] == repository)
+                return subprocess.CompletedProcess(command, 0, revision + "\n", "")
+            return subprocess.CompletedProcess(command, 128, "", "index unavailable")
+        with mock.patch.object(gate, "run_command", side_effect=invoke):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as exit_result:
+                    gate.main(["--ecosystem-root", str(self.root), "--manifest", str(self.manifest_path)])
+        self.assertEqual(exit_result.exception.code, 1)
+        self.assertIn("rs-event-bus-redis", errors.getvalue())
+        self.assertIn("index unavailable", errors.getvalue())
+        self.assertFalse(any(call[0] == "cargo" for call in calls))
+
+    def test_core_checkout_may_be_dirty(self):
+        calls = []
+        (self.root / "rs-event-bus" / "uncommitted-core-change").write_text("under test\n")
+        with mock.patch.object(gate, "run_command", side_effect=self.command_runner(calls)):
+            core, _ = gate.validate_layout(self.root, {"repositories": self.config["repositories"], "targets": []})
+        self.assertEqual(core, self.root / "rs-event-bus")
+
+    def test_real_git_checkout_status_detects_staged_unstaged_and_untracked_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "rs-task"
+            checkout.mkdir()
+            def git(*args):
+                return subprocess.run(["git", "-C", str(checkout), *args], check=True,
+                                      capture_output=True, text=True)
+            git("init", "-q")
+            git("config", "user.name", "Compatibility Test")
+            git("config", "user.email", "compatibility@example.invalid")
+            (checkout / "tracked.txt").write_text("base\n", encoding="utf-8")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "initial")
+            revision = git("rev-parse", "HEAD").stdout.strip()
+            config = {"repositories": [{"name": "rs-task", "revision": revision}], "targets": []}
+            (root / "rs-event-bus").mkdir()
+            (root / "rs-event-bus" / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+            self.assertEqual(gate.validate_layout(root, config)[0], root / "rs-event-bus")
+            (checkout / "tracked.txt").write_text("staged\n", encoding="utf-8")
+            git("add", "tracked.txt")
+            with self.assertRaisesRegex(gate.CompatibilityError, "rs-task.*local changes"):
+                gate.validate_layout(root, config)
+            git("reset", "-q", "HEAD")
+            (checkout / "tracked.txt").write_text("unstaged\n", encoding="utf-8")
+            with self.assertRaisesRegex(gate.CompatibilityError, "rs-task.*local changes"):
+                gate.validate_layout(root, config)
+            git("checkout", "--", "tracked.txt")
+            (checkout / "untracked file.txt").write_text("untracked\n", encoding="utf-8")
+            with self.assertRaisesRegex(gate.CompatibilityError, "(?s)rs-task.*untracked file.txt"):
+                gate.validate_layout(root, config)
+            exclude = checkout / ".git" / "info" / "exclude"
+            exclude.write_text("target/\n", encoding="utf-8")
+            (checkout / "target").mkdir()
+            (checkout / "target" / "ignored").write_text("generated\n", encoding="utf-8")
+            (checkout / "untracked file.txt").unlink()
+            self.assertEqual(gate.validate_layout(root, config)[0], root / "rs-event-bus")
 
 
 if __name__ == "__main__":

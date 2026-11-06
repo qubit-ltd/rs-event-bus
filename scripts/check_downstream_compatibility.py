@@ -118,6 +118,18 @@ def validate_layout(root, config):
         if actual != repository["revision"]:
             raise CompatibilityError(
                 f"repository {repository['name']} is at {actual}, expected {repository['revision']}")
+        status = run_command([
+            "git", "--no-optional-locks", "-C", str(directory), "status",
+            "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
+        ])
+        if status.returncode:
+            detail = status.stderr or status.stdout
+            raise CompatibilityError(
+                f"repository {repository['name']} worktree check failed: {detail.strip()}")
+        if status.stdout:
+            raise CompatibilityError(
+                f"repository {repository['name']} has local changes; "
+                f"fixed-revision checks require a clean downstream checkout:\n{status.stdout}")
     core = checked_path(root, "rs-event-bus")
     if not (core / "Cargo.toml").is_file():
         raise CompatibilityError(f"missing core checkout under test: {core / 'Cargo.toml'}")

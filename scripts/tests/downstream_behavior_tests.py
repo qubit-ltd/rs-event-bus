@@ -78,6 +78,18 @@ class DownstreamBehaviorTests(unittest.TestCase):
         with self.assertRaises(behavior.BehaviorError):
             behavior.require_test_executed(result, "sync conformance")
 
+    def test_dirty_layout_stops_before_docker_or_cargo(self):
+        load, _ = self.setup_gate()
+        with load, \
+             mock.patch.object(behavior.compatibility, "validate_layout",
+                               side_effect=behavior.compatibility.CompatibilityError("dirty downstream")), \
+             mock.patch.object(behavior, "pinned_redis_image") as image, \
+             mock.patch.object(behavior, "run_process") as cargo:
+            with self.assertRaisesRegex(behavior.compatibility.CompatibilityError, "dirty downstream"):
+                behavior.execute(self.root, Path("manifest.json"))
+        image.assert_not_called()
+        cargo.assert_not_called()
+
     def test_nonzero_command_stops_before_remaining_cargo(self):
         load, layout = self.setup_gate()
         failed = subprocess.CompletedProcess([], 7, "partial", "cargo failed")
