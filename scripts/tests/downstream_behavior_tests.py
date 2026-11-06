@@ -28,6 +28,8 @@ class DownstreamBehaviorTests(unittest.TestCase):
             "redis": self.root / "rs-event-bus-redis/Cargo.toml",
             "task_notifications": self.root / "rs-event-bus-redis/tests/fixtures/task_notifications/Cargo.toml",
             "ioc_application_consumer": self.root / "rs-ioc/tests/fixtures/application_consumer_current/Cargo.toml",
+            "async_tokio_consumer": self.root / "rs-event-bus-redis/tests/fixtures/async_tokio_consumer/Cargo.toml",
+            "async_smol_consumer": self.root / "rs-event-bus-redis/tests/fixtures/async_smol_consumer/Cargo.toml",
         }
         self.commands = []
 
@@ -43,7 +45,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
         return mock.patch.object(behavior.compatibility, "load_manifest", return_value={}), \
             mock.patch.object(behavior.compatibility, "validate_layout", return_value=(self.core, self.manifests))
 
-    def test_runs_three_fixed_locked_commands_and_reports_test_count(self):
+    def test_runs_five_fixed_locked_commands_and_reports_test_count(self):
         load, layout = self.setup_gate()
         with load, layout, \
              mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("redis@sha256:" + "a" * 64)), \
@@ -55,7 +57,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
              mock.patch("builtins.print") as output:
             behavior.execute(self.root, Path("manifest.json"))
         commands = self.commands
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 5)
         self.assertEqual(commands[0], [
             "cargo", "test", "--locked", "--all-features", "--manifest-path",
             str(self.manifests["redis"]), "--test", "sync_standalone_tests",
@@ -70,8 +72,39 @@ class DownstreamBehaviorTests(unittest.TestCase):
             "cargo", "run", "--locked", "--manifest-path",
             str(self.manifests["task_notifications"]), "--", "redis://127.0.0.1:43210",
         ])
+        self.assertEqual(commands[3], [
+            "cargo", "run", "--locked", "--manifest-path",
+            str(self.manifests["async_tokio_consumer"]), "--", "redis://127.0.0.1:43210",
+        ])
+        self.assertEqual(commands[4], [
+            "cargo", "run", "--locked", "--manifest-path",
+            str(self.manifests["async_smol_consumer"]), "--", "redis://127.0.0.1:43210",
+        ])
+        self.assertNotIn("--all-features", commands[3])
+        self.assertNotIn("--all-features", commands[4])
         self.assertTrue(any("1 passed" in str(call) for call in output.call_args_list))
-        remove.assert_called_once_with("container-id")
+        self.assertEqual(remove.call_args_list, [
+            mock.call("container-id", "task notifications"),
+            mock.call("container-id", "async_tokio_consumer"),
+            mock.call("container-id", "async_smol_consumer"),
+        ])
+
+    def test_async_scenarios_use_different_containers_and_urls(self):
+        load, layout = self.setup_gate()
+        started = iter(("task-id", "tokio-id", "smol-id"))
+        urls = {"task-id": "redis://127.0.0.1:10001", "tokio-id": "redis://127.0.0.1:10002",
+                "smol-id": "redis://127.0.0.1:10003"}
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("image")), \
+             mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
+             mock.patch.object(behavior, "start_redis_container", side_effect=lambda image, label: next(started)), \
+             mock.patch.object(behavior, "wait_for_redis", side_effect=lambda cid: urls[cid]) as wait, \
+             mock.patch.object(behavior, "remove_container"), \
+             mock.patch("builtins.print"):
+            behavior.execute(self.root, Path("manifest.json"))
+        runs = [command for command in self.commands if command[:2] == ["cargo", "run"]]
+        self.assertEqual([command[-1] for command in runs], list(urls.values()))
+        self.assertEqual(wait.call_args_list, [mock.call("task-id"), mock.call("tokio-id"), mock.call("smol-id")])
 
     def test_zero_executed_tests_is_failure(self):
         result = subprocess.CompletedProcess([], 0, "running 0 tests\ntest result: ok. 0 passed\n", "")
@@ -138,7 +171,7 @@ class DownstreamBehaviorTests(unittest.TestCase):
              mock.patch.object(behavior, "remove_container") as remove:
             with self.assertRaisesRegex(behavior.BehaviorError, "readiness timeout"):
                 behavior.execute(self.root, Path("manifest.json"))
-        remove.assert_called_once_with("container-id")
+        remove.assert_called_once_with("container-id", "task notifications")
 
     def test_failed_container_start_removes_container_by_unique_label(self):
         with mock.patch.object(uuid, "uuid4", return_value=mock.Mock(hex="run-id")), \
@@ -165,8 +198,71 @@ class DownstreamBehaviorTests(unittest.TestCase):
              mock.patch.object(behavior, "start_redis_container", return_value="container-id"), \
              mock.patch.object(behavior, "wait_for_redis", return_value="redis://127.0.0.1:43210"), \
              mock.patch.object(behavior, "remove_container", side_effect=behavior.BehaviorError("docker rm failed")):
-            with self.assertRaisesRegex(behavior.BehaviorError, "docker rm failed"):
+            with self.assertRaisesRegex(behavior.BehaviorError, "(?s)task notifications Redis container cleanup failed.*docker rm failed"):
                 behavior.execute(self.root, Path("manifest.json"))
+
+    def test_async_scenario_failure_names_target_and_preserves_cleanup_failure(self):
+        load, layout = self.setup_gate()
+        commands_run = 0
+
+        def run(command, **kwargs):
+            nonlocal commands_run
+            self.commands.append(command)
+            if command[:2] == ["cargo", "run"]:
+                commands_run += 1
+                if command[command.index("--manifest-path") + 1] == str(self.manifests["async_tokio_consumer"]):
+                    return subprocess.CompletedProcess(command, 23, "tokio stdout", "tokio stderr")
+            return self.cargo_success(command, **kwargs)
+
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("image")), \
+             mock.patch.object(behavior, "run_process", side_effect=run), \
+             mock.patch.object(behavior, "start_redis_container", side_effect=["task-id", "tokio-id"]), \
+             mock.patch.object(behavior, "wait_for_redis", side_effect=lambda cid: f"redis://{cid}"), \
+             mock.patch.object(behavior, "remove_container", side_effect=[None, behavior.BehaviorError("rm failed")]), \
+             mock.patch("builtins.print"):
+            with self.assertRaisesRegex(behavior.BehaviorError,
+                                        r"(?s)async_tokio_consumer failed \(exit 23\).*tokio stderr.*cleanup failed.*rm failed"):
+                behavior.execute(self.root, Path("manifest.json"))
+        self.assertEqual(commands_run, 2)
+        self.assertFalse(any(str(self.manifests["async_smol_consumer"]) in command for command in self.commands))
+
+    def test_async_smol_readiness_timeout_removes_its_container(self):
+        load, layout = self.setup_gate()
+        started = iter(("task-id", "tokio-id", "smol-id"))
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("image")), \
+             mock.patch.object(behavior, "run_process", side_effect=self.cargo_success), \
+             mock.patch.object(behavior, "start_redis_container", side_effect=lambda image, label: next(started)), \
+             mock.patch.object(behavior, "wait_for_redis", side_effect=["redis://task", "redis://tokio",
+                                                                          behavior.BehaviorError("smol readiness timeout")]), \
+             mock.patch.object(behavior, "remove_container") as remove, \
+             mock.patch("builtins.print"):
+            with self.assertRaisesRegex(behavior.BehaviorError, "smol readiness timeout"):
+                behavior.execute(self.root, Path("manifest.json"))
+        self.assertEqual(remove.call_args_list, [mock.call("task-id", "task notifications"),
+                                                mock.call("tokio-id", "async_tokio_consumer"),
+                                                mock.call("smol-id", "async_smol_consumer")])
+
+    def test_async_smol_command_timeout_is_reported_and_container_is_removed(self):
+        load, layout = self.setup_gate()
+        started = iter(("task-id", "tokio-id", "smol-id"))
+
+        def run(command, **kwargs):
+            if command[:2] == ["cargo", "run"] and str(self.manifests["async_smol_consumer"]) in command:
+                raise behavior.BehaviorError("command timed out after 600s: cargo run\nstdout:\npartial\nstderr:\nwaiting")
+            return self.cargo_success(command, **kwargs)
+
+        with load, layout, \
+             mock.patch.object(behavior, "pinned_redis_image", return_value=nullcontext("image")), \
+             mock.patch.object(behavior, "run_process", side_effect=run), \
+             mock.patch.object(behavior, "start_redis_container", side_effect=lambda image, label: next(started)), \
+             mock.patch.object(behavior, "wait_for_redis", side_effect=lambda cid: f"redis://{cid}"), \
+             mock.patch.object(behavior, "remove_container") as remove, \
+             mock.patch("builtins.print"):
+            with self.assertRaisesRegex(behavior.BehaviorError, r"(?s)async_smol_consumer: command timed out.*waiting"):
+                behavior.execute(self.root, Path("manifest.json"))
+        self.assertEqual(remove.call_args_list[-1], mock.call("smol-id", "async_smol_consumer"))
 
     def test_load_redis_image_accepts_single_digest_and_rejects_invalid_files(self):
         valid = "redis@sha256:" + "a" * 64 + "\n"

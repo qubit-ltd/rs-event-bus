@@ -48,6 +48,13 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                  "features": []},
             ],
         }
+        for name in ("async_tokio_consumer", "async_smol_consumer"):
+            if not any(target["name"] == name for target in self.config["targets"]):
+                self.config["targets"].append({
+                    "name": name,
+                    "manifest": f"rs-event-bus-redis/tests/fixtures/{name}/Cargo.toml",
+                    "features": [],
+                })
         for repository in self.config["repositories"]:
             directory = self.root / repository["name"]
             directory.mkdir()
@@ -109,7 +116,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     gate.main(["--ecosystem-root", str(self.root), "--manifest", str(self.manifest_path)])
         self.assertEqual(exit_result.exception.code, 0)
         cargo_calls = [call for call in calls if call[0] == "cargo"]
-        self.assertEqual(len(cargo_calls), 6)
+        self.assertEqual(len(cargo_calls), 10)
         for metadata, check in zip(cargo_calls[::2], cargo_calls[1::2]):
             self.assertEqual(metadata[1], "metadata")
             self.assertIn("--locked", metadata)
@@ -126,6 +133,38 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         self.assertIn("--all-features", cargo_calls[0])
         self.assertIn("--all-features", cargo_calls[1])
         self.assertNotIn("--all-features", cargo_calls[2])
+        self.assertNotIn("--all-features", cargo_calls[6])
+        self.assertNotIn("--all-features", cargo_calls[8])
+        self.assertEqual(
+            [call[call.index("--manifest-path") + 1] for call in cargo_calls[::2]][-2:],
+            [str(self.root / "rs-event-bus-redis/tests/fixtures/async_tokio_consumer/Cargo.toml"),
+             str(self.root / "rs-event-bus-redis/tests/fixtures/async_smol_consumer/Cargo.toml")],
+        )
+
+    def test_async_targets_require_exact_paths_and_empty_extra_features(self):
+        expected = {
+            "async_tokio_consumer": "rs-event-bus-redis/tests/fixtures/async_tokio_consumer/Cargo.toml",
+            "async_smol_consumer": "rs-event-bus-redis/tests/fixtures/async_smol_consumer/Cargo.toml",
+        }
+        for name, path in expected.items():
+            with self.subTest(target=name):
+                target = next(item for item in self.config["targets"] if item["name"] == name)
+                self.assertEqual(target, {"name": name, "manifest": path, "features": []})
+                for mutated in (
+                    {**target, "manifest": path.replace("async_", "")},
+                    {**target, "features": ["--all-features"]},
+                    {**target, "features": ["--features", "async"]},
+                ):
+                    config = json.loads(json.dumps(self.config))
+                    index = next(i for i, item in enumerate(config["targets"]) if item["name"] == name)
+                    config["targets"][index] = mutated
+                    self.write_config_for(config)
+                    with self.assertRaises(gate.CompatibilityError):
+                        gate.load_manifest(self.manifest_path)
+                self.write_config()
+
+    def write_config_for(self, config):
+        self.manifest_path.write_text(json.dumps(config), encoding="utf-8")
 
     def test_metadata_failure_does_not_start_check_and_preserves_error(self):
         calls = []

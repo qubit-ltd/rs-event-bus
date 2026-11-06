@@ -68,14 +68,18 @@ def format_command(command):
 
 
 def checked_command(command, label, timeout=COMMAND_TIMEOUT_SECONDS):
-    result = run_process(command, timeout=timeout)
+    try:
+        result = run_process(command, timeout=timeout)
+    except BehaviorError as error:
+        raise BehaviorError(f"{label}: {error}") from error
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
     if result.stderr:
         print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
     if result.returncode:
         raise BehaviorError(
-            f"{label} failed (exit {result.returncode}): {format_command(command)}"
+            f"{label} failed (exit {result.returncode}): {format_command(command)}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result
 
@@ -190,13 +194,14 @@ def require_test_executed(result, label):
     print(f"{label}: {match.group(1)} test(s) executed", flush=True)
 
 
-def start_redis_container(image):
-    label = f"qubit-event-bus-behavior={uuid.uuid4().hex}"
+def start_redis_container(image, label="task fixture"):
+    scenario = label
+    docker_label = f"qubit-event-bus-behavior={uuid.uuid4().hex}"
     try:
         result = checked_command(
-            ["docker", "run", "-d", "--label", label, "-p", "127.0.0.1::6379",
+            ["docker", "run", "-d", "--label", docker_label, "-p", "127.0.0.1::6379",
              image, "redis-server", "--appendonly", "yes"],
-            "start task fixture Redis container",
+            f"start {scenario} Redis container",
         )
         container_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
         if not container_id:
@@ -204,7 +209,7 @@ def start_redis_container(image):
     except BehaviorError as start_error:
         try:
             orphaned_ids = docker_command(
-                ["docker", "ps", "-aq", "--filter", f"label={label}"]
+                ["docker", "ps", "-aq", "--filter", f"label={docker_label}"]
             ).splitlines()
             for orphaned_id in orphaned_ids:
                 if orphaned_id.strip():
@@ -238,8 +243,33 @@ def wait_for_redis(container_id):
     raise BehaviorError(f"Redis container {container_id} readiness failed after 30s: {last_error}")
 
 
-def remove_container(container_id):
-    checked_command(["docker", "rm", "-f", container_id], "remove task fixture Redis container")
+def remove_container(container_id, label="task fixture"):
+    checked_command(["docker", "rm", "-f", container_id], f"remove {label} Redis container")
+
+
+def run_redis_fixture(image, manifest, label):
+    """Run one consumer against its own Redis container, preserving workload and cleanup failures."""
+    container_id = None
+    primary_error = None
+    try:
+        container_id = start_redis_container(image, label)
+        redis_url = wait_for_redis(container_id)
+        command = ["cargo", "run", "--locked", "--manifest-path", str(manifest), "--", redis_url]
+        print(f"downstream behavior: {label}", flush=True)
+        checked_command(command, label)
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        if container_id is not None:
+            try:
+                remove_container(container_id, label)
+            except BaseException as cleanup_error:
+                if primary_error is not None:
+                    raise BehaviorError(
+                        f"{primary_error}; {label} Redis container cleanup failed: {cleanup_error}"
+                    ) from primary_error
+                raise BehaviorError(f"{label} Redis container cleanup failed: {cleanup_error}") from cleanup_error
 
 
 def execute(ecosystem_root, manifest_path):
@@ -262,15 +292,9 @@ def execute(ecosystem_root, manifest_path):
             if count_tests:
                 require_test_executed(result, label)
 
-        container_id = start_redis_container(image)
-        try:
-            redis_url = wait_for_redis(container_id)
-            command = ["cargo", "run", "--locked", "--manifest-path",
-                       str(manifests["task_notifications"]), "--", redis_url]
-            print("downstream behavior: task notifications", flush=True)
-            checked_command(command, "task notifications")
-        finally:
-            remove_container(container_id)
+        run_redis_fixture(image, manifests["task_notifications"], "task notifications")
+        run_redis_fixture(image, manifests["async_tokio_consumer"], "async_tokio_consumer")
+        run_redis_fixture(image, manifests["async_smol_consumer"], "async_smol_consumer")
 
 
 def main(argv=None):

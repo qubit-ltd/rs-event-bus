@@ -21,6 +21,10 @@ TARGETS = {
         "rs-event-bus-redis/tests/fixtures/task_notifications/Cargo.toml", []),
     "ioc_application_consumer": (
         "rs-ioc/tests/fixtures/application_consumer_current/Cargo.toml", []),
+    "async_tokio_consumer": (
+        "rs-event-bus-redis/tests/fixtures/async_tokio_consumer/Cargo.toml", []),
+    "async_smol_consumer": (
+        "rs-event-bus-redis/tests/fixtures/async_smol_consumer/Cargo.toml", []),
 }
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -84,7 +88,7 @@ def load_manifest(path):
         if target.get("manifest") != expected_path or target.get("features") != expected_features:
             raise CompatibilityError(f"target {name} must use {expected_path} with {expected_features}")
     if set(target_names) != set(TARGETS) or len(target_names) != len(TARGETS):
-        raise CompatibilityError("manifest must contain exactly the three fixed downstream targets")
+        raise CompatibilityError("manifest must contain exactly the five fixed downstream targets")
     return config
 
 
