@@ -173,6 +173,8 @@ let orders = OrderService::new(bus.clone());
 
 本 core 版本为 0.21.0。历史发布的 Redis 0.7 与 task 0.10 面向 core 0.20；这一已发布组合不能作为 core 0.21 兼容证据。CI 的 `downstream-compatibility` job 会将三个真实消费者的固定提交（见 [`scripts/downstream-compatibility.json`](scripts/downstream-compatibility.json)）与本次待测 core 一起编译。要在本地运行，先按固定提交准备同级目录布局，将当前 core checkout 放在 `rs-event-bus`，然后执行 `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root /path/to/layout`。脚本检查锁定的依赖图并运行 `cargo check --locked --all-targets`；它不会抓取仓库或更新锁文件。失败会指出 checkout 缺失或版本不符、依赖图或锁文件问题，或下游编译不兼容。编译检查不会启动 Redis，也不验证运行时投递行为；已发布消费者仍需自身发布版本和集成验证证据。CodecRegistry 遇到重复载荷类型会报错；确实要替换时应显式调用 `replace`。provider 能确认的投递次数与 facade 本地重试次数分开记录；无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
+要验证这一固定源码组合的运行时行为，可准备相同目录布局并执行 `python3 -B scripts/check_downstream_behavior.py --ecosystem-root /path/to/layout`。此检查需要 Docker、可拉取[`固定 Redis 镜像`](scripts/downstream-redis-image.txt)的网络，以及专用 Docker daemon/context；运行期间，其他任务不得并发使用或改写 `redis:7-alpine` 本地标签。脚本会临时将该标签指向固定镜像，并在结束后恢复原镜像（若原标签不存在则删除临时标签）；task fixture 直接使用 digest 引用。检查范围包括同步和异步 Redis conformance，以及 task 通知。通过只验证这些固定 revision 和场景，不代表所有已发布组合兼容，也不覆盖 Sentinel、Cluster、TLS 或所有恢复故障。
+
 ## 延伸阅读
 
 - [用户手册](doc/user_guide.zh_CN.md)
