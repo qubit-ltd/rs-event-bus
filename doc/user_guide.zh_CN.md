@@ -624,6 +624,8 @@ let subscription = bus.subscribe(request, handler)?;
 
 处理函数可返回 `()` 或 `Result<(), DeliveryError>`。如果数据库写入失败，应返回错误，让库按订阅策略处理。`delivery.payload()` 取得业务数据，`delivery.event()` 可取得事件 ID 和附带信息，`delivery.context()` 可取得传递实现、订阅者以及当前是第几次尝试（`retry_attempt()`，从 1 开始）。重试可能带来重复处理，因此处理方应使用业务唯一键。下面以客户视图和审计两个订阅为例，给出三种最常用的配置。
 
+异步 future 清理有不同结果。已完成的 handler 或 middleware future 在析构时 panic，会被报告为 `DeliveryError::Handler` 并按订阅失败策略处理，不会当作成功投递。provider future 成功返回后在析构时 panic，则 publish 返回 `provider_panicked` SPI 错误，接纳效果按未知处理。已有的 handler/provider 错误或 poll panic 优先于清理 panic。取消 pending 异步操作没有结果返回通道：清理 panic 会被隔离，但不会返回终态错误或成功回执，也不会确认 delivery。这些保证要求 panic 使用 unwind；无法恢复 `panic=abort`、会 abort 的 panic hook 或展开期间的进一步 panic。
+
 ### 数据库写入失败后自动重试
 
 客户视图写入偶发超时时，让库自动重试。重试策略类型来自 `qubit-retry`，需要在应用中直接依赖 `qubit-retry = "0.26"`。下面的示例由编译 fixture 校验，确保所用类型与当前 crate 兼容：

@@ -98,8 +98,13 @@ outstanding 预算、通知发布器队列，全部有显式上限；超限时�
 
 **(P8) 失败必须可观测且被隔离。**
 用户代码（handler、filter、interceptor、error handler、retry rule、诊断观察者）
-和 provider SPI 调用全部经 `catch_unwind` 隔离；一个 panic 不会带崩 worker
-线程或整个 bus，而是转成 `DeliveryError`/`PublishError`/`Diagnostic`。
+和 provider SPI 调用会在存在错误返回通道的位置做隔离。poll panic 会转为
+`DeliveryError`、`PublishError` 或 `Diagnostic`；异步 handler future 完成后的析构
+panic 会转为 `DeliveryError::Handler`，成功完成的异步 provider future 析构 panic
+会转为 admission 未知的终态 `provider_panicked` SPI 错误。已有 handler/provider
+错误或 poll panic 优先于清理 panic。取消没有结果返回通道：future 析构会受保护，
+但不会返回终态错误或成功回执，也不会确认 delivery。这些保证仅适用于 unwind
+panic；进程 abort 时不能保证 worker 或 bus 存活。
 所有"无法返回给调用方"的失败（settlement 失败、接收 gap、投递终态失败）
 都通过 `observe_diagnostics` 发出。
 在 codec 和 provider SPI 错误转换边界，先构造包含消息的结构化错误，再正常析构捕获的

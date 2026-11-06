@@ -111,8 +111,15 @@ Count bounds do not bound native payload size, codec allocations, or time spent 
 
 **(P8) Failures are observable and isolated.**
 User code (handler, filter, interceptor, error handler, retry rule, diagnostic observer)
-and provider SPI calls go through `catch_unwind`. One panic does not take down a worker
-thread or the bus. It becomes a `DeliveryError`, `PublishError`, or `Diagnostic`.
+and provider SPI calls are isolated where the API has an error channel. Poll panics
+become a `DeliveryError`, `PublishError`, or `Diagnostic`; a panic while destroying a
+completed async handler future becomes `DeliveryError::Handler`, and a panic while
+destroying a successfully completed async provider future becomes a terminal
+`provider_panicked` SPI error with uncertain admission. A prior handler/provider error
+or poll panic keeps precedence over a cleanup panic. Cancellation has no result channel:
+future destruction is guarded, but no terminal error or success receipt is returned,
+and cancellation does not acknowledge a delivery. These guarantees apply to unwinding
+panics only; they do not keep a worker or bus alive under process abort.
 Failures that cannot be returned to the caller (settlement failure, receive gap,
 terminal delivery failure) are emitted through `observe_diagnostics`.
 At codec and provider SPI error-conversion boundaries, the captured panic payload

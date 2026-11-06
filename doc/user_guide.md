@@ -624,6 +624,8 @@ Also keep these limits in mind:
 
 A handler may return `()` or `Result<(), DeliveryError>`. Return an error when a database write fails, so the crate applies the subscription policy. `delivery.payload()` is the business data. `delivery.event()` carries the event id and attached information. `delivery.context()` carries the transport, the subscriber, and which attempt this is (`retry_attempt()`, starting at 1). Retries can deliver the same event more than once, so handlers should use a business unique key. The two subscriptions below show the three settings used most often.
 
+Async cleanup has separate outcomes. If a completed handler or middleware future panics while being destroyed, the facade reports `DeliveryError::Handler` and follows the configured failure policy; it does not treat the delivery as successful. If a provider future panics while being destroyed after returning success, publish returns a `provider_panicked` SPI failure with admission treated as uncertain. An earlier handler/provider error or poll panic takes precedence over a cleanup panic. Cancelling a pending async operation has no result channel: cleanup is contained, but no terminal error or success receipt is returned and no delivery is acknowledged. These guarantees require unwinding; they cannot recover `panic=abort`, an aborting panic hook, or a further panic during unwinding.
+
 ### Retry after a database write fails
 
 When the customer-view write occasionally times out, let the crate retry. Retry policy types come from `qubit-retry`, so the application depends on `qubit-retry = "0.26"` directly. The compiled fixture keeps this example checked against the version accepted by this crate:
