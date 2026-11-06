@@ -39,6 +39,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/downstream-ecosystem/cargo-target
     steps:
@@ -81,6 +82,37 @@ jobs:
                   raise SystemExit(f"{repository['name']}: checked out {actual}, expected {repository['revision']}")
           PY
 
+      - name: Check Docker and pull Redis fixture image
+        run: |
+          docker info
+          docker pull redis:7-alpine
+
+      - name: Record containers before downstream checks
+        run: docker ps -aq | sort -u > "$RUNNER_TEMP/downstream-docker-before.txt"
+
       - name: Check real downstream compatibility
         working-directory: downstream-ecosystem/rs-event-bus
         run: python3 -B scripts/check_downstream_compatibility.py --ecosystem-root "${{ github.workspace }}/downstream-ecosystem"
+
+      - name: Check real downstream behavior
+        working-directory: downstream-ecosystem/rs-event-bus
+        run: python3 -B scripts/check_downstream_behavior.py --ecosystem-root "${{ github.workspace }}/downstream-ecosystem"
+
+      - name: Clean containers created by this job
+        if: always()
+        shell: bash
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "Docker unavailable; no container cleanup possible"
+            exit 0
+          fi
+          before="$RUNNER_TEMP/downstream-docker-before.txt"
+          current="$RUNNER_TEMP/downstream-docker-current.txt"
+          docker ps -aq | sort -u > "$current"
+          if [[ -f "$before" ]]; then
+            comm -13 "$before" "$current" | while IFS= read -r container_id; do
+              [[ -n "$container_id" ]] || continue
+              docker logs --tail 200 "$container_id" || true
+              docker rm -f "$container_id"
+            done
+          fi
