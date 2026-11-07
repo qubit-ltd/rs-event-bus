@@ -528,6 +528,9 @@ impl PublisherPipeline {
         topic: &str,
         observers: &[Arc<DiagnosticObserver>],
     ) {
+        if observers.is_empty() {
+            return;
+        }
         let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
             return;
         };

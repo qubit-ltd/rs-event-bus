@@ -55,6 +55,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
 loom = "^0.7"
 
 [[bench]]
+name = "rejection_diagnostics"
+harness = false
+
+[[bench]]
 name = "local_scale"
 harness = false
 
