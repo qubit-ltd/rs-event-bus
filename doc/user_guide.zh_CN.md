@@ -1322,6 +1322,23 @@ cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_UR
 
 两个示例为 `String` 注册 `Utf8Codec`（`ContentType("text/plain")`），选择 `redis-streams`，传入 `redis.url` 和 `redis.namespace`，先以 `StartPosition::Earliest` 创建持久组 `billing`，再发布事件。同步示例输出 `consumed order event: order-42`；异步示例输出 `consumed order event: order-43`，看到这行消费成功信息后再按 Enter 结束。每次使用唯一 namespace，避免旧组和旧记录干扰结果；缺少 codec 会导致配置失败，Redis 连接失败不能算接纳。自动验证在 provider 工作副本先运行 `cargo build --locked --all-features --examples`，再运行 `cargo test --locked --all-features --test documentation_examples_tests`，由专用 `RedisServer` fixture 管理服务与 namespace。core 文档 fixture 不引入 Redis 依赖，外部源码只作为链接，不能绕过 checker 的根目录保护。
 
+### 用外部 watchdog 限制 conformance 执行时间
+
+`Strict` 会把缺少 provider fixture 报告为失败，但无法停止永不返回的 SPI 方法或 future poll。使用 `run_sync_with_profile_and_observer` 或 `run_async_with_profile_and_observer`，在每个已埋点操作开始前写出并 flush 进度。`ConformanceProgress` 提供稳定的 `case_id`、可选 `context` 和当前 `stage`；首次 factory 事件没有上下文。observer 在 runner 调用线程同步执行，应尽快返回；如果它自身阻塞，也只能由外层进程终止。
+
+先构建测试可执行文件，再从完整 checkout 用标准库 watchdog 包装某个精确 provider 测试：
+
+```bash
+cargo test --locked --features conformance --test conformance_watchdog_tests --no-run
+test_binary=$(find target/debug/deps -maxdepth 1 -type f -name 'conformance_watchdog_tests-*' -perm -u+x -print -quit)
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label core-fixtures -- \
+  "$test_binary" --exact test_external_watchdog_bounds_all_runner_stuck_modes_and_observes_entry --nocapture --test-threads=1
+```
+
+验证 provider 自己的集成测试时，将上例的 core fixture target 和测试名替换成该 provider 的测试可执行文件与精确测试名。
+
+`--` 后的命令作为子进程运行，其 stdout/stderr 直接继承。超时后 watchdog 输出 label、返回 124，并在 POSIX 下终止整个进程组；其他平台只 kill 并回收直接子进程。超时进程不会返回完整报告，也不会清理远端 provider 状态。fixture 应使用唯一资源名，并自行安排远端清理。进度日志说明最后开始执行的操作，不代表该操作已完成。
+
 ### 自己开发一种传递实现
 
 这一节面向**编写底层传递库**的开发者。如果你只是使用现成实现，上一节已经够用。一个新实现需要同时解决“怎样传递消息”和“怎样交给应用选择”，因此分成两层：
@@ -1615,6 +1632,52 @@ Redis 等持久 provider 的恢复步骤是：停止旧 handle，修复 codec/�
 ## 非阻塞通知入口
 
 如果产生消息的代码不应等待同步发布，可使用 `NotificationPublisher<T>`：它先把消息放进一个有容量上限的队列，再由一个后台线程逐条发布。默认最多排队 256 条。`try_publish(payload)` 只说明**成功入队**，并非已经发布；它不等待队列容量或 provider 工作，但会获取内部互斥锁，竞争该锁时调用可能等待。队列满时返回 `TryPublishError::Full(payload)`，关闭后返回 `Closed(payload)`，原数据会还给调用方。观察回调收到 `Published(receipt)`、`PublishFailed(error)` 或 `RequestFailed(error)`；这里的 `Published` 仍不表示处理函数完成。`stats()` 可查看计数。
+
+如果还要限制已接纳通知的累计声明重量，可使用 `WeightedNotificationPublisher<T>`。重量由应用估算，并在每次 `try_publish(payload, weight)` 时传入；worker 发布消息并执行 observer 期间（包括 worker 正在处理的一条）仍会占用预算。超过条数或重量上限时返回 `TryPublishError::Full(payload)`，并原样归还数据。`queue_full` 同时统计这两种拒绝。声明重量不是 RSS 上界，也不替代 provider 独立的 payload-weight 预算。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/weighted_notifications.rs -->
+```rust
+use std::io;
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::TryPublishError;
+use qubit_event_bus::WeightedNotificationPublisher;
+use qubit_event_bus::model::Topic;
+
+use crate::orders::events::OrderCreated;
+
+pub fn create_weighted_notifier(bus: EventBus) -> io::Result<WeightedNotificationPublisher<OrderCreated>> {
+    let topic = Topic::<OrderCreated>::new_static("orders.created");
+    WeightedNotificationPublisher::new(
+        bus,
+        topic,
+        NonZeroUsize::new(256).expect("item capacity is non-zero"),
+        NonZeroUsize::new(64 * 1024).expect("weight limit is non-zero"),
+        |outcome| match outcome {
+            NotificationOutcome::Published(receipt) => {
+                eprintln!("order notification receipt: {receipt:?}");
+            }
+            NotificationOutcome::PublishFailed(error) => {
+                eprintln!("order notification publish failed: {error}");
+            }
+            NotificationOutcome::RequestFailed(error) => {
+                eprintln!("order notification request failed: {error}");
+            }
+            _ => {}
+        },
+    )
+}
+
+pub fn enqueue_order(
+    notifier: &WeightedNotificationPublisher<OrderCreated>,
+    event: OrderCreated,
+) -> Result<(), TryPublishError<OrderCreated>> {
+    let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
+    notifier.try_publish(event, weight)
+}
+```
 
 ### 在启动时创建通知发布器
 

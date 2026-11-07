@@ -1544,6 +1544,35 @@ pub enum NotificationOutcome {
 }
 ```
 
+`WeightedNotificationPublisher<T>` reuses the same worker and lifecycle while
+requiring an application-declared positive weight at admission:
+
+```rust
+pub struct WeightedNotificationPublisher<T: Send + Sync + 'static> { ... }
+impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
+    pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        max_outstanding_weight: NonZeroUsize, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn with_publish_options<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        max_outstanding_weight: NonZeroUsize, options: PublishOptions<T>, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn try_publish(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>>;
+    pub fn stats(&self) -> NotificationStatsSnapshot;
+    pub fn close(&self) -> io::Result<()>;
+    pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
+}
+```
+
+The existing `NotificationPublisher` remains item-count-only. The weighted
+variant rejects an item with `Full(payload)` when either the waiting queue is
+full, the item's weight exceeds the limit, or accepted outstanding weight would
+exceed the limit. Weight remains reserved while the worker publishes and runs
+the observer, so the budget includes one in-flight item in addition to the
+waiting queue. Reservation guards release exactly once on ordinary completion,
+errors, unwind, and queue destruction. `queue_full` counts both item-count and
+weight rejections. This declared weight is independent from the provider's
+`PublishOptions::native_payload_weight` fanout budget and is not an RSS bound.
+
 - **A bounded `sync_channel(capacity)` and one worker thread named `event-notification-publisher`.**
   The worker builds `PublishRequest::new(topic.clone(), payload)` and calls `bus.publish`,
   so facade semantics (interceptors, retry, receipts) still apply. They run on the background thread.
@@ -1799,6 +1828,29 @@ selection/creation, complete capability behavior, non-zero receive timeout,
 Gap delivery, foreign-token ownership, deeper side effects such as absence of
 extra deliveries, error context and sources, and sensitive-data exposure. A
 hook being called does not establish these separate properties.
+
+The runner also exposes `run_sync_with_profile_and_observer` and
+`run_async_with_profile_and_observer`. Their synchronous observer receives a
+`ConformanceProgress` immediately before each potentially blocking operation;
+it records the stable operation `stage`, `case_id`, and optional
+`ConformanceCaseContext`. The initial factory event has no context. The
+observer should write and flush progress to stderr or a separate file; it is
+not a cancellation boundary and can itself hang. To bound a provider that
+blocks in a synchronous call or async poll, build the test executable first,
+then run the selected test in an external process:
+
+```bash
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 60 --label redis-sync -- \
+  target/debug/deps/conformance_watchdog_tests-<hash> --exact <test-name> --nocapture --test-threads=1
+```
+
+The watchdog uses a monotonic deadline, inherits child stdout/stderr, returns
+124 on timeout, and prints the label and last flushed progress (which identifies
+an operation that had started but not completed). POSIX runs the test in a new
+process group and kills/reaps the group. Other platforms kill and reap only the
+direct child. A timed-out run produces no complete conformance report and does
+not clean remote provider state; fixtures still need unique resource names and
+their own cleanup.
 
 ### 15.4 Documentation checks
 

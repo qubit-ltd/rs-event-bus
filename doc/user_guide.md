@@ -1320,6 +1320,23 @@ cargo run --locked --all-features --example async_orders -- "$EVENT_BUS_REDIS_UR
 
 Each example registers `Utf8Codec` for `String` with `ContentType("text/plain")`, selects `redis-streams`, and supplies `redis.url` / `redis.namespace`. It creates durable group `billing` at `StartPosition::Earliest` before publishing. The sync example prints `consumed order event: order-42`; the async example prints `consumed order event: order-43`, then the user presses Enter to stop it. Wait for that delivery line before pressing Enter. Namespaces must be unique so an old group or record cannot affect the result. A missing codec fails configuration; a Redis connection failure is not admission. For automated verification, first run `cargo build --locked --all-features --examples`, then `cargo test --locked --all-features --test documentation_examples_tests` in the provider checkout: its disposable `RedisServer` fixture owns the server and namespace. Core documentation fixtures do not depend on Redis; these external files are links, never source-checker path exceptions.
 
+### Bound a conformance run with an external watchdog
+
+`Strict` reports missing provider fixtures as failures; it cannot stop a SPI method or a future poll that never returns. Use `run_sync_with_profile_and_observer` or `run_async_with_profile_and_observer` to write a flushed progress line immediately before each instrumented operation. A `ConformanceProgress` gives the stable `case_id`, optional `context`, and current `stage`. The first factory event has no context. The observer runs synchronously, so keep it short; a blocked observer is also bounded only by the outer process.
+
+Build the test executable before starting its timeout. Then wrap one exact provider test in the standard-library watchdog from a full checkout:
+
+```bash
+cargo test --locked --features conformance --test conformance_watchdog_tests --no-run
+test_binary=$(find target/debug/deps -maxdepth 1 -type f -name 'conformance_watchdog_tests-*' -perm -u+x -print -quit)
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label core-fixtures -- \
+  "$test_binary" --exact test_external_watchdog_bounds_all_runner_stuck_modes_and_observes_entry --nocapture --test-threads=1
+```
+
+For a provider's own integration target, use its built test executable and the exact provider test name in place of the core fixture target above.
+
+The command after `--` is launched as a child with stdout and stderr inherited. On timeout the watchdog prints its label, returns 124, and kills the POSIX process group; on other platforms it kills and reaps the direct child only. A timed-out process does not return a complete report or clean remote provider state. Give fixtures unique resource names and arrange their own remote cleanup. Progress logs describe the last operation that started, not an operation that completed.
+
 ### Write a transport yourself
 
 This section is for developers who **write the transport library**. If you only use an existing implementation, the previous section is enough. A new implementation has to both deliver messages and make itself selectable, so it has two layers:
@@ -1615,6 +1632,52 @@ For Redis or another durable provider, stop the old handle, fix the codec/versio
 ## Non-blocking notification entry
 
 When the code that produces a message cannot wait for a synchronous publish, use `NotificationPublisher<T>`. It places the message on a bounded queue, and a background thread publishes each item. The default queue holds 256 items. `try_publish(payload)` means only that the item **was enqueued**, not that it was published. It does not wait for queue capacity or provider work, but it acquires an internal mutex and can wait under mutex contention. A full queue returns `TryPublishError::Full(payload)`. After close, the call returns `Closed(payload)`. In both cases the original value is given back. The observer callback receives `Published(receipt)`, `PublishFailed(error)`, or `RequestFailed(error)`. `Published` still does not mean the handler finished. `stats()` exposes the counters.
+
+Use `WeightedNotificationPublisher<T>` when both the waiting item count and the total declared weight of accepted notifications need limits. The weight is an application estimate passed to each `try_publish(payload, weight)` call. It remains reserved while the worker publishes the item and invokes the observer, including the worker's in-flight item. A request that would exceed either limit returns `TryPublishError::Full(payload)` and preserves the original value. `queue_full` includes both kinds of rejection. This estimate does not bound RSS or replace the provider's separate outstanding payload-weight budget.
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/weighted_notifications.rs -->
+```rust
+use std::io;
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBus;
+use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::TryPublishError;
+use qubit_event_bus::WeightedNotificationPublisher;
+use qubit_event_bus::model::Topic;
+
+use crate::orders::events::OrderCreated;
+
+pub fn create_weighted_notifier(bus: EventBus) -> io::Result<WeightedNotificationPublisher<OrderCreated>> {
+    let topic = Topic::<OrderCreated>::new_static("orders.created");
+    WeightedNotificationPublisher::new(
+        bus,
+        topic,
+        NonZeroUsize::new(256).expect("item capacity is non-zero"),
+        NonZeroUsize::new(64 * 1024).expect("weight limit is non-zero"),
+        |outcome| match outcome {
+            NotificationOutcome::Published(receipt) => {
+                eprintln!("order notification receipt: {receipt:?}");
+            }
+            NotificationOutcome::PublishFailed(error) => {
+                eprintln!("order notification publish failed: {error}");
+            }
+            NotificationOutcome::RequestFailed(error) => {
+                eprintln!("order notification request failed: {error}");
+            }
+            _ => {}
+        },
+    )
+}
+
+pub fn enqueue_order(
+    notifier: &WeightedNotificationPublisher<OrderCreated>,
+    event: OrderCreated,
+) -> Result<(), TryPublishError<OrderCreated>> {
+    let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
+    notifier.try_publish(event, weight)
+}
+```
 
 ### Create the notification publisher at startup
 

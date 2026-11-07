@@ -18,13 +18,14 @@ REPUBLISH = "tests/fixtures/documentation_consumer/src/republish_action.rs"
 RETRY = "tests/fixtures/documentation_consumer/src/retry_policy.rs"
 README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
+WEIGHTED = "tests/fixtures/documentation_consumer/src/weighted_notifications.rs"
 DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
 REQUIRED = {
     LIB: {LOCAL},
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
     "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
     "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
 }

@@ -20,3 +20,4 @@ pub mod receipt_safety;
 pub mod republish_action;
 pub mod retry_policy;
 pub mod run_state_monitor;
+pub mod weighted_notifications;

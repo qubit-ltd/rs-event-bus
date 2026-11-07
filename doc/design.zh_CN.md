@@ -1429,6 +1429,26 @@ pub enum NotificationOutcome {
 }
 ```
 
+`WeightedNotificationPublisher<T>` 复用相同的 worker 和生命周期，在接纳时要求调用方声明正重量：
+
+```rust
+pub struct WeightedNotificationPublisher<T: Send + Sync + 'static> { ... }
+impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
+    pub fn new<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        max_outstanding_weight: NonZeroUsize, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn with_publish_options<F>(bus: EventBus, topic: Topic<T>, capacity: NonZeroUsize,
+        max_outstanding_weight: NonZeroUsize, options: PublishOptions<T>, observer: F) -> io::Result<Self>
+    where F: Fn(NotificationOutcome) + Send + Sync + 'static;
+    pub fn try_publish(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>>;
+    pub fn stats(&self) -> NotificationStatsSnapshot;
+    pub fn close(&self) -> io::Result<()>;
+    pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
+}
+```
+
+现有 `NotificationPublisher` 仍只限制条数。加权版本在等待队列已满、单项重量超过上限或接纳后总重量会超限时返回 `Full(payload)`。worker 发布通知并运行 observer 期间仍持有重量预留，因此预算包含一条正在处理的通知，以及等待队列中的通知。RAII 预留在正常完成、错误、unwind 和队列销毁时恰好释放一次。`queue_full` 同时统计条数和重量拒绝。这里声明的重量与 provider 的 `PublishOptions::native_payload_weight` fanout 预算相互独立，也不是 RSS 上限。
+
 设计要点：
 
 - **有界 `sync_channel(capacity)` + 单 worker 线程 `event-notification-publisher`**：
@@ -1643,6 +1663,21 @@ durability。全局 hook 结果和越界索引没有组合上下文。
 Provider 作者还需自行检查 descriptor 与 provider 选择/创建、完整能力行为、非零 receive
 timeout、Gap 投递、外来 token 归属、更深层副作用（例如没有额外投递）、错误上下文与 source，
 以及敏感数据暴露。hook 被调用本身不证明这些独立属性。
+
+runner 还提供 `run_sync_with_profile_and_observer` 和
+`run_async_with_profile_and_observer`。在每个可能阻塞的操作开始前，它们同步通知 observer，
+传入稳定英文操作名 `stage`、`case_id` 和可选的 `ConformanceCaseContext`；首次 factory 事件没有上下文。
+observer 应将进度写入 stderr 或独立文件并立即 flush；它不是取消边界，自身也可能挂起。若要限制同步调用或
+async poll 阻塞 provider 的时间，先构建测试可执行文件，再从外部进程运行选定测试：
+
+```bash
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 60 --label redis-sync -- \
+  target/debug/deps/conformance_watchdog_tests-<hash> --exact <test-name> --nocapture --test-threads=1
+```
+
+watchdog 使用 monotonic deadline，继承子进程 stdout/stderr，超时返回 124，并输出 label 和最后一次已 flush 的进度
+（标识已经开始但未完成的操作）。POSIX 下测试在独立进程组运行，超时时 kill 并回收整个进程组；其他平台只 kill 并 wait
+直接子进程。超时不会生成完整 conformance 报告，也不会清理远端 provider 状态；fixture 仍须使用唯一资源名并自行清理。
 
 ### 15.4 文档验证
 

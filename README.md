@@ -166,9 +166,9 @@ let orders = OrderService::new(bus.clone());
 - A built-in bounded-queue, in-process provider (`LocalEventBusProvider`).
 - Facade-level interception, retry through the caller's direct `qubit-retry` dependency, ACK/NACK, dead-letter handling, ordering, diagnostics, and lifecycle controls where supported by provider capabilities.
 - Panic-contained codec callbacks, structured codec errors, and shared encoded payload bytes across provider publish attempts.
-- Optional bounded `NotificationPublisher<T>` admits notifications without waiting for queue capacity or provider work; internal mutex contention can still make admission wait. Provider admission receipts do not mean handlers have completed.
+- Optional bounded `NotificationPublisher<T>` and `WeightedNotificationPublisher<T>` admit notifications with item-count or cumulative declared-weight limits; internal mutex contention can still make admission wait. Provider admission receipts do not mean handlers have completed.
 - `EventBus::request_shutdown` returns a reusable ticket for nonblocking shutdown observation; observer timeouts do not cancel cleanup ([shutdown guide](doc/user_guide.md#request-shutdown-without-waiting)).
-- Optional `conformance` feature with a report API for provider-specific SPI contract checks.
+- Optional `conformance` feature with a report API, per-operation progress observer, and external process watchdog for provider-specific SPI contract checks.
 
 The crate does not itself include Tokio, crossbeam, flume, RabbitMQ, Kafka, or Redis adapters. It does not promise durable or cross-process delivery, transactional batches, or exactly-once processing. A backend's stronger guarantees remain provider-specific and must be documented by that backend.
 
