@@ -52,13 +52,23 @@ impl LocalQueueState {
     /// # Parameters
     /// - `event`: event appended behind the current lane contents.
     pub(in crate::local) fn enqueue_back(&mut self, event: LocalEvent) {
+        self.enqueue_back_at(event, Instant::now());
+    }
+
+    /// Adds an event to its lane tail using the supplied monotonic time to
+    /// classify a newly scheduled lane head.
+    ///
+    /// # Parameters
+    /// - `event`: event appended behind the current lane contents.
+    /// - `now`: monotonic time used when scheduling an empty lane.
+    fn enqueue_back_at(&mut self, event: LocalEvent, now: Instant) {
         let key = event.ordering_key.clone();
         let lane = self.lanes.entry(key.clone()).or_default();
         let was_empty = lane.events.is_empty();
         lane.events.push_back(event);
         self.pending_count += 1;
         if was_empty {
-            self.schedule_lane_head(key);
+            self.schedule_lane_head_at(key, now);
         }
     }
 
@@ -68,10 +78,20 @@ impl LocalQueueState {
     /// # Parameters
     /// - `event`: event restored ahead of its same-key successors.
     pub(in crate::local) fn enqueue_front(&mut self, event: LocalEvent) {
+        self.enqueue_front_at(event, Instant::now());
+    }
+
+    /// Restores an event at its lane front using the supplied monotonic time
+    /// to classify the lane head.
+    ///
+    /// # Parameters
+    /// - `event`: event restored ahead of its same-key successors.
+    /// - `now`: monotonic time used when scheduling the lane head.
+    fn enqueue_front_at(&mut self, event: LocalEvent, now: Instant) {
         let key = event.ordering_key.clone();
         self.lanes.entry(key.clone()).or_default().events.push_front(event);
         self.pending_count += 1;
-        self.schedule_lane_head(key);
+        self.schedule_lane_head_at(key, now);
     }
 
     /// Returns the total number of queued events across all lanes.
@@ -172,6 +192,7 @@ impl LocalQueueState {
     ///
     /// # Panics
     /// Panics if scheduling loses the lane before its delayed entry is stored.
+    #[allow(dead_code)]
     pub(in crate::local) fn schedule_lane_head(&mut self, key: QueueKey) {
         self.schedule_lane_head_at(key, Instant::now());
     }
@@ -398,3 +419,6 @@ mod tests {
         assert_eq!(None, pop_id(&mut state, t250));
     }
 }
+
+#[cfg(test)]
+mod delayed_state_machine_tests;
