@@ -42,7 +42,7 @@ FILE_HEADER = (
     "//    Licensed under the Apache License, Version 2.0.\n"
     "// =============================================================================\n"
 )
-DOC_SHA = "a64ed6b1ff12915529a6dc926ff69401fa3dd17b"
+DOC_SHA = "6e8db1c737e4cd9d98acccce9631a6f5a2690ca1"
 DOC_LINKS = (
     ("User guide", "doc/user_guide.md"),
     ("用户指南", "doc/user_guide.zh_CN.md"),
