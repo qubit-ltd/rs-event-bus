@@ -9,3 +9,5 @@
 
 pub(crate) mod panic_payload;
 pub(crate) mod sync;
+#[cfg(test)]
+pub(crate) mod test_wait_probe;

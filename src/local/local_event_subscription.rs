@@ -110,6 +110,8 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             }
             let delay = state.next_ready_delay(now);
             let wait_for = delay.filter(|delay| *delay < remaining).unwrap_or(remaining);
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("local_receive");
             let (next, result) = self
                 .queue
                 .ready

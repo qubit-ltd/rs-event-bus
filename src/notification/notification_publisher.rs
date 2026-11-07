@@ -369,6 +369,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 None => changed.wait(state).unwrap_or_else(PoisonError::into_inner),
                 Some(limit) => {
                     let remaining = remaining_timeout(limit, started)?;
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("notification_close");
                     let (next_state, _) = changed
                         .wait_timeout(state, remaining)
                         .unwrap_or_else(PoisonError::into_inner);

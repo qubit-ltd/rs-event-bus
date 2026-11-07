@@ -158,6 +158,8 @@ impl EventBusSpi for LocalEventBusSpi {
             if state.change_version != version {
                 continue;
             }
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("topic_idle");
             let (_state, result) = self
                 .shared
                 .changed
@@ -422,6 +424,8 @@ impl EventBusSpi for LocalEventBusSpi {
                     if state.change_version != version {
                         continue;
                     }
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("graceful_shutdown");
                     let (_state, result) = self
                         .shared
                         .changed
