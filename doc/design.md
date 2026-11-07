@@ -2180,11 +2180,9 @@ pub fn settle_without_borrowing_token<'a>(
 }
 ```
 
-## Validate a single crate or the coordinated ecosystem
+## Validate this crate
 
-Run repository scripts from the root of a full Git checkout; crate archives do not include `scripts/` or `.infra/`. `./scripts/project-ci-check.sh` is a project helper gate: it runs the Python regressions, Cargo package-list and performance-evidence checks, then runs `check_event_bus_graph.py`. The graph checker, linked here with its authoritative `REPOSITORIES` and `FIXTURES` inputs, [REPOSITORIES and FIXTURES](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/check_event_bus_graph.py), defaults to metadata for the current core crate. That standalone graph mode does not need downstream checkouts. With `--ecosystem-root <repos-dir>`, it validates the five-repository layout and the declared fixtures. Metadata supplements each project's CI; it does not replace compilation, runtime tests, or project CI.
-
-The coordinated downstream contract pins the core, Redis provider, task, IOC, and transitive repositories in `scripts/downstream-compatibility.json`. It has five compile targets: Redis, task notifications, the current IOC consumer, and standalone Tokio and Smol-compatible async consumers. The async consumers use independent Cargo workspaces with default features disabled and only the provider's `async` feature enabled. The locked compatibility gate validates metadata and dependency provenance before checking every target. The behavior gate retains both Redis conformance tests and task notifications, and runs each async consumer with a separate temporary Redis container, dynamic localhost port, readiness check, and cleanup. These checks cover only the pinned source revisions; historical Redis 0.7 and task 0.10 releases target core 0.20, and local path validation does not establish compatibility for published releases.
+Run repository scripts from the root of a full Git checkout. `./scripts/project-ci-check.sh` runs this crate’s Python regressions, package-list checks, performance-evidence checks, and locked Cargo metadata validation. The standard project CI is `./.infra/bin/ci-check.sh`.
 
 ## Local capacity diagnostics
 

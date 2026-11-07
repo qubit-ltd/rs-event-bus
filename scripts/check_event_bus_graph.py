@@ -1,35 +1,9 @@
 """Check resolved event-bus release dependency graphs."""
 
-import argparse
 import json
 from pathlib import Path
 import subprocess
 import sys
-
-REPOSITORIES = ("rs-event-bus", "rs-event-bus-redis", "rs-task", "rs-ioc",
-                "rs-execution-services")
-FIXTURES = (
-    "rs-event-bus/tests/fixtures/discovery_provider",
-    "rs-event-bus/tests/fixtures/discovery_consumer",
-    "rs-event-bus/tests/fixtures/documentation_consumer",
-    "rs-event-bus-redis/tests/fixtures/business_consumer",
-    "rs-event-bus-redis/tests/fixtures/async_tokio_consumer",
-    "rs-event-bus-redis/tests/fixtures/async_smol_consumer",
-    "rs-event-bus-redis/tests/fixtures/task_notifications",
-    "rs-task/tests/fixtures/doc-examples",
-    "rs-ioc/tests/fixtures/application_consumer_current",
-    "rs-execution-services/tests/fixtures/ioc_application_consumer",
-)
-NON_BUS_CONSUMERS = frozenset((
-    "rs-ioc",
-    "rs-execution-services",
-))
-
-
-def requires_bus(manifest, root):
-    """Require core only for roots and fixtures that consume the event bus."""
-    return manifest.parent.relative_to(root).as_posix() not in NON_BUS_CONSUMERS
-
 
 def validate_graph(graph, *, require_bus, expected_core=None):
     """Validate a resolved cargo metadata graph."""
@@ -64,46 +38,21 @@ def validate_graph(graph, *, require_bus, expected_core=None):
             raise ValueError(f"expected local core {expected}, got {package['id']} at {actual}")
 
 
-def layout_manifests(root):
-    """Return controlled-layout manifests after verifying repository presence."""
-    paths = [root / name / "Cargo.toml" for name in REPOSITORIES]
-    paths.extend(root / name / "Cargo.toml" for name in FIXTURES)
-    missing = [str(path) for path in paths if not path.is_file()]
-    if missing:
-        raise ValueError("controlled layout is missing manifests: " + ", ".join(missing))
-    return paths
-
-
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ecosystem-root", type=Path,
-                        help="explicit five-repository layout; all roots and fixtures are required")
-    args = parser.parse_args()
     project = Path(__file__).absolute().parents[1]
-    if args.ecosystem_root is None:
-        manifests = [project / "Cargo.toml"]
-        expected_core = project
-        print("event-bus graph gate: standalone core package", flush=True)
-    else:
-        # Preserve symlink layout spelling when handing manifests to Cargo.
-        root = args.ecosystem_root.absolute()
-        manifests = layout_manifests(root)
-        expected_core = root / "rs-event-bus"
-        print("event-bus graph gate: explicit five-repository layout", flush=True)
-    for manifest in manifests:
-        command = ["cargo", "metadata", "--locked", "--all-features",
-                   "--format-version", "1", "--manifest-path", str(manifest)]
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr, end="")
-        require_bus = (True if args.ecosystem_root is None
-                       else requires_bus(manifest, root))
-        try:
-            validate_graph(json.loads(result.stdout), require_bus=require_bus,
-                           expected_core=expected_core)
-        except ValueError as error:
-            raise ValueError(f"{manifest}: {error}") from error
-        print(f"event-bus graph gate: passed {manifest}", flush=True)
+    manifest = project / "Cargo.toml"
+    print("event-bus graph gate: standalone core package", flush=True)
+    command = ["cargo", "metadata", "--locked", "--all-features",
+               "--format-version", "1", "--manifest-path", str(manifest)]
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="")
+    try:
+        validate_graph(json.loads(result.stdout), require_bus=True,
+                       expected_core=project)
+    except ValueError as error:
+        raise ValueError(f"{manifest}: {error}") from error
+    print(f"event-bus graph gate: passed {manifest}", flush=True)
 
 
 if __name__ == "__main__":

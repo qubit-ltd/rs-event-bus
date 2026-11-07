@@ -54,10 +54,5 @@ is acknowledged by this disposal.
 | `python3 -B scripts/check_documentation_examples.py` | Passed. |
 | `python3 -B scripts/test_documentation_examples.py` | Passed (48 cases). |
 | `python3 -B scripts/check_documentation_examples.py --check-snapshot-content` | Passed after committing the bilingual docs and updating all four links to snapshot commit `cd1ad429d2d96d7905215d4c37577431688a786d`. An initial abbreviated SHA was rejected by the checker and corrected to the full SHA. |
-| `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root /data/working/qubit/rust-common/.worktrees/rs-event-bus-downstream-20261106` | Passed for Redis adapter, task notifications, and IoC application consumer at their fixed revisions. |
-| Same compatibility command with a generated untracked probe in `rs-task` | Rejected before Cargo with `repository rs-task has local changes`; the probe was removed and the checkout returned clean. |
-| `python3 -B scripts/check_downstream_behavior.py --ecosystem-root /data/working/qubit/rust-common/.worktrees/rs-event-bus-downstream-20261106` | Blocked: Docker CLI reached the default context, but server access was denied at `/var/run/docker.sock` (`Docker command failed (exit 1): docker info`). Redis runtime behavior remains unverified in this environment. |
-
 `coverage-cfg-clippy` was skipped by the repository CI configuration because
-`coverage_cfg_clippy` is disabled there. No Redis runtime behavior pass is
-claimed because this environment cannot access a Docker daemon.
+`coverage_cfg_clippy` is disabled there.

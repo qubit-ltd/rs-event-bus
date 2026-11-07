@@ -35,7 +35,7 @@ pub(in crate::local) struct LocalEvent {
     pub(in crate::local) timestamp: SystemTime,
     /// Application and facade-managed metadata.
     pub(in crate::local) headers: Headers,
-    /// Optional key retained for downstream delivery context.
+    /// Optional key retained for delivery context.
     pub(in crate::local) ordering_key: Option<OrderingKey>,
     /// Declared copy weight in bytes, normalized to zero when budgeting is
     /// disabled.

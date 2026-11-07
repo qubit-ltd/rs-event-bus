@@ -176,9 +176,7 @@ Both local providers bound queued and unsettled events per subscription (default
 
 Publication failures carry the original event ID, a structured cause, and `PublishEffect` in `PublishFailure`. The default `DuplicateRiskPolicy::Forbid` stops automatic retries when admission may have happened, even if a custom retry rule asks to continue. Encoded receivers validate size and exact content type/schema before decoding. Incompatible metadata, oversized input, or codec panic stops that subscription; repair the configuration or codec and create a new subscription to recover durable work.
 
-Run repository scripts and `.infra` commands from the root of a full Git checkout; crate archives do not include these tools. This core release is 0.21.0. The historical Redis 0.7 and task 0.10 releases target core 0.20, so they do not establish compatibility with core 0.21. The CI `downstream-compatibility` job checks five fixed target manifests from [`scripts/downstream-compatibility.json`](https://github.com/qubit-ltd/rs-event-bus/blob/6bf2a4eccc0ccc674cc3fe931ea1cb68ce5ef11f/scripts/downstream-compatibility.json): Redis, task notifications, the current IOC application consumer, and standalone Tokio and Smol-compatible async consumers. The last two disable default features and enable only the provider's `async` feature; their independent Cargo workspaces keep that feature combination explicit. Prepare a same-level checkout layout at the pinned revisions, place the core checkout under test at `rs-event-bus`, and run `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root /path/to/layout`. Downstream checkouts must be clean; the core checkout may contain changes. The script checks locked Cargo metadata and dependency provenance before running `cargo check --locked --all-targets` for each target. It does not fetch repositories or update lockfiles. Passing applies to these fixed source revisions and compile targets; it is not release evidence for every published consumer combination. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts remain separate from facade retries and unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
-
-To exercise runtime behavior for the fixed source combination, prepare the same layout and run `python3 -B scripts/check_downstream_behavior.py --ecosystem-root /path/to/layout`. The fixed downstream checkouts must be clean, and the core checkout under test may contain changes. This check requires Docker, network access to pull the pinned Redis image in [`scripts/downstream-redis-image.txt`](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/downstream-redis-image.txt), and a dedicated Docker daemon or context whose `redis:7-alpine` tag is not used concurrently. The script temporarily assigns that tag to the pinned image for the Redis conformance tests and restores or removes the tag afterward. It runs synchronous and asynchronous Redis conformance, task notifications, and the Tokio and Smol-compatible async consumers. Each of the three executable fixtures uses its own temporary Redis container with a dynamic localhost port, readiness check, and cleanup. These scenarios exercise real Redis behavior for the fixed revisions; they do not establish compatibility for every published combination or cover Sentinel, Cluster, TLS, or every recovery failure.
+Run repository scripts and `.infra` commands from the root of a full Git checkout; crate archives do not include these tools. This crate is version 0.21.0. Codec registration rejects duplicate payload types; use `replace` when replacement is intentional. Provider delivery attempts remain separate from facade retries and unknown when the provider cannot establish them. See the [user guide](doc/user_guide.md) for capabilities, recovery, and limits.
 
 ## Learn more
 
@@ -209,8 +207,8 @@ cargo test --all-features
 # Project CI checks
 ./.infra/bin/ci-check.sh
 
-# Optional coordinated five-repository graph validation
-./scripts/project-ci-check.sh --ecosystem-root /path/to/rust-common
+# Project-specific checks for this crate
+./scripts/project-ci-check.sh
 
 # Check code coverage
 ./.infra/bin/coverage.sh

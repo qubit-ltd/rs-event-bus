@@ -60,12 +60,6 @@ class ProjectHookGraphTests(unittest.TestCase):
             self.assertIn("hook-marker", default.stdout)
             self.assertEqual(record.read_bytes(), b"")
 
-            arguments = ["--ecosystem-root", "/tmp/path with spaces/ecosystem"]
-            forwarded = invoke(arguments)
-            self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
-            self.assertIn("hook-marker", forwarded.stdout)
-            self.assertEqual(record.read_bytes().decode().rstrip("\0").split("\0"), arguments)
-
             failing = invoke(exit_code="23")
             self.assertEqual(failing.returncode, 23, failing.stderr)
             self.assertIn("hook-marker", failing.stdout)

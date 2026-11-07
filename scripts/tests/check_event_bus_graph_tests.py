@@ -1,8 +1,7 @@
-"""Regression tests for the event-bus release graph gate."""
+"""Regression tests for the standalone crate dependency graph gate."""
 
 import importlib.util
 from pathlib import Path
-import tempfile
 import unittest
 
 SCRIPT = Path(__file__).parents[1] / "check_event_bus_graph.py"
@@ -12,100 +11,37 @@ spec.loader.exec_module(gate)
 
 
 def metadata(*versions):
-    packages = [{"id": "consumer", "name": "consumer", "version": "1.0.0"}]
-    nodes = [{"id": "consumer", "dependencies": []}]
+    packages = [{"id": "crate", "name": "crate", "version": "1.0.0"}]
+    nodes = [{"id": "crate", "dependencies": []}]
     for index, version in enumerate(versions):
         identity = f"bus-{index}"
-        packages.append({"id": identity, "name": "qubit-event-bus",
-                         "version": version, "source": None,
-                         "manifest_path": "/layout/rs-event-bus/Cargo.toml"})
+        packages.append({"id": identity, "name": "qubit-event-bus", "version": version,
+                         "source": None, "manifest_path": "/project/Cargo.toml"})
         nodes[0]["dependencies"].append(identity)
         nodes.append({"id": identity, "dependencies": []})
-    return {"packages": packages, "workspace_members": ["consumer"],
+    return {"packages": packages, "workspace_members": ["crate"],
             "resolve": {"nodes": nodes}}
 
 
 class GraphTests(unittest.TestCase):
-    def test_accepts_new_minor(self):
-        gate.validate_graph(metadata("0.21.0"), require_bus=True)
+    def test_accepts_current_minor(self):
+        gate.validate_graph(metadata("0.21.0"), require_bus=True, expected_core=Path("/project"))
 
     def test_rejects_old_minor(self):
         with self.assertRaisesRegex(ValueError, "0.21"):
             gate.validate_graph(metadata("0.20.1"), require_bus=True)
 
-    def test_rejects_mixed_old_and_new_minor(self):
+    def test_rejects_duplicate_core_packages(self):
         with self.assertRaisesRegex(ValueError, "multiple"):
-            gate.validate_graph(metadata("0.20.1", "0.21.0"), require_bus=True)
+            gate.validate_graph(metadata("0.21.0", "0.21.0"), require_bus=True)
 
-    def test_controlled_layout_covers_exactly_the_ten_event_bus_consumers(self):
-        expected = (
-            "rs-event-bus/tests/fixtures/discovery_provider",
-            "rs-event-bus/tests/fixtures/discovery_consumer",
-            "rs-event-bus/tests/fixtures/documentation_consumer",
-            "rs-event-bus-redis/tests/fixtures/business_consumer",
-            "rs-event-bus-redis/tests/fixtures/async_tokio_consumer",
-            "rs-event-bus-redis/tests/fixtures/async_smol_consumer",
-            "rs-event-bus-redis/tests/fixtures/task_notifications",
-            "rs-task/tests/fixtures/doc-examples",
-            "rs-ioc/tests/fixtures/application_consumer_current",
-            "rs-execution-services/tests/fixtures/ioc_application_consumer",
-        )
-        self.assertEqual(gate.FIXTURES, expected)
-        self.assertEqual(len(set(gate.FIXTURES)), 10)
-
-    def test_controlled_layout_requires_each_new_consumer_manifest(self):
-        added = (
-            "rs-event-bus-redis/tests/fixtures/async_tokio_consumer",
-            "rs-event-bus-redis/tests/fixtures/async_smol_consumer",
-            "rs-event-bus-redis/tests/fixtures/task_notifications",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in (*gate.REPOSITORIES, *gate.FIXTURES):
-                manifest = root / name / "Cargo.toml"
-                manifest.parent.mkdir(parents=True, exist_ok=True)
-                manifest.write_text("[workspace]\n", encoding="utf-8")
-            self.assertEqual(len(gate.layout_manifests(root)), 15)
-            for name in added:
-                with self.subTest(consumer=name):
-                    manifest = root / name / "Cargo.toml"
-                    manifest.unlink()
-                    try:
-                        with self.assertRaises(ValueError) as error:
-                            gate.layout_manifests(root)
-                        self.assertIn(str(manifest), str(error.exception))
-                    finally:
-                        manifest.write_text("[workspace]\n", encoding="utf-8")
-
-    def test_non_bus_fixtures_do_not_require_bus(self):
-        root = Path("/layout")
-        for name in ("rs-ioc", "rs-execution-services"):
-            with self.subTest(fixture=name):
-                self.assertFalse(gate.requires_bus(root / name / "Cargo.toml", root))
-        for name in gate.FIXTURES:
-            with self.subTest(fixture=name):
-                self.assertTrue(gate.requires_bus(root / name / "Cargo.toml", root))
-
-    def test_rejects_duplicate_registry_and_path_packages(self):
-        graph = metadata("0.21.0", "0.21.0")
-        graph["packages"][2]["source"] = "registry+https://example.invalid"
-        with self.assertRaisesRegex(ValueError, "multiple"):
-            gate.validate_graph(graph, require_bus=True)
-
-    def test_rejects_registry_in_controlled_layout(self):
+    def test_rejects_registry_core_package(self):
         graph = metadata("0.21.0")
         graph["packages"][1]["source"] = "registry+https://example.invalid"
         with self.assertRaisesRegex(ValueError, "local"):
-            gate.validate_graph(graph, require_bus=True,
-                                expected_core=Path("/layout/rs-event-bus"))
+            gate.validate_graph(graph, require_bus=True, expected_core=Path("/project"))
 
-    def test_rejects_wrong_local_core(self):
-        with self.assertRaisesRegex(ValueError, "local"):
-            gate.validate_graph(metadata("0.21.0"), require_bus=True,
-                                expected_core=Path("/other/rs-event-bus"))
-
-    def test_non_bus_root_does_not_require_bus(self):
-        gate.validate_graph(metadata(), require_bus=False)
+    def test_requires_core_package(self):
         with self.assertRaisesRegex(ValueError, "missing"):
             gate.validate_graph(metadata(), require_bus=True)
 
@@ -113,11 +49,6 @@ class GraphTests(unittest.TestCase):
         graph = metadata("0.21.0", "0.20.1")
         graph["resolve"]["nodes"][0]["dependencies"].pop()
         gate.validate_graph(graph, require_bus=True)
-
-    def test_explicit_layout_requires_every_repository(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, "rs-event-bus.*rs-task"):
-                gate.layout_manifests(Path(directory))
 
 
 if __name__ == "__main__":

@@ -1552,7 +1552,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-应用队列达到容量上限时，handler 会等待队列腾出空间。这会在总线和 provider 现有容量约束之外形成反压。send 成功只表示 payload 已交给应用队列，不代表下游业务处理已经持久化。示例使用 `unwrap` 是因为测试接收端必须保持打开；实际应用应将接收端关闭映射为自己的 handler 错误，或明确取消。
+应用队列达到容量上限时，handler 会等待队列腾出空间。这会在总线和 provider 现有容量约束之外形成反压。send 成功只表示 payload 已交给应用队列，不代表后续业务处理已经持久化。示例使用 `unwrap` 是因为测试接收端必须保持打开；实际应用应将接收端关闭映射为自己的 handler 错误，或明确取消。
 
 
 如果应用本身用异步 Rust，可选择 `AsyncEventBus`。它不依赖某个固定运行时，但应用仍需有 Tokio 等任务执行环境来运行异步代码。`publish`、`subscribe`、`publish_all`、`shutdown` 都需要 `.await`。与同步版不同，异步 `subscribe` 只创建订阅；应用还必须启动一个长期运行的任务去执行 `subscription.run(...)`，消息才会交给处理函数：
@@ -1962,8 +1962,6 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 - [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
 
-## 单仓验证与五仓整体验证
+## 验证本 crate
 
-仓库脚本须在完整 Git checkout 根目录运行；crate 解包目录不包含 `scripts/` 或 `.infra/`。`./scripts/project-ci-check.sh` 是项目辅助门禁：先运行 Python 回归、Cargo 包清单和性能证据检查，再运行 `check_event_bus_graph.py`。图检查器的权威 `REPOSITORIES` 与 `FIXTURES` 输入定义见[REPOSITORIES 和 FIXTURES](https://github.com/qubit-ltd/rs-event-bus/blob/97c1d3a8df95402554d2b1fa9ac3bd27e0f188bd/scripts/check_event_bus_graph.py)。默认 standalone 模式只检查当前 core 的 metadata，不需要下载下游仓库；显式传入 `--ecosystem-root <repos-dir>` 时，才验证五仓布局及声明的 fixtures。metadata 检查补充各项目 CI，不能替代编译、运行时测试或项目 CI。
-
-整合验证清单在 `scripts/downstream-compatibility.json` 中固定 core、Redis provider、task、IOC 及传递依赖仓库的版本。编译门禁包含五个目标：Redis、task、当前 IOC consumer，以及独立的 Tokio 和 Smol 兼容异步 consumer。后两者以 `default-features = false` 关闭默认功能，只开启 Redis provider 的 `async` feature。运行 `python3 -B scripts/check_downstream_compatibility.py --ecosystem-root <layout>`，脚本会检查锁定的 metadata、依赖来源，并对每个目标执行 `cargo check --locked --all-targets`。下游 checkout 必须与清单版本一致且保持干净；脚本不会抓取仓库或更新锁文件。运行时验证使用 `python3 -B scripts/check_downstream_behavior.py --ecosystem-root <layout>`：保留同步和异步 Redis conformance、task notifications，并分别在独立的临时 Redis 容器中运行两个异步 consumer。容器使用动态 localhost 端口，先通过 Redis 就绪检查，并在场景结束后删除。运行时验证需要 Docker 和获取固定 Redis 镜像的网络访问，结论仅适用于清单中的源码版本与场景。历史发布的 Redis 0.7 和 task 0.10 面向 core 0.20；本地 path 检查不能证明已发布消费者版本获得支持。
+在完整 Git checkout 根目录运行仓库脚本。`./scripts/project-ci-check.sh` 会运行本 crate 的 Python 回归、包清单、性能证据和锁定 Cargo metadata 检查。标准项目 CI 命令为 `./.infra/bin/ci-check.sh`。
