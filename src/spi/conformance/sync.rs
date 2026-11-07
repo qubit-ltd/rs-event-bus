@@ -15,6 +15,7 @@ use qubit_id::Id;
 use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_hooks::ConformanceHooks;
 use super::conformance_profile::ConformanceProfile;
+use super::conformance_progress::ConformanceProgress;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
 use super::conformance_report::message_difference;
@@ -65,7 +66,7 @@ pub fn run_sync<F>(factory: F, hooks: &ConformanceHooks) -> ConformanceReport
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
-    run_sync_with_profile(factory, hooks, ConformanceProfile::Structural)
+    run_sync_with_profile_and_observer(factory, hooks, ConformanceProfile::Structural, &|_| {})
 }
 
 /// Runs synchronous checks with explicit treatment of missing provider
@@ -89,7 +90,47 @@ pub fn run_sync_with_profile<F>(factory: F, hooks: &ConformanceHooks, profile: C
 where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
+    run_sync_with_profile_and_observer(factory, hooks, profile, &|_| {})
+}
+
+/// Runs synchronous checks with progress notifications before potentially
+/// blocking provider operations.
+///
+/// The observer is called synchronously immediately before the reported
+/// operation begins. Its callback should return quickly and flush any output
+/// that must survive a process timeout. It is diagnostic only: it cannot
+/// cancel an operation, and a blocked observer itself requires an external
+/// process watchdog. `context` is `None` before the runner establishes a
+/// payload/durability combination and is populated with that combination
+/// afterward. Existing [`run_sync_with_profile`] and [`run_sync`] entry points
+/// retain their behavior and run without an observer.
+///
+/// # Type Parameters
+/// - `F`: factory that creates a synchronous provider instance.
+///
+/// # Parameters
+/// - `factory`: creates independent synchronous provider instances.
+/// - `hooks`: optional provider-specific checks and fixtures.
+/// - `profile`: policy for missing provider fixtures.
+/// - `observer`: callback receiving the pending case, optional context, and
+///   stable operation stage.
+///
+/// # Returns
+/// A report containing each conformance check that ran or was skipped.
+///
+/// # Panics
+/// Panics if the provider factory, observer, hook, or an SPI method unwinds.
+pub fn run_sync_with_profile_and_observer<F>(
+    factory: F,
+    hooks: &ConformanceHooks,
+    profile: ConformanceProfile,
+    observer: &dyn Fn(&ConformanceProgress),
+) -> ConformanceReport
+where
+    F: Fn() -> Arc<dyn EventBusSpi>,
+{
     let mut report = ConformanceReport::default();
+    observer(&ConformanceProgress::new("capability-payload-mode", None, "factory"));
     let capability_spi = factory();
     let payloads = payload_probes(capability_spi.capabilities().payload_modes());
     report.push(ConformanceCase::Passed {
@@ -105,11 +146,12 @@ where
                 crate::spi::PayloadModes::Encoded
             };
             report.set_case_context(Some(ConformanceCaseContext::new("sync", payload_mode, durability)));
-            record_pending_close(&factory, case_id, durability, &mut report);
+            record_pending_close(&factory, case_id, durability, &mut report, observer);
             let spi = if first_combination {
                 first_combination = false;
                 capability_spi.clone()
             } else {
+                emit_progress(observer, case_id, case_id, durability, "factory");
                 factory()
             };
             let capabilities = spi.capabilities();
@@ -120,6 +162,7 @@ where
                         case_id: "probe-scope".into(),
                         detail: format!("sync probe identity generation failed: {error}"),
                     });
+                    emit_progress(observer, "shutdown", case_id, durability, "shutdown");
                     report.push(match spi.shutdown(ShutdownMode::Immediate) {
                         Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
                             case_id: "shutdown".into(),
@@ -140,6 +183,11 @@ where
                 SubscriptionDurability::Ephemeral => "ephemeral",
                 SubscriptionDurability::Durable => "durable",
             };
+            observer(&ConformanceProgress::new(
+                "subscribe",
+                Some(ConformanceCaseContext::new("sync", payload_mode, durability)),
+                "subscribe",
+            ));
             let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)) {
                 Ok(subscription) => {
                     report.push(ConformanceCase::Passed {
@@ -158,6 +206,7 @@ where
                             detail: "subscription could not be created".into(),
                         },
                     });
+                    emit_progress(observer, "shutdown", case_id, durability, "shutdown");
                     report.push(match spi.shutdown(ShutdownMode::Immediate) {
                         Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
                             case_id: "shutdown".into(),
@@ -174,8 +223,13 @@ where
                     continue;
                 }
             };
-            record_foreign_settlement(&factory, case_id, durability, &mut report);
+            record_foreign_settlement(&factory, case_id, durability, &mut report, observer);
             let expected = probe_message(probe_payload(case_id), capabilities, &scope);
+            observer(&ConformanceProgress::new(
+                "receive-empty-zero-timeout",
+                Some(ConformanceCaseContext::new("sync", payload_mode, durability)),
+                "receive",
+            ));
             report.push(match subscription.receive(Duration::ZERO) {
                 Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
                     case_id: "receive-empty-zero-timeout".into(),
@@ -197,6 +251,11 @@ where
                     detail: format!("sync {mode_name} mode: empty receive failed: {error}"),
                 },
             });
+            observer(&ConformanceProgress::new(
+                case_id,
+                Some(ConformanceCaseContext::new("sync", payload_mode, durability)),
+                "publish",
+            ));
             let result = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope));
             let published = result.is_ok();
             report.push(publish_case(
@@ -208,6 +267,11 @@ where
                 durability,
             ));
             if published {
+                observer(&ConformanceProgress::new(
+                    "receive-payload",
+                    Some(ConformanceCaseContext::new("sync", payload_mode, durability)),
+                    "receive",
+                ));
                 match subscription.receive(Duration::from_secs(1)) {
                     Ok(ReceiveOutcome::Message(mut message)) => {
                         let difference = message_difference(&message, &expected);
@@ -226,11 +290,20 @@ where
                         });
                         let token = message.take_settlement();
                         report.push(settlement_case(capabilities.settlement(), token.as_ref(), |token| {
+                            emit_progress(observer, "settlement-idempotence", case_id, durability, "settle");
                             subscription.settle(token, DeliveryDisposition::Accept)?;
+                            emit_progress(observer, "settlement-idempotence", case_id, durability, "settle");
                             subscription.settle(token, DeliveryDisposition::Accept)
                         }));
                         report.push(match token.as_ref() {
                             Some(token) if capabilities.settlement() != SettlementCapabilities::None => {
+                                emit_progress(
+                                    observer,
+                                    "settlement-conflicting-disposition",
+                                    case_id,
+                                    durability,
+                                    "settle",
+                                );
                                 match subscription.settle(token, DeliveryDisposition::Reject) {
                                     Err(error) if error.kind() == "invalid_settlement_token" => {
                                         ConformanceCase::Passed {
@@ -272,7 +345,8 @@ where
                     },
                 });
             }
-            record_retry_reject_settlement(&factory, case_id, durability, &mut report);
+            record_retry_reject_settlement(&factory, case_id, durability, &mut report, observer);
+            emit_progress(observer, "close", case_id, durability, "close");
             let close_result = subscription.close();
             report.push(match &close_result {
                 Ok(()) => ConformanceCase::Passed {
@@ -284,27 +358,30 @@ where
                 },
             });
             report.push(match close_result {
-                Ok(()) => match subscription.receive(Duration::ZERO) {
-                    Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
-                        case_id: "receive-after-close".into(),
-                    },
-                    Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
-                        case_id: "receive-after-close".into(),
-                        detail: format!("sync {mode_name} mode: receive after close returned TimedOut"),
-                    },
-                    Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
-                        case_id: "receive-after-close".into(),
-                        detail: format!("sync {mode_name} mode: receive after close returned Message"),
-                    },
-                    Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
-                        case_id: "receive-after-close".into(),
-                        detail: format!("sync {mode_name} mode: receive after close returned Gap"),
-                    },
-                    Err(error) => ConformanceCase::Failed {
-                        case_id: "receive-after-close".into(),
-                        detail: format!("sync {mode_name} mode: receive after close failed: {error}"),
-                    },
-                },
+                Ok(()) => {
+                    emit_progress(observer, "receive-after-close", case_id, durability, "receive");
+                    match subscription.receive(Duration::ZERO) {
+                        Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                            case_id: "receive-after-close".into(),
+                        },
+                        Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
+                            case_id: "receive-after-close".into(),
+                            detail: format!("sync {mode_name} mode: receive after close returned TimedOut"),
+                        },
+                        Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+                            case_id: "receive-after-close".into(),
+                            detail: format!("sync {mode_name} mode: receive after close returned Message"),
+                        },
+                        Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+                            case_id: "receive-after-close".into(),
+                            detail: format!("sync {mode_name} mode: receive after close returned Gap"),
+                        },
+                        Err(error) => ConformanceCase::Failed {
+                            case_id: "receive-after-close".into(),
+                            detail: format!("sync {mode_name} mode: receive after close failed: {error}"),
+                        },
+                    }
+                }
                 Err(_) => ConformanceCase::Skipped {
                     case_id: "receive-after-close".into(),
                     reason: ConformanceSkipReason::MissingFixture {
@@ -312,6 +389,7 @@ where
                     },
                 },
             });
+            emit_progress(observer, "close-idempotence", case_id, durability, "close");
             report.push(match subscription.close() {
                 Ok(()) => ConformanceCase::Passed {
                     case_id: "close-idempotence".into(),
@@ -321,6 +399,7 @@ where
                     detail: format!("repeated sync receiver close failed: {error}"),
                 },
             });
+            emit_progress(observer, "shutdown", case_id, durability, "shutdown");
             report.push(match spi.shutdown(ShutdownMode::Immediate) {
                 Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
                     case_id: "shutdown".into(),
@@ -334,6 +413,7 @@ where
                     detail: format!("sync shutdown failed: {error}"),
                 },
             });
+            emit_progress(observer, "shutdown", case_id, durability, "shutdown");
             report.push(match spi.shutdown(ShutdownMode::Immediate) {
                 Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
                     case_id: "shutdown-idempotence".into(),
@@ -359,6 +439,11 @@ where
             },
         });
     } else {
+        observer(&ConformanceProgress::new(
+            "provider-settlement-idempotence",
+            None,
+            "hook",
+        ));
         push_hook(
             &mut report,
             "provider-settlement-idempotence",
@@ -379,6 +464,7 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Ephemeral)
     {
+        observer(&ConformanceProgress::new("ephemeral-cleanup", None, "hook"));
         push_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref());
     } else {
         report.push(ConformanceCase::Skipped {
@@ -392,6 +478,7 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Durable)
     {
+        observer(&ConformanceProgress::new("durable-unsettled-recovery", None, "hook"));
         push_hook(
             &mut report,
             "durable-unsettled-recovery",
@@ -424,6 +511,7 @@ fn record_retry_reject_settlement<F>(
     payload_case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
@@ -444,6 +532,13 @@ fn record_retry_reject_settlement<F>(
         ),
     ];
     for (disposition, name, first_id, repeat_id, conflict_id) in cases {
+        emit_progress(
+            observer,
+            "settlement-retry-first",
+            payload_case_id,
+            durability,
+            "factory",
+        );
         let spi = factory();
         if spi.capabilities().settlement() != SettlementCapabilities::AcceptRetryReject {
             for id in [first_id, repeat_id, conflict_id] {
@@ -454,6 +549,13 @@ fn record_retry_reject_settlement<F>(
                     },
                 });
             }
+            emit_progress(
+                observer,
+                "settlement-probe-shutdown",
+                payload_case_id,
+                durability,
+                "shutdown",
+            );
             if let Err(error) = spi.shutdown(ShutdownMode::Immediate) {
                 report.push(ConformanceCase::Failed {
                     case_id: "settlement-probe-shutdown".into(),
@@ -465,11 +567,13 @@ fn record_retry_reject_settlement<F>(
         let mut subscription = None;
         let outcome = (|| -> Result<SettlementToken, String> {
             let scope = ProbeScope::new().map_err(|e| format!("{name} identity: {e}"))?;
+            emit_progress(observer, first_id, payload_case_id, durability, "subscribe");
             subscription = Some(
                 spi.subscribe(probe_request(7, durability, &scope))
                     .map_err(|e| format!("{name} subscribe: {e}"))?,
             );
             let expected = probe_message(probe_payload(payload_case_id), spi.capabilities(), &scope);
+            emit_progress(observer, first_id, payload_case_id, durability, "publish");
             let ack = spi
                 .publish(probe_message(
                     probe_payload(payload_case_id),
@@ -478,6 +582,7 @@ fn record_retry_reject_settlement<F>(
                 ))
                 .map_err(|e| format!("{name} publish: {e}"))?;
             validate_probe_acknowledgement(&ack, spi.capabilities().publish_visibility(), Id::new(7))?;
+            emit_progress(observer, first_id, payload_case_id, durability, "receive");
             let mut message = match subscription
                 .as_mut()
                 .expect("subscription created")
@@ -514,6 +619,7 @@ fn record_retry_reject_settlement<F>(
                 });
             }
             Ok(token) => {
+                emit_progress(observer, first_id, payload_case_id, durability, "settle");
                 match subscription
                     .as_mut()
                     .expect("subscription created")
@@ -527,6 +633,7 @@ fn record_retry_reject_settlement<F>(
                         detail: format!("first {name} failed: {e}"),
                     }),
                 }
+                emit_progress(observer, repeat_id, payload_case_id, durability, "settle");
                 match subscription
                     .as_mut()
                     .expect("subscription created")
@@ -545,6 +652,7 @@ fn record_retry_reject_settlement<F>(
                     _ => [DeliveryDisposition::Accept, DeliveryDisposition::Retry],
                 };
                 let bad = conflicts.into_iter().find_map(|other| {
+                    emit_progress(observer, conflict_id, payload_case_id, durability, "settle");
                     match subscription
                         .as_mut()
                         .expect("subscription created")
@@ -566,6 +674,7 @@ fn record_retry_reject_settlement<F>(
                 });
             }
         }
+        emit_progress(observer, "settlement-probe-close", payload_case_id, durability, "close");
         if let Some(subscription) = subscription.as_mut()
             && let Err(error) = subscription.close()
         {
@@ -574,6 +683,13 @@ fn record_retry_reject_settlement<F>(
                 detail: format!("sync {name} close failed: {error}"),
             });
         }
+        emit_progress(
+            observer,
+            "settlement-probe-shutdown",
+            payload_case_id,
+            durability,
+            "shutdown",
+        );
         if let Err(error) = spi.shutdown(ShutdownMode::Immediate) {
             report.push(ConformanceCase::Failed {
                 case_id: "settlement-probe-shutdown".into(),
@@ -599,9 +715,11 @@ fn record_foreign_settlement<F>(
     case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
+    emit_progress(observer, "settlement-foreign-token", case_id, durability, "factory");
     let spi = factory();
     let capabilities = spi.capabilities();
     if capabilities.settlement() == SettlementCapabilities::None {
@@ -613,6 +731,7 @@ fn record_foreign_settlement<F>(
                 },
             });
         }
+        emit_progress(observer, "settlement-probe-shutdown", case_id, durability, "shutdown");
         if let Err(error) = spi.shutdown(ShutdownMode::Immediate) {
             report.push(ConformanceCase::Failed {
                 case_id: "settlement-probe-shutdown".into(),
@@ -626,19 +745,23 @@ fn record_foreign_settlement<F>(
     let result = (|| -> Result<(), String> {
         let owner_scope = ProbeScope::new().map_err(|e| format!("identity generation A: {e}"))?;
         let foreign_scope = ProbeScope::new().map_err(|e| format!("identity generation B: {e}"))?;
+        emit_progress(observer, "settlement-foreign-token", case_id, durability, "subscribe");
         owner = Some(
             spi.subscribe(probe_request(1, durability, &owner_scope))
                 .map_err(|e| format!("subscribe A: {e}"))?,
         );
+        emit_progress(observer, "settlement-foreign-token", case_id, durability, "subscribe");
         foreign = Some(
             spi.subscribe(probe_request(2, durability, &foreign_scope))
                 .map_err(|e| format!("subscribe B: {e}"))?,
         );
         let expected = probe_message(probe_payload(case_id), capabilities, &owner_scope);
+        emit_progress(observer, "settlement-foreign-token", case_id, durability, "publish");
         let ack = spi
             .publish(probe_message(probe_payload(case_id), capabilities, &owner_scope))
             .map_err(|e| format!("publish: {e}"))?;
         validate_probe_acknowledgement(&ack, capabilities.publish_visibility(), Id::new(1))?;
+        emit_progress(observer, "settlement-foreign-token", case_id, durability, "receive");
         let mut message = match owner
             .as_mut()
             .expect("owner set")
@@ -654,6 +777,7 @@ fn record_foreign_settlement<F>(
         let Some(token) = message.take_settlement() else {
             return Err("receive A omitted settlement token".into());
         };
+        emit_progress(observer, "settlement-foreign-token", case_id, durability, "settle");
         match foreign
             .as_mut()
             .expect("foreign set")
@@ -671,6 +795,13 @@ fn record_foreign_settlement<F>(
                 detail: "foreign receiver accepted settlement token".into(),
             }),
         }
+        emit_progress(
+            observer,
+            "settlement-owner-after-foreign-token",
+            case_id,
+            durability,
+            "settle",
+        );
         match owner
             .as_mut()
             .expect("owner set")
@@ -694,6 +825,7 @@ fn record_foreign_settlement<F>(
             });
         }
     }
+    emit_progress(observer, "settlement-probe-close", case_id, durability, "close");
     if let Some(subscription) = foreign.as_mut()
         && let Err(e) = subscription.close()
     {
@@ -702,6 +834,7 @@ fn record_foreign_settlement<F>(
             detail: format!("close B: {e}"),
         });
     }
+    emit_progress(observer, "settlement-probe-close", case_id, durability, "close");
     if let Some(subscription) = owner.as_mut()
         && let Err(e) = subscription.close()
     {
@@ -710,6 +843,7 @@ fn record_foreign_settlement<F>(
             detail: format!("close A: {e}"),
         });
     }
+    emit_progress(observer, "settlement-probe-shutdown", case_id, durability, "shutdown");
     if let Err(e) = spi.shutdown(ShutdownMode::Immediate) {
         report.push(ConformanceCase::Failed {
             case_id: "settlement-probe-shutdown".into(),
@@ -733,9 +867,11 @@ fn record_pending_close<F>(
     case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Arc<dyn EventBusSpi>,
 {
+    emit_progress(observer, "close-with-pending", case_id, durability, "factory");
     let spi = factory();
     let capabilities = spi.capabilities();
     let scope = match ProbeScope::new() {
@@ -757,6 +893,7 @@ fn record_pending_close<F>(
                     detail: "probe identity could not be generated".into(),
                 },
             });
+            emit_progress(observer, "shutdown", case_id, durability, "shutdown");
             report.push(match spi.shutdown(ShutdownMode::Immediate) {
                 Ok(_) => ConformanceCase::Passed {
                     case_id: "close-with-pending-setup-cleanup".into(),
@@ -769,6 +906,7 @@ fn record_pending_close<F>(
             return;
         }
     };
+    emit_progress(observer, "close-with-pending-setup", case_id, durability, "subscribe");
     let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)) {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -788,6 +926,13 @@ fn record_pending_close<F>(
                     detail: "subscription could not be created".into(),
                 },
             });
+            emit_progress(
+                observer,
+                "close-with-pending-setup-cleanup",
+                case_id,
+                durability,
+                "shutdown",
+            );
             let shutdown_result = spi.shutdown(ShutdownMode::Immediate);
             report.push(match shutdown_result {
                 Ok(_) => ConformanceCase::Passed {
@@ -801,6 +946,7 @@ fn record_pending_close<F>(
             return;
         }
     };
+    emit_progress(observer, "close-with-pending-setup", case_id, durability, "publish");
     let publish = spi.publish(probe_message(probe_payload(case_id), capabilities, &scope));
     let setup = match publish {
         Ok(acknowledgement) => {
@@ -819,7 +965,21 @@ fn record_pending_close<F>(
                 detail: "pending-close probe publish failed".into(),
             },
         });
+        emit_progress(
+            observer,
+            "close-with-pending-setup-cleanup",
+            case_id,
+            durability,
+            "close",
+        );
         let close_result = subscription.close();
+        emit_progress(
+            observer,
+            "close-with-pending-setup-cleanup",
+            case_id,
+            durability,
+            "shutdown",
+        );
         let shutdown_result = spi.shutdown(ShutdownMode::Immediate);
         let cleanup_errors = [
             close_result
@@ -852,25 +1012,43 @@ fn record_pending_close<F>(
         report.push(ConformanceCase::Passed {
             case_id: "close-with-pending-setup".into(),
         });
+        emit_progress(
+            observer,
+            "receive-after-close-with-pending",
+            case_id,
+            durability,
+            "close",
+        );
         report.push(match subscription.close() {
-            Ok(()) => match subscription.receive(Duration::ZERO) {
-                Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
-                    case_id: "receive-after-close-with-pending".into(),
-                },
-                Ok(_) => ConformanceCase::Failed {
-                    case_id: "receive-after-close-with-pending".into(),
-                    detail: "sync close with pending probe returned a non-Closed outcome".into(),
-                },
-                Err(error) => ConformanceCase::Failed {
-                    case_id: "receive-after-close-with-pending".into(),
-                    detail: format!("sync receive after pending close failed: {error}"),
-                },
-            },
+            // The following receive is separately announced below.
+            Ok(()) => {
+                emit_progress(
+                    observer,
+                    "receive-after-close-with-pending",
+                    case_id,
+                    durability,
+                    "receive",
+                );
+                match subscription.receive(Duration::ZERO) {
+                    Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                        case_id: "receive-after-close-with-pending".into(),
+                    },
+                    Ok(_) => ConformanceCase::Failed {
+                        case_id: "receive-after-close-with-pending".into(),
+                        detail: "sync close with pending probe returned a non-Closed outcome".into(),
+                    },
+                    Err(error) => ConformanceCase::Failed {
+                        case_id: "receive-after-close-with-pending".into(),
+                        detail: format!("sync receive after pending close failed: {error}"),
+                    },
+                }
+            }
             Err(error) => ConformanceCase::Failed {
                 case_id: "receive-after-close-with-pending".into(),
                 detail: format!("sync pending-close close failed: {error}"),
             },
         });
+        emit_progress(observer, "close-with-pending-idempotent", case_id, durability, "close");
         report.push(match subscription.close() {
             Ok(()) => ConformanceCase::Passed {
                 case_id: "close-with-pending-idempotent".into(),
@@ -881,6 +1059,7 @@ fn record_pending_close<F>(
             },
         });
     }
+    emit_progress(observer, "close-with-pending-shutdown", case_id, durability, "shutdown");
     report.push(match spi.shutdown(ShutdownMode::Immediate) {
         Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
             case_id: "close-with-pending-shutdown".into(),
@@ -894,4 +1073,31 @@ fn record_pending_close<F>(
             detail: format!("sync pending-close shutdown failed: {error}"),
         },
     });
+}
+
+/// Reports an operation that the synchronous runner is about to perform.
+///
+/// # Parameters
+/// - `observer`: callback receiving the progress snapshot.
+/// - `case_id`: stable identifier for the pending case.
+/// - `context_case_id`: case identifier used to determine payload mode.
+/// - `durability`: subscription durability associated with the case.
+/// - `stage`: stable name of the pending operation.
+fn emit_progress(
+    observer: &dyn Fn(&ConformanceProgress),
+    case_id: &'static str,
+    context_case_id: &str,
+    durability: SubscriptionDurability,
+    stage: &'static str,
+) {
+    let payload_mode = if context_case_id.contains("native") {
+        crate::spi::PayloadModes::Native
+    } else {
+        crate::spi::PayloadModes::Encoded
+    };
+    observer(&ConformanceProgress::new(
+        case_id,
+        Some(ConformanceCaseContext::new("sync", payload_mode, durability)),
+        stage,
+    ));
 }

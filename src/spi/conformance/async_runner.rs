@@ -18,6 +18,7 @@ use super::async_conformance_hooks::AsyncConformanceHooks;
 use super::async_publish_probe::AsyncPublishProbe;
 use super::conformance_case_context::ConformanceCaseContext;
 use super::conformance_profile::ConformanceProfile;
+use super::conformance_progress::ConformanceProgress;
 use super::conformance_report::ConformanceCase;
 use super::conformance_report::ConformanceReport;
 use super::conformance_report::message_difference;
@@ -66,7 +67,7 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
 {
-    run_async_with_profile(factory, hooks, ConformanceProfile::Structural).await
+    run_async_with_profile_and_observer(factory, hooks, ConformanceProfile::Structural, &|_| {}).await
 }
 
 /// Runs asynchronous checks with explicit treatment of missing provider
@@ -95,7 +96,50 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
 {
+    run_async_with_profile_and_observer(factory, hooks, profile, &|_| {}).await
+}
+
+/// Runs asynchronous checks with progress notifications before potentially
+/// blocking provider operations.
+///
+/// The observer is called synchronously immediately before the reported
+/// operation begins (including before an async future is polled). Its callback
+/// should return quickly and flush output that must survive a process timeout.
+/// It is diagnostic only: it cannot cancel a pending future or a blocked
+/// poll, and a blocked observer itself requires an external process watchdog.
+/// `context` is `None` before the runner establishes a payload/durability
+/// combination and is populated with that combination afterward. Existing
+/// [`run_async_with_profile`] and [`run_async`] entry points retain their
+/// behavior and run without an observer.
+///
+/// # Type Parameters
+/// - `F`: factory that creates an asynchronous provider instance.
+/// - `Fut`: future resolving to the provider instance.
+///
+/// # Parameters
+/// - `factory`: asynchronously creates independent provider instances.
+/// - `hooks`: optional provider-specific checks and fixtures.
+/// - `profile`: policy for missing provider fixtures.
+/// - `observer`: callback receiving the pending case, optional context, and
+///   stable operation stage.
+///
+/// # Returns
+/// A report containing each conformance check that ran or was skipped.
+///
+/// # Panics
+/// Panics if the provider factory, observer, hook, or an SPI method unwinds.
+pub async fn run_async_with_profile_and_observer<F, Fut>(
+    factory: F,
+    hooks: &AsyncConformanceHooks,
+    profile: ConformanceProfile,
+    observer: &dyn Fn(&ConformanceProgress),
+) -> ConformanceReport
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
+{
     let mut report = ConformanceReport::default();
+    observer(&ConformanceProgress::new("capability-payload-mode", None, "factory"));
     let capability_spi = factory().await;
     let payloads = payload_probes(capability_spi.capabilities().payload_modes());
     report.push(ConformanceCase::Passed {
@@ -111,16 +155,22 @@ where
                 crate::spi::PayloadModes::Encoded
             };
             report.set_case_context(Some(ConformanceCaseContext::new("async", payload_mode, durability)));
-            record_pending_close(&factory, case_id, durability, &mut report).await;
+            record_pending_close(&factory, case_id, durability, &mut report, observer).await;
             let spi = if first_combination {
                 first_combination = false;
                 capability_spi.clone()
             } else {
+                emit_async_progress(observer, case_id, case_id, durability, "factory");
                 factory().await
             };
-            run_payload_case(spi, case_id, durability, &mut report).await;
-            record_async_retry_reject_settlement(&factory, case_id, durability, &mut report).await;
-            record_foreign_settlement(&factory, case_id, durability, &mut report).await;
+            observer(&ConformanceProgress::new(
+                case_id,
+                Some(ConformanceCaseContext::new("async", payload_mode, durability)),
+                "publish",
+            ));
+            run_payload_case(spi, case_id, durability, &mut report, observer).await;
+            record_async_retry_reject_settlement(&factory, case_id, durability, &mut report, observer).await;
+            record_foreign_settlement(&factory, case_id, durability, &mut report, observer).await;
         }
     }
     report.set_case_context(None);
@@ -133,6 +183,11 @@ where
             },
         });
     } else {
+        observer(&ConformanceProgress::new(
+            "provider-settlement-idempotence",
+            None,
+            "hook",
+        ));
         push_async_hook(
             &mut report,
             "provider-settlement-idempotence",
@@ -140,7 +195,9 @@ where
         )
         .await;
     }
+    observer(&ConformanceProgress::new("receive-cancellation", None, "hook"));
     push_async_hook(&mut report, "receive-cancellation", hooks.receive_cancellation.as_ref()).await;
+    observer(&ConformanceProgress::new("subscribe-cancellation", None, "hook"));
     push_async_hook(
         &mut report,
         "subscribe-cancellation",
@@ -155,6 +212,7 @@ where
             },
         });
     } else {
+        observer(&ConformanceProgress::new("settlement-cancellation", None, "hook"));
         push_async_hook(
             &mut report,
             "settlement-cancellation",
@@ -162,7 +220,9 @@ where
         )
         .await;
     }
+    observer(&ConformanceProgress::new("close-cancellation", None, "hook"));
     push_async_hook(&mut report, "close-cancellation", hooks.close_cancellation.as_ref()).await;
+    observer(&ConformanceProgress::new("shutdown-cancellation", None, "hook"));
     push_async_hook(
         &mut report,
         "shutdown-cancellation",
@@ -173,6 +233,7 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Ephemeral)
     {
+        observer(&ConformanceProgress::new("ephemeral-cleanup", None, "hook"));
         push_async_hook(&mut report, "ephemeral-cleanup", hooks.ephemeral_cleanup.as_ref()).await;
     } else {
         report.push(ConformanceCase::Skipped {
@@ -186,6 +247,7 @@ where
         .subscription_modes()
         .supports(SubscriptionDurability::Durable)
     {
+        observer(&ConformanceProgress::new("durable-unsettled-recovery", None, "hook"));
         push_async_hook(
             &mut report,
             "durable-unsettled-recovery",
@@ -220,6 +282,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
     payload_case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
@@ -241,6 +304,13 @@ async fn record_async_retry_reject_settlement<F, Fut>(
         ),
     ];
     for (disposition, name, first_id, repeat_id, conflict_id) in cases {
+        emit_async_progress(
+            observer,
+            "settlement-retry-first",
+            payload_case_id,
+            durability,
+            "factory",
+        );
         let spi = factory().await;
         if spi.capabilities().settlement() != SettlementCapabilities::AcceptRetryReject {
             for id in [first_id, repeat_id, conflict_id] {
@@ -251,6 +321,13 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                     },
                 });
             }
+            emit_async_progress(
+                observer,
+                "settlement-probe-shutdown",
+                payload_case_id,
+                durability,
+                "shutdown",
+            );
             record_async_shutdown(
                 report,
                 spi.as_ref(),
@@ -264,12 +341,14 @@ async fn record_async_retry_reject_settlement<F, Fut>(
         let mut subscription = None;
         let outcome = async {
             let scope = ProbeScope::new().map_err(|e| format!("{name} identity: {e}"))?;
+            emit_async_progress(observer, first_id, payload_case_id, durability, "subscribe");
             subscription = Some(
                 spi.subscribe(probe_request(7, durability, &scope))
                     .await
                     .map_err(|e| format!("{name} subscribe: {e}"))?,
             );
             let expected = probe_message(probe_payload(payload_case_id), spi.capabilities(), &scope);
+            emit_async_progress(observer, first_id, payload_case_id, durability, "publish");
             let ack = spi
                 .publish(probe_message(
                     probe_payload(payload_case_id),
@@ -279,6 +358,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 .await
                 .map_err(|e| format!("{name} publish: {e}"))?;
             validate_probe_acknowledgement(&ack, spi.capabilities().publish_visibility(), Id::new(7))?;
+            emit_async_progress(observer, first_id, payload_case_id, durability, "receive");
             let mut message = match subscription
                 .as_mut()
                 .expect("subscription created")
@@ -317,6 +397,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 });
             }
             Ok(token) => {
+                emit_async_progress(observer, first_id, payload_case_id, durability, "settle");
                 match subscription
                     .as_mut()
                     .expect("subscription created")
@@ -331,6 +412,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                         detail: format!("first {name} failed: {e}"),
                     }),
                 }
+                emit_async_progress(observer, repeat_id, payload_case_id, durability, "settle");
                 match subscription
                     .as_mut()
                     .expect("subscription created")
@@ -351,6 +433,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 };
                 let mut failure = None;
                 for other in conflicts {
+                    emit_async_progress(observer, conflict_id, payload_case_id, durability, "settle");
                     match subscription
                         .as_mut()
                         .expect("subscription created")
@@ -373,6 +456,7 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 });
             }
         }
+        emit_async_progress(observer, "settlement-probe-close", payload_case_id, durability, "close");
         if let Some(subscription) = subscription.as_mut()
             && let Err(error) = subscription.close().await
         {
@@ -381,6 +465,13 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 detail: format!("async {name} close failed: {error}"),
             });
         }
+        emit_async_progress(
+            observer,
+            "settlement-probe-shutdown",
+            payload_case_id,
+            durability,
+            "shutdown",
+        );
         record_async_shutdown(
             report,
             spi.as_ref(),
@@ -409,10 +500,12 @@ async fn record_foreign_settlement<F, Fut>(
     case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
 {
+    emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "factory");
     let spi = factory().await;
     let capabilities = spi.capabilities();
     if capabilities.settlement() == SettlementCapabilities::None {
@@ -424,6 +517,7 @@ async fn record_foreign_settlement<F, Fut>(
                 },
             });
         }
+        emit_async_progress(observer, "settlement-probe-shutdown", case_id, durability, "shutdown");
         if let Err(error) = spi.shutdown(ShutdownMode::Immediate).await {
             report.push(ConformanceCase::Failed {
                 case_id: "settlement-probe-shutdown".into(),
@@ -437,22 +531,26 @@ async fn record_foreign_settlement<F, Fut>(
     let result = async {
         let owner_scope = ProbeScope::new().map_err(|e| format!("identity generation A: {e}"))?;
         let foreign_scope = ProbeScope::new().map_err(|e| format!("identity generation B: {e}"))?;
+        emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "subscribe");
         owner = Some(
             spi.subscribe(probe_request(1, durability, &owner_scope))
                 .await
                 .map_err(|e| format!("subscribe A: {e}"))?,
         );
+        emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "subscribe");
         foreign = Some(
             spi.subscribe(probe_request(2, durability, &foreign_scope))
                 .await
                 .map_err(|e| format!("subscribe B: {e}"))?,
         );
         let expected = probe_message(probe_payload(case_id), capabilities, &owner_scope);
+        emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "publish");
         let ack = spi
             .publish(probe_message(probe_payload(case_id), capabilities, &owner_scope))
             .await
             .map_err(|e| format!("publish: {e}"))?;
         validate_probe_acknowledgement(&ack, capabilities.publish_visibility(), Id::new(1))?;
+        emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "receive");
         let mut message = match owner
             .as_mut()
             .expect("owner set")
@@ -469,6 +567,7 @@ async fn record_foreign_settlement<F, Fut>(
         let Some(token) = message.take_settlement() else {
             return Err("receive A omitted settlement token".into());
         };
+        emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "settle");
         match foreign
             .as_mut()
             .expect("foreign set")
@@ -487,6 +586,13 @@ async fn record_foreign_settlement<F, Fut>(
                 detail: "foreign receiver accepted settlement token".into(),
             }),
         }
+        emit_async_progress(
+            observer,
+            "settlement-owner-after-foreign-token",
+            case_id,
+            durability,
+            "settle",
+        );
         match owner
             .as_mut()
             .expect("owner set")
@@ -512,6 +618,7 @@ async fn record_foreign_settlement<F, Fut>(
             });
         }
     }
+    emit_async_progress(observer, "settlement-probe-close", case_id, durability, "close");
     if let Some(subscription) = foreign.as_mut()
         && let Err(e) = subscription.close().await
     {
@@ -520,6 +627,7 @@ async fn record_foreign_settlement<F, Fut>(
             detail: format!("close B: {e}"),
         });
     }
+    emit_async_progress(observer, "settlement-probe-close", case_id, durability, "close");
     if let Some(subscription) = owner.as_mut()
         && let Err(e) = subscription.close().await
     {
@@ -528,6 +636,7 @@ async fn record_foreign_settlement<F, Fut>(
             detail: format!("close A: {e}"),
         });
     }
+    emit_async_progress(observer, "settlement-probe-shutdown", case_id, durability, "shutdown");
     if let Err(e) = spi.shutdown(ShutdownMode::Immediate).await {
         report.push(ConformanceCase::Failed {
             case_id: "settlement-probe-shutdown".into(),
@@ -552,10 +661,12 @@ async fn record_pending_close<F, Fut>(
     case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn AsyncEventBusSpi>>,
 {
+    emit_async_progress(observer, "close-with-pending", case_id, durability, "factory");
     let spi = factory().await;
     let capabilities = spi.capabilities();
     let scope = match ProbeScope::new() {
@@ -577,6 +688,13 @@ async fn record_pending_close<F, Fut>(
                     detail: "probe identity could not be generated".into(),
                 },
             });
+            emit_async_progress(
+                observer,
+                "close-with-pending-setup-cleanup",
+                case_id,
+                durability,
+                "shutdown",
+            );
             report.push(match spi.shutdown(ShutdownMode::Immediate).await {
                 Ok(_) => ConformanceCase::Passed {
                     case_id: "close-with-pending-setup-cleanup".into(),
@@ -589,6 +707,7 @@ async fn record_pending_close<F, Fut>(
             return;
         }
     };
+    emit_async_progress(observer, "close-with-pending-setup", case_id, durability, "subscribe");
     let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)).await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -608,6 +727,13 @@ async fn record_pending_close<F, Fut>(
                     detail: "subscription could not be created".into(),
                 },
             });
+            emit_async_progress(
+                observer,
+                "close-with-pending-setup-cleanup",
+                case_id,
+                durability,
+                "shutdown",
+            );
             report.push(match spi.shutdown(ShutdownMode::Immediate).await {
                 Ok(_) => ConformanceCase::Passed {
                     case_id: "close-with-pending-setup-cleanup".into(),
@@ -620,6 +746,7 @@ async fn record_pending_close<F, Fut>(
             return;
         }
     };
+    emit_async_progress(observer, "close-with-pending-setup", case_id, durability, "publish");
     let publish = spi
         .publish(probe_message(probe_payload(case_id), capabilities, &scope))
         .await;
@@ -640,7 +767,21 @@ async fn record_pending_close<F, Fut>(
                 detail: "pending-close probe publish failed".into(),
             },
         });
+        emit_async_progress(
+            observer,
+            "close-with-pending-setup-cleanup",
+            case_id,
+            durability,
+            "close",
+        );
         let close_result = subscription.close().await;
+        emit_async_progress(
+            observer,
+            "close-with-pending-setup-cleanup",
+            case_id,
+            durability,
+            "shutdown",
+        );
         let shutdown_result = spi.shutdown(ShutdownMode::Immediate).await;
         let cleanup_errors = [
             close_result
@@ -676,26 +817,43 @@ async fn record_pending_close<F, Fut>(
         report.push(ConformanceCase::Passed {
             case_id: "close-with-pending-setup".into(),
         });
+        emit_async_progress(
+            observer,
+            "receive-after-close-with-pending",
+            case_id,
+            durability,
+            "close",
+        );
         let close_result = subscription.close().await;
         report.push(match close_result {
-            Ok(()) => match subscription.receive(Duration::ZERO).await {
-                Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
-                    case_id: "receive-after-close-with-pending".into(),
-                },
-                Ok(_) => ConformanceCase::Failed {
-                    case_id: "receive-after-close-with-pending".into(),
-                    detail: "async close with pending probe returned a non-Closed outcome".into(),
-                },
-                Err(error) => ConformanceCase::Failed {
-                    case_id: "receive-after-close-with-pending".into(),
-                    detail: format!("async receive after pending close failed: {error}"),
-                },
-            },
+            Ok(()) => {
+                emit_async_progress(
+                    observer,
+                    "receive-after-close-with-pending",
+                    case_id,
+                    durability,
+                    "receive",
+                );
+                match subscription.receive(Duration::ZERO).await {
+                    Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                        case_id: "receive-after-close-with-pending".into(),
+                    },
+                    Ok(_) => ConformanceCase::Failed {
+                        case_id: "receive-after-close-with-pending".into(),
+                        detail: "async close with pending probe returned a non-Closed outcome".into(),
+                    },
+                    Err(error) => ConformanceCase::Failed {
+                        case_id: "receive-after-close-with-pending".into(),
+                        detail: format!("async receive after pending close failed: {error}"),
+                    },
+                }
+            }
             Err(error) => ConformanceCase::Failed {
                 case_id: "receive-after-close-with-pending".into(),
                 detail: format!("async pending-close close failed: {error}"),
             },
         });
+        emit_async_progress(observer, "close-with-pending-idempotent", case_id, durability, "close");
         report.push(match subscription.close().await {
             Ok(()) => ConformanceCase::Passed {
                 case_id: "close-with-pending-idempotent".into(),
@@ -706,6 +864,7 @@ async fn record_pending_close<F, Fut>(
             },
         });
     }
+    emit_async_progress(observer, "close-with-pending-shutdown", case_id, durability, "shutdown");
     report.push(match spi.shutdown(ShutdownMode::Immediate).await {
         Ok(ShutdownOutcome::Complete) => ConformanceCase::Passed {
             case_id: "close-with-pending-shutdown".into(),
@@ -734,6 +893,7 @@ async fn run_payload_case(
     case_id: &'static str,
     durability: SubscriptionDurability,
     report: &mut ConformanceReport,
+    observer: &dyn Fn(&ConformanceProgress),
 ) {
     let capabilities = spi.capabilities();
     let scope = match ProbeScope::new() {
@@ -743,6 +903,7 @@ async fn run_payload_case(
                 case_id: "probe-scope".into(),
                 detail: format!("async probe identity generation failed: {error}"),
             });
+            emit_async_progress(observer, "shutdown", case_id, durability, "shutdown");
             record_async_shutdown(
                 report,
                 spi.as_ref(),
@@ -758,6 +919,7 @@ async fn run_payload_case(
         SubscriptionDurability::Ephemeral => "ephemeral",
         SubscriptionDurability::Durable => "durable",
     };
+    emit_async_progress(observer, "subscribe", case_id, durability, "subscribe");
     let mut subscription = match spi.subscribe(probe_request(1, durability, &scope)).await {
         Ok(subscription) => {
             report.push(ConformanceCase::Passed {
@@ -776,11 +938,13 @@ async fn run_payload_case(
                     detail: "subscription could not be created".into(),
                 },
             });
+            emit_async_progress(observer, "shutdown", case_id, durability, "shutdown");
             record_async_shutdown(report, spi.as_ref(), "shutdown", "immediate shutdown", "async shutdown").await;
             return;
         }
     };
 
+    emit_async_progress(observer, "receive-empty-zero-timeout", case_id, durability, "receive");
     report.push(match subscription.receive(Duration::ZERO).await {
         Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Passed {
             case_id: "receive-empty-zero-timeout".into(),
@@ -814,9 +978,11 @@ async fn run_payload_case(
             durability,
             scope: &scope,
         },
+        observer,
     )
     .await;
 
+    emit_async_progress(observer, "close", case_id, durability, "close");
     let close_result = subscription.close().await;
     let close_summary = match &close_result {
         Ok(()) => Ok(()),
@@ -824,27 +990,30 @@ async fn run_payload_case(
     };
     push_async_result(report, "close", close_summary);
     report.push(match close_result {
-        Ok(()) => match subscription.receive(Duration::ZERO).await {
-            Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
-                case_id: "receive-after-close".into(),
-            },
-            Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
-                case_id: "receive-after-close".into(),
-                detail: format!("async {mode_name} mode: receive after close returned TimedOut"),
-            },
-            Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
-                case_id: "receive-after-close".into(),
-                detail: format!("async {mode_name} mode: receive after close returned Message"),
-            },
-            Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
-                case_id: "receive-after-close".into(),
-                detail: format!("async {mode_name} mode: receive after close returned Gap"),
-            },
-            Err(error) => ConformanceCase::Failed {
-                case_id: "receive-after-close".into(),
-                detail: format!("async {mode_name} mode: receive after close failed: {error}"),
-            },
-        },
+        Ok(()) => {
+            emit_async_progress(observer, "receive-after-close", case_id, durability, "receive");
+            match subscription.receive(Duration::ZERO).await {
+                Ok(ReceiveOutcome::Closed) => ConformanceCase::Passed {
+                    case_id: "receive-after-close".into(),
+                },
+                Ok(ReceiveOutcome::TimedOut) => ConformanceCase::Failed {
+                    case_id: "receive-after-close".into(),
+                    detail: format!("async {mode_name} mode: receive after close returned TimedOut"),
+                },
+                Ok(ReceiveOutcome::Message(_)) => ConformanceCase::Failed {
+                    case_id: "receive-after-close".into(),
+                    detail: format!("async {mode_name} mode: receive after close returned Message"),
+                },
+                Ok(ReceiveOutcome::Gap(_)) => ConformanceCase::Failed {
+                    case_id: "receive-after-close".into(),
+                    detail: format!("async {mode_name} mode: receive after close returned Gap"),
+                },
+                Err(error) => ConformanceCase::Failed {
+                    case_id: "receive-after-close".into(),
+                    detail: format!("async {mode_name} mode: receive after close failed: {error}"),
+                },
+            }
+        }
         Err(_) => ConformanceCase::Skipped {
             case_id: "receive-after-close".into(),
             reason: ConformanceSkipReason::MissingFixture {
@@ -852,6 +1021,7 @@ async fn run_payload_case(
             },
         },
     });
+    emit_async_progress(observer, "close-idempotence", case_id, durability, "close");
     record_async_subscription_close(
         report,
         subscription.as_mut(),
@@ -859,7 +1029,9 @@ async fn run_payload_case(
         "repeated async receiver close",
     )
     .await;
+    emit_async_progress(observer, "shutdown", case_id, durability, "shutdown");
     record_async_shutdown(report, spi.as_ref(), "shutdown", "immediate shutdown", "async shutdown").await;
+    emit_async_progress(observer, "shutdown-idempotence", case_id, durability, "shutdown");
     record_async_shutdown(
         report,
         spi.as_ref(),
@@ -882,12 +1054,14 @@ async fn record_async_publish_receive(
     spi: &dyn AsyncEventBusSpi,
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     probe: AsyncPublishProbe<'_>,
+    observer: &dyn Fn(&ConformanceProgress),
 ) {
     let mode_name = match probe.durability {
         SubscriptionDurability::Ephemeral => "ephemeral",
         SubscriptionDurability::Durable => "durable",
     };
     let expected = probe_message(probe_payload(probe.case_id), probe.capabilities, probe.scope);
+    emit_async_progress(observer, probe.case_id, probe.case_id, probe.durability, "publish");
     let result = spi
         .publish(probe_message(probe.payload, probe.capabilities, probe.scope))
         .await;
@@ -901,6 +1075,7 @@ async fn record_async_publish_receive(
         probe.durability,
     ));
     if published {
+        emit_async_progress(observer, "receive-payload", probe.case_id, probe.durability, "receive");
         match subscription.receive(Duration::from_secs(1)).await {
             Ok(ReceiveOutcome::Message(mut message)) => {
                 let difference = message_difference(&message, &expected);
@@ -919,12 +1094,26 @@ async fn record_async_publish_receive(
                 });
                 let token = message.take_settlement();
                 report.push(
-                    async_settlement_idempotence_case(subscription, probe.capabilities.settlement(), token.as_ref())
-                        .await,
+                    async_settlement_idempotence_case(
+                        subscription,
+                        probe.capabilities.settlement(),
+                        token.as_ref(),
+                        observer,
+                        probe.case_id,
+                        probe.durability,
+                    )
+                    .await,
                 );
                 report.push(
-                    async_conflicting_settlement_case(subscription, probe.capabilities.settlement(), token.as_ref())
-                        .await,
+                    async_conflicting_settlement_case(
+                        subscription,
+                        probe.capabilities.settlement(),
+                        token.as_ref(),
+                        observer,
+                        probe.case_id,
+                        probe.durability,
+                    )
+                    .await,
                 );
             }
             Ok(_) => report.push(ConformanceCase::Failed {
@@ -959,6 +1148,9 @@ async fn async_settlement_idempotence_case(
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     capabilities: SettlementCapabilities,
     token: Option<&SettlementToken>,
+    observer: &dyn Fn(&ConformanceProgress),
+    context_case_id: &'static str,
+    durability: SubscriptionDurability,
 ) -> ConformanceCase {
     match (capabilities, token) {
         (SettlementCapabilities::None, None) => ConformanceCase::Skipped {
@@ -975,7 +1167,7 @@ async fn async_settlement_idempotence_case(
             case_id: "settlement-idempotence".into(),
             detail: "provider omitted a settlement token for a settlement-capable delivery".into(),
         },
-        (_, Some(token)) => async_repeat_accept_case(subscription, token).await,
+        (_, Some(token)) => async_repeat_accept_case(subscription, token, observer, context_case_id, durability).await,
     }
 }
 
@@ -990,13 +1182,30 @@ async fn async_settlement_idempotence_case(
 async fn async_repeat_accept_case(
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     token: &SettlementToken,
+    observer: &dyn Fn(&ConformanceProgress),
+    context_case_id: &'static str,
+    durability: SubscriptionDurability,
 ) -> ConformanceCase {
+    emit_async_progress(
+        observer,
+        "settlement-idempotence",
+        context_case_id,
+        durability,
+        "settle",
+    );
     if let Err(error) = subscription.settle(token, DeliveryDisposition::Accept).await {
         return ConformanceCase::Failed {
             case_id: "settlement-idempotence".into(),
             detail: format!("accept settlement failed: {error}"),
         };
     }
+    emit_async_progress(
+        observer,
+        "settlement-idempotence",
+        context_case_id,
+        durability,
+        "settle",
+    );
     match subscription.settle(token, DeliveryDisposition::Accept).await {
         Ok(()) => ConformanceCase::Passed {
             case_id: "settlement-idempotence".into(),
@@ -1022,6 +1231,9 @@ async fn async_conflicting_settlement_case(
     subscription: &mut dyn AsyncEventSubscriptionSpi,
     capabilities: SettlementCapabilities,
     token: Option<&SettlementToken>,
+    observer: &dyn Fn(&ConformanceProgress),
+    context_case_id: &'static str,
+    durability: SubscriptionDurability,
 ) -> ConformanceCase {
     if capabilities == SettlementCapabilities::None {
         return ConformanceCase::Skipped {
@@ -1039,6 +1251,13 @@ async fn async_conflicting_settlement_case(
             },
         };
     };
+    emit_async_progress(
+        observer,
+        "settlement-conflicting-disposition",
+        context_case_id,
+        durability,
+        "settle",
+    );
     match subscription.settle(token, DeliveryDisposition::Reject).await {
         Err(error) if error.kind() == "invalid_settlement_token" => ConformanceCase::Passed {
             case_id: "settlement-conflicting-disposition".into(),
@@ -1132,4 +1351,31 @@ async fn push_async_hook(report: &mut ConformanceReport, case_id: &str, hook: Op
             },
         }),
     };
+}
+
+/// Reports an operation that the asynchronous runner is about to perform.
+///
+/// # Parameters
+/// - `observer`: callback receiving the progress snapshot.
+/// - `case_id`: stable identifier for the pending case.
+/// - `context_case_id`: case identifier used to determine payload mode.
+/// - `durability`: subscription durability associated with the case.
+/// - `stage`: stable name of the pending operation.
+fn emit_async_progress(
+    observer: &dyn Fn(&ConformanceProgress),
+    case_id: &'static str,
+    context_case_id: &str,
+    durability: SubscriptionDurability,
+    stage: &'static str,
+) {
+    let payload_mode = if context_case_id.contains("native") {
+        crate::spi::PayloadModes::Native
+    } else {
+        crate::spi::PayloadModes::Encoded
+    };
+    observer(&ConformanceProgress::new(
+        case_id,
+        Some(ConformanceCaseContext::new("async", payload_mode, durability)),
+        stage,
+    ));
 }

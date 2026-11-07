@@ -32,5 +32,10 @@ jobs:
         python3 scripts/test_documentation_examples.py
         cargo +1.94.0 run --locked --example local_delivery
         cargo +1.94.0 test --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml
+        cargo +1.94.0 test --locked --no-run --features conformance --test conformance_watchdog_tests
+        test_binary=$(find target/debug/deps -maxdepth 1 -type f -name 'conformance_watchdog_tests-*' -perm -u+x | head -n 1)
+        test -n "$test_binary"
+        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label conformance-watchdog -- "$test_binary" --exact test_external_watchdog_bounds_all_runner_stuck_modes_and_observes_entry --nocapture --test-threads=1
+        cargo +1.94.0 test --locked --features conformance --test spi_conformance_tests
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml --bin async_local
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/discovery_consumer/Cargo.toml
