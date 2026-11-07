@@ -25,7 +25,8 @@ use std::fmt;
 /// ```
 #[must_use]
 pub enum TryPublishError<T> {
-    /// The bounded local queue is full.
+    /// A bounded queue or its configured cumulative declared-weight budget is
+    /// full.
     Full(
         /// Original payload returned to the caller for retry or recovery.
         T,

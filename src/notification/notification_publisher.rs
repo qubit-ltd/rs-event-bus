@@ -22,6 +22,8 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::internal::QueuedNotification;
+use super::internal::WeightBudget;
 use super::internal::WorkerCompletionGuard;
 use super::internal::WorkerExit;
 use super::internal::WorkerState;
@@ -72,7 +74,7 @@ use crate::model::Topic;
 #[must_use]
 pub struct NotificationPublisher<T: Send + Sync + 'static> {
     /// Admission sender; `None` means close has stopped new queue entries.
-    sender: Mutex<Option<SyncSender<T>>>,
+    sender: Mutex<Option<SyncSender<QueuedNotification<T>>>>,
     /// Worker handle, taken exactly once by the first closer that joins it.
     worker: Mutex<Option<thread::JoinHandle<()>>>,
     /// Worker identity retained independently of the join handle.
@@ -81,6 +83,8 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> {
     state: Arc<(Mutex<WorkerState>, Condvar)>,
     /// Atomic counters exposed through [`Self::stats`].
     stats: Arc<NotificationStats>,
+    /// Optional cumulative declared-weight limit for this publisher.
+    weight_budget: Option<Arc<WeightBudget>>,
 }
 
 impl<T: Send + Sync + 'static> NotificationPublisher<T> {
@@ -181,6 +185,35 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     where
         F: Fn(NotificationOutcome) + Send + Sync + 'static,
     {
+        Self::with_optional_weight_budget(bus, topic, capacity, options, observer, None)
+    }
+
+    /// Creates a publisher with an optional cumulative accepted-weight limit.
+    ///
+    /// # Type Parameters
+    /// - `F`: callback invoked for each publication outcome.
+    ///
+    /// # Parameters
+    /// - `bus`: event bus used to publish accepted payloads.
+    /// - `topic`: destination topic.
+    /// - `capacity`: maximum number of entries waiting in the queue.
+    /// - `options`: options applied to each publish request.
+    /// - `observer`: callback invoked after each publication attempt.
+    /// - `weight_budget`: optional cumulative budget for weighted entries.
+    ///
+    /// # Errors
+    /// Returns an error if the worker thread cannot be started.
+    pub(super) fn with_optional_weight_budget<F>(
+        bus: EventBus,
+        topic: Topic<T>,
+        capacity: NonZeroUsize,
+        options: PublishOptions<T>,
+        observer: F,
+        weight_budget: Option<Arc<WeightBudget>>,
+    ) -> io::Result<Self>
+    where
+        F: Fn(NotificationOutcome) + Send + Sync + 'static,
+    {
         let (sender, receiver) = sync_channel(capacity.get());
         let stats = Arc::new(NotificationStats::default());
         let worker_stats = stats.clone();
@@ -194,7 +227,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 // The move closure owns every user-controlled resource so both
                 // normal cleanup and unwind cleanup remain inside this boundary.
                 let result = catch_unwind(AssertUnwindSafe(move || {
-                    while let Ok(payload) = receiver.recv() {
+                    while let Ok(entry) = receiver.recv() {
+                        let QueuedNotification { payload, reservation } = entry;
                         let outcome = match PublishRequest::new(topic.clone(), payload) {
                             Ok(request) => match bus.publish(request.with_options(options.clone())) {
                                 Ok(receipt) => {
@@ -216,6 +250,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                             NotificationStats::increment(&worker_stats.observer_panicked);
                             dispose_panic_payload(payload);
                         }
+                        drop(reservation);
                     }
                     drop(receiver);
                     drop(topic);
@@ -234,6 +269,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             worker: Mutex::new(Some(worker)),
             state,
             stats,
+            weight_budget,
         })
     }
 
@@ -282,23 +318,63 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Returns `Full` when the bounded queue has no free slot and `Closed`
     /// when admission has stopped or the worker has disconnected.
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>> {
-        let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(sender) = sender.as_ref() else {
+        self.try_publish_entry(payload, None)
+    }
+
+    /// Attempts to queue a payload with a declared weight through the shared
+    /// worker implementation.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue.
+    /// - `weight`: positive caller-declared accounting weight.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or the original payload in the error when
+    /// rejected.
+    pub(super) fn try_publish_weighted(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>> {
+        self.try_publish_entry(payload, Some(weight))
+    }
+
+    /// Admits either the legacy unweighted entry or a weighted entry.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue.
+    /// - `weight`: optional caller-declared weight; `None` selects legacy
+    ///   admission.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or the original payload in the error when
+    /// rejected.
+    fn try_publish_entry(&self, payload: T, weight: Option<NonZeroUsize>) -> Result<(), TryPublishError<T>> {
+        let sender_guard = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(sender) = sender_guard.as_ref() else {
             NotificationStats::increment(&self.stats.queue_closed);
             return Err(TryPublishError::Closed(payload));
         };
-        match sender.try_send(payload) {
+        let reservation = match weight {
+            Some(weight) => match self.weight_budget.as_ref().and_then(|budget| budget.reserve(weight)) {
+                Some(reservation) => Some(reservation),
+                None => {
+                    NotificationStats::increment(&self.stats.queue_full);
+                    return Err(TryPublishError::Full(payload));
+                }
+            },
+            None => None,
+        };
+        match sender.try_send(QueuedNotification { payload, reservation }) {
             Ok(()) => {
                 NotificationStats::increment(&self.stats.enqueued);
                 Ok(())
             }
-            Err(ChannelTrySendError::Full(payload)) => {
+            Err(ChannelTrySendError::Full(entry)) => {
                 NotificationStats::increment(&self.stats.queue_full);
-                Err(TryPublishError::Full(payload))
+                drop(sender_guard);
+                Err(TryPublishError::Full(entry.payload))
             }
-            Err(ChannelTrySendError::Disconnected(payload)) => {
+            Err(ChannelTrySendError::Disconnected(entry)) => {
                 NotificationStats::increment(&self.stats.queue_closed);
-                Err(TryPublishError::Closed(payload))
+                drop(sender_guard);
+                Err(TryPublishError::Closed(entry.payload))
             }
         }
     }

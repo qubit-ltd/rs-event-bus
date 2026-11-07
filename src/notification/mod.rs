@@ -14,6 +14,7 @@ pub use notification_outcome::NotificationOutcome;
 pub use notification_publisher::NotificationPublisher;
 pub use notification_stats_snapshot::NotificationStatsSnapshot;
 pub use try_publish_error::TryPublishError;
+pub use weighted_notification_publisher::WeightedNotificationPublisher;
 
 mod internal;
 mod notification_config;
@@ -22,3 +23,4 @@ mod notification_publisher;
 mod notification_stats;
 mod notification_stats_snapshot;
 mod try_publish_error;
+mod weighted_notification_publisher;

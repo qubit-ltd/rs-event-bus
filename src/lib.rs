@@ -131,6 +131,7 @@ pub use notification::NotificationOutcome;
 pub use notification::NotificationPublisher;
 pub use notification::NotificationStatsSnapshot;
 pub use notification::TryPublishError;
+pub use notification::WeightedNotificationPublisher;
 pub use pipeline::Diagnostic;
 pub use registry::AsyncEventBusProvider;
 pub use registry::AsyncEventBusRegistry;
