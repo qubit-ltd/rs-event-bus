@@ -145,7 +145,13 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
         self.publisher.try_publish_weighted(payload, weight)
     }
 
-    /// Returns a snapshot of queue and worker counters.
+    /// Returns a best-effort snapshot of queue, rejection-reason, and worker
+    /// counters.
+    ///
+    /// `queue_full` includes queue-capacity, cumulative-weight, and
+    /// oversized-item rejections. Reason counters are cumulative;
+    /// concurrent snapshots are not guaranteed to sum consistently, and the
+    /// declared weights are not memory measurements.
     #[must_use]
     pub fn stats(&self) -> NotificationStatsSnapshot {
         self.publisher.stats()

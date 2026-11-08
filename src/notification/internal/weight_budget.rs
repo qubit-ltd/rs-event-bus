@@ -20,6 +20,17 @@ pub(in crate::notification) struct WeightBudget {
 }
 
 impl WeightBudget {
+    /// Checks whether one item's weight exceeds the configured total limit.
+    ///
+    /// # Parameters
+    /// - `weight`: positive weight requested by a notification.
+    ///
+    /// # Returns
+    /// `true` when the item alone exceeds the budget limit.
+    pub(in crate::notification) fn exceeds_limit(&self, weight: NonZeroUsize) -> bool {
+        weight.get() > self.limit
+    }
+
     /// Creates an empty budget with a nonzero limit.
     ///
     /// # Parameters

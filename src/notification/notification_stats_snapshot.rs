@@ -10,10 +10,14 @@
 /// A concurrent snapshot of the local notification worker counters.
 ///
 /// Counters are loaded independently, so a snapshot is not a transactionally
-/// consistent view. `published` counts successful receipts, including dropped
-/// receipts, not completed handlers. Admission counters classify those
-/// receipts; opaque acceptance does not reveal a destination count. Each
-/// counter saturates at `u64::MAX`, so sums lose exactness after saturation.
+/// consistent view. `queue_full` is the total of queue-capacity, cumulative
+/// weight-capacity, and oversized-weight rejections. The corresponding reason
+/// counters are independent relaxed loads, so their sum may not match
+/// `queue_full` during concurrent updates. `published` counts successful
+/// receipts, including dropped receipts, not completed handlers. Admission
+/// counters classify those receipts; opaque acceptance does not reveal a
+/// destination count. Each counter saturates at `u64::MAX`, so sums lose
+/// exactness after saturation.
 ///
 /// # Examples
 ///
@@ -30,6 +34,14 @@ pub struct NotificationStatsSnapshot {
     pub(super) enqueued: u64,
     /// Number of attempts rejected because the queue was full.
     pub(super) queue_full: u64,
+    /// Attempts rejected because the item-count queue had no free slot.
+    pub(super) queue_capacity_rejections: u64,
+    /// Attempts rejected because existing reservations left insufficient weight
+    /// capacity.
+    pub(super) weight_capacity_rejections: u64,
+    /// Attempts rejected because one item's weight exceeded the total weight
+    /// limit.
+    pub(super) oversized_weight_rejections: u64,
     /// Number of attempts rejected because the publisher was closed.
     pub(super) queue_closed: u64,
     /// Number of provider admission receipts returned to the worker.
@@ -67,14 +79,37 @@ impl NotificationStatsSnapshot {
         self.enqueued
     }
 
-    /// Returns the number of attempts rejected because the queue was full.
+    /// Returns all capacity rejections, including item-count and weight limits.
     ///
     /// # Returns
-    /// The number of attempts rejected because the queue was full.
+    /// The cumulative number of capacity rejections, regardless of limit.
     #[must_use]
     #[inline]
     pub const fn queue_full(self) -> u64 {
         self.queue_full
+    }
+
+    /// Returns attempts rejected because the item-count queue had no free slot.
+    #[must_use]
+    #[inline]
+    pub const fn queue_capacity_rejections(self) -> u64 {
+        self.queue_capacity_rejections
+    }
+
+    /// Returns attempts rejected because existing reservations left
+    /// insufficient weight capacity.
+    #[must_use]
+    #[inline]
+    pub const fn weight_capacity_rejections(self) -> u64 {
+        self.weight_capacity_rejections
+    }
+
+    /// Returns attempts rejected because one item's weight exceeded the total
+    /// weight limit.
+    #[must_use]
+    #[inline]
+    pub const fn oversized_weight_rejections(self) -> u64 {
+        self.oversized_weight_rejections
     }
 
     /// Returns the number of attempts rejected after the publisher closed.

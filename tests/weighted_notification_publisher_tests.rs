@@ -55,6 +55,11 @@ fn test_cumulative_weight_is_held_through_observer_and_released_afterward() {
         .try_publish("second".to_owned(), nz(5))
         .expect_err("outstanding weight is still reserved during observer");
     assert!(matches!(error, TryPublishError::Full(payload) if payload == "second"));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.queue_full());
+    assert_eq!(0, stats.queue_capacity_rejections());
+    assert_eq!(1, stats.weight_capacity_rejections());
+    assert_eq!(0, stats.oversized_weight_rejections());
 
     release_tx.send(()).unwrap();
     finished_rx
@@ -91,6 +96,11 @@ fn test_one_item_may_use_the_entire_weight_budget() {
         .try_publish("eleven".to_owned(), nz(11))
         .expect_err("one notification cannot exceed the full budget");
     assert!(matches!(error, TryPublishError::Full(payload) if payload == "eleven"));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.queue_full());
+    assert_eq!(0, stats.queue_capacity_rejections());
+    assert_eq!(0, stats.weight_capacity_rejections());
+    assert_eq!(1, stats.oversized_weight_rejections());
     publisher.try_publish("ten".to_owned(), nz(10)).unwrap();
     publisher.close().unwrap();
 }
@@ -118,6 +128,10 @@ fn test_oversized_weight_and_overflow_are_rejected_without_losing_payloads() {
         .try_publish("overflow".to_owned(), nz(1))
         .expect_err("checked addition rejects overflow");
     assert!(matches!(error, TryPublishError::Full(payload) if payload == "overflow"));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.queue_full());
+    assert_eq!(1, stats.weight_capacity_rejections());
+    assert_eq!(0, stats.oversized_weight_rejections());
     release_tx.send(()).unwrap();
     publisher.close().unwrap();
 }
@@ -146,9 +160,76 @@ fn test_queue_capacity_and_weight_capacity_both_report_full() {
         .try_publish("queue-full".to_owned(), nz(1))
         .expect_err("the waiting queue is full");
     assert!(matches!(error, TryPublishError::Full(payload) if payload == "queue-full"));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.queue_full());
+    assert_eq!(1, stats.queue_capacity_rejections());
+    assert_eq!(0, stats.weight_capacity_rejections());
+    assert_eq!(0, stats.oversized_weight_rejections());
     release_tx.send(()).unwrap();
     release_tx.send(()).unwrap();
     publisher.close().unwrap();
+}
+
+#[test]
+fn test_weight_rejection_has_priority_when_queue_is_also_full() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.priority").unwrap(),
+        nz(1),
+        nz(10),
+        move |_| {
+            observed_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+        },
+    )
+    .unwrap();
+    publisher.try_publish("active".to_owned(), nz(6)).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    publisher.try_publish("queued".to_owned(), nz(4)).unwrap();
+    let error = publisher
+        .try_publish("both-full".to_owned(), nz(1))
+        .expect_err("weight reservation is checked before the full queue");
+    assert!(matches!(error, TryPublishError::Full(payload) if payload == "both-full"));
+    let stats = publisher.stats();
+    assert_eq!(1, stats.queue_full());
+    assert_eq!(0, stats.queue_capacity_rejections());
+    assert_eq!(1, stats.weight_capacity_rejections());
+    assert_eq!(0, stats.oversized_weight_rejections());
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+}
+
+#[test]
+fn test_closed_publisher_does_not_increment_capacity_rejection_counters() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.closed").unwrap(),
+        nz(1),
+        nz(10),
+        |_| {},
+    )
+    .unwrap();
+    publisher.close().unwrap();
+    let before = publisher.stats();
+    let error = publisher
+        .try_publish("closed".to_owned(), nz(1))
+        .expect_err("closed publisher rejects admission");
+    assert!(matches!(error, TryPublishError::Closed(payload) if payload == "closed"));
+    let after = publisher.stats();
+    assert_eq!(before.queue_full(), after.queue_full());
+    assert_eq!(before.queue_capacity_rejections(), after.queue_capacity_rejections());
+    assert_eq!(before.weight_capacity_rejections(), after.weight_capacity_rejections());
+    assert_eq!(
+        before.oversized_weight_rejections(),
+        after.oversized_weight_rejections()
+    );
+    assert_eq!(1, after.queue_closed());
 }
 
 #[test]

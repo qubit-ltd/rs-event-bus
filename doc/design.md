@@ -1569,8 +1569,14 @@ full, the item's weight exceeds the limit, or accepted outstanding weight would
 exceed the limit. Weight remains reserved while the worker publishes and runs
 the observer, so the budget includes one in-flight item in addition to the
 waiting queue. Reservation guards release exactly once on ordinary completion,
-errors, unwind, and queue destruction. `queue_full` counts both item-count and
-weight rejections. This declared weight is independent from the provider's
+errors, unwind, and queue destruction. `queue_full` remains the compatibility
+aggregate; `queue_capacity_rejections`, `weight_capacity_rejections`, and
+`oversized_weight_rejections` classify a full item queue, unavailable cumulative
+weight, and one item above the total limit. If queue and weight are both unavailable,
+weight rejection has priority because reservation is checked first. Queue-full and
+cumulative-weight failures may be retried after capacity is released, without a
+success guarantee; retrying an unchanged oversized item cannot help. These declared
+weights are independent from the provider's
 `PublishOptions::native_payload_weight` fanout budget and is not an RSS bound.
 
 - **A bounded `sync_channel(capacity)` and one worker thread named `event-notification-publisher`.**
@@ -1594,7 +1600,7 @@ weight rejections. This declared weight is independent from the provider's
   and six receipt admission classes: accepted, partially accepted, none accepted, no
   destinations, opaque accepted, and dropped. `published` remains the successful
   receipt count (including drops); opaque acceptance does not imply a destination
-  count. Counters use independent relaxed loads and saturate at `u64::MAX`.
+  count. Counters use independent relaxed loads and saturate at `u64::MAX`. The three capacity reason counters partition `queue_full` only when there are no concurrent updates and no counter has saturated.
 - **`close()`** closes the sender, waits for the worker to drain, and joins it.
   Calling it from the worker thread (that is, from the observer) returns an error
   instead of joining itself, the same idea as §8.6. If the worker has panicked, `close()` returns an error.

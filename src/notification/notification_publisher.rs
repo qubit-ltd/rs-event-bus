@@ -355,6 +355,13 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             Some(weight) => match self.weight_budget.as_ref().and_then(|budget| budget.reserve(weight)) {
                 Some(reservation) => Some(reservation),
                 None => {
+                    let budget = self.weight_budget.as_ref().expect("weighted entries have a budget");
+                    let counter = if budget.exceeds_limit(weight) {
+                        &self.stats.oversized_weight_rejections
+                    } else {
+                        &self.stats.weight_capacity_rejections
+                    };
+                    NotificationStats::increment(counter);
                     NotificationStats::increment(&self.stats.queue_full);
                     return Err(TryPublishError::Full(payload));
                 }
@@ -367,6 +374,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 Ok(())
             }
             Err(ChannelTrySendError::Full(entry)) => {
+                NotificationStats::increment(&self.stats.queue_capacity_rejections);
                 NotificationStats::increment(&self.stats.queue_full);
                 drop(sender_guard);
                 Err(TryPublishError::Full(entry.payload))

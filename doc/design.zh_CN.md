@@ -1447,7 +1447,7 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
 }
 ```
 
-现有 `NotificationPublisher` 仍只限制条数。加权版本在等待队列已满、单项重量超过上限或接纳后总重量会超限时返回 `Full(payload)`。worker 发布通知并运行 observer 期间仍持有重量预留，因此预算包含一条正在处理的通知，以及等待队列中的通知。RAII 预留在正常完成、错误、unwind 和队列销毁时恰好释放一次。`queue_full` 同时统计条数和重量拒绝。这里声明的重量与 provider 的 `PublishOptions::native_payload_weight` fanout 预算相互独立，也不是 RSS 上限。
+现有 `NotificationPublisher` 仍只限制条数。加权版本在等待队列已满、单项重量超过上限或接纳后总重量会超限时返回 `Full(payload)`。worker 发布通知并运行 observer 期间仍持有重量预留，因此预算包含一条正在处理的通知，以及等待队列中的通知。RAII 预留在正常完成、错误、unwind 和队列销毁时恰好释放一次。`queue_full` 保持兼容的汇总；`queue_capacity_rejections`、`weight_capacity_rejections`、`oversized_weight_rejections` 分别统计条数队列已满、累计重量暂不可用、单项重量超过总上限。队列和重量同时不足时，因先检查重量预留而优先记重量拒绝。队列满或累计不足可在容量释放后重试，但不保证成功；原样重试单项超限不会奏效。计数独立 relaxed 读取并在 `u64::MAX` 饱和，因此并发快照的分类和可能不等于汇总。这里声明的重量与 provider 的 `PublishOptions::native_payload_weight` fanout 预算相互独立，也不是 RSS 上限。
 
 设计要点：
 
@@ -1468,7 +1468,7 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
   `published`、`publish_errors`、`request_errors`、`observer_panicked`、`worker_panicked`，
   以及六种回执接纳分类：完全接纳、部分接纳、没有接纳目标、无目标、opaque 接纳和丢弃。
   `published` 仍表示成功取得回执的次数（包含丢弃）；opaque 接纳不推断目标数。
-  计数独立 relaxed 读取，并在 `u64::MAX` 饱和。
+  计数独立 relaxed 读取，并在 `u64::MAX` 饱和。没有并发更新且计数未饱和时，三个容量原因计数之和等于 `queue_full`。
 - **`close()`**：关闭发送端、等待 worker 排空并 join；从 worker 线程（即 observer 内）
   调用会返回错误而不是自我 join 死锁（与 §8.6 同一思想）；worker 曾 panic 时返回错误。
   `close_with_timeout(timeout)` 从调用时开始将 timeout 用于排空与 worker join 等待；内部互斥锁获取

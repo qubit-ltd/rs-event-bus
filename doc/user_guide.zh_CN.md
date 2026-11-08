@@ -1633,7 +1633,7 @@ Redis 等持久 provider 的恢复步骤是：停止旧 handle，修复 codec/�
 
 如果产生消息的代码不应等待同步发布，可使用 `NotificationPublisher<T>`：它先把消息放进一个有容量上限的队列，再由一个后台线程逐条发布。默认最多排队 256 条。`try_publish(payload)` 只说明**成功入队**，并非已经发布；它不等待队列容量或 provider 工作，但会获取内部互斥锁，竞争该锁时调用可能等待。队列满时返回 `TryPublishError::Full(payload)`，关闭后返回 `Closed(payload)`，原数据会还给调用方。观察回调收到 `Published(receipt)`、`PublishFailed(error)` 或 `RequestFailed(error)`；这里的 `Published` 仍不表示处理函数完成。`stats()` 可查看计数。
 
-如果还要限制已接纳通知的累计声明重量，可使用 `WeightedNotificationPublisher<T>`。重量由应用估算，并在每次 `try_publish(payload, weight)` 时传入；worker 发布消息并执行 observer 期间（包括 worker 正在处理的一条）仍会占用预算。超过条数或重量上限时返回 `TryPublishError::Full(payload)`，并原样归还数据。`queue_full` 同时统计这两种拒绝。声明重量不是 RSS 上界，也不替代 provider 独立的 payload-weight 预算。
+如果还要限制已接纳通知的累计声明重量，可使用 `WeightedNotificationPublisher<T>`。重量由应用估算，并在每次 `try_publish(payload, weight)` 时传入；worker 发布消息并执行 observer 期间（包括 worker 正在处理的一条）仍会占用预算。超过任一上限时返回 `TryPublishError::Full(payload)`，并原样归还数据。`queue_full()` 保持兼容的总拒绝数；`queue_capacity_rejections()`、`weight_capacity_rejections()`、`oversized_weight_rejections()` 分别统计条数队列已满、累计重量暂不可用、单项重量超过总预算。队列和重量同时不足时，按先观察到的重量原因计数。队列满或累计不足可在容量释放后重试，但不保证成功；单项超限时，原样重试不会成功，应调整真实工作量对应的声明重量或预算。声明重量不是内存用量，也不替代 provider 独立的 payload-weight 预算。
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/weighted_notifications.rs -->
 ```rust
@@ -1768,7 +1768,7 @@ println!(
 );
 ```
 
-`enqueued` 是进入队列的条数；`published` 是成功取得回执的次数，其中也包括拦截器丢弃，不代表处理函数完成。新增的 `admission_accepted()`、`admission_partially_accepted()`、`admission_none_accepted()`、`admission_no_destinations()`、`admission_opaque_accepted()` 和 `admission_dropped()` 分别分类这些回执。opaque 接纳不表示已知目标数。各计数独立读取，运行中的快照不是同一时刻的一致视图。计数在 `u64::MAX` 饱和；达到饱和后求和将不再精确。
+`enqueued` 是进入队列的条数；`published` 是成功取得回执的次数，其中也包括拦截器丢弃，不代表处理函数完成。没有并发更新且计数未饱和时，`queue_full()` 等于三个拒绝原因计数之和。各计数独立读取，运行中的快照不是同一时刻的一致视图；计数在 `u64::MAX` 饱和，达到饱和后求和将不再精确。`admission_accepted()`、`admission_partially_accepted()`、`admission_none_accepted()`、`admission_no_destinations()`、`admission_opaque_accepted()` 和 `admission_dropped()` 分类发布回执；opaque 接纳不表示已知目标数。
 
 ### 停机时排空队列
 

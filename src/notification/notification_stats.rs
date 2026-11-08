@@ -20,6 +20,13 @@ pub(super) struct NotificationStats {
     pub(super) enqueued: AtomicU64,
     /// Number of notifications rejected because the queue was full.
     pub(super) queue_full: AtomicU64,
+    /// Number of rejections caused by a full item-count queue.
+    pub(super) queue_capacity_rejections: AtomicU64,
+    /// Number of rejections caused by insufficient cumulative declared weight.
+    pub(super) weight_capacity_rejections: AtomicU64,
+    /// Number of rejections caused by one item exceeding the total weight
+    /// limit.
+    pub(super) oversized_weight_rejections: AtomicU64,
     /// Number of notifications rejected because the queue was closed.
     pub(super) queue_closed: AtomicU64,
     /// Number of notifications published by the worker.
@@ -58,6 +65,9 @@ impl NotificationStats {
         NotificationStatsSnapshot {
             enqueued: load(&self.enqueued),
             queue_full: load(&self.queue_full),
+            queue_capacity_rejections: load(&self.queue_capacity_rejections),
+            weight_capacity_rejections: load(&self.weight_capacity_rejections),
+            oversized_weight_rejections: load(&self.oversized_weight_rejections),
             queue_closed: load(&self.queue_closed),
             published: load(&self.published),
             publish_errors: load(&self.publish_errors),
@@ -138,5 +148,32 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(u64::MAX, snapshot.admission_accepted());
         assert_eq!(1, snapshot.admission_partially_accepted());
+    }
+
+    #[test]
+    fn test_capacity_rejection_counters_default_to_zero_and_saturate() {
+        use std::sync::atomic::Ordering;
+
+        let stats = NotificationStats::default();
+        let initial = stats.snapshot();
+        assert_eq!(0, initial.queue_full());
+        assert_eq!(0, initial.queue_capacity_rejections());
+        assert_eq!(0, initial.weight_capacity_rejections());
+        assert_eq!(0, initial.oversized_weight_rejections());
+
+        stats.queue_full.store(u64::MAX, Ordering::Relaxed);
+        stats.queue_capacity_rejections.store(u64::MAX, Ordering::Relaxed);
+        stats.weight_capacity_rejections.store(u64::MAX, Ordering::Relaxed);
+        stats.oversized_weight_rejections.store(u64::MAX, Ordering::Relaxed);
+        NotificationStats::increment(&stats.queue_full);
+        NotificationStats::increment(&stats.queue_capacity_rejections);
+        NotificationStats::increment(&stats.weight_capacity_rejections);
+        NotificationStats::increment(&stats.oversized_weight_rejections);
+
+        let saturated = stats.snapshot();
+        assert_eq!(u64::MAX, saturated.queue_full());
+        assert_eq!(u64::MAX, saturated.queue_capacity_rejections());
+        assert_eq!(u64::MAX, saturated.weight_capacity_rejections());
+        assert_eq!(u64::MAX, saturated.oversized_weight_rejections());
     }
 }
