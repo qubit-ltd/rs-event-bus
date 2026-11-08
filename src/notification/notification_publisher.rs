@@ -474,9 +474,10 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// synchronous and cannot be interrupted. Therefore it is not a strict
     /// wall-clock upper bound for the whole method. On timeout,
     /// the worker continues processing the accepted queue and a later close
-    /// call can wait for completion. New calls to `try_publish` return `Closed`
-    /// after this method begins. A synchronous provider call cannot be forcibly
-    /// interrupted.
+    /// call can wait for completion. Once this method acquires the admission
+    /// mutex and removes the sender, new calls to `try_publish` return
+    /// `Closed`. Concurrent publish attempts may still be admitted before that
+    /// transition. A synchronous provider call cannot be forcibly interrupted.
     ///
     /// # Parameters
     /// - `timeout`: budget for draining and worker shutdown waits.
