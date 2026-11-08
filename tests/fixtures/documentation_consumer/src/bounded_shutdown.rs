@@ -51,8 +51,10 @@ pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
 /// Applies the same bounded policy while the caller drives async shutdown.
 ///
 /// Returns `false` if cleanup remains incomplete; other shutdown errors
-/// propagate. Cancelling this future leaves shutdown state for the coordinator
-/// to resume.
+/// propagate. Dropping this future stops the current cleanup driver. To
+/// continue cleanup, the application must call `AsyncEventBus::shutdown`
+/// again and keep polling that future; async shutdown has no background
+/// coordinator.
 ///
 /// # Returns
 ///

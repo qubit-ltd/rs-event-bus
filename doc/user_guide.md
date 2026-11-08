@@ -1883,8 +1883,10 @@ pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
 /// Applies the same bounded policy while the caller drives async shutdown.
 ///
 /// Returns `false` if cleanup remains incomplete; other shutdown errors
-/// propagate. Cancelling this future leaves shutdown state for the coordinator
-/// to resume.
+/// propagate. Dropping this future stops the current cleanup driver. To
+/// continue cleanup, the application must call `AsyncEventBus::shutdown`
+/// again and keep polling that future; async shutdown has no background
+/// coordinator.
 ///
 /// # Returns
 ///
@@ -2003,7 +2005,7 @@ if !cleanup_errors.is_empty() {
 }
 ```
 
-The example retains both the runner result and shutdown error for reporting. `try_shutdown_async` makes two bounded Graceful attempts; it records a shutdown error rather than skipping other application cleanup. When the helper returns `false`, cleanup remains incomplete. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future pauses its driving; a later shutdown resumes coordinator state. The library does not implicitly spawn work outside the caller’s runtime.
+The example retains both the runner result and shutdown error for reporting. `try_shutdown_async` makes two bounded Graceful attempts; it records a shutdown error rather than skipping other application cleanup. When the helper returns `false`, cleanup remains incomplete. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future stops its current driving. To continue cleanup, the application must call `AsyncEventBus::shutdown` again and keep polling that future; async shutdown has no background coordinator. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 

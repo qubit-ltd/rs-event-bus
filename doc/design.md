@@ -1319,7 +1319,7 @@ The async facade has no provider-view `wait_for_idle`. It has `wait_for_received
 
 ```
 shutdown(mode: ShutdownMode).await
-  ├─ CAS elects a leader; other callers wait and receive the same result
+  ├─ CAS elects a cleanup leader; other callers wait within their own deadlines, then recheck Closed or compete for leadership
   ├─ lifecycle Closing; OperationGate closes admission
   ├─ tell every control to stop (Graceful: finish in-flight; Immediate: return as soon as possible)
   ├─ for each control: shutdown(mode) — lease the session → drain (Graceful) → close_inner
@@ -1334,7 +1334,9 @@ shutdown(mode: ShutdownMode).await
 
 Provider shutdown succeeds here when the SPI call returns `Ok(outcome)`; `Ok(ShutdownOutcome::TimedOut)` does not mean all provider background work has completed. A failed or cancelled provider shutdown does not trigger final control disposal. After successful provider shutdown, disposal and reporting a receiver-close error can occur together. Repeated shutdown returns the cached report or retained canonical close errors; it does not erase close errors.
 
-A bounded caller wait is not forced process exit. Use two `Graceful` waits with individual timeouts, handle `ShutdownError::TimedOut`, and hand incomplete cleanup to an external supervisor. `Immediate` can still wait for an uncooperative handler/SPI and is not a timeout rescue. Cancelled futures resume through coordinator state. See the [compiled sync/async policy](user_guide.md#shut-down-a-sync-bus).
+A `Graceful` timeout is the deadline of that `shutdown` call; concurrent calls have independent deadlines. A waiter can time out before leadership is released. When awakened, a waiter rechecks whether the bus is `Closed`; if not, it competes to lead cleanup. A failed, timed-out, or cancelled attempt does not guarantee the same result to another caller: a later leader can retry and succeed.
+
+A bounded caller wait is not forced process exit. `Immediate` can still wait for an uncooperative handler/SPI and is not a timeout rescue. Dropping the leader future releases leadership and wakes waiters, but does not start an asynchronous background coordinator. Cleanup continues only if another `shutdown` future remains polled; if there are no waiters, the application must call `shutdown` again and poll that future. Once the bus reaches `Closed`, later calls reuse the cached report or return the retained canonical close errors. The synchronous `request_shutdown` API is different: it starts a background coordinator and returns an observation ticket. See the [compiled sync/async policy](user_guide.md#shut-down-a-sync-bus).
 
 ### 9.8 `BusContextFuture`: deadlock detection at poll scope
 

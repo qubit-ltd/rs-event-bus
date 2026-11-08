@@ -1233,7 +1233,7 @@ error，以便重试或由最终 shutdown 清理。provider shutdown 成功返�
 
 ```
 shutdown(mode: ShutdownMode).await
-  ├─ CAS 选出 leader；非 leader 等待 leader 完成并返回同一结果
+  ├─ CAS 选出清理 leader；其他调用者在各自截止时间内等待，再检查 Closed 或重新竞争 leadership
   ├─ lifecycle Closing；OperationGate 关闭准入
   ├─ 通知所有 control 停止（Graceful: 完成 in-flight；Immediate: 尽快返回）
   ├─ 对每个 control: shutdown(mode) —— lease session → drain（Graceful）→ close_inner
@@ -1251,7 +1251,9 @@ shutdown(mode: ShutdownMode).await
 处置。provider shutdown 成功后，资源处置与报告 receiver close 错误可以同时发生。重复
 shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹掉关闭错误。
 
-调用方有界等待不等于进程强制退出：两次 `Graceful` 分别设 timeout，处理 `ShutdownError::TimedOut`，最终未完成交外部监督器。`Immediate` 仍可能等待不合作 handler/SPI，不作为超时救援；取消 future 后由协调器恢复。可执行同步/异步示例见[用户手册](user_guide.zh_CN.md#同步总线的停机流程)。
+每次 `Graceful` shutdown 调用的 timeout 都是该调用自己的截止时间，并发调用的截止时间彼此独立。等待者可能在 leadership 释放前先超时。被唤醒后，等待者会重新检查总线是否已 `Closed`；若尚未关闭，则重新竞争清理 leadership。某次调用失败、超时或取消，并不保证其他调用得到相同结果；后续成为 leader 的调用可以重试并成功。
+
+调用方有界等待不等于进程强制退出。`Immediate` 仍可能等待不合作 handler/SPI，不作为超时救援。丢弃 leader future 会释放 leadership 并唤醒等待者，但不会启动异步后台协调器。只有另一个仍被持续 poll 的 `shutdown` future 才会接续清理；若没有等待者，应用必须再次调用 `shutdown` 并持续 poll 该 future。总线进入 `Closed` 后，后续调用复用缓存的 report，或返回保留的规范化 close errors。同步 `request_shutdown` API 则不同：它会启动后台协调器并返回观察 ticket。可执行同步/异步示例见[用户手册](user_guide.zh_CN.md#同步总线的停机流程)。
 
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 
