@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::internal::WeightBudget;
+use super::notification_admission_error::NotificationAdmissionError;
 use super::notification_outcome::NotificationOutcome;
 use super::notification_publisher::NotificationPublisher;
 use super::notification_stats_snapshot::NotificationStatsSnapshot;
@@ -143,6 +144,19 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
     /// rejected.
     pub fn try_publish(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>> {
         self.publisher.try_publish_weighted(payload, weight)
+    }
+
+    /// Tries to queue a payload and returns the specific admission rejection.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue.
+    /// - `weight`: positive caller-declared accounting weight.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or an error owning the original payload and the
+    /// observed rejection reason.
+    pub fn try_publish_detailed(&self, payload: T, weight: NonZeroUsize) -> Result<(), NotificationAdmissionError<T>> {
+        self.publisher.try_publish_weighted_detailed(payload, weight)
     }
 
     /// Returns a best-effort snapshot of queue, rejection-reason, and worker

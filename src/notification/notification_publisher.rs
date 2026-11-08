@@ -27,8 +27,10 @@ use super::internal::WeightBudget;
 use super::internal::WorkerCompletionGuard;
 use super::internal::WorkerExit;
 use super::internal::WorkerState;
+use super::notification_admission_error::NotificationAdmissionError;
 use super::notification_config::DEFAULT_QUEUE_CAPACITY;
 use super::notification_outcome::NotificationOutcome;
+use super::notification_rejection_reason::NotificationRejectionReason;
 use super::notification_stats::NotificationStats;
 use super::notification_stats_snapshot::NotificationStatsSnapshot;
 use super::try_publish_error::TryPublishError;
@@ -85,6 +87,25 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> {
     stats: Arc<NotificationStats>,
     /// Optional cumulative declared-weight limit for this publisher.
     weight_budget: Option<Arc<WeightBudget>>,
+}
+
+/// Maps a detailed rejection onto the legacy two-variant error contract.
+///
+/// # Parameters
+/// - `error`: detailed admission rejection with its original payload.
+///
+/// # Returns
+/// `Closed` when admission has stopped, otherwise the legacy `Full` variant.
+///
+/// # Type Parameters
+/// - `T`: payload type carried by the admission error.
+fn map_admission_error<T>(error: NotificationAdmissionError<T>) -> TryPublishError<T> {
+    let reason = error.reason();
+    let payload = error.into_payload();
+    match reason {
+        NotificationRejectionReason::Closed => TryPublishError::Closed(payload),
+        _ => TryPublishError::Full(payload),
+    }
 }
 
 impl<T: Send + Sync + 'static> NotificationPublisher<T> {
@@ -318,6 +339,19 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Returns `Full` when the bounded queue has no free slot and `Closed`
     /// when admission has stopped or the worker has disconnected.
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>> {
+        self.try_publish_detailed(payload).map_err(map_admission_error)
+    }
+
+    /// Attempts to queue one payload and returns the specific admission reason
+    /// when the bounded queue rejects it.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or an error owning the original payload and the
+    /// observed rejection reason.
+    pub fn try_publish_detailed(&self, payload: T) -> Result<(), NotificationAdmissionError<T>> {
         self.try_publish_entry(payload, None)
     }
 
@@ -332,6 +366,24 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// `Ok(())` when queued, or the original payload in the error when
     /// rejected.
     pub(super) fn try_publish_weighted(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>> {
+        self.try_publish_weighted_detailed(payload, weight)
+            .map_err(map_admission_error)
+    }
+
+    /// Attempts weighted admission and returns the specific rejection reason.
+    ///
+    /// # Parameters
+    /// - `payload`: event payload to enqueue.
+    /// - `weight`: positive caller-declared accounting weight.
+    ///
+    /// # Returns
+    /// `Ok(())` when queued, or an error owning the original payload and the
+    /// observed rejection reason.
+    pub(super) fn try_publish_weighted_detailed(
+        &self,
+        payload: T,
+        weight: NonZeroUsize,
+    ) -> Result<(), NotificationAdmissionError<T>> {
         self.try_publish_entry(payload, Some(weight))
     }
 
@@ -345,25 +397,29 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// # Returns
     /// `Ok(())` when queued, or the original payload in the error when
     /// rejected.
-    fn try_publish_entry(&self, payload: T, weight: Option<NonZeroUsize>) -> Result<(), TryPublishError<T>> {
+    fn try_publish_entry(&self, payload: T, weight: Option<NonZeroUsize>) -> Result<(), NotificationAdmissionError<T>> {
         let sender_guard = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(sender) = sender_guard.as_ref() else {
             NotificationStats::increment(&self.stats.queue_closed);
-            return Err(TryPublishError::Closed(payload));
+            return Err(NotificationAdmissionError::new(
+                NotificationRejectionReason::Closed,
+                payload,
+            ));
         };
         let reservation = match weight {
             Some(weight) => match self.weight_budget.as_ref().and_then(|budget| budget.reserve(weight)) {
                 Some(reservation) => Some(reservation),
                 None => {
                     let budget = self.weight_budget.as_ref().expect("weighted entries have a budget");
-                    let counter = if budget.exceeds_limit(weight) {
-                        &self.stats.oversized_weight_rejections
+                    let reason = if budget.exceeds_limit(weight) {
+                        NotificationStats::increment(&self.stats.oversized_weight_rejections);
+                        NotificationRejectionReason::OversizedWeight
                     } else {
-                        &self.stats.weight_capacity_rejections
+                        NotificationStats::increment(&self.stats.weight_capacity_rejections);
+                        NotificationRejectionReason::WeightCapacity
                     };
-                    NotificationStats::increment(counter);
                     NotificationStats::increment(&self.stats.queue_full);
-                    return Err(TryPublishError::Full(payload));
+                    return Err(NotificationAdmissionError::new(reason, payload));
                 }
             },
             None => None,
@@ -377,12 +433,18 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 NotificationStats::increment(&self.stats.queue_capacity_rejections);
                 NotificationStats::increment(&self.stats.queue_full);
                 drop(sender_guard);
-                Err(TryPublishError::Full(entry.payload))
+                Err(NotificationAdmissionError::new(
+                    NotificationRejectionReason::QueueCapacity,
+                    entry.payload,
+                ))
             }
             Err(ChannelTrySendError::Disconnected(entry)) => {
                 NotificationStats::increment(&self.stats.queue_closed);
                 drop(sender_guard);
-                Err(TryPublishError::Closed(entry.payload))
+                Err(NotificationAdmissionError::new(
+                    NotificationRejectionReason::Closed,
+                    entry.payload,
+                ))
             }
         }
     }

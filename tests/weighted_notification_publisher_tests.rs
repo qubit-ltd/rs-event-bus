@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationPublisher;
+use qubit_event_bus::NotificationRejectionReason;
 use qubit_event_bus::TryPublishError;
 use qubit_event_bus::WeightedNotificationPublisher;
 use qubit_event_bus::local::LocalEventBusConfig;
@@ -230,6 +232,221 @@ fn test_closed_publisher_does_not_increment_capacity_rejection_counters() {
         after.oversized_weight_rejections()
     );
     assert_eq!(1, after.queue_closed());
+}
+
+#[test]
+fn test_detailed_rejection_returns_oversized_reason_and_original_payload() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.detailed.oversized").unwrap(),
+        nz(1),
+        nz(10),
+        |_| {},
+    )
+    .unwrap();
+
+    let error = publisher
+        .try_publish_detailed("oversized".to_owned(), nz(11))
+        .expect_err("single item exceeds total budget");
+    assert_eq!(NotificationRejectionReason::OversizedWeight, error.reason());
+    assert_eq!("oversized", error.into_payload());
+    assert_eq!(1, publisher.stats().oversized_weight_rejections());
+    publisher.close().unwrap();
+}
+
+#[test]
+fn test_detailed_error_formatting_does_not_require_or_expose_payload_formatting() {
+    struct OpaquePayload(&'static str);
+
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<OpaquePayload>::new("weighted.detailed.opaque").unwrap(),
+        nz(1),
+        nz(10),
+        |_| {},
+    )
+    .unwrap();
+    let error = publisher
+        .try_publish_detailed(OpaquePayload("private payload"), nz(11))
+        .expect_err("single item exceeds total budget");
+
+    assert!(format!("{error:?}").contains("OversizedWeight"));
+    assert_eq!("notification weight exceeds the configured limit", error.to_string());
+    assert_eq!("private payload", error.into_payload().0);
+    publisher.close().unwrap();
+}
+
+#[test]
+fn test_detailed_rejection_returns_weight_capacity_and_original_payload() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.detailed.capacity").unwrap(),
+        nz(2),
+        nz(10),
+        move |_| {
+            observed_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+        },
+    )
+    .unwrap();
+
+    publisher.try_publish("active".to_owned(), nz(6)).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let error = publisher
+        .try_publish_detailed("weight-capacity".to_owned(), nz(5))
+        .expect_err("available weight is insufficient");
+    assert_eq!(NotificationRejectionReason::WeightCapacity, error.reason());
+    assert_eq!("weight-capacity", error.into_payload());
+    assert_eq!(1, publisher.stats().weight_capacity_rejections());
+
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+}
+
+#[test]
+fn test_detailed_rejection_returns_queue_capacity_and_original_payload() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.detailed.queue").unwrap(),
+        nz(1),
+        nz(10),
+        move |_| {
+            observed_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+        },
+    )
+    .unwrap();
+
+    publisher.try_publish("active".to_owned(), nz(1)).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    publisher.try_publish("queued".to_owned(), nz(1)).unwrap();
+    let error = publisher
+        .try_publish_detailed("queue-capacity".to_owned(), nz(1))
+        .expect_err("waiting queue is full");
+    assert_eq!(NotificationRejectionReason::QueueCapacity, error.reason());
+    assert_eq!("queue-capacity", error.into_payload());
+    assert_eq!(1, publisher.stats().queue_capacity_rejections());
+
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+}
+
+#[test]
+fn test_detailed_rejection_returns_closed_reason_and_original_payload() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.detailed.closed").unwrap(),
+        nz(1),
+        nz(10),
+        |_| {},
+    )
+    .unwrap();
+    publisher.close().unwrap();
+
+    let error = publisher
+        .try_publish_detailed("closed".to_owned(), nz(1))
+        .expect_err("publisher is closed");
+    assert_eq!(NotificationRejectionReason::Closed, error.reason());
+    assert_eq!("closed", error.into_payload());
+    assert_eq!(1, publisher.stats().queue_closed());
+}
+
+#[test]
+fn test_unweighted_detailed_rejection_reports_queue_capacity_and_closed() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = NotificationPublisher::new(
+        bus,
+        Topic::<String>::new("unweighted.detailed").unwrap(),
+        nz(1),
+        move |_| {
+            observed_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+        },
+    )
+    .unwrap();
+
+    publisher.try_publish("active".to_owned()).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    publisher.try_publish("queued".to_owned()).unwrap();
+    let error = publisher
+        .try_publish_detailed("queue-full".to_owned())
+        .expect_err("waiting queue is full");
+    assert_eq!(NotificationRejectionReason::QueueCapacity, error.reason());
+    assert_eq!("queue-full", error.into_payload());
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+
+    let error = publisher
+        .try_publish_detailed("closed".to_owned())
+        .expect_err("publisher is closed");
+    assert_eq!(NotificationRejectionReason::Closed, error.reason());
+    assert_eq!("closed", error.into_payload());
+}
+
+#[test]
+fn test_concurrent_detailed_rejections_keep_their_reason_and_payload() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = Arc::new(
+        WeightedNotificationPublisher::new(
+            bus,
+            Topic::<String>::new("weighted.detailed.concurrent").unwrap(),
+            nz(4),
+            nz(10),
+            move |_| {
+                observed_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            },
+        )
+        .unwrap(),
+    );
+    publisher.try_publish("active".to_owned(), nz(6)).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let oversized_publisher = publisher.clone();
+    let oversized = thread::spawn(move || {
+        oversized_publisher
+            .try_publish_detailed("oversized".to_owned(), nz(11))
+            .unwrap_err()
+    });
+    let capacity_publisher = publisher.clone();
+    let capacity = thread::spawn(move || {
+        capacity_publisher
+            .try_publish_detailed("capacity".to_owned(), nz(5))
+            .unwrap_err()
+    });
+
+    let oversized = oversized.join().expect("oversized caller completes");
+    let capacity = capacity.join().expect("capacity caller completes");
+    assert_eq!(NotificationRejectionReason::OversizedWeight, oversized.reason());
+    assert_eq!("oversized", oversized.into_payload());
+    assert_eq!(NotificationRejectionReason::WeightCapacity, capacity.reason());
+    assert_eq!("capacity", capacity.into_payload());
+    let stats = publisher.stats();
+    assert_eq!(2, stats.queue_full());
+    assert_eq!(1, stats.oversized_weight_rejections());
+    assert_eq!(1, stats.weight_capacity_rejections());
+
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
 }
 
 #[test]
