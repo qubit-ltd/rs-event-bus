@@ -1532,6 +1532,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub const fn default_capacity() -> NonZeroUsize;                     // 256
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T); the payload is returned
+    pub fn try_publish_detailed(&self, payload: T) -> Result<(), NotificationAdmissionError<T>>;
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
     pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
@@ -1557,11 +1558,23 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
         max_outstanding_weight: NonZeroUsize, options: PublishOptions<T>, observer: F) -> io::Result<Self>
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub fn try_publish(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>>;
+    pub fn try_publish_detailed(&self, payload: T, weight: NonZeroUsize)
+        -> Result<(), NotificationAdmissionError<T>>;
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
     pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
 }
 ```
+
+`NotificationRejectionReason` is a `#[non_exhaustive]` enum with
+`QueueCapacity`, `WeightCapacity`, `OversizedWeight`, and `Closed` variants.
+`NotificationAdmissionError<T>` owns the observed reason and original payload;
+`reason()` inspects the reason and `into_payload()` returns the payload without
+requiring it to be cloned or formatted. The legacy methods remain unchanged:
+`Closed` maps to `TryPublishError::Closed`, and every capacity reason maps to
+`TryPublishError::Full`. The detailed methods return the reason from the same
+single admission attempt, while existing cumulative counters retain their
+current meanings.
 
 The existing `NotificationPublisher` remains item-count-only. The weighted
 variant rejects an item with `Full(payload)` when either the waiting queue is

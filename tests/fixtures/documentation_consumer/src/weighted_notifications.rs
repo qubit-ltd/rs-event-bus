@@ -10,6 +10,7 @@ use std::num::NonZeroUsize;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationRejectionReason;
 use qubit_event_bus::TryPublishError;
 use qubit_event_bus::WeightedNotificationPublisher;
 use qubit_event_bus::model::Topic;
@@ -44,4 +45,31 @@ pub fn enqueue_order(
 ) -> Result<(), TryPublishError<OrderCreated>> {
     let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
     notifier.try_publish(event, weight)
+}
+
+pub fn enqueue_order_detailed(
+    notifier: &WeightedNotificationPublisher<OrderCreated>,
+    event: OrderCreated,
+) -> Result<(), (NotificationRejectionReason, OrderCreated)> {
+    let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
+    match notifier.try_publish_detailed(event, weight) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let reason = error.reason();
+            let event = error.into_payload();
+            match reason {
+                NotificationRejectionReason::QueueCapacity | NotificationRejectionReason::WeightCapacity => {
+                    eprintln!("order notification capacity is temporarily unavailable");
+                }
+                NotificationRejectionReason::OversizedWeight => {
+                    eprintln!("order notification exceeds the configured weight budget");
+                }
+                NotificationRejectionReason::Closed => {
+                    eprintln!("order notification publisher is closed");
+                }
+                _ => eprintln!("order notification admission failed"),
+            }
+            Err((reason, event))
+        }
+    }
 }

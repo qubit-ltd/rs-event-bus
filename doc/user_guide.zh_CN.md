@@ -1635,6 +1635,8 @@ Redis 等持久 provider 的恢复步骤是：停止旧 handle，修复 codec/�
 
 如果还要限制已接纳通知的累计声明重量，可使用 `WeightedNotificationPublisher<T>`。重量由应用估算，并在每次 `try_publish(payload, weight)` 时传入；worker 发布消息并执行 observer 期间（包括 worker 正在处理的一条）仍会占用预算。超过任一上限时返回 `TryPublishError::Full(payload)`，并原样归还数据。`queue_full()` 保持兼容的总拒绝数；`queue_capacity_rejections()`、`weight_capacity_rejections()`、`oversized_weight_rejections()` 分别统计条数队列已满、累计重量暂不可用、单项重量超过总预算。队列和重量同时不足时，按先观察到的重量原因计数。队列满或累计不足可在容量释放后重试，但不保证成功；单项超限时，原样重试不会成功，应调整真实工作量对应的声明重量或预算。声明重量不是内存用量，也不替代 provider 独立的 payload-weight 预算。
 
+如果调用方需要本次接纳尝试的具体原因，可使用 `try_publish_detailed(payload, weight)`。返回的 `NotificationAdmissionError<T>` 持有原数据；用 `reason()` 决定处理方式，再用 `into_payload()` 取回数据。队列或重量暂时不足时可保留数据，待容量可能恢复后重试；`OversizedWeight` 应调整实际工作量或预算；遇到 `Closed` 则停止向该发布器提交。原因由本次接纳操作直接返回，不要通过累计统计差值推断，因为各计数是分别读取的快照。
+
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/weighted_notifications.rs -->
 ```rust
 use std::io;
@@ -1642,6 +1644,7 @@ use std::num::NonZeroUsize;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationRejectionReason;
 use qubit_event_bus::TryPublishError;
 use qubit_event_bus::WeightedNotificationPublisher;
 use qubit_event_bus::model::Topic;
@@ -1676,6 +1679,33 @@ pub fn enqueue_order(
 ) -> Result<(), TryPublishError<OrderCreated>> {
     let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
     notifier.try_publish(event, weight)
+}
+
+pub fn enqueue_order_detailed(
+    notifier: &WeightedNotificationPublisher<OrderCreated>,
+    event: OrderCreated,
+) -> Result<(), (NotificationRejectionReason, OrderCreated)> {
+    let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
+    match notifier.try_publish_detailed(event, weight) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let reason = error.reason();
+            let event = error.into_payload();
+            match reason {
+                NotificationRejectionReason::QueueCapacity | NotificationRejectionReason::WeightCapacity => {
+                    eprintln!("order notification capacity is temporarily unavailable");
+                }
+                NotificationRejectionReason::OversizedWeight => {
+                    eprintln!("order notification exceeds the configured weight budget");
+                }
+                NotificationRejectionReason::Closed => {
+                    eprintln!("order notification publisher is closed");
+                }
+                _ => eprintln!("order notification admission failed"),
+            }
+            Err((reason, event))
+        }
+    }
 }
 ```
 

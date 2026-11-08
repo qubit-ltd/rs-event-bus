@@ -182,12 +182,23 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
 
     /// Stops admission and waits up to the given duration for the worker.
     ///
+    /// This delegates to [`NotificationPublisher::close_with_timeout`]. The
+    /// timeout covers draining accepted notifications and waiting for the
+    /// worker to exit, but synchronous internal mutex acquisition cannot be
+    /// interrupted and is not bounded by the timeout. A timed-out worker keeps
+    /// running and may publish notifications that were already accepted.
+    /// Once the call acquires the required locks and stops admission, new
+    /// publish attempts return [`TryPublishError::Closed`]. A later call can
+    /// wait for the same worker again. This method does not close the injected
+    /// event bus. Calling it from the worker or its observer returns an error.
+    ///
     /// # Parameters
-    /// - `timeout`: maximum time to wait for the worker to finish.
+    /// - `timeout`: budget for queue draining and worker completion waits.
     ///
     /// # Errors
-    /// Returns an error if the worker does not finish before the timeout, if
-    /// called from the worker thread, or if the worker panicked.
+    /// Returns `TimedOut` if the worker does not finish within the covered
+    /// waits, `Other` if called from the worker thread, or an error if the
+    /// worker panicked.
     pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()> {
         self.publisher.close_with_timeout(timeout)
     }

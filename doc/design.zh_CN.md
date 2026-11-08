@@ -1417,6 +1417,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub const fn default_capacity() -> NonZeroUsize;                     // 256
     pub fn try_publish(&self, payload: T) -> Result<(), TryPublishError<T>>; // Full(T) | Closed(T)，原样归还 payload
+    pub fn try_publish_detailed(&self, payload: T) -> Result<(), NotificationAdmissionError<T>>;
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
     pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
@@ -1441,11 +1442,20 @@ impl<T: Send + Sync + 'static> WeightedNotificationPublisher<T> {
         max_outstanding_weight: NonZeroUsize, options: PublishOptions<T>, observer: F) -> io::Result<Self>
     where F: Fn(NotificationOutcome) + Send + Sync + 'static;
     pub fn try_publish(&self, payload: T, weight: NonZeroUsize) -> Result<(), TryPublishError<T>>;
+    pub fn try_publish_detailed(&self, payload: T, weight: NonZeroUsize)
+        -> Result<(), NotificationAdmissionError<T>>;
     pub fn stats(&self) -> NotificationStatsSnapshot;
     pub fn close(&self) -> io::Result<()>;
     pub fn close_with_timeout(&self, timeout: Duration) -> io::Result<()>;
 }
 ```
+
+`NotificationRejectionReason` 是标注为 `#[non_exhaustive]` 的枚举，包含
+`QueueCapacity`、`WeightCapacity`、`OversizedWeight` 和 `Closed`。
+`NotificationAdmissionError<T>` 同时持有本次观察到的原因和原 payload；
+`reason()` 可检查原因，`into_payload()` 可取回 payload，无需克隆或格式化它。
+旧方法保持不变：`Closed` 映射到 `TryPublishError::Closed`，其余容量原因映射到
+`TryPublishError::Full`。详细方法从同一次接纳尝试直接返回原因；既有累计计数语义不变。
 
 现有 `NotificationPublisher` 仍只限制条数。加权版本在等待队列已满、单项重量超过上限或接纳后总重量会超限时返回 `Full(payload)`。worker 发布通知并运行 observer 期间仍持有重量预留，因此预算包含一条正在处理的通知，以及等待队列中的通知。RAII 预留在正常完成、错误、unwind 和队列销毁时恰好释放一次。`queue_full` 保持兼容的汇总；`queue_capacity_rejections`、`weight_capacity_rejections`、`oversized_weight_rejections` 分别统计条数队列已满、累计重量暂不可用、单项重量超过总上限。队列和重量同时不足时，因先检查重量预留而优先记重量拒绝。队列满或累计不足可在容量释放后重试，但不保证成功；原样重试单项超限不会奏效。计数独立 relaxed 读取并在 `u64::MAX` 饱和，因此并发快照的分类和可能不等于汇总。这里声明的重量与 provider 的 `PublishOptions::native_payload_weight` fanout 预算相互独立，也不是 RSS 上限。
 

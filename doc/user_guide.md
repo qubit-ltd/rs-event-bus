@@ -1635,6 +1635,8 @@ When the code that produces a message cannot wait for a synchronous publish, use
 
 Use `WeightedNotificationPublisher<T>` when both the waiting item count and the total declared weight of accepted notifications need limits. The weight is an application estimate passed to each `try_publish(payload, weight)` call. It remains reserved while the worker publishes the item and invokes the observer, including the worker's in-flight item. A request that exceeds either limit returns `TryPublishError::Full(payload)` and preserves the original value. `queue_full()` remains the compatibility total; `queue_capacity_rejections()`, `weight_capacity_rejections()`, and `oversized_weight_rejections()` classify item-count full, cumulative weight unavailable, and one item larger than the total weight limit. When both queue and weight are unavailable, the observed weight rejection takes priority. A cumulative or queue rejection may be retried after capacity is released, though success is not guaranteed. An oversized item cannot succeed by retrying unchanged; reduce its truthful declared weight by changing the work represented or adjust the budget. These estimates do not measure memory usage or replace the provider's separate outstanding payload-weight budget.
 
+Use `try_publish_detailed(payload, weight)` when the caller needs the reason for this specific attempt. Its `NotificationAdmissionError<T>` owns the original value; call `reason()` to choose a response and `into_payload()` to recover it. Keep a queue or weight capacity rejection for a later retry after capacity may return, revise the work or budget for `OversizedWeight`, and stop submitting to this publisher for `Closed`. The reason is returned by the admission attempt itself; do not infer it by comparing cumulative statistics, whose counters are independent snapshots.
+
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/weighted_notifications.rs -->
 ```rust
 use std::io;
@@ -1642,6 +1644,7 @@ use std::num::NonZeroUsize;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::NotificationOutcome;
+use qubit_event_bus::NotificationRejectionReason;
 use qubit_event_bus::TryPublishError;
 use qubit_event_bus::WeightedNotificationPublisher;
 use qubit_event_bus::model::Topic;
@@ -1676,6 +1679,33 @@ pub fn enqueue_order(
 ) -> Result<(), TryPublishError<OrderCreated>> {
     let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
     notifier.try_publish(event, weight)
+}
+
+pub fn enqueue_order_detailed(
+    notifier: &WeightedNotificationPublisher<OrderCreated>,
+    event: OrderCreated,
+) -> Result<(), (NotificationRejectionReason, OrderCreated)> {
+    let weight = NonZeroUsize::new(event.order_id.len().max(1)).expect("weight is non-zero");
+    match notifier.try_publish_detailed(event, weight) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let reason = error.reason();
+            let event = error.into_payload();
+            match reason {
+                NotificationRejectionReason::QueueCapacity | NotificationRejectionReason::WeightCapacity => {
+                    eprintln!("order notification capacity is temporarily unavailable");
+                }
+                NotificationRejectionReason::OversizedWeight => {
+                    eprintln!("order notification exceeds the configured weight budget");
+                }
+                NotificationRejectionReason::Closed => {
+                    eprintln!("order notification publisher is closed");
+                }
+                _ => eprintln!("order notification admission failed"),
+            }
+            Err((reason, event))
+        }
+    }
 }
 ```
 
