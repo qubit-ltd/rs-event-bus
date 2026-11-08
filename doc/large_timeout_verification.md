@@ -45,3 +45,35 @@ No production wait fix is supported by the current evidence. T4 should record th
 
 - `./.infra/bin/align-ci.sh`: first run exited 1 because three new Rust files lacked the repository's complete license header; after adding the header, the next run exited 1 on Clippy findings (`manual_div_ceil`, two `needless_range_loop` instances, `type_complexity`, and `collapsible_if`). Those issues were corrected without suppressing lints. The final run exited 0, including style alignment and Clippy.
 - `./.infra/bin/ci-check.sh`: exited 0. Workspace tests, four feature-matrix configurations, doctests, strict documentation, README checks, package verification, coverage, and audit passed. Coverage was 95.21% functions, 92.08% lines, and 93.31% regions. The configured CI explicitly reports `coverage-cfg-clippy: not configured; skipping`.
+
+## T2 platform verification (2026-11-08)
+
+This entry records a new Linux run and a separate read-only check of platform evidence. It does not supersede or rewrite the historical entries above.
+
+### Linux run
+
+- Baseline commit: `ecf2d79a897a8d8db8fc3160305a90522d7ca9b7` (`test(notification): cover detailed reservation recovery`).
+- Environment: Linux x86_64; `Linux mas-server 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 16:12:16 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux`.
+- `rustc -Vv` output:
+
+  ```text
+  rustc 1.94.0 (4a4ef493e 2026-03-02)
+  binary: rustc
+  commit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db
+  commit-date: 2026-03-02
+  host: x86_64-unknown-linux-gnu
+  release: 1.94.0
+  LLVM version: 21.1.8
+  ```
+
+- Verification log location: command output is retained in the current Paseo task transcript; no separate log file or CI artifact was produced for this local run.
+- `cargo +1.94.0 test --locked --test large_timeout_tests`: exit code 0; 5 passed, 0 failed; test binary completed in 0.17 s. This covers the four wait scenarios and the zero/finite exhaustion case using the existing isolated-process watchdogs.
+- `cargo +1.94.0 test --locked --lib large_timeout`: exit code 0; 4 passed, 0 failed; four exact wait-entry probe tests completed in 0.01 s. Each probe covers `Duration::MAX`, 100 years, and 3 seconds.
+- No production wait conversion defect was reproduced on this Linux host. No production code or test was changed for T2.
+
+### macOS evidence and status
+
+- The project workflow `.github/workflows/ci.yml` calls pinned shared workflow `qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@22e34b76a52b6a9c5c09ddf3fa1fa58b07c46f06` and does not override its `verify-os` input. At that pinned revision, the default verify runner is `ubuntu-latest`. The shared workflow also defines macOS 14 Miri and AddressSanitizer infrastructure jobs, which are not the two large-timeout test commands.
+- GitHub Actions run [42440479860](https://github.com/qubit-ltd/rs-event-bus/actions/runs/42440479860) is for this baseline commit. Its Linux verify job succeeded; its `miri on macos-14` and `address-sanitizer on macos-14` jobs were cancelled. Recent earlier runs inspected likewise had only cancelled macOS infrastructure jobs. No trustworthy macOS execution log for either large-timeout command was found.
+- The current execution host is Linux and no local macOS runner is available. The initial platform evidence check did not trigger remote CI. Following that check, `.github/workflows/ci.yml` was updated with a focused `Large timeout tests (macos-14)` job. It checks the centralized infrastructure snapshot, installs Rust 1.94.0 with `rust-src` via the pinned toolchain action, prepares local path dependencies, then runs the two commands above. The job has a 15-minute timeout and uses the repository's pinned checkout and Rust toolchain action revisions.
+- **macOS execution pending:** the focused job has been added, but its execution result has not yet been recorded. This workflow configuration is not run evidence. EB-REV-002 remains incomplete until an actual macOS run supplies its run link, result, and test counts. The Linux outcome does not establish macOS behavior.

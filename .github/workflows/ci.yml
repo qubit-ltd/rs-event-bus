@@ -18,6 +18,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  large-timeout-macos:
+    name: Large timeout tests (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check centralized infrastructure snapshot
+        run: ./update-infra.sh --check
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.94.0
+          components: rust-src
+      - name: Prepare local path dependencies
+        run: ./.infra/bin/prepare-local-path-dependencies.sh
+      - name: Run large-timeout integration tests
+        run: cargo +1.94.0 test --locked --test large_timeout_tests
+      - name: Run large-timeout wait-entry tests
+        run: cargo +1.94.0 test --locked --lib large_timeout
+
   rust-ci:
     permissions:
       contents: read
