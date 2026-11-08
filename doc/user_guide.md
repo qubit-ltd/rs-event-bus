@@ -1240,6 +1240,8 @@ For direct local construction, use `EventBus::local_with_monitor` (or the async 
 
 A snapshot is a consistent observation under the budget lock, not a reservation or guarantee that a subsequent publication will fit. Reads briefly wait for that lock. The handle retains accounting integers only, so it does not keep queues or payloads alive. The `local_capacity.rs` example earlier in this section shows how to obtain the monitor alongside the configured local bus and inspect its snapshot.
 
+Synchronous local subscriptions start one receiver thread each. In the recorded 2026-11-04 Linux run, 16, 64, and 256 sync subscriptions reached 21, 69, and 261 process threads; async local remained at one process thread in that benchmark. These numbers describe one host and one benchmark. Treat subscription limits as deployment settings: measure expected counts and shutdown behavior on the target machine with `cargo bench --bench local_threads` and `cargo bench --bench local_scale`.
+
 For destination admissions, inspect `DestinationAdmission::rejection_kind()`. A `None` value means the provider did not classify that rejection; retain the original status reason for diagnostics instead of parsing it. The built-in Redis provider returns opaque acknowledgements and does not expose local categories or snapshots.
 
 ## Choose and connect a third-party implementation
@@ -2056,7 +2058,7 @@ The 0.21 release includes source-level changes accumulated since 0.20. Update th
 
 ## Further reading
 
-- [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus)
+- [README](../README.md) · [API reference](https://docs.rs/qubit-event-bus) · [Performance measurements](performance.md)
 
 ## Run crate checks
 

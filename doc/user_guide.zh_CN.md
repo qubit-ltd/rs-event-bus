@@ -1240,6 +1240,8 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 
 快照是在预算锁下取得的一致观察，不会为后续发布预留容量或保证后续发布成功。读取会短暂等待该锁。监控句柄只保留整数记账状态，不会延长队列或 payload 生命周期。前文 `local_capacity.rs` 示例展示了如何在构造 local 总线时取得监控句柄，并读取快照。
 
+同步 local 订阅会为每个订阅启动一个接收线程。在 2026-11-04 的一次 Linux 测量中，16、64、256 个同步订阅分别观察到 21、69、261 个进程线程；该基准里的异步 local 始终只有一个进程线程。这些数字只反映特定机器和测试负载。应根据部署环境测量预期订阅数及停机行为，可运行 `cargo bench --bench local_threads` 和 `cargo bench --bench local_scale`。
+
 检查目标回执时读取 `DestinationAdmission::rejection_kind()`。`None` 表示 provider 未分类该拒绝；保留原 status reason 用于诊断，不要解析文本推断类别。内置 Redis provider 返回 opaque acknowledgement，不提供 local 类别或快照。
 
 ## 选择和接入第三方实现
@@ -2055,7 +2057,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ## 延伸阅读
 
-- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus)
+- [中文 README](../README.zh_CN.md) · [API 文档](https://docs.rs/qubit-event-bus) · [性能测量记录](performance.md)
 
 ## 验证本 crate
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the performance evidence links and Cargo package distribution."""
+"""Check consolidated performance evidence links and Cargo package distribution."""
 
 import argparse
 import re
@@ -24,8 +24,7 @@ ARCHIVES = (
         False,
     ),
 )
-PACKAGED_CAPACITY_DOC = "doc/sync_capacity.md"
-PACKAGED_CAPACITY_ENTRY = "doc/capacity_performance_artifacts/README.md"
+PERFORMANCE_DOC = "doc/performance.md"
 EXPECTED_SNAPSHOT = "e8a1ed724954756d48c3d5216cbd13ac39a0cb81"
 
 
@@ -43,43 +42,23 @@ def check(package_list: Path) -> bool:
 
     packaged = {line.strip().replace("\\", "/").removeprefix("./") for line in lines if line.strip()}
     ok = True
+    if PERFORMANCE_DOC not in packaged:
+        fail(PERFORMANCE_DOC, "consolidated performance document must be included in the Cargo package list")
+        ok = False
+    else:
+        try:
+            content = (root / PERFORMANCE_DOC).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            fail(PERFORMANCE_DOC, f"cannot read packaged performance document: {error}")
+            ok = False
+        else:
+            links = SNAPSHOT_URL.findall(content)
+            for _, archive, _, _ in ARCHIVES:
+                if not any(sha == EXPECTED_SNAPSHOT and target == archive for sha, target in links):
+                    fail(PERFORMANCE_DOC, f"must link directly to fixed evidence snapshot {archive}")
+                    ok = False
+
     snapshots = []
-    if PACKAGED_CAPACITY_DOC not in packaged:
-        fail(PACKAGED_CAPACITY_DOC, "capacity performance document must be included in the Cargo package list")
-        ok = False
-    else:
-        try:
-            content = (root / PACKAGED_CAPACITY_DOC).read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            fail(PACKAGED_CAPACITY_DOC, f"cannot read packaged performance document: {error}")
-            ok = False
-        else:
-            links = SNAPSHOT_URL.findall(content)
-            if not any(sha == EXPECTED_SNAPSHOT and target == ARCHIVES[1][1] for sha, target in links):
-                fail(PACKAGED_CAPACITY_DOC, "must link directly to the fixed complete capacity evidence snapshot")
-                ok = False
-
-    if PACKAGED_CAPACITY_ENTRY not in packaged:
-        fail(PACKAGED_CAPACITY_ENTRY, "capacity performance entry must be included in the Cargo package list")
-        ok = False
-    else:
-        try:
-            content = (root / PACKAGED_CAPACITY_ENTRY).read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            fail(PACKAGED_CAPACITY_ENTRY, f"cannot read packaged performance entry: {error}")
-            ok = False
-        else:
-            links = SNAPSHOT_URL.findall(content)
-            if not any(sha == EXPECTED_SNAPSHOT and target == ARCHIVES[1][1] for sha, target in links):
-                fail(PACKAGED_CAPACITY_ENTRY, "must link directly to the fixed complete capacity evidence snapshot")
-                ok = False
-            if (
-                "this markdown guide is included in the crate package" not in content.lower()
-                or "this markdown guide is not included in the crate package" in content.lower()
-            ):
-                fail(PACKAGED_CAPACITY_ENTRY, "must state that this Markdown guide is included in the crate package")
-                ok = False
-
     for readme, archive, representative, must_be_packaged in ARCHIVES:
         path = root / readme
         if must_be_packaged and readme not in packaged:

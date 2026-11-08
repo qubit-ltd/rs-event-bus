@@ -10,7 +10,7 @@ Online access is required. The snapshot preserves the historical evidence and
 does not guarantee that its original binaries remain available or that another
 host will reproduce the reported performance.
 
-See [the performance decision](../ordering_performance.md). These artifacts
+See [the performance decision](../performance.md). These artifacts
 preserve the measurements independently of the temporary execution directory.
 
 - `paired_samples.txt`: exact original paired-run output, including all 672
