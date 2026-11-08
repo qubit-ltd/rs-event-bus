@@ -19,8 +19,8 @@ concurrency:
 
 jobs:
   large-timeout-macos:
-    name: Large timeout tests (macos-14)
-    runs-on: macos-14
+    name: Large timeout tests (macos-15)
+    runs-on: macos-15
     timeout-minutes: 15
     permissions:
       contents: read
