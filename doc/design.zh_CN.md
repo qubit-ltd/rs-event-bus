@@ -1207,14 +1207,16 @@ lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 
 
 每轮先轮转 poll 已启动任务，再推进单个 receiver 操作，最后在有额度时 receive/dispatch。结算退避以及在途异步 settle 仍允许 poll 已启动 handler，但同一个 receiver 不并发 receive。自然 `ReceiveOutcome::Closed` 会停止后续 receive reservation，并排空 facade 已接收的 buffered delivery、task、handler completion、settlement 和 retry 后再成功返回；provider 队列中尚未被 facade 接收的消息不在排空范围内。显式 `Immediate` 仍沿用原有取消语义。丢弃 `run` future 是暂停：owned 工作、lane、token、计时状态仍归 session；恢复 run 或 shutdown 接管继续推进，不隐式 spawn。
 
-`close().await` 停止并关闭订阅；receiver 清理成功并注销后，session 会在释放内部锁后丢弃自己的 handler 回调及捕获对象。暂停 session 或关闭失败时保留回调，以便恢复或重试。已关闭句柄仍可读取 run state、terminal failure 和 delivery metrics；应用的其他引用仍会独立延长回调生命周期。Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
+`close().await` 停止并关闭订阅；receiver 清理成功并注销后，session 会在释放内部锁后丢弃自己的 handler 回调及捕获对象。暂停 session 或 receiver close 失败时保留 session，以便恢复或重试。facade 操作静止且 provider shutdown 成功返回后，shutdown 会处置剩余 session，包括 receiver close 失败的 session；规范化 close error 仍可观察，shutdown 也仍可能返回该错误。这种最终处置不表示异步 receiver close 已成功；应用独立持有的回调引用不属于此处置边界。provider shutdown 失败或取消时不会执行最终处置。已关闭句柄仍可读取 run state、terminal failure 和 delivery metrics。Drop 处置 receiver，按 provider 的 durable/ephemeral 语义清理。这与同步 handle 的 Drop 不取消语义不同。取消 receive future 不等于销毁 receiver；取消结算不伪造 Accept/Reject，已发起尝试仍计入预算。
 
 ### 9.5 `AsyncEventBus::subscribe` 与未启动订阅
 
 `subscribe` 在 SPI 侧建好接收器后立即返回；如果调用方从未 `run()` 就 `shutdown`，
 `close_unstarted_subscriptions` 会对每个 control `lease()` 并 `close_inner()`，确保
-provider 侧接收器被正确关闭、不留悬挂订阅。若 `subscribe` 完成时 bus 已不是 `Running`，
-接收器会被立即关闭并返回 `SubscribeError::Closed`。
+尝试关闭 provider receiver。receiver close 成功时记录并清理；失败时保留 session 与规范化
+error，以便重试或由最终 shutdown 清理。provider shutdown 成功返回后，仍剩余的 control
+会被处置。此 fallback 释放 facade 所有的资源，但不表示 receiver close 已成功。若 `subscribe`
+完成时 bus 已不是 `Running`，接收器会被立即关闭并返回 `SubscribeError::Closed`。
 
 ### 9.6 有限结算重试
 
@@ -1236,11 +1238,18 @@ shutdown(mode: ShutdownMode).await
   ├─ 通知所有 control 停止（Graceful: 完成 in-flight；Immediate: 尽快返回）
   ├─ 对每个 control: shutdown(mode) —— lease session → drain（Graceful）→ close_inner
   ├─ 等待 runners_stopped（有 timeout 则以 Timer 计时，超时 TimedOut）
-  ├─ catch_spi_future(spi.shutdown(mode))
-  └─ lifecycle Closed
+  ├─ catch_spi_future(spi.shutdown(mode)) → Err：保留 session，仍可重试
+  ├─ 返回 Ok(outcome)：处置剩余 control
+  ├─ 缓存 report 并设 lifecycle Closed
+  └─ 返回保留的 close errors，或 report
 ```
 
 `Immediate` 同样可以加强正在进行的 `Graceful`（control 的停止级别只升不降）。
+
+此处 provider shutdown 成功是指 SPI 调用返回 `Ok(outcome)`；`Ok(ShutdownOutcome::TimedOut)`
+不表示所有 provider 后台工作都已完成。provider shutdown 失败或取消不会触发最终 control
+处置。provider shutdown 成功后，资源处置与报告 receiver close 错误可以同时发生。重复
+shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹掉关闭错误。
 
 调用方有界等待不等于进程强制退出：两次 `Graceful` 分别设 timeout，处理 `ShutdownError::TimedOut`，最终未完成交外部监督器。`Immediate` 仍可能等待不合作 handler/SPI，不作为超时救援；取消 future 后由协调器恢复。可执行同步/异步示例见[用户手册](user_guide.zh_CN.md#同步总线的停机流程)。
 

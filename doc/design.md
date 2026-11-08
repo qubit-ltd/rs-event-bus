@@ -1290,15 +1290,19 @@ Lanes are keyed by `(topic, key, subscription_id)`. Queued same-key messages con
 
 Each turn polls started tasks in rotation, advances one receiver operation, then receives/dispatches when capacity allows. Settlement backoff and an in-flight async settle still allow polling started handlers, while that receiver never receives concurrently. A natural `ReceiveOutcome::Closed` disables further receive reservations and drains the facade-owned buffered deliveries, tasks, handler completions, settlements, and retries before `run` returns successfully. It does not recover messages still queued inside a provider. Explicit `Immediate` shutdown retains its cancellation behavior. Dropping `run` pauses: owned work, lanes, tokens, and timing remain in the session. Resuming run or shutdown takes over without implicit spawn.
 
-`close().await` stops and closes one subscription; after successful receiver cleanup and deregistration, the session drops its handler callback and captures outside internal locks. A paused session or failed close retains the callback for resume/retry. The closed handle still exposes run state, terminal cause, and delivery metrics; external references to the callback remain alive independently. Drop disposes its receiver under the provider's durable/ephemeral semantics. This differs from the non-cancelling synchronous handle Drop. Cancelling receive is not destroying the receiver. Cancelling settlement fabricates neither Accept nor Reject; a started attempt remains charged to the budget.
+`close().await` stops and closes one subscription; after successful receiver cleanup and deregistration, the session drops its handler callback and captures outside internal locks. A paused session or failed receiver close retains the session for resume or retry. Once facade operations are quiescent and provider shutdown returns successfully, shutdown disposes any remaining sessions, including sessions whose receiver close failed. The canonical close error remains observable and may still be returned by shutdown. This final disposal does not imply that asynchronous receiver close succeeded, and independent callback references remain outside this ownership boundary. A failed or cancelled provider shutdown attempt does not perform final disposal. The closed handle still exposes run state, terminal cause, and delivery metrics. Drop disposes its receiver under the provider's durable/ephemeral semantics. This differs from the non-cancelling synchronous handle Drop. Cancelling receive is not destroying the receiver. Cancelling settlement fabricates neither Accept nor Reject; a started attempt remains charged to the budget.
 
 ### 9.5 `AsyncEventBus::subscribe` and subscriptions that never start
 
 `subscribe` returns as soon as the SPI receiver exists. If the caller never calls
 `run()` and then `shutdown`s, `close_unstarted_subscriptions` `lease()`s each control
-and `close_inner()`s it, so the provider receiver is closed and no subscription is
-left hanging. If `subscribe` completes when the bus is no longer `Running`, the
-receiver is closed immediately and the call returns `SubscribeError::Closed`.
+and `close_inner()`s it. A successful receiver close is recorded and cleaned up; a
+failed close retains its session and canonical error for retry or final shutdown
+cleanup. After provider shutdown returns successfully, any remaining control is
+disposed. This fallback releases facade-owned resources but does not imply that
+receiver close succeeded. If `subscribe` completes when the bus is no longer
+`Running`, the receiver is closed immediately and the call returns
+`SubscribeError::Closed`.
 
 ### 9.6 Finite settlement retries
 
@@ -1320,11 +1324,15 @@ shutdown(mode: ShutdownMode).await
   ├─ tell every control to stop (Graceful: finish in-flight; Immediate: return as soon as possible)
   ├─ for each control: shutdown(mode) — lease the session → drain (Graceful) → close_inner
   ├─ wait for runners_stopped (a timeout is measured with Timer; expiry is TimedOut)
-  ├─ catch_spi_future(spi.shutdown(mode))
-  └─ lifecycle Closed
+  ├─ catch_spi_future(spi.shutdown(mode)) → Err: retain sessions; remain retryable
+  ├─ on Ok(outcome): dispose remaining controls
+  ├─ cache report and set lifecycle Closed
+  └─ return retained close errors, or the report
 ```
 
 `Immediate` can also strengthen a `Graceful` shutdown already in progress. A control's stop level only rises.
+
+Provider shutdown succeeds here when the SPI call returns `Ok(outcome)`; `Ok(ShutdownOutcome::TimedOut)` does not mean all provider background work has completed. A failed or cancelled provider shutdown does not trigger final control disposal. After successful provider shutdown, disposal and reporting a receiver-close error can occur together. Repeated shutdown returns the cached report or retained canonical close errors; it does not erase close errors.
 
 A bounded caller wait is not forced process exit. Use two `Graceful` waits with individual timeouts, handle `ShutdownError::TimedOut`, and hand incomplete cleanup to an external supervisor. `Immediate` can still wait for an uncooperative handler/SPI and is not a timeout rescue. Cancelled futures resume through coordinator state. See the [compiled sync/async policy](user_guide.md#shut-down-a-sync-bus).
 
