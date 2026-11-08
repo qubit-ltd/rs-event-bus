@@ -34,6 +34,8 @@ jobs:
           components: rust-src
       - name: Prepare local path dependencies
         run: ./.infra/bin/prepare-local-path-dependencies.sh
+      - name: Record Rust compiler version
+        run: rustc +1.94.0 -Vv
       - name: Run large-timeout integration tests
         run: cargo +1.94.0 test --locked --test large_timeout_tests
       - name: Run large-timeout wait-entry tests
@@ -46,7 +48,7 @@ jobs:
       pages: write
       id-token: write
     # Pin the upstream workflow version; review its input contract before upgrading.
-    uses: qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@22e34b76a52b6a9c5c09ddf3fa1fa58b07c46f06
+    uses: qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@2c965cad450e9f0e4d01cf1e5985e6d5e11e75b4
     with:
       verify-extra-script: |
         python3 scripts/check_documentation_examples.py --check-snapshot-content --fetch-snapshot
