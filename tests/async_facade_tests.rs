@@ -1057,6 +1057,16 @@ fn test_async_subscription_preserves_order_for_the_same_ordering_key() {
 
 #[test]
 fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler() {
+    const CASE: &str = "immediate-shutdown-lane-waiter";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_handler",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
+
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
@@ -1105,9 +1115,11 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
     }
     assert_eq!(state.lock().unwrap().1, 1);
 
-    let shutdown_bus = bus.clone();
-    let shutdown = std::thread::spawn(move || block_on(shutdown_bus.shutdown(ShutdownMode::Immediate)));
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(matches!(
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
+        Poll::Pending
+    ));
     assert_eq!(state.lock().unwrap().1, 1, "Immediate must not start lane-waiting work");
     let wakers = {
         let mut state = state.lock().unwrap();
@@ -1117,7 +1129,7 @@ fn test_immediate_shutdown_drops_same_key_lane_waiters_but_finishes_started_hand
     for waker in wakers {
         waker.wake();
     }
-    let _ = shutdown.join().unwrap().unwrap();
+    let _ = block_on(shutdown).unwrap();
     runner.join().unwrap().unwrap();
     assert_eq!(
         spi.settlement_count(),
