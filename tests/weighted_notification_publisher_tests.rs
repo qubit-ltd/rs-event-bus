@@ -343,6 +343,49 @@ fn test_detailed_rejection_returns_queue_capacity_and_original_payload() {
 }
 
 #[test]
+fn test_detailed_queue_rejection_releases_its_temporary_weight_reservation() {
+    let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new("weighted.detailed.reservation").unwrap(),
+        nz(1),
+        nz(3),
+        move |_| {
+            observed_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+        },
+    )
+    .unwrap();
+
+    publisher.try_publish("active".to_owned(), nz(1)).unwrap();
+    observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    publisher.try_publish("queued".to_owned(), nz(1)).unwrap();
+    let error = publisher
+        .try_publish_detailed("queue-full".to_owned(), nz(1))
+        .expect_err("waiting queue is full");
+    assert_eq!(NotificationRejectionReason::QueueCapacity, error.reason());
+    drop(error.into_payload());
+
+    release_tx.send(()).unwrap();
+    observed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker started the queued item");
+    publisher
+        .try_publish_detailed("after-rejection".to_owned(), nz(2))
+        .expect("failed queue admission released its temporary reservation");
+
+    release_tx.send(()).unwrap();
+    observed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker started the final item");
+    release_tx.send(()).unwrap();
+    publisher.close().unwrap();
+}
+
+#[test]
 fn test_detailed_rejection_returns_closed_reason_and_original_payload() {
     let bus = EventBus::local(LocalEventBusConfig::new()).expect("local event bus");
     let publisher = WeightedNotificationPublisher::new(
