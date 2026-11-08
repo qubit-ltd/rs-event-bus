@@ -79,3 +79,24 @@ This entry records a new Linux run and a separate read-only check of platform ev
 - Workflow dispatch [run 42494236486](https://github.com/qubit-ltd/rs-event-bus/actions/runs/42494236486) completed the focused job successfully on macOS 15 arm64 (runner image `20261104.0514.1`, Rust `1.94.0`, host `aarch64-apple-darwin`). `cargo +1.94.0 test --locked --test large_timeout_tests` exited 0 with 5 passed; `cargo +1.94.0 test --locked --lib large_timeout` exited 0 with 4 passed. No large-timeout defect was reproduced, so no production wait logic changed.
 - The overall run was cancelled after its older shared-workflow pin attempted to schedule Miri and AddressSanitizer infrastructure suites on retired macOS 14 labels; both failed before execution, while a Loom suite was still running. This was a runner configuration failure, not a test failure. To keep all existing checks enabled and runnable, the project pin was updated to `rs-infra-ci` revision `2c965cad450e9f0e4d01cf1e5985e6d5e11e75b4`. Comparing the pinned workflow inputs found no contract change; the revision adds the project toolchain's Clippy component and moves the existing Miri/AddressSanitizer matrix to macOS 26 arm64 and Intel labels. The focused large-timeout tests remain on `macos-15`.
 - **EB-REV-002 verified on Linux x86_64 and macOS 15 arm64:** neither platform reproduced the suspected large-timeout defect. No production wait fix is supported by the evidence.
+
+### Final CI rerun (2026-11-08)
+
+- Workflow dispatch [run 42495605806](https://github.com/qubit-ltd/rs-event-bus/actions/runs/42495605806) at commit `0fa397dd63c73390a0de9cbd860cfec01b1493c9` completed successfully after rerunning one failed job.
+- macOS 15 arm64 runner image: `20261104.0514.1`; OS: macOS 15. Rust compiler output:
+
+  ```text
+  rustc 1.94.0 (4a4ef493e 2026-03-02)
+  binary: rustc
+  commit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db
+  commit-date: 2026-03-02
+  host: aarch64-apple-darwin
+  release: 1.94.0
+  LLVM version: 21.1.8
+  ```
+
+- `cargo +1.94.0 test --locked --test large_timeout_tests`: exit code 0; 5 passed, 0 failed.
+- `cargo +1.94.0 test --locked --lib large_timeout`: exit code 0; 4 passed, 0 failed.
+- The first complete run's macOS 26 Intel AddressSanitizer job could not install Rust because `static.rust-lang.org` DNS resolution failed. Rerunning that failed job succeeded, and the complete workflow then concluded success. This was a transient runner network failure; no repository change was needed to address it.
+- The updated shared workflow's existing macOS 26 arm64 and Intel Miri/AddressSanitizer suites, Linux verification, feature matrix, audit, and Loom checks all completed successfully in the final run. No verification gate was skipped or weakened by this update.
+- **Final EB-REV-002 result:** Linux x86_64 and macOS 15 arm64 both passed all large-timeout scenarios; the suspected defect was not reproduced. No production wait fix was made.
