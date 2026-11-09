@@ -133,7 +133,7 @@ fn update_peak(peak: &mut Option<usize>) -> io::Result<()> {
 ///
 /// # Returns
 /// Creation, close, and process-thread measurements for the isolated sample.
-fn sample(subscription_count: usize, direct_shutdown: bool) -> Sample {
+fn sample(subscription_count: usize, scenario: Scenario) -> Sample {
     let started = Instant::now();
     let bus = match EventBus::local(Default::default()) {
         Ok(bus) => bus,
@@ -191,19 +191,46 @@ fn sample(subscription_count: usize, direct_shutdown: bool) -> Sample {
     let creation_ns = started.elapsed().as_nanos();
 
     let close_started = Instant::now();
-    if !direct_shutdown {
+    if scenario == Scenario::SyncCancelShutdown {
         for subscription in &subscriptions {
             if subscription.cancel().is_err() && status == "success" {
                 status = "cancel_failed";
             }
         }
     }
-    if bus.shutdown(ShutdownMode::Immediate).is_err() && status == "success" {
-        status = "shutdown_failed";
+    if scenario == Scenario::SyncConcurrentCancel {
+        let outcomes = thread::scope(|scope| {
+            let handles = subscriptions
+                .iter()
+                .map(|subscription| scope.spawn(move || subscription.cancel()))
+                .collect::<Vec<_>>()
+            ;
+            handles.into_iter().map(|handle| handle.join()).collect::<Vec<_>>()
+        });
+        for outcome in outcomes {
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => status = "cancel_failed",
+                Err(_) => status = "cancel_panicked",
+            }
+        }
+        if subscriptions.iter().any(|subscription| !subscription.is_cancelled()) {
+            status = "subscription_not_cancelled";
+        }
     }
-    let close_ns = close_started.elapsed().as_nanos();
-
-    if direct_shutdown && status == "success" && subscriptions.iter().any(|subscription| !subscription.is_cancelled()) {
+    let close_ns = if scenario == Scenario::SyncConcurrentCancel {
+        let elapsed = close_started.elapsed().as_nanos();
+        if bus.shutdown(ShutdownMode::Immediate).is_err() && status == "success" {
+            status = "shutdown_failed";
+        }
+        elapsed
+    } else {
+        if bus.shutdown(ShutdownMode::Immediate).is_err() && status == "success" {
+            status = "shutdown_failed";
+        }
+        close_started.elapsed().as_nanos()
+    };
+    if scenario == Scenario::SyncDirectShutdown && status == "success" && subscriptions.iter().any(|subscription| !subscription.is_cancelled()) {
         status = "subscription_not_cancelled";
     }
 
@@ -522,14 +549,13 @@ fn block_on<F: Future>(future: F) -> F::Output {
 ///
 /// # Parameters
 /// - `subscription_count`: Number of subscriptions used by the sample.
-/// - `asynchronous`: Whether to run the async local provider sample.
+/// - `scenario`: Lifecycle scenario to run in the child process.
 ///
 /// # Side Effects
 /// Prints one status record to stdout; a caught panic becomes a `panic` record.
 fn run_child_sample(subscription_count: usize, scenario: Scenario) {
     let result = panic::catch_unwind(|| match scenario {
-        Scenario::SyncCancelShutdown => sample(subscription_count, false),
-        Scenario::SyncDirectShutdown => sample(subscription_count, true),
+        Scenario::SyncCancelShutdown | Scenario::SyncConcurrentCancel | Scenario::SyncDirectShutdown => sample(subscription_count, scenario),
         Scenario::Async => sample_async(subscription_count),
     });
     match result {
@@ -597,6 +623,7 @@ fn run_isolated_sample(subscription_count: usize, scenario: Scenario) -> io::Res
     let scenario_argument = match scenario {
         Scenario::SyncCancelShutdown => None,
         Scenario::SyncDirectShutdown => Some("--direct-shutdown"),
+        Scenario::SyncConcurrentCancel => Some("--concurrent-cancel"),
         Scenario::Async => Some("--async"),
     };
     let mut child = Command::new(executable)
@@ -713,6 +740,7 @@ fn main() {
     for subscription_count in COUNTS {
         if let Err(error) = run(subscription_count, Scenario::SyncCancelShutdown)
             .and_then(|()| run(subscription_count, Scenario::SyncDirectShutdown))
+            .and_then(|()| run(subscription_count, Scenario::SyncConcurrentCancel))
             .and_then(|()| run(subscription_count, Scenario::Async))
         {
             eprintln!("thread-profile benchmark failed: {error}");

@@ -41,6 +41,7 @@ use crate::model::Headers;
 use crate::model::ProviderId;
 use crate::model::PublishAcknowledgement;
 use crate::model::StartPosition;
+use crate::model::SubscribeRequest;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
 use crate::model::Topic;
@@ -73,6 +74,176 @@ const WAIT_TIMEOUTS: [Duration; 3] = [
     Duration::from_secs(60 * 60 * 24 * 365 * 100),
     Duration::from_secs(3),
 ];
+
+#[test]
+fn test_sync_cancel_causal_probe_and_poll_intervals() {
+    isolated_with_watchdog(
+        "test_sync_cancel_causal_probe_and_poll_intervals",
+        "sync-cancel-causal",
+        Duration::from_secs(120),
+        || {
+            const CONFIGURATIONS: [(&str, u64, usize); 12] = [
+                ("serial", 10, 16),
+                ("direct-shutdown", 50, 64),
+                ("serial", 50, 256),
+                ("direct-shutdown", 10, 16),
+                ("serial", 10, 64),
+                ("direct-shutdown", 50, 256),
+                ("serial", 50, 16),
+                ("direct-shutdown", 10, 64),
+                ("serial", 10, 256),
+                ("direct-shutdown", 50, 16),
+                ("serial", 50, 64),
+                ("direct-shutdown", 10, 256),
+            ];
+            for trial in 1..=3 {
+                let offset = (trial as usize - 1) * 5;
+                for step in 0..CONFIGURATIONS.len() {
+                    let (mode, interval_ms, count) = CONFIGURATIONS[(offset + step) % CONFIGURATIONS.len()];
+                    run_idle_causal_probe(trial, mode, interval_ms, count);
+                }
+            }
+            run_blocked_handler_controls();
+        },
+    );
+}
+
+fn run_idle_causal_probe(trial: usize, mode: &str, interval_ms: u64, count: usize) {
+    let interval = Duration::from_millis(interval_ms);
+    let provider = local_spi();
+    let bus = EventBus::from_spi(ProviderId::new("cancel-probe").unwrap(), Arc::clone(&provider)).unwrap();
+    let mut subscriptions = Vec::with_capacity(count);
+    for index in 0..count {
+        let topic = Topic::<u32>::new(&format!("cancel-probe.{trial}.{interval_ms}.{index}")).unwrap();
+        let request = SubscribeRequest::new(&format!("cancel-probe-{trial}-{index}"), topic).unwrap();
+        let subscription = bus.subscribe(request, |_| {}).unwrap();
+        subscription.test_control().set_receive_poll_interval(interval);
+        subscription.test_control().enable_cancellation_probe();
+        subscriptions.push(subscription);
+    }
+    thread::sleep(Duration::from_millis(100));
+    let cpu_before = process_cpu_ticks();
+    let started = Instant::now();
+    match mode {
+        "serial" => {
+            for subscription in &subscriptions {
+                subscription.cancel().unwrap();
+            }
+            let elapsed = started.elapsed();
+            let cpu_after = process_cpu_ticks();
+            print_causal_probe_summary(mode, trial, interval_ms, count, elapsed, cpu_before, cpu_after);
+            let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+        }
+        "direct-shutdown" => {
+            let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+            let elapsed = started.elapsed();
+            let cpu_after = process_cpu_ticks();
+            print_causal_probe_summary(mode, trial, interval_ms, count, elapsed, cpu_before, cpu_after);
+        }
+        _ => unreachable!("probe mode is fixed by the configuration table"),
+    }
+    assert!(subscriptions.iter().all(|subscription| {
+        subscription
+            .test_control()
+            .cancellation_probe_snapshot()
+            .is_some_and(|sample| sample.worker_finished.is_some())
+    }));
+    for (index, subscription) in subscriptions.iter().enumerate() {
+        let sample = subscription.test_control().cancellation_probe_snapshot().unwrap();
+        let request_ns = sample.requested.expect("cancellation request recorded").as_nanos();
+        println!(
+            "CANCEL_PROBE_SAMPLE mode={mode} trial={trial} interval_ms={interval_ms} count={count} index={index} request_ns={request_ns} receive_return_after_request_ns={:?} worker_finished_after_request_ns={:?}",
+            sample
+                .receive_returns_after_request
+                .iter()
+                .map(|timestamp| timestamp.as_nanos().saturating_sub(request_ns))
+                .collect::<Vec<_>>(),
+            sample
+                .worker_finished
+                .map(|duration| duration.as_nanos().saturating_sub(request_ns))
+        );
+    }
+}
+
+fn print_causal_probe_summary(
+    mode: &str,
+    trial: usize,
+    interval_ms: u64,
+    count: usize,
+    elapsed: Duration,
+    cpu_before: Option<u64>,
+    cpu_after: Option<u64>,
+) {
+    println!(
+        "CANCEL_PROBE mode={mode} trial={trial} interval_ms={interval_ms} count={count} elapsed_ns={} process_cpu_ticks_delta={:?}",
+        elapsed.as_nanos(),
+        cpu_before
+            .zip(cpu_after)
+            .map(|(before, after)| after.saturating_sub(before))
+    );
+}
+
+fn run_blocked_handler_controls() {
+    for mode in ["cancel", "shutdown"] {
+        let provider = local_spi();
+        let bus = EventBus::from_spi(ProviderId::new("blocked-handler").unwrap(), Arc::clone(&provider)).unwrap();
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let handler_release = Arc::clone(&release);
+        let topic_name = format!("blocked-handler.{mode}");
+        let request = SubscribeRequest::new(mode, Topic::<u32>::new(&topic_name).unwrap()).unwrap();
+        let subscription = bus
+            .subscribe(request, move |_| {
+                entered_sender.send(()).unwrap();
+                let mut released = handler_release.0.lock().unwrap();
+                while !*released {
+                    released = handler_release.1.wait(released).unwrap();
+                }
+            })
+            .unwrap();
+        publish(&*provider, &topic_name, &format!("blocked-{mode}"));
+        entered_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("handler reached its blocking gate");
+
+        let wait_site = if mode == "cancel" {
+            "subscription_worker_join"
+        } else {
+            "active_workers_wait"
+        };
+        let waiting = crate::internal::test_wait_probe::install(wait_site);
+        let (done_sender, done_receiver) = mpsc::channel();
+        let waiter = if mode == "cancel" {
+            let subscription = Arc::new(subscription);
+            let cancel_subscription = Arc::clone(&subscription);
+            thread::spawn(move || done_sender.send(cancel_subscription.cancel().is_ok()).unwrap())
+        } else {
+            let shutdown_bus = bus.clone();
+            thread::spawn(move || {
+                done_sender
+                    .send(shutdown_bus.shutdown(ShutdownMode::Immediate).is_ok())
+                    .unwrap()
+            })
+        };
+        waiting
+            .recv_timeout(Duration::from_secs(2))
+            .expect("lifecycle waiter reached its condition-variable wait while the handler is blocked");
+        assert!(
+            done_receiver.try_recv().is_err(),
+            "waiter cannot finish before the handler gate opens"
+        );
+        {
+            let mut released = release.0.lock().unwrap();
+            *released = true;
+            release.1.notify_all();
+        }
+        assert!(done_receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        waiter.join().unwrap();
+        println!(
+            "CANCEL_PROBE_BLOCKED mode={mode} wait_site={wait_site} released_after_wait_signal=true result=success"
+        );
+    }
+}
 
 #[test]
 fn test_large_timeout_probe_local_receive() {
@@ -355,6 +526,10 @@ fn test_notification_close_and_join_share_total_budget() {
 }
 
 fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
+    isolated_with_watchdog(test_name, case, WATCHDOG, child);
+}
+
+fn isolated_with_watchdog(test_name: &str, case: &str, watchdog: Duration, child: impl FnOnce()) {
     if std::env::var(CASE_ENV).as_deref() == Ok(case) {
         child();
         return;
@@ -379,7 +554,7 @@ fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("isolated unit test starts");
-    let deadline = Instant::now() + WATCHDOG;
+    let deadline = Instant::now() + watchdog;
     loop {
         if let Some(status) = child.try_wait().expect("child status is available") {
             assert!(status.success(), "isolated wait probe failed: {case}");
@@ -388,9 +563,24 @@ fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
         if Instant::now() >= deadline {
             child.kill().expect("hung unit test is killed");
             child.wait().expect("killed unit test is reaped");
-            panic!("isolated wait probe exceeded its 10-second watchdog: {case}");
+            panic!("isolated wait probe exceeded its {watchdog:?} watchdog: {case}");
         }
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn process_cpu_ticks() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let fields = stat.rsplit_once(')')?.1.split_whitespace().collect::<Vec<_>>();
+        let user_ticks = fields.get(11)?.parse::<u64>().ok()?;
+        let system_ticks = fields.get(12)?.parse::<u64>().ok()?;
+        Some(user_ticks.saturating_add(system_ticks))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 

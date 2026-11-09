@@ -69,6 +69,14 @@ mod coordinator_messages;
 #[path = "worker/internal/stop_cleanup.rs"]
 mod stop_cleanup;
 
+fn receive_poll_interval_for(control: &SubscriptionControl) -> Duration {
+    #[cfg(test)]
+    if let Some(interval) = control.receive_poll_interval_override() {
+        return interval;
+    }
+    receive_poll_interval()
+}
+
 /// Owns a receiver on one thread until all started handlers and provider
 /// cleanup finish. Payloads move to granted jobs, while tracking, lanes and
 /// retries remain here. Provider failures are recorded on `control` and emitted
@@ -177,7 +185,7 @@ fn run_subscription_worker_body<T>(
 
             let terminal = control.terminal_failure().is_some();
             let (completed, mut wait) = if terminal {
-                (Vec::new(), receive_poll_interval())
+                (Vec::new(), receive_poll_interval_for(&control))
             } else {
                 progress_owned_settlements(
                     &inner,
@@ -188,7 +196,7 @@ fn run_subscription_worker_body<T>(
                     &mut *spi_subscription,
                     &mut owned,
                     stopping,
-                    receive_poll_interval(),
+                    receive_poll_interval_for(&control),
                 )
             };
             remove_completed_deliveries(&mut owned, completed, &control);
@@ -380,6 +388,10 @@ fn run_subscription_worker_body<T>(
                         || spi_subscription.receive(wait),
                     )
                     .and_then(identity);
+                    #[cfg(test)]
+                    if control.is_cancelled() {
+                        control.record_receive_return_after_cancel();
+                    }
                     inner.scheduler.set_dispatch_active(control.id, true);
                     match result {
                         Ok(ReceiveOutcome::Message(message)) => {

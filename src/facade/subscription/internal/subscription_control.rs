@@ -14,6 +14,10 @@ use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use qubit_id::Id;
 
@@ -44,6 +48,29 @@ pub(crate) struct SubscriptionControl {
     finished: Mutex<bool>,
     /// Wakes cancellation callers waiting for worker completion.
     finished_changed: Condvar,
+    /// Optional per-subscription causal trace used by isolated tests.
+    #[cfg(test)]
+    cancellation_probe: Mutex<Option<CancellationProbe>>,
+    /// Per-subscription receive poll override used by isolated tests.
+    #[cfg(test)]
+    receive_poll_interval: Mutex<Option<Duration>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct CancellationProbe {
+    started: Instant,
+    requested: Option<Duration>,
+    receive_returns_after_request: Vec<Duration>,
+    worker_finished: Option<Duration>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct CancellationProbeSnapshot {
+    pub(crate) requested: Option<Duration>,
+    pub(crate) receive_returns_after_request: Vec<Duration>,
+    pub(crate) worker_finished: Option<Duration>,
 }
 
 impl SubscriptionControl {
@@ -87,6 +114,10 @@ impl SubscriptionControl {
             close_error: Mutex::new(None),
             finished: Mutex::new(false),
             finished_changed: Condvar::new(),
+            #[cfg(test)]
+            cancellation_probe: Mutex::new(None),
+            #[cfg(test)]
+            receive_poll_interval: Mutex::new(None),
         })
     }
 
@@ -176,7 +207,74 @@ impl SubscriptionControl {
     /// admission. The gate is never held across user callbacks.
     pub(in crate::facade) fn request_cancel(&self) {
         let _start = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        {
+            let mut probe = self.cancellation_probe.lock().unwrap_or_else(PoisonError::into_inner);
+            self.cancelled.store(true, Ordering::Release);
+            if let Some(probe) = probe.as_mut() {
+                probe.requested.get_or_insert_with(|| probe.started.elapsed());
+            }
+        }
+        #[cfg(not(test))]
         self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Enables an opt-in trace for this subscription alone.
+    #[cfg(test)]
+    pub(crate) fn enable_cancellation_probe(&self) {
+        *self.cancellation_probe.lock().unwrap_or_else(PoisonError::into_inner) = Some(CancellationProbe {
+            started: Instant::now(),
+            requested: None,
+            receive_returns_after_request: Vec::new(),
+            worker_finished: None,
+        });
+    }
+
+    /// Records one SPI receive return after cancellation has been requested.
+    #[cfg(test)]
+    pub(crate) fn record_receive_return_after_cancel(&self) {
+        if let Some(probe) = self
+            .cancellation_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            if probe.requested.is_some() {
+                probe.receive_returns_after_request.push(probe.started.elapsed());
+            }
+        }
+    }
+
+    /// Records a test-only receive poll override for this subscription.
+    #[cfg(test)]
+    pub(crate) fn set_receive_poll_interval(&self, interval: Duration) {
+        *self
+            .receive_poll_interval
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(interval);
+    }
+
+    /// Returns the test-only poll override, if configured.
+    #[cfg(test)]
+    pub(crate) fn receive_poll_interval_override(&self) -> Option<Duration> {
+        *self
+            .receive_poll_interval
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Returns the causal trace captured for this subscription.
+    #[cfg(test)]
+    pub(crate) fn cancellation_probe_snapshot(&self) -> Option<CancellationProbeSnapshot> {
+        self.cancellation_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|probe| CancellationProbeSnapshot {
+                requested: probe.requested,
+                receive_returns_after_request: probe.receive_returns_after_request.clone(),
+                worker_finished: probe.worker_finished,
+            })
     }
 
     /// Stores the provider close failure for lifecycle callers to observe.
@@ -193,6 +291,15 @@ impl SubscriptionControl {
     /// Marks receiver cleanup complete and wakes concurrent cancellers.
     pub(in crate::facade) fn mark_finished(&self) {
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        #[cfg(test)]
+        if let Some(probe) = self
+            .cancellation_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            probe.worker_finished = Some(probe.started.elapsed());
+        }
         self.finished_changed.notify_all();
     }
 

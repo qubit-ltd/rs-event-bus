@@ -136,6 +136,8 @@ impl LifecycleTracker {
                     .unwrap_or_else(PoisonError::into_inner);
                 state = next_state;
             } else {
+                #[cfg(test)]
+                crate::internal::test_wait_probe::announce("active_workers_wait");
                 state = self.wait(state);
             }
         }

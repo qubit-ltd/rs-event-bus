@@ -1926,3 +1926,8 @@ These are host-specific idle-subscription results, not a cross-machine latency
 threshold. The long legacy sync interval includes per-subscription cancellation
 and does not isolate its cause. This measurement alone does not demonstrate a
 cancellation-wakeup defect or justify changing cancellation behavior.
+
+
+### Synchronous local cancellation causal check (2026-11-09)
+
+The uninstrumented `sync-concurrent-cancel` series remains inconclusive by itself. A test-only per-subscription trace compared 10 ms and 50 ms intervals over three interleaved runs per mode/count/interval and captured request, receive return, and worker completion. Receive-return latency followed the configured interval and serial cancel elapsed time was consistently higher at 50 ms. Synchronized blocked-handler controls also confirmed that a deliberately held handler delays both `cancel()` and `shutdown()` until released. This supports polling as a substantial contributor to idle serial-cancel latency in this test setup, while also demonstrating expected handler wait behavior. Probe overhead, unisolated host load, and the direct-shutdown 10 ms / 256 spread constrain the conclusion; no production default change is justified. Raw per-subscription data and host/toolchain provenance are in [local shutdown measurements](local-shutdown-measurements-20261109.md), [causal probe CSV](cancellation-causal-probe-20261109.csv), and [captured probe log](cancellation-causal-probe-20261109.raw.txt).

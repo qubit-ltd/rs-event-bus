@@ -10,10 +10,12 @@ use std::io;
 /// Measurement lifecycle selected for an isolated local-threads sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Scenario {
-    /// Cancel every subscription before timing bus shutdown.
+    /// Cancel subscriptions serially, then shut down within the timed interval.
     SyncCancelShutdown,
     /// Keep every subscription alive and uncancelled during bus shutdown.
     SyncDirectShutdown,
+    /// Call cancel concurrently and wait for all calls.
+    SyncConcurrentCancel,
     /// Drive async receive runners while shutting down the bus.
     Async,
 }
@@ -25,7 +27,8 @@ impl Scenario {
             [] => Ok(Self::SyncCancelShutdown),
             [mode] if mode == "--async" => Ok(Self::Async),
             [mode] if mode == "--direct-shutdown" => Ok(Self::SyncDirectShutdown),
-            _ => Err("expected no mode, --async, or --direct-shutdown"),
+            [mode] if mode == "--concurrent-cancel" => Ok(Self::SyncConcurrentCancel),
+            _ => Err("expected no mode, --async, --direct-shutdown, or --concurrent-cancel"),
         }
     }
 
@@ -34,16 +37,18 @@ impl Scenario {
         match self {
             Self::SyncCancelShutdown => "sync",
             Self::SyncDirectShutdown => "sync-direct-shutdown",
+            Self::SyncConcurrentCancel => "sync-concurrent-cancel",
             Self::Async => "async",
         }
     }
 
-    /// Identifies the measured shutdown boundary without changing legacy
+    /// Identifies the measured operation boundary without changing legacy
     /// values.
     pub(crate) const fn duration_kind(self) -> &'static str {
         match self {
             Self::SyncCancelShutdown => "cancel_shutdown_ns",
             Self::SyncDirectShutdown => "shutdown_only_ns",
+            Self::SyncConcurrentCancel => "cancel_request_wait_ns",
             Self::Async => "async_receive_shutdown_ns",
         }
     }
@@ -89,6 +94,8 @@ mod tests {
         assert_eq!(Scenario::SyncDirectShutdown.label(), "sync-direct-shutdown");
         assert_eq!(Scenario::Async.label(), "async");
         assert_eq!(Scenario::SyncDirectShutdown.duration_kind(), "shutdown_only_ns");
+        assert_eq!(Scenario::parse(&["--concurrent-cancel".into()]), Ok(Scenario::SyncConcurrentCancel));
+        assert_eq!(Scenario::SyncConcurrentCancel.duration_kind(), "cancel_request_wait_ns");
         assert_eq!(Scenario::SyncCancelShutdown.duration_kind(), "cancel_shutdown_ns");
     }
 
@@ -204,6 +211,10 @@ mod tests {
             (false, "child_failed", false),
             (false, "subscribe_failed", false),
             (false, "receiver_failed", false),
+            (false, "cancel_failed", false),
+            (false, "cancel_panicked", false),
+            (false, "subscription_not_cancelled", false),
+            (false, "shutdown_failed", false),
         ];
 
         for (timed_out, status, expected) in cases {

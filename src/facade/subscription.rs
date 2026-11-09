@@ -67,6 +67,12 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Exposes test-only instance instrumentation to in-crate probes.
+    #[cfg(test)]
+    pub(crate) fn test_control(&self) -> &Arc<SubscriptionControl> {
+        &self.control
+    }
+
     /// Creates a public handle for a successfully started subscription worker.
     ///
     /// # Parameters
@@ -207,6 +213,8 @@ impl Subscription {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(worker) = worker {
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("subscription_worker_join");
             worker.join().map_err(|_| {
                 LifecycleError::Spi(SpiError::Operation {
                     provider_id: "event-bus".into(),
