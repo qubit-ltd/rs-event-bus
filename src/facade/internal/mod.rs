@@ -43,6 +43,3 @@ mod delivery_snapshot_input;
 
 mod shutdown_coordinator_state;
 pub(super) use shutdown_coordinator_state::ShutdownCoordinatorState;
-
-mod finite_wait;
-pub(super) use finite_wait::FiniteWait;

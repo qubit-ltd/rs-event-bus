@@ -1262,6 +1262,14 @@ Both have the signature `(&Topic<T>, Option<Duration>) -> Result<WaitOutcome, Li
   second says the handlers have finished. A test that publishes and then asserts
   should call one of them first.
 
+Finite synchronous waits share the crate-internal `FiniteWait` budget. It uses
+monotonic elapsed time and caps each condition-variable wait to one hour; after
+every wake or timeout, the caller rechecks its completion condition and the
+remaining total budget. Receive waits also honor the configured minimum delay.
+Notification close uses the same budget for completion and worker-join waits.
+The budget bounds condition-variable waits, not mutex acquisition or in-flight
+provider calls.
+
 ### 8.6 Deadlock detection: `BusContextGuard`
 
 Coordinator and handler threads install a thread-local `BusContextGuard` before

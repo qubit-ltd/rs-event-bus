@@ -15,7 +15,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use std::time::Duration;
-use std::time::Instant;
 
 use super::LocalCapacityMonitor;
 use super::LocalEventBusConfig;
@@ -26,6 +25,7 @@ use super::state::LocalQueueState;
 use super::state::LocalSharedState;
 use crate::error::ConfigurationError;
 use crate::error::SpiError;
+use crate::internal::finite_wait::FiniteWait;
 use crate::model::AdmissionRejectionKind;
 use crate::model::AdmissionStatus;
 use crate::model::DestinationAdmission;
@@ -76,6 +76,20 @@ pub struct LocalEventBusSpi {
 }
 
 impl LocalEventBusSpi {
+    /// Wakes synchronous receivers for one topic without changing queue state.
+    #[cfg(test)]
+    pub(crate) fn wake_topic_waiters_for_test(&self, topic: &TopicAddress) {
+        let queues = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live_queues_for_topic(topic);
+        for queue in queues {
+            queue.ready.notify_all();
+        }
+    }
+
     /// Creates a monitor sharing this provider's outstanding-capacity
     /// accounting.
     ///
@@ -129,7 +143,7 @@ impl EventBusSpi for LocalEventBusSpi {
     /// # Errors
     /// This implementation never returns a provider error.
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
-        let started = Instant::now();
+        let budget = timeout.map(FiniteWait::new);
         loop {
             let (version, queues) = {
                 let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -143,7 +157,7 @@ impl EventBusSpi for LocalEventBusSpi {
             if !busy {
                 return Ok(Some(true));
             }
-            let Some(timeout) = timeout else {
+            let Some(budget) = &budget else {
                 let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.change_version != version {
                     continue;
@@ -151,7 +165,7 @@ impl EventBusSpi for LocalEventBusSpi {
                 drop(self.shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner));
                 continue;
             };
-            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+            let Some(remaining) = budget.remaining() else {
                 return Ok(Some(false));
             };
             let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -160,14 +174,11 @@ impl EventBusSpi for LocalEventBusSpi {
             }
             #[cfg(test)]
             crate::internal::test_wait_probe::announce("topic_idle");
-            let (_state, result) = self
+            let (_state, _) = self
                 .shared
                 .changed
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(PoisonError::into_inner);
-            if result.timed_out() {
-                return Ok(Some(false));
-            }
         }
     }
 
@@ -402,7 +413,7 @@ impl EventBusSpi for LocalEventBusSpi {
         let outcome = match mode {
             ShutdownMode::Immediate => ShutdownOutcome::Complete,
             ShutdownMode::Graceful { timeout } => {
-                let started = Instant::now();
+                let budget = FiniteWait::new(timeout);
                 loop {
                     let (version, queues) = {
                         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -417,7 +428,7 @@ impl EventBusSpi for LocalEventBusSpi {
                     if !busy {
                         break ShutdownOutcome::Complete;
                     }
-                    let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                    let Some(remaining) = budget.remaining() else {
                         break ShutdownOutcome::TimedOut;
                     };
                     let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -426,14 +437,11 @@ impl EventBusSpi for LocalEventBusSpi {
                     }
                     #[cfg(test)]
                     crate::internal::test_wait_probe::announce("graceful_shutdown");
-                    let (_state, result) = self
+                    let (_state, _) = self
                         .shared
                         .changed
                         .wait_timeout(state, remaining)
                         .unwrap_or_else(PoisonError::into_inner);
-                    if result.timed_out() {
-                        break ShutdownOutcome::TimedOut;
-                    }
                 }
             }
         };

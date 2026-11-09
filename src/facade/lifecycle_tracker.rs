@@ -24,7 +24,7 @@ pub(crate) use internal::DeliveryTrackerGuard;
 
 use self::internal::TrackerState;
 use crate::facade::WaitOutcome;
-use crate::facade::internal::FiniteWait;
+use crate::internal::finite_wait::FiniteWait;
 
 /// Tracks worker and received-delivery lifetimes without invoking user code.
 pub(crate) struct LifecycleTracker {

@@ -7,6 +7,7 @@
 // =============================================================================
 //! Implementation primitives shared by otherwise independent internal modules.
 
+pub(crate) mod finite_wait;
 pub(crate) mod panic_payload;
 pub(crate) mod sync;
 #[cfg(test)]

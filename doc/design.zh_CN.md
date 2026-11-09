@@ -1183,6 +1183,11 @@ provider 的全部积压。
   两者互补：前者确认 provider 队列排空，后者确认 handler 都跑完。测试里常见的
   "publish 后立刻断言"应先调用其中之一。
 
+有限同步等待共用 crate 内部的 `FiniteWait` 预算。它使用单调时钟计算已用时间，并将每次
+条件变量等待限制为不超过一小时；每次唤醒或超时后，调用方都会重新检查完成条件和剩余总预算。
+接收等待还会遵守配置的最小延迟。通知发布器关闭时，完成通知和 worker join 等待共用同一预算。
+该预算限制条件变量等待，不限制获取互斥锁或正在执行的 provider 调用。
+
 ### 8.6 死锁检测：`BusContextGuard`
 
 协调线程与 handler 线程进入用户代码前会设置 thread-local `BusContextGuard`。

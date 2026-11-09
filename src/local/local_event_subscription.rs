@@ -22,6 +22,7 @@ use super::state::LocalSettlementHandle;
 use super::state::LocalSettlementState;
 use super::state::LocalSharedState;
 use crate::error::SpiError;
+use crate::internal::finite_wait::FiniteWait;
 use crate::spi::DeliveryDisposition;
 use crate::spi::EventSubscriptionSpi;
 use crate::spi::ReceiveOutcome;
@@ -65,7 +66,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
     /// # Errors
     /// Returns an operation error if the delivery token sequence is exhausted.
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
-        let started = Instant::now();
+        let budget = FiniteWait::new(timeout);
         let mut state = self.queue.lock();
         loop {
             if state.closed {
@@ -102,29 +103,19 @@ impl EventSubscriptionSpi for LocalEventSubscription {
             if timeout.is_zero() {
                 return Ok(ReceiveOutcome::TimedOut);
             }
-            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+            let Some(remaining) = budget.remaining() else {
                 return Ok(ReceiveOutcome::TimedOut);
             };
-            if remaining.is_zero() {
-                return Ok(ReceiveOutcome::TimedOut);
-            }
             let delay = state.next_ready_delay(now);
             let wait_for = delay.filter(|delay| *delay < remaining).unwrap_or(remaining);
             #[cfg(test)]
             crate::internal::test_wait_probe::announce("local_receive");
-            let (next, result) = self
+            let (next, _) = self
                 .queue
                 .ready
                 .wait_timeout(state, wait_for)
                 .unwrap_or_else(PoisonError::into_inner);
             state = next;
-            if result.timed_out() && timeout.checked_sub(started.elapsed()).is_none() {
-                return if state.closed {
-                    Ok(ReceiveOutcome::Closed)
-                } else {
-                    Ok(ReceiveOutcome::TimedOut)
-                };
-            }
         }
     }
 

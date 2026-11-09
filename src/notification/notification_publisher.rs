@@ -20,7 +20,6 @@ use std::sync::mpsc::TrySendError as ChannelTrySendError;
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use super::internal::QueuedNotification;
 use super::internal::WeightBudget;
@@ -35,6 +34,7 @@ use super::notification_stats::NotificationStats;
 use super::notification_stats_snapshot::NotificationStatsSnapshot;
 use super::try_publish_error::TryPublishError;
 use crate::EventBus;
+use crate::internal::finite_wait::FiniteWait;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::PublishOptions;
 use crate::model::PublishRequest;
@@ -506,7 +506,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// deadline expires, or when the worker panics.
     fn close_inner(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.reject_worker_thread()?;
-        let started = Instant::now();
+        let budget = timeout.map(FiniteWait::new);
         let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner).take();
         drop(sender);
         let (lock, changed) = &*self.state;
@@ -514,8 +514,11 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         while state.exit.is_none() {
             state = match timeout {
                 None => changed.wait(state).unwrap_or_else(PoisonError::into_inner),
-                Some(limit) => {
-                    let remaining = remaining_timeout(limit, started)?;
+                Some(_) => {
+                    let remaining = budget
+                        .as_ref()
+                        .and_then(FiniteWait::remaining)
+                        .ok_or_else(notification_close_timeout)?;
                     #[cfg(test)]
                     crate::internal::test_wait_probe::announce("notification_close");
                     let (next_state, _) = changed
@@ -527,7 +530,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         }
         let exit = state.exit;
         drop(state);
-        self.finish_join(timeout, started)?;
+        self.finish_join(budget.as_ref())?;
         match exit {
             Some(WorkerExit::Drained) => Ok(()),
             Some(WorkerExit::Panicked) | None => Err(io::Error::other("notification publisher worker panicked")),
@@ -553,8 +556,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// Joins the worker only after the operating system reports it exited.
     ///
     /// # Parameters
-    /// - `timeout`: maximum total wait, or `None` to wait without a deadline.
-    /// - `started`: instant at which the enclosing close operation began.
+    /// - `budget`: the enclosing close operation's finite wait budget, if any.
     ///
     /// # Returns
     /// `Ok(())` after joining the worker.
@@ -562,7 +564,7 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     /// # Errors
     /// Returns `TimedOut` when the deadline expires or `Other` when the worker
     /// panicked.
-    fn finish_join(&self, timeout: Option<Duration>, started: Instant) -> io::Result<()> {
+    fn finish_join(&self, budget: Option<&FiniteWait>) -> io::Result<()> {
         loop {
             let worker_finished = self
                 .worker
@@ -573,9 +575,14 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             if worker_finished {
                 break;
             }
-            match timeout {
+            match budget {
                 None => thread::sleep(Duration::from_millis(1)),
-                Some(limit) => thread::sleep(remaining_timeout(limit, started)?.min(Duration::from_millis(1))),
+                Some(budget) => thread::sleep(
+                    budget
+                        .remaining()
+                        .ok_or_else(notification_close_timeout)?
+                        .min(Duration::from_millis(1)),
+                ),
             }
         }
         if let Some(worker) = self.worker.lock().unwrap_or_else(PoisonError::into_inner).take() {
@@ -587,21 +594,12 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
     }
 }
 
-/// Returns the remaining close time, or a timeout error after the deadline.
-///
-/// # Parameters
-/// - `limit`: total time allowed for the close operation.
-/// - `started`: instant at which that operation began.
+/// Creates the timeout error used when the shared close budget is exhausted.
 ///
 /// # Returns
-/// The unelapsed portion of `limit`.
-///
-/// # Errors
-/// Returns `TimedOut` when the deadline has elapsed.
-fn remaining_timeout(limit: Duration, started: Instant) -> io::Result<Duration> {
-    limit
-        .checked_sub(started.elapsed())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "notification publisher close timed out"))
+/// An I/O error with kind [`io::ErrorKind::TimedOut`].
+fn notification_close_timeout() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "notification publisher close timed out")
 }
 
 impl<T: Send + Sync + 'static> Drop for NotificationPublisher<T> {

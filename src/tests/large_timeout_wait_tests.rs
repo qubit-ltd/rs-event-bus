@@ -33,6 +33,7 @@ use crate::error::SpiError;
 use crate::internal::test_wait_probe;
 use crate::local::LocalEventBusConfig;
 use crate::local::LocalEventBusProvider;
+use crate::local::LocalEventBusSpi;
 use crate::model::AdmissionStatus;
 use crate::model::EventId;
 use crate::model::Headers;
@@ -108,6 +109,52 @@ fn test_large_timeout_probe_local_receive() {
             );
         }
     });
+}
+
+#[test]
+fn test_local_receive_spurious_wakes_do_not_reset_timeout() {
+    isolated(
+        "test_local_receive_spurious_wakes_do_not_reset_timeout",
+        "receive-spurious-wakes",
+        || {
+            let topic_name = "probe.receive.spurious";
+            let topic = TopicAddress::new(topic_name).unwrap();
+            let config = LocalEventBusConfig::new();
+            let spi = LocalEventBusSpi::new(&config).unwrap();
+            let mut receiver = spi.subscribe(subscription(19, topic_name)).unwrap();
+            let (done_sender, done_receiver) = mpsc::channel();
+            let started = Instant::now();
+            let probe = test_wait_probe::install("local_receive");
+            let timeout = Duration::from_millis(1200);
+            let worker = thread::spawn(move || {
+                let result = receiver.receive(timeout);
+                done_sender.send(result).unwrap();
+            });
+
+            probe
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive entered its first condition-variable wait");
+            for _ in 0..2 {
+                thread::sleep(Duration::from_millis(300));
+                let next_wait = test_wait_probe::install("local_receive");
+                spi.wake_topic_waiters_for_test(&topic);
+                next_wait
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("spurious wake returned to the receive wait loop");
+            }
+
+            let result = done_receiver
+                .recv_timeout(Duration::from_millis(900))
+                .expect("spurious wakes do not restart the 1.2 second total budget");
+            assert!(matches!(result, Ok(ReceiveOutcome::TimedOut)));
+            assert!(started.elapsed() < Duration::from_millis(1950));
+            worker.join().unwrap();
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                spi.shutdown(ShutdownMode::Immediate).unwrap()
+            );
+        },
+    );
 }
 
 #[test]

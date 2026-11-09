@@ -23,7 +23,7 @@ use std::time::Duration;
 use super::internal::ShutdownCoordinatorState;
 use super::shutdown_result::ShutdownResult;
 use crate::error::SpiError;
-use crate::facade::internal::FiniteWait;
+use crate::internal::finite_wait::FiniteWait;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
