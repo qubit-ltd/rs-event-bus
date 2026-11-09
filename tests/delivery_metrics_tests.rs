@@ -10,14 +10,18 @@
 
 mod support;
 
+use std::future::Future;
 use std::future::poll_fn;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -265,6 +269,159 @@ fn test_async_delivery_metrics_gated_phases_and_final_counters() {
     assert_eq!(final_snapshot.settlement_duration_count, 2);
     assert_eq!(final_snapshot.settlement_duration_total_nanos, 11);
     assert_eq!(bus.delivery_metrics(), final_snapshot);
+}
+
+struct HandlerDurationProbe {
+    clock: Arc<ManualMonotonicClock>,
+    drops: Arc<AtomicBool>,
+    advanced_nanos: Arc<AtomicUsize>,
+    return_error: bool,
+}
+
+impl Future for HandlerDurationProbe {
+    type Output = Result<(), DeliveryError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        self.clock.advance(Duration::from_nanos(7)).unwrap();
+        self.advanced_nanos.fetch_add(7, Ordering::SeqCst);
+        if self.return_error {
+            Poll::Ready(Err(DeliveryError::Handler {
+                source: Box::new(std::io::Error::other("probe failure")),
+            }))
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+}
+
+impl Drop for HandlerDurationProbe {
+    fn drop(&mut self) {
+        self.clock.advance(Duration::from_nanos(11)).unwrap();
+        self.advanced_nanos.fetch_add(11, Ordering::SeqCst);
+        self.drops.store(true, Ordering::Release);
+    }
+}
+
+#[test]
+fn test_async_handler_duration_boundary_ready_ok_excludes_future_drop() {
+    assert_ready_handler_duration_boundary(false);
+}
+
+#[test]
+fn test_async_handler_duration_boundary_ready_error_excludes_future_drop() {
+    assert_ready_handler_duration_boundary(true);
+}
+
+#[test]
+fn test_async_handler_duration_boundary_paused_run_includes_suspension() {
+    let clock = ManualMonotonicClock::new();
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("handler-duration-pause").unwrap(),
+        spi.clone(),
+        EventBusFacadeConfig::new(),
+        clock.new_timer(),
+    )
+    .unwrap();
+    let mut subscription = block_on(
+        bus.subscribe(SubscribeRequest::new("duration-pause", Topic::<u32>::new("test.topic").unwrap()).unwrap()),
+    )
+    .unwrap();
+    spi.enqueue(inbound_message(None));
+    let ready = Arc::new(AtomicBool::new(false));
+    let handler_ready = ready.clone();
+    let mut paused = Box::pin(subscription.run(move |_| {
+        let ready = handler_ready.clone();
+        poll_fn(move |_| {
+            if ready.load(Ordering::Acquire) {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+    }));
+    for _ in 0..8 {
+        assert!(poll_once(paused.as_mut()).is_pending());
+        if bus.delivery_metrics().running_handlers == 1 {
+            break;
+        }
+    }
+    assert_eq!(
+        bus.delivery_metrics().running_handlers,
+        1,
+        "handler is suspended before run is dropped"
+    );
+    assert_eq!(bus.delivery_metrics().handler_duration_count, 0);
+    drop(paused);
+    clock.advance(Duration::from_nanos(7)).unwrap();
+    assert_eq!(bus.delivery_metrics().handler_duration_count, 0);
+    clock.advance(Duration::from_nanos(5)).unwrap();
+    ready.store(true, Ordering::Release);
+    let handler_ready = ready.clone();
+    let mut resumed = Box::pin(subscription.run(move |_| {
+        let ready = handler_ready.clone();
+        poll_fn(move |_| {
+            if ready.load(Ordering::Acquire) {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+    }));
+    for _ in 0..8 {
+        assert!(poll_once(resumed.as_mut()).is_pending());
+        if bus.delivery_metrics().handler_duration_count == 1 {
+            break;
+        }
+    }
+    let metrics = bus.delivery_metrics();
+    assert_eq!(metrics.handler_duration_count, 1);
+    assert_eq!(metrics.handler_duration_total_nanos, 12);
+    assert_eq!(metrics.handler_duration_max_nanos, 12);
+    drop(resumed);
+    block_on(subscription.close()).unwrap();
+}
+
+fn assert_ready_handler_duration_boundary(return_error: bool) {
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("handler-duration").unwrap(),
+        spi.clone(),
+        EventBusFacadeConfig::new(),
+        clock.new_timer(),
+    )
+    .unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("duration", Topic::<u32>::new("test.topic").unwrap()).unwrap()))
+            .unwrap();
+    spi.enqueue(inbound_message(None));
+    let drops = Arc::new(AtomicBool::new(false));
+    let advanced_nanos = Arc::new(AtomicUsize::new(0));
+    let handler_drops = drops.clone();
+    let handler_clock = clock.clone();
+    let handler_advanced_nanos = advanced_nanos.clone();
+    let handler_return_error = return_error;
+    let mut run = Box::pin(subscription.run(move |_| HandlerDurationProbe {
+        clock: handler_clock.clone(),
+        drops: handler_drops.clone(),
+        advanced_nanos: handler_advanced_nanos.clone(),
+        return_error: handler_return_error,
+    }));
+    for _ in 0..8 {
+        assert!(poll_once(run.as_mut()).is_pending());
+        if drops.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    assert!(drops.load(Ordering::Acquire), "ready handler future is destroyed");
+    assert_eq!(advanced_nanos.load(Ordering::SeqCst), 18);
+    let metrics = bus.delivery_metrics();
+    assert_eq!(metrics.handler_duration_count, 1);
+    assert_eq!(metrics.handler_duration_total_nanos, 7);
+    assert_eq!(metrics.handler_duration_max_nanos, 7);
+    drop(run);
+    block_on(subscription.close()).unwrap();
 }
 
 #[test]

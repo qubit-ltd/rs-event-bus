@@ -5,7 +5,7 @@
 //
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
-//! Async adapter retaining handler duration through future cleanup.
+//! Async handler timing with distinct ready and early-destruction boundaries.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,7 +20,7 @@ use crate::spi::SpiFuture;
 pub(super) struct HandlerDurationFuture {
     /// User handler future retained until the outer panic boundary drops it.
     future: SpiFuture<'static, Result<(), DeliveryError>>,
-    /// Records duration after the handler future has been destroyed.
+    /// Records at Ready, or after future destruction when dropped before Ready.
     _duration: Option<HandlerDurationGuard>,
 }
 
@@ -29,7 +29,8 @@ impl HandlerDurationFuture {
     ///
     /// # Parameters
     /// - `future`: user handler future to poll.
-    /// - `duration`: guard recording the full handler execution interval.
+    /// - `duration`: guard recording the handler interval through Ready or
+    ///   early future destruction.
     ///
     /// # Returns
     /// An adapter whose fields are destroyed by the surrounding panic boundary.

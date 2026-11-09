@@ -58,10 +58,13 @@ pub struct DeliveryMetricsSnapshot {
     pub abandoned_ephemeral: u64,
     /// Actual user handler invocation samples, including failed, panicked, and
     /// local retry invocations; decoding, filters, and middleware
-    /// short-circuits add none.
+    /// short-circuits add none. For asynchronous handlers, timing includes
+    /// suspension and ends when the future returns `Ready`, before subsequent
+    /// future destruction. If destroyed before `Ready`, timing ends during
+    /// cleanup after destruction of the handler future.
     pub handler_duration_count: u64,
     /// Saturating sum of actual user handler invocation durations in
-    /// nanoseconds.
+    /// nanoseconds. For asynchronous handlers, suspension time is included.
     pub handler_duration_total_nanos: u64,
     /// Longest handler duration in nanoseconds.
     pub handler_duration_max_nanos: u64,
