@@ -94,7 +94,10 @@ mod tests {
         assert_eq!(Scenario::SyncDirectShutdown.label(), "sync-direct-shutdown");
         assert_eq!(Scenario::Async.label(), "async");
         assert_eq!(Scenario::SyncDirectShutdown.duration_kind(), "shutdown_only_ns");
-        assert_eq!(Scenario::parse(&["--concurrent-cancel".into()]), Ok(Scenario::SyncConcurrentCancel));
+        assert_eq!(
+            Scenario::parse(&["--concurrent-cancel".into()]),
+            Ok(Scenario::SyncConcurrentCancel)
+        );
         assert_eq!(Scenario::SyncConcurrentCancel.duration_kind(), "cancel_request_wait_ns");
         assert_eq!(Scenario::SyncCancelShutdown.duration_kind(), "cancel_shutdown_ns");
     }

@@ -97,7 +97,7 @@ fn test_sync_cancel_causal_probe_and_poll_intervals() {
                 ("direct-shutdown", 10, 256),
             ];
             for trial in 1..=3 {
-                let offset = (trial as usize - 1) * 5;
+                let offset = (trial - 1) * 5;
                 for step in 0..CONFIGURATIONS.len() {
                     let (mode, interval_ms, count) = CONFIGURATIONS[(offset + step) % CONFIGURATIONS.len()];
                     run_idle_causal_probe(trial, mode, interval_ms, count);

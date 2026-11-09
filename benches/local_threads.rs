@@ -203,8 +203,7 @@ fn sample(subscription_count: usize, scenario: Scenario) -> Sample {
             let handles = subscriptions
                 .iter()
                 .map(|subscription| scope.spawn(move || subscription.cancel()))
-                .collect::<Vec<_>>()
-            ;
+                .collect::<Vec<_>>();
             handles.into_iter().map(|handle| handle.join()).collect::<Vec<_>>()
         });
         for outcome in outcomes {
@@ -230,7 +229,10 @@ fn sample(subscription_count: usize, scenario: Scenario) -> Sample {
         }
         close_started.elapsed().as_nanos()
     };
-    if scenario == Scenario::SyncDirectShutdown && status == "success" && subscriptions.iter().any(|subscription| !subscription.is_cancelled()) {
+    if scenario == Scenario::SyncDirectShutdown
+        && status == "success"
+        && subscriptions.iter().any(|subscription| !subscription.is_cancelled())
+    {
         status = "subscription_not_cancelled";
     }
 
@@ -555,7 +557,9 @@ fn block_on<F: Future>(future: F) -> F::Output {
 /// Prints one status record to stdout; a caught panic becomes a `panic` record.
 fn run_child_sample(subscription_count: usize, scenario: Scenario) {
     let result = panic::catch_unwind(|| match scenario {
-        Scenario::SyncCancelShutdown | Scenario::SyncConcurrentCancel | Scenario::SyncDirectShutdown => sample(subscription_count, scenario),
+        Scenario::SyncCancelShutdown | Scenario::SyncConcurrentCancel | Scenario::SyncDirectShutdown => {
+            sample(subscription_count, scenario)
+        }
         Scenario::Async => sample_async(subscription_count),
     });
     match result {

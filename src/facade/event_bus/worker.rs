@@ -69,7 +69,16 @@ mod coordinator_messages;
 #[path = "worker/internal/stop_cleanup.rs"]
 mod stop_cleanup;
 
+/// Returns the receive interval configured for this subscription.
+///
+/// # Parameters
+/// - `control`: Subscription control that may carry a test-only override.
+///
+/// # Returns
+/// The receive polling interval for the worker.
 fn receive_poll_interval_for(control: &SubscriptionControl) -> Duration {
+    #[cfg(not(test))]
+    let _ = control;
     #[cfg(test)]
     if let Some(interval) = control.receive_poll_interval_override() {
         return interval;

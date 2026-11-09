@@ -52,11 +52,26 @@ impl FiniteWait {
 }
 
 /// Computes a positive wait slice for deterministic budget arithmetic.
+///
+/// # Parameters
+/// - `timeout`: Total duration allowed by the operation.
+/// - `elapsed`: Monotonic time already consumed by the operation.
+///
+/// # Returns
+/// A positive slice capped to [`MAX_WAIT_SLICE`], or `None` if exhausted.
 fn wait_slice(timeout: Duration, elapsed: Duration) -> Option<Duration> {
     wait_slice_with_max(timeout, elapsed, MAX_WAIT_SLICE)
 }
 
 /// Computes a positive wait slice with an explicit cap for deterministic tests.
+///
+/// # Parameters
+/// - `timeout`: Total duration allowed by the operation.
+/// - `elapsed`: Monotonic time already consumed by the operation.
+/// - `max_slice`: Maximum duration for this individual wait.
+///
+/// # Returns
+/// A positive slice capped to `max_slice`, or `None` if exhausted.
 fn wait_slice_with_max(timeout: Duration, elapsed: Duration, max_slice: Duration) -> Option<Duration> {
     let remaining = timeout.saturating_sub(elapsed);
     (!remaining.is_zero()).then_some(remaining.min(max_slice))

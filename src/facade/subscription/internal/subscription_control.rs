@@ -238,14 +238,16 @@ impl SubscriptionControl {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_mut()
+            && probe.requested.is_some()
         {
-            if probe.requested.is_some() {
-                probe.receive_returns_after_request.push(probe.started.elapsed());
-            }
+            probe.receive_returns_after_request.push(probe.started.elapsed());
         }
     }
 
     /// Records a test-only receive poll override for this subscription.
+    ///
+    /// # Parameters
+    /// - `interval`: Receive polling interval used by this subscription's test.
     #[cfg(test)]
     pub(crate) fn set_receive_poll_interval(&self, interval: Duration) {
         *self
@@ -255,6 +257,10 @@ impl SubscriptionControl {
     }
 
     /// Returns the test-only poll override, if configured.
+    ///
+    /// # Returns
+    /// The configured interval, or `None` when this subscription has no
+    /// override.
     #[cfg(test)]
     pub(crate) fn receive_poll_interval_override(&self) -> Option<Duration> {
         *self
@@ -264,6 +270,10 @@ impl SubscriptionControl {
     }
 
     /// Returns the causal trace captured for this subscription.
+    ///
+    /// # Returns
+    /// A snapshot of the cancellation trace, or `None` when tracing is
+    /// disabled.
     #[cfg(test)]
     pub(crate) fn cancellation_probe_snapshot(&self) -> Option<CancellationProbeSnapshot> {
         self.cancellation_probe

@@ -77,6 +77,9 @@ pub struct LocalEventBusSpi {
 
 impl LocalEventBusSpi {
     /// Wakes synchronous receivers for one topic without changing queue state.
+    ///
+    /// # Parameters
+    /// - `topic`: Topic whose waiting receivers should be notified.
     #[cfg(test)]
     pub(crate) fn wake_topic_waiters_for_test(&self, topic: &TopicAddress) {
         let queues = self

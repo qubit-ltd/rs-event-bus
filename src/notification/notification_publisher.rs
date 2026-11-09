@@ -617,6 +617,9 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
 
     /// Holds this publisher's worker after signaling completion and before
     /// the worker thread exits.
+    ///
+    /// # Parameters
+    /// - `barrier`: Per-test barrier that controls the worker's final exit.
     #[cfg(test)]
     pub(crate) fn hold_worker_after_completion_for_test(&self, barrier: Arc<Barrier>) {
         let previous = self
