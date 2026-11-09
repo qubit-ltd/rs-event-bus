@@ -11,8 +11,14 @@ from urllib.parse import unquote, urlsplit
 
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
              "doc/design.md", "doc/design.zh_CN.md")
+MIGRATION_PAGES = ("doc/migration.md", "doc/migration.zh_CN.md")
+MIGRATION_GUIDES = {
+    "doc/migration.md": ("doc/user_guide.md", "migrate-from-020-to-021"),
+    "doc/migration.zh_CN.md": ("doc/user_guide.zh_CN.md", "从-020-迁移到-021"),
+}
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 
 
 def markdown_links(text):
@@ -70,6 +76,79 @@ def check(root, package_list):
             local = normalized_local_path(document, destination)
             if local is not None and local not in packaged:
                 errors.append((document, f"local link target {local} is not included in the Cargo package list"))
+    for document, message in errors:
+        print(f"{document}: {message}", file=sys.stderr)
+    return not errors and check_migration_contract(root, package_list)
+
+
+def _packaged_paths(package_list):
+    try:
+        return {line.strip().replace("\\", "/").removeprefix("./")
+                for line in package_list.read_text(encoding="utf-8").splitlines() if line.strip()}
+    except (OSError, UnicodeError):
+        return set()
+
+
+def _heading_anchors(text):
+    anchors = set()
+    for line in text.splitlines():
+        match = HEADING.match(line)
+        if match:
+            # GitHub-style heading IDs: lowercase, remove punctuation, spaces become hyphens.
+            title = match.group(1).strip().lower()
+            title = re.sub(r"[^\w\- ]", "", title, flags=re.UNICODE)
+            anchors.add(re.sub(r"\s+", "-", title))
+    return anchors
+
+
+def _is_local_link_to(destination, path, fragment=None):
+    parts = urlsplit(destination)
+    return (not parts.scheme and not parts.netloc and parts.path == path and
+            (fragment is None or parts.fragment == fragment))
+
+
+def check_migration_contract(root, package_list):
+    """Check stable bilingual migration entry points without consulting sibling repositories."""
+    errors = []
+    packaged = _packaged_paths(package_list)
+    contents = {}
+    for page in MIGRATION_PAGES:
+        try:
+            contents[page] = (root / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append((page, f"cannot read migration page: {error}"))
+            continue
+        if page not in packaged:
+            errors.append((page, "migration page is not included in the Cargo package list"))
+    for page, peer in ((MIGRATION_PAGES[0], MIGRATION_PAGES[1]),
+                       (MIGRATION_PAGES[1], MIGRATION_PAGES[0])):
+        text = contents.get(page)
+        if text is not None and not any(
+                _is_local_link_to(link, peer.removeprefix("doc/"))
+                for link in markdown_links(text)):
+            errors.append((page, f"missing reciprocal migration link to {peer}"))
+    for page, (guide, anchor) in MIGRATION_GUIDES.items():
+        text = contents.get(page)
+        if text is None:
+            continue
+        if not (root / guide).is_file():
+            errors.append((page, f"guide target {guide} does not exist"))
+            continue
+        if not any(_is_local_link_to(link, PurePosixPath(guide).name, anchor)
+                   for link in markdown_links(text)):
+            errors.append((page, f"missing link to {guide}#{anchor}"))
+        guide_text = (root / guide).read_text(encoding="utf-8")
+        if anchor not in _heading_anchors(guide_text):
+            errors.append((page, f"guide anchor {anchor} does not exist in {guide}"))
+    for readme in ("README.md", "README.zh_CN.md"):
+        try:
+            readme_text = (root / readme).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append((readme, f"cannot read README: {error}"))
+            continue
+        target = "doc/migration.md" if readme == "README.md" else "doc/migration.zh_CN.md"
+        if not any(_is_local_link_to(link, target) for link in markdown_links(readme_text)):
+            errors.append((readme, f"missing migration entry link to {target}"))
     for document, message in errors:
         print(f"{document}: {message}", file=sys.stderr)
     return not errors
