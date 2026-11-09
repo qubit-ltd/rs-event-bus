@@ -22,6 +22,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
+const MAX_HEADERS: usize = 1024;
 static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
@@ -41,6 +42,9 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
+        if original.headers().len() > MAX_HEADERS {
+            return Err(encode_error("too many headers"));
+        }
         let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
@@ -86,7 +90,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
             .checked_add(Duration::new(seconds, nanoseconds))
             .ok_or_else(|| decode_error("timestamp is out of range"))?;
         let header_count = cursor.u32()? as usize;
-        if header_count > 1024 {
+        if header_count > MAX_HEADERS {
             return Err(decode_error("too many headers"));
         }
         let mut headers = Vec::with_capacity(header_count);

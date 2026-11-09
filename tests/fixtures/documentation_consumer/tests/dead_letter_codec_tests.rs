@@ -22,14 +22,28 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 fn make_dead_letter(reason: &str, payload: &str) -> DeadLetterEvent<String> {
+    make_dead_letter_with_headers(
+        reason,
+        payload,
+        vec![
+            ("trace-id".to_owned(), "trace-λ".to_owned()),
+            ("attempt".to_owned(), "3".to_owned()),
+        ],
+    )
+}
+
+fn make_dead_letter_with_headers(
+    reason: &str,
+    payload: &str,
+    headers: Vec<(String, String)>,
+) -> DeadLetterEvent<String> {
     let timestamp = UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789);
     let (envelope, _) = PublishRequest::builder()
         .topic(Topic::<String>::new("orders.dead.source").expect("valid topic"))
         .payload(payload.to_owned())
         .event_id(EventId::new("event-42").expect("valid event ID"))
         .timestamp(timestamp)
-        .header("trace-id", "trace-λ")
-        .header("attempt", "3")
+        .headers(headers)
         .ordering_key("order|42")
         .build()
         .expect("valid request")
@@ -79,6 +93,29 @@ fn test_encoded_dead_letter_round_trips_empty_reason() {
 }
 
 #[test]
+fn test_encoded_dead_letter_round_trips_zero_headers() {
+    let value = make_dead_letter_with_headers("reason", "payload", Vec::new());
+    assert_round_trip(&value);
+}
+
+#[test]
+fn test_encoded_dead_letter_round_trips_maximum_headers() {
+    let headers = (0..1024).map(|i| (format!("h-{i}"), "v".to_owned())).collect();
+    let value = make_dead_letter_with_headers("reason", "payload", headers);
+    assert_round_trip(&value);
+}
+
+#[test]
+fn test_encoder_rejects_more_than_maximum_headers() {
+    let headers = (0..1025).map(|i| (format!("h-{i}"), "v".to_owned())).collect();
+    let value = make_dead_letter_with_headers("reason", "payload", headers);
+    assert!(matches!(
+        DeadLetterCodec.encode(&value),
+        Err(qubit_event_bus::CodecError::Encode { .. })
+    ));
+}
+
+#[test]
 fn test_decoder_rejects_malformed_bytes_as_decode_errors() {
     let codec = DeadLetterCodec;
     let valid_bytes = codec
@@ -119,6 +156,29 @@ fn test_decoder_rejects_malformed_bytes_as_decode_errors() {
             Err(qubit_event_bus::CodecError::Decode { .. })
         ));
     }
+}
+
+#[test]
+fn test_decoder_rejects_more_than_maximum_headers() {
+    let codec = DeadLetterCodec;
+    let mut bytes = codec
+        .encode(&make_dead_letter("reason", "payload"))
+        .expect("encode succeeds")
+        .to_vec();
+    let event_id_length = u32::from_be_bytes(bytes[..4].try_into().expect("length")) as usize;
+    let topic_length_offset = 4 + event_id_length;
+    let topic_length = u32::from_be_bytes(
+        bytes[topic_length_offset..topic_length_offset + 4]
+            .try_into()
+            .expect("length"),
+    ) as usize;
+    let header_count_offset = topic_length_offset + 4 + topic_length + 8 + 4;
+    bytes[header_count_offset..header_count_offset + 4].copy_from_slice(&1025_u32.to_be_bytes());
+    let payload = EncodedPayload::new(Arc::from(bytes), codec.content_type().clone(), None);
+    assert!(matches!(
+        codec.decode(&payload),
+        Err(qubit_event_bus::CodecError::Decode { .. })
+    ));
 }
 
 #[test]
