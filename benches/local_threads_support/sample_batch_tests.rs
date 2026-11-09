@@ -38,7 +38,8 @@ impl Scenario {
         }
     }
 
-    /// Identifies the measured shutdown boundary without changing legacy values.
+    /// Identifies the measured shutdown boundary without changing legacy
+    /// values.
     pub(crate) const fn duration_kind(self) -> &'static str {
         match self {
             Self::SyncCancelShutdown => "cancel_shutdown_ns",
@@ -76,7 +77,7 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    fn scenario_routing_keeps_legacy_modes_and_adds_direct_shutdown() {
+    fn test_scenario_routing_keeps_legacy_modes_and_adds_direct_shutdown() {
         use super::Scenario;
         assert_eq!(Scenario::parse(&[]), Ok(Scenario::SyncCancelShutdown));
         assert_eq!(Scenario::parse(&["--async".into()]), Ok(Scenario::Async));
@@ -92,14 +93,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_conflicting_scenario_arguments_fail() {
+    fn test_unknown_or_conflicting_scenario_arguments_fail() {
         use super::Scenario;
         assert!(Scenario::parse(&["--mystery".into()]).is_err());
         assert!(Scenario::parse(&["--async".into(), "--direct-shutdown".into()]).is_err());
     }
 
     #[test]
-    fn scenario_labels_and_units_keep_each_batch_distinct() {
+    fn test_scenario_labels_and_units_keep_each_batch_distinct() {
         use super::Scenario;
         let rows = [
             (Scenario::SyncCancelShutdown, 16),
@@ -120,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_shutdown_keeps_all_handles_until_return_then_marks_them_cancelled() {
+    fn test_direct_shutdown_keeps_all_handles_until_return_then_marks_them_cancelled() {
         use qubit_event_bus::EventBus;
         use qubit_event_bus::model::SubscribeRequest;
         use qubit_event_bus::model::Topic;
@@ -146,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sync_mode_cancels_handles_before_shutdown() {
+    fn test_legacy_sync_mode_cancels_handles_before_shutdown() {
         use qubit_event_bus::EventBus;
         use qubit_event_bus::model::SubscribeRequest;
         use qubit_event_bus::model::Topic;
