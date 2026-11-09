@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![中文文档](https://img.shields.io/badge/文档-中文版-blue.svg)](README.zh_CN.md)
 
+[Migration guide](doc/migration.md)
+
 `qubit-event-bus` provides a typed event bus for Rust applications. When several independent parts of an application need to react to the same event, the publisher can publish it once and each part can subscribe independently, without coupling the publisher to their implementations and failure paths. Its built-in local provider handles work inside one process, where events may be lost and the application must arrange any needed recovery; a provider SPI lets applications integrate a different transport without changing the event-facing API. The crate does not make the handoff from a business transaction to event publication reliable.
 
 Local capacity diagnostics are available for direct local construction through `EventBus::local_with_monitor`. Use `EventBus::local_with_config_and_monitor` when the facade also needs custom settings; see the [user guide](doc/user_guide.md).
