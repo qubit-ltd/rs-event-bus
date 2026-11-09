@@ -111,5 +111,25 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assertIn(str(directory), result.stderr)
 
 
+class RealCheckoutEntryPointTests(unittest.TestCase):
+    def test_archive_entries_are_lightweight_distribution_guides(self):
+        for relative_path, archive_link in (
+            (ORDERING, ORDERING_LINK),
+            (CAPACITY_ARCHIVE, CAPACITY_LINK),
+        ):
+            with self.subTest(path=relative_path):
+                content = (REPO / relative_path).read_text(encoding="utf-8")
+                normalized_content = " ".join(content.lower().split())
+                self.assertIn(archive_link, content)
+                self.assertIn("distribution and complete evidence", normalized_content)
+                self.assertIn("historical snapshot", normalized_content)
+                self.assertIn("not included in the current Cargo package", content)
+
+    def test_performance_document_relative_ordering_link_resolves(self):
+        content = (REPO / PERFORMANCE).read_text(encoding="utf-8")
+        self.assertIn("(ordering_performance_artifacts/README.md)", content)
+        self.assertTrue((REPO / "doc/ordering_performance_artifacts/README.md").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
