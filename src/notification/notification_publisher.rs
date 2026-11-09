@@ -12,6 +12,8 @@ use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -87,6 +89,9 @@ pub struct NotificationPublisher<T: Send + Sync + 'static> {
     stats: Arc<NotificationStats>,
     /// Optional cumulative declared-weight limit for this publisher.
     weight_budget: Option<Arc<WeightBudget>>,
+    /// Per-instance gate that holds the worker after completion is published.
+    #[cfg(test)]
+    worker_exit_barrier: Arc<Mutex<Option<Arc<Barrier>>>>,
 }
 
 /// Maps a detailed rejection onto the legacy two-variant error contract.
@@ -241,6 +246,10 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
         let state = Arc::new((Mutex::new(WorkerState { exit: None }), Condvar::new()));
         let worker_state = state.clone();
         let observer = Arc::new(observer);
+        #[cfg(test)]
+        let worker_exit_barrier = Arc::new(Mutex::new(None::<Arc<Barrier>>));
+        #[cfg(test)]
+        let worker_exit_barrier_for_worker = Arc::clone(&worker_exit_barrier);
         let worker = thread::Builder::new()
             .name("event-notification-publisher".into())
             .spawn(move || {
@@ -283,6 +292,15 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                     Ok(()) => completion.mark_drained(),
                     Err(payload) => dispose_panic_payload(payload),
                 }
+                drop(completion);
+                #[cfg(test)]
+                if let Some(barrier) = worker_exit_barrier_for_worker
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    barrier.wait();
+                }
             })?;
         Ok(Self {
             sender: Mutex::new(Some(sender)),
@@ -291,6 +309,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             state,
             stats,
             weight_budget,
+            #[cfg(test)]
+            worker_exit_barrier,
         })
     }
 
@@ -575,6 +595,8 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
             if worker_finished {
                 break;
             }
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("notification_join");
             match budget {
                 None => thread::sleep(Duration::from_millis(1)),
                 Some(budget) => thread::sleep(
@@ -591,6 +613,18 @@ impl<T: Send + Sync + 'static> NotificationPublisher<T> {
                 .map_err(|_| io::Error::other("notification publisher worker panicked"))?;
         }
         Ok(())
+    }
+
+    /// Holds this publisher's worker after signaling completion and before
+    /// the worker thread exits.
+    #[cfg(test)]
+    pub(crate) fn hold_worker_after_completion_for_test(&self, barrier: Arc<Barrier>) {
+        let previous = self
+            .worker_exit_barrier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(barrier);
+        assert!(previous.is_none(), "worker exit barrier is installed once");
     }
 }
 

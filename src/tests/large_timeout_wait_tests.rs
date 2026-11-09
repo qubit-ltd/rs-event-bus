@@ -13,6 +13,7 @@ use std::num::NonZeroUsize;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -283,6 +284,72 @@ fn test_large_timeout_probe_notification_close() {
                 assert_eq!(vec!["blocked", "queued"], *spi.published.lock().unwrap());
                 publisher.close().unwrap();
             }
+        },
+    );
+}
+
+#[test]
+fn test_notification_close_and_join_share_total_budget() {
+    isolated(
+        "test_notification_close_and_join_share_total_budget",
+        "notification-close-join-budget",
+        || {
+            let spi = Arc::new(ProviderGate::new());
+            let bus = EventBus::from_spi(ProviderId::new("close-join-budget").unwrap(), spi.clone()).unwrap();
+            let publisher = Arc::new(
+                NotificationPublisher::new(
+                    bus,
+                    Topic::<String>::new("probe.notification.close-join").unwrap(),
+                    NonZeroUsize::new(1).unwrap(),
+                    |_| {},
+                )
+                .unwrap(),
+            );
+            publisher.try_publish("blocked".to_owned()).unwrap();
+            assert_eq!(
+                "blocked",
+                spi.entered
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+            );
+
+            let worker_exit_barrier = Arc::new(Barrier::new(2));
+            publisher.hold_worker_after_completion_for_test(Arc::clone(&worker_exit_barrier));
+            let close_probe = test_wait_probe::install("notification_close");
+            let (done_sender, done_receiver) = mpsc::channel();
+            let close_publisher = Arc::clone(&publisher);
+            let total_budget = Duration::from_millis(1200);
+            let closer = thread::spawn(move || {
+                done_sender
+                    .send(close_publisher.close_with_timeout(total_budget))
+                    .unwrap();
+            });
+            close_probe
+                .recv_timeout(Duration::from_secs(2))
+                .expect("close entered its completion condition-variable wait");
+
+            // Consume half of the one close budget in the completion phase.
+            thread::sleep(Duration::from_millis(600));
+            let join_probe = test_wait_probe::install("notification_join");
+            spi.release();
+            join_probe
+                .recv_timeout(Duration::from_secs(2))
+                .expect("completion woke close and it entered join observation");
+
+            let error = done_receiver
+                .recv_timeout(Duration::from_millis(900))
+                .expect("join uses only the remainder of the original close budget")
+                .expect_err("the worker is held after completion until join times out");
+            assert_eq!(io::ErrorKind::TimedOut, error.kind());
+
+            worker_exit_barrier.wait();
+            closer.join().unwrap();
+            publisher
+                .close_with_timeout(Duration::from_secs(2))
+                .expect("a later close can join the completed worker");
+            assert_eq!(vec!["blocked"], *spi.published.lock().unwrap());
         },
     );
 }
