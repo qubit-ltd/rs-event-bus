@@ -33,6 +33,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use local_threads_support::sample_batch_tests::Scenario;
 use local_threads_support::sample_batch_tests::run_measured_batch;
 use local_threads_support::sample_batch_tests::sample_succeeded;
 use qubit_event_bus::AsyncEventBus;
@@ -81,7 +82,7 @@ struct Sample {
     status: &'static str,
     /// Time spent creating subscriptions.
     creation_ns: u128,
-    /// Time spent cancelling subscriptions and shutting down the bus.
+    /// Close or shutdown duration selected by the scenario.
     close_ns: u128,
     /// Process thread count before subscription creation when available.
     baseline_threads: Option<usize>,
@@ -125,15 +126,14 @@ fn update_peak(peak: &mut Option<usize>) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates, subscribes, then cancels one fresh bus while measuring thread
-/// growth.
+/// Creates and shuts down one fresh bus while measuring thread growth.
 ///
 /// # Parameters
 /// - `subscription_count`: Number of empty subscriptions to create.
 ///
 /// # Returns
 /// Creation, close, and process-thread measurements for the isolated sample.
-fn sample(subscription_count: usize) -> Sample {
+fn sample(subscription_count: usize, direct_shutdown: bool) -> Sample {
     let started = Instant::now();
     let bus = match EventBus::local(Default::default()) {
         Ok(bus) => bus,
@@ -191,15 +191,21 @@ fn sample(subscription_count: usize) -> Sample {
     let creation_ns = started.elapsed().as_nanos();
 
     let close_started = Instant::now();
-    for subscription in &subscriptions {
-        if subscription.cancel().is_err() && status == "success" {
-            status = "cancel_failed";
+    if !direct_shutdown {
+        for subscription in &subscriptions {
+            if subscription.cancel().is_err() && status == "success" {
+                status = "cancel_failed";
+            }
         }
     }
     if bus.shutdown(ShutdownMode::Immediate).is_err() && status == "success" {
         status = "shutdown_failed";
     }
     let close_ns = close_started.elapsed().as_nanos();
+
+    if direct_shutdown && status == "success" && subscriptions.iter().any(|subscription| !subscription.is_cancelled()) {
+        status = "subscription_not_cancelled";
+    }
 
     Sample {
         status,
@@ -520,13 +526,11 @@ fn block_on<F: Future>(future: F) -> F::Output {
 ///
 /// # Side Effects
 /// Prints one status record to stdout; a caught panic becomes a `panic` record.
-fn run_child_sample(subscription_count: usize, asynchronous: bool) {
-    let result = panic::catch_unwind(|| {
-        if asynchronous {
-            sample_async(subscription_count)
-        } else {
-            sample(subscription_count)
-        }
+fn run_child_sample(subscription_count: usize, scenario: Scenario) {
+    let result = panic::catch_unwind(|| match scenario {
+        Scenario::SyncCancelShutdown => sample(subscription_count, false),
+        Scenario::SyncDirectShutdown => sample(subscription_count, true),
+        Scenario::Async => sample_async(subscription_count),
     });
     match result {
         Ok(sample) => println!(
@@ -588,12 +592,17 @@ fn wait_with_timeout(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 ///
 /// # Errors
 /// Returns process creation, waiting, or output collection failures.
-fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Result<(bool, String)> {
+fn run_isolated_sample(subscription_count: usize, scenario: Scenario) -> io::Result<(bool, String)> {
     let executable = env::current_exe()?;
+    let scenario_argument = match scenario {
+        Scenario::SyncCancelShutdown => None,
+        Scenario::SyncDirectShutdown => Some("--direct-shutdown"),
+        Scenario::Async => Some("--async"),
+    };
     let mut child = Command::new(executable)
         .arg("--sample")
         .arg(subscription_count.to_string())
-        .args(if asynchronous { vec!["--async"] } else { Vec::new() })
+        .args(scenario_argument)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -620,9 +629,9 @@ fn run_isolated_sample(subscription_count: usize, asynchronous: bool) -> io::Res
 ///
 /// # Errors
 /// Returns child process I/O errors or an error when a warmup fails.
-fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
+fn run(subscription_count: usize, scenario: Scenario) -> io::Result<()> {
     for _ in 0..WARMUPS {
-        let (timed_out, fields) = run_isolated_sample(subscription_count, asynchronous)?;
+        let (timed_out, fields) = run_isolated_sample(subscription_count, scenario)?;
         if timed_out || fields.split(',').next() != Some("success") {
             return Err(io::Error::other(format!(
                 "warmup failed for {subscription_count} subscriptions"
@@ -632,7 +641,7 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
 
     let mut sample_io_failed = false;
     let result = run_measured_batch(SAMPLES, |iteration| {
-        let (timed_out, fields) = match run_isolated_sample(subscription_count, asynchronous) {
+        let (timed_out, fields) = match run_isolated_sample(subscription_count, scenario) {
             Ok(sample) => sample,
             Err(error) => {
                 sample_io_failed = true;
@@ -647,8 +656,9 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
         let peak_threads = fields.next().unwrap_or("");
         let outcome = if timed_out { "timeout" } else { status };
         println!(
-            "{},{subscription_count},{iteration},{outcome},{creation_ns},{close_ns},{baseline_threads},{peak_threads}",
-            if asynchronous { "async" } else { "sync" }
+            "{},{subscription_count},{iteration},{outcome},{creation_ns},{close_ns},{},{baseline_threads},{peak_threads}",
+            scenario.label(),
+            scenario.duration_kind()
         );
         Ok(sample_succeeded(timed_out, status))
     });
@@ -657,7 +667,7 @@ fn run(subscription_count: usize, asynchronous: bool) -> io::Result<()> {
         Err(error) if sample_io_failed => Err(error),
         Err(error) => Err(io::Error::other(format!(
             "{} benchmark failed for {subscription_count} subscriptions: {error}",
-            if asynchronous { "async" } else { "sync" }
+            scenario.label()
         ))),
     }
 }
@@ -669,15 +679,22 @@ fn main() {
         .filter(|argument| argument != "--bench")
         .collect::<Vec<_>>();
     if args.as_slice() == ["--help"] {
-        println!("usage: local_threads [--sample <subscription-count> [--async] | --routing]");
+        println!("usage: local_threads [--sample <subscription-count> [--async|--direct-shutdown] | --routing]");
         return;
     }
     if args.first().is_some_and(|argument| argument == "--sample") {
         let Some(count) = args.get(1).and_then(|value| value.parse::<usize>().ok()) else {
-            eprintln!("usage: local_threads --sample <subscription-count> [--async]");
+            eprintln!("usage: local_threads --sample <subscription-count> [--async|--direct-shutdown]");
             process::exit(2);
         };
-        run_child_sample(count, args.iter().any(|argument| argument == "--async"));
+        let scenario = match Scenario::parse(&args[2..]) {
+            Ok(scenario) => scenario,
+            Err(message) => {
+                eprintln!("invalid sample scenario: {message}");
+                process::exit(2);
+            }
+        };
+        run_child_sample(count, scenario);
         return;
     }
     if args.as_slice() == ["--routing"] {
@@ -692,9 +709,12 @@ fn main() {
         process::exit(2);
     }
 
-    println!("mode,subscriptions,iteration,status,creation_ns,cancel_shutdown_ns,baseline_threads,peak_threads");
+    println!("mode,subscriptions,iteration,status,creation_ns,duration_ns,duration_kind,baseline_threads,peak_threads");
     for subscription_count in COUNTS {
-        if let Err(error) = run(subscription_count, false).and_then(|()| run(subscription_count, true)) {
+        if let Err(error) = run(subscription_count, Scenario::SyncCancelShutdown)
+            .and_then(|()| run(subscription_count, Scenario::SyncDirectShutdown))
+            .and_then(|()| run(subscription_count, Scenario::Async))
+        {
             eprintln!("thread-profile benchmark failed: {error}");
             process::exit(1);
         }

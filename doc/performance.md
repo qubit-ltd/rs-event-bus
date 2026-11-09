@@ -1894,3 +1894,35 @@ The profile completed 262,144 public-facade deliveries using one balanced high-k
 The focused unit probe creates the input `SpiFuture` before enabling a thread-local allocation counter, then measures only construction of the panic wrapper. At the baseline, it failed as expected with 2 allocations. After passing the existing pinned future directly into `CatchUnwindFuture`, it passed with exactly 1 allocation. Thread-local counting prevents allocations on concurrently running test threads from contaminating the measurement.
 
 The first staged `git diff --cached --check` flagged trailing spaces in the gprof report's column headings. Those spaces were removed from the retained text reports; the repeated check passed. The binary gmon profile is unchanged.
+
+## Direct local shutdown measurements (2026-11-09)
+
+The local thread benchmark now reports `sync-direct-shutdown` separately from
+the existing `sync` (cancel each subscription, then shut down) and `async`
+scenarios. Its `shutdown_only_ns` interval contains only synchronous
+`EventBus::shutdown(Immediate)`: all subscription handles remain alive and
+uncancelled until shutdown returns, then the harness verifies their cancelled
+terminal state outside the timer. The legacy sync interval and async
+receive/shutdown interval retain their previous meanings. Each quantity uses
+two discarded warmups and seven independent measured child processes with the
+existing 30-second watchdog.
+
+| Scenario | Subscriptions | Duration kind | Samples | Median (ns) |
+| --- | ---: | --- | ---: | ---: |
+| sync | 16 | cancel + shutdown | 7 | 551,453,825 |
+| sync | 64 | cancel + shutdown | 7 | 2,356,283,189 |
+| sync | 256 | cancel + shutdown | 7 | 7,110,563,686 |
+| sync-direct-shutdown | 16 | shutdown only | 7 | 50,272,303 |
+| sync-direct-shutdown | 64 | shutdown only | 7 | 50,861,210 |
+| sync-direct-shutdown | 256 | shutdown only | 7 | 53,402,074 |
+| async | 16 | receive + shutdown | 7 | 118,389 |
+| async | 64 | receive + shutdown | 7 | 408,070 |
+| async | 256 | receive + shutdown | 7 | 1,267,206 |
+
+All 63 measured rows succeeded on this host; the complete raw rows, observed
+ranges, thread counts, command, toolchain, source/lock identity and environment
+are in [local shutdown measurements](local-shutdown-measurements-20261109.md).
+These are host-specific idle-subscription results, not a cross-machine latency
+threshold. The long legacy sync interval includes per-subscription cancellation
+and does not isolate its cause. This measurement alone does not demonstrate a
+cancellation-wakeup defect or justify changing cancellation behavior.
