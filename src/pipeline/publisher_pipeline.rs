@@ -33,6 +33,8 @@ use crate::error::ConfigurationError;
 use crate::error::EventBusError;
 use crate::error::PublishError;
 use crate::error::PublishFailure;
+use crate::facade::HeaderLimits;
+use crate::facade::internal::validate_headers;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AdmissionStatus;
 use crate::model::DEAD_LETTER_HEADER;
@@ -77,6 +79,8 @@ pub(crate) struct PublisherPipeline {
     capabilities: EventBusCapabilities,
     /// Maximum size accepted for encoded payloads.
     max_encoded_payload_bytes: NonZeroUsize,
+    /// Portable header count and aggregate UTF-8 byte boundaries.
+    header_limits: HeaderLimits,
 }
 
 impl PublisherPipeline {
@@ -98,12 +102,14 @@ impl PublisherPipeline {
         codecs: Arc<CodecRegistry>,
         capabilities: EventBusCapabilities,
         max_encoded_payload_bytes: NonZeroUsize,
+        header_limits: HeaderLimits,
     ) -> Self {
         Self {
             provider_id,
             codecs,
             capabilities,
             max_encoded_payload_bytes,
+            header_limits,
         }
     }
 
@@ -326,6 +332,8 @@ impl PublisherPipeline {
                 .headers
                 .insert(DEAD_LETTER_HEADER.into(), DEAD_LETTER_HEADER_VALUE.into());
         }
+        validate_headers(envelope.headers(), self.header_limits)
+            .map_err(|error| failure(PipelineFailureOrigin::Configuration, PublishError::Headers(error)))?;
         let capabilities = self.capabilities;
         validate_transport_metadata(envelope.delay(), envelope.ordering_key(), capabilities)?;
         let native_weight = if capabilities.payload_modes() == PayloadModes::Encoded {

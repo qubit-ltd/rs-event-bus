@@ -417,13 +417,6 @@ An encoded provider can reconstruct this value by decoding its own persisted byt
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/dead_letter_codec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
@@ -441,6 +434,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
+const MAX_HEADERS: usize = 1024;
 static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
@@ -460,6 +454,9 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
+        if original.headers().len() > MAX_HEADERS {
+            return Err(encode_error("too many headers"));
+        }
         let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
@@ -505,7 +502,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
             .checked_add(Duration::new(seconds, nanoseconds))
             .ok_or_else(|| decode_error("timestamp is out of range"))?;
         let header_count = cursor.u32()? as usize;
-        if header_count > 1024 {
+        if header_count > MAX_HEADERS {
             return Err(decode_error("too many headers"));
         }
         let mut headers = Vec::with_capacity(header_count);
@@ -912,6 +909,7 @@ or `Registry::create`. It is frozen when the facade is created:
 | `delivery_scheduling` | `DeliverySchedulingConfig`: running=4, owned=256, per-subscription=32, subscriptions=256 | Independent count limits shared by both facades |
 | `settlement_retry` | `SettlementRetryConfig`: 5 attempts, 5 seconds, initial backoff 10 ms, cap 1 second | Retry only explicitly retryable settlement failures |
 | `payload_limits` | `PayloadLimits` | Independent positive encoded publish/receive byte limits, each 1,048,576 by default |
+| `header_limits` | `HeaderLimits` | Positive maximum header count and aggregate UTF-8 key/value bytes; defaults 1,024 and 65,536 |
 
 The facade validates all configured subscriber middleware before reading provider
 capabilities. A synchronous facade rejects any async subscriber middleware, and an
@@ -951,6 +949,46 @@ Durable work remains recoverable by a new subscription after the configuration
 or codec is repaired. Ephemeral receiver cleanup may discard work, and known
 abandonment is counted once. Healthy subscriptions remain active.
 
+#### Portable header limits
+
+`EventBusFacadeConfig::with_header_limits(HeaderLimits::new(max_count, max_bytes))` sets positive `NonZeroUsize` limits; defaults are 1,024 headers and 65,536 aggregate UTF-8 bytes. Both boundaries are inclusive. The byte total sums each key and value's UTF-8 byte length, including the restored dead-letter marker. It excludes topics, identifiers, payloads, ordering keys, serialization framing, and allocation overhead.
+
+On publish, the facade validates final headers after publisher interceptors and restores the protected dead-letter marker before encoding or provider admission. A violation returns `PublishError::Headers(HeaderLimitError::{CountExceeded, BytesExceeded})`; no provider publish call is made. On receive, it validates provider headers before decoding or invoking the handler. A violation retains `SubscriptionStopReason::Headers` with the event ID and structured error, stops further receives on that subscription, and does not settle that delivery. Repair the producer or configure compatible limits, then close and create a new subscription. Durable providers may redeliver according to their settlement/recovery contract. Local providers are ephemeral: close/drop can discard pending or unsettled work, and resubscribing starts with an empty queue.
+
+These facade limits are independent of `PayloadLimits`, which measures encoded payload bytes only. Increasing Redis's payload limit does not increase the facade's header limits; configure both layers when required. These checks bound header count and key/value text bytes, not process memory, provider allocations, topic names, or payloads.
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/header_limits.rs -->
+```rust
+//! Configure portable header limits and classify their boundary failures.
+
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::HeaderLimits;
+use qubit_event_bus::error::HeaderLimitError;
+use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::SubscriptionStopReason;
+
+/// Returns a facade configuration with application-specific header boundaries.
+pub fn configured_facade() -> EventBusFacadeConfig {
+    let limits = HeaderLimits::new(NonZeroUsize::new(64).unwrap(), NonZeroUsize::new(8_192).unwrap());
+    EventBusFacadeConfig::new().with_header_limits(limits)
+}
+
+/// Returns the structured header limit error from a rejected publication.
+pub fn publish_header_error(error: &PublishError) -> Option<&HeaderLimitError> {
+    match error {
+        PublishError::Headers(error) => Some(error),
+        _ => None,
+    }
+}
+
+/// Detects a receive stop caused by headers exceeding the configured limits.
+pub fn stopped_for_headers(reason: &SubscriptionStopReason) -> bool {
+    matches!(reason, SubscriptionStopReason::Headers { .. })
+}
+```
+
 `PayloadLimits` has independent positive `max_publish_bytes` and
 `max_receive_bytes`, both 1 MiB by default. Exactly the limit is permitted;
 there is no unlimited setting. Publication checks after encoding and before
@@ -971,10 +1009,11 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
 4. **Global metadata interceptors.** They may change headers only. Any `false` drops the message.
 5. **Dead-letter header protection.** If the original envelope carried the dead-letter
    header, it is written back after the interceptors, so the dead-letter identity cannot be lost.
-6. **Capability checks.** `delay.is_some()` with `DelayedDeliveryCapability::None`,
+6. **Portable header limits.** Check header count, then cumulative UTF-8 key/value bytes, including the restored marker. Failure returns `PublishError::Headers` before encoding or SPI publication.
+7. **Capability checks.** `delay.is_some()` with `DelayedDeliveryCapability::None`,
    or `ordering_key.is_some()` with `OrderingCapability::None`, returns `PublishError::Capability`.
-7. **Payload preparation.** Choose `Native` or `Encoded` from `PayloadModes`. `Encoded` encodes with the codec and produces an `OutboundMessage`.
-8. **Publish with retry.** When `retry_policy` is set, `qubit_retry::Retry` (synchronous)
+8. **Payload preparation.** Choose `Native` or `Encoded` from `PayloadModes`. `Encoded` encodes with the codec and produces an `OutboundMessage`.
+9. **Publish with retry.** When `retry_policy` is set, `qubit_retry::Retry` (synchronous)
    or `AsyncRetry` (asynchronous, with a `Timer`) wraps `spi.publish`. The retry decision
    combines `SpiError::retryable()` with the caller's `RetryRule<PublishAttemptError>`.
    The fallback is `RetryFallback::Abort`. Exhaustion becomes
@@ -986,7 +1025,7 @@ Steps of `publish(request)`. `publish_all` runs them for each request in order a
    Uncertainty is retained across attempts and sets `duplicate_possible()` on a
    later successful receipt. In-flight cancellation that returns an error is
    uncertain; RetryPolicy budgets are soft, not universal hard I/O timeouts.
-9. **Error handlers.** When a provider publish attempt, or its retry flow,
+10. **Error handlers.** When a provider publish attempt, or its retry flow,
    returns a terminal failure, `PublishErrorHandler<T>(&PublishFailureContext<T>,
    &PublishFailure)` runs in registration order. Failures before a provider
    attempt—including request construction or validation, lifecycle rejection,
@@ -1960,13 +1999,6 @@ This example keeps every settlement result to demonstrate idempotence and confli
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_contract.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Minimal provider subscription implementations using the public SPI paths.
 
 use std::collections::HashMap;
@@ -2184,13 +2216,6 @@ mod tests {
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Provider service aliases and subscription calls compiled by documentation
 //! checks.
 

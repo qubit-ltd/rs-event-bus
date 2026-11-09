@@ -14,6 +14,7 @@ use qubit_retry::RetryError;
 use crate::error::CapabilityError;
 use crate::error::CodecError;
 use crate::error::ConfigurationError;
+use crate::error::HeaderLimitError;
 use crate::error::PublishAttemptError;
 use crate::error::PublishFailure;
 use crate::error::SpiError;
@@ -42,6 +43,13 @@ pub enum PublishError {
         /// Validation failure for the publication metadata.
         #[from]
         ConfigurationError,
+    ),
+    /// Portable headers exceeded the configured count or byte boundary.
+    #[error(transparent)]
+    Headers(
+        /// The configured portable header boundary that was exceeded.
+        #[from]
+        HeaderLimitError,
     ),
     /// Required backend behavior is unavailable.
     #[error(transparent)]

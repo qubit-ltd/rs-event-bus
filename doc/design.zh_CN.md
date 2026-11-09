@@ -379,13 +379,6 @@ encoded provider 可解码自己持久化的字节，再调用公开的 `DeadLet
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/dead_letter_codec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Example codec that reconstructs dead-letter events from encoded bytes.
 
 use std::sync::Arc;
@@ -403,6 +396,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
+const MAX_HEADERS: usize = 1024;
 static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
@@ -422,6 +416,9 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
+        if original.headers().len() > MAX_HEADERS {
+            return Err(encode_error("too many headers"));
+        }
         let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
@@ -467,7 +464,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
             .checked_add(Duration::new(seconds, nanoseconds))
             .ok_or_else(|| decode_error("timestamp is out of range"))?;
         let header_count = cursor.u32()? as usize;
-        if header_count > 1024 {
+        if header_count > MAX_HEADERS {
             return Err(decode_error("too many headers"));
         }
         let mut headers = Vec::with_capacity(header_count);
@@ -864,6 +861,7 @@ facade 构建期配置，`EventBus::with_config` / `AsyncEventBus::with_config`
 | `delivery_scheduling` | `DeliverySchedulingConfig`：running=4、owned=256、per-subscription=32、subscriptions=256 | 两种 facade 共用的独立数量上限 |
 | `settlement_retry` | `SettlementRetryConfig`：5 次、5 秒、10 ms 初始退避、1 秒上限 | 只重试明确可重试的结算错误 |
 | `payload_limits` | `PayloadLimits` | 编码发布和接收的独立正数上限，默认各 1,048,576 字节 |
+| `header_limits` | `HeaderLimits` | header 数量和 key/value UTF-8 汇总字节正数上限，默认 1,024 项、65,536 字节 |
 
 facade 先校验配置中的全部订阅中间件，再查询 provider capabilities。同步 facade
 拒绝任何异步订阅中间件，异步 facade 对同步订阅中间件对称处理；直接构造时返回
@@ -899,6 +897,46 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
 恢复持久消息；临时 receiver 清理可能丢弃消息，已知损失只计数一次。
 其他健康订阅不受影响。
 
+#### Portable header 限额
+
+`EventBusFacadeConfig::with_header_limits(HeaderLimits::new(max_count, max_bytes))` 设置正数 `NonZeroUsize` 限额，默认分别为 1,024 个 header 和 65,536 个 UTF-8 汇总字节，恰好达到上限仍允许。字节数为每个 key 与 value 的 UTF-8 字节长度之和，包括恢复后的死信标记；不包括 topic、标识符、payload、ordering key、序列化帧或分配开销。
+
+发布时，facade 在 publisher interceptor 之后、恢复受保护的死信标记之后，在编码和 provider 接纳之前校验最终 headers。超限返回 `PublishError::Headers(HeaderLimitError::{CountExceeded, BytesExceeded})`，不会调用 provider publish。接收时，在解码或调用 handler 前校验 provider headers。超限会保留包含 event ID 和结构化错误的 `SubscriptionStopReason::Headers`，停止该订阅后续接收，且不会结算该投递。修复生产方或配置兼容限额后，关闭并重新创建订阅。durable provider 可按自身 settlement/recovery 契约重新投递。local provider 是 ephemeral：close/drop 可能丢弃排队或未结算消息，重新订阅从空队列开始。
+
+Facade headers 限额独立于 `PayloadLimits`，后者只计算编码 payload 字节。提高 Redis payload 限额不会提高 facade headers 限额；需要时须同时配置两层。此检查限制 header 数量及 key/value 文本字节，不限制进程内存、provider 分配、topic 名称或 payload。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/header_limits.rs -->
+```rust
+//! Configure portable header limits and classify their boundary failures.
+
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::HeaderLimits;
+use qubit_event_bus::error::HeaderLimitError;
+use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::SubscriptionStopReason;
+
+/// Returns a facade configuration with application-specific header boundaries.
+pub fn configured_facade() -> EventBusFacadeConfig {
+    let limits = HeaderLimits::new(NonZeroUsize::new(64).unwrap(), NonZeroUsize::new(8_192).unwrap());
+    EventBusFacadeConfig::new().with_header_limits(limits)
+}
+
+/// Returns the structured header limit error from a rejected publication.
+pub fn publish_header_error(error: &PublishError) -> Option<&HeaderLimitError> {
+    match error {
+        PublishError::Headers(error) => Some(error),
+        _ => None,
+    }
+}
+
+/// Detects a receive stop caused by headers exceeding the configured limits.
+pub fn stopped_for_headers(reason: &SubscriptionStopReason) -> bool {
+    matches!(reason, SubscriptionStopReason::Headers { .. })
+}
+```
+
 `PayloadLimits` 包含独立正数 `max_publish_bytes` 和 `max_receive_bytes`，
 默认各 1 MiB，恰好达到上限允许，没有无限额配置。发布在编码完成后、provider
 接纳前检查；接收在任何 codec 回调前检查。它不限制 codec 或 Redis 客户端预先
@@ -919,11 +957,13 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
 4. **全局 metadata 拦截器**：只能改 headers；任一返回 `false` → 丢弃。
 5. **死信头保护**：无论拦截器如何改动，如果原始 envelope 带死信头，重新写回，
    保证死信身份不丢。
-6. **能力校验**：`delay.is_some()` 且 `DelayedDeliveryCapability::None`；
+6. **Portable header 限额**：检查 header 数量，再检查 key/value UTF-8 累计字节
+   （包含恢复后的标记）；失败在编码和 SPI 发布前返回 `PublishError::Headers`。
+7. **能力校验**：`delay.is_some()` 且 `DelayedDeliveryCapability::None`；
    `ordering_key.is_some()` 且 `OrderingCapability::None` → `PublishError::Capability`。
-7. **载荷准备**：依据 `PayloadModes` 选 `Native`/`Encoded`；`Encoded` 时用 codec 编码，
+8. **载荷准备**：依据 `PayloadModes` 选 `Native`/`Encoded`；`Encoded` 时用 codec 编码，
    得到 `OutboundMessage`。
-8. **重试发布**：若配置 `retry_policy`，用 `qubit_retry::Retry`（同步）/
+9. **重试发布**：若配置 `retry_policy`，用 `qubit_retry::Retry`（同步）/
    `AsyncRetry`（异步，带 `Timer`）包裹 `spi.publish`。重试判定综合
    `SpiError::retryable()` 与用户 `RetryRule<PublishAttemptError>`；
    `RetryFallback::Abort`；耗尽 → `PublishError::Retry(Box<RetryError<...>>)`。
@@ -933,7 +973,7 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
    `AllowDuplicates` 仅允许原策略继续判断。未知效果跨尝试保留，后续成功回执
    的 `duplicate_possible()` 为 true。进行中的尝试被取消并返回错误时效果未知；
    RetryPolicy 预算是软预算，不是通用的 I/O 硬超时。
-9. **错误处理器**：provider 发布尝试或其重试流程最终返回失败后，按注册顺序调用
+10. **错误处理器**：provider 发布尝试或其重试流程最终返回失败后，按注册顺序调用
    `PublishErrorHandler<T>(&PublishFailureContext<T>, &PublishFailure)`。provider
    尝试之前的失败（包括请求构造或校验、生命周期拒绝、能力检查、codec 处理和拦截器
    预处理）不会调用这些处理器；调用方必须观察返回的错误。拦截器丢弃会返回
@@ -1770,13 +1810,6 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_contract.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Minimal provider subscription implementations using the public SPI paths.
 
 use std::collections::HashMap;
@@ -1994,13 +2027,6 @@ mod tests {
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/provider_spec.rs -->
 ```rust
-// =============================================================================
-//    Copyright (c) 2025 - 2026 Haixing Hu.
-//
-//    SPDX-License-Identifier: Apache-2.0
-//
-//    Licensed under the Apache License, Version 2.0.
-// =============================================================================
 //! Provider service aliases and subscription calls compiled by documentation
 //! checks.
 

@@ -232,6 +232,7 @@ impl AsyncEventBus {
                     config.codec_registry().clone(),
                     capabilities,
                     config.payload_limits().max_publish_bytes(),
+                    config.header_limits(),
                 ),
                 facade_config: config,
                 state: Mutex::new(BusState::Running),

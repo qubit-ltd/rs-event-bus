@@ -14,7 +14,7 @@ mod diagnostic_observer_handle;
 mod event_bus;
 mod event_bus_facade_config;
 mod event_bus_shutdown;
-mod internal;
+pub(crate) mod internal;
 mod into_handler_result;
 mod lifecycle;
 #[path = "lifecycle_tracker.rs"]
@@ -46,7 +46,9 @@ pub use subscription::Subscription;
 pub(crate) use subscription::SubscriptionControl;
 pub use wait_outcome::WaitOutcome;
 
+mod header_limits;
 mod payload_limits;
+pub use header_limits::HeaderLimits;
 pub use payload_limits::PayloadLimits;
 
 mod delivery_scheduling_config;

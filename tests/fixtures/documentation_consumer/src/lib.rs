@@ -9,6 +9,7 @@
 
 pub mod bounded_shutdown;
 pub mod dead_letter_codec;
+pub mod header_limits;
 pub mod local_capacity;
 pub mod order_created_codec;
 #[path = "orders/mod.rs"]

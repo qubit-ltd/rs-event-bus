@@ -185,6 +185,7 @@ fn make_pipeline(_bus: &Arc<FakeBus>) -> PublisherPipeline {
         Arc::default(),
         EventBusSpi::capabilities(_bus.as_ref()),
         NonZeroUsize::new(1_048_576).unwrap(),
+        crate::facade::HeaderLimits::default(),
     )
 }
 
@@ -222,6 +223,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 
 struct StringCodec {
     content_type: ContentType,
+    encode_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl EventCodec<String> for StringCodec {
@@ -232,6 +234,7 @@ impl EventCodec<String> for StringCodec {
         None
     }
     fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        self.encode_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Arc::from(value.as_bytes()))
     }
     fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
@@ -239,6 +242,173 @@ impl EventCodec<String> for StringCodec {
             source: Box::new(source),
         })
     }
+}
+
+#[test]
+fn test_header_overflow_stops_before_weight_codec_and_provider_for_native_and_encoded() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use crate::facade::HeaderLimits;
+
+    for payload_modes in [PayloadModes::Native, PayloadModes::Encoded] {
+        let (spi, state) = bus(payload_modes, 0);
+        let pipeline = PublisherPipeline::new(
+            ProviderId::new("fake").unwrap(),
+            Arc::default(),
+            EventBusSpi::capabilities(spi.as_ref()),
+            NonZeroUsize::new(1_048_576).unwrap(),
+            HeaderLimits::new(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(1).unwrap()),
+        );
+        let weights = Arc::new(AtomicUsize::new(0));
+        let weight_count = weights.clone();
+        let encodes = Arc::new(AtomicUsize::new(0));
+        let topic = Topic::new("orders.created").unwrap().with_codec(StringCodec {
+            content_type: ContentType::TEXT_PLAIN,
+            encode_calls: encodes.clone(),
+        });
+        let options = PublishOptions::builder()
+            .interceptor(|mut envelope: EventEnvelope<String>| {
+                envelope.set_header("a", "b")?;
+                Ok(Some(envelope))
+            })
+            .native_payload_weight(move |_| {
+                weight_count.fetch_add(1, Ordering::SeqCst);
+                NonZeroUsize::new(1).unwrap()
+            })
+            .build();
+        let publish_request = PublishRequest::builder()
+            .topic(topic)
+            .payload("order-1".to_owned())
+            .event_id(EventId::new("header-overflow").unwrap())
+            .options(options)
+            .build()
+            .unwrap();
+        let failure = pipeline.publish(spi.as_ref(), publish_request, &[], &[]).unwrap_err();
+        assert_eq!(failure.origin(), PipelineFailureOrigin::Configuration);
+        assert_eq!(failure.publish_effect(), PublishEffect::NotAccepted);
+        assert!(format!("{:?}", failure.error()).contains("Headers"));
+        assert_eq!(weights.load(Ordering::SeqCst), 0);
+        assert_eq!(encodes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.lock().unwrap().calls, 0);
+    }
+}
+
+fn dead_letter_request_for_marker_limit_test() -> (PublishRequest<String>, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::model::DEAD_LETTER_HEADER;
+    use crate::model::DEAD_LETTER_HEADER_VALUE;
+
+    let encode_calls = Arc::new(AtomicUsize::new(0));
+    let topic = Topic::new("orders.dead-letter").unwrap().with_codec(StringCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        encode_calls: encode_calls.clone(),
+    });
+    let mut envelope = EventEnvelope::with_id_and_shared_payload(
+        topic,
+        Arc::new("dead-letter".to_owned()),
+        EventId::new("dead-letter-id").unwrap(),
+    );
+    // `ordinary=x` is exactly 9 UTF-8 bytes (8-byte key plus 1-byte value).
+    envelope.headers.insert("ordinary".to_owned(), "x".to_owned());
+    envelope.set_system_header(DEAD_LETTER_HEADER, DEAD_LETTER_HEADER_VALUE);
+    let options = PublishOptions::builder()
+        .interceptor(|mut envelope: EventEnvelope<String>| {
+            // Simulate replacing an envelope and dropping its facade-owned marker.
+            envelope.headers.remove(DEAD_LETTER_HEADER);
+            Ok(Some(envelope))
+        })
+        .build();
+    (
+        PublishRequest::from_envelope(envelope).with_options(options),
+        encode_calls,
+    )
+}
+
+#[test]
+fn test_restored_dead_letter_marker_counts_toward_count_limit_before_callbacks() {
+    use crate::facade::HeaderLimits;
+
+    let (spi, state) = bus(PayloadModes::Encoded, 0);
+    let pipeline = PublisherPipeline::new(
+        ProviderId::new("fake").unwrap(),
+        Arc::default(),
+        EventBusSpi::capabilities(spi.as_ref()),
+        NonZeroUsize::new(1_048_576).unwrap(),
+        HeaderLimits::new(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(100).unwrap()),
+    );
+    let (request, encode_calls) = dead_letter_request_for_marker_limit_test();
+    let failure = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap_err();
+    assert_eq!(failure.origin(), PipelineFailureOrigin::Configuration);
+    assert_eq!(failure.publish_effect(), PublishEffect::NotAccepted);
+    assert!(format!("{:?}", failure.error()).contains("CountExceeded"));
+    assert_eq!(encode_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(state.lock().unwrap().calls, 0);
+}
+
+#[test]
+fn test_restored_dead_letter_marker_bytes_count_toward_limit_before_callbacks() {
+    use std::sync::atomic::Ordering;
+
+    use crate::facade::HeaderLimits;
+
+    let (spi, state) = bus(PayloadModes::Encoded, 0);
+    let pipeline = PublisherPipeline::new(
+        ProviderId::new("fake").unwrap(),
+        Arc::default(),
+        EventBusSpi::capabilities(spi.as_ref()),
+        NonZeroUsize::new(1_048_576).unwrap(),
+        // Without the restored marker, ordinary=x is exactly at this boundary.
+        HeaderLimits::new(NonZeroUsize::new(2).unwrap(), NonZeroUsize::new(9).unwrap()),
+    );
+    let (request, encode_calls) = dead_letter_request_for_marker_limit_test();
+    let failure = pipeline.publish(spi.as_ref(), request, &[], &[]).unwrap_err();
+    assert_eq!(failure.origin(), PipelineFailureOrigin::Configuration);
+    assert_eq!(failure.publish_effect(), PublishEffect::NotAccepted);
+    assert!(format!("{:?}", failure.error()).contains("BytesExceeded"));
+    assert_eq!(encode_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.lock().unwrap().calls, 0);
+}
+
+#[test]
+fn test_global_header_augmentation_is_checked_but_drop_still_short_circuits() {
+    use crate::facade::HeaderLimits;
+    let (spi, state) = bus(PayloadModes::Native, 0);
+    let pipeline = PublisherPipeline::new(
+        ProviderId::new("fake").unwrap(),
+        Arc::default(),
+        EventBusSpi::capabilities(spi.as_ref()),
+        NonZeroUsize::new(1_048_576).unwrap(),
+        HeaderLimits::new(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(8).unwrap()),
+    );
+    let global = GlobalPublisherInterceptor::new(|metadata| {
+        metadata.set_header("extra", "value")?;
+        Ok(true)
+    });
+    let failure = pipeline
+        .publish(spi.as_ref(), request(PublishOptions::new()), &[global], &[])
+        .unwrap_err();
+    assert_eq!(failure.origin(), PipelineFailureOrigin::Configuration);
+    assert_eq!(state.lock().unwrap().calls, 0);
+
+    let (spi, state) = bus(PayloadModes::Native, 0);
+    let pipeline = PublisherPipeline::new(
+        ProviderId::new("fake").unwrap(),
+        Arc::default(),
+        EventBusSpi::capabilities(spi.as_ref()),
+        NonZeroUsize::new(1_048_576).unwrap(),
+        HeaderLimits::new(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(1).unwrap()),
+    );
+    let drop = GlobalPublisherInterceptor::new(|metadata| {
+        metadata.set_header("too", "large")?;
+        Ok(false)
+    });
+    let receipt = pipeline
+        .publish(spi.as_ref(), request(PublishOptions::new()), &[drop], &[])
+        .unwrap();
+    assert!(receipt.acknowledgement().is_dropped());
+    assert_eq!(state.lock().unwrap().calls, 0);
 }
 
 #[test]
@@ -398,6 +568,7 @@ fn test_encoded_only_provider_uses_the_topic_codec_and_rejects_missing_codec() {
     let pipeline = make_pipeline(&spi);
     let topic = Topic::new("orders.encoded").unwrap().with_codec(StringCodec {
         content_type: ContentType::TEXT_PLAIN,
+        encode_calls: Arc::default(),
     });
     let encoded_request = PublishRequest::builder()
         .topic(topic)
@@ -435,6 +606,7 @@ fn test_native_and_encoded_provider_prefers_native_payload() {
     let pipeline = make_pipeline(&spi);
     let topic = Topic::new("orders.hybrid").unwrap().with_codec(StringCodec {
         content_type: ContentType::TEXT_PLAIN,
+        encode_calls: Arc::default(),
     });
     let request = PublishRequest::builder()
         .topic(topic)

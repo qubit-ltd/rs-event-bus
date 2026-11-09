@@ -36,6 +36,7 @@ use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::error::SubscriptionCloseErrors;
 use qubit_event_bus::facade::EventBusFacadeConfig;
+use qubit_event_bus::facade::HeaderLimits;
 use qubit_event_bus::facade::PayloadLimits;
 use qubit_event_bus::model::ContentType;
 use qubit_event_bus::model::EventId;
@@ -152,6 +153,7 @@ struct Source {
     native: bool,
     ephemeral: bool,
     content: ContentType,
+    oversized_headers: bool,
 }
 struct Receiver {
     source: Source,
@@ -174,6 +176,7 @@ impl Source {
             native: false,
             ephemeral: false,
             content: ContentType::new("application/test").expect("content"),
+            oversized_headers: false,
         }
     }
     /// Advertises encoded messages and durable settlement recovery.
@@ -249,7 +252,11 @@ impl Receiver {
             TopicAddress::new("boundary").expect("topic"),
             EventId::new(if good { "healthy-record" } else { "source-record" }).expect("id"),
             SystemTime::UNIX_EPOCH,
-            Headers::new(),
+            if self.source.oversized_headers {
+                Headers::from([("k".to_owned(), "v".to_owned())])
+            } else {
+                Headers::new()
+            },
             None,
             payload,
             Some(SettlementToken::new(self.id, "source-record")),
@@ -421,6 +428,78 @@ fn verify_boundary(
         );
     }
 }
+#[test]
+fn test_header_limit_stops_before_codec_and_settlement_for_sync_and_async() {
+    for asynchronous in [false, true] {
+        for native in [false, true] {
+            let mut source_value = Source::new(1, Some(SchemaId::new("v1").expect("schema")));
+            source_value.native = native;
+            source_value.oversized_headers = true;
+            let source = Arc::new(source_value);
+            let config = config().with_header_limits(HeaderLimits::new(
+                NonZeroUsize::new(1).expect("count"),
+                NonZeroUsize::new(1).expect("bytes"),
+            ));
+            let probe = Probe::new();
+            let topic = Topic::new("boundary").expect("topic").with_shared_codec(probe.clone());
+            let reason;
+            if asynchronous {
+                let bus =
+                    AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config)
+                        .expect("bus");
+                let mut subscription =
+                    manual_async::block_on(bus.subscribe(SubscribeRequest::new("headers", topic).expect("request")))
+                        .expect("subscription");
+                let ReceiveError::Stopped(returned) = manual_async::block_on(
+                    subscription.run(|_| async { panic!("over-limit headers must stop before handler") }),
+                )
+                .expect_err("headers stop") else {
+                    panic!("headers stop reason")
+                };
+                reason = subscription.terminal_failure().expect("cached cause");
+                assert!(Arc::ptr_eq(&reason, &returned));
+                let ReceiveError::Stopped(repeated) =
+                    manual_async::block_on(subscription.run(|_| async { panic!("already stopped") }))
+                        .expect_err("repeat stop")
+                else {
+                    panic!("same cause")
+                };
+                assert!(Arc::ptr_eq(&reason, &repeated));
+                manual_async::block_on(subscription.close()).expect("close");
+                let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            } else {
+                let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config)
+                    .expect("bus");
+                let subscription = bus
+                    .subscribe(SubscribeRequest::new("headers", topic).expect("request"), |_| -> () {
+                        panic!("over-limit headers must stop before handler")
+                    })
+                    .expect("subscription");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while source.closed.load(Ordering::SeqCst) == 0 {
+                    assert!(Instant::now() < deadline);
+                    thread::yield_now();
+                }
+                reason = subscription.terminal_failure().expect("cached cause");
+                subscription.cancel().expect("cancel");
+                let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+            }
+            let SubscriptionStopReason::Headers { event_id, error } = reason.as_ref() else {
+                panic!("header stop reason")
+            };
+            assert_eq!(event_id.as_str(), "source-record");
+            assert!(matches!(
+                error.as_ref(),
+                qubit_event_bus::HeaderLimitError::BytesExceeded { limit: 1 }
+            ));
+            assert_eq!(probe.validate.load(Ordering::SeqCst), 0);
+            assert_eq!(probe.decode.load(Ordering::SeqCst), 0);
+            assert_eq!(source.settled.load(Ordering::SeqCst), 0);
+            assert!(source.dispositions.lock().expect("settlement log").is_empty());
+        }
+    }
+}
+
 #[test]
 fn test_receive_limit_precedes_callbacks() {
     for asynchronous in [false, true] {

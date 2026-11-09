@@ -20,14 +20,15 @@ README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
 WEIGHTED = "tests/fixtures/documentation_consumer/src/weighted_notifications.rs"
 DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
+HEADER_LIMITS = "tests/fixtures/documentation_consumer/src/header_limits.rs"
 REQUIRED = {
     LIB: {LOCAL},
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
-    "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
-    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
+    "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER, HEADER_LIMITS},
+    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER, HEADER_LIMITS},
 }
 PATTERN = re.compile(
     r"<!-- event-bus-source: (?P<path>[^\n]+?) -->\s*"
@@ -43,7 +44,7 @@ FILE_HEADER = re.compile(
     r"//    Licensed under the Apache License, Version 2\.0\.\n"
     r"// =+\n"
 )
-EXAMPLE_DOCUMENTS = {LIB, "README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md"}
+EXAMPLE_DOCUMENTS = {LIB, "README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md", "doc/design.md", "doc/design.zh_CN.md"}
 
 
 def read_document_text(path):

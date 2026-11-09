@@ -25,6 +25,12 @@ encoding and before provider admission; receive checks before codec callbacks.
 These limits do not cap codec allocations or native Rust object memory. Check
 the version-specific guide before carrying these values into another release.
 
+## Header boundaries and the next incompatible release
+
+The next incompatible core release is planned to be handled as 0.22; this note does not announce or publish that release. It will apply finite facade header limits by default: at most 1,024 headers and 65,536 aggregate UTF-8 bytes across keys and values. Publications outside either limit fail with `PublishError::Headers`; received deliveries stop with `SubscriptionStopReason::Headers` before decoding/handler invocation. `SubscriptionStopReason` currently has no `non_exhaustive` attribute, so downstream exhaustive matches must add a `Headers` arm where applicable. A fallback arm is recommended for forward compatibility.
+
+Applications that require larger headers should set `EventBusFacadeConfig::with_header_limits(HeaderLimits::new(count, bytes))` with positive `NonZeroUsize` values. This facade boundary counts header text only. It is distinct from `PayloadLimits` for encoded message bytes and from Redis/provider transport limits: increasing Redis JSON or wire payload limits does not raise the core header limit. Configure both layers if both boundaries need adjustment. Repair incompatible producers or configure compatible limits, then recreate stopped subscriptions. Durable recovery follows the provider contract; local delivery is ephemeral and pending/unsettled work can be lost on close/drop.
+
 ## Current upgrade guide
 
 For changes accumulated since core 0.20, follow [Migrate from 0.20 to 0.21](user_guide.md#migrate-from-020-to-021). Earlier transitions are recorded in the sections above; verify the exact source and provider versions used by your application.

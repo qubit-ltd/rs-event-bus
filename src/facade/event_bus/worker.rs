@@ -386,6 +386,23 @@ fn run_subscription_worker_body<T>(
                             let provider_attempt = message.provider_attempt();
                             let (address, event_id, timestamp, headers, ordering_key, payload, token, metadata) =
                                 message.into_parts();
+                            if let Err(error) =
+                                crate::facade::internal::validate_headers(&headers, inner.facade_config.header_limits())
+                            {
+                                let text = error.to_string();
+                                let first = control.fail_receive(SubscriptionStopReason::Headers {
+                                    event_id,
+                                    error: Arc::new(error),
+                                });
+                                inner.scheduler.cancel_subscription(control.id);
+                                drop(token);
+                                count_abandoned(&inner, control.id);
+                                drop(lease_guard);
+                                if first {
+                                    inner.emit_internal("receive_boundary", text);
+                                }
+                                continue;
+                            }
                             let decoded = decode_payload(
                                 codec.as_ref(),
                                 &payload,

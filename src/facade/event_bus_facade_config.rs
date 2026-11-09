@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::DeliverySchedulingConfig;
+use super::HeaderLimits;
 use super::PayloadLimits;
 use super::SettlementRetryConfig;
 use super::internal::ErasedMiddlewareList;
@@ -54,6 +55,8 @@ pub struct EventBusFacadeConfig {
     global_publisher_interceptors: Vec<GlobalPublisherInterceptor>,
     /// Independent positive byte limits for encoded publication and receiving.
     payload_limits: PayloadLimits,
+    /// Portable header count and aggregate UTF-8 byte limits.
+    header_limits: HeaderLimits,
     /// Unified handler, delivery ownership and subscription limits.
     delivery_scheduling: DeliverySchedulingConfig,
     /// Finite provider settlement retry policy.
@@ -73,6 +76,7 @@ impl Default for EventBusFacadeConfig {
             async_subscriber_interceptors: HashMap::new(),
             global_publisher_interceptors: Vec::new(),
             payload_limits: PayloadLimits::default(),
+            header_limits: HeaderLimits::default(),
             delivery_scheduling: DeliverySchedulingConfig::default(),
             settlement_retry: SettlementRetryConfig::default(),
         }
@@ -118,6 +122,26 @@ impl EventBusFacadeConfig {
     #[inline]
     pub const fn payload_limits(&self) -> PayloadLimits {
         self.payload_limits
+    }
+
+    /// Returns portable header count and aggregate UTF-8 byte limits.
+    #[inline]
+    pub const fn header_limits(&self) -> HeaderLimits {
+        self.header_limits
+    }
+
+    /// Replaces portable header limits for publishers and subscribers.
+    ///
+    /// # Parameters
+    /// - `limits`: Maximum portable header count and aggregate UTF-8 bytes.
+    ///
+    /// # Returns
+    /// This configuration with the supplied limits for both directions.
+    #[must_use]
+    #[inline]
+    pub fn with_header_limits(mut self, limits: HeaderLimits) -> Self {
+        self.header_limits = limits;
+        self
     }
 
     /// Returns the codec table that the publisher pipeline will consult.

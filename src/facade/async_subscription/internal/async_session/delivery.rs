@@ -148,6 +148,23 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 self.id,
             )
         });
+        if let Err(error) =
+            crate::facade::internal::validate_headers(&headers, self.inner.facade_config.header_limits())
+        {
+            let message = error.to_string();
+            self.record_abandoned_delivery();
+            if self.signals.fail_receive(SubscriptionStopReason::Headers {
+                event_id,
+                error: Arc::new(error),
+            }) {
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "receive_boundary".into(),
+                    message: message.into(),
+                });
+            }
+            drop(token);
+            return;
+        }
         let payload = match decode_payload(
             self.codec.as_ref(),
             &transport_payload,

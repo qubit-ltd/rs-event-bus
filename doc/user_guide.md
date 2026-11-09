@@ -751,6 +751,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
+const MAX_HEADERS: usize = 1024;
 static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
@@ -770,6 +771,9 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
+        if original.headers().len() > MAX_HEADERS {
+            return Err(encode_error("too many headers"));
+        }
         let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
@@ -815,7 +819,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
             .checked_add(Duration::new(seconds, nanoseconds))
             .ok_or_else(|| decode_error("timestamp is out of range"))?;
         let header_count = cursor.u32()? as usize;
-        if header_count > 1024 {
+        if header_count > MAX_HEADERS {
             return Err(decode_error("too many headers"));
         }
         let mut headers = Vec::with_capacity(header_count);
@@ -1221,6 +1225,46 @@ let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
 The registration limit bounds sync receiver threads and async sessions; a paused async subscription still counts. Excess registration fails before provider subscription creation. Both required capacity keys and the optional weight key in `local.provider_options()` must be positive; unknown keys and nonnumeric values fail creation. `EventBus::local` uses default facade settings. For direct local construction with custom facade settings, use `EventBus::local_with_config_and_monitor(local_config, facade_config)` or its async equivalent; see [Inspect local capacity and rejection categories](#inspect-local-capacity-and-rejection-categories). Use registry assembly when provider selection, discovery, or creation fallback is needed.
+
+### Portable header limits
+
+`EventBusFacadeConfig::with_header_limits(HeaderLimits::new(max_count, max_bytes))` sets positive `NonZeroUsize` limits; defaults are 1,024 headers and 65,536 aggregate UTF-8 bytes. Both boundaries are inclusive. The byte total sums each key and value's UTF-8 byte length, including the restored dead-letter marker. It excludes topics, identifiers, payloads, ordering keys, serialization framing, and allocation overhead.
+
+On publish, the facade validates final headers after publisher interceptors and restores the protected dead-letter marker before encoding or provider admission. A violation returns `PublishError::Headers(HeaderLimitError::{CountExceeded, BytesExceeded})`; no provider publish call is made. On receive, it validates provider headers before decoding or invoking the handler. A violation retains `SubscriptionStopReason::Headers` with the event ID and structured error, stops further receives on that subscription, and does not settle that delivery. Repair the producer or configure compatible limits, then close and create a new subscription. Durable providers may redeliver according to their settlement/recovery contract. Local providers are ephemeral: close/drop can discard pending or unsettled work, and resubscribing starts with an empty queue.
+
+These facade limits are independent of `PayloadLimits`, which measures encoded payload bytes only. Increasing Redis's payload limit does not increase the facade's header limits; configure both layers when required. These checks bound header count and key/value text bytes, not process memory, provider allocations, topic names, or payloads.
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/header_limits.rs -->
+```rust
+//! Configure portable header limits and classify their boundary failures.
+
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::HeaderLimits;
+use qubit_event_bus::error::HeaderLimitError;
+use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::SubscriptionStopReason;
+
+/// Returns a facade configuration with application-specific header boundaries.
+pub fn configured_facade() -> EventBusFacadeConfig {
+    let limits = HeaderLimits::new(NonZeroUsize::new(64).unwrap(), NonZeroUsize::new(8_192).unwrap());
+    EventBusFacadeConfig::new().with_header_limits(limits)
+}
+
+/// Returns the structured header limit error from a rejected publication.
+pub fn publish_header_error(error: &PublishError) -> Option<&HeaderLimitError> {
+    match error {
+        PublishError::Headers(error) => Some(error),
+        _ => None,
+    }
+}
+
+/// Detects a receive stop caused by headers exceeding the configured limits.
+pub fn stopped_for_headers(reason: &SubscriptionStopReason) -> bool {
+    matches!(reason, SubscriptionStopReason::Headers { .. })
+}
+```
 
 For encoded transports, `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))` sets two positive `NonZeroUsize` limits. Both default to 1,048,576 bytes; exactly the limit is allowed. Publishing checks completed codec output before calling the provider; receiving checks bytes before any codec callback. There is no unlimited setting. This does not cap allocations inside encoding or the transport client. Native Rust payloads have no automatically measured byte-size check because their retained memory cannot be measured reliably by the facade; the optional local weight budget instead uses the application's declaration. The local queue count limit still counts deliveries, not bytes.
 

@@ -751,6 +751,7 @@ use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::EncodedPayload;
 
 const MAX_ENCODED_BYTES: usize = 1_048_576;
+const MAX_HEADERS: usize = 1024;
 static CONTENT_TYPE: ContentType = ContentType::new_static("application/vnd.example.dead-letter");
 
 /// Codec for the documentation fixture's private dead-letter byte format.
@@ -770,6 +771,9 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
 
     fn encode(&self, value: &DeadLetterEvent<String>) -> Result<Arc<[u8]>, CodecError> {
         let original = value.original_event();
+        if original.headers().len() > MAX_HEADERS {
+            return Err(encode_error("too many headers"));
+        }
         let timestamp = original.timestamp().duration_since(UNIX_EPOCH).map_err(encode_error)?;
         let mut bytes = Vec::new();
         put_text(&mut bytes, original.id().as_str())?;
@@ -815,7 +819,7 @@ impl EventCodec<DeadLetterEvent<String>> for DeadLetterCodec {
             .checked_add(Duration::new(seconds, nanoseconds))
             .ok_or_else(|| decode_error("timestamp is out of range"))?;
         let header_count = cursor.u32()? as usize;
-        if header_count > 1024 {
+        if header_count > MAX_HEADERS {
             return Err(decode_error("too many headers"));
         }
         let mut headers = Vec::with_capacity(header_count);
@@ -1221,6 +1225,46 @@ let bus = EventBusRegistry::with_local()?.create(&config)?;
 ```
 
 注册数同时约束同步接收线程和异步 session；暂停的异步订阅仍计数。超限在 provider 创建订阅前失败。`local.provider_options()` 的两个必需容量键和可选权重键都必须为正数，未知键或非数字会在创建时拒绝。`EventBus::local` 使用默认 facade 配置。固定使用 local 且需要自定义 facade 配置时，可直接调用 `EventBus::local_with_config_and_monitor(local_config, facade_config)`，异步总线使用对应入口，详见[查看 local 容量与拒绝类别](#查看-local-容量与拒绝类别)。需要 provider 选择、发现或创建回退时，使用 registry 装配。
+
+### Portable header 限额
+
+`EventBusFacadeConfig::with_header_limits(HeaderLimits::new(max_count, max_bytes))` 设置正数 `NonZeroUsize` 限额，默认分别为 1,024 个 header 和 65,536 个 UTF-8 汇总字节，恰好达到上限仍允许。字节数为每个 key 与 value 的 UTF-8 字节长度之和，包括恢复后的死信标记；不包括 topic、标识符、payload、ordering key、序列化帧或分配开销。
+
+发布时，facade 在 publisher interceptor 之后、恢复受保护的死信标记之后，在编码和 provider 接纳之前校验最终 headers。超限返回 `PublishError::Headers(HeaderLimitError::{CountExceeded, BytesExceeded})`，不会调用 provider publish。接收时，在解码或调用 handler 前校验 provider headers。超限会保留包含 event ID 和结构化错误的 `SubscriptionStopReason::Headers`，停止该订阅后续接收，且不会结算该投递。修复生产方或配置兼容限额后，关闭并重新创建订阅。durable provider 可按自身 settlement/recovery 契约重新投递。local provider 是 ephemeral：close/drop 可能丢弃排队或未结算消息，重新订阅从空队列开始。
+
+Facade headers 限额独立于 `PayloadLimits`，后者只计算编码 payload 字节。提高 Redis payload 限额不会提高 facade headers 限额；需要时须同时配置两层。此检查限制 header 数量及 key/value 文本字节，不限制进程内存、provider 分配、topic 名称或 payload。
+
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/header_limits.rs -->
+```rust
+//! Configure portable header limits and classify their boundary failures.
+
+use std::num::NonZeroUsize;
+
+use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::HeaderLimits;
+use qubit_event_bus::error::HeaderLimitError;
+use qubit_event_bus::error::PublishError;
+use qubit_event_bus::model::SubscriptionStopReason;
+
+/// Returns a facade configuration with application-specific header boundaries.
+pub fn configured_facade() -> EventBusFacadeConfig {
+    let limits = HeaderLimits::new(NonZeroUsize::new(64).unwrap(), NonZeroUsize::new(8_192).unwrap());
+    EventBusFacadeConfig::new().with_header_limits(limits)
+}
+
+/// Returns the structured header limit error from a rejected publication.
+pub fn publish_header_error(error: &PublishError) -> Option<&HeaderLimitError> {
+    match error {
+        PublishError::Headers(error) => Some(error),
+        _ => None,
+    }
+}
+
+/// Detects a receive stop caused by headers exceeding the configured limits.
+pub fn stopped_for_headers(reason: &SubscriptionStopReason) -> bool {
+    matches!(reason, SubscriptionStopReason::Headers { .. })
+}
+```
 
 编码传输使用 `EventBusFacadeConfig::with_payload_limits(PayloadLimits::new(publish_limit, receive_limit))`，两个参数均为正数 `NonZeroUsize`，默认各 1,048,576 字节；恰好达到上限仍允许。发布在编码完成后、调用 provider 前检查，接收在任何 codec 回调前检查。没有无限额配置。该检查不限制 codec 内部或传输客户端的预先分配。facade 无法可靠计算原生 Rust payload 的递归占用，因此不提供自动测量的字节上限；上面的可选 local 权重预算依赖应用声明。本地队列的条数限制仍按投递次数计费。
 

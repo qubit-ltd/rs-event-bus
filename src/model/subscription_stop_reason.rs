@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use crate::error::CodecError;
+use crate::error::HeaderLimitError;
 use crate::error::SpiError;
 use crate::model::EventId;
 use crate::model::SettlementTermination;
@@ -59,6 +60,15 @@ pub enum SubscriptionStopReason {
         /// Original codec failure with its source chain.
         #[source]
         error: Arc<CodecError>,
+    },
+    /// Portable headers exceeded the configured boundary.
+    #[error("subscription stopped at event {event_id:?}: {error}")]
+    Headers {
+        /// Identity of the event that stopped receiving.
+        event_id: EventId,
+        /// Header boundary failure retained for recovery diagnostics.
+        #[source]
+        error: Arc<HeaderLimitError>,
     },
     /// Provider receive failure, potentially before trustworthy event identity.
     #[error("subscription stopped at provider boundary: {error}")]

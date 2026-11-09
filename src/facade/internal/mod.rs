@@ -13,6 +13,9 @@ pub(super) use close_failure_ledger::CloseFailureLedger;
 pub(super) use erased_middleware_list::ErasedMiddlewareList;
 pub(super) use lifecycle_state::LifecycleState;
 
+mod header_validation;
+pub(crate) use header_validation::validate_headers;
+
 mod bus_context_guard;
 mod close_failure_ledger;
 mod erased_middleware_list;

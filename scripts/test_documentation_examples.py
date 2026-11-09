@@ -24,14 +24,15 @@ WEIGHTED = "tests/fixtures/documentation_consumer/src/weighted_notifications.rs"
 README_ORDERS = "tests/fixtures/documentation_consumer/src/readme_orders.rs"
 MONITOR = "tests/fixtures/documentation_consumer/src/run_state_monitor.rs"
 DEAD_LETTER = "tests/fixtures/documentation_consumer/src/dead_letter_codec.rs"
+HEADER_LIMITS = "tests/fixtures/documentation_consumer/src/header_limits.rs"
 REQUIRED = {
     LIB: {LOCAL},
     "README.md": {LOCAL, README_ORDERS},
     "README.zh_CN.md": {LOCAL, README_ORDERS},
-    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
-    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
-    "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
-    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER},
+    "doc/user_guide.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
+    "doc/user_guide.zh_CN.md": {LOCAL, ASYNC, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED},
+    "doc/design.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER, HEADER_LIMITS},
+    "doc/design.zh_CN.md": {SPEC, PROVIDER_CONTRACT, DEAD_LETTER, HEADER_LIMITS},
 }
 FILE_HEADER = (
     "// =============================================================================\n"
@@ -63,7 +64,7 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
-        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, DEAD_LETTER, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED):
+        for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
             header = FILE_HEADER if source in {LOCAL, README_ORDERS} else ""
