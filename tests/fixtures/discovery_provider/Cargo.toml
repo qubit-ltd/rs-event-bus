@@ -7,5 +7,5 @@ publish = false
 [workspace]
 
 [dependencies]
-qubit-event-bus = { version = "0.21", path = "../../..", features = ["discovery"] }
-qubit-spi = { version = "0.14", features = ["inventory"] }
+qubit-event-bus = { version = "^0.21", features = ["discovery"] }
+qubit-spi = { version = "^0.14", features = ["inventory"] }
