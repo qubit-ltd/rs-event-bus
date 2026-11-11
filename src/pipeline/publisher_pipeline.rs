@@ -517,7 +517,8 @@ impl PublisherPipeline {
         })
     }
 
-    /// Reports rejected destination admissions to the observer snapshot captured for this publication.
+    /// Reports rejected destination admissions to the observer snapshot
+    /// captured for this publication.
     ///
     /// # Parameters
     ///

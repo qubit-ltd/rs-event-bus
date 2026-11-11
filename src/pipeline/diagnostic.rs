@@ -157,12 +157,13 @@ pub enum Diagnostic {
 /// facade and do not escape the notification path.
 pub type DiagnosticObserver = dyn Fn(&Diagnostic) + Send + Sync + 'static;
 
-/// Calls the selected observer snapshot in registration order, containing panics per
-/// observer so one faulty callback does not prevent later observers from
-/// receiving the diagnostic.
+/// Calls the selected observer snapshot in registration order, containing
+/// panics per observer so one faulty callback does not prevent later observers
+/// from receiving the diagnostic.
 ///
 /// # Parameters
-/// - `observers`: callbacks selected when the snapshot was created, in registration order.
+/// - `observers`: callbacks selected when the snapshot was created, in
+///   registration order.
 /// - `diagnostic`: runtime fact passed to each observer.
 pub(crate) fn emit_diagnostic(observers: &[Arc<DiagnosticObserver>], diagnostic: &Diagnostic) {
     for observer in observers {

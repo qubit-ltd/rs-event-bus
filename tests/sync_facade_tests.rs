@@ -4234,13 +4234,14 @@ fn test_sync_observer_snapshot_survives_drop_during_publish_interceptor() {
 
 #[test]
 fn test_sync_observer_snapshot_self_unregister_keeps_two_rejections() {
+    use std::any::TypeId;
+
     use qubit_event_bus::local::LocalEventBusConfig;
     use qubit_event_bus::local::LocalEventBusProvider;
     use qubit_event_bus::registry::EventBusConfig;
     use qubit_event_bus::spi::OutboundMessage;
     use qubit_event_bus::spi::TransportPayload;
     use qubit_spi::ServiceProvider;
-    use std::any::TypeId;
 
     let config = EventBusConfig::default()
         .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options());
