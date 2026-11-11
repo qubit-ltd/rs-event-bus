@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "^0.4"
-qubit-event-bus = { version = "^0.21" }
+qubit-event-bus = { version = "^0.21", path = ".." }
 qubit-clock = "^0.13"
 qubit-id = { version = "^0.7", features = ["uuid"] }
 

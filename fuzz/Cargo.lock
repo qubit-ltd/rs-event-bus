@@ -207,8 +207,6 @@ dependencies = [
 [[package]]
 name = "qubit-event-bus"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d8c315ee36bb4a5bc9caeb925fd05a61e02c54b2e9e44c379a1a6512d9a00c6"
 dependencies = [
  "qubit-clock",
  "qubit-id",
