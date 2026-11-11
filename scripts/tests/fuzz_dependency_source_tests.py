@@ -59,6 +59,16 @@ class MetadataTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.validate_metadata(graph, "/project")
 
+    def test_rejects_edge_to_missing_package_id(self):
+        graph = metadata()
+        graph["resolve"]["nodes"][0]["deps"][0]["pkg"] = "missing-package-id"
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous package missing-package-id"):
+            gate.validate_metadata(graph, "/project")
+
+    def test_rejects_non_mapping_metadata_root(self):
+        with self.assertRaisesRegex(ValueError, "invalid cargo metadata structure"):
+            gate.validate_metadata([], "/project")
+
 
 class ManifestTests(unittest.TestCase):
     def test_requires_path_and_version_with_correct_resolution(self):
