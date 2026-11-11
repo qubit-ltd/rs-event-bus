@@ -3,12 +3,51 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    tomllib = None
 
 
 DEPENDENCY = "qubit-event-bus"
+INLINE_DEPENDENCY = re.compile(
+    r'^\s*qubit-event-bus\s*=\s*\{\s*'
+    r'(version|path)\s*=\s*("[^"\\]*(?:\\.[^"\\]*)*"|\'[^\']*\')\s*,?\s*'
+    r'(?:,\s*(version|path)\s*=\s*("[^"\\]*(?:\\.[^"\\]*)*"|\'[^\']*\')\s*,?\s*)?'
+    r'\}\s*(?:#.*)?$')
+
+
+def _fallback_dependency(manifest_path):
+    """Read the narrow inline dependency form supported on Python 3.10."""
+    in_dependencies = False
+    found = None
+    for line in Path(manifest_path).read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_dependencies = stripped == "[dependencies]"
+            continue
+        if not in_dependencies or not stripped.startswith(DEPENDENCY):
+            continue
+        if found is not None:
+            raise ValueError(f"duplicate {DEPENDENCY} declaration")
+        match = INLINE_DEPENDENCY.fullmatch(line)
+        if match is None:
+            raise ValueError(f"unsupported {DEPENDENCY} dependency syntax without tomllib")
+        fields = {}
+        for key, value in ((match.group(1), match.group(2)),
+                           (match.group(3), match.group(4))):
+            if key is None:
+                continue
+            if key in fields:
+                raise ValueError(f"duplicate {DEPENDENCY} {key} field")
+            fields[key] = value[1:-1]
+        found = fields
+    if found is None:
+        raise ValueError(f"{DEPENDENCY} declaration is missing or unsupported without tomllib")
+    return {"dependencies": {DEPENDENCY: found}}
 
 
 def validate_metadata(metadata, project_root):
@@ -49,8 +88,11 @@ def validate_metadata(metadata, project_root):
 def validate_manifest(manifest_path, project_root):
     """Require an explicit path and retained version constraint in fuzz manifest."""
     try:
-        with Path(manifest_path).open("rb") as stream:
-            manifest = tomllib.load(stream)
+        if tomllib is None:
+            manifest = _fallback_dependency(manifest_path)
+        else:
+            with Path(manifest_path).open("rb") as stream:
+                manifest = tomllib.load(stream)
         dependency = manifest["dependencies"][DEPENDENCY]
         if not isinstance(dependency, dict):
             raise ValueError(f"{DEPENDENCY} must use a detailed dependency declaration")
@@ -64,7 +106,7 @@ def validate_manifest(manifest_path, project_root):
         expected = Path(project_root).resolve()
         if actual != expected:
             raise ValueError(f"expected {DEPENDENCY} path {expected}, got {actual}")
-    except (KeyError, TypeError, tomllib.TOMLDecodeError, OSError) as error:
+    except (KeyError, TypeError, OSError) as error:
         raise ValueError(f"invalid fuzz manifest: {error}") from error
 
 

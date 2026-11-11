@@ -92,6 +92,30 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "expected qubit-event-bus path"):
                 gate.validate_manifest(manifest, root)
 
+    def test_python310_fallback_accepts_only_supported_inline_dependency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project with spaces"
+            (root / "fuzz").mkdir(parents=True)
+            manifest = root / "fuzz" / "Cargo.toml"
+            with mock.patch.object(gate, "tomllib", None):
+                manifest.write_text('[dependencies]\nqubit-event-bus = { version = "^0.21", path = ".." }\n')
+                gate.validate_manifest(manifest, root)
+                cases = [
+                    ('[dependencies]\nqubit-event-bus = { path = ".." }\n', "version constraint"),
+                    ('[dependencies]\nqubit-event-bus = { version = "^0.21" }\n', "path dependency"),
+                    ('[dependencies]\nqubit-event-bus = { version = "^0.21", path = "../wrong" }\n',
+                     "expected qubit-event-bus path"),
+                    ('[dependencies]\nqubit-event-bus = { version = "^0.21", path = }\n',
+                     "unsupported qubit-event-bus dependency syntax"),
+                    ('[dependencies]\nqubit-event-bus = { version = "^0.21", path = "..", path = ".." }\n',
+                     "unsupported qubit-event-bus dependency syntax"),
+                ]
+                for contents, message in cases:
+                    with self.subTest(contents=contents):
+                        manifest.write_text(contents)
+                        with self.assertRaisesRegex(ValueError, message):
+                            gate.validate_manifest(manifest, root)
+
 
 class CliTests(unittest.TestCase):
     def test_subprocess_arguments_cwd_and_space_path(self):
