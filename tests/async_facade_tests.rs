@@ -1697,6 +1697,159 @@ fn test_async_dropping_diagnostic_observer_releases_its_callback_capture() {
 }
 
 #[test]
+fn test_async_observer_snapshot_self_unregister_keeps_two_rejections() {
+    use qubit_event_bus::local::AsyncLocalEventBusProvider;
+    use qubit_event_bus::local::LocalEventBusConfig;
+    use qubit_event_bus::registry::EventBusConfig;
+    use qubit_event_bus::spi::OutboundMessage;
+    use qubit_event_bus::spi::TransportPayload;
+    use qubit_spi::AsyncServiceProvider;
+    use std::any::TypeId;
+
+    let config = EventBusConfig::default()
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options());
+    let spi = block_on(AsyncLocalEventBusProvider.create_configured(&config)).expect("async local SPI");
+    let topic_address = TopicAddress::new("observer.snapshot.async").expect("topic address");
+    let mut receivers = block_on(async {
+        let mut receivers = Vec::new();
+        for id in [801_u64, 802] {
+            receivers.push(
+                spi.subscribe(SpiSubscriptionRequest::new(
+                    Id::new(id),
+                    topic_address.clone(),
+                    qubit_event_bus::model::SubscriberId::new(format!("observer-{id}")).unwrap(),
+                    None,
+                    SubscriptionDurability::Ephemeral,
+                    StartPosition::New,
+                    Default::default(),
+                    TypeId::of::<String>(),
+                ))
+                .await
+                .expect("raw subscription"),
+            );
+        }
+        receivers
+    });
+    let raw_publish = |event_id: &'static str| {
+        block_on(spi.publish(OutboundMessage::new(
+            topic_address.clone(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(String::from("fill"))),
+        )))
+        .expect("raw publication")
+    };
+    let PublishAcknowledgement::DestinationAdmissions(filled) = raw_publish("fill-async") else {
+        panic!("local SPI exposes destination outcomes");
+    };
+    assert_eq!(filled.len(), 2);
+    assert!(
+        filled
+            .iter()
+            .all(|item| matches!(item.status(), qubit_event_bus::model::AdmissionStatus::Accepted))
+    );
+    let PublishAcknowledgement::DestinationAdmissions(full) = raw_publish("full-async") else {
+        panic!("local SPI exposes destination outcomes");
+    };
+    assert_eq!(full.len(), 2);
+    assert!(
+        full.iter()
+            .all(|item| matches!(item.status(), qubit_event_bus::model::AdmissionStatus::Rejected(_)))
+    );
+
+    let bus = AsyncEventBus::from_spi(ProviderId::new("observer-snapshot-async").unwrap(), spi.clone()).unwrap();
+    let capture_slot = Arc::new(std::sync::Mutex::new(None));
+    let capture_probe = Arc::new(());
+    let capture_probe_weak = Arc::downgrade(&capture_probe);
+    let capture_probe_for_callback = capture_probe.clone();
+    drop(capture_probe);
+    let capture_calls = Arc::new(AtomicUsize::new(0));
+    let capture_calls_in_callback = capture_calls.clone();
+    let capture_observer = bus.observe_diagnostics(move |diagnostic| {
+        let _capture = &capture_probe_for_callback;
+        if matches!(diagnostic, Diagnostic::AdmissionRejected { .. }) {
+            capture_calls_in_callback.fetch_add(1, Ordering::AcqRel);
+        }
+    });
+    *capture_slot.lock().unwrap() = Some(capture_observer);
+    let slot = Arc::new(std::sync::Mutex::new(None));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let probe = Arc::new(());
+    let probe_weak = Arc::downgrade(&probe);
+    let probe_for_callback = probe.clone();
+    drop(probe);
+    let slot_in_callback = slot.clone();
+    let seen_in_callback = seen.clone();
+    let weak_in_callback = probe_weak.clone();
+    let observer = bus.observe_diagnostics(move |diagnostic| {
+        let _capture = &probe_for_callback;
+        if let Diagnostic::AdmissionRejected {
+            event_id,
+            subscription_id,
+            ..
+        } = diagnostic
+        {
+            seen_in_callback
+                .lock()
+                .unwrap()
+                .push((event_id.clone(), *subscription_id));
+            let removed = { slot_in_callback.lock().unwrap().take() };
+            drop(removed);
+            assert!(
+                weak_in_callback.upgrade().is_some(),
+                "selected snapshot retains captures"
+            );
+        }
+    });
+    *slot.lock().unwrap() = Some(observer);
+    let snapshot_request = || {
+        PublishRequest::new(
+            Topic::new("observer.snapshot.async").expect("typed topic"),
+            String::from("payload"),
+        )
+        .expect("publish request")
+    };
+    let capture_slot_in_interceptor = capture_slot.clone();
+    let weak_in_interceptor = capture_probe_weak.clone();
+    let options = PublishOptions::<String>::builder()
+        .interceptor(move |envelope| {
+            let removed = { capture_slot_in_interceptor.lock().unwrap().take() };
+            drop(removed);
+            assert!(
+                weak_in_interceptor.upgrade().is_some(),
+                "selected snapshot retains captures"
+            );
+            Ok(Some(envelope))
+        })
+        .build();
+    let _ = block_on(bus.publish(snapshot_request().with_options(options))).expect("publish");
+    let first = seen.lock().unwrap().clone();
+    assert_eq!(first.len(), 2);
+    assert_eq!(capture_calls.load(Ordering::Acquire), 2);
+    assert_eq!(first[0].0, first[1].0);
+    assert_ne!(first[0].1, first[1].1);
+    assert!(first.iter().any(|entry| entry.1 == Id::new(801)));
+    assert!(first.iter().any(|entry| entry.1 == Id::new(802)));
+    assert!(probe_weak.upgrade().is_none(), "completed snapshot releases captures");
+    assert!(
+        capture_probe_weak.upgrade().is_none(),
+        "completed snapshot releases captures"
+    );
+    let _ = block_on(bus.publish(snapshot_request())).expect("publish");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    block_on(async {
+        for receiver in &mut receivers {
+            receiver.close().await.expect("close raw subscription");
+        }
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("bus shutdown");
+    });
+}
+
+#[test]
 fn test_async_wrong_settlement_token_is_diagnosed_before_capability_gate() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),

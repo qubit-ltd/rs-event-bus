@@ -25,8 +25,8 @@ pub(super) struct ObserverEntry {
 }
 
 impl ObserverEntry {
-    /// Returns callbacks for entries that are active after acquiring a strong
-    /// ownership snapshot under the registry lock.
+    /// Selects callbacks that are active after acquiring a strong ownership
+    /// snapshot under the registry lock.
     ///
     /// The registry lock is released before liveness checks, callback cloning,
     /// and any resulting observer destruction.
@@ -35,7 +35,7 @@ impl ObserverEntry {
     /// - `registry`: weak entries owned by the bus observer registry.
     ///
     /// # Returns
-    /// Active callbacks retained by strong references for this dispatch.
+    /// Callbacks selected for this dispatch and retained by strong references.
     pub(super) fn snapshot(registry: &Mutex<Vec<Weak<Self>>>) -> Vec<Arc<DiagnosticObserver>> {
         Self::active_callbacks(Self::snapshot_entries(registry))
     }
@@ -53,13 +53,14 @@ impl ObserverEntry {
         entries.iter().filter_map(Weak::upgrade).collect()
     }
 
-    /// Clones callbacks whose shared liveness flag remains active.
+    /// Clones callbacks whose shared liveness flag is active at snapshot time.
     ///
     /// # Parameters
     /// - `entries`: observer entries retained by a strong snapshot.
     ///
     /// # Returns
-    /// Callback handles for entries still marked active.
+    /// Callback handles selected for dispatch. Later deactivation does not
+    /// cancel callbacks already returned by this method.
     fn active_callbacks(entries: Vec<Arc<Self>>) -> Vec<Arc<DiagnosticObserver>> {
         entries
             .into_iter()

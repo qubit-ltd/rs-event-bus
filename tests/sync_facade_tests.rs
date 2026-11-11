@@ -4210,7 +4210,10 @@ fn test_sync_observer_snapshot_survives_drop_during_publish_interceptor() {
         .interceptor(move |envelope| {
             let removed = { slot_for_interceptor.lock().unwrap().take() };
             drop(removed);
-            assert!(weak_for_interceptor.upgrade().is_some(), "selected snapshot retains captures");
+            assert!(
+                weak_for_interceptor.upgrade().is_some(),
+                "selected snapshot retains captures"
+            );
             Ok(Some(envelope))
         })
         .build();
@@ -4227,6 +4230,110 @@ fn test_sync_observer_snapshot_survives_drop_during_publish_interceptor() {
         .expect("later publish succeeds");
     assert_eq!(callback_count.load(Ordering::Acquire), 1);
     finish_sync_bus_cleanup(cleanup);
+}
+
+#[test]
+fn test_sync_observer_snapshot_self_unregister_keeps_two_rejections() {
+    use qubit_event_bus::local::LocalEventBusConfig;
+    use qubit_event_bus::local::LocalEventBusProvider;
+    use qubit_event_bus::registry::EventBusConfig;
+    use qubit_event_bus::spi::OutboundMessage;
+    use qubit_event_bus::spi::TransportPayload;
+    use qubit_spi::ServiceProvider;
+    use std::any::TypeId;
+
+    let config = EventBusConfig::default()
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options());
+    let spi = LocalEventBusProvider.create_configured(&config).expect("local SPI");
+    let topic_address = TopicAddress::new("observer.snapshot.sync").expect("topic address");
+    let mut receivers = [701_u64, 702]
+        .into_iter()
+        .map(|id| {
+            spi.subscribe(SpiSubscriptionRequest::new(
+                Id::new(id),
+                topic_address.clone(),
+                qubit_event_bus::model::SubscriberId::new(format!("observer-{id}")).unwrap(),
+                None,
+                SubscriptionDurability::Ephemeral,
+                StartPosition::New,
+                Default::default(),
+                TypeId::of::<String>(),
+            ))
+            .expect("raw subscription")
+        })
+        .collect::<Vec<_>>();
+    let raw_publish = |event_id: &str| {
+        spi.publish(OutboundMessage::new(
+            topic_address.clone(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(String::from("fill"))),
+        ))
+        .expect("raw publication")
+    };
+    let PublishAcknowledgement::DestinationAdmissions(filled) = raw_publish("fill-sync") else {
+        panic!("local SPI exposes destination outcomes");
+    };
+    assert_eq!(filled.len(), 2);
+    assert!(
+        filled
+            .iter()
+            .all(|item| matches!(item.status(), AdmissionStatus::Accepted))
+    );
+    let PublishAcknowledgement::DestinationAdmissions(full) = raw_publish("full-sync") else {
+        panic!("local SPI exposes destination outcomes");
+    };
+    assert_eq!(full.len(), 2);
+    assert!(
+        full.iter()
+            .all(|item| matches!(item.status(), AdmissionStatus::Rejected(_)))
+    );
+
+    let bus = EventBus::from_spi(ProviderId::new("observer-snapshot-sync").unwrap(), spi.clone()).unwrap();
+    let slot = Arc::new(Mutex::new(None));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let slot_in_callback = slot.clone();
+    let seen_in_callback = seen.clone();
+    let observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::AdmissionRejected {
+            event_id,
+            subscription_id,
+            ..
+        } = diagnostic
+        {
+            seen_in_callback
+                .lock()
+                .unwrap()
+                .push((event_id.clone(), *subscription_id));
+            let removed = { slot_in_callback.lock().unwrap().take() };
+            drop(removed);
+        }
+    });
+    *slot.lock().unwrap() = Some(observer);
+    let snapshot_request = || {
+        PublishRequest::new(
+            Topic::new("observer.snapshot.sync").expect("typed topic"),
+            String::from("payload"),
+        )
+        .expect("publish request")
+    };
+    let _ = bus.publish(snapshot_request()).expect("publish");
+    let first = seen.lock().unwrap().clone();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].0, first[1].0);
+    assert_ne!(first[0].1, first[1].1);
+    assert!(first.iter().any(|entry| entry.1 == Id::new(701)));
+    assert!(first.iter().any(|entry| entry.1 == Id::new(702)));
+    let _ = bus.publish(snapshot_request()).expect("publish");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    for receiver in &mut receivers {
+        receiver.close().expect("close raw subscription");
+    }
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shutdown");
 }
 
 #[test]

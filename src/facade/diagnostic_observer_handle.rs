@@ -57,7 +57,9 @@ impl DiagnosticObserverHandle {
 }
 
 impl Drop for DiagnosticObserverHandle {
-    /// Marks the observer inactive so subsequent dispatches skip it.
+    /// Marks the observer inactive so later snapshots skip it.
+    ///
+    /// Callback references already copied into a snapshot remain callable.
     fn drop(&mut self) {
         self.entry.active.store(false, Ordering::Release);
     }

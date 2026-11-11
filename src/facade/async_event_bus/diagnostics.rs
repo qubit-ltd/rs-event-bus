@@ -70,7 +70,8 @@ impl AsyncEventBus {
     /// dropped.
     /// A snapshot that already selected the callback may still invoke it and
     /// retain its captures after drop returns. Dropping does not wait for
-    /// callbacks to finish.
+    /// callbacks to finish. See [`DiagnosticObserverHandle`] for the full
+    /// lifecycle contract.
     ///
     /// # Type Parameters
     /// - `F`: Thread-safe callback type.

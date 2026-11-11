@@ -23,7 +23,8 @@ impl EventBus {
     /// locks. Panics are contained and do not recursively emit diagnostics.
     /// Dropping the handle prevents inclusion in later observer snapshots.
     /// An existing snapshot may still invoke the callback and retain its
-    /// captures after drop returns; dropping does not wait for callbacks.
+    /// captures after drop returns; dropping does not wait for callbacks. See
+    /// [`DiagnosticObserverHandle`] for the full lifecycle contract.
     ///
     /// # Type Parameters
     /// - `F`: thread-safe callback type.
