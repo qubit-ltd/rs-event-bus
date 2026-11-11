@@ -304,7 +304,7 @@ handler 收到的是 `Delivery<T>`：
 - `event()` / `payload()` / `payload_arc()`：只读访问 envelope。
 - `context()` → `DeliveryContext`：`provider_id`、`subscription_id`、`subscriber_id`、
   `retry_attempt`（facade 本地重试的第几次尝试，从 1 起）、`provider_attempt`
-  （由 provider 提供的可选投递次数，随 `InboundMessage` 传递；无法确认次数时保持未设置）、`provider_metadata`（`BTreeMap<String, String>`，
+  （由 provider 提供的可选投递次数，随 `InboundMessage` 传递；local 按每个已接纳事件副本统计成功 receive 次数，从 1 起，溢出后保持未知）、`provider_metadata`（`BTreeMap<String, String>`，
   分区/偏移等非敏感元数据，原样来自 `InboundMessage`）、`can_settle`
   （本条消息是否带 settlement token）、`is_dead_letter()`（是否带死信保留头）。
   facade 重试与 provider 重投在模型上**分开计数**，避免把两种语义混进一个数字。
@@ -1674,7 +1674,7 @@ crate 内的 `loom` 测试对预算准入、操作许可和调度器容量进行
 | `src/facade/sync_delivery_scheduler.rs`（inline `scheduler_race_tests`）、`src/facade/event_bus.rs`（inline `spawn_failure_tests`）、`tests/support/panic_hook.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
 | `tests/discovery_{sync,async,conflict}_tests.rs` + `tests/fixtures/discovery_{provider,consumer}` | `discovery` feature 跨 crate 链接与冲突检测 |
 | `tests/spi_conformance_tests.rs` | 用 `conformance` 模块跑 local 与 flume |
-| `src/local/outstanding_budget.rs`、`src/facade/event_bus/internal/operation_gate.rs`、`src/facade/internal/delivery_scheduler_core_loom_tests.rs` | `loom` 模型检查：预算准入、操作许可和调度器容量 |
+| `src/local/outstanding_budget.rs`、`src/facade/event_bus/internal/operation_gate.rs`、[调度器 Loom 模型测试](../src/facade/internal/delivery_scheduler_core/loom_tests.rs) | `loom` 模型检查：预算准入、操作许可和调度器容量 |
 | `fuzz/fuzz_targets/{provider_options,transport_envelope}.rs` | 解析/构造边界 fuzz |
 | `benches/` | 见 §10.6 |
 
@@ -1797,7 +1797,7 @@ SPI 输入结构使用私有字段、构造函数和访问器，避免新增字�
 - **异步 local 不参与 discovery**（§6.4）。
 - **`wait_for_idle` 依赖 provider**：不支持时返回 `IdleWaitUnsupported`，请用
   `wait_for_received_deliveries` 或业务层信号替代。
-- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。本次核对的本地 `rs-event-bus-redis` 0.7 checkout（HEAD `1f62ce24142de09f77e2f83bbd9ecf4092f9bdb1`）中，同步和异步 fresh delivery 报告 `Some(1)`。恢复 delivery 会按 entry ID 查询详细 `XPENDING`；仅当结果恰有一行、entry ID 与当前 consumer owner 均匹配，且 count 非零并可表示为 `u32` 时，`stream_protocol::trusted_attempt` 才接受该次数。查询或校验失败时次数保持未知（`None`）。本地清单已声明 core 0.21 路径依赖，因此该 checkout 的清单与 core 0.21 对齐。这是静态源码与清单核对，不是 Redis 集成执行或 registry 发布兼容证据。facade 本地重试仍单独记录在 `retry_attempt`。该次数不能证明恰好一次、业务完成或完整恢复历史。
+- **`provider_attempt` 由 provider 决定，可能未知**：SPI 会传递 provider 能确认的非零次数。local 对每个已接纳的订阅副本从 `Some(1)` 开始，仅在成功 receive 后增加；fanout 副本独立计数，复用事件 ID 重新发布也从 1 开始。facade 本地重试不增加此值。`u32` 溢出后 local 保持未知（`None`），不回绕。本次核对的本地 `rs-event-bus-redis` 0.7 checkout（HEAD `1f62ce24142de09f77e2f83bbd9ecf4092f9bdb1`）中，同步和异步 fresh delivery 报告 `Some(1)`。恢复 delivery 会按 entry ID 查询详细 `XPENDING`；仅当结果恰有一行、entry ID 与当前 consumer owner 均匹配，且 count 非零并可表示为 `u32` 时，`stream_protocol::trusted_attempt` 才接受该次数。查询或校验失败时次数保持未知（`None`）。本地清单已声明 core 0.21 路径依赖，因此该 checkout 的清单与 core 0.21 对齐。这是静态源码与清单核对，不是 Redis 集成执行或 registry 发布兼容证据。facade 本地重试仍单独记录在 `retry_attempt`。该次数不能证明恰好一次、业务完成或完整恢复历史。
 - Async local 在注册 mailbox 前拒绝订阅 ID 耗尽。同步和异步 local 在 settlement token
   耗尽时保留可接收消息并返回结构化 receive 错误；不会回绕 token 计数或静默丢弃事件。
 

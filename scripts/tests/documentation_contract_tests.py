@@ -50,6 +50,26 @@ class DocumentationContractTests(unittest.TestCase):
     def test_missing_package_list_is_rejected(self):
         self.assertFalse(checker.check(self.root, self.root / "absent.txt"))
 
+    def test_explicit_source_links_are_checked_with_document_relative_paths_and_fragments(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/example.rs").write_text("// source\n", encoding="utf-8")
+        (self.root / "doc/design.md").write_text(
+            "[source](../src/example.rs#entry)\nhttps://example.com/src/missing.rs\n"
+            "[#section](#overview)\n```md\n[ignored](../src/missing.rs)\n```\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(checker.check(self.root, self.listing))
+
+    def test_missing_explicit_source_file_is_rejected(self):
+        (self.root / "README.md").write_text(
+            "[Migration](doc/migration.md)\n[missing](src/missing.rs)\n", encoding="utf-8")
+        self.assertFalse(checker.check(self.root, self.listing))
+
+    def test_explicit_source_link_that_escapes_repository_is_rejected(self):
+        (self.root / "doc/design.md").write_text(
+            "[outside](../../outside.rs)\n", encoding="utf-8")
+        self.assertFalse(checker.check(self.root, self.listing))
+
     def _migration_pages(self):
         (self.root / "doc/migration.md").write_text(
             "[简体中文](migration.zh_CN.md) [guide](user_guide.md#migrate-from-020-to-021)\n", encoding="utf-8")

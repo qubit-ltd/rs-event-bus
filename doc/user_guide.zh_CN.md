@@ -622,7 +622,7 @@ let subscription = bus.subscribe(request, handler)?;
 
 `DeadLetterPolicy::with_topic_name` 要求主题名非空、最多 255 个 UTF-8 字节、没有首尾空白或控制字符。`with_topic` 接受已经校验过的 `Topic`。provider option 的 key 必须带命名空间（包含点号），不能以点号开头或结尾，key 和 value 都不能包含控制字符。请求 builder 和 facade 执行订阅时都会校验；非法配置会在调用 provider 的 `subscribe` 前被拒绝。边界用例可运行 `cargo test --locked --test request_validation_regression_tests`。
 
-处理函数可返回 `()` 或 `Result<(), DeliveryError>`。如果数据库写入失败，应返回错误，让库按订阅策略处理。`delivery.payload()` 取得业务数据，`delivery.event()` 可取得事件 ID 和附带信息，`delivery.context()` 可取得传递实现、订阅者以及当前是第几次尝试（`retry_attempt()`，从 1 开始）。重试可能带来重复处理，因此处理方应使用业务唯一键。下面以客户视图和审计两个订阅为例，给出三种最常用的配置。
+处理函数可返回 `()` 或 `Result<(), DeliveryError>`。如果数据库写入失败，应返回错误，让库按订阅策略处理。`delivery.payload()` 取得业务数据，`delivery.event()` 可取得事件 ID 和附带信息，`delivery.context()` 可取得传递实现、订阅者以及当前是第几次尝试（`retry_attempt()`，从 1 开始）。`provider_attempt()` 与它分开计数：local 对每个订阅的事件副本记录成功 receive 的次数，从 1 开始，仅在 provider 重新投递时增加；facade 内部重试不会增加该值。fanout 副本各自计数，即使复用事件 ID 重新发布也会从 1 开始。计数溢出后 local 将其保留为未知；其他 provider 也可能无法确定次数。重试可能带来重复处理，因此处理方应使用业务唯一键。下面以客户视图和审计两个订阅为例，给出三种最常用的配置。
 
 异步 future 清理有不同结果。已完成的 handler 或 middleware future 在析构时 panic，会被报告为 `DeliveryError::Handler` 并按订阅失败策略处理，不会当作成功投递。provider future 成功返回后在析构时 panic，则 publish 返回 `provider_panicked` SPI 错误，接纳效果按未知处理。已有的 handler/provider 错误或 poll panic 优先于清理 panic。取消 pending 异步操作没有结果返回通道：清理 panic 会被隔离，但不会返回终态错误或成功回执，也不会确认 delivery。这些保证要求 panic 使用 unwind；无法恢复 `panic=abort`、会 abort 的 panic hook 或展开期间的进一步 panic。
 

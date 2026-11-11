@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
              "doc/design.md", "doc/design.zh_CN.md")
 MIGRATION_PAGES = ("doc/migration.md", "doc/migration.zh_CN.md")
+SOURCE_LINK_ROOTS = ("src", "tests", "benches", "fuzz")
 MIGRATION_GUIDES = {
     "doc/migration.md": ("doc/user_guide.md", "migrate-from-020-to-021"),
     "doc/migration.zh_CN.md": ("doc/user_guide.zh_CN.md", "从-020-迁移到-021"),
@@ -78,7 +79,43 @@ def check(root, package_list):
                 errors.append((document, f"local link target {local} is not included in the Cargo package list"))
     for document, message in errors:
         print(f"{document}: {message}", file=sys.stderr)
-    return not errors and check_migration_contract(root, package_list)
+    return not errors and check_explicit_source_links(root) and check_migration_contract(root, package_list)
+
+
+def check_explicit_source_links(root):
+    """Check explicit Markdown links to source files in the full checkout."""
+    root = root.resolve()
+    errors = []
+    for document in DOCUMENTS:
+        try:
+            text = (root / document).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append((document, f"cannot read document for source links: {error}"))
+            continue
+        for destination in markdown_links(text):
+            parts = urlsplit(destination)
+            if parts.scheme or parts.netloc or not parts.path or "*" in parts.path:
+                continue
+            raw = unquote(parts.path).replace("\\", "/")
+            combined = PurePosixPath(raw.lstrip("/")) if raw.startswith("/") else PurePosixPath(document).parent / raw
+            normalized = PurePosixPath(os.path.normpath(combined.as_posix()))
+            relative = normalized.as_posix()
+            if relative == ".." or relative.startswith("../"):
+                errors.append((document, f"source link target {raw} escapes the repository"))
+                continue
+            if not any(relative == prefix or relative.startswith(prefix + "/") for prefix in SOURCE_LINK_ROOTS):
+                continue
+            candidate = root.joinpath(*normalized.parts)
+            try:
+                candidate.resolve(strict=False).relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                errors.append((document, f"source link target {raw} escapes the repository"))
+                continue
+            if not candidate.is_file():
+                errors.append((document, f"source link target {relative} does not exist as a file"))
+    for document, message in errors:
+        print(f"{document}: {message}", file=sys.stderr)
+    return not errors
 
 
 def _packaged_paths(package_list):

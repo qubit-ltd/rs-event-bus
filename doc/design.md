@@ -329,7 +329,8 @@ A handler receives `Delivery<T>`:
 - `context()` returns `DeliveryContext`: `provider_id`, `subscription_id`, `subscriber_id`,
   `retry_attempt` (the facade-local attempt, starting at 1), `provider_attempt`
   (an optional provider-supplied delivery count carried by `InboundMessage`;
-  providers that cannot establish a count leave it unset), `provider_metadata`
+  providers that cannot establish a count leave it unset; local counts successful
+  receives for each accepted event copy, starts at 1, and leaves overflow unknown), `provider_metadata`
   (`BTreeMap<String, String>` of non-sensitive data such as partition or offset,
   copied from `InboundMessage`), `can_settle` (whether this message carries a
   settlement token), and `is_dead_letter()` (whether the reserved dead-letter header
@@ -1820,7 +1821,7 @@ The in-crate `loom` tests model-check budget admission, operation permits, and s
 | `src/facade/sync_delivery_scheduler.rs` (inline `scheduler_race_tests`), `src/facade/event_bus.rs` (inline `spawn_failure_tests`), `tests/support/panic_hook.rs` | Scheduler races, thread-spawn failure, panic-hook isolation |
 | `tests/discovery_{sync,async,conflict}_tests.rs` plus `tests/fixtures/discovery_{provider,consumer}` | Cross-crate linking and conflict detection for the `discovery` feature |
 | `tests/spi_conformance_tests.rs` | Runs the `conformance` module against `local` and flume |
-| `src/local/outstanding_budget.rs`, `src/facade/event_bus/internal/operation_gate.rs`, `src/facade/internal/delivery_scheduler_core_loom_tests.rs` | `loom` models for budget admission, operation permits, and scheduler capacity |
+| `src/local/outstanding_budget.rs`, `src/facade/event_bus/internal/operation_gate.rs`, [scheduler Loom model tests](../src/facade/internal/delivery_scheduler_core/loom_tests.rs) | `loom` models for budget admission, operation permits, and scheduler capacity |
 | `fuzz/fuzz_targets/{provider_options,transport_envelope}.rs` | Fuzz of parse and construction edges |
 | `benches/` | See §10.6 |
 
@@ -1987,7 +1988,7 @@ structure should depend on `qubit-retry` directly; core does not re-export it.
 - **Retry paths have different resource costs.** Ordinary synchronous handler retry backoff is scheduled by the receiver owner through `RetrySession`; it releases the handler execution permit while retaining the owned delivery and ordering lane. A blocking handler still occupies a permit. Synchronous publish retries and dead-letter forwarding have separate paths and are not claimed to be non-blocking; async execution avoids blocking an OS thread but does not by itself prove every scheduling permit is released.
 - **Async `local` does not participate in discovery** (§6.4).
 - **`wait_for_idle` depends on the provider.** When the provider does not support it, the call returns `IdleWaitUnsupported`. Use `wait_for_received_deliveries` or an application-level signal instead.
-- **`provider_attempt` is provider-specific and may be unknown.** In the locally checked `rs-event-bus-redis` 0.7 checkout (HEAD `1f62ce24142de09f77e2f83bbd9ecf4092f9bdb1`), synchronous and asynchronous fresh deliveries report `Some(1)`. Recovered deliveries query detailed `XPENDING` for the entry ID; a count is trusted only when exactly one row is returned and its entry ID and current consumer owner match, and its count is nonzero and representable as `u32` by `stream_protocol::trusted_attempt`. Query or validation failures leave the count unknown (`None`). The local manifest declares a core 0.21 path dependency, so this checkout’s manifest is aligned with core 0.21. This is a static source and manifest check, not Redis integration execution or registry release compatibility evidence. The count does not prove exactly-once delivery, business completion, or complete recovery history. Facade-local retries remain in `retry_attempt`.
+- **`provider_attempt` is provider-specific and may be unknown.** Local starts each accepted subscription copy at `Some(1)`, increments on each successful receive after provider redelivery, and keeps fanout copies independent. Republishing starts at 1 even when the event ID is reused. Facade-local retries do not increment this count. If its `u32` count overflows, local leaves it unknown (`None`) rather than wrapping. In the locally checked `rs-event-bus-redis` 0.7 checkout (HEAD `1f62ce24142de09f77e2f83bbd9ecf4092f9bdb1`), synchronous and asynchronous fresh deliveries report `Some(1)`. Recovered deliveries query detailed `XPENDING` for the entry ID; a count is trusted only when exactly one row is returned and its entry ID and current consumer owner match, and its count is nonzero and representable as `u32` by `stream_protocol::trusted_attempt`. Query or validation failures leave the count unknown (`None`). The local manifest declares a core 0.21 path dependency, so this checkout’s manifest is aligned with core 0.21. This is a static source and manifest check, not Redis integration execution or registry release compatibility evidence. The count does not prove exactly-once delivery, business completion, or complete recovery history. Facade-local retries remain in `retry_attempt`.
 - Async local rejects subscription-ID exhaustion before registering a mailbox.
   Sync and async local also preserve a ready message when settlement-token
   allocation is exhausted and return a structured receive error; they never wrap
