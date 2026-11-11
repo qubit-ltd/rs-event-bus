@@ -15,8 +15,10 @@ use super::observer_entry::ObserverEntry;
 /// A registration that remains active until this handle is dropped.
 ///
 /// Create a handle with [`EventBus::observe_diagnostics`] or
-/// [`AsyncEventBus::observe_diagnostics`]. Dropping the handle unregisters the
-/// callback for future diagnostics.
+/// [`AsyncEventBus::observe_diagnostics`]. Dropping the handle prevents
+/// inclusion in later observer snapshots. Snapshots that already selected the
+/// callback may still invoke it and retain its captures after drop returns.
+/// Dropping the handle does not wait for callbacks to finish.
 ///
 /// [`EventBus::observe_diagnostics`]: super::EventBus::observe_diagnostics
 /// [`AsyncEventBus::observe_diagnostics`]: super::AsyncEventBus::observe_diagnostics
@@ -31,7 +33,7 @@ use super::observer_entry::ObserverEntry;
 ///
 /// let bus = EventBus::local(LocalEventBusConfig::new()).unwrap();
 /// let observer: DiagnosticObserverHandle = bus.observe_diagnostics(|_| {});
-/// drop(observer); // Unregister before subsequent diagnostics are dispatched.
+/// drop(observer); // Later snapshots no longer select this observer.
 /// bus.shutdown(ShutdownMode::Immediate).unwrap();
 /// ```
 #[must_use = "keep this handle alive while observing diagnostics"]

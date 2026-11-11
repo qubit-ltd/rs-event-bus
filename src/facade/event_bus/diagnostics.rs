@@ -21,6 +21,9 @@ impl EventBus {
     ///
     /// Observers run synchronously in registration order and outside facade
     /// locks. Panics are contained and do not recursively emit diagnostics.
+    /// Dropping the handle prevents inclusion in later observer snapshots.
+    /// An existing snapshot may still invoke the callback and retain its
+    /// captures after drop returns; dropping does not wait for callbacks.
     ///
     /// # Type Parameters
     /// - `F`: thread-safe callback type.
@@ -29,7 +32,7 @@ impl EventBus {
     /// - `observer`: callback invoked for each emitted diagnostic.
     ///
     /// # Returns
-    /// A handle that unregisters the observer when dropped.
+    /// A handle that excludes the observer from later snapshots when dropped.
     pub fn observe_diagnostics<F>(&self, observer: F) -> DiagnosticObserverHandle
     where
         F: Fn(&Diagnostic) + Send + Sync + 'static,

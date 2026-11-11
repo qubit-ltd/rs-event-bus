@@ -2064,7 +2064,7 @@ if !cleanup_errors.is_empty() {
 | `IdleWaitUnsupported` | 所用实现不能报告整个主题是否空闲；可以由业务代码记录完成状态，不能把总线已取到的工作当作全部工作。 |
 | 平稳关闭超时 | 查是否有处理函数或底层读写一直没返回、是否还有未完成的消息；稍后再获取关闭结果。 |
 
-用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。要持续接收通知，就保留返回的 `DiagnosticObserverHandle`；丢弃它会停止观察。回调会占用触发问题的线程，应尽快返回。`Diagnostic::AdmissionRejected` 同时携带逻辑身份 `subscriber_id` 和被拒绝实例的 `subscription_id`，可以区分逻辑名称相同的订阅。显式构造该变体或完整解构字段的调用方须补充实例 ID，或用 `..` 忽略新增字段；该源码变更随 core 0.21.0 发布。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、逻辑处理方 ID 和订阅实例 ID、重试次数及最终错误。
+用 `observe_diagnostics` 可登记一个接收内部问题通知的回调。保留返回的 `DiagnosticObserverHandle`，回调才会被后续 observer 快照选中。丢弃句柄后新快照不会再选中它，但已经选中回调的快照仍可能在 drop 返回后调用回调，并在快照释放前保留其捕获对象；drop 不会等待回调结束。一次发布可能为多个诊断（包括多个被拒绝目标）复用同一快照。关闭回调可能访问的资源前，应停止诊断来源并等待应用管理的在途操作完成，或让回调访问应用可关闭状态；不要在回调中等待它自身结束。回调会占用触发问题的线程，应尽快返回。`Diagnostic::AdmissionRejected` 同时携带逻辑身份 `subscriber_id` 和被拒绝实例的 `subscription_id`，可以区分逻辑名称相同的订阅。显式构造该变体或完整解构字段的调用方须补充实例 ID，或用 `..` 忽略新增字段；该源码变更随 core 0.21.0 发布。`publish_metrics()` 统计发布尝试和 provider 报告的接纳结果。`cancelled` 统计已经首次轮询、随后在返回前被丢弃的异步发布 future；这不表示 provider 没有接纳事件，因为调用被丢弃时事件可能已经接纳。它不统计消息接收或业务写入成功次数。日志建议同时记录订单 ID、事件 ID、逻辑处理方 ID 和订阅实例 ID、重试次数及最终错误。
 
 停机时的关闭错误历史保留最早 256 条详细记录。`SubscriptionCloseErrors::len()` 和 `iter()` 只描述保留样本；`total_count()`、`omitted_count()` 与 `is_truncated()` 描述完整数量。即使截断，shutdown 仍返回错误，source 指向首个保留错误。此限制只约束记录数，不约束单条 provider 错误的大小或应用保留的快照；需要完整归档时，应在显式关闭订阅时记录每条错误。
 

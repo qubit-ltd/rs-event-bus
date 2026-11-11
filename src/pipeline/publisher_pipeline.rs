@@ -517,7 +517,7 @@ impl PublisherPipeline {
         })
     }
 
-    /// Reports rejected destination admissions to each diagnostic observer.
+    /// Reports rejected destination admissions to the observer snapshot captured for this publication.
     ///
     /// # Parameters
     ///

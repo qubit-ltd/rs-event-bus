@@ -68,6 +68,9 @@ impl AsyncEventBus {
 
     /// Registers a synchronous diagnostic observer until the returned handle is
     /// dropped.
+    /// A snapshot that already selected the callback may still invoke it and
+    /// retain its captures after drop returns. Dropping does not wait for
+    /// callbacks to finish.
     ///
     /// # Type Parameters
     /// - `F`: Thread-safe callback type.
@@ -76,7 +79,7 @@ impl AsyncEventBus {
     /// - `observer`: Callback invoked for emitted diagnostics.
     ///
     /// # Returns
-    /// A handle that unregisters the observer when dropped.
+    /// A handle that excludes the observer from later snapshots when dropped.
     #[must_use = "the handle keeps the diagnostic observer registered"]
     pub fn observe_diagnostics<F>(&self, observer: F) -> DiagnosticObserverHandle
     where

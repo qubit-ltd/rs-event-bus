@@ -4186,6 +4186,50 @@ fn test_dropping_diagnostic_observer_releases_its_callback_capture() {
 }
 
 #[test]
+fn test_sync_observer_snapshot_survives_drop_during_publish_interceptor() {
+    let (bus, backend) = create_bus();
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    backend.partial_publish_call(1);
+    let handle_slot = Arc::new(Mutex::new(None));
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let probe = Arc::new(());
+    let probe_weak = Arc::downgrade(&probe);
+    let callback_probe = probe.clone();
+    drop(probe);
+    let count_for_callback = callback_count.clone();
+    let handle = bus.observe_diagnostics(move |diagnostic| {
+        let _capture = &callback_probe;
+        if matches!(diagnostic, Diagnostic::AdmissionRejected { .. }) {
+            count_for_callback.fetch_add(1, Ordering::AcqRel);
+        }
+    });
+    *handle_slot.lock().unwrap() = Some(handle);
+    let slot_for_interceptor = handle_slot.clone();
+    let weak_for_interceptor = probe_weak.clone();
+    let options = PublishOptions::builder()
+        .interceptor(move |envelope| {
+            let removed = { slot_for_interceptor.lock().unwrap().take() };
+            drop(removed);
+            assert!(weak_for_interceptor.upgrade().is_some(), "selected snapshot retains captures");
+            Ok(Some(envelope))
+        })
+        .build();
+
+    assert_eq!(callback_count.load(Ordering::Acquire), 0);
+    let _ = bus
+        .publish(request("snapshot-selected".into()).with_options(options))
+        .expect("publish succeeds");
+    assert_eq!(callback_count.load(Ordering::Acquire), 1);
+    assert!(probe_weak.upgrade().is_none(), "completed snapshot releases captures");
+
+    let _ = bus
+        .publish(request("after-snapshot".into()))
+        .expect("later publish succeeds");
+    assert_eq!(callback_count.load(Ordering::Acquire), 1);
+    finish_sync_bus_cleanup(cleanup);
+}
+
+#[test]
 fn test_retry_directive_is_subject_to_qubit_retry_policy_and_abort_is_not_overridden() {
     let (bus, backend) = create_bus();
     let attempts = Arc::new(AtomicUsize::new(0));

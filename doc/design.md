@@ -1752,7 +1752,11 @@ preserves the underlying source chain.
 ## 13. Diagnostics and metrics
 
 `observe_diagnostics(observer) -> DiagnosticObserverHandle` registers an
-`Fn(&Diagnostic) + Send + Sync` observer. Dropping the handle unregisters it.
+`Fn(&Diagnostic) + Send + Sync` observer. Dropping the handle prevents later
+observer snapshots from selecting it. A snapshot selected before drop can still
+invoke the callback after drop returns and retains its captures until released;
+drop does not wait for callbacks. A publication may reuse one snapshot for
+multiple diagnostics. Concurrent snapshot selection may race with drop.
 An observer panic is isolated and does not affect other observers or the main path.
 
 | `Diagnostic` variant | When it is emitted |

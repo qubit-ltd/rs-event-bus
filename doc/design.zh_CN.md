@@ -1603,7 +1603,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 ## 13. 诊断与指标
 
 `observe_diagnostics(observer) -> DiagnosticObserverHandle`：注册一个
-`Fn(&Diagnostic) + Send + Sync` 观察者，句柄 drop 即注销。观察者 panic 被隔离，
+`Fn(&Diagnostic) + Send + Sync` 观察者。句柄 drop 后，后续 observer 快照不会再选中它；drop 前已选中的快照仍可在 drop 返回后调用回调，并持有其捕获对象直到快照释放。drop 不等待回调结束；并发中的快照选择可能与 drop 竞争。一次发布可能为多个诊断复用同一快照。观察者 panic 被隔离，
 不影响其他观察者与主流程。
 
 | `Diagnostic` 变体 | 何时发出 |
