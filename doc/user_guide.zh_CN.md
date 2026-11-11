@@ -2026,6 +2026,8 @@ if outcome == WaitOutcome::TimedOut {
 
 ### 异步总线的停机流程
 
+异步发布回调（包括发布拦截器和终结发布错误处理器）在发布总线的 poll 作用域中运行。在回调中直接等待同一总线的 `shutdown` 或调用 `wait_for_received_deliveries`，会返回 `LifecycleError::WouldDeadlock`；即使当前没有已接收投递，等待检查也采用保守保护。回调返回后，由应用生命周期任务驱动停机。操作另一条总线不会触发该保护。此 poll 作用域检查不检测独立 spawn 任务之间任意的依赖环。
+
 应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
 
 ```rust

@@ -178,6 +178,217 @@ fn test_cancelling_polled_publish_future_does_not_retract_provider_acceptance() 
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
 }
 
+#[test]
+fn test_async_publish_reentrant_shutdown() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("publish-reentrant-shutdown").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let callback_bus = bus.clone();
+    let callback_ran = Arc::new(AtomicBool::new(false));
+    let callback_ran_in_interceptor = callback_ran.clone();
+    let options = PublishOptions::<String>::builder()
+        .interceptor(move |envelope| {
+            for mode in [
+                ShutdownMode::Immediate,
+                ShutdownMode::Graceful {
+                    timeout: Duration::from_secs(60),
+                },
+            ] {
+                let mut future = Box::pin(callback_bus.shutdown(mode));
+                let mut context = Context::from_waker(Waker::noop());
+                assert!(matches!(
+                    future.as_mut().poll(&mut context),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                        operation: "shutdown"
+                    })))
+                ));
+            }
+            callback_ran_in_interceptor.store(true, Ordering::Release);
+            Ok(Some(envelope))
+        })
+        .build();
+    let request = PublishRequest::new(Topic::<String>::new("publish.reentrant").unwrap(), "event".to_owned())
+        .unwrap()
+        .with_options(options);
+
+    let _receipt = block_on(bus.publish(request)).expect("publish should continue after rejected reentrant shutdown");
+    assert!(callback_ran.load(Ordering::Acquire));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown should succeed");
+}
+
+#[test]
+fn test_async_publish_context_failure_callback_and_wait() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("publish-context-failure").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
+    spi.fail_next_publish();
+    let callback_bus = bus.clone();
+    let callback_topic = Topic::<String>::new("publish.context.failure").unwrap();
+    let callback_ran = Arc::new(AtomicBool::new(false));
+    let callback_ran_in_handler = callback_ran.clone();
+    let request = PublishRequest::new(
+        Topic::<String>::new("publish.context.failure").unwrap(),
+        "event".to_owned(),
+    )
+    .unwrap()
+    .with_options(
+        PublishOptions::<String>::builder()
+            .error_handler(move |_, _| {
+                let mut shutdown = Box::pin(callback_bus.shutdown(ShutdownMode::Immediate));
+                let mut wait = Box::pin(callback_bus.wait_for_received_deliveries(&callback_topic, None));
+                let mut context = Context::from_waker(Waker::noop());
+                assert!(matches!(
+                    shutdown.as_mut().poll(&mut context),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                        operation: "shutdown"
+                    })))
+                ));
+                assert!(matches!(
+                    wait.as_mut().poll(&mut context),
+                    Poll::Ready(Err(LifecycleError::WouldDeadlock {
+                        operation: "wait_for_received_deliveries"
+                    }))
+                ));
+                callback_ran_in_handler.store(true, Ordering::Release);
+            })
+            .build(),
+    );
+    let error = block_on(bus.publish(request)).expect_err("fake provider failure should be retained");
+    assert!(callback_ran.load(Ordering::Acquire));
+    assert!(matches!(error.cause(), qubit_event_bus::PublishError::Spi(_)));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
+}
+
+#[test]
+fn test_async_publish_context_does_not_reject_different_bus() {
+    let first = AsyncEventBus::from_spi(
+        ProviderId::new("publish-context-first").unwrap(),
+        Arc::new(FakeAsyncEventBusSpi::new()),
+    )
+    .expect("valid first provider");
+    let second = AsyncEventBus::from_spi(
+        ProviderId::new("publish-context-second").unwrap(),
+        Arc::new(FakeAsyncEventBusSpi::new()),
+    )
+    .expect("valid second provider");
+    let second_for_callback = second.clone();
+    let request = PublishRequest::new(
+        Topic::<String>::new("publish.context.other").unwrap(),
+        "event".to_owned(),
+    )
+    .unwrap()
+    .with_options(
+        PublishOptions::<String>::builder()
+            .interceptor(move |envelope| {
+                let _report = block_on(second_for_callback.shutdown(ShutdownMode::Immediate))
+                    .expect("different bus shutdown should be allowed");
+                Ok(Some(envelope))
+            })
+            .build(),
+    );
+    let _receipt = block_on(first.publish(request)).expect("first bus publish succeeds");
+    let _report = block_on(first.shutdown(ShutdownMode::Immediate)).expect("first bus shutdown succeeds");
+}
+
+#[test]
+fn test_async_publish_context_admission_observer_rejects_same_bus_shutdown() {
+    use std::any::TypeId;
+
+    use qubit_event_bus::local::AsyncLocalEventBusProvider;
+    use qubit_event_bus::local::LocalEventBusConfig;
+    use qubit_event_bus::registry::EventBusConfig;
+    use qubit_event_bus::spi::OutboundMessage;
+    use qubit_event_bus::spi::TransportPayload;
+    use qubit_spi::AsyncServiceProvider;
+
+    let config = EventBusConfig::default()
+        .with_provider_options(LocalEventBusConfig::new().queue_capacity(1).provider_options());
+    let spi = block_on(AsyncLocalEventBusProvider.create_configured(&config)).expect("local SPI");
+    let topic_address = TopicAddress::new("publish.context.observer").unwrap();
+    let receiver = block_on(spi.subscribe(SpiSubscriptionRequest::new(
+        Id::new(903),
+        topic_address.clone(),
+        qubit_event_bus::model::SubscriberId::new("publish-context-observer").unwrap(),
+        None,
+        SubscriptionDurability::Ephemeral,
+        StartPosition::New,
+        Default::default(),
+        TypeId::of::<String>(),
+    )))
+    .expect("raw receiver");
+    let raw_publish = |event_id: &'static str| {
+        block_on(spi.publish(OutboundMessage::new(
+            topic_address.clone(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(String::from("fill"))),
+        )))
+        .expect("raw publish")
+    };
+    let _filled = raw_publish("observer-fill");
+    let _rejected = raw_publish("observer-reject");
+
+    let bus = AsyncEventBus::from_spi(ProviderId::new("publish-context-observer").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let callback_bus = bus.clone();
+    let observed = Arc::new(AtomicBool::new(false));
+    let observed_in_callback = observed.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::AdmissionRejected { .. }) {
+            let mut shutdown = Box::pin(callback_bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(60),
+            }));
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(matches!(
+                shutdown.as_mut().poll(&mut context),
+                Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                    operation: "shutdown"
+                })))
+            ));
+            observed_in_callback.store(true, Ordering::Release);
+        }
+    });
+    let _receipt = block_on(
+        bus.publish(
+            PublishRequest::new(
+                Topic::<String>::new("publish.context.observer").unwrap(),
+                "payload".to_owned(),
+            )
+            .unwrap(),
+        ),
+    )
+    .expect("observer does not change publication result");
+    assert!(observed.load(Ordering::Acquire));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
+    drop(receiver);
+}
+
+#[test]
+fn test_async_publish_context_pending_poll_restores_scope_and_releases_publish() {
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let observed_event_id = Arc::new(std::sync::Mutex::new(None));
+    let spi = Arc::new(PendingPublishSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        accepted: accepted.clone(),
+        observed_event_id,
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("publish-context-pending").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let mut publishing = Box::pin(bus.publish(PublishRequest::new(topic(), 9).unwrap()));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(publishing.as_mut().poll(&mut context).is_pending());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(matches!(shutdown.as_mut().poll(&mut context), Poll::Pending));
+    drop(shutdown);
+    drop(publishing);
+    assert_eq!(1, accepted.load(Ordering::Acquire));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("publish cancellation releases count");
+}
+
 /// Signals a channel whenever an idle-wait future is woken.
 struct WakeOnSignal(std::sync::mpsc::Sender<()>);
 

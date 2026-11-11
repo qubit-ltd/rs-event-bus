@@ -45,6 +45,7 @@ mod dead_letter;
 // Runs retry attempts and reports terminal delivery failures.
 mod delivery_task;
 
+pub(super) use internal::BusContextFuture;
 pub(super) use internal::is_current_bus_poll;
 
 /// Boxed subscriber handler that returns a runtime-neutral future.

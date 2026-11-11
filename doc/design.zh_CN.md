@@ -1302,11 +1302,14 @@ shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹�
 
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 
-异步侧没有线程可绑定，因此用 **poll 作用域**：投递任务在 poll handler/中间件时进入
-bus 上下文，poll 返回后退出。在此作用域内调用 `wait_for_received_deliveries` 或
-`shutdown().await` 会立刻得到 `WouldDeadlock`，因为等待自己所在的投递完成必然死锁。poll scope 覆盖
-runner 一轮中的 filter、decode、handler 与 diagnostic 回调；poll 返回 `Pending` 时
-即清除。操作其他 bus 不会匹配当前上下文。
+异步侧没有线程可绑定，因此使用 **poll 作用域**。投递任务在 poll handler 或 middleware
+时进入 bus 上下文，poll 返回后退出；该作用域覆盖 runner 整轮，包括 filter、decode、
+handler 和 diagnostic 回调。Publisher pipeline 也会在每次 poll 时进入 bus 上下文，在
+poll 返回或 unwind 后退出，覆盖准备阶段、拦截器、codec/provider poll 和终结诊断回调。
+在任一作用域内调用 `wait_for_received_deliveries` 或 `shutdown().await` 会立刻得到
+`WouldDeadlock`；即使没有已接收投递，也保守地按 bus poll 边界拒绝。上下文在 `Pending`、
+`Ready` 或 unwind 后清除，操作其他 bus 不会匹配当前上下文。此检查不检测独立 spawn
+任务之间任意的依赖环。
 
 ---
 

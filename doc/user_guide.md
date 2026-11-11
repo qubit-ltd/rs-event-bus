@@ -2028,6 +2028,8 @@ When `wait_for_idle` is supported, `Idle` means the provider reported no queued 
 
 ### Shut down an async bus
 
+Async publish callbacks, including publisher interceptors and terminal publish error handlers, run inside the publishing bus's poll scope. Directly awaiting `shutdown` or calling `wait_for_received_deliveries` for that same bus returns `LifecycleError::WouldDeadlock`; the wait check is conservative even when no received delivery is active. Return from the callback and have an application lifecycle task drive shutdown. Another bus is unaffected. This poll-scoped guard does not detect arbitrary dependency cycles between independently spawned tasks.
+
 The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
 
 ```rust

@@ -1389,9 +1389,17 @@ A bounded caller wait is not forced process exit. `Immediate` can still wait for
 ### 9.8 `BusContextFuture`: deadlock detection at poll scope
 
 The async side has no thread to bind, so it uses a **poll scope**. A delivery task
-enters bus context while polling the handler or middleware and leaves it when the
-poll returns. Inside that scope, `wait_for_received_deliveries` or `shutdown().await`
-returns `WouldDeadlock` immediately, because waiting for the delivery that is currently being polled cannot succeed. The poll scope covers the full runner turn, including filter, decode, handler, and diagnostic callbacks. It is cleared when the poll returns `Pending`; work on another bus does not match this context.
+enters bus context while polling its handler or middleware and leaves it when
+that poll returns. The scope covers the full runner turn, including filter,
+decode, handler, and diagnostic callbacks. The publisher pipeline also enters
+bus context for each poll and leaves it when the poll returns or unwinds; it
+covers preparation, interceptors, codec/provider polling, and terminal
+diagnostics. Inside either scope, `wait_for_received_deliveries` or
+`shutdown().await` returns `WouldDeadlock` immediately, even if no received
+delivery is active; this is a conservative bus-poll boundary. It is cleared on
+`Pending`, `Ready`, or unwind, and work on another bus does not match this context.
+The check does not detect arbitrary dependency cycles between independently
+spawned tasks.
 
 ---
 

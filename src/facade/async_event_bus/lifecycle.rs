@@ -40,6 +40,9 @@ impl AsyncEventBus {
     ///
     /// This does not query the provider's queue and does not establish global
     /// idleness on a remote broker.
+    /// A callback polled for this bus cannot wait for this operation: it
+    /// receives [`LifecycleError::WouldDeadlock`] even when no matching
+    /// delivery is active, because the guard is scoped to the whole bus poll.
     ///
     /// # Type Parameters
     /// - `T`: Topic payload type.
@@ -84,11 +87,12 @@ impl AsyncEventBus {
     /// the bus closing so the caller may retry cleanup, including with
     /// [`ShutdownMode::Immediate`].
     ///
-    /// Directly awaiting shutdown from a handler or middleware Future running
-    /// on this bus returns [`LifecycleError::WouldDeadlock`]. This detection is
-    /// scoped to each poll of the caller-driven runner Future; tasks the
-    /// application independently spawns are outside that scope and must not
-    /// await a shutdown that includes their originating handler.
+    /// Directly awaiting shutdown from a handler, middleware, or publisher
+    /// callback running on this bus returns [`LifecycleError::WouldDeadlock`].
+    /// This detection is scoped to each poll of caller-driven runner and
+    /// publisher futures. Request shutdown from an application lifecycle task
+    /// after the callback returns. Independently spawned tasks are outside
+    /// that scope; this check does not detect arbitrary dependency cycles.
     ///
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.

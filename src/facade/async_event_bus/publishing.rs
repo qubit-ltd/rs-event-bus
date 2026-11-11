@@ -7,6 +7,8 @@
 // =============================================================================
 //! Asynchronous event bus publishing operations.
 
+use std::sync::Arc;
+
 use super::PublishCompletionGuard;
 use crate::AsyncEventBus;
 use crate::CapabilityError;
@@ -16,6 +18,7 @@ use crate::PublishMetricsSnapshot;
 use crate::error::CheckedPublishError;
 use crate::error::ConfigurationError;
 use crate::error::EventBusError;
+use crate::facade::async_subscription::BusContextFuture;
 use crate::model::AdmissionRequirement;
 use crate::model::BatchPublishResult;
 use crate::model::EventId;
@@ -155,6 +158,10 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns an error if shutdown has started, a required capability is
     /// unavailable, or middleware, codec, or provider operations fail.
+    /// A callback polled as part of this publication that directly waits for
+    /// this bus to shut down receives [`crate::LifecycleError::WouldDeadlock`].
+    /// Drive shutdown from an application lifecycle task after the callback
+    /// returns.
     ///
     /// # Cancellation
     /// An unpolled future does not start publication. Dropping a polled future
@@ -165,6 +172,13 @@ impl AsyncEventBus {
     /// and reconcile uncertain publication or use application idempotency
     /// before republishing. `DuplicateRiskPolicy` does not make
     /// cancellation a rollback.
+    ///
+    /// Publisher callbacks are polled in this bus's lifecycle context. A
+    /// callback that directly waits for this bus to shut down receives
+    /// [`crate::LifecycleError::WouldDeadlock`]; request shutdown from an
+    /// external lifecycle task after the callback returns. This poll-scoped
+    /// check does not detect arbitrary dependency cycles between
+    /// independently spawned tasks.
     pub async fn publish<T: Send + Sync + 'static>(
         &self,
         request: PublishRequest<T>,
@@ -184,24 +198,24 @@ impl AsyncEventBus {
             ));
         };
         let observers = self.observer_snapshot();
-        let result = self
-            .inner
-            .publisher
-            .publish_async(
+        let result = BusContextFuture::new(
+            Arc::as_ptr(&self.inner) as usize,
+            self.inner.publisher.publish_async(
                 self.inner.spi.as_ref(),
                 request,
                 self.inner.facade_config.global_publisher_interceptors(),
                 &observers,
                 self.inner.timer.clone(),
-            )
-            .await
-            .map_err(|failure| {
-                self.inner.publish_metrics.record_error();
-                publish_pipeline_error(event_id, failure)
-            })
-            .inspect(|receipt| {
-                self.inner.publish_metrics.record_receipt(receipt);
-            });
+            ),
+        )
+        .await
+        .map_err(|failure| {
+            self.inner.publish_metrics.record_error();
+            publish_pipeline_error(event_id, failure)
+        })
+        .inspect(|receipt| {
+            self.inner.publish_metrics.record_receipt(receipt);
+        });
         completion.complete();
         result
     }
