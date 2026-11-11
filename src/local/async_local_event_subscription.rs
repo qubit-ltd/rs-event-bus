@@ -294,7 +294,7 @@ impl Drop for AsyncLocalEventSubscription {
 /// Returns `settlement_token_exhausted` if no new token can be issued, keeping
 /// the event queued with its existing capacity reservation.
 fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Result<Option<ReceiveOutcome>, SpiError> {
-    let Some(event) = state.pop_ready(Instant::now()) else {
+    let Some(mut event) = state.pop_ready(Instant::now()) else {
         return Ok(None);
     };
     let Some(next) = state.next_delivery_token.checked_add(1) else {
@@ -308,6 +308,7 @@ fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Result<Optio
         token_id: token_id.clone(),
         disposition: None,
     }));
+    event.record_delivery_attempt();
     state.in_flight.insert(
         token_id,
         LocalInFlight {

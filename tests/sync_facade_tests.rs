@@ -1064,7 +1064,10 @@ fn test_sync_provider_attempt_is_stable_across_handler_retry() {
                 .with_options(options),
             move |delivery: Delivery<String>| {
                 observed_tx
-                    .send(delivery.context().provider_attempt())
+                    .send((
+                        delivery.context().provider_attempt(),
+                        delivery.context().retry_attempt(),
+                    ))
                     .expect("observer remains connected");
                 if handler_calls.fetch_add(1, Ordering::AcqRel) == 0 {
                     Err(DeliveryError::Handler {
@@ -1108,23 +1111,124 @@ fn test_sync_provider_attempt_is_stable_across_handler_retry() {
         if attempt.is_some() {
             assert_eq!(
                 observed_rx.recv_timeout(Duration::from_secs(2)).expect("first attempt"),
-                Some(3)
+                (Some(3), 1)
             );
             assert_eq!(
                 observed_rx.recv_timeout(Duration::from_secs(2)).expect("local retry"),
-                Some(3)
+                (Some(3), 2)
             );
         } else {
             assert_eq!(
                 observed_rx
                     .recv_timeout(Duration::from_secs(2))
                     .expect("unmarked delivery"),
-                None
+                (None, 1)
             );
         }
     }
     subscription.cancel().expect("subscription cancels");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+}
+
+#[test]
+fn test_sync_provider_redelivery_attempt_reaches_handler() {
+    let (bus, backend) = create_bus();
+    let options = SubscribeOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(1)
+                .build()
+                .expect("valid retry policy"),
+        )
+        .error_handler(|_, _| FailureDirective::Requeue)
+        .build();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("provider-redelivery-attempt", topic())
+                .expect("valid subscriber")
+                .with_options(options),
+            move |delivery: Delivery<String>| {
+                observed_tx
+                    .send((
+                        delivery.context().provider_attempt(),
+                        delivery.context().retry_attempt(),
+                    ))
+                    .expect("observer remains connected");
+                if handler_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(IoError::other("request provider redelivery")),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .expect("subscription starts");
+    let queue = backend
+        .state
+        .lock()
+        .expect("backend state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("subscription queue")
+        .1
+        .clone();
+    let make_message = |id: &'static str, attempt| {
+        InboundMessage::new(
+            TopicAddress::new("sync.events").expect("valid topic"),
+            EventId::new(id).expect("valid event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Native(Arc::new(id.to_owned())),
+            Some(SettlementToken::new(subscription.id(), id)),
+            Default::default(),
+        )
+        .with_provider_attempt(NonZeroU32::new(attempt).expect("positive attempt"))
+    };
+    {
+        let (lock, ready) = &*queue;
+        lock.lock()
+            .expect("queue lock")
+            .messages
+            .push_back(make_message("provider-redelivery-first", 1));
+        ready.notify_one();
+    }
+    assert_eq!(
+        (Some(1), 1),
+        observed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first provider delivery")
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_dispositions() != [DeliveryDisposition::Retry] && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Retry]);
+    {
+        let (lock, ready) = &*queue;
+        lock.lock()
+            .expect("queue lock")
+            .messages
+            .push_back(make_message("provider-redelivery-second", 2));
+        ready.notify_one();
+    }
+    assert_eq!(
+        (Some(2), 1),
+        observed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("provider redelivery")
+    );
+    subscription.cancel().expect("subscription cancels");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
+    assert_eq!(
+        backend.settlement_dispositions(),
+        [DeliveryDisposition::Retry, DeliveryDisposition::Accept]
+    );
 }
 
 #[test]

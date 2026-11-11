@@ -12,6 +12,7 @@ mod support;
 use std::any::TypeId;
 use std::env;
 use std::fs;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -238,6 +239,105 @@ fn test_async_local_pre_admission_failures_report_not_accepted() {
         block_on(second.receive(Duration::ZERO)).unwrap(),
         ReceiveOutcome::TimedOut
     ));
+}
+
+#[test]
+fn test_async_local_provider_attempt_counts_successful_receive_and_resets_on_republish() {
+    let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap();
+    let mut subscription = block_on(spi.subscribe(spi_request_with_type(
+        913,
+        "async-provider-attempt",
+        "async.provider.attempt",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    assert!(matches!(
+        block_on(subscription.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    let publish = || {
+        OutboundMessage::new(
+            TopicAddress::new("async.provider.attempt").unwrap(),
+            EventId::new("async-event-91").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            None,
+            TransportPayload::Native(Arc::new(91_u32)),
+        )
+    };
+    let _ = block_on(spi.publish(publish())).unwrap();
+
+    let ReceiveOutcome::Message(mut first) = block_on(subscription.receive(Duration::ZERO)).unwrap() else {
+        panic!("published event is available");
+    };
+    assert_eq!(Some(1), first.provider_attempt().map(NonZeroU32::get));
+    let first_token = first.take_settlement().unwrap();
+    block_on(subscription.settle(&first_token, DeliveryDisposition::Retry)).unwrap();
+    block_on(subscription.settle(&first_token, DeliveryDisposition::Retry)).unwrap();
+
+    let ReceiveOutcome::Message(mut second) = block_on(subscription.receive(Duration::ZERO)).unwrap() else {
+        panic!("retried event is available");
+    };
+    assert_eq!(Some(2), second.provider_attempt().map(NonZeroU32::get));
+    let second_token = second.take_settlement().unwrap();
+    block_on(subscription.settle(&second_token, DeliveryDisposition::Retry)).unwrap();
+
+    let ReceiveOutcome::Message(mut third) = block_on(subscription.receive(Duration::ZERO)).unwrap() else {
+        panic!("second retry is available");
+    };
+    assert_eq!(Some(3), third.provider_attempt().map(NonZeroU32::get));
+    block_on(subscription.settle(&third.take_settlement().unwrap(), DeliveryDisposition::Accept)).unwrap();
+
+    let _ = block_on(spi.publish(publish())).unwrap();
+    let ReceiveOutcome::Message(republished) = block_on(subscription.receive(Duration::ZERO)).unwrap() else {
+        panic!("republished event is available");
+    };
+    assert_eq!(Some(1), republished.provider_attempt().map(NonZeroU32::get));
+}
+
+#[test]
+fn test_async_local_provider_attempt_is_independent_for_fanout_copies() {
+    let spi = AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap();
+    let mut first = block_on(spi.subscribe(spi_request_with_type(
+        914,
+        "async-fanout-first",
+        "async.provider.fanout",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let mut second = block_on(spi.subscribe(spi_request_with_type(
+        915,
+        "async-fanout-second",
+        "async.provider.fanout",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let message = OutboundMessage::new(
+        TopicAddress::new("async.provider.fanout").unwrap(),
+        EventId::new("async-fanout-event").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(92_u32)),
+    );
+    let _ = block_on(spi.publish(message)).unwrap();
+
+    let ReceiveOutcome::Message(mut first_message) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("first fanout copy is available");
+    };
+    assert_eq!(Some(1), first_message.provider_attempt().map(NonZeroU32::get));
+    block_on(first.settle(&first_message.take_settlement().unwrap(), DeliveryDisposition::Retry)).unwrap();
+
+    let ReceiveOutcome::Message(second_message) = block_on(second.receive(Duration::ZERO)).unwrap() else {
+        panic!("second fanout copy is available");
+    };
+    assert_eq!(Some(1), second_message.provider_attempt().map(NonZeroU32::get));
+    let ReceiveOutcome::Message(first_retry) = block_on(first.receive(Duration::ZERO)).unwrap() else {
+        panic!("first fanout copy is retried independently");
+    };
+    assert_eq!(Some(2), first_retry.provider_attempt().map(NonZeroU32::get));
 }
 
 #[test]

@@ -15,6 +15,7 @@ mod local_provider_tests {
 mod support;
 
 use std::any::TypeId;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -990,6 +991,71 @@ fn test_local_subscription_redelivers_retry_and_settlement_is_idempotent() {
         subscription.receive(Duration::ZERO).unwrap(),
         ReceiveOutcome::TimedOut
     ));
+}
+
+#[test]
+fn test_local_provider_attempt_counts_successful_receive_and_resets_on_republish() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut subscription = spi.subscribe(request(910, "provider.attempt")).unwrap();
+    assert!(matches!(
+        subscription.receive(Duration::ZERO).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    let _ = spi.publish(outbound("provider.attempt", 91)).unwrap();
+
+    let ReceiveOutcome::Message(mut first) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("published event is available");
+    };
+    assert_eq!(Some(1), first.provider_attempt().map(NonZeroU32::get));
+    let first_token = first.take_settlement().unwrap();
+    subscription.settle(&first_token, DeliveryDisposition::Retry).unwrap();
+    subscription.settle(&first_token, DeliveryDisposition::Retry).unwrap();
+
+    let ReceiveOutcome::Message(mut second) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("retried event is available");
+    };
+    assert_eq!(Some(2), second.provider_attempt().map(NonZeroU32::get));
+    let second_token = second.take_settlement().unwrap();
+    subscription.settle(&second_token, DeliveryDisposition::Retry).unwrap();
+
+    let ReceiveOutcome::Message(mut third) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("second retry is available");
+    };
+    assert_eq!(Some(3), third.provider_attempt().map(NonZeroU32::get));
+    subscription
+        .settle(&third.take_settlement().unwrap(), DeliveryDisposition::Accept)
+        .unwrap();
+
+    let _ = spi.publish(outbound("provider.attempt", 91)).unwrap();
+    let ReceiveOutcome::Message(republished) = subscription.receive(Duration::ZERO).unwrap() else {
+        panic!("republished event is available");
+    };
+    assert_eq!(Some(1), republished.provider_attempt().map(NonZeroU32::get));
+}
+
+#[test]
+fn test_local_provider_attempt_is_independent_for_fanout_copies() {
+    let spi = create(&LocalEventBusConfig::default());
+    let mut first = spi.subscribe(request(911, "provider.fanout")).unwrap();
+    let mut second = spi.subscribe(request(912, "provider.fanout")).unwrap();
+    let _ = spi.publish(outbound("provider.fanout", 92)).unwrap();
+
+    let ReceiveOutcome::Message(mut first_message) = first.receive(Duration::ZERO).unwrap() else {
+        panic!("first fanout copy is available");
+    };
+    assert_eq!(Some(1), first_message.provider_attempt().map(NonZeroU32::get));
+    first
+        .settle(&first_message.take_settlement().unwrap(), DeliveryDisposition::Retry)
+        .unwrap();
+
+    let ReceiveOutcome::Message(second_message) = second.receive(Duration::ZERO).unwrap() else {
+        panic!("second fanout copy is available");
+    };
+    assert_eq!(Some(1), second_message.provider_attempt().map(NonZeroU32::get));
+    let ReceiveOutcome::Message(first_retry) = first.receive(Duration::ZERO).unwrap() else {
+        panic!("first fanout copy is retried independently");
+    };
+    assert_eq!(Some(2), first_retry.provider_attempt().map(NonZeroU32::get));
 }
 
 #[test]

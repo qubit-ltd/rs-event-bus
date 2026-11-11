@@ -73,7 +73,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                 return Ok(ReceiveOutcome::Closed);
             }
             let now = Instant::now();
-            if let Some(event) = state.pop_ready(now) {
+            if let Some(mut event) = state.pop_ready(now) {
                 let Some(sequence) = state.next_delivery_token.checked_add(1) else {
                     state.enqueue_front(event);
                     return Err(operation_error(
@@ -88,6 +88,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
                     token_id: token.clone(),
                     disposition: None,
                 }));
+                event.record_delivery_attempt();
                 state.in_flight.insert(
                     token,
                     LocalInFlight {
