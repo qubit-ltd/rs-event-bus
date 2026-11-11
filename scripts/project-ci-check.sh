@@ -13,4 +13,6 @@ python3 -B "$project_root/scripts/check_documentation_contract.py" --package-lis
 rm -f "$package_list"
 trap - EXIT
 python3 -B -m unittest discover -s "$project_root/scripts/tests" -p '*graph_tests.py'
+python3 -B -m unittest discover -s "$project_root/scripts/tests" -p 'fuzz_dependency_source_tests.py'
+python3 -B "$project_root/scripts/check_fuzz_dependency_source.py" --project-root "$project_root"
 exec python3 -B "$project_root/scripts/check_event_bus_graph.py"
