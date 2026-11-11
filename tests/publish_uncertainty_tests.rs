@@ -957,6 +957,9 @@ fn test_token_cancelled_during_second_pending_attempt_keeps_unknown_after_reject
     let id = request.envelope().id().clone();
     let mut future = Box::pin(bus.publish(request));
     assert!(support::manual_async::poll_once(future.as_mut()).is_pending());
+    // Immediate retry yields once so the executor can observe cancellation
+    // before the second provider attempt.
+    assert!(support::manual_async::poll_once(future.as_mut()).is_pending());
     assert_eq!(spi.calls.lock().expect("test_token_cancelled_during_second_pending_attempt_keeps_unknown_after_rejection: spi.calls mutex must not be poisoned").len(), 2);
     token.cancel();
     let failure = support::manual_async::block_on(future).unwrap_err();
