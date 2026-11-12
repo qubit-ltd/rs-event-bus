@@ -8,5 +8,5 @@ publish = false
 
 [dependencies]
 discovery-provider-fixture = { path = "../discovery_provider" }
-qubit-event-bus = { version = "^0.21", features = ["discovery"] }
+qubit-event-bus = { version = "^0.21", features = ["discovery"] , path = "../../../" }
 qubit-spi = "^0.14"
