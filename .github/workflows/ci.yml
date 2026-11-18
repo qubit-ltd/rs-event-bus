@@ -47,8 +47,8 @@ jobs:
       pull-requests: write
       pages: write
       id-token: write
-    # Pin the upstream workflow version; review its input contract before upgrading.
-    uses: qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@2c965cad450e9f0e4d01cf1e5985e6d5e11e75b4
+    # Follow the shared CI workflow on the upstream main branch.
+    uses: qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@main
     with:
       verify-extra-script: |
         python3 scripts/check_documentation_examples.py --check-snapshot-content --fetch-snapshot
