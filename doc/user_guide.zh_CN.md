@@ -2030,6 +2030,8 @@ if outcome == WaitOutcome::TimedOut {
 
 应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
 
+Graceful 停机一开始就会关闭新接纳。若仍有已登记的 receiver，零超时会返回 `ShutdownError::TimedOut`，且不会开始关闭 receiver。若 receiver 批次为空，停机仍可在零超时下进入 runner 和 provider 阶段；需要等待的阶段仍可能超时。因此，空 receiver 批次不等于跳过 provider shutdown。
+
 ```rust
 use std::time::Duration;
 let run_result = tokio::select! {
@@ -2053,9 +2055,10 @@ if !cleanup_errors.is_empty() {
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 
-可运行的生命周期示例包括：`async_shutdown` 展示异步总线的有界停机，`notification_close` 展示 observer 仍在运行时关闭通知发布器。使用嵌套示例包构建，再分别通过进程 watchdog 运行：
+在完整 Git checkout 根目录（即同时包含仓库 `Cargo.toml` 和 `scripts/run_conformance_watchdog.py` 的目录）运行：构建可运行的生命周期示例（`async_shutdown` 展示异步总线的有界停机，`notification_close` 展示 observer 仍在运行时关闭通知发布器），再分别通过有界进程 watchdog 运行：
 
 ```sh
+cd "$(git rev-parse --show-toplevel)"
 cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
 python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
 python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close

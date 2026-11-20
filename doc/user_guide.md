@@ -2032,6 +2032,8 @@ Async publish callbacks, including publisher interceptors and terminal publish e
 
 The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
 
+Graceful shutdown closes admission as soon as it begins. A zero timeout with registered receivers returns `ShutdownError::TimedOut` without starting receiver close. When there are no receivers to close, shutdown can continue into runner and provider stages even with a zero timeout; a stage that must wait can still time out. Thus an empty receiver batch is not equivalent to skipping provider shutdown.
+
 ```rust
 use std::time::Duration;
 use qubit_event_bus::spi::ShutdownMode;
@@ -2057,9 +2059,10 @@ The example retains both the runner result and shutdown error for reporting. `tr
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 
-The runnable lifecycle examples include `async_shutdown` for bounded async bus shutdown and `notification_close` for closing a notification publisher while its observer is active. Build both from the nested examples package, then run each under a process watchdog:
+From the root of a full Git checkout (the directory containing the repository's `Cargo.toml` and `scripts/run_conformance_watchdog.py`), build both runnable lifecycle examples and run each under the bounded process watchdog:
 
 ```sh
+cd "$(git rev-parse --show-toplevel)"
 cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
 python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
 python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close

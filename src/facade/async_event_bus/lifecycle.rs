@@ -127,6 +127,12 @@ impl AsyncEventBus {
     /// include abandonment recorded before this shutdown call. It cannot
     /// establish whether a handler produced a business side effect. The
     /// facade cannot count provider-owned queued deliveries.
+    /// Graceful shutdown first stops admission, then closes registered
+    /// receivers. If receivers remain when a zero-length budget is exhausted,
+    /// their close operations are not started. An empty receiver batch can
+    /// proceed to later cleanup stages, including provider shutdown, even
+    /// with a zero-length budget; those stages can still time out if they need
+    /// to wait.
     ///
     /// # Errors
     /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout

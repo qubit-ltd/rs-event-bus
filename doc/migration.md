@@ -59,6 +59,17 @@ causes, and treat a missing age as unavailable data. Snapshot collection can
 then remain on the regular monitoring path without controlling subscription
 lifecycle.
 
+## Async zero-budget shutdown after core 0.21.4
+
+The current development source documents the zero-budget boundary exercised by
+the async facade regressions. Shutdown stops admission first. If registered
+receivers remain, an expired zero budget does not start their close operations;
+with an empty receiver batch, cleanup may proceed to provider shutdown, which
+can still time out if it must wait. This source is newer than `v0.21.4`, and
+there is no later release tag to assign it a published version. Apply this
+guidance when using a release that contains the behavior; do not infer a
+published version from the current source tree.
+
 ## Current upgrade guide
 
 For changes accumulated since core 0.20, follow [Migrate from 0.20 to 0.21](user_guide.md#migrate-from-020-to-021). Earlier transitions are recorded in the sections above; verify the exact source and provider versions used by your application. Adopt the unreleased metric snapshot change only when upgrading to a release that contains it; do not infer a published version from the current source tree.
