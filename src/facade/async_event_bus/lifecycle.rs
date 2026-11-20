@@ -82,10 +82,18 @@ impl AsyncEventBus {
     /// have not started are closed directly by shutdown. Unstarted ephemeral
     /// deliveries may be abandoned and are counted in the returned report.
     /// It cannot forcibly cancel user code and may therefore wait indefinitely.
-    /// Graceful shutdown applies this caller's deadline to receiver close,
-    /// runner and publish completion, and provider shutdown. A timeout leaves
-    /// the bus closing so the caller may retry cleanup, including with
-    /// [`ShutdownMode::Immediate`].
+    /// Graceful shutdown applies this call's timeout budget to receiver close,
+    /// runner and publish completion, and provider shutdown. If it times out,
+    /// the bus remains closing and stops admitting work. Call `shutdown`
+    /// again to continue cleanup; each call with [`ShutdownMode::Graceful`]
+    /// gets its own timeout budget. [`ShutdownMode::Immediate`] has no
+    /// internal deadline and may wait indefinitely for a running handler or
+    /// provider operation, which it cannot forcibly cancel.
+    ///
+    /// This future drives cleanup while it is polled. Dropping it stops the
+    /// current attempt; to continue cleanup, the caller must call `shutdown`
+    /// again and keep polling the returned future. The async bus does not
+    /// continue shutdown in a background task.
     ///
     /// Directly awaiting shutdown from a handler, middleware, or publisher
     /// callback running on this bus returns [`LifecycleError::WouldDeadlock`].
@@ -101,8 +109,14 @@ impl AsyncEventBus {
     /// The cached provider outcome and facade-known abandoned-delivery count.
     ///
     /// # Errors
-    /// Returns an error if cleanup, provider shutdown, the timer, or a
-    /// subscription receiver close fails.
+    /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout
+    /// expires. The bus remains closing, and a later call can continue
+    /// cleanup with a new timeout budget. Other errors report a timer failure,
+    /// provider shutdown failure, subscription receiver close failure, or a
+    /// lifecycle error such as attempting to wait from a callback running on
+    /// this bus. An error does not mean that cleanup will continue in the
+    /// background; the caller must keep polling this future or make another
+    /// call to drive it.
     ///
     /// # Panics
     /// An internal invariant violation while handling a graceful deadline
