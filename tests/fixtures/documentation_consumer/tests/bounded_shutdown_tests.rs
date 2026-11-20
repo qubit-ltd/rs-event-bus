@@ -81,8 +81,11 @@ fn test_sync_uncooperative_handler_returns_control_before_gate_release() {
     release_sender.send(()).expect("always release handler gate");
     waiter.join().expect("shutdown thread");
     assert!(
-        !result.expect("bounded caller returned").expect("only deadline elapsed"),
-        "shutdown should return control while the handler remains blocked"
+        matches!(
+            result.expect("bounded caller returned"),
+            Err(qubit_event_bus::error::ShutdownError::TimedOut { .. })
+        ),
+        "shutdown should report the final caller timeout while the handler remains blocked"
     );
     let report = bus
         .shutdown(ShutdownMode::Graceful {
@@ -96,10 +99,7 @@ fn test_sync_uncooperative_handler_returns_control_before_gate_release() {
 #[test]
 fn test_sync_idle_shutdown_completes() {
     let bus = EventBus::local(LocalEventBusConfig::new()).expect("local bus");
-    assert!(
-        try_shutdown(&bus).expect("shutdown"),
-        "shutdown should complete when no handler is active"
-    );
+    assert_eq!(try_shutdown(&bus).expect("shutdown").outcome, ShutdownOutcome::Complete);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -139,8 +139,11 @@ async fn test_async_uncooperative_handler_returns_control_before_gate_release() 
     let result = timeout(Duration::from_secs(30), try_shutdown_async(&bus)).await;
     gate.notify_one();
     assert!(
-        !result.expect("bounded caller returned").expect("only deadline elapsed"),
-        "async shutdown should return control while the handler remains blocked"
+        matches!(
+            result.expect("bounded caller returned"),
+            Err(qubit_event_bus::error::ShutdownError::TimedOut { .. })
+        ),
+        "async shutdown should report the final caller timeout while the handler remains blocked"
     );
     let report = bus
         .shutdown(ShutdownMode::Graceful {
@@ -161,9 +164,9 @@ async fn test_async_idle_shutdown_completes() {
     let bus = AsyncEventBus::local(LocalEventBusConfig::new())
         .await
         .expect("local bus");
-    assert!(
-        try_shutdown_async(&bus).await.expect("shutdown"),
-        "async shutdown should complete when no handler is active"
+    assert_eq!(
+        try_shutdown_async(&bus).await.expect("shutdown").outcome,
+        ShutdownOutcome::Complete
     );
 }
 
@@ -265,7 +268,13 @@ async fn test_async_pending_provider_close_is_bounded_and_resumable() {
         .await
         .expect("subscription");
 
-    assert!(!try_shutdown_async(&bus).await.expect("bounded shutdown"));
+    assert!(matches!(
+        try_shutdown_async(&bus).await,
+        Err(qubit_event_bus::error::ShutdownError::TimedOut { .. })
+    ));
     gate.release();
-    assert!(try_shutdown_async(&bus).await.expect("resumed shutdown"));
+    assert_eq!(
+        try_shutdown_async(&bus).await.expect("resumed shutdown").outcome,
+        ShutdownOutcome::Complete
+    );
 }

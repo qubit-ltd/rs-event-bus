@@ -158,6 +158,13 @@ def main():
             source_code = source.read_text(encoding="utf-8")
             if document in EXAMPLE_DOCUMENTS:
                 source_code = FILE_HEADER.sub("", source_code)
+            if name == SHUTDOWN:
+                source_code = re.sub(
+                    r"\n#\[cfg\(test\)\]\nmod tests \{.*\}\s*\Z",
+                    "",
+                    source_code,
+                    flags=re.DOTALL,
+                )
             if match.group("code").strip() != source_code.strip():
                 errors.append(f"{document}: example drift from {name}")
         for missing in sorted(required - found):
