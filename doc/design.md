@@ -1,6 +1,6 @@
-# Qubit Event Bus Design (0.21)
+# Qubit Event Bus Design (0.21.x)
 
-> This document describes `qubit-event-bus` 0.21.0 as implemented.
+> This document describes the `qubit-event-bus` 0.21.x series as implemented.
 > When the document and the code disagree, the code wins; please update this document.
 > 中文版：[design.zh_CN.md](design.zh_CN.md).
 >
@@ -225,7 +225,7 @@ facade. `local` does not know about any layer above the registry.
 
 ### 2.3 Crate metadata, features, and dependencies
 
-- Package `qubit-event-bus`, version `0.21.0`, edition 2024, `rust-version = 1.94`.
+- Package `qubit-event-bus`, supported version range `0.21.x`, edition 2024, `rust-version = 1.94`.
 - Features:
   - `discovery = ["qubit-spi/inventory"]` enables inventory-driven provider
     registration (see §6.4).

@@ -173,7 +173,7 @@ let orders = OrderService::new(bus.clone());
 
 发布失败通过 `PublishFailure` 保留原始事件 ID、结构化原因及 `PublishEffect`。默认 `DuplicateRiskPolicy::Forbid` 会在可能已经接纳消息时停止自动重试，自定义重试规则也不能绕过。编码接收先检查长度，再通过 codec 验证 content type/schema，最后解码；默认要求精确匹配，codec 可覆盖 `validate_metadata`，显式支持并记录兼容格式或 schema 版本。详见[codec 恢复指南](doc/user_guide.zh_CN.md#恢复因编码边界失败而停止的订阅)。元数据不兼容、输入超限或 codec panic 会停止该订阅。修复配置或 codec 后，应创建新订阅恢复持久消息。
 
-仓库脚本和 `.infra` 命令须在完整 Git checkout 根目录运行，crate 解包目录不包含这些工具。本 crate 版本为 0.21.0。CodecRegistry 遇到重复载荷类型会报错；确需替换时应显式调用 `replace`。provider 可确认的投递次数与 facade 本地重试次数分开记录，无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
+仓库脚本和 `.infra` 命令须在完整 Git checkout 根目录运行，crate 解包目录不包含这些工具。本 crate 支持 0.21.x 系列。CodecRegistry 遇到重复载荷类型会报错；确需替换时应显式调用 `replace`。provider 可确认的投递次数与 facade 本地重试次数分开记录，无法确认时保持未知。能力、恢复步骤与限制见[用户手册](doc/user_guide.zh_CN.md)。
 
 ## 延伸阅读
 
