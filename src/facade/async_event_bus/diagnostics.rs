@@ -14,15 +14,14 @@ use std::sync::atomic::AtomicBool;
 use crate::AsyncEventBus;
 use crate::Diagnostic;
 use crate::DiagnosticObserverHandle;
-use crate::error::SpiError;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::pipeline::DiagnosticObserver;
 
 impl AsyncEventBus {
     /// Returns bounded active gauges and cumulative delivery lifecycle
-    /// counters. Clock failures are diagnosed and stop affected work;
-    /// gauges remain accurate.
+    /// counters. An incomparable clock sample makes age unavailable while
+    /// preserving the captured gauges.
     ///
     /// # Returns
     /// Current bounded gauges and bus totals, omitting age if the clock failed.
@@ -30,39 +29,7 @@ impl AsyncEventBus {
     pub fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
         let input = self.inner.scheduler.snapshot_input(None);
         let now = self.inner.timer.clock().now();
-        let gauges = match input.at(now) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let message = error.to_string();
-                let error = Arc::new(SpiError::Operation {
-                    provider_id: self.inner.provider_id.as_str().into(),
-                    operation: "delivery_metrics",
-                    resource: None,
-                    kind: "delivery_metrics_clock_failure",
-                    retryable: Some(false),
-                    source: Box::new(error),
-                });
-                let controls: Vec<_> = self
-                    .inner
-                    .controls
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .values()
-                    .cloned()
-                    .collect();
-                let mut first = false;
-                for control in controls {
-                    first |= control.fail_metrics_clock(error.clone());
-                }
-                if first {
-                    self.inner.emit(&Diagnostic::InternalFailure {
-                        origin: "delivery_metrics_clock".into(),
-                        message: message.into(),
-                    });
-                }
-                self.inner.scheduler.snapshot_gauges(None)
-            }
-        };
+        let gauges = input.at(now);
         self.inner.delivery_metrics.snapshot(gauges)
     }
 

@@ -269,8 +269,10 @@ impl EventBus {
     }
 
     /// Returns active delivery gauges and cumulative bus counters.
-    /// Snapshot clock failures stop affected subscriptions and are diagnosed;
-    /// the fallback preserves exact gauges with an unknown oldest age.
+    /// If a captured timestamp cannot be compared with the sampled clock,
+    /// `oldest_owned_age` is unavailable while the captured gauges and
+    /// counters remain intact. Collecting metrics does not stop subscriptions
+    /// or emit diagnostics.
     ///
     /// # Returns
     /// Current live delivery gauges combined with bus-wide cumulative counters.

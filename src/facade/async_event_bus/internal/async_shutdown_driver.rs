@@ -11,7 +11,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
 use crate::spi::ShutdownMode;
 
@@ -19,16 +18,6 @@ use crate::spi::ShutdownMode;
 pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     /// Wakes the caller driving scheduler work.
     fn notify(&self);
-    /// Stores a first metrics-clock failure and requests stop before observer
-    /// callbacks.
-    ///
-    /// # Parameters
-    /// - `error`: metrics-clock failure to retain as the terminal cause.
-    ///
-    /// # Returns
-    /// `true` only when this call records the first terminal cause.
-    #[must_use]
-    fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool;
     /// Stops the subscription runner from receiving according to the selected
     /// shutdown policy.
     ///

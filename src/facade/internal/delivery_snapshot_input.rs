@@ -8,7 +8,6 @@
 //! Bounded scheduling metadata captured before the caller samples its clock.
 
 use qubit_clock::MonotonicInstant;
-use qubit_clock::TimeError;
 
 use crate::facade::DeliveryMetricsSnapshot;
 
@@ -43,7 +42,7 @@ impl DeliverySnapshotInput {
 
     /// Computes the oldest age from this capture after the caller samples its
     /// clock. Leases created after capture cannot affect these gauges or
-    /// cause a time-order error.
+    /// cause a time-order error in the caller.
     ///
     /// # Parameters
     /// - `now`: monotonic instant sampled after obtaining this capture, outside
@@ -51,18 +50,16 @@ impl DeliverySnapshotInput {
     ///
     /// # Returns
     /// The captured live gauges and oldest timestamped lease age; no starts
-    /// yields `None`.
-    ///
-    /// # Errors
-    /// Returns `TimeError::ClockDomainMismatch` for a start from a foreign
-    /// clock domain, or `TimeError::InvalidInstantOrder` when `now`
-    /// precedes a captured start.
-    pub(in crate::facade) fn at(self, now: MonotonicInstant) -> Result<DeliveryMetricsSnapshot, TimeError> {
+    /// yields `None`. Any incomparable timestamp makes the age unavailable.
+    pub(in crate::facade) fn at(self, now: MonotonicInstant) -> DeliveryMetricsSnapshot {
         let mut snapshot = self.gauges;
         for started in self.owned_starts {
-            let age = now.duration_since(started)?;
+            let Ok(age) = now.duration_since(started) else {
+                snapshot.oldest_owned_age = None;
+                return snapshot;
+            };
             snapshot.oldest_owned_age = Some(snapshot.oldest_owned_age.map_or(age, |oldest| oldest.max(age)));
         }
-        Ok(snapshot)
+        snapshot
     }
 }

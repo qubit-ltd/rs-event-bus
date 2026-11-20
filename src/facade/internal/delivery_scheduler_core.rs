@@ -17,6 +17,7 @@ use super::delivery_scheduler_state::DeliverySchedulerState;
 use super::delivery_snapshot_input::DeliverySnapshotInput;
 use super::owned_delivery_phase::OwnedDeliveryPhase;
 use super::subscription_schedule_state::SubscriptionScheduleState;
+#[cfg(test)]
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::DeliverySchedulingConfig;
 use crate::internal::sync::Mutex;
@@ -86,6 +87,7 @@ impl DeliverySchedulerCore {
     /// counters. This remains usable when a clock error prevents computing
     /// an age.
     #[must_use = "scheduler gauges are the current delivery snapshot"]
+    #[cfg(test)]
     pub(in crate::facade) fn snapshot_gauges(&self, subscription_id: Option<Id>) -> DeliveryMetricsSnapshot {
         self.lock().snapshot_gauges(subscription_id)
     }
@@ -555,12 +557,12 @@ mod tests {
 
     use qubit_clock::ClockDomain;
     use qubit_clock::MonotonicInstant;
-    use qubit_clock::TimeError;
     use qubit_id::Id;
 
     use super::DeliverySchedulerCore;
     use crate::facade::DeliveryMetricsSnapshot;
     use crate::facade::DeliverySchedulingConfig;
+    use crate::facade::internal::delivery_snapshot_input::DeliverySnapshotInput;
     use crate::facade::internal::owned_delivery_phase::OwnedDeliveryPhase;
     use crate::pipeline::OrderingLaneKey;
 
@@ -1102,14 +1104,14 @@ mod tests {
             leases.push(lease);
         }
         core.request_receive(second);
-        let before = core.snapshot_input(Some(first)).at(now).expect("same-domain snapshot");
+        let before = core.snapshot_input(Some(first)).at(now);
         assert_eq!(
             (before.queued, before.lane_waiting),
             (4, 2),
             "each ordered lane's tail waits for its FIFO predecessor"
         );
         assert_eq!(core.take_ready(first), Some(leases[0]));
-        let global = core.snapshot_input(None).at(now).expect("global snapshot");
+        let global = core.snapshot_input(None).at(now);
         assert_eq!(
             (
                 global.reserved_receives,
@@ -1121,35 +1123,23 @@ mod tests {
         );
         assert_eq!(global.lane_waiting, 2);
         assert_eq!(global.oldest_owned_age, Some(Duration::from_secs(8)));
-        let local = core
-            .snapshot_input(Some(second))
-            .at(now)
-            .expect("unclaimed reservation snapshot");
+        let local = core.snapshot_input(Some(second)).at(now);
         assert_eq!(local.reserved_receives, 1);
         assert_eq!(local.queued, 0);
         assert_eq!(local.oldest_owned_age, None);
         core.handler_finished(leases[0]);
-        let settling = core.snapshot_input(Some(first)).at(now).expect("settling snapshot");
+        let settling = core.snapshot_input(Some(first)).at(now);
         assert_eq!(
             (settling.running_handlers, settling.settling, settling.lane_waiting),
             (0, 1, 2)
         );
         core.complete(leases[0]);
-        assert_eq!(
-            core.snapshot_input(Some(first))
-                .at(now)
-                .expect("unlocked snapshot")
-                .lane_waiting,
-            1
-        );
+        assert_eq!(core.snapshot_input(Some(first)).at(now).lane_waiting, 1);
         for lease in leases {
             core.complete(lease);
         }
         core.cancel_receive(second);
-        assert_eq!(
-            core.snapshot_input(None).at(now).expect("idle snapshot"),
-            DeliveryMetricsSnapshot::default()
-        );
+        assert_eq!(core.snapshot_input(None).at(now), DeliveryMetricsSnapshot::default());
     }
 
     #[test]
@@ -1165,34 +1155,22 @@ mod tests {
             .receive_reservation
             .expect("core reservation");
         core.record_owned_start(unclaimed, zero);
-        assert_eq!(
-            core.snapshot_input(None)
-                .at(now)
-                .expect("unclaimed snapshot")
-                .oldest_owned_age,
-            None
-        );
+        assert_eq!(core.snapshot_input(None).at(now).oldest_owned_age, None);
         let lease = core.take_receive_reservation(sub).expect("claim reservation");
         core.record_owned_start(lease, zero);
         core.record_owned_start(lease, now);
         assert_eq!(
-            core.snapshot_input(None).at(now).expect("claimed age").oldest_owned_age,
+            core.snapshot_input(None).at(now).oldest_owned_age,
             Some(Duration::from_secs(9))
         );
         core.enqueue(lease, None);
         core.record_owned_start(lease, now);
         assert_eq!(
-            core.snapshot_input(None).at(now).expect("queue age").oldest_owned_age,
+            core.snapshot_input(None).at(now).oldest_owned_age,
             Some(Duration::from_secs(9))
         );
         core.complete(lease);
-        assert_eq!(
-            core.snapshot_input(None)
-                .at(now)
-                .expect("completed age")
-                .oldest_owned_age,
-            None
-        );
+        assert_eq!(core.snapshot_input(None).at(now).oldest_owned_age, None);
     }
 
     #[test]
@@ -1206,21 +1184,37 @@ mod tests {
         let lease = core.take_receive_reservation(sub).expect("claim reservation");
         core.record_owned_start(lease, start);
         let foreign = MonotonicInstant::new(ClockDomain::new(), Duration::from_secs(7));
-        assert!(matches!(
-            core.snapshot_input(None).at(foreign),
-            Err(TimeError::ClockDomainMismatch { .. })
-        ));
+        let foreign_snapshot = core.snapshot_input(None).at(foreign);
+        assert_eq!(foreign_snapshot.oldest_owned_age, None);
+        assert_eq!(foreign_snapshot.reserved_receives, 1);
         let earlier = MonotonicInstant::new(domain, Duration::from_secs(4));
-        assert!(matches!(
-            core.snapshot_input(None).at(earlier),
-            Err(TimeError::InvalidInstantOrder { .. })
-        ));
+        let earlier_snapshot = core.snapshot_input(None).at(earlier);
+        assert_eq!(earlier_snapshot.oldest_owned_age, None);
+        assert_eq!(earlier_snapshot.reserved_receives, 1);
         assert_eq!(
-            core.snapshot_input(Some(Id::new(99)))
-                .at(foreign)
-                .expect("unrelated subscription has no timestamp"),
+            core.snapshot_input(Some(Id::new(99))).at(foreign),
             DeliveryMetricsSnapshot::default()
         );
+    }
+
+    #[test]
+    fn test_delivery_snapshot_input_discards_partial_age_after_incomparable_start() {
+        let domain = ClockDomain::new();
+        let foreign_domain = ClockDomain::new();
+        let started = MonotonicInstant::new(domain, Duration::from_secs(1));
+        let foreign = MonotonicInstant::new(foreign_domain, Duration::from_secs(2));
+        let now = MonotonicInstant::new(domain, Duration::from_secs(5));
+        let gauges = DeliveryMetricsSnapshot {
+            reserved_receives: 2,
+            completed: 7,
+            ..DeliveryMetricsSnapshot::default()
+        };
+
+        let snapshot = DeliverySnapshotInput::new(gauges, vec![started, foreign]).at(now);
+
+        assert_eq!(snapshot.reserved_receives, 2);
+        assert_eq!(snapshot.completed, 7);
+        assert_eq!(snapshot.oldest_owned_age, None);
     }
 
     #[test]
@@ -1254,10 +1248,7 @@ mod tests {
             assert!(state.ready.is_empty());
             assert_eq!(state.running, 0);
         }
-        assert_eq!(
-            core.snapshot_input(None).at(now).expect("empty final snapshot"),
-            DeliveryMetricsSnapshot::default()
-        );
+        assert_eq!(core.snapshot_input(None).at(now), DeliveryMetricsSnapshot::default());
     }
 
     #[test]
@@ -1294,15 +1285,12 @@ mod tests {
         core.request_receive(sub);
         let lease = core.take_receive_reservation(sub).expect("receive reservation");
         core.record_owned_start(lease, MonotonicInstant::new(ClockDomain::new(), Duration::ZERO));
-        assert!(
-            core.snapshot_input(None)
-                .at(MonotonicInstant::new(ClockDomain::new(), Duration::ZERO))
-                .is_err()
-        );
-        let gauges = core.snapshot_gauges(Some(sub));
-        assert_eq!(gauges.reserved_receives, 1);
-        assert_eq!(gauges.oldest_owned_age, None);
-        assert_eq!(gauges.completed, 0);
+        let snapshot = core
+            .snapshot_input(None)
+            .at(MonotonicInstant::new(ClockDomain::new(), Duration::ZERO));
+        assert_eq!(snapshot.reserved_receives, 1);
+        assert_eq!(snapshot.oldest_owned_age, None);
+        assert_eq!(snapshot.completed, 0);
     }
 
     #[test]
@@ -1322,9 +1310,7 @@ mod tests {
         core.request_receive(sub);
         let later = core.take_receive_reservation(sub).expect("later reservation");
         core.record_owned_start(later, later_start);
-        let snapshot = captured
-            .at(sampled_after_capture)
-            .expect("post-capture lease cannot invalidate this sample");
+        let snapshot = captured.at(sampled_after_capture);
         assert_eq!(snapshot.oldest_owned_age, Some(Duration::from_secs(5)));
         assert_eq!((snapshot.queued, snapshot.reserved_receives), (1, 0));
         assert_eq!(

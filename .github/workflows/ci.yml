@@ -62,3 +62,8 @@ jobs:
         cargo +1.94.0 test --locked --features conformance --test spi_conformance_tests
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml --bin async_local
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/discovery_consumer/Cargo.toml
+        cargo +1.94.0 build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
+        test -x examples/operation_lifecycle/target/debug/examples/async_shutdown
+        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
+        test -x examples/operation_lifecycle/target/debug/examples/notification_close
+        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close

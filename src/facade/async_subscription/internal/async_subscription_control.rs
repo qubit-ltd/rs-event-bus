@@ -28,13 +28,11 @@ use super::SessionLease;
 use super::SessionSignals;
 use super::SessionSlot;
 use crate::error::ReceiveError;
-use crate::error::SpiError;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::AsyncSubscriptionRunState;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::async_event_bus::AsyncSignal;
 use crate::facade::internal::DeliveryMetrics;
-use crate::model::SubscriptionStopReason;
 use crate::pipeline::Diagnostic;
 use crate::spi::ShutdownMode;
 
@@ -170,34 +168,14 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     ///
     /// # Returns
     /// Subscription counters with active gauges, or zero gauges after disposal.
-    /// Clock errors publish the first stop cause and return accurate gauges
-    /// without age.
+    /// An incomparable clock sample leaves the age unavailable while
+    /// preserving the captured gauges; metrics collection does not stop the
+    /// subscription or emit diagnostics.
     pub(in crate::facade::async_subscription) fn delivery_metrics(&self) -> DeliveryMetricsSnapshot {
         let gauges = self.bus.upgrade().map_or_else(Default::default, |bus| {
             let input = bus.scheduler.snapshot_input(Some(self.id));
             let now = bus.timer.clock().now();
-            match input.at(now) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let message = error.to_string();
-                    let error = Arc::new(SpiError::Operation {
-                        provider_id: bus.provider_id.as_str().into(),
-                        operation: "delivery_metrics",
-                        resource: None,
-                        kind: "delivery_metrics_clock_failure",
-                        retryable: Some(false),
-                        source: Box::new(error),
-                    });
-                    if self.signals.fail_receive(SubscriptionStopReason::Provider { error }) {
-                        self.mark_stopped();
-                        bus.emit(&Diagnostic::InternalFailure {
-                            origin: "delivery_metrics_clock".into(),
-                            message: message.into(),
-                        });
-                    }
-                    bus.scheduler.snapshot_gauges(Some(self.id))
-                }
-            }
+            input.at(now)
         });
         self.metrics.snapshot(gauges)
     }
@@ -232,19 +210,6 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     #[inline]
     fn notify(&self) {
         self.signals.signal().notify();
-    }
-    /// Stores a metrics clock error before any diagnostic callback can reenter.
-    ///
-    /// # Parameters
-    /// - `error`: Original clock failure retained as the provider stop source.
-    ///
-    /// # Returns
-    /// True only when this call publishes the first terminal cause.
-    #[inline]
-    fn fail_metrics_clock(&self, error: Arc<SpiError>) -> bool {
-        let published = self.signals.fail_receive(SubscriptionStopReason::Provider { error });
-        self.mark_stopped();
-        published
     }
     /// Stops the active or future runner.
     ///

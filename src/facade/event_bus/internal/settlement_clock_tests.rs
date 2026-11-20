@@ -391,7 +391,7 @@ fn test_sync_thousand_closed_handles_leave_active_registry_at_baseline() {
         }
         subscription.cancel().expect("close and join");
         assert!(bus.inner.subscriptions.lock().expect("registry lock").is_empty());
-        let gauges = bus.inner.scheduler.snapshot_gauges(None);
+        let gauges = bus.inner.delivery_gauges(None);
         assert_eq!(
             gauges.reserved_receives + gauges.queued + gauges.running_handlers + gauges.settling,
             0
@@ -444,7 +444,7 @@ impl MonotonicClock for SwitchingClock {
     }
 }
 #[test]
-fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
+fn test_sync_metrics_clock_failure_preserves_live_subscriptions_without_diagnostics() {
     struct ReleaseGate(Arc<(Mutex<bool>, Condvar)>);
     impl Drop for ReleaseGate {
         fn drop(&mut self) {
@@ -460,8 +460,10 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
         switched: AtomicBool::new(false),
     });
     let one = NonZeroUsize::new(1).expect("positive limit");
-    let config = EventBusFacadeConfig::new()
-        .with_delivery_scheduling(DeliverySchedulingConfig::new(one, one, one, one).expect("one owned lease"));
+    let two = NonZeroUsize::new(2).expect("two subscriptions");
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(two, two, one, two).expect("two subscriptions with one owned lease each"),
+    );
     let bus = EventBus::with_config_and_clock(
         ProviderId::new("snapshot-test").expect("provider"),
         local.inner.spi.clone(),
@@ -489,6 +491,13 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
             },
         )
         .expect("subscribe");
+    let idle_subscription = bus
+        .subscribe(
+            SubscribeRequest::new("idle", Topic::<u32>::new("snapshot.idle").expect("idle topic"))
+                .expect("idle request"),
+            |_| {},
+        )
+        .expect("idle subscribe");
     let release = ReleaseGate(gate);
     let _ = bus
         .publish(PublishRequest::new(topic.clone(), 0).expect("first request"))
@@ -503,50 +512,37 @@ fn test_sync_metrics_clock_failure_observer_can_reenter_snapshot_once() {
         .expect("second publish");
     entered_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("second handler retains its old-domain lease");
-    let nested_bus = bus.clone();
+        .expect("second handler retains its lease");
     let callbacks = Arc::new(AtomicUsize::new(0));
     let callback_count = callbacks.clone();
-    let (nested_tx, nested_rx) = mpsc::channel();
-    let _observer = bus.observe_diagnostics(move |diagnostic| {
-        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "metrics_clock") {
-            // The bound makes a broken reentry gate fail without stack overflow.
-            if callback_count.fetch_add(1, Ordering::SeqCst) < 2 {
-                let _ = nested_tx.send(nested_bus.delivery_metrics());
-            }
-        }
+    let _observer = bus.observe_diagnostics(move |_| {
+        callback_count.fetch_add(1, Ordering::SeqCst);
     });
+
     clock.switched.store(true, Ordering::SeqCst);
-    let outer = bus.delivery_metrics();
-    let nested = nested_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("observer reenters without locking or recursive diagnostics");
-    assert_eq!(callbacks.load(Ordering::SeqCst), 1);
-    for snapshot in [outer, nested] {
-        assert_eq!(snapshot.running_handlers, 1);
-        assert_eq!(snapshot.completed, 1);
-        assert_eq!(snapshot.oldest_owned_age, None);
-    }
-    let reason = subscription
-        .terminal_failure()
-        .expect("clock error is published before the observer");
-    let SubscriptionStopReason::Provider { error } = reason.as_ref() else {
-        panic!("snapshot clock provider boundary reason")
-    };
-    assert_eq!(error.operation(), "metrics_clock");
-    assert!(
-        Error::source(error.as_ref())
-            .expect("clock source")
-            .downcast_ref::<TimeError>()
-            .is_some()
-    );
+    let snapshot = bus.delivery_metrics();
+    assert_eq!(snapshot.running_handlers, 1);
+    assert_eq!(snapshot.completed, 1);
+    assert_eq!(snapshot.oldest_owned_age, None);
+    let active_snapshot = subscription.delivery_metrics().metrics;
+    assert_eq!(active_snapshot.running_handlers, 1);
+    assert_eq!(active_snapshot.completed, 1);
+    assert_eq!(active_snapshot.oldest_owned_age, None);
+    assert!(subscription.terminal_failure().is_none());
+    assert!(idle_subscription.terminal_failure().is_none());
+    assert_eq!(idle_subscription.delivery_metrics().metrics.oldest_owned_age, None);
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+    clock.switched.store(false, Ordering::SeqCst);
     drop(release);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while bus.delivery_metrics().completed < 2 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(bus.delivery_metrics().completed, 2);
     subscription.cancel().expect("cleanup");
+    idle_subscription.cancel().expect("idle cleanup");
     finish_test_bus_cleanup(cleanup);
-    assert!(Arc::ptr_eq(
-        &reason,
-        &subscription.terminal_failure().expect("first cause retained")
-    ));
 }
 
 /// Returns real provider success before the test clock changes its domain.

@@ -530,7 +530,7 @@ let global = bus.delivery_metrics();
 eprintln!("subscription={per_subscription:?}, global={global:?}");
 ```
 
-总线快照提供 `reserved_receives`、`queued`、`running_handlers`、`settling`、`lane_waiting`（queued 的子集），以及结算尝试/重试/终止、完成/临时消息放弃计数、handler 与结算耗时的次数/总和/最大值、`oldest_owned_age`。跨线程读取不保证所有字段构成同一个事务快照。关闭后的订阅 handle 保留最终计数，总线只保留聚合量，不建立每事件或每键的永久索引。数量上限也不是 Native payload 或 codec 分配的字节上限。
+总线快照提供 `reserved_receives`、`queued`、`running_handlers`、`settling`、`lane_waiting`（queued 的子集），以及结算尝试/重试/终止、完成/临时消息放弃计数、handler 与结算耗时的次数/总和/最大值、`oldest_owned_age`。没有在途时间戳，或任一已捕获时间戳无法与采样时钟比较时，年龄为 `None`。指标读取是只读快照：年龄样本无效不会停止订阅、取消工作或发出诊断；后续有效采样仍可恢复年龄读数。跨线程读取不保证所有字段构成同一个事务快照。关闭后的订阅 handle 保留最终计数，总线只保留聚合量，不建立每事件或每键的永久索引。数量上限也不是 Native payload 或 codec 分配的字节上限。
 
 订单消费者停止后，保存原因与 `Diagnostic::SettlementFailed` / `SettlementStopped`，修正 provider、codec、容量或策略，关闭旧订阅，再用同一持久消费组建立新订阅。Redis 按配置认领尚在 PEL 的工作；已经 ACK 的消息不能仅凭失败记录恢复。local 重新订阅从空队列开始，需要应用补偿。异步 `run` 返回 `ReceiveError::Stopped`，再次运行同一个已停止 handle 不会清除原因。取消仍活跃的 `run` future 则只是暂停，owned 任务和计时状态会保留，可恢复 `run` 或交给 shutdown 接管。
 
@@ -2052,6 +2052,14 @@ if !cleanup_errors.is_empty() {
 示例保留 runner 结果和 shutdown 错误，供应用记录。`try_shutdown_async` 最多执行两轮有界 Graceful 停机；它会返回 shutdown 错误，不会让应用跳过其他清理。返回 `false` 表示清理仍未完成，不要再无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
+
+可运行的生命周期示例包括：`async_shutdown` 展示异步总线的有界停机，`notification_close` 展示 observer 仍在运行时关闭通知发布器。使用嵌套示例包构建，再分别通过进程 watchdog 运行：
+
+```sh
+cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close
+```
 
 ## 错误、诊断与排障
 

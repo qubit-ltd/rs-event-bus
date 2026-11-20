@@ -91,7 +91,7 @@ impl Wake for MetricsWake {
     }
 }
 
-fn reentrant_delivery_metrics_on_clock_failure() {
+fn reentrant_delivery_metrics_during_receive_failure_is_nonterminal() {
     let fake = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
     let timer = Arc::new(SwitchingTimer {
         normal: ManualMonotonicClock::new(),
@@ -100,7 +100,7 @@ fn reentrant_delivery_metrics_on_clock_failure() {
     });
     let bus = AsyncEventBus::with_config_and_timer(
         ProviderId::new("waker-reentry-a").expect("provider"),
-        fake,
+        fake.clone(),
         EventBusFacadeConfig::default(),
         timer.clone(),
     )
@@ -124,17 +124,20 @@ fn reentrant_delivery_metrics_on_clock_failure() {
     // The support poller has its own waker, so poll again with the reentrant one.
     assert!(runner.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
     timer.switched.store(true, Ordering::SeqCst);
-    let _ = subscription.delivery_metrics();
+    fake.fail_next_receive();
     assert!(
         wake.calls.load(Ordering::SeqCst) > 0,
-        "the stop waiter invoked its callback"
+        "receive failure wakes the waiter, whose callback can safely read metrics"
     );
+    assert!(matches!(
+        poll_once(runner.as_mut()),
+        Poll::Ready(Err(_))
+    ));
     let terminal_failure = subscription.terminal_failure();
     let Some(SubscriptionStopReason::Provider { error }) = terminal_failure.as_deref() else {
-        panic!("delivery metrics clock failure is retained as the terminal cause");
+        panic!("the injected receive failure remains the terminal cause");
     };
-    assert_eq!(error.operation(), "delivery_metrics");
-    assert_eq!(error.kind(), "delivery_metrics_clock_failure");
+    assert_ne!(error.operation(), "delivery_metrics");
     drop(runner);
     let _ = block_on(bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate));
 }
@@ -605,7 +608,7 @@ fn test_a_fail_receive_wake_reentry() {
         support::isolated_process::run_case("test_a_fail_receive_wake_reentry", "a");
         return;
     }
-    reentrant_delivery_metrics_on_clock_failure();
+    reentrant_delivery_metrics_during_receive_failure_is_nonterminal();
 }
 
 #[test]

@@ -100,7 +100,9 @@ impl Subscription {
 
     /// Returns live gauges and retained cumulative counters for this
     /// subscription. Closed handles preserve final counters without
-    /// retaining payload or tokens.
+    /// retaining payload or tokens. If a captured timestamp cannot be
+    /// compared with the sampled clock, `oldest_owned_age` is unavailable;
+    /// collecting metrics does not stop the subscription.
     ///
     /// # Returns
     /// This subscription identity, live gauges when active, and retained

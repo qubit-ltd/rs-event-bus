@@ -530,7 +530,7 @@ let global = bus.delivery_metrics();
 eprintln!("subscription={per_subscription:?}, global={global:?}");
 ```
 
-The bus snapshot exposes `reserved_receives`, `queued`, `running_handlers`, `settling`, and `lane_waiting` (a subset of queued), plus settlement attempts/retries/terminal failures, completed/abandoned counts, handler and settlement duration totals/counts/maxima, and `oldest_owned_age`. Gauges and totals need not be a transactionally consistent cross-thread read. Closed handles keep their final subscription counts; the bus retains aggregate counters, not a permanent index of every event or key. Native payload size and codec allocations remain outside these count bounds.
+The bus snapshot exposes `reserved_receives`, `queued`, `running_handlers`, `settling`, and `lane_waiting` (a subset of queued), plus settlement attempts/retries/terminal failures, completed/abandoned counts, handler and settlement duration totals/counts/maxima, and `oldest_owned_age`. The age is `None` when no owned timestamp is available or any captured timestamp cannot be compared with the sampled clock. This is a read-only snapshot: an invalid age sample does not stop subscriptions, cancel work, or emit diagnostics; a later valid sample can report age again. Gauges and totals need not be a transactionally consistent cross-thread read. Closed handles keep their final subscription counts; the bus retains aggregate counters, not a permanent index of every event or key. Native payload size and codec allocations remain outside these count bounds.
 
 For an order consumer that stops, retain the reason and `Diagnostic::SettlementFailed` / `SettlementStopped`, fix the provider, codec, capacity, or policy, close the old subscription, then create a new subscription with the same durable group. Redis can claim outstanding PEL work under its configured policy; entries already ACKed cannot be recovered by replaying the failure alone. Local resubscription starts empty, so use application compensation. Async `run` reports `ReceiveError::Stopped`; rerunning that same stopped handle does not clear the reason. Merely cancelling a live `run` future pauses its owned tasks and timers; resume `run` or let shutdown take over.
 
@@ -2056,6 +2056,14 @@ if !cleanup_errors.is_empty() {
 The example retains both the runner result and shutdown error for reporting. `try_shutdown_async` makes two bounded Graceful attempts; it records a shutdown error rather than skipping other application cleanup. When the helper returns `false`, cleanup remains incomplete. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future stops its current driving. To continue cleanup, the application must call `AsyncEventBus::shutdown` again and keep polling that future; async shutdown has no background coordinator. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
+
+The runnable lifecycle examples include `async_shutdown` for bounded async bus shutdown and `notification_close` for closing a notification publisher while its observer is active. Build both from the nested examples package, then run each under a process watchdog:
+
+```sh
+cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close
+```
 
 ## Errors, diagnostics, and troubleshooting
 

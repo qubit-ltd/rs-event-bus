@@ -25,7 +25,6 @@ use std::thread::Thread;
 
 use qubit_clock::MonotonicClock;
 use qubit_clock::MonotonicInstant;
-use qubit_clock::TimeError;
 use qubit_id::Id;
 
 use self::internal::SchedulerState;
@@ -346,28 +345,9 @@ impl SyncDeliveryScheduler {
     ///
     /// # Returns
     /// Exact captured gauges and the oldest owned age, if any.
-    ///
-    /// # Errors
-    /// Returns TimeError when sampled instants belong to different domains or
-    /// regress.
-    pub(super) fn snapshot(
-        &self,
-        scope: Option<Id>,
-        clock: &dyn MonotonicClock,
-    ) -> Result<DeliveryMetricsSnapshot, TimeError> {
+    pub(super) fn snapshot(&self, scope: Option<Id>, clock: &dyn MonotonicClock) -> DeliveryMetricsSnapshot {
         let captured = self.core.snapshot_input(scope);
         captured.at(clock.now())
-    }
-
-    /// Returns exact active gauges without computing a possibly invalid age.
-    ///
-    /// # Parameters
-    /// - `scope`: subscription identity, or None for the entire bus.
-    ///
-    /// # Returns
-    /// Captured live gauges with unknown age and zero cumulative counters.
-    pub(super) fn snapshot_gauges(&self, scope: Option<Id>) -> DeliveryMetricsSnapshot {
-        self.core.snapshot_gauges(scope)
     }
 
     /// Queues a decode rejection in its ordering lane without consuming a

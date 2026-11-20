@@ -98,8 +98,7 @@ pub(in crate::facade) struct EventBusInner {
 
 impl EventBusInner {
     /// Samples the injected clock outside metadata locks and returns exact live
-    /// gauges. A clock error stops affected owners and returns gauges with
-    /// unknown oldest age.
+    /// gauges. An incomparable clock sample returns gauges with unknown age.
     ///
     /// # Parameters
     /// - `scope`: receiver identity, or None for the entire bus.
@@ -108,39 +107,9 @@ impl EventBusInner {
     /// Exact captured live gauges; clock failures preserve gauges with unknown
     /// age.
     ///
-    /// # Side Effects
-    /// A checked clock failure stops affected owners before invoking
-    /// diagnostics.
     #[must_use = "delivery gauges are the current bus snapshot"]
     pub(in crate::facade) fn delivery_gauges(&self, scope: Option<Id>) -> crate::facade::DeliveryMetricsSnapshot {
-        match self.scheduler.snapshot(scope, self.clock.as_ref()) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let controls = self.subscription_snapshot();
-                let error = Arc::new(SpiError::Operation {
-                    provider_id: self.provider_id.as_str().into(),
-                    operation: "metrics_clock",
-                    resource: None,
-                    kind: "invalid_monotonic_clock",
-                    retryable: Some(false),
-                    source: Box::new(error),
-                });
-                let mut first_failures = 0;
-                for control in controls
-                    .into_iter()
-                    .filter(|control| scope.is_none_or(|id| id == control.id))
-                {
-                    if control.fail_receive(crate::model::SubscriptionStopReason::Provider { error: error.clone() }) {
-                        first_failures += 1;
-                    }
-                    self.scheduler.cancel_subscription(control.id);
-                }
-                for _ in 0..first_failures {
-                    self.emit_internal("metrics_clock", error.to_string());
-                }
-                self.scheduler.snapshot_gauges(scope)
-            }
-        }
+        self.scheduler.snapshot(scope, self.clock.as_ref())
     }
 
     /// Publishes a checked clock failure with its original source and wakes the

@@ -1708,10 +1708,9 @@ fn test_close_failure_does_not_overwrite_first_settlement_cause() {
     );
 }
 
-/// A misbehaving clock cannot recursively re-emit diagnostics through snapshot
-/// observers.
+/// An incomparable metrics clock leaves subscription state untouched.
 #[test]
-fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
+fn test_metrics_clock_failure_does_not_stop_async_subscription_or_emit_diagnostics() {
     /// Timer double that switches to a foreign clock to trigger snapshot
     /// errors.
     struct SwitchingTimer {
@@ -1746,6 +1745,7 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
         )
         .expect("test provider capabilities must be valid");
         let sub = subscribe(&bus, "clock-reentry");
+        let idle_sub = subscribe(&bus, "clock-reentry-idle");
         enqueue(&fake, sub.id(), 1, "A");
         let mut run = Box::pin(sub.run(|_| async {
             std::future::pending::<()>().await;
@@ -1792,19 +1792,13 @@ fn test_metrics_clock_failure_reentrant_observer_is_not_repeated() {
         } else {
             bus.delivery_metrics()
         };
-        assert_eq!(
-            callbacks.load(Ordering::SeqCst),
-            1,
-            "first cause must be stored before invoking the observer"
-        );
-        let nested = nested_snapshots
-            .lock()
-            .expect("reentrant snapshot log mutex must not be poisoned");
-        assert_eq!(nested.len(), 1, "observer completed its reentrant snapshot call");
-        assert_eq!(nested[0].running_handlers, 1);
-        assert_eq!(nested[0].oldest_owned_age, None);
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0, "metrics sampling is read-only");
+        assert!(nested_snapshots.lock().expect("snapshot mutex").is_empty());
         assert_eq!(snapshot.running_handlers, 1);
-        assert!(sub.terminal_failure().is_some());
+        assert_eq!(snapshot.oldest_owned_age, None);
+        assert!(sub.terminal_failure().is_none());
+        assert!(idle_sub.terminal_failure().is_none());
+        assert_eq!(idle_sub.delivery_metrics().metrics.oldest_owned_age, None);
     }
 }
 
