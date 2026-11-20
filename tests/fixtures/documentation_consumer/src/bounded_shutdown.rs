@@ -92,9 +92,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
     use qubit_event_bus::error::LifecycleError;
     use qubit_event_bus::spi::ShutdownOutcome;
+
+    use super::ShutdownError;
+    use super::ShutdownReport;
+    use super::retry_shutdown_async_with;
+    use super::retry_shutdown_with;
 
     fn shutdown_report(outcome: ShutdownOutcome) -> ShutdownReport {
         ShutdownReport {
