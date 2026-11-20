@@ -247,6 +247,22 @@ def wrong_doc_path(root):
     mutate_doc_link(root, "Design", f"//! - [Design](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/other.md)")
 
 
+def add_external_shutdown_tests(root):
+    path = root / SHUTDOWN
+    path.write_text(path.read_text(encoding="utf-8") + "\n#[cfg(test)]\nmod tests;\n", encoding="utf-8")
+
+
+def add_item_after_external_shutdown_tests(root):
+    add_external_shutdown_tests(root)
+    path = root / SHUTDOWN
+    path.write_text(path.read_text(encoding="utf-8") + "fn trailing_item() {}\n", encoding="utf-8")
+
+
+def add_inline_shutdown_tests_then_item(root):
+    path = root / SHUTDOWN
+    path.write_text(path.read_text(encoding="utf-8") + "\n#[cfg(test)]\nmod tests {}\nfn trailing_item() {}\n", encoding="utf-8")
+
+
 def mixed_doc_snapshot(root):
     mutate_doc_link(root, "设计文档", "//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/1111111111111111111111111111111111111111/doc/design.zh_CN.md)")
 
@@ -298,6 +314,13 @@ result = run_case(normalize_lib_blank_lines)
 assert result.returncode == 0, result.stdout + result.stderr
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
+
+result = run_case(add_external_shutdown_tests)
+assert result.returncode == 0, result.stdout + result.stderr
+result = run_case(add_item_after_external_shutdown_tests)
+assert result.returncode != 0 and "example drift from " + SHUTDOWN in result.stdout + result.stderr
+result = run_case(add_inline_shutdown_tests_then_item)
+assert result.returncode != 0 and "example drift from " + SHUTDOWN in result.stdout + result.stderr
 
 SNAPSHOT_ARGS = ("--check-snapshot-content",)
 result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True)

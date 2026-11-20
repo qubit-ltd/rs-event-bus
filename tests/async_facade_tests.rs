@@ -675,6 +675,28 @@ fn test_async_per_key_capability_is_checked_before_spi_subscribe() {
 }
 
 #[test]
+fn test_async_subscription_close_is_idempotent_while_bus_runs() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+
+    block_on(async {
+        let mut subscription = bus
+            .subscribe(SubscribeRequest::new("repeat-close", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("subscription");
+
+        subscription.close().await.expect("first close succeeds");
+        subscription.close().await.expect("repeated close succeeds");
+        assert_eq!(spi.close_call_count(), 1, "provider receiver closes only once");
+
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("bus shutdown");
+        assert!(matches!(subscription.close().await, Err(LifecycleError::Closed)));
+        assert_eq!(spi.close_call_count(), 1, "closed bus does not close receiver again");
+    });
+}
+
+#[test]
 fn test_async_subscription_capabilities_are_checked_before_spi_subscribe() {
     let requests = [
         (

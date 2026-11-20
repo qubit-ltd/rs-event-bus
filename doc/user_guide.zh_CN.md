@@ -2045,7 +2045,14 @@ let shutdown_result = try_shutdown_async(&bus).await;
 let mut cleanup_errors = Vec::new();
 if let Some(Err(error)) = run_result { cleanup_errors.push(error.to_string()); }
 match shutdown_result {
-    Ok(report) if report.outcome == qubit_event_bus::spi::ShutdownOutcome::Complete => {}
+    Ok(report)
+        if report.outcome == qubit_event_bus::spi::ShutdownOutcome::Complete
+            && report.known_abandoned_deliveries == 0 =>
+    {
+        if report.provider_may_have_abandoned_deliveries {
+            eprintln!("provider 可能放弃了投递：{report:?}");
+        }
+    }
     Ok(report) => cleanup_errors.push(format!("停机报告：{report:?}")),
     Err(error) => cleanup_errors.push(error.to_string()),
 }
@@ -2054,7 +2061,7 @@ if !cleanup_errors.is_empty() {
 }
 ```
 
-示例保留 runner 结果以及 shutdown 报告或错误，供应用记录。`try_shutdown_async` 仅在第一次调用方 deadline 到期时，再执行一轮有界 Graceful 停机。它会返回首次获得的完整报告，包括 provider 报告的 `TimedOut` outcome；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。示例会连同 runner 错误报告非 `Complete` 的停机报告，并继续执行应用的其他清理。不要无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
+示例保留 runner 结果以及 shutdown 报告或错误，供应用记录。`try_shutdown_async` 仅在第一次调用方 deadline 到期时，再执行一轮有界 Graceful 停机。它会返回首次获得的完整报告，包括 provider 报告的 `TimedOut` outcome；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。示例会连同 runner 错误报告非 `Complete` 或已知放弃计数非零的停机报告，并继续执行应用的其他清理。已知放弃数是总线累计值，不能说明 handler 是否已经产生业务副作用。provider 报告的可能放弃表示不确定性：本示例会记录它，但不会据此认定消息确已丢失。不要无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 

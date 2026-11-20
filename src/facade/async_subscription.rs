@@ -270,13 +270,17 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Stops this session and closes its provider receiver.
     ///
     /// # Returns
-    /// `Ok(())` after receiver cleanup completes.
+    /// `Ok(())` after receiver cleanup completes. Calling `close` again while
+    /// the bus is still running also returns `Ok(())` without closing the
+    /// provider receiver a second time.
     ///
     /// # Errors
-    /// Returns `LifecycleError::Closed` when the bus has begun shutdown or the
-    /// session is already closed. This error does not indicate that cleanup is
-    /// complete; continue driving `AsyncEventBus::shutdown` and inspect its
-    /// result. Other lifecycle errors report provider receiver close failures.
+    /// Returns `LifecycleError::Closed` when the bus has begun shutdown. This
+    /// error does not indicate that cleanup is complete; continue driving
+    /// `AsyncEventBus::shutdown` and inspect its result. Other lifecycle errors
+    /// report provider receiver close failures. A repeated close while the bus
+    /// remains running is idempotent and succeeds without another provider
+    /// close call.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
