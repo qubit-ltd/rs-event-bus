@@ -7,7 +7,11 @@ import sys
 from pathlib import Path
 
 
-SNAPSHOT_URL = re.compile(
+FIXED_COMMIT = "7299e7d19b1889655e28625a6ca3e47af926e6d4"
+RAW_URL = re.compile(
+    r"https://raw\.githubusercontent\.com/qubit-ltd/rs-event-bus/([0-9a-f]{40})/([^\s)]+)"
+)
+TREE_URL = re.compile(
     r"https://github\.com/qubit-ltd/rs-event-bus/tree/([0-9a-f]{40})/([^\s)]+)"
 )
 ARCHIVES = (
@@ -15,82 +19,80 @@ ARCHIVES = (
         "doc/ordering_performance_artifacts/README.md",
         "doc/ordering_performance_artifacts",
         "doc/ordering_performance_artifacts/paired_samples.txt",
-        True,
     ),
     (
         "doc/capacity_performance_artifacts/20261104-review/README.md",
         "doc/capacity_performance_artifacts/20261104-review",
         "doc/capacity_performance_artifacts/20261104-review/manifest.json",
-        False,
     ),
 )
 PERFORMANCE_DOC = "doc/performance.md"
-EXPECTED_SNAPSHOT = "e8a1ed724954756d48c3d5216cbd13ac39a0cb81"
 
 
 def fail(path: str, message: str) -> None:
     print(f"{path}: {message}", file=sys.stderr)
 
 
+def read_text(path: Path, label: str) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        fail(label, f"cannot read file: {error}")
+        return None
+
+
 def check(package_list: Path) -> bool:
     root = Path(__file__).resolve().parents[1]
-    try:
-        lines = package_list.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        fail(str(package_list), f"cannot read package list: {error}")
+    listed = read_text(package_list, str(package_list))
+    if listed is None:
         return False
+    packaged = {
+        line.strip().replace("\\", "/").removeprefix("./")
+        for line in listed.splitlines()
+        if line.strip()
+    }
 
-    packaged = {line.strip().replace("\\", "/").removeprefix("./") for line in lines if line.strip()}
     ok = True
     if PERFORMANCE_DOC not in packaged:
         fail(PERFORMANCE_DOC, "consolidated performance document must be included in the Cargo package list")
         ok = False
+    performance = read_text(root / PERFORMANCE_DOC, PERFORMANCE_DOC)
+    if performance is None:
+        ok = False
     else:
-        try:
-            content = (root / PERFORMANCE_DOC).read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            fail(PERFORMANCE_DOC, f"cannot read packaged performance document: {error}")
-            ok = False
-        else:
-            links = SNAPSHOT_URL.findall(content)
-            for _, archive, _, _ in ARCHIVES:
-                if not any(sha == EXPECTED_SNAPSHOT and target == archive for sha, target in links):
-                    fail(PERFORMANCE_DOC, f"must link directly to fixed evidence snapshot {archive}")
-                    ok = False
+        for _, _, evidence in ARCHIVES:
+            found = [
+                sha
+                for sha, target in RAW_URL.findall(performance)
+                if target == evidence
+            ]
+            if found != [FIXED_COMMIT]:
+                fail(PERFORMANCE_DOC, f"must link exactly once to fixed raw evidence file {evidence} at {FIXED_COMMIT}")
+                ok = False
 
-    snapshots = []
-    for readme, archive, representative, must_be_packaged in ARCHIVES:
-        path = root / readme
-        if must_be_packaged and readme not in packaged:
-            fail(readme, "README must be included in the Cargo package list")
+    for readme, archive, evidence in ARCHIVES:
+        if readme not in packaged:
+            fail(readme, "evidence navigation README must be included in the Cargo package list")
             ok = False
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            fail(readme, f"cannot read archive entry: {error}")
+        content = read_text(root / readme, readme)
+        if content is None:
             ok = False
             continue
 
-        links = SNAPSHOT_URL.findall(content)
-        matching = [(sha, target) for sha, target in links if target == archive]
-        if len(matching) != 1:
-            fail(readme, f"must contain exactly one fixed snapshot link to {archive}")
+        links = [(sha, target) for sha, target in TREE_URL.findall(content) if target == archive]
+        if len(links) != 1 or links[0][0] != FIXED_COMMIT:
+            fail(readme, f"must contain one fixed snapshot link for {archive} at {FIXED_COMMIT}")
             ok = False
-        else:
-            snapshots.append((readme, matching[0][0]))
-            if matching[0][0] != EXPECTED_SNAPSHOT:
-                fail(readme, f"snapshot SHA must be the reviewed fixed commit {EXPECTED_SNAPSHOT}")
-                ok = False
         if "distribution and complete evidence" not in content.lower():
             fail(readme, "must explain distribution and how to consult complete evidence online")
             ok = False
-        if representative in packaged:
-            fail(representative, "representative non-Markdown evidence must remain outside the Cargo package")
+        if "raw evidence is not included in the current cargo package" not in content.lower():
+            fail(readme, "must state that raw evidence is outside the Cargo package")
+            ok = False
+        if evidence in packaged:
+            fail(evidence, "raw evidence must remain outside the Cargo package and use its fixed raw file URL")
             ok = False
 
-    if len(snapshots) == len(ARCHIVES) and snapshots[0][1] != snapshots[1][1]:
-        fail(ARCHIVES[1][0], f"snapshot SHA must match {ARCHIVES[0][0]} ({snapshots[0][1]})")
-        ok = False
     return ok
 
 

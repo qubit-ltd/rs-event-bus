@@ -10,12 +10,18 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CHECKER = REPO / "scripts" / "check_performance_evidence.py"
-SNAPSHOT = "e8a1ed724954756d48c3d5216cbd13ac39a0cb81"
+SNAPSHOT = "7299e7d19b1889655e28625a6ca3e47af926e6d4"
 ORDERING = "doc/ordering_performance_artifacts/README.md"
 CAPACITY_ARCHIVE = "doc/capacity_performance_artifacts/20261104-review/README.md"
 PERFORMANCE = "doc/performance.md"
-ORDERING_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/doc/ordering_performance_artifacts"
-CAPACITY_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/doc/capacity_performance_artifacts/20261104-review"
+ORDERING_ARCHIVE = "doc/ordering_performance_artifacts"
+CAPACITY_ARCHIVE_DIR = "doc/capacity_performance_artifacts/20261104-review"
+ORDERING_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/{ORDERING_ARCHIVE}"
+CAPACITY_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/{CAPACITY_ARCHIVE_DIR}"
+ORDERING_EVIDENCE = "doc/ordering_performance_artifacts/paired_samples.txt"
+CAPACITY_EVIDENCE = f"{CAPACITY_ARCHIVE_DIR}/manifest.json"
+ORDERING_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{ORDERING_EVIDENCE}"
+CAPACITY_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{CAPACITY_EVIDENCE}"
 
 
 class PerformanceEvidenceTests(unittest.TestCase):
@@ -27,12 +33,15 @@ class PerformanceEvidenceTests(unittest.TestCase):
         (self.root / Path(ORDERING).parent).mkdir(parents=True)
         (self.root / Path(CAPACITY_ARCHIVE).parent).mkdir(parents=True)
         (self.root / "doc").mkdir(exist_ok=True)
-        archive_text = "# Evidence\n\n## Distribution and complete evidence\n\n"
+        archive_text = (
+            "# Evidence\n\n## Distribution and complete evidence\n\n"
+            "The raw evidence is not included in the current Cargo package.\n\n"
+        )
         (self.root / ORDERING).write_text(archive_text + f"Consult the evidence: {ORDERING_LINK}\n", encoding="utf-8")
         (self.root / CAPACITY_ARCHIVE).write_text(archive_text + f"Consult the evidence: {CAPACITY_LINK}\n", encoding="utf-8")
-        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_LINK}\n{CAPACITY_LINK}\n", encoding="utf-8")
+        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_RAW}\n{CAPACITY_RAW}\n", encoding="utf-8")
         self.listing = self.root / "package-list.txt"
-        self.files = [ORDERING, PERFORMANCE]
+        self.files = [ORDERING, CAPACITY_ARCHIVE, PERFORMANCE]
         self.write_listing()
 
     def tearDown(self):
@@ -62,8 +71,12 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.write_listing()
         self.assert_rejected(PERFORMANCE)
 
-    def test_missing_fixed_archive_link(self):
-        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_LINK}\n", encoding="utf-8")
+    def test_missing_fixed_evidence_file_link(self):
+        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_RAW}\n", encoding="utf-8")
+        self.assert_rejected(PERFORMANCE)
+
+    def test_directory_link_is_not_accepted_as_evidence_file(self):
+        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_LINK}\n{CAPACITY_RAW}\n", encoding="utf-8")
         self.assert_rejected(PERFORMANCE)
 
     def test_floating_main_reference_rejected(self):
@@ -93,9 +106,21 @@ class PerformanceEvidenceTests(unittest.TestCase):
         self.assert_rejected("doc/ordering_performance_artifacts/paired_samples.txt")
 
     def test_capacity_representative_evidence_must_not_be_packaged(self):
-        self.files.append("doc/capacity_performance_artifacts/20261104-review/manifest.json")
+        self.files.append(CAPACITY_EVIDENCE)
         self.write_listing()
-        self.assert_rejected("doc/capacity_performance_artifacts/20261104-review/manifest.json")
+        self.assert_rejected(CAPACITY_EVIDENCE)
+
+    def test_ordering_representative_evidence_must_not_be_packaged(self):
+        self.files.append(ORDERING_EVIDENCE)
+        self.write_listing()
+        self.assert_rejected(ORDERING_EVIDENCE)
+
+    def test_wrong_raw_file_path_is_rejected(self):
+        (self.root / PERFORMANCE).write_text(
+            f"# Performance\n\n{ORDERING_RAW.replace('paired_samples.txt', 'README.md')}\n{CAPACITY_RAW}\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(PERFORMANCE)
 
     def test_missing_package_list_rejected(self):
         missing = self.root / "missing-list.txt"
@@ -129,6 +154,8 @@ class RealCheckoutEntryPointTests(unittest.TestCase):
         content = (REPO / PERFORMANCE).read_text(encoding="utf-8")
         self.assertIn("(ordering_performance_artifacts/README.md)", content)
         self.assertTrue((REPO / "doc/ordering_performance_artifacts/README.md").is_file())
+        self.assertIn(ORDERING_RAW, content)
+        self.assertIn(CAPACITY_RAW, content)
 
 
 if __name__ == "__main__":

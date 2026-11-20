@@ -25,7 +25,6 @@ include = [
     "/benches/**",
     "!/doc/ordering_performance_artifacts/**",
     "/doc/ordering_performance_artifacts/README.md",
-    "/doc/ordering_performance_artifacts/eb-20261104-review-measurements.md",
 ]
 
 [package.metadata.rs-infra-dependency]

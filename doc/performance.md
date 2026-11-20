@@ -421,7 +421,7 @@ under `/tmp/ordering-t8-evidence`. These temporary paths identify session proven
 The exact original sample/rejection text, parsed samples with MAD association,
 profile outputs, source/binary SHA manifests and complete candidate patch are
 permanently stored in [ordering_performance_artifacts](ordering_performance_artifacts/README.md),
-and in the [fixed evidence snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/ordering_performance_artifacts).
+and in the [fixed evidence file](https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/7299e7d19b1889655e28625a6ca3e47af926e6d4/doc/ordering_performance_artifacts/paired_samples.txt).
 That artifact set and the tables below preserve this decision independently of `/tmp`.
 
 Frozen baseline SHA-256 values:
@@ -1796,7 +1796,7 @@ These measurements were collected from the current implementation for this
 review. They are kept separate from the historical tables above and do not
 support a historical before/after performance claim. The exact source state,
 environment, commands, complete stdout/stderr, and checksums are archived in
-the [fixed evidence snapshot](https://github.com/qubit-ltd/rs-event-bus/tree/e8a1ed724954756d48c3d5216cbd13ac39a0cb81/doc/capacity_performance_artifacts/20261104-review).
+the [fixed evidence file](https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/7299e7d19b1889655e28625a6ca3e47af926e6d4/doc/capacity_performance_artifacts/20261104-review/manifest.json).
 
 - UTC run interval: see the start and finish timestamp files in the archive.
 - Source HEAD: see the archive manifest; the task-local source patch and
